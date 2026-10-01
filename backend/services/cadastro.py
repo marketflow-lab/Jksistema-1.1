@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from backend.schemas import (
+    CadastroImportadorLojaRequest,
     CadastroFornecedorRequest,
     CadastroProdutoLojaAtualizacaoRequest,
     CadastroProdutoLojaRequest,
@@ -59,3 +60,4 @@ __all__ += [
     'cancelar_importacao_catalogo',
     'aplicar_importacao_catalogo',
 ]
+__all__ += ['CadastroImportadorLojaRequest', 'obter_importador_loja', 'salvar_importador_loja']

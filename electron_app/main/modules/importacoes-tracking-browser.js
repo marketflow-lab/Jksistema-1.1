@@ -210,6 +210,16 @@ function extractCoscoTrackingFromText(rawText, expectedReference = '') {
         /^ETD(?:\s*[:\-]\s*(.+))?$/i,
         /20\d{2}[-/]\d{2}[-/]\d{2}/,
     );
+    const ladenReturnTime = lineAfter(
+        lines,
+        /^Laden\s+Return\s+Time(?:\s*[:\-]\s*(.+))?$/i,
+        /20\d{2}[-/]\d{2}[-/]\d{2}/,
+    );
+    const atd = lineAfter(
+        lines,
+        /^ATD(?:\s*[:\-]\s*(.+))?$/i,
+        /20\d{2}[-/]\d{2}[-/]\d{2}/,
+    );
     const eta = lineAfter(
         lines,
         /^ETA(?:\s*[:\-]\s*(.+))?$/i,
@@ -232,6 +242,8 @@ function extractCoscoTrackingFromText(rawText, expectedReference = '') {
         trafficTerm,
         equipment,
         etd,
+        ladenReturnTime,
+        atd,
         eta,
         cargoAvailableAt,
     ].filter(Boolean).length;
@@ -246,6 +258,8 @@ function extractCoscoTrackingFromText(rawText, expectedReference = '') {
         trafficTerm,
         equipment,
         etd,
+        ladenReturnTime,
+        atd,
         eta,
         cargoAvailableAt,
     };

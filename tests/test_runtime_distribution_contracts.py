@@ -15,7 +15,7 @@ def test_release_version_is_canonical_and_materialized():
     runtime_contract = json.loads((root / "installer-runtime.lock.json").read_text(encoding="utf-8"))
 
     release_version = electron_package["version"]
-    assert release_version == "1.0.154"
+    assert release_version == "1.0.155"
     assert root_package["version"] == release_version
     assert context_manifest["source_version"] == release_version
     if runtime_manifest_path.is_file():

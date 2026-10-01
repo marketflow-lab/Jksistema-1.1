@@ -253,6 +253,8 @@ const popoverHtml = helpers.montarRastreamentoCargaPopoverHtml({
             trafficTerm: 'CY | CY',
             equipment: '40HQ*1',
             etd: '2026-09-04 12:00:00 CST',
+            ladenReturnTime: '2026-09-07 15:20:00 CST',
+            atd: '2026-09-17 10:29:35 CST',
             eta: '2026-10-08 12:00:00 BRT',
             cargoAvailableAt: '2026-10-09 19:00:00 BRT',
         },
@@ -266,6 +268,9 @@ assert(popoverHtml.includes('Tipo consultado'));
 assert(popoverHtml.includes('Booking (tentativa automática após BL)'));
 assert(popoverHtml.includes('40HQ*1'));
 assert(popoverHtml.includes('2026-10-09 19:00:00 BRT'));
+assert(popoverHtml.includes('Trajeto da carga'));
+assert(popoverHtml.includes('2026-09-17 10:29:35 CST'));
+assert(popoverHtml.includes('Chegada prevista'));
 assert(html.includes('estado.url = payload.portalUrl'), 'Portal deve passar a apontar para o tipo que encontrou a carga');
 
 const meta = helpers.montarMetaRastreamentoEmbarqueHtml({

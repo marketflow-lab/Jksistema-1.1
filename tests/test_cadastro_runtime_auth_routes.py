@@ -33,6 +33,8 @@ LATE_BOUND_AUTH_ROUTE_NAMES = {
     "criar_fornecedor_cadastro",
     "atualizar_fornecedor_cadastro",
     "excluir_fornecedor_cadastro",
+    "obter_importador_loja",
+    "salvar_importador_loja",
     "importar_colunas_cadastro_por_sku",
     "listar_colunas_cadastro",
     "obter_produto_cadastro",
@@ -153,14 +155,14 @@ def _provider(*, asynchronous: bool):
     return resolve_async
 
 
-def test_cadastro_preserves_32_routes_and_all_24_late_bound_auth_dependencies_follow_reconfiguration():
+def test_cadastro_preserves_routes_and_late_bound_auth_dependencies_follow_reconfiguration():
     router = create_cadastro_router()
     routes = {route.name: route for route in router.routes}
 
-    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 32
-    assert len(router.routes) == 33
+    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 34
+    assert len(router.routes) == 35
     assert LATE_BOUND_AUTH_ROUTE_NAMES <= routes.keys()
-    assert len(LATE_BOUND_AUTH_ROUTE_NAMES) == 24
+    assert len(LATE_BOUND_AUTH_ROUTE_NAMES) == 26
 
     captured = {}
     for name in LATE_BOUND_AUTH_ROUTE_NAMES:

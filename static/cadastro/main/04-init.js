@@ -2,7 +2,7 @@
     'use strict';
 
     const cadastro = global.JKCadastro;
-    const required = ['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importacoes-catalogos'];
+    const required = ['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importador-loja', 'importacoes-catalogos'];
     if (!cadastro || required.some(component => !cadastro.components.has(component))) {
         throw new Error('Componentes da tela principal do Cadastro incompletos.');
     }
@@ -13,6 +13,7 @@
     const secondary = cadastro.custosMlb;
     const actions = cadastro.actions;
     const fornecedores = cadastro.fornecedores;
+    const importadorLoja = cadastro.importadorLoja;
     const importacoesCatalogos = cadastro.importacoesCatalogos;
 
     cadastro.__mainInitialized = true;
@@ -100,9 +101,13 @@
     async function iniciar() {
         actions.inicializarNcm();
         fornecedores.init();
+        importadorLoja.init();
         importacoesCatalogos.init();
         try {
-            if (await actions.inicializarLojas()) await actions.carregarProdutos();
+            if (await actions.inicializarLojas()) {
+                void importadorLoja.carregar();
+                await actions.carregarProdutos();
+            }
         } catch (error) {
             cadastro.core.setStatus(`Erro ao carregar lojas: ${error.message}`, 'error');
         } finally { void atualizarCadastroRecebido(); }

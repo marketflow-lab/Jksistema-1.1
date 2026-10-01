@@ -284,6 +284,31 @@ def _gerar_commercial_invoice_bytes(
     if loja == "__todas":
         loja = ""
 
+    texto_comprador = f"STORE: {loja}" if loja else ""
+    if client_id and store_id_cadastro:
+        from backend.services.cadastro_importador_loja import ler_importador_loja_por_store_id
+
+        cadastro_comprador = ler_importador_loja_por_store_id(client_id, store_id_cadastro)
+        if cadastro_comprador:
+            campos_comprador = (
+                ("Buyer", "nome_empresa"),
+                ("TAX ID", "tax_id"),
+                ("Phone", "telefone"),
+                ("E-mail", "email"),
+                ("Contact Personal", "contato"),
+                ("Address", "logradouro"),
+                ("Neighborhood", "bairro"),
+                ("City", "cidade"),
+                ("ZIP CODE", "cep"),
+                ("State", "estado"),
+                ("Country", "pais"),
+            )
+            texto_comprador = "\n".join(
+                f"{rotulo}: {valor}"
+                for rotulo, chave in campos_comprador
+                if (valor := str(cadastro_comprador.get(chave) or "").strip())
+            )
+
     _atribuir_texto_excel(ws["A1"], fornecedor)
     _atribuir_texto_excel(ws["A2"], "COMMERCIAL INVOICE")
     _atribuir_texto_excel(ws["A3"], "INV. No.:")
@@ -293,7 +318,7 @@ def _gerar_commercial_invoice_bytes(
     _atribuir_texto_excel(ws["F3"], "FROM:")
     _atribuir_texto_excel(ws["H3"], "")
     _atribuir_texto_excel(ws["A4"], f"LIST: {nome_lista}" if nome_lista else "")
-    _atribuir_texto_excel(ws["F4"], f"STORE: {loja}" if loja else "")
+    _atribuir_texto_excel(ws["F4"], texto_comprador)
     _atribuir_texto_excel(ws["A7"], "Descriptions")
 
     cabecalhos = {

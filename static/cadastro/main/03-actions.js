@@ -97,6 +97,7 @@
         if (cadastro.fornecedores && typeof cadastro.fornecedores.atualizarEstadoMutacoes === 'function') {
             cadastro.fornecedores.atualizarEstadoMutacoes();
         }
+        cadastro.importadorLoja?.atualizarEstadoMutacoes();
     }
 
     cadastro.produtosCarregamento.configurar({ authHeaders, lojaPorId, rotuloLojaExibicao, atualizarEstadoMutacoes });
@@ -139,6 +140,7 @@
         storeTools.salvarPreferencia(state.clientId, valor, state.lojas);
         storeTools.atualizarUrl(valor);
         atualizarEstadoMutacoes();
+        void cadastro.importadorLoja?.carregar();
         await carregarProdutos();
     }
 

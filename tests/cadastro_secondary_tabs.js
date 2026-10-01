@@ -121,6 +121,8 @@ context.JKCadastro.actions = {
 context.JKCadastro.components.add('actions');
 context.JKCadastro.fornecedores = { init() {} };
 context.JKCadastro.components.add('fornecedores');
+context.JKCadastro.importadorLoja = { init() {}, carregar() {} };
+context.JKCadastro.components.add('importador-loja');
 context.JKCadastro.importacoesCatalogos = { abrir() {}, init() {} };
 context.JKCadastro.components.add('importacoes-catalogos');
 vm.runInContext(read('static/cadastro/main/04-init.js'), context, { filename: 'static/cadastro/main/04-init.js' });
@@ -135,5 +137,8 @@ assert.match(html, /id="tabFornecedores"[^>]*>Fornecedores<\/button>/);
 assert.match(html, /id="tabImportadorLoja"[^>]*>Importador\/loja<\/button>/);
 assert.match(html, /id="painelFornecedores"[^>]*aria-labelledby="tabFornecedores"[^>]*hidden/);
 assert.match(html, /id="painelImportadorLoja"[^>]*aria-labelledby="tabImportadorLoja"[^>]*hidden/);
+for (const field of ['importadorNomeEmpresa', 'importadorTaxId', 'importadorTelefone', 'importadorEmail', 'importadorContato', 'importadorLogradouro', 'importadorBairro', 'importadorCidade', 'importadorCep', 'importadorEstado', 'importadorPais']) {
+  assert(html.includes(`id="${field}"`), `campo ${field} deve estar disponível`);
+}
 
 console.log('cadastro secondary tabs: OK');

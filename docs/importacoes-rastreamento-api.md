@@ -24,6 +24,12 @@ plano. O retorno disponivel e exibido no proprio balao: situacao do Booking e do
 BL, ultimo status, origem, destino, equipamento, ETD, ETA e disponibilidade da
 carga no destino.
 
+Quando o retorno publico inclui portos e horarios, o balao tambem desenha uma
+linha do tempo com origem, saida do porto, chegada prevista e disponibilidade
+da carga. A saida mostra ATD quando a COSCO informa o horario realizado e ETD
+quando ha apenas previsao. Marcos sem horario permanecem explicitamente sem
+informacao; o desenho nao usa dados de outro embarque.
+
 Essa consulta publica da COSCO nao exige chave, credito ou periodo de teste. Ela
 roda somente no aplicativo Electron, em uma sessao de navegador isolada, sem
 reutilizar a sessao do Mercado Livre e sem gravar o resultado no cadastro. Como

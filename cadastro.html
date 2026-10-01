@@ -151,10 +151,36 @@
                 </div>
             </div>
             <div id="painelImportadorLoja" class="tab-panel" role="tabpanel" aria-labelledby="tabImportadorLoja" hidden>
-                <div class="tab-empty-state">
-                    <h3>Importador/loja</h3>
-                    <p>Nenhum importador ou loja cadastrado.</p>
-                </div>
+                <div id="importadorLojaStatus" class="status-bar" role="status"></div>
+                <section class="fornecedor-section" aria-labelledby="importadorLojaTitulo">
+                    <h3 id="importadorLojaTitulo">Dados do importador/loja</h3>
+                    <form id="importadorLojaForm">
+                        <fieldset>
+                            <legend>Empresa e contato</legend>
+                            <div class="form-grid">
+                                <label class="field full">Nome ou razão social<input id="importadorNomeEmpresa" required maxlength="240"></label>
+                                <label class="field">Tax ID / CNPJ<input id="importadorTaxId" maxlength="40"></label>
+                                <label class="field">Telefone<input id="importadorTelefone" type="tel" maxlength="80"></label>
+                                <label class="field">E-mail<input id="importadorEmail" type="email" maxlength="254"></label>
+                                <label class="field">Contato pessoal<input id="importadorContato" maxlength="160"></label>
+                            </div>
+                        </fieldset>
+                        <fieldset>
+                            <legend>Endereço</legend>
+                            <div class="form-grid">
+                                <label class="field full">Rua e número<input id="importadorLogradouro" maxlength="300"></label>
+                                <label class="field">Bairro<input id="importadorBairro" maxlength="160"></label>
+                                <label class="field">Cidade<input id="importadorCidade" maxlength="160"></label>
+                                <label class="field">CEP<input id="importadorCep" maxlength="24"></label>
+                                <label class="field">Estado<input id="importadorEstado" maxlength="120"></label>
+                                <label class="field">País<input id="importadorPais" maxlength="120"></label>
+                            </div>
+                        </fieldset>
+                        <div class="actions">
+                            <button id="btnSalvarImportadorLoja" class="btn btn-primary" type="submit">Salvar importador/loja</button>
+                        </div>
+                    </form>
+                </section>
             </div>
         </div>
     </div>
@@ -210,6 +236,7 @@
 <script src="/cadastro/main/03-produtos-carregamento.js?v=20260909-cadastro-bulk-v1"></script>
 <script src="/cadastro/main/03-actions.js?v=20260909-cadastro-bulk-v1"></script>
 <script src="/cadastro/main/05-fornecedores.js?v=20260828-cadastro-store-scope-v1"></script>
+<script src="/cadastro/main/05-importador-loja.js?v=20260923-importador-loja-v1"></script>
 <script src="/cadastro/main/06-importacoes-catalogos.js?v=20260909-ml-partial-photos-v1"></script>
 <script src="/cadastro/main/04-init.js?v=20260909-cadastro-bulk-v1"></script>
 <script src="/table_columns.js"></script>
