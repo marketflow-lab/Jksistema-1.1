@@ -24,6 +24,12 @@ def linha_analise(**alteracoes):
         "deal_price": 80,
         "Custo": "R$ 20,00",
         "Tarifa ML": "R$ 5,23",
+        "Desconto ML": "R$ 3,58",
+        "action_desconto_ml": 3.58,
+        "_jk_desconto_ml_estimado": True,
+        "_jk_desconto_ml_estimativa_motivo": "Participacao ML aplicada como estimativa.",
+        "_jk_desconto_ml_confiavel": False,
+        "_jk_desconto_ml_fonte": "seller_promotions.meli_percentage_estimado",
         "Frete ML": "A calcular",
         "Imposto ML": "",
         "Imposto": "R$ 1,83",
@@ -58,6 +64,7 @@ def test_api_preserva_estimativa_canonica_e_nao_acrescenta_rotulo():
     saida = montar_saida(linha)
 
     assert saida["Tarifa ML"] == "R$ 5,23"
+    assert saida["Desconto ML"] == "R$ 3,58"
     assert valor_liquido_ml(saida) == "R$ 18,38"
     assert saida["Margem ML"] == "22,98%"
     assert saida["Margem"] == "12,34%"
@@ -98,6 +105,9 @@ def test_exportacao_mantem_valores_exatos_sem_rotulo():
         _jk_tarifa_ml_estimada=False,
         action_financeiro_exato=True,
         action_financeiro_estimado=False,
+        _jk_desconto_ml_estimado=False,
+        _jk_desconto_ml_confiavel=True,
+        _jk_desconto_ml_fonte="seller_promotions.promotion_fee_discount",
     )
 
     saida = montar_saida(linha, destacar_estimativas=True)
@@ -144,6 +154,55 @@ def test_tarifa_exata_pode_acompanhar_margem_estimada_por_outro_componente():
     assert saida["Margem ML"] == "22,98% (Estimado)"
 
 
+@pytest.mark.parametrize("valor,formatado", [(3.58, "R$ 3,58"), (0, "R$ 0,00")])
+def test_desconto_estimado_e_apresentado_sem_reaplicar_o_beneficio(valor, formatado):
+    linha = linha_analise(**{"Desconto ML": formatado}, action_desconto_ml=valor)
+    original = copy.deepcopy(linha)
+
+    api = montar_saida(linha)
+    xlsx = montar_saida(linha, destacar_estimativas=True)
+
+    assert api["Desconto ML"] == formatado
+    assert xlsx["Desconto ML"] == f"{formatado} (Estimado)"
+    assert api["Tarifa ML"] == "R$ 5,23"
+    assert valor_liquido_ml(api) == "R$ 18,38"
+    assert api["Margem ML"] == "22,98%"
+    assert list(api) == list(planilhas.COLUNAS_PLANILHA_ANALISE_PROMO)
+    assert list(xlsx) == list(api)
+    assert linha == original
+
+
+@pytest.mark.parametrize("estimado", [False, "false"])
+def test_desconto_confirmado_ou_flag_textual_nao_recebe_rotulo(estimado):
+    linha = linha_analise(_jk_desconto_ml_estimado=estimado)
+
+    saida = montar_saida(linha, destacar_estimativas=True)
+
+    assert saida["Desconto ML"] == "R$ 3,58"
+
+
+@pytest.mark.parametrize("estimado", [False, True])
+def test_desconto_desconhecido_nao_recebe_rotulo(estimado):
+    linha = linha_analise(
+        **{"Desconto ML": "Não informado pela API"},
+        action_desconto_ml=None,
+        _jk_desconto_ml_estimado=estimado,
+    )
+
+    api = montar_saida(linha)
+    xlsx = montar_saida(linha, destacar_estimativas=True)
+
+    assert api["Desconto ML"] == xlsx["Desconto ML"] == "Não informado pela API"
+
+
+def test_metadata_de_desconto_ausente_nao_rotula_valor_antigo():
+    linha = linha_analise(action_desconto_ml=None)
+
+    saida = montar_saida(linha, destacar_estimativas=True)
+
+    assert saida["Desconto ML"] == "R$ 3,58"
+
+
 def test_xlsx_real_destaca_estimativas_sem_contaminar_dataframe_da_api(tmp_path, monkeypatch):
     monkeypatch.setattr(planilhas, "get_tenant_path", lambda _client: str(tmp_path), raising=False)
     linhas = [
@@ -153,14 +212,18 @@ def test_xlsx_real_destaca_estimativas_sem_contaminar_dataframe_da_api(tmp_path,
             _jk_tarifa_ml_estimada=False,
             action_financeiro_exato=True,
             action_financeiro_estimado=False,
+            _jk_desconto_ml_estimado=False,
+            _jk_desconto_ml_confiavel=True,
         ),
         linha_analise(
-            **{"Tarifa ML": "A calcular"},
+            **{"Tarifa ML": "A calcular", "Desconto ML": "Não informado pela API"},
+            action_desconto_ml=None,
             _jk_tarifa_ml_estimada=False,
             action_financeiro_estimado=False,
             action_valor_liquido_ml=None,
             action_margem_ml=None,
         ),
+        linha_analise(**{"Desconto ML": "R$ 0,00"}, action_desconto_ml=0),
     ]
     originais = copy.deepcopy(linhas)
 
@@ -172,7 +235,14 @@ def test_xlsx_real_destaca_estimativas_sem_contaminar_dataframe_da_api(tmp_path,
     ).to_dict(orient="records")
     api = planilhas._build_df_planilha_analise_promo(linhas).to_dict(orient="records")
 
-    assert len(exportadas) == len(api) == 3
+    assert len(exportadas) == len(api) == 4
+    assert list(exportadas[0]) == list(planilhas.COLUNAS_PLANILHA_ANALISE_PROMO)
+    assert exportadas[0]["Desconto ML"] == "R$ 3,58 (Estimado)"
+    assert exportadas[1]["Desconto ML"] == "R$ 3,58"
+    assert exportadas[2]["Desconto ML"] == "Não informado pela API"
+    assert exportadas[3]["Desconto ML"] == "R$ 0,00 (Estimado)"
+    assert api[0]["Desconto ML"] == "R$ 3,58"
+    assert api[3]["Desconto ML"] == "R$ 0,00"
     assert exportadas[0]["Tarifa ML"] == "R$ 5,23 (Estimado)"
     assert valor_liquido_ml(exportadas[0]) == "R$ 18,38 (Estimado)"
     assert exportadas[0]["Margem ML"] == "22,98% (Estimado)"

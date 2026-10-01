@@ -59,6 +59,7 @@ configure_mercadolivre_legacy_planilhas_runtime()
 PROMO_DESCONTO_ML_NAO_INFORMADO = "Não informado pela API"
 PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
 PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
+PROMO_DESCONTO_ML_ESTIMADO_KEY = "_jk_desconto_ml_estimado"
 PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
 PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
 PROMO_TARIFA_ML_ESTIMADA_KEY = "_jk_tarifa_ml_estimada"
@@ -279,6 +280,11 @@ def _build_df_planilha_analise_promo(
             # arquivo exportado; seus consumidores continuam recebendo os
             # valores formatados e os metadados de estimativa em separado.
             campos_estimados = []
+            if (
+                campos_analise.get(PROMO_DESCONTO_ML_ESTIMADO_KEY) is True
+                and _to_float_safe(campos_analise.get("action_desconto_ml")) is not None
+            ):
+                campos_estimados.append("Desconto ML")
             if campos_analise.get(PROMO_TARIFA_ML_ESTIMADA_KEY) is True:
                 campos_estimados.append("Tarifa ML")
             if campos_analise.get("action_financeiro_estimado") is True:

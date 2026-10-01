@@ -92,6 +92,8 @@ logger = logging.getLogger("jk_sistema")
 PROMO_DESCONTO_ML_NAO_INFORMADO = "Não informado pela API"
 PROMO_DESCONTO_ML_CONFIAVEL_KEY = "_jk_desconto_ml_confiavel"
 PROMO_DESCONTO_ML_FONTE_KEY = "_jk_desconto_ml_fonte"
+PROMO_DESCONTO_ML_ESTIMADO_KEY = "_jk_desconto_ml_estimado"
+PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY = "_jk_desconto_ml_estimativa_motivo"
 PROMO_TARIFA_ML_EXATA_KEY = "_jk_tarifa_ml_exata"
 PROMO_TARIFA_ML_FONTE_KEY = "_jk_tarifa_ml_fonte"
 PROMO_TARIFA_ML_LIQUIDA_KEY = "_jk_tarifa_ml_liquida"
@@ -186,9 +188,6 @@ def _promo_desconto_ml_proveniencia(
     boost_amount = _parse_float_flex(raw_promocao.get("discount_meli_boost_amount"))
     if boosted_ativo and boost_amount is not None and boost_amount > 0:
         return True, "seller_promotions.discount_meli_boost_amount"
-    if boosted_inativo and abs(float(desconto)) <= 0.005:
-        return True, "seller_promotions.boosted_offer"
-
     for chave in PROMO_DESCONTO_ML_TARIFA_FIELDS:
         valor = raw_promocao.get(chave)
         if isinstance(valor, dict):
@@ -196,10 +195,15 @@ def _promo_desconto_ml_proveniencia(
         desconto_tarifa = _parse_float_flex(valor)
         if (
             desconto_tarifa is not None
-            and desconto_tarifa > 0
+            and not isinstance(valor, bool)
+            and math.isfinite(float(desconto_tarifa))
+            and desconto_tarifa >= 0
             and abs(round(float(desconto_tarifa), 2) - float(desconto)) <= 0.01
         ):
             return True, f"seller_promotions.{chave}"
+
+    if boosted_inativo and abs(float(desconto)) <= 0.005:
+        return True, "seller_promotions.boosted_offer"
 
     fonte_calculo = str(fonte_calculo or "").strip()
     if fonte_calculo in PROMO_DESCONTO_ML_FONTES_CALCULADAS and float(desconto) >= 0:
@@ -815,6 +819,7 @@ def _promo_resolver_tarifa_ml_cobrada(
 
     if (
         fee_exata
+        and raw_mesmo_preco
         and desconto_ml_confiavel
         and desconto is not None
         and abs(float(desconto)) <= 0.005
@@ -900,6 +905,21 @@ def _promo_observar_cotacao_financeira_shadow(
             pass
 
 
+def _promo_base_atual_anuncio(price_info: dict, item: dict):
+    """Seleciona uma base atual valida sem alterar a base da promocao 1."""
+    price_info = price_info if isinstance(price_info, dict) else {}
+    item = item if isinstance(item, dict) else {}
+    for valor in (
+        price_info.get("standard_price"), price_info.get("original_price"),
+        item.get("original_price"), item.get("base_price"),
+        price_info.get("price"), item.get("price"),
+    ):
+        numero = _parse_float_flex(valor) if not isinstance(valor, bool) else None
+        if numero is not None and math.isfinite(numero) and numero > 0:
+            return float(numero)
+    return None
+
+
 def _promo_calcular_contexto_financeiro_acao(
     raw_promocao: dict,
     preco_base: Any,
@@ -936,6 +956,8 @@ def _promo_calcular_contexto_financeiro_acao(
         "desconto": None,
         "desconto_confiavel": False,
         "desconto_fonte": "",
+        "desconto_estimado": False,
+        "desconto_estimativa_motivo": "",
         "recebivel": None,
         "fee_data": fee_data or {},
         "shipping_data": shipping_data or {},
@@ -950,9 +972,26 @@ def _promo_calcular_contexto_financeiro_acao(
         return resultado
     resultado["preco"] = preco
 
+    # A base do beneficio pertence a oferta selecionada. A base do anuncio
+    # continua sendo usada pela promocao 1 e serve somente como contingencia.
+    preco_base_oferta = numero_financeiro(raw_promocao.get("original_price")) if isinstance(raw_promocao, dict) else None
+    if preco_base_oferta is not None and preco_base_oferta <= 0:
+        preco_base_oferta = None
+    preco_base_beneficio = preco_base_oferta if preco_base_oferta is not None else numero_financeiro(preco_base)
+
     desconto_ml = _ml_extrair_desconto_tarifa_promocao_raw(raw_promocao)
+    desconto_zero_explicito = False
+    if desconto_ml is None and isinstance(raw_promocao, dict):
+        for chave in PROMO_DESCONTO_ML_TARIFA_FIELDS:
+            valor = raw_promocao.get(chave)
+            if isinstance(valor, dict):
+                valor = valor.get("amount") if valor.get("amount") is not None else valor.get("value")
+            if numero_financeiro(valor) == 0:
+                desconto_ml = 0.0
+                desconto_zero_explicito = True
+                break
     tarifa_base = _parse_float_flex((fee_data or {}).get("ad_cost"))
-    if desconto_ml is not None and tarifa_base is not None and desconto_ml >= (tarifa_base * 0.8):
+    if desconto_ml is not None and desconto_ml > 0 and tarifa_base is not None and desconto_ml >= (tarifa_base * 0.8):
         desconto_ml = None
 
     meli_pct, seller_pct, boost_pct = _promo_desconto_ml_parametros_calculo(raw_promocao)
@@ -961,7 +1000,7 @@ def _promo_calcular_contexto_financeiro_acao(
         ml_pct=meli_pct,
         seller_pct=seller_pct,
         boost_pct=boost_pct,
-        preco_base=preco_base,
+        preco_base=preco_base_beneficio,
         preco_final_ml=preco,
         tarifa_ml=tarifa_base,
         desconto_atual_confiavel=True,
@@ -981,16 +1020,26 @@ def _promo_calcular_contexto_financeiro_acao(
         (fee_data or {}).get("ad_cost_source"),
         (shipping_data or {}).get("shipping_cost_retry_source"),
     )
+    if desconto_ajustado is None and desconto_zero_explicito:
+        desconto_ajustado = 0.0
     desconto_ml, fonte_calculo = _promo_desconto_ml_aplicar_ajuste(
         desconto_ml,
         fonte_calculo,
         desconto_ajustado,
     )
+    desconto_ml = numero_financeiro(desconto_ml)
     desconto_confiavel, desconto_fonte = _promo_desconto_ml_proveniencia(
         raw_promocao,
         desconto_ml,
         fonte_calculo,
     )
+    if preco_base_oferta is None and desconto_fonte in PROMO_DESCONTO_ML_FONTES_CALCULADAS:
+        # A conciliacao com uma base externa a oferta nao confirma o beneficio.
+        desconto_confiavel = False
+    if desconto_zero_explicito:
+        preco_oferta = _promo_preco_efetivo_raw(raw_promocao)
+        if preco_oferta is None or abs(float(preco_oferta) - float(preco)) > 0.02:
+            desconto_confiavel = False
     tarifa, tarifa_exata, tarifa_fonte = _promo_resolver_tarifa_ml_cobrada(
         raw_promocao,
         preco,
@@ -1013,10 +1062,18 @@ def _promo_calcular_contexto_financeiro_acao(
             desconto_validado=desconto_ml if beneficio_aplicavel else None,
             conflito=tarifa_fonte if str(tarifa_fonte).startswith("conflito_") else "",
             tipo_promocao=_promo_identidade_financeira_raw(raw_promocao)[1],
+            preco_base_contingencia=preco_base_beneficio,
         )
         if estimativa:
             tarifa = estimativa["tarifa"]
             tarifa_fonte = estimativa["fonte"]
+    desconto_estimado = False
+    desconto_estimativa_motivo = ""
+    if not desconto_confiavel:
+        desconto_ml = numero_financeiro(estimativa.get("desconto")) if estimativa else None
+        desconto_fonte = str(estimativa.get("desconto_fonte") or "") if estimativa and desconto_ml is not None else ""
+        desconto_estimado = desconto_ml is not None
+        desconto_estimativa_motivo = str(estimativa.get("desconto_motivo") or "") if desconto_estimado else ""
     frete_exato = _promo_contexto_valor_exato(
         shipping_data,
         preco,
@@ -1043,6 +1100,8 @@ def _promo_calcular_contexto_financeiro_acao(
         "desconto": desconto_ml,
         "desconto_confiavel": desconto_confiavel,
         "desconto_fonte": desconto_fonte,
+        "desconto_estimado": desconto_estimado,
+        "desconto_estimativa_motivo": desconto_estimativa_motivo,
         "recebivel": recebivel,
     })
     faltantes = []
@@ -1349,9 +1408,12 @@ def _promo_campos_financeiros_acao(financeiro: dict, raw_acao: dict, percentual:
         "frete_ml_fonte": financeiro.get("frete_fonte", ""),
         "Frete Gratis ML": ("SIM" if shipping.get("free_shipping") or (buyer_cost is not None and buyer_cost <= 0) else "NÃO") if shipping else "A calcular",
         "Imposto ML": formatar_moeda_br(imposto) if imposto is not None else "",
-        "Desconto ML": formatar_moeda_br(financeiro["desconto"]) if financeiro.get("desconto_confiavel") and financeiro.get("desconto") is not None else PROMO_DESCONTO_ML_NAO_INFORMADO,
+        "Desconto ML": formatar_moeda_br(financeiro["desconto"]) if (financeiro.get("desconto_confiavel") or financeiro.get("desconto_estimado")) and financeiro.get("desconto") is not None else PROMO_DESCONTO_ML_NAO_INFORMADO,
+        "action_desconto_ml": financeiro.get("desconto") if financeiro.get("desconto_confiavel") or financeiro.get("desconto_estimado") else None,
         PROMO_DESCONTO_ML_CONFIAVEL_KEY: financeiro.get("desconto_confiavel", False),
         PROMO_DESCONTO_ML_FONTE_KEY: financeiro.get("desconto_fonte", ""),
+        PROMO_DESCONTO_ML_ESTIMADO_KEY: financeiro.get("desconto_estimado", False),
+        PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY: financeiro.get("desconto_estimativa_motivo", ""),
         "Valor lÃ­quido ML": formatar_moeda_br(financeiro["valor_liquido"]) if financeiro.get("valor_liquido") is not None else "",
         "Margem ML": _format_pct_br(financeiro.get("margem")),
         "action_financeiro_motivo": financeiro.get("motivo") or ("Margem da promocao 1 nao confirmada para comparar." if margem_base is None else ""),
@@ -1797,7 +1859,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             item,
             raw_b_participacao,
             promo_b,
-            preco_base_anuncio,
+            _promo_base_atual_anuncio(price_info, item),
             preco_b_acao,
             desconto_b_acao,
             custo,
@@ -1936,6 +1998,11 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_deal_price": _parse_float_flex(item.get("action_deal_price")),
             "action_discount_percentage": _parse_float_flex(item.get("action_discount_percentage")),
             "action_tarifa_ml": _parse_float_flex(item.get("action_tarifa_ml")),
+            "action_desconto_ml": _parse_float_flex(item.get("action_desconto_ml")),
+            PROMO_DESCONTO_ML_CONFIAVEL_KEY: item.get(PROMO_DESCONTO_ML_CONFIAVEL_KEY) is True,
+            PROMO_DESCONTO_ML_FONTE_KEY: str(item.get(PROMO_DESCONTO_ML_FONTE_KEY) or ""),
+            PROMO_DESCONTO_ML_ESTIMADO_KEY: item.get(PROMO_DESCONTO_ML_ESTIMADO_KEY) is True,
+            PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
             "action_valor_liquido_ml": _parse_float_flex(item.get("action_valor_liquido_ml")),
             "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
             "action_financeiro_exato": item.get("action_financeiro_exato") is True,
@@ -1969,6 +2036,11 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "action_deal_price",
             "action_discount_percentage",
             "action_tarifa_ml",
+            "action_desconto_ml",
+            PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+            PROMO_DESCONTO_ML_FONTE_KEY,
+            PROMO_DESCONTO_ML_ESTIMADO_KEY,
+            PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
             "action_valor_liquido_ml",
             "action_margem_ml",
             "action_financeiro_exato",
@@ -1986,7 +2058,13 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "pricing_price",
             "pricing_source",
         ):
-            if meta.get(campo) not in (None, ""):
+            if campo in (
+                "action_desconto_ml", PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+                PROMO_DESCONTO_ML_FONTE_KEY, PROMO_DESCONTO_ML_ESTIMADO_KEY,
+                PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
+            ):
+                row[campo] = meta.get(campo)
+            elif meta.get(campo) not in (None, ""):
                 row[campo] = meta[campo]
     return {
         "success": True,
@@ -2438,7 +2516,7 @@ async def analisar_promo_via_api_sem_arquivos(
             item,
             raw_b_participacao,
             promo_meta["promo_b"],
-            preco_base_anuncio,
+            _promo_base_atual_anuncio(price_info, item),
             preco_b_acao,
             desconto_b_acao,
             custo,
@@ -2688,6 +2766,11 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_deal_price": _parse_float_flex(item.get("action_deal_price")),
                 "action_discount_percentage": _parse_float_flex(item.get("action_discount_percentage")),
                 "action_tarifa_ml": _parse_float_flex(item.get("action_tarifa_ml")),
+                "action_desconto_ml": _parse_float_flex(item.get("action_desconto_ml")),
+                PROMO_DESCONTO_ML_CONFIAVEL_KEY: item.get(PROMO_DESCONTO_ML_CONFIAVEL_KEY) is True,
+                PROMO_DESCONTO_ML_FONTE_KEY: str(item.get(PROMO_DESCONTO_ML_FONTE_KEY) or ""),
+                PROMO_DESCONTO_ML_ESTIMADO_KEY: item.get(PROMO_DESCONTO_ML_ESTIMADO_KEY) is True,
+                PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
                 "action_valor_liquido_ml": _parse_float_flex(item.get("action_valor_liquido_ml")),
                 "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
@@ -2724,6 +2807,11 @@ async def analisar_promo_via_api_sem_arquivos(
                 "action_deal_price",
                 "action_discount_percentage",
                 "action_tarifa_ml",
+                "action_desconto_ml",
+                PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+                PROMO_DESCONTO_ML_FONTE_KEY,
+                PROMO_DESCONTO_ML_ESTIMADO_KEY,
+                PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
                 "action_valor_liquido_ml",
                 "action_margem_ml",
                 "action_financeiro_exato",
@@ -2741,7 +2829,13 @@ async def analisar_promo_via_api_sem_arquivos(
                 "pricing_price",
                 "pricing_source",
             ):
-                if meta.get(campo) not in (None, ""):
+                if campo in (
+                    "action_desconto_ml", PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+                    PROMO_DESCONTO_ML_FONTE_KEY, PROMO_DESCONTO_ML_ESTIMADO_KEY,
+                    PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
+                ):
+                    row[campo] = meta.get(campo)
+                elif meta.get(campo) not in (None, ""):
                     row[campo] = meta[campo]
 
         arquivo_nome = f"analise_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])}.xlsx"
@@ -3230,7 +3324,7 @@ async def analisar_promo_via_api_com_arquivos(
             item,
             raw_b_participacao,
             promo_b_id,
-            preco_base_anuncio,
+            _promo_base_atual_anuncio(price_info, item),
             preco_b_acao,
             desconto_b_acao,
             custo,
@@ -3380,6 +3474,11 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_deal_price": _parse_float_flex(item.get("action_deal_price")),
                 "action_discount_percentage": _parse_float_flex(item.get("action_discount_percentage")),
                 "action_tarifa_ml": _parse_float_flex(item.get("action_tarifa_ml")),
+                "action_desconto_ml": _parse_float_flex(item.get("action_desconto_ml")),
+                PROMO_DESCONTO_ML_CONFIAVEL_KEY: item.get(PROMO_DESCONTO_ML_CONFIAVEL_KEY) is True,
+                PROMO_DESCONTO_ML_FONTE_KEY: str(item.get(PROMO_DESCONTO_ML_FONTE_KEY) or ""),
+                PROMO_DESCONTO_ML_ESTIMADO_KEY: item.get(PROMO_DESCONTO_ML_ESTIMADO_KEY) is True,
+                PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY: str(item.get(PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY) or ""),
                 "action_valor_liquido_ml": _parse_float_flex(item.get("action_valor_liquido_ml")),
                 "action_margem_ml": _parse_float_flex(item.get("action_margem_ml")),
                 "action_financeiro_exato": item.get("action_financeiro_exato") is True,
@@ -3416,6 +3515,11 @@ async def analisar_promo_via_api_com_arquivos(
                 "action_deal_price",
                 "action_discount_percentage",
                 "action_tarifa_ml",
+                "action_desconto_ml",
+                PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+                PROMO_DESCONTO_ML_FONTE_KEY,
+                PROMO_DESCONTO_ML_ESTIMADO_KEY,
+                PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
                 "action_valor_liquido_ml",
                 "action_margem_ml",
                 "action_financeiro_exato",
@@ -3433,7 +3537,13 @@ async def analisar_promo_via_api_com_arquivos(
                 "pricing_price",
                 "pricing_source",
             ):
-                if meta.get(campo) not in (None, ""):
+                if campo in (
+                    "action_desconto_ml", PROMO_DESCONTO_ML_CONFIAVEL_KEY,
+                    PROMO_DESCONTO_ML_FONTE_KEY, PROMO_DESCONTO_ML_ESTIMADO_KEY,
+                    PROMO_DESCONTO_ML_ESTIMATIVA_MOTIVO_KEY,
+                ):
+                    row[campo] = meta.get(campo)
+                elif meta.get(campo) not in (None, ""):
                     row[campo] = meta[campo]
 
         analises.append({

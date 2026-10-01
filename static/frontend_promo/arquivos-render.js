@@ -188,6 +188,11 @@ function renderEmptyAnalysisState(data) {
 }
 
 function obterEstimativaCelulaPromocoes(row, coluna) {
+    if (coluna === 'Desconto ML' && row?._jk_desconto_ml_estimado === true
+        && Number.isFinite(row.action_desconto_ml)) {
+        return String(row._jk_desconto_ml_estimativa_motivo || '').trim()
+            || 'Benefício aproximado já abatido da tarifa estimada. O desconto cobrado pelo Mercado Livre pode ser diferente.';
+    }
     if (coluna === 'Tarifa ML' && row?._jk_tarifa_ml_estimada === true) {
         return String(row._jk_tarifa_ml_estimativa_motivo || '').trim()
             || 'Tarifa aproximada com os dados disponíveis. O valor cobrado pelo Mercado Livre pode ser diferente.';

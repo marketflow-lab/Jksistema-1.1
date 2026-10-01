@@ -1166,8 +1166,10 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         self.assertEqual(linha_json["Desconto ML"], "R$ 6,64")
         self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 37,18")
         self.assertEqual(linha_json["Margem ML"], "33,56%")
-        self.assertNotIn(analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY, linha_json)
-        self.assertNotIn(analysis.PROMO_DESCONTO_ML_FONTE_KEY, linha_json)
+        self.assertTrue(linha_json[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
+        self.assertEqual(linha_json[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "seller_promotions.discount_meli_boost_amount")
+        self.assertEqual(linha_json["action_desconto_ml"], 6.64)
+        self.assertFalse(linha_json["_jk_desconto_ml_estimado"])
         self.assertNotIn("discount_meli_boost_amount", linha_json)
 
     def test_boost_percentual_calcula_os_664_quando_amount_nao_vem(self):
@@ -1375,14 +1377,16 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         linha_interna, linha_json = self._executar_fluxo(raw_b)
 
         self.assertFalse(linha_interna[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
-        self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "")
-        self.assertEqual(linha_json["Desconto ML"], "Não informado pela API")
+        self.assertEqual(linha_interna[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "estimativa.seller_promotions.percentual_meli")
+        self.assertEqual(linha_json["Desconto ML"], "R$ 3,58")
         self.assertEqual(_valor_por_sufixo(linha_json, "quido ML"), "R$ 34,12")
         self.assertEqual(linha_json["Tarifa ML"], "R$ 15,25")
         self.assertTrue(linha_json["action_financeiro_estimado"])
         self.assertFalse(linha_json["action_financeiro_exato"])
-        self.assertNotIn(analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY, linha_json)
-        self.assertNotIn(analysis.PROMO_DESCONTO_ML_FONTE_KEY, linha_json)
+        self.assertFalse(linha_json[analysis.PROMO_DESCONTO_ML_CONFIAVEL_KEY])
+        self.assertEqual(linha_json[analysis.PROMO_DESCONTO_ML_FONTE_KEY], "estimativa.seller_promotions.percentual_meli")
+        self.assertEqual(linha_json["action_desconto_ml"], 3.58)
+        self.assertTrue(linha_json["_jk_desconto_ml_estimado"])
 
     def test_tarifa_liquida_exata_preserva_margem_sem_inventar_beneficio(self):
         raw_b = {

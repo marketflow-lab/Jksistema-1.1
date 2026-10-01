@@ -16,7 +16,8 @@ def _numero(valor):
 
 
 def estimar_tarifa_promocao(raw, preco, fee, *, preco_raw=None,
-                            desconto_validado=None, conflito="", tipo_promocao=""):
+                            desconto_validado=None, conflito="", tipo_promocao="",
+                            preco_base_contingencia=None):
     """Nao inventa aliquotas nem reaproveita cotacoes de outro preco/anuncio.
 
     O chamador confirma cliente, loja, anuncio e campanha antes de consultar a
@@ -54,17 +55,22 @@ def estimar_tarifa_promocao(raw, preco, fee, *, preco_raw=None,
     if not 0 <= tarifa <= preco:
         return None
 
+    def resultado(motivo_resultado, desconto=None, origem=""):
+        return {"tarifa": round(tarifa, 2), "fonte": fonte,
+                "motivo": motivo_resultado, "desconto": desconto,
+                "desconto_fonte": "estimativa.seller_promotions." + origem if origem else "",
+                "desconto_motivo": motivo_resultado if desconto is not None else ""}
+
     charged = _numero(fee.get("promotion_fee_charged"))
     if fee.get("promotion_fee_discount_applied") is True:
         if charged is not None and 0 <= charged <= preco:
             tarifa = charged
         # ad_cost tambem pode conter o total ja ajustado. Nao abater novamente.
-        return {"tarifa": round(tarifa, 2), "fonte": fonte + ".promocao_aplicada",
-                "motivo": "Tarifa com beneficio ja aplicado; contexto da cotacao ainda nao confirmado."}
+        fonte += ".promocao_aplicada"
+        return resultado("Tarifa com beneficio ja aplicado; contexto da cotacao ainda nao confirmado.")
 
     if conflito:
-        return {"tarifa": round(tarifa, 2), "fonte": fonte,
-                "motivo": "Tarifa-base da consulta; os dados da oferta divergem e o beneficio ML nao foi abatido."}
+        return resultado("Tarifa-base da consulta; os dados da oferta divergem e o beneficio ML nao foi abatido.")
 
     mesmo_preco = _numero(preco_raw) is not None and abs(float(preco_raw) - preco) <= 0.02
     desconto = _numero(desconto_validado) if mesmo_preco else None
@@ -72,6 +78,9 @@ def estimar_tarifa_promocao(raw, preco, fee, *, preco_raw=None,
     if desconto is None and mesmo_preco:
         tipo = str(raw.get("promotion_type") or raw.get("type") or tipo_promocao).strip().upper()
         base = _numero(raw.get("original_price"))
+        base_contingencia = base is None or base <= 0
+        if base_contingencia:
+            base = _numero(preco_base_contingencia)
         meli = _numero(raw.get("meli_percentage"))
         seller = _numero(raw.get("seller_percentage"))
         # Um percentual ML isolado pode servir como estimativa, mas nunca vira
@@ -94,8 +103,13 @@ def estimar_tarifa_promocao(raw, preco, fee, *, preco_raw=None,
                     if 0 <= residual <= total and abs(residual - aporte) <= tolerancia:
                         desconto = residual
                         origem_desconto = "coparticipacao_reconciliada"
+            if desconto is not None and base_contingencia:
+                origem_desconto += ".base_anuncio"
     if desconto is not None and 0 <= desconto <= tarifa:
         tarifa -= desconto
         fonte += ".menos_" + origem_desconto
         motivo = "Tarifa da consulta ajustada com a participacao ML informada para esta oferta; valor final estimado."
-    return {"tarifa": round(tarifa, 2), "fonte": fonte, "motivo": motivo}
+        if origem_desconto.endswith(".base_anuncio"):
+            motivo = "Beneficio ML estimado com a base atual do anuncio; preco original da oferta nao confirmado."
+        return resultado(motivo, round(desconto, 2), origem_desconto)
+    return resultado(motivo)
