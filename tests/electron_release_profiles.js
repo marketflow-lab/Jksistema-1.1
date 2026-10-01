@@ -59,6 +59,7 @@ assert(workflow.indexOf('Build complete offline installer') < workflow.indexOf(o
 assert(workflow.indexOf(offlineRuntimeGate) < workflow.indexOf('Stage selected release artifacts'));
 assert(/stage_desktop_release_artifacts\.ps1 -Mode/.test(workflow));
 assert(/electron_release_artifact_staging\.ps1/.test(workflow));
+assert(/installer_wix_extraction\.ps1/.test(workflow));
 assert(/JK-Sistema-Cliente-Setup-\$\(\$Version\)\.exe/.test(stagingScript));
 assert(/JK-Sistema-Cliente-Update-\$\(\$Version\)\.exe/.test(stagingScript));
 assert(/Assert-ProfileArtifacts -Source \$SetupSource -Executable \$setupExe/.test(stagingScript));

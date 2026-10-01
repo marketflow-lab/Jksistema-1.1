@@ -16,6 +16,14 @@ Correcao de promocoes `5cc5783` integrada com a release oficial `v1.0.157`, sem 
 - Fixture de foto/layout da Commercial Invoice isolada da resolucao real do cadastro de lojas, eliminando dependencia da ordem de testes.
 - 18 Python compilados em area temporaria e `git diff --check` aprovado antes do commit.
 
+## Extracao do Python no runner
+
+A extracao WiX usa processos ocultos com stdout/stderr redirecionados temporariamente, e repeticao limitada somente para o erro de pipe `0x800700e8`. Saidas parciais sao removidas antes de repetir; outros erros interrompem a preparacao. Pins de tamanho, assinatura e arvore Python continuam obrigatorios. O comportamento de repeticao/limpeza tem regressao PowerShell no workflow.
+
+Extracao do bundle oficial tambem verificada localmente em processo sem console (`GetConsoleCP=0`), sem executar o instalador. Contexto do erro: [WiX issue 9267](https://github.com/wixtoolset/issues/issues/9267).
+
+Helper final aprovado com extracao real e verificacao de tamanho/SHA1 dos cinco payloads MSI obrigatorios. Regressao PowerShell e gates de release reexecutados apos o ajuste.
+
 ## Publicacao
 
 Workflow `desktop-release.yml` com `release_tag=v1.0.158`, `release_mode=runtime-update` e `publish=true`.

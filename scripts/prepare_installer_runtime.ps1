@@ -130,6 +130,42 @@ function Invoke-CheckedProcess([string]$FilePath, [string[]]$ArgumentList, [stri
     }
 }
 
+function Invoke-WixBundleExtract([string]$FilePath, [string]$InstallerPath, [string]$BundleRoot) {
+    Assert-PathInside $BundleRoot $stagingDir
+    $logRoot = Join-Path $stagingDir (".wix-extract-" + [guid]::NewGuid().ToString("N"))
+    $extracted = $false
+    try {
+        New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            # Uma tentativa com pipe interrompido pode deixar payloads incompletos.
+            Remove-SafeTree $BundleRoot $stagingDir
+            New-Item -ItemType Directory -Force -Path $BundleRoot | Out-Null
+            $payloads = Join-Path $BundleRoot "payloads"
+            $ba = Join-Path $BundleRoot "ba"
+            $stdout = Join-Path $logRoot "stdout-$attempt.txt"
+            $stderr = Join-Path $logRoot "stderr-$attempt.txt"
+            $process = Start-Process -FilePath $FilePath -ArgumentList @(
+                "burn", "extract", "`"$InstallerPath`"", "-o", "`"$payloads`"", "-oba", "`"$ba`""
+            ) -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            if ($process.ExitCode -eq 0) {
+                $extracted = $true
+                return
+            }
+            # WiX 6 pode falhar na primeira inicializacao sem console com
+            # HRESULT_FROM_WIN32(ERROR_NO_DATA), 0x800700e8. Outros erros abortam.
+            if ($process.ExitCode -ne -2147024664 -or $attempt -eq 3) {
+                throw "Falha ao extrair o bundle oficial do Python. Codigo: $($process.ExitCode)."
+            }
+            Write-Warning "WiX interrompeu o pipe de extracao (0x800700e8). Repetindo tentativa $($attempt + 1) de 3."
+            Start-Sleep -Milliseconds (300 * $attempt)
+        }
+    } finally {
+        # stdout/stderr podem conter caminhos locais: nunca publicar seu conteudo.
+        Remove-SafeTree $logRoot $stagingDir
+        if (-not $extracted) { Remove-SafeTree $BundleRoot $stagingDir }
+    }
+}
+
 function Get-WixCli {
     $ready = $false
     if (Test-Path -LiteralPath $wixExe -PathType Leaf) {
@@ -259,11 +295,7 @@ function New-PortablePython([string]$Destination) {
     try {
         Write-Host "Extraindo payloads embutidos do Python $pythonVersion sem executar o instalador..."
         $dark = Get-WixCli
-        Remove-SafeTree $bundleRoot $stagingDir
-        New-Item -ItemType Directory -Force -Path $bundleRoot | Out-Null
-        Invoke-CheckedProcess $dark @(
-            "burn", "extract", "`"$pythonInstaller`"", "-o", "`"$bundlePayloads`"", "-oba", "`"$bundleBa`""
-        ) "Falha ao extrair o bundle oficial do Python."
+        Invoke-WixBundleExtract $dark $pythonInstaller $bundleRoot
 
         $bundleManifestPath = Join-Path $bundleBa "manifest.xml"
         if (-not (Test-Path -LiteralPath $bundleManifestPath -PathType Leaf)) {

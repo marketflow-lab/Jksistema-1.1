@@ -100,6 +100,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node tests/electron_backend_bootstrap_regression.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tests\installer_wix_extraction.ps1
           .\tests\electron_release_artifact_staging.ps1
 
       - name: Restore pinned Whisper model
