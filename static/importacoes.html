@@ -410,7 +410,10 @@
         }
 
         .lista-card-topo .nome-lista {
-            flex: 0 0 auto;
+            flex: 0 1 auto;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
             font-size: 1.45rem;
             line-height: 1.1;
             white-space: nowrap;
@@ -614,7 +617,7 @@
             font-weight: 800;
         }
         .meta-pill.meta-fornecedor {
-            display: block;
+            display: inline-flex;
             max-width: min(220px, 100%);
             min-width: 0;
             overflow: hidden;
@@ -623,7 +626,28 @@
         }
         .lista-card-topo .meta-fornecedor {
             flex: 0 1 220px;
+            min-width: 176px;
         }
+        .meta-fornecedor-select {
+            flex: 1 1 auto;
+            width: 100%;
+            min-width: 0;
+            border: 0;
+            border-radius: 999px;
+            padding: 2px 6px;
+            background: #eff7ff;
+            color: #07172d;
+            font: inherit;
+            font-weight: 800;
+            cursor: pointer;
+            text-overflow: ellipsis;
+        }
+        .meta-fornecedor-select:focus-visible {
+            outline: 2px solid #67caff;
+            outline-offset: 2px;
+        }
+        .meta-fornecedor-select:disabled { cursor: default; opacity: 0.65; }
+        .meta-fornecedor-select[aria-invalid="true"] { outline: 2px solid #f08787; }
 
         .meta-invoice {
             border-color: rgba(255, 214, 150, 0.38);
@@ -868,6 +892,7 @@
         }
 
         @media (max-width: 980px) {
+            .lista-card-topo { flex-wrap: wrap; }
             .topbar {
                 grid-template-columns: 1fr 1fr;
             }
@@ -1693,6 +1718,8 @@
         let todasListasCache = [];
         let lojasImportacoesCache = null;
         let lojasImportacoesPromise = null;
+        let fornecedoresImportacoesPromise = null;
+        const fornecedoresImportacoesSalvando = new Set();
         let lojaFiltroImportacoes = '__todas';
         let _embarqueEditandoId = null;
 
@@ -2451,6 +2478,104 @@
         }
 
 
+        function metaFornecedorListaHtml(lista) {
+            return '<label class="meta-pill meta-fornecedor" data-fornecedor-pill title="Fornecedor: ' +
+                escaparHtml(window.JKFornecedorListas.nome(lista)) + '">Fornecedor: ' +
+                '<select class="meta-fornecedor-select" data-fornecedor-lista-id="' + escaparHtml(String(lista.id || '')) +
+                '" aria-label="Fornecedor da lista ' + escaparHtml(String(lista.nome_lista || 'Sem nome')) +
+                '" disabled><option>Carregando...</option></select></label>';
+        }
+
+        function buscarFornecedoresImportacoes(url, configuracao) {
+            if (!fornecedoresImportacoesPromise) {
+                const consulta = fetch(url, configuracao);
+                fornecedoresImportacoesPromise = consulta;
+                const limpar = () => {
+                    if (fornecedoresImportacoesPromise === consulta) fornecedoresImportacoesPromise = null;
+                };
+                consulta.then(limpar, limpar);
+            }
+            return fornecedoresImportacoesPromise.then(resposta => resposta.clone());
+        }
+
+        function atualizarControlesFornecedorImportacoes(listaId, lista) {
+            document.querySelectorAll('[data-fornecedor-lista-id]').forEach(select => {
+                if (select.dataset.fornecedorListaId !== listaId) return;
+                const salvando = fornecedoresImportacoesSalvando.has(listaId);
+                select.disabled = salvando || select.dataset.fornecedoresDisponiveis !== '1';
+                select.setAttribute('aria-busy', String(salvando));
+                if (lista && select.dataset.fornecedoresDisponiveis) {
+                    select.value = String(lista.fornecedor_id || '');
+                    select.closest('[data-fornecedor-pill]').title = 'Fornecedor: ' + window.JKFornecedorListas.nome(lista);
+                }
+            });
+        }
+
+        async function prepararFornecedorListaCartao(pill, listaId, lista) {
+            if (!pill || !listaId) return;
+            const select = pill.querySelector('select');
+            ['click', 'dblclick', 'keydown'].forEach(tipo => {
+                pill.addEventListener(tipo, evento => evento.stopPropagation());
+            });
+            try {
+                const fornecedores = await window.JKFornecedorListas.preencherSelect(select, lista, {
+                    fetch: buscarFornecedoresImportacoes,
+                    headers: obterAuthHeaders
+                });
+                if (!select.isConnected) return;
+                select.dataset.fornecedoresDisponiveis = fornecedores.length ? '1' : '0';
+                const listaAtual = todasListasCache.find(item => String(item.id) === listaId) || lista;
+                Object.assign(lista, listaAtual);
+                atualizarControlesFornecedorImportacoes(listaId, listaAtual);
+                if (!fornecedores.length) pill.title = 'Cadastre um fornecedor em Cadastro > Fornecedores para vincular esta lista.';
+                select.addEventListener('change', async () => {
+                    if (fornecedoresImportacoesSalvando.has(listaId)) return;
+                    const atual = todasListasCache.find(item => String(item.id) === listaId) || lista;
+                    const fornecedorAnterior = String(atual.fornecedor_id || '');
+                    const fornecedor = fornecedores.find(item => String(item.id) === select.value);
+                    if (!fornecedor || String(fornecedor.id) === fornecedorAnterior) {
+                        select.value = fornecedorAnterior;
+                        return;
+                    }
+                    const recuperarFoco = document.activeElement === select;
+                    fornecedoresImportacoesSalvando.add(listaId);
+                    select.removeAttribute('aria-invalid');
+                    select.removeAttribute('title');
+                    atualizarControlesFornecedorImportacoes(listaId);
+                    setStatus('Salvando fornecedor da lista...');
+                    let listaFinal = atual;
+                    try {
+                        const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                            method: 'PUT',
+                            headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ fornecedor_id: String(fornecedor.id) })
+                        });
+                        const dados = await resposta.json();
+                        if (!resposta.ok) throw new Error(dados.detail || 'Não foi possível salvar o fornecedor.');
+                        listaFinal = atualizarListaCacheImportacoes(listaId, dados.lista || {
+                            fornecedor_id: String(fornecedor.id), supplier: fornecedor.nome_empresa
+                        }, atual.loja);
+                        Object.assign(lista, listaFinal);
+                        setStatus('Fornecedor da lista atualizado com sucesso.');
+                    } catch (erro) {
+                        const mensagem = erro.message || 'Não foi possível salvar o fornecedor.';
+                        select.setAttribute('aria-invalid', 'true');
+                        select.title = mensagem;
+                        setStatus(mensagem);
+                    } finally {
+                        fornecedoresImportacoesSalvando.delete(listaId);
+                        atualizarControlesFornecedorImportacoes(listaId, listaFinal);
+                        if (recuperarFoco && select.isConnected && !select.disabled &&
+                            select.getClientRects().length && document.activeElement === document.body) select.focus();
+                    }
+                });
+            } catch (erro) {
+                if (select.isConnected) {
+                    pill.title = (erro.message || 'Não foi possível carregar os fornecedores.') + ' Atualize a página para tentar novamente.';
+                }
+            }
+        }
+
         function renderListas(listas) {
             const box = document.getElementById('listaWrap');
             if (!box) return;
@@ -2474,7 +2599,7 @@
                         '<div class="nome-lista">' + nomeLista + '</div>' +
                         '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                         lojaPill +
-                        '<span class="meta-pill meta-fornecedor" title="Fornecedor: ' + escaparHtml(window.JKFornecedorListas.nome(l)) + '">Fornecedor: <strong>' + escaparHtml(window.JKFornecedorListas.nome(l)) + '</strong></span>' +
+                        metaFornecedorListaHtml(l) +
                         '<div class="lista-card-acoes">' +
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
@@ -2510,7 +2635,7 @@
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill]')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
@@ -2528,6 +2653,7 @@
                 if (lojaEl && listaId) {
                     ativarEdicaoLojaLista(lojaEl, listaId, l, { reaplicarFiltro: true });
                 }
+                prepararFornecedorListaCartao(el.querySelector('[data-fornecedor-pill]'), listaId, l);
 
                 const nomeEl = el.querySelector('.nome-lista');
                 if (nomeEl && listaId) {
@@ -3602,7 +3728,7 @@
                         '<div class="meta-resumo">' +
                             '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                             lojaPill +
-                            '<span class="meta-pill meta-fornecedor" title="Fornecedor: ' + escaparHtml(window.JKFornecedorListas.nome(l)) + '">Fornecedor: <strong>' + escaparHtml(window.JKFornecedorListas.nome(l)) + '</strong></span>' +
+                            metaFornecedorListaHtml(l) +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                             '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
@@ -3610,7 +3736,7 @@
                     if (listaId) {
                         var embarqueId = embarque.id || '';
                         var ir = function(ev) {
-                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input')) return;
+                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input, [data-fornecedor-pill]')) return;
                             window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : '');
                         };
                         elL.addEventListener('click', ir);
@@ -3622,6 +3748,7 @@
                     if (lojaElL && listaId) {
                         ativarEdicaoLojaLista(lojaElL, listaId, l, { reaplicarFiltro: false });
                     }
+                    prepararFornecedorListaCartao(elL.querySelector('[data-fornecedor-pill]'), listaId, l);
                     listasBox.appendChild(elL);
                 });
             }

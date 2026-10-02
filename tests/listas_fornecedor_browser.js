@@ -14,6 +14,8 @@ const suppliers = [
 const state = {
   suppliers,
   supplierError: false,
+  updateError: false,
+  updateGate: null,
   fallback: false,
   creates: [],
   imports: [],
@@ -101,6 +103,9 @@ async function installRoutes(page) {
       if (method === 'PUT') {
         const payload = request.postDataJSON();
         state.updates.push(payload);
+        assert.strictEqual(request.headers().authorization, 'Bearer test');
+        if (state.updateGate) await state.updateGate;
+        if (state.updateError) return json(route, { detail: 'Falha ao salvar fornecedor' }, 503);
         Object.assign(list, payload);
         if (payload.fornecedor_id) list.supplier = suppliers.find(item => item.id === payload.fornecedor_id).nome_empresa;
       }
@@ -133,6 +138,183 @@ async function chooseSupplierForImport(page, trigger, id) {
   const chooser = await chooserPromise;
   await chooser.setFiles({ name: 'pedido.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('fixture') });
   await importPromise;
+}
+
+function inlineSelector(listId, container = '#listaWrap') {
+  return container + ' select[data-fornecedor-lista-id="' + listId + '"]';
+}
+
+async function waitForInlineReady(page, selector, expectedValue) {
+  await page.waitForFunction(({ selector, expectedValue }) => {
+    const select = document.querySelector(selector);
+    return select && !select.disabled && select.options.length > 1 &&
+      (expectedValue === undefined || select.value === expectedValue);
+  }, { selector, expectedValue });
+  return page.locator(selector);
+}
+
+async function assertSupplierControlKeepsCardClosed(page, select) {
+  const url = page.url();
+  const updatesBefore = state.updates.length;
+  await select.click();
+  await select.press('Escape');
+  for (const key of ['Enter', 'Space']) {
+    await select.press(key);
+    await select.press('Escape');
+    assert.strictEqual(page.url(), url, 'O teclado no fornecedor não deve abrir o detalhe da lista');
+  }
+  const label = select.locator('..');
+  const labelBox = await label.boundingBox();
+  await label.click({ position: { x: 8, y: labelBox.height / 2 } });
+  assert.strictEqual(page.url(), url, 'O clique no rótulo do fornecedor não deve abrir o detalhe da lista');
+  assert.strictEqual(state.updates.length, updatesBefore, 'Abrir o seletor sem trocar a opção não deve salvar');
+}
+
+async function testInlineSuppliers(page, longSupplier) {
+  const order = {
+    id: 'inline-order', nome_lista: 'Pedido com fornecedor selecionável', loja: 'JK Pecas', store_id: 'store-jk',
+    status: 'Analisando orçamento', fornecedor_id: 'supplier-a', supplier: 'Fornecedor A', itens: [],
+  };
+  state.lists.push(order);
+  state.suppliers = [...suppliers, { id: 'supplier-long', nome_empresa: longSupplier }];
+  Object.assign(state.lists.find(list => list.id === 'long-name'), { fornecedor_id: 'supplier-long', supplier: longSupplier });
+  await page.evaluate(() => localStorage.setItem('jk_embarques_importacoes', JSON.stringify([{
+    id: 'emb-inline', nome: 'Embarque de teste', lista_ids: ['inline-order', 'long-name'],
+  }])));
+  await page.goto('http://jk.test/importacoes.html');
+  const mainSelector = inlineSelector(order.id);
+  let main = await waitForInlineReady(page, mainSelector, 'supplier-a');
+  await assertSupplierControlKeepsCardClosed(page, main);
+
+  await main.focus();
+  await main.selectOption('supplier-b');
+  main = await waitForInlineReady(page, mainSelector, 'supplier-b');
+  assert.strictEqual(await main.evaluate(select => document.activeElement === select), true,
+    'Após salvar o fornecedor, o controle deve recuperar o foco para continuar usando o teclado');
+  assert.deepStrictEqual(state.updates.at(-1), { fornecedor_id: 'supplier-b' });
+  assert.strictEqual(order.supplier, 'Fornecedor B');
+  assert.strictEqual(order.loja, 'JK Pecas', 'Trocar o fornecedor deve preservar a loja e o filtro');
+  await page.locator('#lojaFiltroListas button').filter({ hasText: 'JK Pecas' }).click();
+  main = await waitForInlineReady(page, mainSelector, 'supplier-b');
+
+  state.updateError = true;
+  await main.selectOption('supplier-a');
+  await waitForInlineReady(page, mainSelector, 'supplier-b');
+  await page.locator('#status', { hasText: 'Falha ao salvar fornecedor' }).waitFor();
+  assert.strictEqual(order.fornecedor_id, 'supplier-b', 'Uma falha no PUT deve manter o fornecedor persistido');
+  state.updateError = false;
+
+  // O filtro recria o primeiro controle, e o embarque monta outro para a mesma lista.
+  // Ambos precisam respeitar a requisição ainda pendente para impedir duas gravações.
+  let releaseUpdate;
+  state.updateGate = new Promise(resolve => { releaseUpdate = resolve; });
+  const updatesBeforePending = state.updates.length;
+  const pendingRequest = page.waitForRequest(request => request.method() === 'PUT' &&
+    new URL(request.url()).pathname.endsWith('/listas-pedidos/' + order.id));
+  await page.locator(mainSelector).selectOption('supplier-a');
+  await pendingRequest;
+  await page.waitForFunction(selector => document.querySelector(selector)?.disabled, mainSelector);
+  await page.locator('#lojaFiltroListas button').filter({ hasText: 'Todas as lojas' }).click();
+  await page.waitForFunction(selector => {
+    const select = document.querySelector(selector);
+    return select && select.disabled && Array.from(select.options).some(option => option.value === 'supplier-b');
+  }, mainSelector);
+  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque de teste' }).click();
+  const detailSelector = inlineSelector(order.id, '#embarqueDetalheListas');
+  await page.waitForFunction(listId => {
+    const selects = Array.from(document.querySelectorAll('select[data-fornecedor-lista-id="' + listId + '"]'));
+    return selects.length === 2 && selects.every(select => select.disabled &&
+      Array.from(select.options).some(option => option.value === 'supplier-b'));
+  }, order.id);
+  assert.strictEqual(state.updates.length, updatesBeforePending + 1, 'Recriar os controles deve manter apenas um PUT em andamento');
+  state.updateGate = null;
+  releaseUpdate();
+  await waitForInlineReady(page, mainSelector, 'supplier-a');
+  let detail = await waitForInlineReady(page, detailSelector, 'supplier-a');
+  assert.strictEqual(order.supplier, 'Fornecedor A');
+  await assertSupplierControlKeepsCardClosed(page, detail);
+
+  await detail.selectOption('supplier-b');
+  detail = await waitForInlineReady(page, detailSelector, 'supplier-b');
+  assert.deepStrictEqual(state.updates.at(-1), { fornecedor_id: 'supplier-b' });
+  await page.locator('#btnVoltarEmbarque').click();
+  await waitForInlineReady(page, mainSelector, 'supplier-b');
+  await page.locator('#lojaFiltroListas button').filter({ hasText: 'JK Pecas' }).click();
+  await waitForInlineReady(page, mainSelector, 'supplier-b');
+  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque de teste' }).click();
+  detail = await waitForInlineReady(page, detailSelector, 'supplier-b');
+  state.updateError = true;
+  await detail.selectOption('supplier-a');
+  await waitForInlineReady(page, detailSelector, 'supplier-b');
+  await page.locator('#status', { hasText: 'Falha ao salvar fornecedor' }).waitFor();
+  assert.strictEqual(order.fornecedor_id, 'supplier-b');
+  state.updateError = false;
+  assert.strictEqual(await detail.getAttribute('aria-invalid'), 'true');
+  await detail.selectOption('supplier-a');
+  detail = await waitForInlineReady(page, detailSelector, 'supplier-a');
+  assert.strictEqual(await detail.getAttribute('aria-invalid'), null, 'Uma nova gravação bem sucedida deve limpar o erro anterior');
+  assert.strictEqual(await detail.getAttribute('title'), null);
+  await detail.selectOption('supplier-b');
+  await waitForInlineReady(page, detailSelector, 'supplier-b');
+  if (previewDirectory) {
+    await page.locator('.container').screenshot({ path: path.join(previewDirectory, 'embarque-fornecedor-selecionavel.png') });
+  }
+  await page.locator('#btnVoltarEmbarque').click();
+  await page.reload();
+  await waitForInlineReady(page, mainSelector, 'supplier-b');
+  assert.strictEqual(order.supplier, 'Fornecedor B', 'O fornecedor salvo deve continuar selecionado após recarregar a página');
+
+  const longCard = page.locator('.lista-item--compacta').filter({ hasText: 'JK55-Richard Aproved' });
+  await waitForInlineReady(page, inlineSelector('long-name'), 'supplier-long');
+  for (const width of [1033, 880, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const listId of ['long-name', order.id]) {
+      const layout = await page.locator(inlineSelector(listId)).evaluate(select => {
+        const card = select.closest('.lista-item');
+        const actions = card.querySelector('.lista-card-acoes');
+        const selectRect = select.getBoundingClientRect();
+        const actionsRect = actions.getBoundingClientRect();
+        const overlap = selectRect.left < actionsRect.right && selectRect.right > actionsRect.left &&
+          selectRect.top < actionsRect.bottom && selectRect.bottom > actionsRect.top;
+        return { fits: card.scrollWidth <= card.clientWidth + 1, overlap, actionsVisible: actionsRect.width > 0,
+          selectWidth: selectRect.width };
+      });
+      assert.strictEqual(layout.fits && !layout.overlap && layout.actionsVisible, true,
+        'Nomes longos devem caber no cartão e manter as ações acessíveis em ' + width + ' px');
+      assert(layout.selectWidth >= 72, 'O fornecedor deve continuar selecionável no cartão ' + listId +
+        ' em ' + width + ' px: largura do select = ' + layout.selectWidth);
+    }
+    if (previewDirectory && width === 390) {
+      await page.locator('.container').screenshot({ path: path.join(previewDirectory, 'importacoes-fornecedor-selecionavel-mobile.png') });
+    }
+  }
+  await page.setViewportSize({ width: 880, height: 900 });
+  assert.strictEqual(await longCard.locator('[data-fornecedor-pill]').getAttribute('title'), 'Fornecedor: ' + longSupplier);
+  if (previewDirectory) {
+    await page.locator('.container').screenshot({ path: path.join(previewDirectory, 'importacoes-fornecedor-selecionavel.png') });
+    await page.locator(mainSelector).locator('xpath=ancestor::div[contains(@class,"lista-item")][1]').screenshot({
+      path: path.join(previewDirectory, 'cartao-fornecedor-selecionavel.png'),
+    });
+  }
+
+  const updatesBeforeUnavailable = state.updates.length;
+  state.suppliers = [];
+  await page.reload();
+  await page.waitForFunction(selector => {
+    const select = document.querySelector(selector);
+    return select && select.disabled && Array.from(select.options).some(option => /Nenhum fornecedor cadastrado/.test(option.textContent));
+  }, mainSelector);
+  assert.strictEqual(order.fornecedor_id, 'supplier-b');
+  state.suppliers = suppliers;
+  state.supplierError = true;
+  await page.reload();
+  await page.waitForFunction(selector => {
+    const select = document.querySelector(selector);
+    return select && select.disabled && /Não foi possível carregar/.test(select.textContent);
+  }, mainSelector);
+  assert.strictEqual(state.updates.length, updatesBeforeUnavailable, 'Cadastro vazio ou indisponível não deve gravar dados');
+  assert.strictEqual(order.fornecedor_id, 'supplier-b');
+  state.supplierError = false;
 }
 
 (async () => {
@@ -237,8 +419,9 @@ async function chooseSupplierForImport(page, trigger, id) {
     await page.waitForFunction(() => document.getElementById('resumoFornecedorSelect')?.value === 'supplier-b' && !document.getElementById('resumoFornecedorSelect').disabled);
     assert.deepStrictEqual(state.updates.at(-1), { fornecedor_id: 'supplier-b' });
     assert.strictEqual(imported.supplier, 'Fornecedor B');
+    await testInlineSuppliers(page, longSupplier);
     assert.deepStrictEqual(errors, []);
-    console.log('Listas com fornecedor: geração POST/GET, Excel dos dois módulos, cadastro vazio/erro, cancelamento, listas antigas e troca: OK');
+    console.log('Listas com fornecedor: geração POST/GET, Excel, cadastro vazio/erro, listas antigas, troca inline nos cartões e embarques, restauração e bloqueio de PUT duplicado: OK');
   } finally {
     await browser.close();
   }
