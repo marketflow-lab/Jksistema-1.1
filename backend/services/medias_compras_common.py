@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import inspect
 import io
 import json
@@ -9,8 +11,10 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 import unicodedata
 from datetime import datetime
+from functools import wraps
 from typing import Any, Optional
 
 import openpyxl
@@ -23,6 +27,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from backend.services.cadastro_common import _normalizar_sku_mes
 from backend.services.runtime_bridge import bind_runtime_globals, current_backend_runtime
+from backend.services.path_coordination import canonical_path_key, path_lock_for
 
 logger = logging.getLogger("jk_sistema")
 _get_tenant_id_fn = None
@@ -348,16 +353,25 @@ def _limpar_cache_lista_pedido(client_id: str, lista_id: str, manter_versao: str
     manter_token = _token_versao_lista(manter_versao) if manter_versao is not None else None
     prefixo = f"{lista_id}_"
     try:
-        for nome in os.listdir(pasta):
-            if not nome.startswith(prefixo) or not nome.lower().endswith(".xlsx"):
-                continue
-            token_nome = nome[len(prefixo):-5]
-            if manter_token and token_nome == manter_token:
-                continue
-            try:
-                os.remove(os.path.join(pasta, nome))
-            except Exception:
-                pass
+        with path_lock_for(_arquivo_listas_pedidos(client_id)):
+            atuais = _carregar_listas_pedidos(client_id)
+            atual = next((row for row in atuais if str(row.get("id", "")) == str(lista_id)), None)
+            if manter_versao is not None and atual is not None:
+                versao_atual = atual.get("updated_at") or atual.get("created_at") or ""
+                if _token_versao_lista(versao_atual) != manter_token:
+                    return
+            for nome in os.listdir(pasta):
+                if not nome.startswith(prefixo) or not nome.lower().endswith(".xlsx"):
+                    continue
+                token_nome = nome[len(prefixo):-5]
+                if manter_token and token_nome == manter_token:
+                    continue
+                caminho = os.path.join(pasta, nome)
+                try:
+                    with path_lock_for(caminho):
+                        os.remove(caminho)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -367,9 +381,17 @@ def _salvar_bytes_cache_lista_pedido(client_id: str, lista_id: str, versao_lista
         return None
     caminho = _arquivo_cache_lista_pedido(client_id, str(lista_id), versao_lista)
     try:
-        with open(caminho, "wb") as f:
-            f.write(file_bytes)
-        _limpar_cache_lista_pedido(client_id, str(lista_id), manter_versao=versao_lista)
+        with path_lock_for(caminho):
+            descriptor, temporary = tempfile.mkstemp(prefix=".lista-xlsx-", suffix=".tmp", dir=os.path.dirname(caminho))
+            try:
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(file_bytes)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, caminho)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
         return caminho
     except Exception:
         return None
@@ -440,23 +462,116 @@ def _normalizar_status_lista_pedido(status: str | None) -> str:
     return aliases.get(_status_key(texto), "Lista gerada")
 
 
-def _carregar_listas_pedidos(client_id: str) -> list[dict]:
-    caminho = _arquivo_listas_pedidos(client_id)
-    if not os.path.exists(caminho):
-        return []
+class _ListaPedidoConflict(HTTPException):
+    def __init__(self):
+        super().__init__(409, "A lista foi alterada durante o calculo. Recarregue e tente novamente.")
+
+
+class _ListasPedidosSnapshot(list):
+    """A list-compatible snapshot whose source is checked at commit time."""
+
+    def __init__(self, rows, path, source):
+        super().__init__(rows)
+        self.original = copy.deepcopy(rows)
+        self.path_key = canonical_path_key(path)
+        self.source_digest = hashlib.sha256(source).digest()
+        self.require_unchanged = False
+
+
+def _ler_listas_pedidos_snapshot(caminho):
     try:
-        with open(caminho, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        return dados if isinstance(dados, list) else []
-    except Exception:
-        return []
+        with open(caminho, "rb") as stream:
+            source = stream.read()
+    except FileNotFoundError:
+        source = b""
+    try:
+        rows = json.loads(source.decode("utf-8-sig")) if source else []
+    except (ValueError, UnicodeError):
+        raise HTTPException(500, "Arquivo de listas invalido; gravacao bloqueada.") from None
+    if not isinstance(rows, list):
+        raise HTTPException(500, "Arquivo de listas invalido; gravacao bloqueada.")
+    return _ListasPedidosSnapshot(rows, caminho, source)
+
+
+def _carregar_listas_pedidos(client_id: str) -> list[dict]:
+    return _ler_listas_pedidos_snapshot(_arquivo_listas_pedidos(client_id))
+
+
+def _retry_listas_pedidos(function):
+    """Recalculate once on a conflicting snapshot, never retry other failures."""
+    if inspect.iscoroutinefunction(function):
+        @wraps(function)
+        async def async_retry(*args, **kwargs):
+            for attempt in range(2):
+                try:
+                    return await function(*args, **kwargs)
+                except _ListaPedidoConflict:
+                    if attempt:
+                        raise
+        return async_retry
+
+    @wraps(function)
+    def sync_retry(*args, **kwargs):
+        for attempt in range(2):
+            try:
+                return function(*args, **kwargs)
+            except _ListaPedidoConflict:
+                if attempt:
+                    raise
+    return sync_retry
+
+
+def _mesclar_listas_pedidos_snapshot(snapshot, proposed, current):
+    def indexed(rows):
+        result = {}
+        for row in rows:
+            key = str(row.get("id") or "") if isinstance(row, dict) else ""
+            if not key or key in result:
+                raise _ListaPedidoConflict()
+            result[key] = row
+        return result
+
+    original = indexed(snapshot.original)
+    candidate = indexed(proposed)
+    present = indexed(current)
+    changed = {key for key in original if candidate.get(key) != original[key]}
+    inserted = set(candidate) - set(original)
+    if any(present.get(key) != original[key] for key in changed):
+        raise _ListaPedidoConflict()
+    if any(key in present for key in inserted):
+        raise _ListaPedidoConflict()
+    merged = [candidate[key] if key in changed else row for key, row in present.items()
+              if key not in changed or key in candidate]
+    # Preserve prepend/append intent for new lists while retaining other writers.
+    first_old = next((i for i, row in enumerate(proposed)
+                      if str(row.get("id") or "") in original), len(proposed))
+    before = [row for i, row in enumerate(proposed)
+              if str(row.get("id") or "") in inserted and i < first_old]
+    after = [row for i, row in enumerate(proposed)
+             if str(row.get("id") or "") in inserted and i >= first_old]
+    return before + merged + after
+
+
+def _exigir_lista_pedido_snapshot_atual(snapshot, current, lista_id):
+    if not isinstance(snapshot, _ListasPedidosSnapshot):
+        return
+    before = next((row for row in snapshot.original
+                   if str(row.get("id") or "") == str(lista_id)), None)
+    after = next((row for row in current
+                  if str(row.get("id") or "") == str(lista_id)), None)
+    if before != after:
+        raise _ListaPedidoConflict()
 
 
 def _mapa_estoque_em_transito_detalhado_por_sku(
     client_id: str,
     loja: str = "__todas",
+    *,
+    snapshot: list[dict] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    listas = _carregar_listas_pedidos(client_id)
+    if isinstance(snapshot, _ListasPedidosSnapshot) and snapshot.path_key != canonical_path_key(_arquivo_listas_pedidos(client_id)):
+        raise _ListaPedidoConflict()
+    listas = _carregar_listas_pedidos(client_id) if snapshot is None else snapshot
     loja_sel = str(loja or "").strip().lower() or "__todas"
     mapa: dict[str, dict[str, Any]] = {}
 
@@ -497,8 +612,10 @@ def _mapa_estoque_em_transito_detalhado_por_sku(
     return mapa
 
 
-def _mapa_estoque_em_transito_por_sku(client_id: str, loja: str = "__todas") -> dict[str, float]:
-    detalhes = _mapa_estoque_em_transito_detalhado_por_sku(client_id, loja)
+def _mapa_estoque_em_transito_por_sku(
+    client_id: str, loja: str = "__todas", *, snapshot: list[dict] | None = None,
+) -> dict[str, float]:
+    detalhes = _mapa_estoque_em_transito_detalhado_por_sku(client_id, loja, snapshot=snapshot)
     return {
         sku: float((detalhe or {}).get("total", 0) or 0)
         for sku, detalhe in detalhes.items()
@@ -574,11 +691,38 @@ def _mapa_ultima_venda_por_sku(client_id: str, loja: str = "__todas") -> dict[st
 
 def _salvar_listas_pedidos(client_id: str, listas: list[dict]) -> None:
     caminho = _arquivo_listas_pedidos(client_id)
-    pasta = os.path.dirname(caminho)
-    if pasta and not os.path.exists(pasta):
+    _salvar_listas_pedidos_no_caminho(caminho, listas)
+
+
+def _salvar_listas_pedidos_no_caminho(caminho: str, listas: list[dict]) -> None:
+    # Serialize calculations outside the canonical mutex; only compare/commit is held.
+    proposed = copy.deepcopy(list(listas or []))
+    with path_lock_for(caminho):
+        current = _ler_listas_pedidos_snapshot(caminho)
+        if isinstance(listas, _ListasPedidosSnapshot):
+            if listas.path_key != canonical_path_key(caminho):
+                raise _ListaPedidoConflict()
+            if listas.source_digest != current.source_digest:
+                if listas.require_unchanged:
+                    raise _ListaPedidoConflict()
+                proposed = _mesclar_listas_pedidos_snapshot(listas, proposed, current)
+        pasta = os.path.dirname(caminho)
         os.makedirs(pasta, exist_ok=True)
-    with open(caminho, "w", encoding="utf-8") as f:
-        json.dump(listas or [], f, ensure_ascii=False, indent=2)
+        descriptor, temporary = tempfile.mkstemp(prefix=".listas-pedidos-", suffix=".tmp", dir=pasta)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(proposed, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, caminho)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        if isinstance(listas, _ListasPedidosSnapshot):
+            fresh = _ler_listas_pedidos_snapshot(caminho)
+            listas[:] = fresh
+            listas.original = fresh.original
+            listas.source_digest = fresh.source_digest
 
 
 def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str:
@@ -854,6 +998,8 @@ COMMON_EXPORTS = [
     "_salvar_bytes_cache_lista_pedido",
     "_normalizar_status_lista_pedido",
     "_carregar_listas_pedidos",
+    "_retry_listas_pedidos",
+    "_exigir_lista_pedido_snapshot_atual",
     "_mapa_estoque_em_transito_detalhado_por_sku",
     "_mapa_estoque_em_transito_por_sku",
     "_meses_sem_vender_desde",

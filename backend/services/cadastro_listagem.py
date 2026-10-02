@@ -122,6 +122,21 @@ async def listar_produtos_cadastro(
     sync_fotos: bool = False,
     sync_ncm: bool = False,
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(
+        _listar_produtos_cadastro_sync,
+        client_id=client_id,
+        sync_fotos=sync_fotos,
+        sync_ncm=sync_ncm,
+    )
+
+
+def _listar_produtos_cadastro_sync(
+    client_id: str,
+    sync_fotos: bool = False,
+    sync_ncm: bool = False,
+):
     if sync_fotos:
         _cadastro_fotos_exigir_mutacao_global_permitida(client_id)
 

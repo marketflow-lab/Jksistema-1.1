@@ -103,12 +103,24 @@ async def api_medias_compras_lista_pedido_importar_excel_precos(
     confirmar_inclusoes: str = Form("0"),
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    conteudo = await file.read()
+    return await run_heavy(_api_medias_compras_lista_pedido_importar_excel_precos_sync, lista_id=lista_id, conteudo=conteudo, confirmar_inclusoes=confirmar_inclusoes, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_importar_excel_precos_sync(
+    lista_id: str,
+    conteudo: bytes,
+    confirmar_inclusoes: str = Form("0"),
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
-    conteudo = await file.read()
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo Excel vazio")
 
@@ -410,8 +422,32 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
     fornecedor_id: str = Form(""),
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    fornecedor = _resolver_fornecedor_lista(client_id, fornecedor_id)
+    from backend.services.blocking_workers import run_heavy
+
     conteudo = await file.read()
+    return await run_heavy(
+        _api_medias_compras_lista_pedido_importar_excel_nova_lista_sync,
+        conteudo=conteudo,
+        nome_lista=nome_lista,
+        loja=loja,
+        store_id=store_id,
+        fornecedor_id=fornecedor_id,
+        client_id=client_id,
+        filename=str(getattr(file, "filename", "") or ""),
+    )
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_importar_excel_nova_lista_sync(
+    conteudo: bytes,
+    nome_lista: str = Form(""),
+    loja: str = Form("__todas"),
+    store_id: str = Form(""),
+    fornecedor_id: str = Form(""),
+    client_id: str = Depends(medias_common.get_tenant_id),
+    filename: str = "",
+):
+    fornecedor = _resolver_fornecedor_lista(client_id, fornecedor_id)
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo Excel vazio")
 
@@ -526,7 +562,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
 
     nome_lista_final = str(nome_lista or "").strip()
     if not nome_lista_final:
-        nome_arquivo = str(getattr(file, "filename", "") or "").strip()
+        nome_arquivo = str(filename or "").strip()
         nome_arquivo = re.sub(r"\.[A-Za-z0-9]{1,8}$", "", nome_arquivo).strip()
         nome_lista_final = nome_arquivo or f"Lista importada {datetime.now().strftime('%d/%m/%Y %H:%M')}"
 

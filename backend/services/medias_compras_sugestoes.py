@@ -137,6 +137,16 @@ async def api_medias_compras_gerar_lista_compra(
     req: ListaCompraRequest,
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_gerar_lista_compra_sync, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_gerar_lista_compra_sync(
+    req: ListaCompraRequest,
+    client_id: str = Depends(medias_common.get_tenant_id)
+):
     try:
         opcao = str(req.opcao or "").strip().lower()
         if opcao not in {"media_6m", "crescimento"}:
@@ -306,7 +316,10 @@ async def api_medias_compras_gerar_lista_compra(
                 saldo_por_sku = saldo_por_sku or {}
 
         # Estoque em trÃƒÂ¢nsito vindo das listas com status Pedido Aprovado.
-        transito_por_sku = _mapa_estoque_em_transito_por_sku(client_id, loja_sel)
+        listas_salvas = _carregar_listas_pedidos(client_id)
+        if isinstance(listas_salvas, medias_common._ListasPedidosSnapshot):
+            listas_salvas.require_unchanged = True
+        transito_por_sku = _mapa_estoque_em_transito_por_sku(client_id, loja_sel, snapshot=listas_salvas)
 
         # Cadastro por SKU para foto, tÃƒÂ­tulo em inglÃƒÂªs, OEM e link.
         cadastro_por_sku = {}
@@ -573,7 +586,6 @@ async def api_medias_compras_gerar_lista_compra(
 
         lista_id = str(uuid.uuid4())
         agora_iso = datetime.now().isoformat(timespec="seconds")
-        listas_salvas = _carregar_listas_pedidos(client_id)
         itens_lista_norm = _recalcular_frete_internacional_itens_lista(
             client_id,
             itens_lista,
@@ -665,6 +677,20 @@ async def api_medias_compras_gerar_lista_sugestao(
     quantidades_sugeridas: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_gerar_lista_sugestao_sync, meses=meses, loja=loja, store_id=store_id, quantidades_sugeridas=quantidades_sugeridas, client_id=client_id)
+
+
+def _api_medias_compras_gerar_lista_sugestao_sync(
+    meses: int = 12,
+    loja: str = "__todas",
+    store_id: str = "",
+    quantidades_sugeridas: str = "",
+    client_id: str = Depends(medias_common.get_tenant_id)
+):
+    from backend.services.medias_compras_visao import _api_medias_compras_visao_sync
+
     escopo_loja = _resolver_escopo_loja_medias(
         client_id,
         loja,
@@ -673,7 +699,7 @@ async def api_medias_compras_gerar_lista_sugestao(
     )
     loja = escopo_loja["loja"]
     store_id = escopo_loja["store_id"]
-    data = await api_medias_compras_visao(
+    data = _api_medias_compras_visao_sync(
         meses=meses,
         loja=loja,
         store_id=store_id,
@@ -781,12 +807,26 @@ async def api_medias_compras_produtos_sem_venda(
     store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_produtos_sem_venda_sync, faixa=faixa, order=order, loja=loja, store_id=store_id, client_id=client_id)
+
+
+def _api_medias_compras_produtos_sem_venda_sync(
+    faixa: str = "3m",
+    order: str = "desc",
+    loja: str = "__todas",
+    store_id: str = "",
+    client_id: str = Depends(medias_common.get_tenant_id)
+):
+    from backend.services.medias_compras_visao import _api_medias_compras_visao_sync
+
     faixa_sel = str(faixa or "3m").strip().lower()
     if faixa_sel not in {"3m", "6m", "6m+"}:
         faixa_sel = "3m"
 
     order_sel = "asc" if str(order or "desc").strip().lower() == "asc" else "desc"
-    data = await api_medias_compras_visao(
+    data = _api_medias_compras_visao_sync(
         meses=12,
         loja=loja,
         store_id=store_id,

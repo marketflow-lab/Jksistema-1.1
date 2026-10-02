@@ -197,12 +197,24 @@ def _salvar_fornecedores(client_id: str, fornecedores: list[dict]) -> None:
 
 
 async def listar_fornecedores_cadastro(client_id: str = Depends(get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_listar_fornecedores_cadastro_sync, client_id=client_id)
+
+
+def _listar_fornecedores_cadastro_sync(client_id: str = Depends(get_tenant_id)):
     with _FORNECEDORES_LOCK:
         fornecedores = _carregar_fornecedores(client_id)
     return sorted(fornecedores, key=lambda item: _chave_nome_fornecedor(item.get("nome_empresa", "")))
 
 
 async def criar_fornecedor_cadastro(req: CadastroFornecedorRequest, client_id: str = Depends(get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_criar_fornecedor_cadastro_sync, req=req, client_id=client_id)
+
+
+def _criar_fornecedor_cadastro_sync(req: CadastroFornecedorRequest, client_id: str = Depends(get_tenant_id)):
     novo = _normalizar_fornecedor(_dados_request(req))
     chave_nova = _chave_nome_fornecedor(novo["nome_empresa"])
     with _FORNECEDORES_LOCK:
@@ -216,6 +228,18 @@ async def criar_fornecedor_cadastro(req: CadastroFornecedorRequest, client_id: s
 
 
 async def atualizar_fornecedor_cadastro(
+    fornecedor_id: str,
+    req: CadastroFornecedorRequest,
+    client_id: str = Depends(get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(
+        _atualizar_fornecedor_cadastro_sync, fornecedor_id=fornecedor_id, req=req, client_id=client_id,
+    )
+
+
+def _atualizar_fornecedor_cadastro_sync(
     fornecedor_id: str,
     req: CadastroFornecedorRequest,
     client_id: str = Depends(get_tenant_id),
@@ -244,6 +268,12 @@ async def atualizar_fornecedor_cadastro(
 
 
 async def excluir_fornecedor_cadastro(fornecedor_id: str, client_id: str = Depends(get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_excluir_fornecedor_cadastro_sync, fornecedor_id=fornecedor_id, client_id=client_id)
+
+
+def _excluir_fornecedor_cadastro_sync(fornecedor_id: str, client_id: str = Depends(get_tenant_id)):
     with _FORNECEDORES_LOCK:
         fornecedores = _carregar_fornecedores(client_id)
         restantes = [item for item in fornecedores if str(item.get("id", "")) != fornecedor_id]

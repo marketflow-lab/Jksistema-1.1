@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import io
 import json
@@ -15,7 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from backend.schemas import (
     ListaPedidoAddSkuRequest,
@@ -386,6 +385,16 @@ async def api_medias_compras_listas_pedidos(
     store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_listas_pedidos_sync, loja=loja, store_id=store_id, client_id=client_id)
+
+
+def _api_medias_compras_listas_pedidos_sync(
+    loja: str = "__todas",
+    store_id: str = "",
+    client_id: str = Depends(medias_common.get_tenant_id)
+):
     listas = _carregar_listas_pedidos(client_id)
     escopo = _resolver_escopo_loja_medias(client_id, loja, store_id)
     store_id_alvo = escopo["store_id"]
@@ -420,6 +429,15 @@ async def api_medias_compras_skus_ocultos_get(
     request: Request,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_skus_ocultos_get_sync, request=request, client_id=client_id)
+
+
+def _api_medias_compras_skus_ocultos_get_sync(
+    request: Request,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     username = _extrair_username_do_request(request)
     prefs = _carregar_preferencias_skus_ocultos_medias(client_id, username)
     return {
@@ -434,6 +452,16 @@ async def api_medias_compras_skus_ocultos_put(
     request: Request,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_skus_ocultos_put_sync, req=req, request=request, client_id=client_id)
+
+
+def _api_medias_compras_skus_ocultos_put_sync(
+    req: MediasComprasSkusOcultosRequest,
+    request: Request,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     username = _extrair_username_do_request(request)
     payload = _salvar_preferencias_skus_ocultos_medias(client_id, username, req.skus_ocultos or [])
     return {
@@ -444,6 +472,12 @@ async def api_medias_compras_skus_ocultos_put(
 
 
 async def api_medias_compras_preferencias_colunas_get(client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_preferencias_colunas_get_sync, client_id=client_id)
+
+
+def _api_medias_compras_preferencias_colunas_get_sync(client_id: str = Depends(medias_common.get_tenant_id)):
     prefs = _carregar_preferencias_colunas_importacoes(client_id)
     return {
         "success": True,
@@ -453,6 +487,15 @@ async def api_medias_compras_preferencias_colunas_get(client_id: str = Depends(m
 
 
 async def api_medias_compras_preferencias_colunas_put(
+    req: ListaPedidoPreferenciasColunasRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_preferencias_colunas_put_sync, req=req, client_id=client_id)
+
+
+def _api_medias_compras_preferencias_colunas_put_sync(
     req: ListaPedidoPreferenciasColunasRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
@@ -472,12 +515,21 @@ async def api_medias_compras_concorrentes_links(
     sku: str,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_concorrentes_links_sync, sku=sku, client_id=client_id)
+
+
+def _api_medias_compras_concorrentes_links_sync(
+    sku: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     sku_in = str(sku or "").strip()
     if not sku_in:
         raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio")
 
     try:
-        rows = await asyncio.to_thread(_carregar_linhas_planilha_concorrentes)
+        rows = _carregar_linhas_planilha_concorrentes()
         indice = _indexar_linhas_planilha_concorrentes(rows)
         return _payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in)))
     except HTTPException:
@@ -568,6 +620,15 @@ async def api_medias_compras_lista_pedido_concorrentes_links_lote(
     lista_id: str,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_concorrentes_links_lote_sync, lista_id=lista_id, client_id=client_id)
+
+
+def _api_medias_compras_lista_pedido_concorrentes_links_lote_sync(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
     if not lista:
@@ -580,7 +641,7 @@ async def api_medias_compras_lista_pedido_concorrentes_links_lote(
             skus.append(sku)
 
     try:
-        rows = await asyncio.to_thread(_carregar_linhas_planilha_concorrentes)
+        rows = _carregar_linhas_planilha_concorrentes()
         indice = _indexar_linhas_planilha_concorrentes(rows)
         resultados = {
             sku: _payload_concorrentes_planilha(
@@ -603,6 +664,13 @@ async def api_medias_compras_lista_pedido_concorrentes_links_lote(
 
 
 async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_detalhe_sync, lista_id=lista_id, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_detalhe_sync(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     alvo = listas[idx] if idx >= 0 else None
@@ -694,6 +762,16 @@ async def api_medias_compras_lista_pedido_custo_posto(
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
     """Return the backend-authoritative landed-cost calculation for one import list."""
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_custo_posto_sync, lista_id=lista_id, client_id=client_id)
+
+
+def _api_medias_compras_lista_pedido_custo_posto_sync(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    """Return the backend-authoritative landed-cost calculation for one import list."""
     from backend.services import codex_reports_advanced
 
     context = codex_reports_advanced.build_profile_context(
@@ -773,6 +851,17 @@ def _proteger_itens_aprovados_lista(
 
 
 async def api_medias_compras_lista_pedido_editar(
+    lista_id: str,
+    req: ListaPedidoUpdateRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_editar_sync, lista_id=lista_id, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_editar_sync(
     lista_id: str,
     req: ListaPedidoUpdateRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
@@ -881,6 +970,18 @@ async def api_medias_compras_lista_pedido_atualizar_aprovacao_sku(
     req: ListaPedidoSkuAprovacaoRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_atualizar_aprovacao_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_atualizar_aprovacao_sku_sync(
+    lista_id: str,
+    sku: str,
+    req: ListaPedidoSkuAprovacaoRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     listas = _carregar_listas_pedidos(client_id)
     idx_lista = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx_lista < 0:
@@ -926,6 +1027,18 @@ async def api_medias_compras_lista_pedido_atualizar_aprovacao_sku(
 
 
 async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+    lista_id: str,
+    sku: str,
+    req: ListaPedidoSkuAnaliseConcorrentesRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     lista_id: str,
     sku: str,
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
@@ -979,8 +1092,7 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     margens: dict[str, dict[str, Any]] = {}
     if precos_normalizados:
         try:
-            margens = await asyncio.to_thread(
-                _calcular_margens_concorrentes_promocoes,
+            margens = _calcular_margens_concorrentes_promocoes(
                 client_id,
                 str(lista.get("loja") or ""),
                 str(item.get("SKU") or sku),
@@ -1018,6 +1130,7 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
     # que tenha ocorrido enquanto a margem era calculada.
     listas_atuais = _carregar_listas_pedidos(client_id)
+    _exigir_lista_pedido_snapshot_atual(listas, listas_atuais, lista_id)
     idx_lista_atual = next(
         (i for i, atual in enumerate(listas_atuais) if str(atual.get("id", "")) == str(lista_id)),
         -1,
@@ -1070,6 +1183,20 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
     req: ListaPedidoAddSkuRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_adicionar_sku_sync, lista_id=lista_id, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_adicionar_sku_sync(
+    lista_id: str,
+    req: ListaPedidoAddSkuRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.cadastro_produtos import _obter_produto_cadastro_sync
+    from backend.services.cadastro_listagem import _listar_produtos_cadastro_sync
+
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
@@ -1096,11 +1223,11 @@ async def api_medias_compras_lista_pedido_adicionar_sku(
 
     # Busca dados do cadastro no backend para garantir consistÃƒÂªncia da inclusÃƒÂ£o.
     try:
-        prod_resp = await obter_produto_cadastro_query(sku=sku_in, client_id=client_id)
+        prod_resp = _obter_produto_cadastro_sync(sku=sku_in, client_id=client_id)
         produto = (prod_resp or {}).get("produto") or {}
     except HTTPException:
         # Fallback: busca por comparacao normalizada na listagem inteira do cadastro.
-        produtos = await listar_produtos_cadastro(client_id=client_id)
+        produtos = _listar_produtos_cadastro_sync(client_id=client_id)
         alvo_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_in).upper()
         produto = None
         for p in (produtos or []):
@@ -1238,6 +1365,17 @@ async def api_medias_compras_lista_pedido_atualizar_status(
     req: ListaPedidoStatusRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_atualizar_status_sync, lista_id=lista_id, req=req, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_atualizar_status_sync(
+    lista_id: str,
+    req: ListaPedidoStatusRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
@@ -1269,6 +1407,17 @@ async def api_medias_compras_lista_pedido_excluir(
     request: Request,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_excluir_sync, lista_id=lista_id, request=request, client_id=client_id)
+
+
+@_retry_listas_pedidos
+def _api_medias_compras_lista_pedido_excluir_sync(
+    lista_id: str,
+    request: Request,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
@@ -1294,7 +1443,23 @@ async def api_medias_compras_lista_pedido_excluir(
     }
 
 
+def _versao_cache_lista_pedido(lista: dict) -> str:
+    """Distinguish list edits made within the same updated_at second."""
+    import hashlib
+
+    payload = json.dumps(lista, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+    version = str(lista.get("updated_at") or lista.get("created_at") or "")
+    return f"{version}_{digest}"
+
+
 async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_download_sync, lista_id=lista_id, client_id=client_id)
+
+
+def _api_medias_compras_lista_pedido_download_sync(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((l for l in listas if str(l.get("id", "")) == str(lista_id)), None)
     if not lista:
@@ -1303,19 +1468,24 @@ async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str
     nome_lista = str(lista.get("nome_lista", "lista_pedido") or "lista_pedido").strip()
     nome_base = re.sub(r"[^A-Za-z0-9_-]+", "_", nome_lista).strip("_") or "lista_pedido"
     nome_arquivo = f"{nome_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    versao_lista = str(lista.get("updated_at") or lista.get("created_at") or "")
+    versao_lista = _versao_cache_lista_pedido(lista)
     cache_key = f"{client_id}:{lista_id}:{versao_lista}"
     caminho_cache = _arquivo_cache_lista_pedido(client_id, str(lista_id), versao_lista)
 
-    # Cache persistente em disco (mais estÃƒÂ¡vel entre requisiÃƒÂ§ÃƒÂµes/processos).
-    if os.path.exists(caminho_cache):
+    # Capture complete bytes in the worker: a later list edit may remove the
+    # cache before FileResponse would open it in the response phase.
+    try:
+        with open(caminho_cache, "rb") as cached:
+            cached_bytes = cached.read()
+    except FileNotFoundError:
+        cached_bytes = None
+    if cached_bytes:
         headers = {
             "Content-Disposition": f"attachment; filename={nome_arquivo}"
         }
-        return FileResponse(
-            caminho_cache,
+        return StreamingResponse(
+            io.BytesIO(cached_bytes),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=nome_arquivo,
             headers=headers,
         )
 
@@ -1335,12 +1505,7 @@ async def api_medias_compras_lista_pedido_download(lista_id: str, client_id: str
             except Exception:
                 break
 
-    try:
-        with open(caminho_cache, "wb") as f:
-            f.write(file_bytes)
-        _limpar_cache_lista_pedido(client_id, str(lista_id), manter_versao=versao_lista)
-    except Exception:
-        pass
+    _salvar_bytes_cache_lista_pedido(client_id, str(lista_id), versao_lista, file_bytes)
 
     headers = {
         "Content-Disposition": f"attachment; filename={nome_arquivo}"
@@ -1363,6 +1528,15 @@ def _data_aprovacao_commercial_invoice(lista: dict[str, Any]) -> str:
 
 
 async def api_medias_compras_lista_pedido_commercial_invoice(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_commercial_invoice_sync, lista_id=lista_id, client_id=client_id)
+
+
+def _api_medias_compras_lista_pedido_commercial_invoice_sync(
     lista_id: str,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
@@ -1394,6 +1568,12 @@ async def api_medias_compras_lista_pedido_commercial_invoice(
 
 
 async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_lista_pedido_gerar_download_sync, lista_id=lista_id, client_id=client_id)
+
+
+def _api_medias_compras_lista_pedido_gerar_download_sync(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
     listas = _carregar_listas_pedidos(client_id)
     lista = next((l for l in listas if str(l.get("id", "")) == str(lista_id)), None)
     if not lista:
@@ -1402,7 +1582,7 @@ async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_i
     nome_lista = str(lista.get("nome_lista", "lista_pedido") or "lista_pedido").strip()
     nome_base = re.sub(r"[^A-Za-z0-9_-]+", "_", nome_lista).strip("_") or "lista_pedido"
     nome_arquivo = f"{nome_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    versao_lista = str(lista.get("updated_at") or lista.get("created_at") or "")
+    versao_lista = _versao_cache_lista_pedido(lista)
     cache_key = f"{client_id}:{lista_id}:{versao_lista}"
     caminho_cache = _arquivo_cache_lista_pedido(client_id, str(lista_id), versao_lista)
 
@@ -1449,6 +1629,12 @@ async def api_medias_compras_lista_pedido_gerar_download(lista_id: str, client_i
 
 
 async def api_medias_compras_download(file_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_download_sync, file_id=file_id, client_id=client_id)
+
+
+def _api_medias_compras_download_sync(file_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
     file_bytes = TEMP_FILES_STORAGE.get(file_id)
     if not file_bytes:
         raise HTTPException(status_code=404, detail="Arquivo nÃ£o encontrado ou expirado")

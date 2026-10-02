@@ -18,6 +18,9 @@ from .contracts import INVENTORY_SCHEMA_VERSION
 
 from .normalization import _slug
 
+from .cache_sources import _validated_source_root
+from .static_cache import STATIC_INVENTORY_CACHE
+
 
 
 
@@ -59,19 +62,9 @@ from .surface_scanner import (
 
 
 
-def build_context_inventory(base_dir: str, info_root: str, client_id: str, surface: str) -> dict[str, Any]:
-    """Constroi o inventario completo sem importar a aplicacao nem escrever arquivos.
-
-    ``info_root`` deve apontar para a raiz ``info`` ou diretamente para a pasta
-    do tenant. Fora de ``SKU`` nenhum dado do tenant e aberto.
-    """
-
-    base = Path(base_dir).expanduser().resolve(strict=True)
-    info = Path(info_root).expanduser().resolve(strict=True)
-    surface_value = _slug(surface, fallback="checkout")
-    tenant = str(client_id or "").strip()
+def _build_static_inventory(base: Path, surface_value: str) -> dict[str, Any]:
+    """Cache only derived source entities; ASTs and tenant inputs stay local."""
     findings: list[dict[str, str]] = []
-
     schemas, schema_lookup = _scan_schemas(base, surface_value, findings)
     routes = _scan_routes(base, surface_value, schema_lookup, findings)
     services, parsed_files = _scan_services(base, surface_value, findings)
@@ -80,10 +73,39 @@ def build_context_inventory(base_dir: str, info_root: str, client_id: str, surfa
     screens, frontend_calls = _scan_frontend(base, surface_value, routes, findings)
     tests = _scan_tests(base, surface_value)
     integrations = _scan_integrations(base, surface_value)
-    capabilities = _scan_capabilities(base, surface_value, tenant, routes, findings)
-    sku_entities, sku_stats = _scan_sku(base, info, tenant, surface_value, findings)
     legacy_docs, legacy_findings = _scan_legacy_docs(base, surface_value)
     findings.extend(legacy_findings)
+    return {
+        "schemas": schemas, "routes": routes, "services": services,
+        "data_schemas": data_schemas, "screens": screens,
+        "frontend_calls": frontend_calls, "tests": tests,
+        "integrations": integrations, "legacy_docs": legacy_docs,
+        "findings": findings, "source_version": _source_version(base),
+    }
+
+
+def build_context_inventory(
+    base_dir: str, info_root: str, client_id: str, surface: str,
+) -> dict[str, Any]:
+    """Build inventory without importing the application or persisting source data.
+
+    Static derived entities are reused; capabilities, SKU and final domains are
+    rebuilt on every invocation and are never stored in the shared cache.
+    """
+    base = _validated_source_root(Path(base_dir))
+    info = Path(info_root).expanduser().resolve(strict=True)
+    surface_value = _slug(surface, fallback="checkout")
+    tenant = str(client_id or "").strip()
+    static = STATIC_INVENTORY_CACHE.get_or_build(
+        base, surface_value, lambda: _build_static_inventory(base, surface_value),
+    )
+    findings = static["findings"]
+    schemas, routes, services = static["schemas"], static["routes"], static["services"]
+    data_schemas, screens = static["data_schemas"], static["screens"]
+    frontend_calls, tests = static["frontend_calls"], static["tests"]
+    integrations, legacy_docs = static["integrations"], static["legacy_docs"]
+    capabilities = _scan_capabilities(base, surface_value, tenant, routes, findings)
+    sku_entities, sku_stats = _scan_sku(base, info, tenant, surface_value, findings)
 
     base_entities = _deduplicate_entities(
         [
@@ -136,7 +158,7 @@ def build_context_inventory(base_dir: str, info_root: str, client_id: str, surfa
     }
     return {
         "schema_version": INVENTORY_SCHEMA_VERSION,
-        "source_version": _source_version(base),
+        "source_version": static["source_version"],
         "surface": surface_value,
         "client_id": tenant,
         "entities": entities,

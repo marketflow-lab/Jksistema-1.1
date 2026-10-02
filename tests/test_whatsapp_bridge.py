@@ -577,6 +577,7 @@ def test_question_approval_duplicate_id_requires_one_store_and_question_match(mo
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_marcar_processada", lambda *_args: None, raising=False)
     monkeypatch.setattr(perguntas_pos_venda_endpoints, "_perguntas_ia_state_salvar", lambda *_args: None, raising=False)
     monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_jobs_current", lambda _client, ids: {job_id: True for job_id in ids})
     monkeypatch.setattr(
         perguntas_pos_venda_codex,
         "approve_or_refresh_proposal",
@@ -936,6 +937,7 @@ def test_pending_question_approval_is_notified_once_to_authorized_binding(monkey
         "result": {"resposta": "Sim, possui garantia.", "requires_approval": True},
     })
     monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda _client, _job: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_jobs_current", lambda _client, ids: {job_id: True for job_id in ids})
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"success": True, "status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
 
@@ -1008,6 +1010,7 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
         },
     })
     monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda _client, _job: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_jobs_current", lambda _client, ids: {job_id: True for job_id in ids})
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
     state = {}
@@ -1030,6 +1033,8 @@ def test_whatsapp_forwards_only_one_question_until_active_is_answered(monkeypatc
 
 
 def _prepare_question_forwarding(monkeypatch, approvals, sent):
+    for approval in approvals:
+        approval.setdefault("codex_job_id", "job-" + approval["id"])
     monkeypatch.setattr(whatsapp_bridge, "_worker_health", lambda _cfg: {"bindings": [{
         "machine_id": "machine-1", "client_id": "cliente", "username": "operador", "subject_id": "subject-1"
     }]})
@@ -1039,6 +1044,7 @@ def _prepare_question_forwarding(monkeypatch, approvals, sent):
     })
     monkeypatch.setattr(perguntas_pos_venda_state, "_perguntas_ia_aprovacoes_carregar", lambda _client: approvals)
     monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_jobs_current", lambda _client, ids: {job_id: True for job_id in ids})
     monkeypatch.setattr(perguntas_pos_venda_codex, "job_contract_current", lambda *_args: True)
     monkeypatch.setattr(whatsapp_bridge, "_post_interactive_approval", lambda _cfg, **kwargs: sent.append(kwargs) or {"status": "sent"})
     monkeypatch.setattr(whatsapp_bridge, "_save_state", lambda _state: None)
@@ -1047,6 +1053,7 @@ def _prepare_question_forwarding(monkeypatch, approvals, sent):
 def test_blocked_question_template_is_followed_by_the_same_interactive_draft_after_window_reopens(monkeypatch):
     approval = {
         "id": "approval-window",
+        "codex_job_id": "job-window",
         "status": "pending",
         "loja": "JK Pecas",
         "pergunta": "Este produto tem garantia?",
@@ -1096,6 +1103,7 @@ def test_blocked_question_template_is_followed_by_the_same_interactive_draft_aft
         lambda _client: [approval],
     )
     monkeypatch.setattr(perguntas_pos_venda_codex, "approval_job_current", lambda *_args: True)
+    monkeypatch.setattr(perguntas_pos_venda_codex, "approval_jobs_current", lambda _client, ids: {job_id: True for job_id in ids})
     monkeypatch.setattr(perguntas_pos_venda_codex, "job_contract_current", lambda *_args: True)
     monkeypatch.setattr(
         whatsapp_bridge,

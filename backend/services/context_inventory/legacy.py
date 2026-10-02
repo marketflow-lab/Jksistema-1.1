@@ -48,14 +48,18 @@ from .python_scanner import _path_is_excluded
 
 
 
-def _scan_legacy_docs(base: Path, surface: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    findings: list[dict[str, str]] = []
+def _legacy_files(base: Path) -> list[Path]:
     paths: set[Path] = set(base.glob("*.md"))
     docs = base / "docs"
     if docs.is_dir():
         paths.update(path for path in docs.rglob("*.md") if "knowledge" not in path.relative_to(docs).parts)
+    return sorted(paths, key=lambda item: _relative_ref(item, base))
+
+
+def _scan_legacy_docs(base: Path, surface: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    findings: list[dict[str, str]] = []
     entities: list[dict[str, Any]] = []
-    for path in sorted(paths, key=lambda item: _relative_ref(item, base)):
+    for path in _legacy_files(base):
         if _path_is_excluded(path, base):
             findings.append(
                 _finding("legacy_doc_excluded", "info", _relative_ref(path, base), "Documento sensivel excluido do inventario.")

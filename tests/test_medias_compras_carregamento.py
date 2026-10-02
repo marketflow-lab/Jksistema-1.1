@@ -5,6 +5,7 @@ import copy
 import csv
 import json
 import logging
+import threading
 from collections import Counter
 
 import pandas as pd
@@ -314,3 +315,37 @@ def test_tres_itens_sinteticos_resolvem_foto_negativa_uma_vez_por_get(ambiente, 
     assert ambiente["counts"] == Counter(contexto_catalogo=2, cadastro_principal=2, indice_aliquotas=2, indice_ncm=2, persistencias=1)
     assert len(ambiente["photo_calls"]) == 6
     assert Counter(ambiente["photo_calls"]) == Counter({("cliente-a", "store-a", sku, ""): 2 for sku in skus})
+
+
+def test_retry_no_worker_recarrega_contexto_apos_troca_concorrente_da_loja(ambiente, monkeypatch):
+    common._salvar_listas_pedidos("cliente-a", ambiente["lists"]["cliente-a"])
+    monkeypatch.setattr(listas, "_carregar_listas_pedidos", common._carregar_listas_pedidos)
+    monkeypatch.setattr(listas, "_salvar_listas_pedidos", common._salvar_listas_pedidos)
+    load_catalog = fiscal._carregar_cadastro_para_impostos
+    caller_thread = threading.get_ident()
+    worker_threads = []
+
+    def catalog_during_concurrent_edit(client_id):
+        worker_threads.append(threading.get_ident())
+        if len(worker_threads) == 1:
+            edited = common._carregar_listas_pedidos(client_id)
+            edited[0]["store_id"] = "store-b"
+            edited[0]["itens"][0]["Quantidade"] = 3
+            edited[0]["itens"][0]["compra_aprovada"] = True
+            common._salvar_listas_pedidos(client_id, edited)
+        return load_catalog(client_id)
+
+    monkeypatch.setattr(fiscal, "_carregar_cadastro_para_impostos", catalog_during_concurrent_edit)
+    result = _detail()
+    current = common._carregar_listas_pedidos("cliente-a")[0]
+    assert result["store_id"] == current["store_id"] == "store-b"
+    assert result["itens"] == current["itens"]
+    assert result["itens"][0]["Foto"] == ambiente["refs"]["cliente-a", "store-b"]
+    assert result["itens"][0]["Quantidade"] == 3
+    assert result["itens"][0]["compra_aprovada"] is True
+    assert result["itens"][0]["M3"] == 0.375
+    assert result["itens"][0]["Frete Internacional"] == 30.0
+    assert ambiente["counts"]["contexto_catalogo"] == 2
+    assert len(worker_threads) == 2
+    assert all(thread != caller_thread for thread in worker_threads)
+    assert {call[:2] for call in ambiente["photo_calls"]} == {("cliente-a", "store-a"), ("cliente-a", "store-b")}

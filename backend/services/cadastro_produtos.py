@@ -358,6 +358,12 @@ async def listar_colunas_cadastro(client_id: str = Depends(get_tenant_id)):
         raise HTTPException(status_code=500, detail=f"Erro ao listar colunas do cadastro: {str(e)}")
 
 async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_obter_produto_cadastro_sync, sku, client_id)
+
+
+def _obter_produto_cadastro_sync(sku: str, client_id: str):
     sku_norm = _normalizar_sku_mes(sku)
     from backend.services.cadastro_compatibilidade import (
         obter_produto_controlado_para_compatibilidade,

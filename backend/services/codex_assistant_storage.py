@@ -96,6 +96,7 @@ from backend.services.codex.storage.plans import (
 )
 
 from backend.services.codex.storage.customer_replies import (
+    codex_assistant_customer_reply_jobs_readonly,
     codex_assistant_customer_reply_job_has_transient,
     codex_assistant_customer_reply_jobs_cleanup,
     codex_assistant_customer_reply_job_save,
@@ -124,6 +125,7 @@ from backend.services.codex.storage.actions import (
 )
 
 __all__ = [
+    "codex_assistant_customer_reply_jobs_readonly",
     "codex_assistant_customer_reply_job_has_transient",
     "codex_assistant_customer_reply_jobs_cleanup",
     "codex_assistant_client_dir",

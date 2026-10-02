@@ -332,6 +332,12 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
 
 
 async def get_lojas(client_id: str = Depends(get_tenant_id)):
+    from backend.services.blocking_workers import run_blocking
+
+    return await run_blocking(_get_lojas_sync, client_id)
+
+
+def _get_lojas_sync(client_id: str):
     from backend.services.central_accounts_client import current
     central = current(client_id)
     if central:
@@ -357,6 +363,21 @@ async def get_loja(
     nome_loja: str,
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
+):
+    from backend.services.blocking_workers import run_blocking
+
+    return await run_blocking(
+        _get_loja_sync,
+        nome_loja=nome_loja,
+        store_id=store_id,
+        client_id=client_id,
+    )
+
+
+def _get_loja_sync(
+    nome_loja: str,
+    store_id: Optional[str],
+    client_id: str,
 ):
     from backend.services.central_accounts_client import current
     central = current(client_id)

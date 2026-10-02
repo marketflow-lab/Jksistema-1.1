@@ -94,6 +94,16 @@ def codex_assistant_state_db_path(info_base: str, client_id: str) -> str:
     return os.path.join(codex_assistant_client_dir(info_base, client_id), "codex_assistant.db")
 
 
+def _readonly_state_db_path(info_base: str, client_id: str) -> str:
+    """Resolve an existing tenant database without creating any directories."""
+
+    client = str(client_id or "").strip()
+    if not client or _safe_id(client, "") != client:
+        raise ValueError("Invalid customer-reply tenant")
+    base = os.path.abspath(str(info_base or "info").strip() or "info")
+    return os.path.join(base, client, "codex_assistant", "codex_assistant.db")
+
+
 def _lock_for(path: str) -> threading.RLock:
     key = os.path.abspath(path)
     with _LOCKS_LOCK:

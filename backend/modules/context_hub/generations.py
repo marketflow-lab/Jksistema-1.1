@@ -93,6 +93,8 @@ from backend.modules.context_hub.storage import (
     _connect,
 )
 
+from backend.services.context_inventory.static_cache import _inventory_cache_bypass
+
 
 def _idempotent_generation(
     connection: sqlite3.Connection,
@@ -352,7 +354,8 @@ def rebuild_context(
         _recover_publish_journal(paths)
         with _connect(paths) as connection:
             base_active = _active_generation_id(connection)
-        source = _collect_rebuild_source(config, paths)
+        with _inventory_cache_bypass(force):
+            source = _collect_rebuild_source(config, paths)
         existing = _existing_generation(paths, source, force=force)
         if existing is not None:
             return existing

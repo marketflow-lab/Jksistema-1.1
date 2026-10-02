@@ -1894,6 +1894,10 @@ def create_replenishment_list(
     username: str,
 ) -> dict[str, Any]:
     import uuid
+    from backend.services.medias_compras_common import (
+        _ler_listas_pedidos_snapshot,
+        _salvar_listas_pedidos_no_caminho,
+    )
 
     tenant = _tenant_path(info_base, client_id)
     fornecedor = resolver_fornecedor_lista(
@@ -1903,8 +1907,6 @@ def create_replenishment_list(
     )
     os.makedirs(tenant, exist_ok=True)
     path = os.path.join(tenant, "listas_pedidos.json")
-    existing = _read_json(path, [])
-    lists = existing if isinstance(existing, list) else []
     items_raw = action.get("items") if isinstance(action.get("items"), list) else []
     if not items_raw:
         items_raw = [{"sku": sku, "quantity": 0} for sku in (action.get("skus") or [])]
@@ -1934,9 +1936,7 @@ def create_replenishment_list(
         "created_by": str(username or ""),
         "itens": items,
     }
+    lists = _ler_listas_pedidos_snapshot(path)
     lists.insert(0, payload)
-    temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as fh:
-        json.dump(lists, fh, ensure_ascii=False, indent=2, default=str)
-    os.replace(temp, path)
+    _salvar_listas_pedidos_no_caminho(path, lists)
     return {"list_id": list_id, "status": "Lista gerada", "items": len(items), "store": payload["loja"], **fornecedor}

@@ -20,6 +20,7 @@ from backend.modules.context_hub.bootstrap import (
 )
 
 from backend.modules.context_hub.contracts import (
+    ContextHubConflictError,
     ContextHubError,
     ContextHubPaths,
     ContextHubRuntimeConfig,
@@ -45,8 +46,10 @@ from backend.modules.context_hub.runtime import (
     _sha256_text,
 )
 
-from backend.modules.context_hub.settings import (
-    get_settings,
+from backend.modules.context_hub.locking import _exclusive_file_lock, _tenant_thread_lock
+from backend.modules.context_hub.journal import _recover_publish_journal
+from backend.modules.context_hub.watcher_settings import (
+    _read_watcher_settings, _WatcherDatabaseSnapshot, _WatcherReadBusy, _WatcherRecoveryRequired,
 )
 
 from backend.modules.context_hub.state import CONTEXT_HUB_STATE
@@ -151,11 +154,42 @@ def scan_context_hub_changes(
     }
 
 
-def _watch_loop(config: ContextHubRuntimeConfig, paths: ContextHubPaths, stop_event: threading.Event) -> None:
+def _recover_watcher_state(
+    config: ContextHubRuntimeConfig, paths: ContextHubPaths,
+) -> _WatcherDatabaseSnapshot:
+    # No migration may run while a generation or publication owns either lock.
+    paths = _tenant_paths(paths.client_id, info_root=config.info_root)
+    lock = _tenant_thread_lock(paths)
+    if not lock.acquire(blocking=False):
+        raise ContextHubConflictError("Context Hub is busy.")
+    try:
+        with _exclusive_file_lock(paths, timeout=0.0):
+            bootstrap_context_hub(
+                paths.client_id, base_dir=config.base_dir,
+                info_root=config.info_root, surface=config.surface,
+            )
+            _recover_publish_journal(paths)
+            _settings, snapshot = _read_watcher_settings(paths, config.surface)
+            return snapshot
+    finally:
+        lock.release()
+
+
+def _watch_loop(
+    config: ContextHubRuntimeConfig, paths: ContextHubPaths, stop_event: threading.Event,
+    snapshot: _WatcherDatabaseSnapshot | None = None,
+) -> None:
     last_change: Optional[float] = None
+    recovery_at: float | None = None
     while not stop_event.wait(1.0):
         try:
-            settings = get_settings(paths.client_id, info_root=config.info_root, surface=config.surface)
+            if recovery_at is not None:
+                if time.monotonic() < recovery_at:
+                    continue
+                recovery_at = time.monotonic() + 5.0
+                snapshot = _recover_watcher_state(config, paths)
+                recovery_at = None
+            settings, snapshot = _read_watcher_settings(paths, config.surface, snapshot)
             if settings["paused"] or not settings["watch_enabled"]:
                 last_change = None
                 continue
@@ -176,6 +210,12 @@ def _watch_loop(config: ContextHubRuntimeConfig, paths: ContextHubPaths, stop_ev
                     surface=config.surface,
                 )
                 last_change = None
+        except _WatcherRecoveryRequired:
+            last_change = None
+            if recovery_at is None:
+                recovery_at = time.monotonic() + 5.0
+        except _WatcherReadBusy:
+            last_change = None
         except ContextHubError:
             # Fail closed and try again; no source content or exception text is logged.
             last_change = None
@@ -193,7 +233,7 @@ def start_context_hub_watcher(
     config = _runtime_config(base_dir=base_dir, info_root=info_root, surface=surface)
     paths = _tenant_paths(client_id, info_root=config.info_root)
     bootstrap_context_hub(paths.client_id, base_dir=config.base_dir, info_root=config.info_root, surface=config.surface)
-    settings = get_settings(paths.client_id, info_root=config.info_root, surface=config.surface)
+    settings, snapshot = _read_watcher_settings(paths, config.surface)
     if not settings["watch_enabled"] or settings["paused"]:
         return {"success": False, "client_id": paths.client_id, "started": False, "reason": "watcher_disabled"}
     key = str(paths.internal_dir).lower()
@@ -204,7 +244,7 @@ def start_context_hub_watcher(
         stop_event = threading.Event()
         thread = threading.Thread(
             target=_watch_loop,
-            args=(config, paths, stop_event),
+            args=(config, paths, stop_event, snapshot),
             name=f"context-hub-{paths.client_id}",
             daemon=True,
         )
