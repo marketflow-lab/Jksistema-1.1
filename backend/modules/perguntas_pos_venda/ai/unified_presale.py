@@ -449,13 +449,19 @@ def execute_unified_research(
             results.append(_bound_packet_result(packet, operational, tool_type))
             continue
         if tool_type == "same_store_listing":
+            if not callable(bindings.same_store_listing_tool):
+                results.append(_unavailable_research(
+                    tool_type, "same_store_listing_search_unavailable",
+                ))
+                continue
+            query = str(request.get("query") or "").strip()
             results.append(client._tool_segura(
-                "find_same_store_compatible_alternative",
-                lambda: bindings.alternative_tool(
+                "search_same_store_listings",
+                lambda: bindings.same_store_listing_tool(
                     client.client_id,
                     client.loja,
                     client.agent_input,
-                    client.compatibility_analysis,
+                    query,
                 ),
             ))
             continue

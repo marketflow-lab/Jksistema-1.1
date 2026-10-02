@@ -113,3 +113,13 @@ def test_v23_contract_changes_prompt_hash_and_keeps_public_schema():
     assert orchestrator.FACTUAL_CRITIC_POLICY == "jk_black_jhon_factual_critic_v1"
     assert orchestrator.PUBLIC_RESEARCH_POLICY == "jk_black_jhon_research_v3"
     assert orchestrator.MAX_SECONDS == orchestrator.PUBLIC_RESEARCH_DEADLINE_SECONDS
+
+
+def test_same_store_query_policy_invalidates_previous_research_contract():
+    previous_hash = "0838d271147dd9bd50d3aa56b560921b77417280caef6d673798de886f2d0a28"
+    assert orchestrator.SAME_STORE_LISTING_RESEARCH_POLICY == "jk_same_store_listing_query_v1"
+    assert orchestrator.SCHEMA_VERSION == "5.3"
+    previous_job = _current_job()
+    previous_job["prompt_hash"] = previous_hash
+    assert orchestrator.PROMPT_HASH != previous_hash
+    assert not orchestrator._job_contract_current(previous_job)

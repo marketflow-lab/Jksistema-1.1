@@ -52,6 +52,7 @@ class GeneralBindings:
     listing_tool: Optional[Callable[..., dict]] = None
     product_tool: Optional[Callable[..., dict]] = None
     bling_tool: Optional[Callable[..., dict]] = None
+    same_store_listing_tool: Optional[Callable[..., dict]] = None
 
 
 @dataclass(frozen=True, slots=True)

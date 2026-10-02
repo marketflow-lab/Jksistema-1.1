@@ -552,7 +552,8 @@ def test_client_unified_turn_updates_state_without_factual_review(monkeypatch) -
     assert all(step[0] not in {"factual_critic", "factual_revision"} for step in calls)
 
 
-def test_presale_research_denies_post_sale_sources_and_uses_bound_alternative(monkeypatch) -> None:
+@pytest.mark.parametrize("decision", ["no", "insufficient", "not_applicable"])
+def test_presale_research_denies_post_sale_sources_and_uses_bound_listing_query(monkeypatch, decision) -> None:
     monkeypatch.setattr(clients, "_ia_raciocinio_perguntas_configurado", lambda: "medium")
     client = clients._PerguntasCodexV3Client(
         "tenant-2",
@@ -567,24 +568,24 @@ def test_presale_research_denies_post_sale_sources_and_uses_bound_alternative(mo
     client.sku_question_context = {"identity": {"sku": "SKU-7"}}
     client._sku_context_internal_sources = []
     client._sku_context_hub = {}
-    client.compatibility_analysis = {"decision": "no", "target": "alvo"}
+    client.compatibility_analysis = {"decision": decision, "target": "alvo"}
     captured = {}
 
     monkeypatch.setattr(unified_presale, "bind_client_sku_question_context", lambda *_a, **_k: {})
 
-    def alternative(client_id, store, agent_input, analysis):
+    def listing_search(client_id, store, agent_input, query):
         captured.update(
             client_id=client_id,
             store=store,
             agent_input=agent_input,
-            analysis=analysis,
+            query=query,
         )
-        return {"function": "find_same_store_compatible_alternative", "result": {"found": False}}
+        return {"function": "search_same_store_listings", "result": {"found": False}}
 
-    monkeypatch.setattr(clients, "_find_same_store_compatible_alternative", alternative)
+    monkeypatch.setattr(clients, "_search_same_store_listing", listing_search)
     results = client.execute_unified_research(
         [
-            {"type": "same_store_listing", "query": "ignorado", "purpose": "alternativa", "preferred_authority": "store"},
+            {"type": "same_store_listing", "query": "Gerador de ozonio 110 V", "purpose": "alternativa", "preferred_authority": "store"},
             {"type": "order", "query": "pedido alheio", "purpose": "pedido", "preferred_authority": "api"},
         ],
         1,
@@ -593,7 +594,7 @@ def test_presale_research_denies_post_sale_sources_and_uses_bound_alternative(mo
     assert captured["client_id"] == "tenant-2"
     assert captured["store"] == "Loja Exata"
     assert captured["agent_input"] is client.agent_input
-    assert captured["analysis"] is client.compatibility_analysis
+    assert captured["query"] == "Gerador de ozonio 110 V"
     assert results[1]["result"]["unavailable"] is True
     assert results[1]["result"]["reason"] == "tool_not_available_in_pre_sale_flow"
 
@@ -1281,3 +1282,109 @@ def test_bound_context_hub_requires_approved_generation_hashes_and_binding() -> 
     mismatched = unified_presale._bound_packet_result(packet, [], "context_hub")["result"]
     assert mismatched["store_sku_bound"] is False
     assert mismatched["evidence_scope"] == "reference_only"
+
+
+@pytest.mark.parametrize("analysis_decision", ["no", "not_applicable"])
+@pytest.mark.parametrize("has_candidate", [True, False])
+def test_voltage_availability_research_reaches_real_search_and_returns_draft(
+    monkeypatch, analysis_decision, has_candidate,
+):
+    monkeypatch.setattr(clients, "_ia_raciocinio_perguntas_configurado", lambda: "medium")
+    agent_input = {
+        "_unified_response_flow": "pre_sale",
+        "tenant_id": "tenant-2",
+        "store_id": "store-9",
+        "seller_id": "123",
+        "site_id": "MLB",
+        "question": {"id": "q-voltage", "text": "Teria 110 V?"},
+        "item": {"id": "MLB1111111111", "title": "Gerador ozonio", "description": "Fonte: 220 V"},
+        "context": {"sku": "SKU-7"},
+    }
+    client = clients._PerguntasCodexV3Client(
+        "tenant-2", "Loja Exata", "codex:model-test", agent_input,
+    )
+    client.sku_question_context = {"identity": {"sku": "SKU-7"}}
+    monkeypatch.setattr(unified_presale, "bind_client_sku_question_context", lambda *_a, **_k: {})
+    cfg_calls = []
+    api_calls = []
+    item_id = "MLB2222222222"
+    link = "https://produto.mercadolivre.com.br/MLB-2222222222-gerador-_JM"
+    query = "Gerador de ozonio 1000 mg/h 110 V"
+
+    def cfg(client_id, store, *, store_id):
+        cfg_calls.append((client_id, store, store_id))
+        return {"user_id": "123", "site_id": "MLB", "_store_id_context": "store-9"}
+
+    def api(client_id, store, config, method, url, *, params, timeout):
+        api_calls.append((client_id, store, method, url, params, timeout))
+        if url.endswith("/items/search"):
+            body = {"results": [item_id] if has_candidate else [], "paging": {"total": int(has_candidate)}}
+        else:
+            body = [{"code": 200, "body": {
+                "id": item_id, "seller_id": 123, "site_id": "MLB", "status": "active",
+                "title": "Gerador de ozonio 1000 mg/h 110 V", "available_quantity": 2,
+                "permalink": link, "attributes": [{"id": "VOLTAGE", "value_name": "110 V"}],
+            }}]
+        return SimpleNamespace(status_code=200, json=lambda: body), config
+
+    from backend.services.favoritos_busca import _extrair_item_id
+
+    monkeypatch.setattr(perguntas_ml, "_obter_cfg_ml", cfg, raising=False)
+    monkeypatch.setattr(perguntas_ml, "_ml_api_request", api, raising=False)
+    monkeypatch.setattr(perguntas_ml, "_extrair_item_id", _extrair_item_id, raising=False)
+    turns = []
+
+    def invoke(_prompt, results, _force_answer):
+        turns.append(results)
+        if not results:
+            analysis = {
+                "applicable": analysis_decision == "no",
+                "target": "Rede eletrica 110 V" if analysis_decision == "no" else "",
+                "decision": analysis_decision, "condition": "", "missing_fields": [], "evidence_refs": [],
+            }
+            client.compatibility_analysis = analysis
+            return _turn(
+                action="research", category="product_availability",
+                research_requests=[{
+                    "type": "same_store_listing", "query": query,
+                    "purpose": "Consultar versao 110 V na loja", "preferred_authority": "same_store_active_listing",
+                }], compatibility=analysis,
+            )
+        result = results[0]["result"]
+        assert result["search_complete"] is True
+        assert result["absence_confirmed"] is False
+        assert result["sources"][0]["scope"] == "single_query_first_page"
+        assert bool(result["matches"]) is has_candidate
+        if has_candidate:
+            assert result["matches"][0]["attributes"][0]["value_name"] == "110 V"
+            return _turn(
+                action="answer", category="product_availability",
+                answer=f"Este anuncio e 220 V. A versao 110 V consta neste anuncio da loja: {link}",
+                evidence_basis="exact_listing", evidence_refs=[f"same_store_listing:{item_id}"],
+            )
+        answer = _turn(
+            action="answer", category="product_availability",
+            answer="Este anuncio e 220 V. A disponibilidade de uma versao 110 V na loja ainda nao esta confirmada.",
+            decision="insufficient", commercial_state="insufficient",
+            evidence_basis="exact_listing", evidence_refs=["listing:description"],
+        )
+        answer.update(missing_fact_owner="internal", requires_human_review=True)
+        return answer
+
+    result = run_unified_response_agent(
+        flow="pre_sale", context={"agent_input": agent_input}, invoke_turn=invoke,
+        execute_research=client.execute_unified_research,
+    )
+
+    assert cfg_calls == [("tenant-2", "Loja Exata", "store-9")]
+    assert api_calls[0][2] == "GET"
+    assert api_calls[0][3] == "https://api.mercadolibre.com/users/123/items/search"
+    assert api_calls[0][4]["q"] == query
+    assert len(api_calls) == (2 if has_candidate else 1)
+    assert len(turns) == 2
+    assert result["action"] == "answer"
+    assert "220 V" in result["answer"]
+    if not has_candidate:
+        assert result["requires_human_review"] is True
+        assert result["missing_fact_owner"] == "internal"
+        assert "https://" not in result["answer"]

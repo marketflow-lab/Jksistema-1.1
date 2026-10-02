@@ -122,6 +122,21 @@ def _find_same_store_compatible_alternative(
     )
 
 
+def _search_same_store_listing(
+    client_id: str,
+    loja: str,
+    agent_input: dict[str, Any],
+    query: str,
+) -> dict[str, Any]:
+    """Resolve the read-only listing search without importing the service eagerly."""
+
+    from backend.services import perguntas_pos_venda_perguntas_ml
+
+    return perguntas_pos_venda_perguntas_ml._perguntas_ia_buscar_anuncios_mesma_loja(
+        client_id, loja, agent_input, query,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LegacyVertexBindings:
     call_model: Any = _ia_agent_perguntas_chamar_modelo
@@ -387,6 +402,7 @@ class _PerguntasVertexGeminiV2Client:
             web_tool=_ia_agent_perguntas_web_tool,
             product_identity_tool=_ia_agent_perguntas_product_identity_web_tool,
             alternative_tool=_find_same_store_compatible_alternative,
+            same_store_listing_tool=_search_same_store_listing,
             listing_tool=resolve_runtime_adapter("tools", "mercado_livre_listing", marketplace_listing_query),
             product_tool=resolve_runtime_adapter("tools", "product_data", _ia_tool_get_product_data),
             bling_tool=resolve_runtime_adapter("tools", "bling_product", _ia_tool_get_bling_product),

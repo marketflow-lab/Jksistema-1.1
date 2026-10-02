@@ -98,6 +98,7 @@ FACTUAL_REVIEW_VERSION = "jk_ml_factual_review_v1"
 FACTUAL_CRITIC_POLICY = "jk_black_jhon_factual_critic_v1"
 PRODUCT_DOCUMENT_VISION_POLICY = "jk_product_document_vision_v1"
 PUBLIC_RESEARCH_POLICY = "jk_black_jhon_research_v3"
+SAME_STORE_LISTING_RESEARCH_POLICY = "jk_same_store_listing_query_v1"
 PROMPT_HASH = hashlib.sha256(
     (
         "codex-native|public-question-by-item-buyer|post-sale-by-pack|"
@@ -116,6 +117,7 @@ PROMPT_HASH = hashlib.sha256(
         f"factual-critic:{FACTUAL_CRITIC_POLICY}|"
         f"document-vision:{PRODUCT_DOCUMENT_VISION_POLICY}|"
         f"public-research-policy:{PUBLIC_RESEARCH_POLICY}|"
+        f"same-store-listing-policy:{SAME_STORE_LISTING_RESEARCH_POLICY}|"
         "store-sku-binding:jk_context_store_sku_binding_v1|"
         "store-sku-question-context:jk_ml_store_sku_question_context_v1|"
         "store-sku-migration:jk_context_store_sku_migration_v1|"

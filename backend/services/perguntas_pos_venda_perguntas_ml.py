@@ -1223,6 +1223,285 @@ def _perguntas_ia_buscar_anuncios_ml_peca(
     return resultados[:limite], cfg_local
 
 
+
+def _perguntas_ia_buscar_anuncios_mesma_loja(
+    client_id: str,
+    loja: str,
+    agent_input: dict,
+    query: str,
+) -> dict:
+    """Read one server-bound listing search without asserting technical fit."""
+
+    source = agent_input if isinstance(agent_input, dict) else {}
+    result = {
+        "found": False,
+        "searched": False,
+        "search_complete": False,
+        "truncated": False,
+        "absence_confirmed": False,
+        "read_only": True,
+        "content_role": "untrusted_reference_data",
+        "source_family": "listing",
+        "evidence_scope": "same_store_listings",
+        "store_sku_bound": False,
+        "matches": [],
+        "sources": [],
+    }
+
+    def _return(reason: str, *, unavailable: bool = False) -> dict:
+        result["reason"] = reason
+        if unavailable:
+            result["unavailable"] = True
+        return {
+            "function": "search_same_store_listings",
+            "arguments": {},
+            "result": result,
+        }
+
+    def _quantity(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value >= 0 else None
+        if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+            return int(value.strip())
+        return None
+
+    def _attributes(values: Any) -> list[dict]:
+        projected = []
+        for entry in values[:60] if isinstance(values, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            attribute = {
+                key: str(entry[key])[:500]
+                for key in ("id", "name", "value_id", "value_name", "value")
+                if isinstance(entry.get(key), (str, int, float))
+                and not isinstance(entry.get(key), bool)
+            }
+            if isinstance(entry.get("values"), list):
+                attribute["values"] = [
+                    {
+                        key: str(value[key])[:500]
+                        for key in ("id", "name")
+                        if isinstance(value.get(key), (str, int, float))
+                        and not isinstance(value.get(key), bool)
+                    }
+                    for value in entry["values"][:10]
+                    if isinstance(value, dict)
+                ]
+            if attribute:
+                projected.append(attribute)
+        return projected
+
+    def _attributes_truncated(values: Any) -> bool:
+        return bool(isinstance(values, list) and (
+            len(values) > 60
+            or any(
+                any(
+                    len(str(entry.get(key) or "")) > 500
+                    for key in ("id", "name", "value_id", "value_name", "value")
+                )
+                or (isinstance(entry.get("values"), list) and (
+                    len(entry["values"]) > 10
+                    or any(
+                        any(len(str(value.get(key) or "")) > 500 for key in ("id", "name"))
+                        for value in entry["values"] if isinstance(value, dict)
+                    )
+                ))
+                for entry in values if isinstance(entry, dict)
+            )
+        ))
+
+    normalized_query = (
+        re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", query)).strip()[:180]
+        if isinstance(query, str)
+        else ""
+    )
+    if not normalized_query:
+        return _return("same_store_query_unavailable", unavailable=True)
+    if (
+        not str(client_id or "").strip()
+        or not str(loja or "").strip()
+        or any(
+            str(source[key] or "").strip() != str(client_id).strip()
+            for key in ("tenant_id", "client_id")
+            if source.get(key) not in (None, "")
+        )
+    ):
+        return _return("same_store_identity_mismatch", unavailable=True)
+
+    store_id = str(source.get("store_id") or "").strip()
+    current_item = source.get("item") if isinstance(source.get("item"), dict) else {}
+    expected_sellers = {
+        str(value).strip()
+        for value in (source.get("seller_id"), current_item.get("seller_id"))
+        if value not in (None, "")
+    }
+    expected_sites = {
+        str(value).strip()
+        for value in (source.get("site_id"), current_item.get("site_id"))
+        if value not in (None, "")
+    }
+    try:
+        cfg_loader = globals().get("_obter_cfg_ml")
+        api_request = globals().get("_ml_api_request")
+        if not callable(cfg_loader) or not callable(api_request):
+            return _return("same_store_configuration_unavailable", unavailable=True)
+        cfg = (
+            cfg_loader(client_id, loja, store_id=store_id)
+            if store_id
+            else cfg_loader(client_id, loja)
+        )
+        if not isinstance(cfg, dict):
+            return _return("same_store_configuration_unavailable", unavailable=True)
+        resolved_store = str(cfg.get("_store_id_context") or "").strip()
+        seller_id = str(cfg.get("user_id") or "").strip()
+        configured_site = str(cfg.get("site_id") or "").strip()
+        site_id = configured_site or (next(iter(expected_sites)) if len(expected_sites) == 1 else "")
+        if (
+            (store_id and resolved_store != store_id)
+            or not re.fullmatch(r"\d+", seller_id)
+            or not re.fullmatch(r"[A-Z]{3}", site_id)
+            or (expected_sellers and expected_sellers != {seller_id})
+            or (expected_sites and expected_sites != {site_id})
+        ):
+            return _return("same_store_identity_mismatch", unavailable=True)
+
+        response, cfg = api_request(
+            client_id,
+            loja,
+            cfg,
+            "GET",
+            f"https://api.mercadolibre.com/users/{seller_id}/items/search",
+            params={"q": normalized_query, "status": "active", "limit": 20, "offset": 0},
+            timeout=15,
+        )
+        result["searched"] = True
+        if (
+            not isinstance(cfg, dict)
+            or str(cfg.get("user_id") or "").strip() != seller_id
+            or str(cfg.get("_store_id_context") or "").strip() != resolved_store
+            or (str(cfg.get("site_id") or "").strip() not in ("", site_id))
+        ):
+            return _return("same_store_identity_mismatch", unavailable=True)
+        if response.status_code != 200:
+            return _return("same_store_search_failed", unavailable=True)
+        search = response.json()
+        if not isinstance(search, dict) or not isinstance(search.get("results"), list):
+            return _return("same_store_search_invalid_response", unavailable=True)
+        paging = search.get("paging")
+        total = _quantity(paging.get("total")) if isinstance(paging, dict) else None
+        if total is None or total < len(search["results"]):
+            return _return("same_store_search_invalid_response", unavailable=True)
+        ids = []
+        for entry in search["results"]:
+            item_id = entry.get("id") if isinstance(entry, dict) else entry
+            if not isinstance(item_id, str) or not re.fullmatch(rf"{site_id}\d+", item_id):
+                return _return("same_store_search_invalid_response", unavailable=True)
+            if item_id not in ids:
+                ids.append(item_id)
+        result["truncated"] = total > len(search["results"]) or len(ids) > 20
+        ids = ids[:20]
+        items_by_id = {}
+        if ids:
+            response, _ = api_request(
+                client_id,
+                loja,
+                cfg,
+                "GET",
+                "https://api.mercadolibre.com/items",
+                params={"ids": ",".join(ids)},
+                timeout=20,
+            )
+            if response.status_code != 200:
+                return _return("same_store_listing_details_failed", unavailable=True)
+            details = response.json()
+            if not isinstance(details, list):
+                return _return("same_store_listing_details_invalid_response", unavailable=True)
+            for entry in details:
+                if not isinstance(entry, dict) or entry.get("code") != 200:
+                    return _return("same_store_listing_details_incomplete", unavailable=True)
+                item = entry.get("body")
+                item_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+                if item_id not in ids or item_id in items_by_id:
+                    return _return("same_store_listing_details_invalid_response", unavailable=True)
+                items_by_id[item_id] = item
+            if set(items_by_id) != set(ids):
+                return _return("same_store_listing_details_incomplete", unavailable=True)
+
+        matches = []
+        for item_id in ids:
+            item = items_by_id[item_id]
+            item_seller = str(item.get("seller_id") or "").strip()
+            available_quantity = _quantity(item.get("available_quantity"))
+            official_link = _perguntas_ia_alternativa_link_oficial(item)
+            if (
+                item_seller != seller_id
+                or str(item.get("site_id") or "").strip() != site_id
+                or str(item.get("status") or "").strip().lower() != "active"
+                or available_quantity is None
+                or available_quantity <= 0
+                or not official_link
+            ):
+                continue
+            raw_variations = item.get("variations") if isinstance(item.get("variations"), list) else []
+            variations = [
+                {
+                    "id": str(variation.get("id") or ""),
+                    "available_quantity": _quantity(variation.get("available_quantity")),
+                    "attributes": _attributes(variation.get("attributes")),
+                    "attributes_truncated": _attributes_truncated(variation.get("attributes")),
+                    "attribute_combinations": _attributes(variation.get("attribute_combinations")),
+                    "attribute_combinations_truncated": _attributes_truncated(variation.get("attribute_combinations")),
+                }
+                for variation in raw_variations[:40]
+                if isinstance(variation, dict)
+            ]
+            match = {
+                "ref": f"same_store_listing:{item_id}",
+                "id": item_id,
+                "title": str(item.get("title") or "")[:240],
+                "status": "active",
+                "available_quantity": available_quantity,
+                "link": official_link,
+                "attributes": _attributes(item.get("attributes")),
+                "attributes_truncated": _attributes_truncated(item.get("attributes")),
+                "variation_attributes": _attributes(item.get("variation_attributes")),
+                "variation_attributes_truncated": _attributes_truncated(item.get("variation_attributes")),
+                "variations": variations,
+                "variations_truncated": len(raw_variations) > 40,
+            }
+            description = item.get("description")
+            if isinstance(description, dict):
+                description = description.get("plain_text") or description.get("text")
+            if isinstance(description, str) and description.strip():
+                match["description"] = description.strip()[:4000]
+                match["description_truncated"] = len(description.strip()) > 4000
+            matches.append(match)
+
+        result.update({
+            "found": bool(matches),
+            "search_complete": True,
+            "matches": matches,
+            "sources": [{
+                "ref": "same_store_listing:search",
+                "source_family": "listing",
+                "evidence_scope": "same_store_listings",
+                "content_role": "untrusted_reference_data",
+                "query": normalized_query,
+                "scope": "single_query_first_page",
+                "returned_count": len(ids),
+                "matching_candidate_count": len(matches),
+                "total_results": total,
+                "truncated": result["truncated"],
+                "absence_confirmed": False,
+            }],
+        })
+        return _return("same_store_search_completed")
+    except Exception:
+        return _return("same_store_search_unavailable", unavailable=True)
+
+
 def _perguntas_ia_contexto_outra_peca(
     client_id: str,
     loja: str,
