@@ -247,7 +247,8 @@
     "context-bundle-manifest.json",
     "scripts/generate_context_bundle_manifest.py",
     "electron_app/main/modules/context-vault-security.js",
-    "electron_app/main/modules/importacoes-tracking-browser.js"
+    "electron_app/main/modules/importacoes-tracking-browser.js",
+    "static/medias_compras/fornecedores.js"
   ],
   "requiredSourceGlobs": [
     { "pattern": "python_runtime/portable/python.exe", "min": 1 },
@@ -644,7 +645,8 @@
     "local_app/openapi_bling.json",
     "local_app/firebase-presence.env",
     "local_app/electron_app/main/modules/context-vault-security.js",
-    "local_app/electron_app/main/modules/importacoes-tracking-browser.js"
+    "local_app/electron_app/main/modules/importacoes-tracking-browser.js",
+    "local_app/static/medias_compras/fornecedores.js"
   ],
   "requiredPackagedSourceParity": [
     "package.json",
@@ -802,7 +804,8 @@
     "NCM1.xlsx",
     "openapi_bling.json",
     "firebase-presence.env",
-    "context-bundle-manifest.json"
+    "context-bundle-manifest.json",
+    "static/medias_compras/fornecedores.js"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",
