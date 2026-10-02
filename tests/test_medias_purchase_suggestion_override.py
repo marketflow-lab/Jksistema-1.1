@@ -71,7 +71,7 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get)
         lambda _client_id, legado, _destino: str(estoque_csv) if legado == "produtos_compilado.csv" else "",
         raising=False,
     )
-    monkeypatch.setattr(sugestoes, "_mapa_estoque_em_transito_por_sku", lambda *_args: {}, raising=False)
+    monkeypatch.setattr(sugestoes, "_mapa_estoque_em_transito_por_sku", lambda *_args, **_kwargs: {}, raising=False)
     monkeypatch.setattr(
         sugestoes,
         "calcular_reposicao_periodo",
@@ -108,7 +108,7 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get)
 
 
 def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
-    async def fake_visao(*, meses, loja, store_id, client_id):
+    def fake_visao(*, meses, loja, store_id, client_id):
         assert meses == 6
         assert loja == "JK Pecas"
         assert store_id == "store-jk"
@@ -129,7 +129,8 @@ def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
         itens_gerados.extend(itens)
         return b"xlsx"
 
-    monkeypatch.setattr(sugestoes, "api_medias_compras_visao", fake_visao)
+    from backend.services import medias_compras_visao
+    monkeypatch.setattr(medias_compras_visao, "_api_medias_compras_visao_sync", fake_visao)
     monkeypatch.setattr(
         sugestoes,
         "_resolver_escopo_loja_medias",

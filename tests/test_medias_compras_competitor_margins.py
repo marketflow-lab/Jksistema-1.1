@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -447,24 +448,20 @@ def test_endpoint_em_lote_carrega_planilha_uma_vez_e_isola_lista(monkeypatch):
 def test_calculo_financeiro_e_executado_fora_do_fluxo_principal(monkeypatch):
     _configurar_estado(monkeypatch)
     chamadas = []
+    thread_principal = threading.get_ident()
 
-    async def executar_em_thread(funcao, *args):
-        chamadas.append((funcao, args))
-        return funcao(*args)
-
-    monkeypatch.setattr(listas_service.asyncio, "to_thread", executar_em_thread)
-    monkeypatch.setattr(
-        listas_service,
-        "_calcular_margens_concorrentes_promocoes",
-        lambda *_args: {
+    def calcular(*args):
+        chamadas.append((threading.get_ident(), args))
+        return {
             "concorrente_1": {
                 "preco_venda": 100,
                 "custo_unitario": 60,
                 "margem_percentual": 7,
                 "financeiro_exato": True,
             }
-        },
-    )
+        }
+
+    monkeypatch.setattr(listas_service, "_calcular_margens_concorrentes_promocoes", calcular)
 
     asyncio.run(
         listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
@@ -479,7 +476,11 @@ def test_calculo_financeiro_e_executado_fora_do_fluxo_principal(monkeypatch):
     )
 
     assert len(chamadas) == 1
-    assert chamadas[0][0] is listas_service._calcular_margens_concorrentes_promocoes
+    assert chamadas[0][0] != thread_principal
+    assert chamadas[0][1] == (
+        "tenant-a", "Loja A", "001",
+        {"concorrente_1": 100.0}, {"concorrente_1": "MLB111"},
+    )
 
 
 def test_persistencia_da_margem_preserva_aprovacao_feita_durante_calculo(monkeypatch):

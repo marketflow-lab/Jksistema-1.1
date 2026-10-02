@@ -22,6 +22,8 @@ LAYERS = {
     "legacy": 5,
     "markdown_maps": 5,
     "surface_scanner": 6,
+    "cache_sources": 6,
+    "static_cache": 7,
     "builder": 7,
     "api": 8,
     "__init__": 9,

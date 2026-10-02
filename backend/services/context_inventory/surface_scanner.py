@@ -76,7 +76,7 @@ def _script_refs(html_text: str) -> list[str]:
         }
     )
 
-def _resolve_static_script(static_root: Path, page: Path, source: str) -> Path | None:
+def _static_script_candidate(static_root: Path, page: Path, source: str) -> Path | None:
     clean = source.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
     if not clean or re.match(r"^[a-z]+://", clean, re.I) or clean.startswith("//"):
         return None
@@ -86,7 +86,12 @@ def _resolve_static_script(static_root: Path, page: Path, source: str) -> Path |
         candidate = static_root / clean.lstrip("/")
     else:
         candidate = page.parent / clean
-    return _safe_resolve(candidate, static_root)
+    return candidate
+
+
+def _resolve_static_script(static_root: Path, page: Path, source: str) -> Path | None:
+    candidate = _static_script_candidate(static_root, page, source)
+    return _safe_resolve(candidate, static_root) if candidate is not None else None
 
 def _extract_api_literals(text: str) -> set[str]:
     values: set[str] = set()
@@ -238,7 +243,7 @@ def _scan_frontend(
                 )
     return screens, calls
 
-def _scan_tests(base: Path, surface: str) -> list[dict[str, Any]]:
+def _test_files(base: Path) -> list[Path]:
     candidates: set[Path] = set()
     tests_root = base / "tests"
     if tests_root.is_dir():
@@ -250,10 +255,15 @@ def _scan_tests(base: Path, surface: str) -> list[dict[str, Any]]:
         if root.is_dir():
             candidates.update(path for path in root.rglob("test*.js") if not _path_is_excluded(path, root))
             candidates.update(path for path in root.rglob("*.test.js") if not _path_is_excluded(path, root))
+    return sorted(
+        (path for path in candidates if not _path_is_excluded(path, base)),
+        key=lambda item: _relative_ref(item, base),
+    )
+
+
+def _scan_tests(base: Path, surface: str) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
-    for path in sorted(candidates, key=lambda item: _relative_ref(item, base)):
-        if _path_is_excluded(path, base):
-            continue
+    for path in _test_files(base):
         ref = _relative_ref(path, base)
         file_hash = _sha256_bytes(_read_bytes(path))
         names: list[tuple[str, int]] = []
@@ -308,7 +318,7 @@ def _iter_infra_files(root: Path) -> list[Path]:
             files.append(path)
     return sorted(files, key=lambda item: item.relative_to(root).as_posix())
 
-def _scan_integrations(base: Path, surface: str) -> list[dict[str, Any]]:
+def _integration_specs(base: Path) -> list[tuple[str, str, list[Path]]]:
     specs: list[tuple[str, str, list[Path]]] = []
     for slug, title, root_rel in _INFRA_ROOTS:
         files = _iter_infra_files(base / root_rel)
@@ -336,9 +346,13 @@ def _scan_integrations(base: Path, surface: str) -> list[dict[str, Any]]:
         if files:
             specs.append((slug, title, sorted(set(files))))
 
+    return specs
+
+
+def _scan_integrations(base: Path, surface: str) -> list[dict[str, Any]]:
     entities: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for slug, title, files in specs:
+    for slug, title, files in _integration_specs(base):
         if slug in seen:
             continue
         seen.add(slug)

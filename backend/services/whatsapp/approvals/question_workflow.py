@@ -157,25 +157,43 @@ def _is_post_sale_question_approval(item: dict[str, Any]) -> bool:
         for origem in origens
     )
 
+def _question_approval_job_id(item: dict[str, Any]) -> str:
+    return str(item.get("proposal_id") or item.get("codex_job_id") or item.get("research_job_id") or "").strip()
+
+
+def _question_approval_candidates(ppv_state: Any, configs: Any, approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Discard resolved or disabled records before consulting customer-reply jobs."""
+
+    return [
+        item for item in approvals
+        if isinstance(item, dict)
+        and not _is_post_sale_question_approval(item)
+        and str(item.get("status") or "pending") == "pending"
+        and str(item.get("id") or "").strip()
+        and str(item.get("resposta_sugerida") or "").strip()
+        and _question_approval_job_id(item)
+        and ppv_state._perguntas_loja_config_normalizar(
+            ppv_state._perguntas_loja_config_obter(configs, str(item.get("loja") or "").strip())
+        ).get("notificar_whatsapp_aprovacoes") is True
+    ]
+
+
 def _pending_question_approval(
     ppv_state: Any,
     configs: Any,
     approvals: list[dict[str, Any]],
     *,
     client_id: str = "",
+    current_jobs: Optional[dict[str, bool]] = None,
 ) -> Optional[dict[str, Any]]:
     return next(
         (
-            item for item in approvals
-            if isinstance(item, dict)
-            and not _is_post_sale_question_approval(item)
-            and perguntas_pos_venda_codex.approval_job_current(client_id, str(item.get("proposal_id") or item.get("codex_job_id") or item.get("research_job_id") or ""))
-            and str(item.get("status") or "pending") == "pending"
-            and str(item.get("id") or "").strip()
-            and str(item.get("resposta_sugerida") or "").strip()
-            and ppv_state._perguntas_loja_config_normalizar(
-                ppv_state._perguntas_loja_config_obter(configs, str(item.get("loja") or "").strip())
-            ).get("notificar_whatsapp_aprovacoes") is True
+            item for item in _question_approval_candidates(ppv_state, configs, approvals)
+            if (
+                current_jobs.get(_question_approval_job_id(item), False)
+                if current_jobs is not None else
+                perguntas_pos_venda_codex.approval_job_current(client_id, _question_approval_job_id(item))
+            )
         ),
         None,
     )
@@ -487,9 +505,14 @@ def _forward_question_approval_for_binding(
     subject_id: str,
     *,
     last_inbound_at: Any = 0,
+    approval_context: Optional[tuple[Any, list[dict[str, Any]], dict[str, bool]]] = None,
 ) -> None:
-    configs = ppv_state._perguntas_loja_configs_carregar(client_id)
-    approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
+    if approval_context is None:
+        configs = ppv_state._perguntas_loja_configs_carregar(client_id)
+        approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
+        current_jobs = None
+    else:
+        configs, approvals, current_jobs = approval_context
     active, active_token, token_item = _question_active_approval(
         state, approvals, subject_id=subject_id, client_id=client_id, username=username,
         require_current_contract=True,
@@ -508,8 +531,13 @@ def _forward_question_approval_for_binding(
             thread_key = _question_thread_key(client_id, subject_id, username)
             if isinstance(threads.get(thread_key), dict):
                 _question_clear_active_thread(state, subject_id=subject_id, client_id=client_id, username=username)
-    approval = retry_active or _pending_question_approval(ppv_state, configs, approvals, client_id=client_id)
+    approval = retry_active or _pending_question_approval(
+        ppv_state, configs, approvals, client_id=client_id, current_jobs=current_jobs,
+    )
     if approval is None:
+        return
+    # A per-cycle snapshot selects candidates; delivery checks the latest revision.
+    if not perguntas_pos_venda_codex.approval_job_current(client_id, _question_approval_job_id(approval)):
         return
     _send_question_approval_card(
         config, state, notifications, approval, client_id, username, subject_id,
@@ -524,7 +552,16 @@ def _forward_question_approvals(config: dict[str, Any], state: dict[str, Any]) -
         if not eligible:
             return
         notifications = state.get("question_approval_notifications") if isinstance(state.get("question_approval_notifications"), dict) else {}
+        approval_contexts: dict[str, tuple[Any, list[dict[str, Any]], dict[str, bool]]] = {}
         for binding, client_id, username, subject_id in eligible:
+            if client_id not in approval_contexts:
+                configs = ppv_state._perguntas_loja_configs_carregar(client_id)
+                approvals = ppv_state._perguntas_ia_aprovacoes_carregar(client_id)
+                candidates = _question_approval_candidates(ppv_state, configs, approvals)
+                current_jobs = perguntas_pos_venda_codex.approval_jobs_current(
+                    client_id, [_question_approval_job_id(item) for item in candidates],
+                )
+                approval_contexts[client_id] = (configs, approvals, current_jobs)
             _forward_question_approval_for_binding(
                 config,
                 state,
@@ -534,6 +571,7 @@ def _forward_question_approvals(config: dict[str, Any], state: dict[str, Any]) -
                 username,
                 subject_id,
                 last_inbound_at=binding.get("last_inbound_at") or 0,
+                approval_context=approval_contexts[client_id],
             )
         state["question_approval_notifications"] = notifications
         _save_state(state)

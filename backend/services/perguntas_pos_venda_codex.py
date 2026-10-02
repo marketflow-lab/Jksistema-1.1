@@ -3998,31 +3998,56 @@ def get_job(client_id: str, job_id: str) -> Optional[dict[str, Any]]:
 def approval_job_current(client_id: str, job_id: str) -> bool:
     """Return whether a public draft belongs to the current AI contract and is approvable."""
 
-    try:
-        job = get_job(client_id, job_id)
-    except Exception:
-        return False
+    return approval_jobs_current(client_id, [job_id]).get(str(job_id or "").strip(), False)
+
+
+def _approval_job_current_payload(job: Any) -> bool:
+    """Check approval eligibility without changing a job or reading queue metrics."""
+
     result = job.get("result") if isinstance(job, dict) and isinstance(job.get("result"), dict) else {}
     return bool(
-        isinstance(job, dict)
-        and str(job.get("prompt_version") or "") == PROMPT_VERSION
-        and str(job.get("prompt_hash") or "") == PROMPT_HASH
-        and str(job.get("schema_version") or "") == SCHEMA_VERSION
-        and str(job.get("queue_policy_version") or "") == QUEUE_POLICY_VERSION
+        _job_contract_current(job)
+        and _canonical_task_type(job.get("task_type")) != TASK_TYPE_POST_SALE
         and str(job.get("status") or "") == "completed"
         and str(job.get("agent_state") or "") == "aguardando_aprovacao"
         and not job.get("contract_quarantined")
         and not job.get("blocked_without_draft")
+        and not result.get("blocked_without_draft")
         and str(result.get("resposta") or "").strip()
         and result.get("requires_approval") is not False
     )
+
+
+def _readonly_customer_reply_jobs(
+    client_id: str, job_ids: list[str], *, include_drafts: bool = True
+) -> dict[str, dict[str, Any]]:
+    runtime = _require_runtime()
+    info_base = str(getattr(runtime, "PASTA_INFO", "") or os.path.join(os.getcwd(), "info"))
+    return codex_assistant_storage.codex_assistant_customer_reply_jobs_readonly(
+        os.path.abspath(info_base), client_id, job_ids, include_drafts=include_drafts,
+    )
+
+
+def approval_jobs_current(client_id: str, job_ids: list[str]) -> dict[str, bool]:
+    """Return fresh eligibility for a tenant-local batch without lifecycle writes."""
+
+    ids = list(dict.fromkeys(str(job_id).strip() for job_id in job_ids if job_id))
+    if not ids:
+        return {}
+    try:
+        jobs = _readonly_customer_reply_jobs(client_id, ids)
+    except Exception:
+        jobs = {}
+    return {job_id: _approval_job_current_payload(jobs.get(job_id)) for job_id in ids}
 
 
 def job_contract_current(client_id: str, job_id: str) -> bool:
     """Check the current contract without requiring the job to be approval-ready."""
 
     try:
-        job = get_job(client_id, job_id)
+        job = _readonly_customer_reply_jobs(
+            client_id, [job_id], include_drafts=False,
+        ).get(str(job_id or "").strip())
     except Exception:
         return False
     return _job_contract_current(job)

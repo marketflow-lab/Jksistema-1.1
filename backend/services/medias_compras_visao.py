@@ -43,6 +43,12 @@ def _configure_runtime_globals(runtime_module=None):
 
 
 async def api_medias_compras_calcular(req: MediasComprasRequest):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_api_medias_compras_calcular_sync, req)
+
+
+def _api_medias_compras_calcular_sync(req: MediasComprasRequest):
     try:
         itens = [item.model_dump() for item in req.itens]
         return calcular_medias_compras(itens=itens, meses_cobertura=req.meses_cobertura)
@@ -56,6 +62,23 @@ async def api_medias_compras_visao(
     loja: str = "__todas",
     store_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(
+        _api_medias_compras_visao_sync,
+        meses=meses,
+        loja=loja,
+        store_id=store_id,
+        client_id=client_id,
+    )
+
+
+def _api_medias_compras_visao_sync(
+    meses: int = 12,
+    loja: str = "__todas",
+    store_id: str = "",
+    client_id: str = "default",
 ):
     try:
         if meses not in (3, 6, 12):
