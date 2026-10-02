@@ -404,7 +404,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
                 info_base=root,
                 client_id="tenant-a",
                 username="admin",
-                payload={"report_id": "report-1", "action_type": "replenishment", "status": "queued", "skus": ["A"]},
+                payload={"report_id": "report-1", "action_type": "price_review", "status": "queued", "skus": ["A"]},
             )
             updated = codex_reports_advanced.update_queue_action(
                 info_base=root,
@@ -434,6 +434,11 @@ class CodexAdvancedReportTest(unittest.TestCase):
             "queueable": True,
         }
         with tempfile.TemporaryDirectory() as root:
+            tenant = self._tenant(root, "tenant-a")
+            (tenant / "cadastro_fornecedores.json").write_text(
+                json.dumps({"fornecedores": [{"id": "fornecedor-1", "nome_empresa": "Fornecedor cadastrado"}]}),
+                encoding="utf-8",
+            )
             codex_assistant_storage.codex_assistant_report_save(
                 root,
                 "tenant-a",
@@ -443,7 +448,7 @@ class CodexAdvancedReportTest(unittest.TestCase):
                 "client_id": "tenant-a",
                 "created_by": "admin",
                 "action": {"id": "reports.queue_replenishment"},
-                "params": {"report_id": "report-1", "report_action": action},
+                "params": {"report_id": "report-1", "report_action": action, "fornecedor_id": "fornecedor-1"},
             }
             with (
                 patch.object(assistant_runtime, "info_base", return_value=root),
@@ -458,6 +463,8 @@ class CodexAdvancedReportTest(unittest.TestCase):
         self.assertEqual(lists[0]["status"], "Lista gerada")
         self.assertEqual(lists[0]["itens"][0]["Quantidade"], 12)
         self.assertEqual(queues[0]["report_id"], "report-1")
+        self.assertEqual(lists[0]["fornecedor_id"], "fornecedor-1")
+        self.assertEqual(lists[0]["supplier"], "Fornecedor cadastrado")
 
     def test_stale_stock_alert_exposes_scope_age_capital_and_top_items(self):
         result = {

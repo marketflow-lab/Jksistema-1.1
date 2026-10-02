@@ -160,6 +160,7 @@ async def api_medias_compras_gerar_lista_compra(
         if not nome_lista:
             raise HTTPException(status_code=400, detail="Informe o nome da lista antes de gerar o pedido")
 
+        fornecedor = _resolver_fornecedor_lista(client_id, req.fornecedor_id)
         escopo_loja = _resolver_escopo_loja_medias(
             client_id,
             req.loja,
@@ -590,6 +591,7 @@ async def api_medias_compras_gerar_lista_compra(
             "nome_lista": nome_lista,
             "loja": loja_sel,
             "store_id": store_id_cadastro,
+            **fornecedor,
             "status": "Lista gerada",
             "created_at": agora_iso,
             "updated_at": agora_iso,
@@ -613,6 +615,7 @@ async def api_medias_compras_gerar_lista_compra(
             "lista_id": lista_id,
             "nome_lista": nome_lista,
             "loja": loja_sel,
+            **fornecedor,
             "filename": nome_arquivo,
             "total_itens": len(itens_lista),
             "total_skus_ocultados": len(hidden_skus),
@@ -638,6 +641,7 @@ async def api_medias_compras_gerar_lista_compra_get(
     store_id: str = "",
     periodo_meses: int = 6,
     quantidades_sugeridas: str = "",
+    fornecedor_id: str = "",
     client_id: str = Depends(medias_common.get_tenant_id)
 ):
     req = ListaCompraRequest(
@@ -647,6 +651,7 @@ async def api_medias_compras_gerar_lista_compra_get(
         nome_lista=nome_lista,
         loja=loja,
         store_id=store_id,
+        fornecedor_id=fornecedor_id,
         periodo_meses=periodo_meses,
         quantidades_sugeridas=_normalizar_quantidades_sugeridas(quantidades_sugeridas),
     )

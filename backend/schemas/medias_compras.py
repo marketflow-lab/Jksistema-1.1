@@ -26,6 +26,7 @@ class ListaCompraRequest(BaseModel):
     nome_lista: str | None = None
     loja: str | None = None
     store_id: str | None = None
+    fornecedor_id: str | None = None
     periodo_meses: int | None = None
     quantidades_sugeridas: dict[str, int] | None = None
 
@@ -37,6 +38,7 @@ class ListaPedidoUpdateRequest(BaseModel):
     status: str | None = None
     itens: list[dict] | None = None
     numero_invoice: str | None = None
+    fornecedor_id: str | None = None
     supplier: str | None = None
     currency: str | None = None
     incoterm: str | None = None

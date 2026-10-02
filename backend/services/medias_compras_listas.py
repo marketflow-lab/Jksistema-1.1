@@ -768,7 +768,7 @@ async def api_medias_compras_lista_pedido_editar(
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
-    lista = listas[idx]
+    lista = dict(listas[idx])
     campos_informados = (
         getattr(req, "model_fields_set", None)
         or getattr(req, "__fields_set__", set())
@@ -776,6 +776,16 @@ async def api_medias_compras_lista_pedido_editar(
     )
     alterou = False
     alterou_loja = False
+    if "fornecedor_id" in campos_informados:
+        lista.update(_resolver_fornecedor_lista(client_id, req.fornecedor_id))
+        alterou = True
+    elif lista.get("fornecedor_id") and "supplier" in campos_informados:
+        nome_salvo = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+        if str(req.supplier or "").strip() != nome_salvo:
+            raise HTTPException(
+                status_code=400,
+                detail="Selecione um fornecedor cadastrado para alterar o fornecedor da lista.",
+            )
     if req.nome_lista is not None:
         nome_lista = str(req.nome_lista or "").strip()
         if nome_lista:
@@ -804,6 +814,8 @@ async def api_medias_compras_lista_pedido_editar(
     )
     for campo in campos_logisticos:
         if campo not in campos_informados:
+            continue
+        if campo == "supplier" and lista.get("fornecedor_id"):
             continue
         valor = getattr(req, campo, None)
         if campo in {"exchange_rate", "lead_time_days", "moq_default", "package_multiple_default"}:

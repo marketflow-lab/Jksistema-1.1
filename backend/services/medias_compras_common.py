@@ -160,6 +160,16 @@ def get_tenant_path(client_id: str) -> str:
     return _get_tenant_path_fn(client_id)
 
 
+def _resolver_fornecedor_lista(client_id: str, fornecedor_id: str | None) -> dict[str, str]:
+    from backend.services.cadastro_fornecedores import resolver_fornecedor_lista
+
+    return resolver_fornecedor_lista(
+        client_id,
+        fornecedor_id,
+        pasta_tenant=get_tenant_path(client_id),
+    )
+
+
 def _to_float(valor, padrao: float = 0.0) -> float:
     if isinstance(valor, (int, float)):
         return float(valor)
@@ -785,6 +795,7 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
             if str(i.get("SKU", "") or "").strip()
         ],
         "numero_invoice": str(lista.get("numero_invoice") or lista.get("invoice") or "").strip(),
+        "fornecedor_id": str(lista.get("fornecedor_id") or "").strip(),
         "supplier": str(lista.get("supplier") or lista.get("fornecedor") or "").strip(),
         "currency": str(lista.get("currency") or "USD").strip(),
         "incoterm": str(lista.get("incoterm") or "").strip(),
@@ -807,6 +818,7 @@ COMMON_EXPORTS = [
     "configure_medias_compras_common_runtime",
     "get_tenant_id",
     "get_tenant_path",
+    "_resolver_fornecedor_lista",
     "logger",
     "TEMP_FILES_STORAGE",
     "TEMP_FILES_META",

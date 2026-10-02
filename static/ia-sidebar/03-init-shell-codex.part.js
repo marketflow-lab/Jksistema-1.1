@@ -2566,12 +2566,55 @@
       return '';
     }
 
+    let codexFornecedorListasCarregamento = null;
+
+    function _codexCarregarFornecedorListas() {
+      if (window.JKFornecedorListas && typeof window.JKFornecedorListas.selecionar === 'function') {
+        return Promise.resolve(window.JKFornecedorListas);
+      }
+      if (!codexFornecedorListasCarregamento) {
+        codexFornecedorListasCarregamento = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = '/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1';
+          script.async = true;
+          script.onload = () => {
+            const helper = window.JKFornecedorListas;
+            if (helper && typeof helper.selecionar === 'function') resolve(helper);
+            else { script.remove(); reject(new Error('Não foi possível iniciar a seleção de fornecedor.')); }
+          };
+          script.onerror = () => {
+            script.remove();
+            reject(new Error('Não foi possível carregar a seleção de fornecedor. Tente novamente.'));
+          };
+          document.head.appendChild(script);
+        }).catch(erro => { codexFornecedorListasCarregamento = null; throw erro; });
+      }
+      return codexFornecedorListasCarregamento;
+    }
+
     async function _codexProporFilaRelatorio(reportId, reportAction, button) {
       if (!_usuarioLocalEhFull()) return;
       const actionId = _codexReportQueueActionId(reportAction && reportAction.action_type);
       if (!actionId) return;
       if (button) button.disabled = true;
       try {
+        const params = { report_id: reportId, report_action: reportAction };
+        if (actionId === 'reports.queue_replenishment') {
+          _codexSetStatus('Selecione o fornecedor cadastrado para a lista de reposição.');
+          const helper = await _codexCarregarFornecedorListas();
+          const fornecedor = await helper.selecionar({
+            fetch: (input, options) => window.__JK_IA_SIDEBAR_FETCH__(input, options),
+            headers: _authHeaders,
+            titulo: 'Fornecedor da lista de reposição',
+          });
+          if (!fornecedor) {
+            if (button) button.disabled = false;
+            _codexSetStatus('Criação da fila cancelada.');
+            return;
+          }
+          params.fornecedor_id = String(fornecedor.id || '').trim();
+          if (!params.fornecedor_id) throw new Error('Selecione um fornecedor cadastrado para criar a lista.');
+        }
         _codexSetStatus('Preparando aprovacao da fila interna...');
         const data = await _codexFetchJson('/api/admin/codex/actions/proposals', {
           method: 'POST',
@@ -2579,7 +2622,7 @@
           body: JSON.stringify({
             message: `Criar fila interna a partir do relatorio ${reportId}`,
             action_id: actionId,
-            params: { report_id: reportId, report_action: reportAction },
+            params,
             conversation_id: _codexGetActiveConversationId(true),
             screen_context: _codexObterContextoTelaAtual({ background: true }),
             history: [],

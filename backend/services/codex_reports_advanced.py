@@ -21,6 +21,7 @@ from statistics import NormalDist
 from typing import Any, Optional
 
 from backend.services import codex_assistant_storage
+from backend.services.cadastro_fornecedores import resolver_fornecedor_lista
 from backend.services.estoque_historico import _estoque_historico_ambiguidade
 from backend.services.favoritos_margem import margem_calcular_anuncio
 
@@ -1832,6 +1833,12 @@ def create_queue_action(
     if action_type not in {"replenishment", "price_review", "liquidation", "data_quality"}:
         raise ValueError("Tipo de ação interna inválido.")
     data = normalize_text_tree(dict(payload or {}))
+    if action_type == "replenishment":
+        data.update(resolver_fornecedor_lista(
+            client_id,
+            data.get("fornecedor_id"),
+            pasta_tenant=_tenant_path(info_base, client_id),
+        ))
     data["status"] = str(data.get("status") or "queued")
     data["approved_by"] = str(username or "")
     data["created_by"] = str(data.get("created_by") or username or "")
@@ -1889,6 +1896,11 @@ def create_replenishment_list(
     import uuid
 
     tenant = _tenant_path(info_base, client_id)
+    fornecedor = resolver_fornecedor_lista(
+        client_id,
+        action.get("fornecedor_id"),
+        pasta_tenant=tenant,
+    )
     os.makedirs(tenant, exist_ok=True)
     path = os.path.join(tenant, "listas_pedidos.json")
     existing = _read_json(path, [])
@@ -1912,6 +1924,7 @@ def create_replenishment_list(
         "id": list_id,
         "nome_lista": f"Reposicao Black Jhon {date.today().isoformat()}",
         "loja": str(action.get("store") or "__todas"),
+        **fornecedor,
         "status": "Lista gerada",
         "created_at": now,
         "updated_at": now,
@@ -1926,4 +1939,4 @@ def create_replenishment_list(
     with open(temp, "w", encoding="utf-8") as fh:
         json.dump(lists, fh, ensure_ascii=False, indent=2, default=str)
     os.replace(temp, path)
-    return {"list_id": list_id, "status": "Lista gerada", "items": len(items), "store": payload["loja"]}
+    return {"list_id": list_id, "status": "Lista gerada", "items": len(items), "store": payload["loja"], **fornecedor}

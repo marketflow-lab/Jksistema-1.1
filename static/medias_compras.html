@@ -101,6 +101,7 @@
                     <div class="editor-toolbar">
                         <input id="nomeListaPedidoEdit" class="editor-input" type="text" placeholder="Nome da lista">
                         <select id="lojaListaPedidoEdit" class="editor-select" title="Loja da lista" aria-label="Loja da lista"></select>
+                        <select id="fornecedorListaPedidoEdit" class="editor-select" title="Fornecedor da lista" aria-label="Fornecedor da lista"></select>
                         <div id="statusListaPedidoEdit" class="status-lista-visual" aria-live="polite"></div>
                         <button id="btnAdicionarSkuPedido" type="button" class="btn-secondary" data-jk-action="abrir-adicionar-sku">Adicionar SKU</button>
                         <button id="btnSalvarListaPedido" type="button" class="btn-primary" data-jk-action="salvar-lista">Salvar alterações</button>
@@ -151,6 +152,13 @@
         <div class="campo-lista">
             <label for="nomeListaPedido">Nome da lista</label>
             <input id="nomeListaPedido" class="input-lista" type="text" placeholder="Ex.: Pedido Abril 2026" maxlength="80">
+        </div>
+
+        <div class="campo-lista">
+            <label for="fornecedorListaPedido">Fornecedor cadastrado</label>
+            <select id="fornecedorListaPedido" class="input-lista" required aria-required="true" disabled>
+                <option value="">Selecione um fornecedor cadastrado</option>
+            </select>
         </div>
 
         <div class="opcoes-lista">
@@ -226,13 +234,14 @@
 <script src="/medias_compras/core.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 <script src="/medias_compras/state.js?v=20260901-medias-table-layout-v2"></script>
 <script src="/medias_compras/api.js?v=20260826-medias-modular-v1"></script>
+<script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/transito.js?v=20260826-medias-modular-v1"></script>
 <script src="/medias_compras/filtros.js?v=20260826-medias-modular-v1"></script>
 <script src="/medias_compras/tabela-colunas.js?v=20260901-medias-table-layout-v2"></script>
-<script src="/medias_compras/listas.js?v=20260826-medias-modular-v1"></script>
-<script src="/medias_compras/editor.js?v=20260826-medias-modular-v1"></script>
+<script src="/medias_compras/listas.js?v=20261002-fornecedor-listas-v1"></script>
+<script src="/medias_compras/editor.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/editor-produtos.js?v=20260826-medias-modular-v1"></script>
-<script src="/medias_compras/importacao.js?v=20260826-medias-modular-v1"></script>
+<script src="/medias_compras/importacao.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/tabela.js?v=20260901-medias-table-layout-v2"></script>
 <script src="/medias_compras/init.js?v=20260826-medias-modular-v1"></script>
 <script src="/table_columns.js"></script>

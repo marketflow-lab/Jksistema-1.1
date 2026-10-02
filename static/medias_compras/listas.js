@@ -5,6 +5,7 @@
     app.defineModule('listas', ['core', 'state', 'api', 'editor', 'importacao'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
+        let cargaListaPedido = 0;
 
         function setStatusListaPedido(msg) {
             const el = document.getElementById('statusListaPedido');
@@ -152,6 +153,7 @@
                         '</div>' +
                     '</div>' +
                     '<div class="lista-item-meta">Itens: ' + numero(l.total_itens || 0) + lojaMeta + ' | Atualizada: ' + escaparHtml(formatarDataHoraLocal(l.updated_at || l.created_at || '')) + (pesquisaAtiva ? ' | Contém SKU pesquisado' : '') + '</div>' +
+                    '<div class="lista-item-meta">Fornecedor: ' + escaparHtml(global.JKFornecedorListas.nome(l)) + '</div>' +
                     avisoCancelada +
                     avisoImportacoes;
                 div.addEventListener('click', () => abrirListaPedidoPorId(l.id));
@@ -315,6 +317,7 @@
 
         async function abrirListaPedidoPorId(listaId) {
             if (!listaId) return;
+            const carga = ++cargaListaPedido;
             try {
                 setStatusListaPedido('Abrindo lista...');
                 const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)), {
@@ -326,6 +329,7 @@
                     throw new Error(err.detail || 'Falha ao abrir lista de pedidos.');
                 }
                 const data = await resp.json();
+                if (carga !== cargaListaPedido) return;
                 listaPedidoAtual = data.lista || null;
                 if (listaPedidoAtual && forcarStatusCanceladoLocal(listaId)) {
                     listaPedidoAtual.status = 'Pedido cancelado';
@@ -334,7 +338,7 @@
                 renderEditorListaPedido();
                 setStatusListaPedido('Lista carregada.');
             } catch (e) {
-                setStatusListaPedido(e.message || 'Erro ao abrir lista.');
+                if (carga === cargaListaPedido) setStatusListaPedido(e.message || 'Erro ao abrir lista.');
             }
         }
 

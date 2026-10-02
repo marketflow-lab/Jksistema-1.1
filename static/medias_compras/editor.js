@@ -5,6 +5,30 @@
     app.defineModule('editor', ['core', 'state', 'api', 'listas', 'editor-produtos', 'tabela-colunas'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
+        let cargaFornecedorEditor = 0;
+
+        async function carregarFornecedorEditor(lista) {
+            const select = document.getElementById('fornecedorListaPedidoEdit');
+            const carga = ++cargaFornecedorEditor;
+            if (!select) return;
+            select.disabled = true;
+            select.replaceChildren(new Option(global.JKFornecedorListas.nome(lista), ''));
+            if (!lista) return;
+            try {
+                const opcoes = document.createElement('select');
+                await global.JKFornecedorListas.preencherSelect(opcoes, lista, { fetch, headers: obterAuthHeaders });
+                if (carga !== cargaFornecedorEditor || listaPedidoAtual !== lista) return;
+                const valorSelecionado = opcoes.value;
+                select.replaceChildren(...Array.from(opcoes.children));
+                select.value = valorSelecionado;
+                select.disabled = opcoes.disabled;
+            } catch (e) {
+                if (carga === cargaFornecedorEditor && listaPedidoAtual === lista) {
+                    select.title = e.message || 'Não foi possível carregar os fornecedores.';
+                    setStatusListaPedido(e.message || 'Não foi possível carregar os fornecedores. Abra novamente a lista para tentar.');
+                }
+            }
+        }
 
         function setStatusModalAdicionarSku(msg) {
             const el = document.getElementById('modalAdicionarSkuStatus');
@@ -63,6 +87,7 @@
             const tbody = document.querySelector('#tblListaPedidoItens tbody');
             const btnSalvar = document.getElementById('btnSalvarListaPedido');
             if (!inputNome || !selectLoja || !inputStatus || !painelEditor || !tbody || !btnSalvar) return;
+            carregarFornecedorEditor(listaPedidoAtual);
 
             prepararColunasListaPedidos();
             habilitarResizeColunasListaPedidos();
@@ -361,6 +386,10 @@
             }
             const inputNome = document.getElementById('nomeListaPedidoEdit');
             const selectLoja = document.getElementById('lojaListaPedidoEdit');
+            const selectFornecedor = document.getElementById('fornecedorListaPedidoEdit');
+            const listaId = String(listaPedidoAtual.id);
+            const opcaoFornecedor = selectFornecedor && selectFornecedor.selectedOptions[0];
+            const fornecedorId = String((selectFornecedor && !selectFornecedor.disabled && opcaoFornecedor && !opcaoFornecedor.disabled && selectFornecedor.value) || '').trim();
             const nomeLista = String((inputNome && inputNome.value) || '').trim();
             if (!nomeLista) {
                 setStatusListaPedido('Informe o nome da lista.');
@@ -375,7 +404,7 @@
             }
 
             const skuOk = await aplicarEdicoesSkuPendentesListaPedido();
-            if (!skuOk) return;
+            if (!skuOk || !listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) return;
             const itensOriginais = capturarItensListaPedidoDoEditor();
             const itens = itensOriginais.map((item, idx) => {
                 const qtdEl = document.querySelector('input[data-kind="qtd"][data-idx="' + idx + '"]');
@@ -397,19 +426,20 @@
 
             try {
                 setStatusListaPedido('Salvando alterações...');
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
                         ...obterAuthHeaders()
                     },
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens })
+                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens, ...(fornecedorId ? { fornecedor_id: fornecedorId } : {}) })
                 });
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({}));
                     throw new Error(err.detail || 'Falha ao salvar alterações da lista.');
                 }
                 const data = await resp.json();
+                if (!listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) { await carregarListasPedidos(); return; }
                 listaPedidoAtual = data.lista || listaPedidoAtual;
                 await carregarListasPedidos();
                 if (listaPedidoAtual && listaPedidoAtual.id) {

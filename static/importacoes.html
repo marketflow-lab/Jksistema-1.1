@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
 
@@ -611,6 +612,17 @@
         .meta-pill strong {
             color: #f0f7ff;
             font-weight: 800;
+        }
+        .meta-pill.meta-fornecedor {
+            display: block;
+            max-width: min(220px, 100%);
+            min-width: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .lista-card-topo .meta-fornecedor {
+            flex: 0 1 220px;
         }
 
         .meta-invoice {
@@ -2371,6 +2383,12 @@
         }
 
         async function importarPedidoPorExcel(btn) {
+            const fornecedor = await window.JKFornecedorListas.selecionar({
+                fetch,
+                headers: obterAuthHeaders,
+                titulo: 'Fornecedor do pedido importado'
+            });
+            if (!fornecedor) return;
 
             const input = document.createElement('input');
             input.type = 'file';
@@ -2389,6 +2407,7 @@
 
                     const fd = new FormData();
                     fd.append('file', file);
+                    fd.append('fornecedor_id', String(fornecedor.id));
 
                     setStatus('Importando arquivo "' + String(file.name || '') + '" e criando nova lista...');
                     const resp = await fetch('/api/medias-compras/listas-pedidos/importar-excel', {
@@ -2455,6 +2474,7 @@
                         '<div class="nome-lista">' + nomeLista + '</div>' +
                         '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                         lojaPill +
+                        '<span class="meta-pill meta-fornecedor" title="Fornecedor: ' + escaparHtml(window.JKFornecedorListas.nome(l)) + '">Fornecedor: <strong>' + escaparHtml(window.JKFornecedorListas.nome(l)) + '</strong></span>' +
                         '<div class="lista-card-acoes">' +
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
@@ -3582,6 +3602,7 @@
                         '<div class="meta-resumo">' +
                             '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                             lojaPill +
+                            '<span class="meta-pill meta-fornecedor" title="Fornecedor: ' + escaparHtml(window.JKFornecedorListas.nome(l)) + '">Fornecedor: <strong>' + escaparHtml(window.JKFornecedorListas.nome(l)) + '</strong></span>' +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                             '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +

@@ -71,6 +71,10 @@ const json = (route, body, status = 200) => route.fulfill({
         await json(route, [{ nome: 'JK Pecas', store_id: storeId }]);
         return;
       }
+      if (url.pathname === '/api/cadastro/fornecedores') {
+        await json(route, [{ id: 'fornecedor-teste', nome_empresa: 'Fornecedor teste' }]);
+        return;
+      }
       if (url.pathname === '/api/medias-compras/preferencias-skus-ocultos') {
         await json(route, { skus_ocultos: [] });
         return;
@@ -90,6 +94,7 @@ const json = (route, body, status = 200) => route.fulfill({
         return;
       }
       if (url.pathname === '/api/medias-compras/listas-pedidos/importar-excel' && method === 'POST') {
+        assert.match(request.postDataBuffer().toString('utf8'), /name="fornecedor_id"\r\n\r\nfornecedor-teste/);
         importacoes += 1;
         const criada = {
           id: 'lista-2',
@@ -97,6 +102,8 @@ const json = (route, body, status = 200) => route.fulfill({
           loja: 'JK Pecas',
           store_id: storeId,
           status: 'Lista gerada',
+          fornecedor_id: 'fornecedor-teste',
+          supplier: 'Fornecedor teste',
           created_at: '2026-08-26T11:00:00Z',
           updated_at: '2026-08-26T11:00:00Z',
           itens: [],
@@ -194,6 +201,12 @@ const json = (route, body, status = 200) => route.fulfill({
 
     const fileChooserPromise = page.waitForEvent('filechooser');
     await page.locator('#btnImportarListaPedidoExcel').click();
+    await page.waitForFunction(() => {
+      const select = document.getElementById('jkFornecedorListaSelect');
+      return select && !select.disabled;
+    });
+    await page.locator('#jkFornecedorListaSelect').selectOption('fornecedor-teste');
+    await page.locator('#jkFornecedorListaConfirmar').click();
     const fileChooser = await fileChooserPromise;
     await fileChooser.setFiles({
       name: 'pedido.xlsx',

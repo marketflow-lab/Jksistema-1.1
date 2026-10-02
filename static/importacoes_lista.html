@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Detalhe da Lista - Importações</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <style>
         body {
             margin: 0;
@@ -217,6 +218,13 @@
         }
         .resumo-select:focus {
             border-color: #67b4ff;
+        }
+        #resumoFornecedorStatus {
+            font-size: 0.7rem;
+            font-weight: 400;
+            white-space: normal;
+            line-height: 1.25;
+            margin-top: 3px;
         }
         .resumo-input {
             width: 100%;
@@ -929,6 +937,7 @@
         let cotacaoDolarTopo = 0;
         let ultimaListaCarregada = null;
         let ultimosItensCarregados = [];
+        let fornecedorResumoSalvando = false;
         let ultimaAnaliseCustoPosto = null;
         let cicloAnaliseMargensAutomaticas = 0;
         const estadosAnaliseMargensAutomaticas = new Map();
@@ -1820,6 +1829,69 @@
             }
         }
 
+        async function prepararFornecedorListaResumo(lista, select, status) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (!listaId || !select) return;
+            const listaAtiva = () => ultimaListaCarregada && String(ultimaListaCarregada.id) === listaId;
+            const vigente = () => select.isConnected && listaAtiva();
+            try {
+                const fornecedores = await window.JKFornecedorListas.preencherSelect(select, lista, {
+                    fetch,
+                    headers: obterAuthHeaders
+                });
+                if (!vigente()) return;
+                let fornecedorAnterior = String(lista.fornecedor_id || '').trim();
+                status.textContent = fornecedores.length ?
+                    (fornecedorAnterior ? '' : 'Selecione um fornecedor cadastrado para vincular esta lista.') :
+                    'Cadastre um fornecedor em Cadastro > Fornecedores para vincular esta lista.';
+                if (fornecedorResumoSalvando) {
+                    select.disabled = true;
+                    status.textContent = 'Salvando fornecedor...';
+                }
+                select.addEventListener('change', async () => {
+                    if (fornecedorResumoSalvando) return;
+                    const fornecedor = fornecedores.find(item => String(item.id) === select.value);
+                    if (!fornecedor) {
+                        select.value = fornecedorAnterior;
+                        status.textContent = 'Selecione um fornecedor cadastrado.';
+                        return;
+                    }
+                    select.disabled = true;
+                    fornecedorResumoSalvando = true;
+                    status.textContent = 'Salvando fornecedor...';
+                    try {
+                        const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                            body: JSON.stringify({ fornecedor_id: String(fornecedor.id) })
+                        });
+                        const dados = await resposta.json().catch(() => ({}));
+                        if (!resposta.ok) throw new Error(dados.detail || 'Não foi possível salvar o fornecedor.');
+                        if (!listaAtiva()) return;
+                        fornecedorAnterior = String(fornecedor.id);
+                        Object.assign(ultimaListaCarregada, dados.lista || { fornecedor_id: fornecedorAnterior, supplier: fornecedor.nome_empresa });
+                        if (vigente()) {
+                            select.value = String(ultimaListaCarregada.fornecedor_id || fornecedorAnterior);
+                            status.textContent = 'Fornecedor salvo.';
+                        }
+                    } catch (erro) {
+                        if (vigente()) {
+                            select.value = fornecedorAnterior;
+                            status.textContent = erro.message || 'Não foi possível salvar o fornecedor.';
+                        } else if (listaAtiva()) {
+                            setErro(erro.message || 'Não foi possível salvar o fornecedor.');
+                        }
+                    } finally {
+                        fornecedorResumoSalvando = false;
+                        if (vigente()) select.disabled = false;
+                        else if (listaAtiva()) renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                    }
+                });
+            } catch (erro) {
+                if (vigente()) status.textContent = (erro.message || 'Não foi possível carregar os fornecedores.') + ' Atualize a página para tentar novamente.';
+            }
+        }
+
         function iniciarEdicaoLojaResumo(card, listaId) {
             if (!card || card.dataset.editando === '1' || !listaId) return;
             const valueEl = card.querySelector('.value');
@@ -2100,7 +2172,7 @@
                 { label: 'Modalidade', value: modalidade },
                 { label: 'Nº Invoice', value: invoice, editable: true },
                 { label: 'Loja', value: lojaLista },
-                { label: 'Fornecedor', value: String(lista && (lista.supplier || lista.fornecedor) || '-') , editable: true },
+                { label: 'Fornecedor', value: window.JKFornecedorListas.nome(lista) },
                 { label: 'Moeda', value: String(lista && (lista.currency || lista.moeda) || 'USD'), editable: true },
                 { label: 'Incoterm', value: String(lista && lista.incoterm || '-'), editable: true },
                 { label: 'Faturamento Loja', value: textoFaturamentoLoja },
@@ -2165,9 +2237,12 @@
                         '<option value="Aéreo"' + (c.value === 'Aéreo' ? ' selected' : '') + '>Aéreo</option>' +
                         '</select>'
                     )
-                    : (c.editable && editKey
+                    : (c.label === 'Fornecedor'
+                        ? '<select id="resumoFornecedorSelect" class="resumo-select" aria-label="Fornecedor da lista" aria-describedby="resumoFornecedorStatus" disabled><option value="">' + escaparHtml(c.value) + '</option></select>' +
+                            '<div id="resumoFornecedorStatus" class="muted" role="status" aria-live="polite">Carregando fornecedores...</div>'
+                        : (c.editable && editKey
                         ? ('<div class="value editavel-valor" data-valor="' + escaparHtml(valorBase === '-' ? '' : formatarMoedaEditavel(valorBase, formatoEditavel)) + '">' + escaparHtml(valorBase === '-' ? '-' : formatarMoedaEditavel(valorBase, formatoEditavel)) + '</div>')
-                        : (escaparHtml(c.value) + (c.valueExtra ? '<span class="value-sub">' + escaparHtml(c.valueExtra) + '</span>' : '')));
+                        : (escaparHtml(c.value) + (c.valueExtra ? '<span class="value-sub">' + escaparHtml(c.valueExtra) + '</span>' : ''))));
                 return (
                 '<div class="resumo-card' + classeExtra + (c.editable && editKey ? ' editavel' : '') + '"' + (c.editable && editKey ? (' data-edit-key="' + escaparHtml(editKey) + '"') : '') + '>' +
                     '<div class="label">' + escaparHtml(c.label) + '</div>' +
@@ -2182,6 +2257,10 @@
             });
 
             const selModalidade = document.getElementById('resumoModalidadeSelect');
+            const selectFornecedor = document.getElementById('resumoFornecedorSelect');
+            if (selectFornecedor) {
+                void prepararFornecedorListaResumo(lista, selectFornecedor, document.getElementById('resumoFornecedorStatus'));
+            }
             if (selModalidade) {
                 selModalidade.addEventListener('change', () => {
                     const escolhido = String(selModalidade.value || '').trim();

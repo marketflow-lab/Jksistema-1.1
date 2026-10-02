@@ -504,8 +504,12 @@ def _manual_specs() -> dict[str, CodexActionSpec]:
             label="Criar lista interna de reposicao",
             aliases=("enviar reposicao para fila", "criar lista de reposicao", "aprovar reposicao black jhon"),
             params_schema=_schema(
-                ["report_id", "report_action"],
-                {"report_id": {"type": "string"}, "report_action": {"type": "object"}},
+                ["report_id", "report_action", "fornecedor_id"],
+                {
+                    "report_id": {"type": "string"},
+                    "report_action": {"type": "object"},
+                    "fornecedor_id": {"type": "string", "description": "ID de um fornecedor cadastrado neste cliente."},
+                },
             ),
             risk_level="local_write",
             side_effects=("Cria uma lista local em Medias e Compras com status Lista gerada; nao altera estoque externo.",),
@@ -1975,6 +1979,10 @@ def _execute_internal_report_queue(run_id: str, proposal: dict[str, Any]) -> dic
     if valid_action.get("queueable") is False:
         raise RuntimeError("A recomendacao nao possui confianca suficiente para entrar na fila.")
     queue_payload = {**valid_action, "report_id": report_id, "status": "queued", "approved_by": username}
+    if expected_type == "replenishment":
+        # O fornecedor e uma escolha explicita da proposta aprovada; nao se
+        # deduz um cadastro por nome nem pela recomendacao do relatorio.
+        queue_payload["fornecedor_id"] = params.get("fornecedor_id")
     queue_item = codex_reports_advanced.create_queue_action(
         info_base=assistant_runtime.info_base(),
         client_id=client_id,

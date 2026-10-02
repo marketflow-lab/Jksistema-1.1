@@ -137,8 +137,12 @@ def _normalizar_fornecedor(payload: dict, *, fornecedor_id: str = "", criado_em:
     }
 
 
-def _carregar_fornecedores(client_id: str) -> list[dict]:
-    arquivo = _arquivo_fornecedores(client_id)
+def _carregar_fornecedores(client_id: str, *, pasta_tenant: str | None = None) -> list[dict]:
+    arquivo = (
+        os.path.join(pasta_tenant, "cadastro_fornecedores.json")
+        if pasta_tenant is not None
+        else _arquivo_fornecedores(client_id)
+    )
     if not os.path.exists(arquivo):
         return []
     try:
@@ -150,6 +154,30 @@ def _carregar_fornecedores(client_id: str) -> list[dict]:
     if not isinstance(registros, list):
         raise HTTPException(status_code=500, detail="Cadastro de fornecedores inválido.")
     return [dict(item) for item in registros if isinstance(item, dict)]
+
+
+def resolver_fornecedor_lista(
+    client_id: str,
+    fornecedor_id: str | None,
+    *,
+    pasta_tenant: str | None = None,
+) -> dict[str, str]:
+    """Resolve somente um ID cadastrado no cliente e salva seu nome historico."""
+    identificador = str(fornecedor_id or "").strip()
+    if not identificador:
+        raise HTTPException(status_code=400, detail="Selecione um fornecedor cadastrado para continuar.")
+    with _FORNECEDORES_LOCK:
+        fornecedores = _carregar_fornecedores(client_id, pasta_tenant=pasta_tenant)
+        fornecedor = next(
+            (item for item in fornecedores if str(item.get("id") or "").strip() == identificador),
+            None,
+        )
+    if fornecedor is None:
+        raise HTTPException(status_code=400, detail="Fornecedor não encontrado no cadastro deste cliente.")
+    nome = str(fornecedor.get("nome_empresa") or "").strip()
+    if not nome:
+        raise HTTPException(status_code=409, detail="O fornecedor cadastrado precisa ter o nome da empresa.")
+    return {"fornecedor_id": identificador, "supplier": nome}
 
 
 def _salvar_fornecedores(client_id: str, fornecedores: list[dict]) -> None:
@@ -231,5 +259,6 @@ __all__ = [
     "criar_fornecedor_cadastro",
     "atualizar_fornecedor_cadastro",
     "excluir_fornecedor_cadastro",
+    "resolver_fornecedor_lista",
     "configure_cadastro_fornecedores_runtime",
 ]

@@ -5,6 +5,16 @@
     app.defineModule('importacao', ['core', 'state', 'api', 'listas', 'editor', 'tabela'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
+        let cargaFornecedorModal = 0;
+        let fornecedoresModal = [];
+        let geracaoCompraAtiva = 0;
+
+        function atualizarConfirmacaoListaCompra() {
+            const select = document.getElementById('fornecedorListaPedido');
+            const btn = document.getElementById('btnConfirmarListaCompra');
+            const valido = select && !select.disabled && fornecedoresModal.some(f => String(f.id) === select.value);
+            if (btn) btn.disabled = !valido || geracaoCompraAtiva === cargaFornecedorModal;
+        }
 
         function anexarExcelAtualizarPrecosLista(listaId, nomeLista) {
             if (!listaId) return;
@@ -95,10 +105,32 @@
             input.click();
         }
 
-        function importarListaPedidoPorExcel() {
+        async function importarListaPedidoPorExcel() {
             if (!exigirLojaEspecificaParaLista(setStatusListaPedido)) return;
 
             const btn = document.getElementById('btnImportarListaPedidoExcel');
+            const textoOriginal = btn ? btn.textContent : '';
+            const lojaImportacao = lojaSelecionada;
+            const storeImportacao = storeIdSelecionado;
+            let fornecedor;
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = 'Selecionando fornecedor...'; }
+                fornecedor = await global.JKFornecedorListas.selecionar({
+                    fetch, headers: obterAuthHeaders, titulo: 'Fornecedor da lista por Excel'
+                });
+                if (!fornecedor) {
+                    setStatusListaPedido('Importação cancelada. Selecione um fornecedor para criar a lista.');
+                    return;
+                }
+                if (lojaSelecionada !== lojaImportacao || storeIdSelecionado !== storeImportacao) {
+                    throw new Error('A loja foi alterada. Inicie novamente a importação da lista.');
+                }
+            } catch (e) {
+                setStatusListaPedido(e.message || 'Não foi possível selecionar o fornecedor.');
+                return;
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = textoOriginal || 'Adicionar lista por Excel'; }
+            }
             const input = document.createElement('input');
             input.type = 'file';
             input.accept = '.xlsx,.xlsm,.xltx,.xltm';
@@ -107,9 +139,11 @@
                 const file = input.files && input.files[0] ? input.files[0] : null;
                 if (!file) return;
 
-                const textoOriginal = btn ? btn.textContent : '';
                 try {
                     if (!exigirLojaEspecificaParaLista(setStatusListaPedido)) return;
+                    if (lojaSelecionada !== lojaImportacao || storeIdSelecionado !== storeImportacao) {
+                        throw new Error('A loja foi alterada. Inicie novamente a importação da lista.');
+                    }
 
                     if (btn) {
                         btn.disabled = true;
@@ -118,8 +152,9 @@
 
                     const fd = new FormData();
                     fd.append('file', file);
-                    fd.append('loja', lojaSelecionada || '__todas');
-                    fd.append('store_id', storeIdSelecionado || '');
+                    fd.append('loja', lojaImportacao || '__todas');
+                    fd.append('store_id', storeImportacao || '');
+                    fd.append('fornecedor_id', String(fornecedor.id));
 
                     setStatusListaPedido('Importando lista por Excel...');
                     const resp = await fetch('/api/medias-compras/listas-pedidos/importar-excel', {
@@ -158,13 +193,19 @@
             if (el) el.textContent = msg || '';
         }
 
-        function abrirModalListaCompra() {
+        async function abrirModalListaCompra() {
             if (!exigirLojaEspecificaParaLista(setStatus)) return;
 
             const modal = document.getElementById('modalListaCompra');
             const inputNome = document.getElementById('nomeListaPedido');
+            const select = document.getElementById('fornecedorListaPedido');
+            const btn = document.getElementById('btnConfirmarListaCompra');
             if (!modal) return;
-            setStatusModalListaCompra('');
+            const carga = ++cargaFornecedorModal;
+            fornecedoresModal = [];
+            if (select) { select.disabled = true; select.value = ''; select.onchange = atualizarConfirmacaoListaCompra; }
+            if (btn) btn.disabled = true;
+            setStatusModalListaCompra('Carregando fornecedores cadastrados...');
             modal.classList.add('open');
             modal.setAttribute('aria-hidden', 'false');
             if (inputNome) {
@@ -177,9 +218,28 @@
                 }
                 setTimeout(() => inputNome.focus(), 40);
             }
+            try {
+                const opcoes = document.createElement('select');
+                const fornecedores = await global.JKFornecedorListas.preencherSelect(opcoes, null, { fetch, headers: obterAuthHeaders });
+                if (carga !== cargaFornecedorModal || !modal.classList.contains('open')) return;
+                fornecedoresModal = fornecedores;
+                if (select) {
+                    const valorSelecionado = opcoes.value;
+                    select.replaceChildren(...Array.from(opcoes.children));
+                    select.value = valorSelecionado;
+                    select.disabled = opcoes.disabled;
+                }
+                atualizarConfirmacaoListaCompra();
+                setStatusModalListaCompra(fornecedores.length ? '' : 'Cadastre um fornecedor em Cadastro > Fornecedores para criar a lista.');
+            } catch (e) {
+                if (carga === cargaFornecedorModal && modal.classList.contains('open')) {
+                    setStatusModalListaCompra(e.message || 'Não foi possível carregar os fornecedores. Abra novamente para tentar.');
+                }
+            }
         }
 
         function fecharModalListaCompra() {
+            ++cargaFornecedorModal;
             const modal = document.getElementById('modalListaCompra');
             if (!modal) return;
             modal.classList.remove('open');
@@ -206,7 +266,16 @@
         async function gerarListaCompraExcel() {
             const btn = document.getElementById('btnConfirmarListaCompra');
             const inputNome = document.getElementById('nomeListaPedido');
+            const selectFornecedor = document.getElementById('fornecedorListaPedido');
             if (!exigirLojaEspecificaParaLista(setStatusModalListaCompra)) return;
+            const fornecedorId = String((selectFornecedor && !selectFornecedor.disabled && selectFornecedor.value) || '').trim();
+            if (!fornecedorId || !fornecedoresModal.some(f => String(f.id) === fornecedorId)) {
+                setStatusModalListaCompra('Selecione um fornecedor cadastrado para criar a lista.');
+                if (selectFornecedor) selectFornecedor.focus();
+                return;
+            }
+            const carga = cargaFornecedorModal;
+            geracaoCompraAtiva = carga;
 
             if (btn) btn.disabled = true;
             exibirOverlayDownload(true);
@@ -214,6 +283,7 @@
 
             try {
                 const payload = obterOpcaoListaCompraSelecionada();
+                payload.fornecedor_id = fornecedorId;
                 payload.nome_lista = String((inputNome && inputNome.value) || '').trim();
                 if (!payload.nome_lista) {
                     throw new Error('Informe o nome da lista para continuar.');
@@ -242,6 +312,7 @@
                         params.set('hidden_skus', payload.hidden_skus.join(','));
                     }
                     params.set('nome_lista', payload.nome_lista);
+                    params.set('fornecedor_id', payload.fornecedor_id);
                     params.set('loja', String(payload.loja || '__todas'));
                     params.set('store_id', String(payload.store_id || ''));
                     params.set('periodo_meses', String(Number(payload.periodo_meses || 12)));
@@ -266,17 +337,19 @@
                     throw new Error('Lista nao foi gerada corretamente.');
                 }
 
-                setStatusModalListaCompra('Lista gerada com sucesso.');
+                if (carga === cargaFornecedorModal) setStatusModalListaCompra('Lista gerada com sucesso.');
                 setStatus('Lista de compra gerada com sucesso. Itens: ' + numero(data.total_itens || 0) + '. SKUs ocultados ignorados: ' + numero(data.total_skus_ocultados || 0));
                 setTimeout(() => {
+                    if (carga !== cargaFornecedorModal) return;
                     fecharModalListaCompra();
                     selecionarAba('listas_pedidos');
                 }, 500);
             } catch (e) {
-                setStatusModalListaCompra(e.message || 'Erro ao gerar lista de compra.');
+                if (carga === cargaFornecedorModal) setStatusModalListaCompra(e.message || 'Erro ao gerar lista de compra.');
             } finally {
                 exibirOverlayDownload(false);
-                if (btn) btn.disabled = false;
+                if (geracaoCompraAtiva === carga) geracaoCompraAtiva = 0;
+                if (carga === cargaFornecedorModal) atualizarConfirmacaoListaCompra();
             }
         }
 

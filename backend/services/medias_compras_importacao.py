@@ -407,8 +407,10 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
     nome_lista: str = Form(""),
     loja: str = Form("__todas"),
     store_id: str = Form(""),
+    fornecedor_id: str = Form(""),
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
+    fornecedor = _resolver_fornecedor_lista(client_id, fornecedor_id)
     conteudo = await file.read()
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo Excel vazio")
@@ -551,6 +553,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
         "nome_lista": nome_lista_final,
         "loja": loja_final,
         "store_id": store_id_cadastro,
+        **fornecedor,
         "status": status_importacao,
         "created_at": agora_iso,
         "updated_at": agora_iso,
@@ -568,6 +571,7 @@ async def api_medias_compras_lista_pedido_importar_excel_nova_lista(
             "nome_lista": nome_lista_final,
             "loja": loja_final,
             "store_id": store_id_cadastro,
+            **fornecedor,
             "status": status_importacao,
             "created_at": agora_iso,
             "updated_at": agora_iso,

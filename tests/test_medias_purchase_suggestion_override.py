@@ -1,10 +1,12 @@
 import asyncio
+import json
 
 import pytest
 from fastapi import HTTPException
 
 from backend.schemas.medias_compras import ListaCompraRequest
 from backend.services import medias_compras_sugestoes as sugestoes
+from backend.services import medias_compras_common
 
 
 def test_lista_compra_request_accepts_quantidades_sugeridas():
@@ -35,13 +37,21 @@ def test_resolve_quantidade_manual_inclusive_zero():
     assert aplicadas == {"001", "002"}
 
 
-def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path):
+@pytest.mark.parametrize("via_get", [False, True])
+def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get):
     estoque_csv = tmp_path / "produtos_compilado.csv"
     estoque_csv.write_text(
         "sku,saldo_loja,loja_sync\n001,5,JK Pecas\n002,5,JK Pecas\n",
         encoding="utf-8",
     )
     listas_salvas = []
+    tenant = tmp_path / "000002"
+    tenant.mkdir()
+    (tenant / "cadastro_fornecedores.json").write_text(
+        json.dumps({"fornecedores": [{"id": "fornecedor-1", "nome_empresa": "Fornecedor cadastrado"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(medias_compras_common, "get_tenant_path", lambda client_id: str(tmp_path / client_id))
 
     monkeypatch.setattr(
         sugestoes,
@@ -75,23 +85,26 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path):
     monkeypatch.setattr(sugestoes, "TEMP_FILES_STORAGE", {})
     monkeypatch.setattr(sugestoes, "TEMP_FILES_META", {})
 
-    resultado = asyncio.run(
-        sugestoes.api_medias_compras_gerar_lista_compra(
-            ListaCompraRequest(
-                opcao="media_6m",
-                nome_lista="Pedido editado",
-                loja="JK Pecas",
-                store_id="store-jk",
-                periodo_meses=6,
-                quantidades_sugeridas={"001": 7, "002": 0},
-            ),
-            client_id="000002",
-        )
+    payload = dict(
+        opcao="media_6m",
+        nome_lista="Pedido editado",
+        loja="JK Pecas",
+        store_id="store-jk",
+        fornecedor_id="fornecedor-1",
+        periodo_meses=6,
+        quantidades_sugeridas={"001": 7, "002": 0},
     )
+    if via_get:
+        payload["quantidades_sugeridas"] = json.dumps(payload["quantidades_sugeridas"])
+        resultado = asyncio.run(sugestoes.api_medias_compras_gerar_lista_compra_get(**payload, client_id="000002"))
+    else:
+        resultado = asyncio.run(sugestoes.api_medias_compras_gerar_lista_compra(ListaCompraRequest(**payload), client_id="000002"))
 
     assert [(item["SKU"], item["Quantidade"]) for item in listas_salvas[0]["itens"]] == [("001", 7)]
     assert resultado["total_itens"] == 1
     assert resultado["total_quantidades_ajustadas"] == 2
+    assert listas_salvas[0]["fornecedor_id"] == resultado["fornecedor_id"] == "fornecedor-1"
+    assert listas_salvas[0]["supplier"] == resultado["supplier"] == "Fornecedor cadastrado"
 
 
 def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
