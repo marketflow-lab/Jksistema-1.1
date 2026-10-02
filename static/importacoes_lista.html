@@ -717,6 +717,8 @@
                 </table>
             </div>
             <div id="totalGeral" class="total-box"></div>
+            <div id="statusM3Complementar" class="meta" role="status" aria-live="polite"></div>
+            <button id="btnRecarregarM3" type="button" class="btn-add-sku" hidden>Tentar carregar a metragem novamente</button>
             <div class="add-sku-box">
                 <div class="add-sku-title">Incluir SKU no pedido</div>
                 <div class="add-sku-grid">
@@ -936,6 +938,44 @@
 
         let cotacaoDolarTopo = 0;
         let ultimaListaCarregada = null;
+        let geracaoCarregamentoLista = 0;
+        let requisicaoFaturamento = 0;
+        let requisicaoCustoPosto = 0;
+        const AUXILIAR_TIMEOUT_MS = 5000;
+        const controladoresAuxiliares = new Set();
+
+        function contextoCarregamentoAtual(listaId) {
+            return { geracao: geracaoCarregamentoLista, listaId: String(listaId || '') };
+        }
+
+        function carregamentoVigente(contexto) {
+            return contexto.geracao === geracaoCarregamentoLista && ultimaListaCarregada
+                && String(ultimaListaCarregada.id || '') === contexto.listaId;
+        }
+
+        async function consultarComplementoJson(url, contexto) {
+            for (let tentativa = 0; tentativa < 2; tentativa++) {
+                if (!carregamentoVigente(contexto)) return null;
+                const controller = new AbortController();
+                controladoresAuxiliares.add(controller);
+                const timeout = setTimeout(() => controller.abort(), AUXILIAR_TIMEOUT_MS);
+                try {
+                    const resposta = await fetch(url, {
+                        method: 'GET', headers: { ...obterAuthHeaders() }, cache: 'no-store', signal: controller.signal
+                    });
+                    if (!resposta.ok) throw new Error('Complemento indisponível.');
+                    const dados = await resposta.json();
+                    return carregamentoVigente(contexto) ? dados : null;
+                } catch (erro) {
+                    if (!carregamentoVigente(contexto)) return null;
+                    if (tentativa === 1) throw erro;
+                } finally {
+                    clearTimeout(timeout);
+                    controladoresAuxiliares.delete(controller);
+                }
+            }
+            return null;
+        }
         let ultimosItensCarregados = [];
         let fornecedorResumoSalvando = false;
         let ultimaAnaliseCustoPosto = null;
@@ -1004,6 +1044,8 @@
         }
 
         async function carregarFaturamentoVendas12m() {
+            const contexto = contextoCarregamentoAtual(ultimaListaCarregada && ultimaListaCarregada.id);
+            const ordemRequisicao = ++requisicaoFaturamento;
             const lojaFiltro = obterLojaFiltroVendas(ultimaListaCarregada);
             const chaveLoja = obterChaveFaturamentoLoja(ultimaListaCarregada);
 
@@ -1016,7 +1058,6 @@
                 return;
             }
 
-            if (faturamentoVendasCarregando) return;
             if (faturamentoVendasLoja !== chaveLoja) {
                 faturamentoVendas12m = null;
                 faturamentoVendasLoja = chaveLoja;
@@ -1029,20 +1070,14 @@
             try {
                 const params = new URLSearchParams({ periodo: '1a', intervalo: 'mes' });
                 params.set('loja', lojaFiltro);
-                const resp = await fetch('/api/vendas/grafico?' + params.toString(), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store'
-                });
-                if (!resp.ok) throw new Error('Falha ao carregar faturamento do módulo Vendas.');
-
-                const data = await resp.json();
+                const data = await consultarComplementoJson('/api/vendas/grafico?' + params.toString(), contexto);
+                if (!carregamentoVigente(contexto) || ordemRequisicao !== requisicaoFaturamento) return;
                 const vendas = Array.isArray(data && data.valores_vendas) ? data.valores_vendas : [];
                 const devolucoes = Array.isArray(data && data.valores_devolucoes) ? data.valores_devolucoes : [];
 
                 const totalVendas = vendas.reduce((acc, v) => acc + Number(v || 0), 0);
                 const totalDevolucoes = devolucoes.reduce((acc, v) => acc + Number(v || 0), 0);
-                if (obterChaveFaturamentoLoja(ultimaListaCarregada) !== chaveLoja) return;
+                if (!carregamentoVigente(contexto) || obterChaveFaturamentoLoja(ultimaListaCarregada) !== chaveLoja) return;
                 faturamentoVendas12m = totalVendas - totalDevolucoes;
                 faturamentoVendasLoja = chaveLoja;
 
@@ -1052,7 +1087,7 @@
             } catch (_e) {
                 // Mantém o último valor conhecido em caso de falha transitória.
             } finally {
-                faturamentoVendasCarregando = false;
+                if (ordemRequisicao === requisicaoFaturamento) faturamentoVendasCarregando = false;
             }
         }
 
@@ -1316,6 +1351,7 @@
 
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
             const cicloAtual = ++cicloAnaliseMargensAutomaticas;
+            const contexto = contextoCarregamentoAtual(listaId);
             const pendentes = (Array.isArray(itens) ? itens : []).filter((item) => (
                 obterSkuItemMargensAutomaticas(item)
                 && (!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')
@@ -1328,14 +1364,14 @@
             try {
                 fontes = await carregarFontesMargensAutomaticas(listaId);
             } catch (erro) {
-                if (cicloAtual !== cicloAnaliseMargensAutomaticas) return;
+                if (cicloAtual !== cicloAnaliseMargensAutomaticas || !carregamentoVigente(contexto)) return;
                 const mensagem = erro.message || 'Não foi possível iniciar a análise automática.';
                 pendentes.forEach((item) => definirEstadoMargensAutomaticas(item, 'erro', mensagem));
                 return;
             }
 
             for (const item of pendentes) {
-                if (cicloAtual !== cicloAnaliseMargensAutomaticas) return;
+                if (cicloAtual !== cicloAnaliseMargensAutomaticas || !carregamentoVigente(contexto)) return;
                 const sku = obterSkuItemMargensAutomaticas(item);
                 definirEstadoMargensAutomaticas(item, 'analisando');
                 try {
@@ -1345,11 +1381,13 @@
                         sku,
                         montarPayloadMargensAutomaticas(fonte)
                     );
+                    if (!carregamentoVigente(contexto) || cicloAtual !== cicloAnaliseMargensAutomaticas) return;
                     item.analise_concorrentes = resultado && resultado.analise_concorrentes
                         ? resultado.analise_concorrentes
                         : { margens: {} };
                     definirEstadoMargensAutomaticas(item, '');
                 } catch (erro) {
+                    if (!carregamentoVigente(contexto) || cicloAtual !== cicloAnaliseMargensAutomaticas) return;
                     definirEstadoMargensAutomaticas(
                         item,
                         'erro',
@@ -1361,6 +1399,9 @@
 
         const mapaM3IndividualSku = new Map();
         let mapaM3IndividualCarregado = false;
+        let mapaM3StoreId = '';
+        let mapaM3IndividualCarregando = false;
+        let requisicaoM3 = 0;
 
         function registrarM3IndividualPorSku(skuRaw, m3Val) {
             const m3 = valorNumerico(m3Val);
@@ -1378,6 +1419,10 @@
         }
 
         function obterM3IndividualDoItem(item) {
+            const m3IndividualItem = valorNumerico(obterCampoNormalizado(item, [
+                'cg m3 individual', 'cg_m3 individual', 'm3 individual', 'm3_individual', 'cgM3individual'
+            ], 0));
+            if (m3IndividualItem > 0) return m3IndividualItem;
             const sku = String((item && item.SKU) || '').trim();
             const skuNorm = normalizarSkuComparacao(sku);
             const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
@@ -1391,42 +1436,80 @@
             );
             if (m3Cadastro > 0) return m3Cadastro;
 
-            const m3IndividualItem = valorNumerico(obterCampoNormalizado(item, [
-                'cg m3 individual',
-                'cg_m3 individual',
-                'm3 individual'
-            ], 0));
-            return m3IndividualItem > 0 ? m3IndividualItem : 0;
+            return null;
         }
 
         function obterM3TotalItem(item) {
             const qtd = valorNumerico(item && item.Quantidade);
             const m3Individual = obterM3IndividualDoItem(item);
-            if (m3Individual > 0 && qtd > 0) {
+            if (m3Individual > 0 && qtd >= 0) {
                 const totalCalc = m3Individual * qtd;
-                return Number.isFinite(totalCalc) ? totalCalc : 0;
+                return Number.isFinite(totalCalc) ? totalCalc : null;
             }
-            return 0;
+            const totalInformado = valorNumerico(obterCampoNormalizado(item, ['M3', 'm3', 'Estimated CBM', 'Estimed CBM'], 0));
+            return totalInformado > 0 ? totalInformado : null;
         }
 
-        async function carregarMapaM3Individual() {
-            if (mapaM3IndividualCarregado) return;
+        async function carregarMapaM3Individual(contexto) {
+            const ordem = ++requisicaoM3;
+            const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
+            const faltantes = ultimosItensCarregados.some(item => !Number.isFinite(obterM3TotalItem(item)));
+            if (!storeId || !faltantes || (mapaM3IndividualCarregado && mapaM3StoreId === storeId)) {
+                mapaM3IndividualCarregando = false;
+                atualizarM3Visivel(faltantes);
+                return;
+            }
+            mapaM3IndividualCarregando = true;
             try {
-                const resp = await fetch('/api/cadastro/produtos', {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) return;
-                const lista = await resp.json().catch(() => ([]));
+                const lista = await consultarComplementoJson('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto);
+                if (!carregamentoVigente(contexto) || ordem !== requisicaoM3) return;
+                if (!Array.isArray(lista)) throw new Error('Cadastro de metragem indisponível.');
                 (Array.isArray(lista) ? lista : []).forEach((p) => {
+                    if (p && p.store_id && String(p.store_id) !== storeId) return;
                     const sku = p && p.sku;
                     const m3 = p && obterCampoNormalizado(p, ['cg m3 individual', 'cg_m3 individual', 'm3 individual', 'm3'], 0);
                     registrarM3IndividualPorSku(sku, m3);
                 });
                 mapaM3IndividualCarregado = true;
+                mapaM3StoreId = storeId;
             } catch (_e) {
-                // Se falhar, mantém M3 zerado.
+                // A tabela permanece disponível e a metragem ausente continua indisponível.
+            } finally {
+                if (carregamentoVigente(contexto) && ordem === requisicaoM3) {
+                    mapaM3IndividualCarregando = false;
+                    atualizarM3Visivel();
+                }
             }
+        }
+
+        function textoM3Ausente() {
+            return mapaM3IndividualCarregando ? 'Carregando...' : 'Indisponível';
+        }
+
+        function atualizarM3Visivel(atualizarResumo = true) {
+            const indice = colunasTabela.findIndex(col => col.key === 'm3');
+            if (indice < 0 || !ultimaListaCarregada) return;
+            document.querySelectorAll('#tbodyLista tr[data-item-index]').forEach(linha => {
+                const item = ultimosItensCarregados[Number(linha.dataset.itemIndex)];
+                const celula = linha.querySelector('[data-col-key="m3"]');
+                if (!item || !celula) return;
+                const m3 = obterM3TotalItem(item);
+                celula.textContent = Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente();
+                celula.classList.toggle('m3-alerta', !Number.isFinite(m3) && !mapaM3IndividualCarregando);
+                celula.title = Number.isFinite(m3) ? '' : 'Metragem M3 indisponível';
+            });
+            const totais = document.querySelector('#tbodyLista .totais-row [data-col-key="m3"]');
+            const conhecido = ultimosItensCarregados.every(item => Number.isFinite(obterM3TotalItem(item)));
+            if (totais) {
+                totais.textContent = conhecido ? formatarM3(ultimosItensCarregados.reduce((soma, item) => soma + obterM3TotalItem(item), 0)) : textoM3Ausente();
+            }
+            const status = document.getElementById('statusM3Complementar');
+            if (status) status.textContent = conhecido ? '' : (mapaM3IndividualCarregando
+                ? 'Carregando a metragem complementar. Os itens já estão disponíveis.'
+                : 'Há itens com metragem indisponível.');
+            const retry = document.getElementById('btnRecarregarM3');
+            if (retry) retry.hidden = conhecido || mapaM3IndividualCarregando || !String(ultimaListaCarregada.store_id || '').trim();
+            if (atualizarResumo) renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
         }
 
         function obterValorResumo(lista, itens, aliases, fallback = '-') {
@@ -1973,6 +2056,16 @@
         function renderResumoTopo(lista, itens) {
             const el = document.getElementById('resumoTopo');
             if (!el) return;
+            const idAtual = String(lista && lista.id || '');
+            const preservados = el.dataset.listaId === idAtual
+                ? Array.from(el.children).filter(card => card.dataset.editando === '1'
+                    || card.contains(document.activeElement)
+                    || (card.querySelector('#resumoFornecedorSelect')
+                        && (fornecedorResumoSalvando || el.dataset.geracao === String(geracaoCarregamentoLista))))
+                : [];
+            const focoAnterior = document.activeElement;
+            el.dataset.listaId = idAtual;
+            el.dataset.geracao = String(geracaoCarregamentoLista);
 
             const dados = Array.isArray(itens) ? itens : [];
             const listaId = String((lista && lista.id) || getListaIdDaUrl() || '').trim();
@@ -1987,6 +2080,7 @@
                 const m3Item = obterM3TotalItem(item);
                 return acc + (Number.isFinite(m3Item) ? m3Item : 0);
             }, 0);
+            const totalM3Disponivel = dados.every(item => Number.isFinite(obterM3TotalItem(item)));
             const valorPorM3Calculado = totalM3 > 0 ? (totalUsd / totalM3) : 0;
             const valorPorM3Editado = valorNumerico((resumoEditavel && resumoEditavel.valor_por_m3) || '');
             const valorPorM3 = (valorPorM3Editado > 0) ? valorPorM3Editado : valorPorM3Calculado;
@@ -2177,8 +2271,8 @@
                 { label: 'Incoterm', value: String(lista && lista.incoterm || '-'), editable: true },
                 { label: 'Faturamento Loja', value: textoFaturamentoLoja },
                 { label: 'Faixa de Imposto', value: faixaImposto },
-                { label: 'M³ Total', value: formatarM3(totalM3), alertaM3: !Number.isFinite(totalM3) || totalM3 <= 0 },
-                { label: 'Valor por M³', value: formatarUSD(valorPorM3), editable: true },
+                { label: 'M³ Total', value: totalM3Disponivel ? formatarM3(totalM3) : textoM3Ausente(), alertaM3: !totalM3Disponivel && !mapaM3IndividualCarregando },
+                { label: 'Valor por M³', value: totalM3Disponivel || valorPorM3Editado > 0 ? formatarUSD(valorPorM3) : '-', editable: true },
                 { label: 'VMLE', value: vmleUsd, valueExtra: vmleBrl },
                 { label: 'Frete Internacional', value: freteInternacional, valueExtra: freteInternacionalUsd },
                 { label: 'Seguro Internacional 0,28%', value: seguroInternacional, valueExtra: seguroInternacionalUsd },
@@ -2199,17 +2293,17 @@
                 { label: 'PIS', value: pisResumo, valueExtra: pisValorResumo },
                 { label: 'COFINS', value: cofinsResumo, valueExtra: cofinsValorResumo },
                 { label: 'ICMS', value: icmsResumo, valueExtra: icmsValorResumo },
-                { label: 'Armazenagem', value: armazenagem },
-                { label: 'Pick-up Origem', value: pickupOrigem },
-                { label: 'Taxas de Origem', value: taxasOrigem },
+                { label: 'Armazenagem', value: totalM3Disponivel ? armazenagem : textoM3Ausente() },
+                { label: 'Pick-up Origem', value: totalM3Disponivel ? pickupOrigem : textoM3Ausente() },
+                { label: 'Taxas de Origem', value: totalM3Disponivel ? taxasOrigem : textoM3Ausente() },
                 { label: 'Taxas fixas', value: taxasFixas },
-                { label: 'Taxas sobre m³', value: taxasSobreM3 },
-                { label: 'Capatazia', value: capatazia },
+                { label: 'Taxas sobre m³', value: totalM3Disponivel ? taxasSobreM3 : textoM3Ausente() },
+                { label: 'Capatazia', value: totalM3Disponivel ? capatazia : textoM3Ausente() },
                 { label: 'BL Fee', value: blFee },
                 { label: 'Desconsolidação', value: desconsolidacao },
                 { label: 'Handling', value: handling },
                 { label: 'Honorários Trading', value: honorariosTrading },
-                { label: 'Transporte Rodoviário', value: transporteRodoviario },
+                { label: 'Transporte Rodoviário', value: totalM3Disponivel ? transporteRodoviario : textoM3Ausente() },
                 { label: 'Desembaraço', value: desembaraco },
                 { label: 'Expediente', value: expediente },
                 { label: 'Taxa Siscomex', value: taxaSiscomex },
@@ -2217,7 +2311,8 @@
                 { label: 'Total NCM', value: totalNcm.toLocaleString('pt-BR') },
             ];
 
-            el.innerHTML = cards.map((c) => {
+            const novosCards = document.createElement('div');
+            novosCards.innerHTML = cards.map((c) => {
                 let classeExtra = c.label === 'Cotação na Compra'
                     ? ' card-cotacao'
                     : (c.label === 'Loja' ? ' card-loja' : '');
@@ -2250,6 +2345,17 @@
                 '</div>'
                 );
             }).join('');
+            // Atualiza os outros cartões sem desconectar o editor ativo: remover
+            // seu nó dispara blur e pode salvar uma edição ainda incompleta.
+            Array.from(novosCards.children).forEach((novo, indice) => {
+                const label = novo.querySelector('.label')?.textContent;
+                const existente = Array.from(el.children).find(card => card.querySelector('.label')?.textContent === label);
+                const card = existente && preservados.includes(existente) ? existente : novo;
+                if (existente && card !== existente) existente.replaceWith(card);
+                else if (!existente) el.appendChild(card);
+                if (el.children[indice] !== card) el.insertBefore(card, el.children[indice] || null);
+            });
+            if (focoAnterior && focoAnterior.isConnected && document.activeElement !== focoAnterior) focoAnterior.focus({ preventScroll: true });
 
             requestAnimationFrame(() => {
                 ajustarTamanhoValoresResumo();
@@ -2258,10 +2364,12 @@
 
             const selModalidade = document.getElementById('resumoModalidadeSelect');
             const selectFornecedor = document.getElementById('resumoFornecedorSelect');
-            if (selectFornecedor) {
+            if (selectFornecedor && !selectFornecedor.dataset.preparado) {
+                selectFornecedor.dataset.preparado = '1';
                 void prepararFornecedorListaResumo(lista, selectFornecedor, document.getElementById('resumoFornecedorStatus'));
             }
-            if (selModalidade) {
+            if (selModalidade && !selModalidade.dataset.listenerModalidade) {
+                selModalidade.dataset.listenerModalidade = '1';
                 selModalidade.addEventListener('change', () => {
                     const escolhido = String(selModalidade.value || '').trim();
                     if (!listaId || !escolhido) return;
@@ -2281,11 +2389,15 @@
             }
 
             el.querySelectorAll('.resumo-card.editavel[data-edit-key]').forEach((card) => {
+                if (card.dataset.listenerEditavel) return;
+                card.dataset.listenerEditavel = '1';
                 card.addEventListener('dblclick', () => iniciarEdicaoCardResumo(card, listaId));
             });
 
             const cardLoja = el.querySelector('.resumo-card.card-loja');
             if (cardLoja && listaId) {
+                if (cardLoja.dataset.listenerLoja) return;
+                cardLoja.dataset.listenerLoja = '1';
                 cardLoja.title = 'Clique duas vezes para incluir ou alterar a loja';
                 cardLoja.addEventListener('dblclick', () => iniciarEdicaoLojaResumo(cardLoja, listaId));
             }
@@ -2303,6 +2415,10 @@
         const LS_ORDEM_COLUNAS_KEY = 'importacoes_lista_ordem_colunas_v1';
         const largurasColunas = JSON.parse(localStorage.getItem(LS_LARGURAS_KEY) || '{}');
         let preferenciasColunasCarregadas = false;
+        let revisaoColunasLocal = 0;
+        let requisicaoPreferencias = 0;
+        let colunaRedimensionando = false;
+        let preferenciasColunasPendentes = null;
         const colunasTabela = [
             { key: 'sku', label: 'SKU', width: 110 },
             { key: 'foto', label: 'Foto', width: 90 },
@@ -2345,6 +2461,7 @@
         }
 
         function salvarOrdemColunas() {
+            ++revisaoColunasLocal;
             try {
                 localStorage.setItem(LS_ORDEM_COLUNAS_KEY, JSON.stringify(colunasTabela.map((c) => c.key)));
             } catch (_e) {
@@ -2381,6 +2498,7 @@
         aplicarOrdemColunasSalva();
 
         function salvarLarguras() {
+            ++revisaoColunasLocal;
             try {
                 localStorage.setItem(LS_LARGURAS_KEY, JSON.stringify(largurasColunas));
             } catch (e) {
@@ -2425,21 +2543,40 @@
             }
         }
 
-        async function carregarPreferenciasColunasServidor() {
+        async function carregarPreferenciasColunasServidor(contexto) {
             if (preferenciasColunasCarregadas) return;
-            preferenciasColunasCarregadas = true;
+            const revisao = revisaoColunasLocal;
+            const ordem = ++requisicaoPreferencias;
             try {
-                const resp = await fetch('/api/medias-compras/listas-pedidos/preferencias-colunas', {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store'
-                });
-                if (!resp.ok) return;
-                const data = await resp.json().catch(() => ({}));
-                _aplicarPreferenciasColunasNoEstado(data && data.ordem_colunas, data && data.larguras_colunas);
+                const data = await consultarComplementoJson('/api/medias-compras/listas-pedidos/preferencias-colunas', contexto);
+                if (!carregamentoVigente(contexto) || ordem !== requisicaoPreferencias) return;
+                preferenciasColunasCarregadas = true;
+                if (revisao !== revisaoColunasLocal || colunaArrastadaKey || colunaRedimensionando) return;
+                preferenciasColunasPendentes = { contexto, revisao, data };
+                aplicarPreferenciasColunasPendentes();
             } catch (_e) {
                 // Fallback localStorage já cobre a UI.
             }
+        }
+
+        function aplicarPreferenciasColunasPendentes() {
+            const pendente = preferenciasColunasPendentes;
+            if (!pendente || skuArrastadoIndex >= 0 || skuArrasteSalvando) return;
+            preferenciasColunasPendentes = null;
+            if (!carregamentoVigente(pendente.contexto) || pendente.revisao !== revisaoColunasLocal) return;
+            _aplicarPreferenciasColunasNoEstado(pendente.data && pendente.data.ordem_colunas, pendente.data && pendente.data.larguras_colunas);
+            sincronizarColunasVisiveis();
+        }
+
+        function sincronizarColunasVisiveis() {
+            const foco = document.activeElement;
+            renderCabecalho();
+            document.querySelectorAll('#tbodyLista tr').forEach(linha => {
+                const celulas = new Map(Array.from(linha.children).map(celula => [celula.dataset.colKey, celula]));
+                colunasTabela.forEach(col => { if (celulas.has(col.key)) linha.appendChild(celulas.get(col.key)); });
+            });
+            colunasTabela.forEach((col, indice) => aplicarLarguraColuna(indice, col, obterLarguraColuna(col)));
+            if (foco && foco.isConnected && document.activeElement !== foco) foco.focus({ preventScroll: true });
         }
 
         async function salvarPreferenciasColunasServidor() {
@@ -2489,6 +2626,7 @@
         }
 
         function iniciarResizeColuna(event, idx, coluna) {
+            colunaRedimensionando = true;
             event.preventDefault();
             const startX = event.clientX;
             const startWidth = obterLarguraColuna(coluna);
@@ -2499,6 +2637,7 @@
             }
 
             function onUp() {
+                colunaRedimensionando = false;
                 window.removeEventListener('mousemove', onMove);
                 window.removeEventListener('mouseup', onUp);
                 salvarLarguras();
@@ -2951,6 +3090,7 @@
                 return false;
             } finally {
                 skuArrasteSalvando = false;
+                aplicarPreferenciasColunasPendentes();
             }
         }
 
@@ -3072,7 +3212,7 @@
                         ? '<img class="foto" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
                         : '<span class="foto-empty">Sem foto</span>'),
                     quantidade: formatarNumero(qtd),
-                    m3: formatarM3(m3),
+                    m3: Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente(),
                     ii: formatarPct(ii) + '<span class="cell-sub-money">' + formatarBRL(iiBrl) + '</span>',
                     ipi: formatarPct(ipi) + '<span class="cell-sub-money">' + formatarBRL(ipiBrl) + '</span>',
                     pis: formatarPct(pis) + '<span class="cell-sub-money">' + formatarBRL(pisBrl) + '</span>',
@@ -3098,7 +3238,7 @@
                 const classes = {
                     sku: 'sku',
                     quantidade: 'num-center',
-                    m3: 'num-center' + (m3SemMetragem ? ' m3-alerta' : ''),
+                    m3: 'num-center' + (m3SemMetragem && !mapaM3IndividualCarregando ? ' m3-alerta' : ''),
                     ii: 'num-center',
                     ipi: 'num-center',
                     pis: 'num-center',
@@ -3119,7 +3259,7 @@
                         ? ' data-coluna="margens_concorrentes"'
                         : '';
                     const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
-                    return '<td' + klass + title + dataColuna + '>' + conteudo + '</td>';
+                    return '<td data-col-key="' + escaparHtml(col.key) + '"' + klass + title + dataColuna + '>' + conteudo + '</td>';
                 }).join('');
 
                 const btnExcluir = tr.querySelector('[data-excluir-sku]');
@@ -3166,6 +3306,7 @@
                     handleMover.addEventListener('dragend', () => {
                         skuArrastadoIndex = -1;
                         limparMarcadoresArrasteSku();
+                        aplicarPreferenciasColunasPendentes();
                     });
                 }
 
@@ -3210,14 +3351,14 @@
                     conteudo = formatarNumero(totalQuantidade);
                     klass = 'num-center';
                 } else if (col.key === 'm3') {
-                    conteudo = formatarM3(totalM3);
+                    conteudo = dados.every(item => Number.isFinite(obterM3TotalItem(item))) ? formatarM3(totalM3) : textoM3Ausente();
                     klass = 'num-center';
                 } else if (col.key === 'valor_total_usd') {
                     conteudo = formatarUSD(totalGeral);
                     klass = 'num';
                 }
 
-                return '<td' + (klass ? ' class="' + klass + '"' : '') + '>' + conteudo + '</td>';
+                return '<td data-col-key="' + escaparHtml(col.key) + '"' + (klass ? ' class="' + klass + '"' : '') + '>' + conteudo + '</td>';
             }).join('');
             tbody.appendChild(trTotais);
 
@@ -3252,6 +3393,8 @@
         }
 
         async function carregarDetalheLista() {
+            const geracao = ++geracaoCarregamentoLista;
+            controladoresAuxiliares.forEach(controller => controller.abort());
             try {
                 setErro('');
                 const listaId = getListaIdDaUrl();
@@ -3269,20 +3412,29 @@
                 }
 
                 const data = await resp.json();
+                if (geracao !== geracaoCarregamentoLista || listaId !== getListaIdDaUrl()) return;
                 const lista = data && data.lista ? data.lista : {};
                 const itens = lista.itens || [];
                 ultimaListaCarregada = lista;
+                ultimaAnaliseCustoPosto = null;
                 ultimosItensCarregados = Array.isArray(itens) ? itens : [];
-                carregarFaturamentoVendas12m();
-                await carregarPreferenciasColunasServidor();
+                const storeId = String(lista.store_id || '').trim();
+                mapaM3IndividualSku.clear();
+                mapaM3IndividualCarregado = false;
+                mapaM3StoreId = storeId;
+                mapaM3IndividualCarregando = !!storeId && ultimosItensCarregados.some(item => !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
                 renderCabecalho();
-                await carregarMapaM3Individual();
                 renderMeta(lista);
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
+                const contexto = contextoCarregamentoAtual(listaId);
+                void carregarPreferenciasColunasServidor(contexto);
+                void carregarMapaM3Individual(contexto);
+                void carregarFaturamentoVendas12m();
                 void carregarCustoPostoBackend(listaId);
                 void analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);
             } catch (e) {
+                if (geracao !== geracaoCarregamentoLista) return;
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);
                 renderItens([], {});
@@ -3290,19 +3442,17 @@
         }
 
         async function carregarCustoPostoBackend(listaId) {
+            const contexto = contextoCarregamentoAtual(listaId);
+            const ordem = ++requisicaoCustoPosto;
             try {
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/landed-cost', {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) return;
-                const data = await resp.json().catch(() => ({}));
+                const data = await consultarComplementoJson('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/landed-cost', contexto);
+                if (!carregamentoVigente(contexto) || ordem !== requisicaoCustoPosto) return;
                 ultimaAnaliseCustoPosto = data && data.analysis ? data.analysis : null;
                 if (ultimaListaCarregada && String(ultimaListaCarregada.id || '') === String(listaId || '')) {
                     renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
                 }
             } catch (_e) {
-                ultimaAnaliseCustoPosto = null;
+                if (carregamentoVigente(contexto) && ordem === requisicaoCustoPosto) ultimaAnaliseCustoPosto = null;
             }
         }
 
@@ -3313,6 +3463,14 @@
         atualizarHorarioPequim();
         setInterval(atualizarHorarioPequim, 1000);
         carregarDetalheLista();
+        const btnRecarregarM3 = document.getElementById('btnRecarregarM3');
+        if (btnRecarregarM3) btnRecarregarM3.addEventListener('click', () => {
+            if (!ultimaListaCarregada || mapaM3IndividualCarregando) return;
+            mapaM3IndividualCarregado = false;
+            mapaM3IndividualCarregando = true;
+            atualizarM3Visivel();
+            void carregarMapaM3Individual(contextoCarregamentoAtual(ultimaListaCarregada.id));
+        });
         setInterval(carregarFaturamentoVendas12m, FATURAMENTO_REFRESH_MS);
 
         const btnAddSkuManual = document.getElementById('btnAddSkuManual');

@@ -30,6 +30,7 @@ from backend.services import medias_compras_common as medias_common
 from backend.services.medias_compras_common import *
 from backend.services.medias_compras_excel import *
 from backend.services.medias_compras_fiscal import *
+from backend.services.medias_compras_fiscal import _ContextoCadastroLista
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -616,6 +617,7 @@ async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str 
         store_id_antes or alvo.get("loja") or ""
     ).strip()
     escopo_cadastro_nao_resolvido = False
+    contexto_preparado = None
     if referencia_loja_cadastro and referencia_loja_cadastro != "__todas":
         try:
             from backend.services.cadastro_compatibilidade import (
@@ -637,11 +639,22 @@ async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str 
                 referencia_loja_cadastro = store_id_resolvido
         except RuntimeError:
             escopo_cadastro_nao_resolvido = True
+            contexto_cadastro = {
+                "produtos": [],
+                "store_id": "",
+                "loja_resolvida": False,
+                "scope": "unavailable",
+            }
+        contexto_preparado = _ContextoCadastroLista(
+            client_id, referencia_loja_cadastro, contexto_cadastro,
+        )
 
+    opcoes_contexto = {"contexto_cadastro": contexto_preparado} if contexto_preparado is not None else {}
     itens_recalculados = _recalcular_frete_internacional_itens_lista(
         client_id,
         alvo.get("itens") or [],
         loja=referencia_loja_cadastro,
+        **opcoes_contexto,
     )
     itens_persistidos = itens_recalculados
     if escopo_cadastro_nao_resolvido:

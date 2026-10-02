@@ -306,7 +306,7 @@ def test_detalhe_de_lista_legada_fixa_store_id_apos_renomear_loja(
         lambda *_args, **_kwargs: None,
     )
 
-    def recalcular(_client_id, itens, *, loja=""):
+    def recalcular(_client_id, itens, *, loja="", contexto_cadastro=None):
         assert loja == "store-a"
         return [dict(item) for item in itens]
 
