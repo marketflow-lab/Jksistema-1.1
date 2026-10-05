@@ -8,12 +8,19 @@
         let cargaFornecedorModal = 0;
         let fornecedoresModal = [];
         let geracaoCompraAtiva = 0;
+        const mensagemSelecaoFornecedor = 'Selecione um fornecedor cadastrado para liberar a geração da lista.';
 
         function atualizarConfirmacaoListaCompra() {
             const select = document.getElementById('fornecedorListaPedido');
             const btn = document.getElementById('btnConfirmarListaCompra');
             const valido = select && !select.disabled && fornecedoresModal.some(f => String(f.id) === select.value);
-            if (btn) btn.disabled = !valido || geracaoCompraAtiva === cargaFornecedorModal;
+            const gerando = geracaoCompraAtiva === cargaFornecedorModal;
+            if (btn) btn.disabled = !valido || gerando;
+            const status = document.getElementById('modalListaCompraStatus');
+            if (select && !select.disabled && fornecedoresModal.length && !gerando && status &&
+                (!status.textContent || status.textContent === mensagemSelecaoFornecedor)) {
+                setStatusModalListaCompra(valido ? '' : mensagemSelecaoFornecedor);
+            }
         }
 
         function anexarExcelAtualizarPrecosLista(listaId, nomeLista) {
@@ -229,8 +236,8 @@
                     select.value = valorSelecionado;
                     select.disabled = opcoes.disabled;
                 }
-                atualizarConfirmacaoListaCompra();
                 setStatusModalListaCompra(fornecedores.length ? '' : 'Cadastre um fornecedor em Cadastro > Fornecedores para criar a lista.');
+                atualizarConfirmacaoListaCompra();
             } catch (e) {
                 if (carga === cargaFornecedorModal && modal.classList.contains('open')) {
                     setStatusModalListaCompra(e.message || 'Não foi possível carregar os fornecedores. Abra novamente para tentar.');

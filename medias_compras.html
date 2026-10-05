@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Médias e Pedidos - JK Sistema</title>
-    <link rel="stylesheet" href="/medias_compras/styles.css?v=20260901-medias-responsive-width-v1">
+    <link rel="stylesheet" href="/medias_compras/styles.css?v=20261005-medias-fornecedor-aviso-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
@@ -156,7 +156,7 @@
 
         <div class="campo-lista">
             <label for="fornecedorListaPedido">Fornecedor cadastrado</label>
-            <select id="fornecedorListaPedido" class="input-lista" required aria-required="true" disabled>
+            <select id="fornecedorListaPedido" class="input-lista" required aria-required="true" aria-describedby="modalListaCompraStatus" disabled>
                 <option value="">Selecione um fornecedor cadastrado</option>
             </select>
         </div>
@@ -175,7 +175,7 @@
             <label class="opcao-item"><input type="radio" name="opcaoCompra" value="100"> Sugestão do período + 100%</label>
         </div>
 
-        <div class="modal-status" id="modalListaCompraStatus"></div>
+        <div class="modal-status" id="modalListaCompraStatus" role="status" aria-live="polite"></div>
 
         <div class="modal-actions">
             <button type="button" class="btn-secondary" data-jk-action="fechar-lista-compra">Cancelar</button>
@@ -241,7 +241,7 @@
 <script src="/medias_compras/listas.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/editor.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/editor-produtos.js?v=20260826-medias-modular-v1"></script>
-<script src="/medias_compras/importacao.js?v=20261002-fornecedor-listas-v1"></script>
+<script src="/medias_compras/importacao.js?v=20261005-medias-fornecedor-aviso-v1"></script>
 <script src="/medias_compras/tabela.js?v=20260901-medias-table-layout-v2"></script>
 <script src="/medias_compras/init.js?v=20260826-medias-modular-v1"></script>
 <script src="/table_columns.js"></script>

@@ -294,6 +294,7 @@
             font-weight: 700;
         }
         .btn-primary { background: #4facfe; color: #0e1117; }
+        #btnConfirmarListaCompra:disabled { opacity: 0.5; cursor: not-allowed; }
         .btn-secondary { background: #333a4d; color: #e5e5e5; border: 1px solid #444; }
         .btn-link { background: #4facfe; color: #0e1117; text-decoration: none; display: inline-block; text-align: center; font-weight: bold; }
         .back-btn { padding: 8px 14px; background: #4facfe; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; }
