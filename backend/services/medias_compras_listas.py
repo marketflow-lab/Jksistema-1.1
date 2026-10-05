@@ -888,6 +888,16 @@ def _api_medias_compras_lista_pedido_editar_sync(
                 status_code=400,
                 detail="Selecione um fornecedor cadastrado para alterar o fornecedor da lista.",
             )
+    if "nacionalizador_id" in campos_informados:
+        lista.update(_resolver_nacionalizador_lista(client_id, req.nacionalizador_id))
+        alterou = True
+    elif "nacionalizador" in campos_informados:
+        nome_salvo = str(lista.get("nacionalizador") or "").strip()
+        if str(req.nacionalizador or "").strip() != nome_salvo:
+            raise HTTPException(
+                status_code=400,
+                detail="Selecione um nacionalizador cadastrado para alterar o nacionalizador da lista.",
+            )
     if req.nome_lista is not None:
         nome_lista = str(req.nome_lista or "").strip()
         if nome_lista:

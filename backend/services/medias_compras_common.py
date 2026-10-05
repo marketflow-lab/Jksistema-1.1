@@ -175,6 +175,16 @@ def _resolver_fornecedor_lista(client_id: str, fornecedor_id: str | None) -> dic
     )
 
 
+def _resolver_nacionalizador_lista(client_id: str, nacionalizador_id: str | None) -> dict[str, str]:
+    from backend.services.cadastro_nacionalizadores import resolver_nacionalizador_lista
+
+    return resolver_nacionalizador_lista(
+        client_id,
+        nacionalizador_id,
+        pasta_tenant=get_tenant_path(client_id),
+    )
+
+
 def _to_float(valor, padrao: float = 0.0) -> float:
     if isinstance(valor, (int, float)):
         return float(valor)
@@ -941,6 +951,8 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
         "numero_invoice": str(lista.get("numero_invoice") or lista.get("invoice") or "").strip(),
         "fornecedor_id": str(lista.get("fornecedor_id") or "").strip(),
         "supplier": str(lista.get("supplier") or lista.get("fornecedor") or "").strip(),
+        "nacionalizador_id": str(lista.get("nacionalizador_id") or "").strip(),
+        "nacionalizador": str(lista.get("nacionalizador") or "").strip(),
         "currency": str(lista.get("currency") or "USD").strip(),
         "incoterm": str(lista.get("incoterm") or "").strip(),
         "exchange_rate": _to_float(lista.get("exchange_rate") or lista.get("dolar_hoje") or lista.get("cotacao_dolar"), 0.0),
@@ -963,6 +975,7 @@ COMMON_EXPORTS = [
     "get_tenant_id",
     "get_tenant_path",
     "_resolver_fornecedor_lista",
+    "_resolver_nacionalizador_lista",
     "logger",
     "TEMP_FILES_STORAGE",
     "TEMP_FILES_META",

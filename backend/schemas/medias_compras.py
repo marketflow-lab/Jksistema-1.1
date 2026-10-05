@@ -40,6 +40,8 @@ class ListaPedidoUpdateRequest(BaseModel):
     numero_invoice: str | None = None
     fornecedor_id: str | None = None
     supplier: str | None = None
+    nacionalizador_id: str | None = None
+    nacionalizador: str | None = None
     currency: str | None = None
     incoterm: str | None = None
     exchange_rate: float | None = None

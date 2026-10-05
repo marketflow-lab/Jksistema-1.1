@@ -92,9 +92,14 @@ def _normalizar(req: CadastroNacionalizadorRequest, *, identificador: str = "", 
     }
 
 
-def _carregar(client_id: str) -> list[dict]:
+def _carregar(client_id: str, *, pasta_tenant: str | None = None) -> list[dict]:
+    arquivo = (
+        os.path.join(pasta_tenant, "cadastro_nacionalizadores.json")
+        if pasta_tenant is not None
+        else _arquivo(client_id)
+    )
     try:
-        with open(_arquivo(client_id), encoding="utf-8") as handle:
+        with open(arquivo, encoding="utf-8") as handle:
             payload = json.load(handle)
     except FileNotFoundError:
         return []
@@ -115,6 +120,41 @@ def _carregar(client_id: str) -> list[dict]:
             raise HTTPException(status_code=500, detail="Cadastro de nacionalizadores inválido.")
         ids.add(registro["id"])
     return registros
+
+
+def ler_nacionalizador_por_id(
+    client_id: str,
+    nacionalizador_id: str | None,
+    *,
+    pasta_tenant: str | None = None,
+) -> dict | None:
+    """Read one company exclusively from the already authenticated tenant."""
+    identificador = str(nacionalizador_id or "").strip()
+    if not identificador:
+        return None
+    with _LOCK:
+        registros = _carregar(client_id, pasta_tenant=pasta_tenant)
+        registro = next((item for item in registros if item["id"] == identificador), None)
+        return dict(registro) if registro is not None else None
+
+
+def resolver_nacionalizador_lista(
+    client_id: str,
+    nacionalizador_id: str | None,
+    *,
+    pasta_tenant: str | None = None,
+) -> dict[str, str]:
+    """Materialize the optional company id and its historical display name."""
+    identificador = str(nacionalizador_id or "").strip()
+    if not identificador:
+        return {"nacionalizador_id": "", "nacionalizador": ""}
+    registro = ler_nacionalizador_por_id(client_id, identificador, pasta_tenant=pasta_tenant)
+    if registro is None:
+        raise HTTPException(status_code=400, detail="Nacionalizador não encontrado no cadastro deste cliente.")
+    nome = registro["nome_empresa"].strip()
+    if not nome:
+        raise HTTPException(status_code=409, detail="O nacionalizador cadastrado precisa ter o nome da empresa.")
+    return {"nacionalizador_id": identificador, "nacionalizador": nome}
 
 
 def _salvar(client_id: str, registros: list[dict]) -> None:
@@ -199,6 +239,8 @@ def _atualizar_sync(nacionalizador_id: str, req: CadastroNacionalizadorRequest, 
 
 
 __all__ = [
+    "ler_nacionalizador_por_id",
+    "resolver_nacionalizador_lista",
     "listar_nacionalizadores_cadastro",
     "criar_nacionalizador_cadastro",
     "atualizar_nacionalizador_cadastro",
