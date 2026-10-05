@@ -937,6 +937,8 @@ def _api_medias_compras_lista_pedido_editar_sync(
         elif valor is not None:
             valor = str(valor).strip()
         lista[campo] = valor
+        if campo == "numero_invoice":
+            lista.pop("invoice", None)
         alterou = True
 
     if "itens" in campos_informados:

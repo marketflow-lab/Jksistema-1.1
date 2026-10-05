@@ -764,33 +764,69 @@ def test_endpoint_nome_arquivo_prioriza_invoice_lista_e_id(monkeypatch, numero_i
     assert resposta.headers["content-disposition"] == f'attachment; filename="{esperado}"'
 
 
-def test_numero_invoice_passa_a_ser_persistido_no_backend(monkeypatch):
+@pytest.fixture
+def invoice_edit_state(monkeypatch):
     lista = _lista_aprovada()
-    lista["numero_invoice"] = ""
-    estado = [lista]
-    monkeypatch.setattr(listas_service, "_carregar_listas_pedidos", lambda _client_id: copy.deepcopy(estado))
+    lista.update({
+        "store_id": "store-a", "numero_invoice": "Invoice anterior", "invoice": "Invoice legado",
+        "meta_extra": {"preservar": True},
+    })
+    outro_cliente = {**copy.deepcopy(lista), "store_id": "store-b", "numero_invoice": "Outro cliente"}
+    estado = {"tenant-a": [lista], "tenant-b": [outro_cliente]}
+    monkeypatch.setattr(listas_service, "_carregar_listas_pedidos", lambda client_id: copy.deepcopy(estado[client_id]))
 
-    def salvar(_client_id, listas):
-        estado[:] = copy.deepcopy(listas)
+    def salvar(client_id, listas):
+        estado[client_id] = copy.deepcopy(listas)
 
     monkeypatch.setattr(listas_service, "_salvar_listas_pedidos", salvar)
     monkeypatch.setattr(listas_service, "_limpar_cache_lista_pedido", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        listas_service,
-        "_resumo_lista_pedido",
-        lambda item, *_args: {"id": item["id"], "numero_invoice": item.get("numero_invoice")},
-    )
+    return estado
 
+
+@pytest.mark.parametrize("numero_invoice", ["  JK49-20261005  ", "", None])
+def test_numero_invoice_passa_a_ser_persistido_no_backend(invoice_edit_state, numero_invoice):
+    estado = invoice_edit_state
+    antes = copy.deepcopy(estado)
     resultado = asyncio.run(
         listas_service.api_medias_compras_lista_pedido_editar(
             "lista-1",
-            ListaPedidoUpdateRequest(numero_invoice="JK48-18082026"),
+            ListaPedidoUpdateRequest(numero_invoice=numero_invoice),
             client_id="tenant-a",
         )
     )
 
-    assert estado[0]["numero_invoice"] == "JK48-18082026"
-    assert resultado["lista"]["numero_invoice"] == "JK48-18082026"
+    esperado = numero_invoice.strip() if numero_invoice is not None else None
+    salva = estado["tenant-a"][0]
+    assert salva["numero_invoice"] == esperado
+    assert "invoice" not in salva, "Um alias antigo nao pode ressurgir quando o numero e apagado"
+    assert salva["updated_at"]
+    lista_esperada = {**antes["tenant-a"][0], "numero_invoice": esperado, "updated_at": salva["updated_at"]}
+    lista_esperada.pop("invoice")
+    assert salva == lista_esperada, "Editar Invoice preserva loja, store_id, itens e demais metadados"
+    assert estado["tenant-b"] == antes["tenant-b"], "IDs iguais em outro cliente permanecem isolados"
+    assert resultado["lista"]["numero_invoice"] == (esperado or "")
+    assert resultado["lista"]["store_id"] == "store-a"
+    assert resultado["lista"]["itens"] == antes["tenant-a"][0]["itens"]
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(salva))
+    assert sheet["C3"].value == (esperado or None), "Commercial Invoice usa o numero persistido sem alias antigo"
+
+
+@pytest.mark.parametrize("payload", [{"nome_lista": "Pedido renomeado"}, {"currency": "BRL"}])
+def test_edicao_de_outro_campo_preserva_alias_invoice_legado(invoice_edit_state, payload):
+    estado = invoice_edit_state
+    antes = copy.deepcopy(estado)
+    resultado = asyncio.run(
+        listas_service.api_medias_compras_lista_pedido_editar(
+            "lista-1", ListaPedidoUpdateRequest(**payload), client_id="tenant-a",
+        )
+    )
+
+    salva = estado["tenant-a"][0]
+    assert salva == {**antes["tenant-a"][0], **payload, "updated_at": salva["updated_at"]}
+    assert salva["invoice"] == "Invoice legado"
+    assert salva["numero_invoice"] == "Invoice anterior"
+    assert resultado["lista"]["numero_invoice"] == "Invoice anterior"
+    assert estado["tenant-b"] == antes["tenant-b"]
 
 
 def test_router_expoe_download_do_commercial_invoice():

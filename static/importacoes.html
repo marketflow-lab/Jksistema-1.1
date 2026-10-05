@@ -650,6 +650,18 @@
         }
 
         .meta-invoice strong { color: #ffd89a; }
+        .meta-invoice[data-invoice-pill] { cursor: text; max-width: min(220px, 100%); min-width: 95px; }
+        .lista-card-topo .meta-invoice[data-invoice-pill] { flex: 0 1 auto; }
+        .lista-card-topo:has([data-invoice-pill] input) { flex-wrap: wrap; }
+        .meta-invoice[data-invoice-pill]:has(input) { flex: 0 0 auto; min-width: 190px; }
+        .meta-invoice[data-invoice-pill] strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .meta-invoice[data-invoice-pill] input { width: 120px; min-width: 80px; }
+        .meta-invoice[data-invoice-pill]:focus-visible { outline: 2px solid #ffd89a; outline-offset: 2px; }
+        .meta-invoice[aria-busy="true"] { cursor: wait; opacity: 0.65; }
+        .meta-invoice input[aria-invalid="true"] { outline: 2px solid #f08787; }
+        @media (max-width: 1100px) {
+            .lista-card-topo:has([data-invoice-pill]) { flex-wrap: wrap; }
+        }
 
         .meta-loja {
             border-color: rgba(126, 203, 255, 0.42);
@@ -1711,6 +1723,7 @@
 
         let cotacaoDolarAtual = 0;
         let todasListasCache = [];
+        const invoicesSalvando = new Set();
         let lojasImportacoesCache = null;
         let lojasImportacoesPromise = null;
         let lojaFiltroImportacoes = '__todas';
@@ -1906,6 +1919,149 @@
             return carregarInvoiceLocal(id);
         }
 
+        const invoicesPendentes = new Map();
+
+        function atualizarPillsInvoiceLista(listaId, pillAtual) {
+            const lista = todasListasCache.find(item => String(item.id) === String(listaId));
+            if (!lista) return;
+            const pills = Array.from(document.querySelectorAll('[data-invoice-pill]'));
+            if (pillAtual && !pills.includes(pillAtual)) pills.push(pillAtual);
+            pills.forEach(pill => {
+                if (pill.dataset.invoiceListaId !== String(listaId)) return;
+                const salvando = invoicesSalvando.has(String(listaId));
+                pill.setAttribute('aria-busy', String(salvando));
+                const input = pill.querySelector('input');
+                if (input) { input.disabled = salvando; return; }
+                const invoice = obterInvoiceLista(lista, listaId);
+                const valor = document.createElement('strong');
+                valor.textContent = invoice || '-';
+                pill.replaceChildren(document.createTextNode('N° Invoice: '), valor);
+                pill.title = 'N° Invoice: ' + (invoice || '-') + '. Dê dois cliques para editar.';
+            });
+            document.querySelectorAll('[data-invoice-summary-id]').forEach(resumo => {
+                if (resumo.dataset.invoiceSummaryId !== String(listaId)) return;
+                const invoice = obterInvoiceLista(lista, listaId) || String(lista.nome_lista || 'Sem nome');
+                const valor = resumo.querySelector('strong');
+                if (valor) valor.textContent = invoice;
+                else resumo.textContent = rotuloListaComLoja(lista, invoice);
+            });
+            document.querySelectorAll('[data-invoice-summary-ids]').forEach(resumo => {
+                const ids = JSON.parse(resumo.dataset.invoiceSummaryIds || '[]').map(String);
+                if (!ids.includes(String(listaId))) return;
+                const identificadores = ids.map(id => todasListasCache.find(item => String(item.id) === id))
+                    .filter(Boolean).map(item => rotuloListaComLoja(item, obterInvoiceLista(item, item.id) || item.nome_lista || 'Sem nome'));
+                resumo.textContent = identificadores.join(', ') || '-';
+            });
+        }
+
+        function ativarEdicaoInvoiceLista(pill, listaId, lista) {
+            if (!pill || !listaId) return;
+            const id = String(listaId);
+            pill.dataset.invoiceListaId = id;
+            const iniciar = () => {
+                if (pill.querySelector('input') || invoicesSalvando.has(id)) return;
+                const atual = todasListasCache.find(item => String(item.id) === id) || lista;
+                const original = obterInvoiceLista(atual, id);
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'meta-loja-input';
+                input.setAttribute('aria-label', 'N° Invoice da lista ' + (atual.nome_lista || 'Sem nome'));
+                input.value = original;
+                input.placeholder = 'Número da Invoice';
+                input.autocomplete = 'off';
+                let encerrado = false;
+                pill.replaceChildren(document.createTextNode('N° Invoice: '), input);
+                const fechar = recuperarFoco => {
+                    if (encerrado) return;
+                    encerrado = true;
+                    pill.replaceChildren();
+                    atualizarPillsInvoiceLista(id);
+                    if (recuperarFoco && pill.isConnected) pill.focus();
+                };
+                const salvar = async () => {
+                    if (encerrado || !input.isConnected || invoicesSalvando.has(id)) return;
+                    const numeroInvoice = input.value.trim();
+                    const recuperarFoco = document.activeElement === input;
+                    if (numeroInvoice === original) { fechar(recuperarFoco); return; }
+                    let concluirSalvamento;
+                    invoicesPendentes.set(id, new Promise(resolve => { concluirSalvamento = resolve; }));
+                    invoicesSalvando.add(id);
+                    input.removeAttribute('aria-invalid');
+                    atualizarPillsInvoiceLista(id);
+                    setStatus('Salvando número da Invoice...');
+                    let sucesso = false;
+                    try {
+                        const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(id), {
+                            method: 'PUT',
+                            headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ numero_invoice: numeroInvoice })
+                        });
+                        const dados = await resposta.json();
+                        if (!resposta.ok) throw new Error(dados.detail || 'Não foi possível salvar o número da Invoice.');
+                        const valorSalvo = dados.lista && Object.prototype.hasOwnProperty.call(dados.lista, 'numero_invoice')
+                            ? String(dados.lista.numero_invoice || '').trim() : numeroInvoice;
+                        // Merge only the edited field; other controls may have saved since this request began.
+                        todasListasCache.forEach(item => {
+                            if (String(item.id) === id) {
+                                item.numero_invoice = valorSalvo;
+                                delete item.invoice;
+                            }
+                        });
+                        lista.numero_invoice = valorSalvo;
+                        delete lista.invoice;
+                        try {
+                            const resumos = JSON.parse(localStorage.getItem('importacoes_lista_resumo_editavel') || '{}');
+                            if (resumos && resumos[id] && typeof resumos[id] === 'object') {
+                                delete resumos[id].numero_invoice;
+                                localStorage.setItem('importacoes_lista_resumo_editavel', JSON.stringify(resumos));
+                            }
+                        } catch (_erroLocal) {}
+                        sucesso = true;
+                        setStatus('Número da Invoice atualizado com sucesso.');
+                    } catch (erro) {
+                        input.setAttribute('aria-invalid', 'true');
+                        input.title = erro.message || 'Não foi possível salvar o número da Invoice.';
+                        setStatus(input.title);
+                    } finally {
+                        invoicesSalvando.delete(id);
+                        invoicesPendentes.delete(id);
+                        concluirSalvamento(sucesso);
+                        atualizarPillsInvoiceLista(id);
+                        if (sucesso) fechar(recuperarFoco && (document.activeElement === input || document.activeElement === document.body));
+                        else if (input.isConnected) input.focus();
+                    }
+                };
+                input.addEventListener('input', () => {
+                    input.removeAttribute('aria-invalid');
+                    input.removeAttribute('title');
+                });
+                input.addEventListener('keydown', evento => {
+                    evento.stopPropagation();
+                    if (evento.key === 'Enter') { evento.preventDefault(); salvar(); }
+                    if (evento.key === 'Escape') {
+                        evento.preventDefault();
+                        if (!invoicesSalvando.has(id)) fechar(true);
+                    }
+                });
+                input.addEventListener('blur', salvar);
+                input.focus();
+                input.select();
+            };
+            pill.addEventListener('click', evento => {
+                evento.stopPropagation();
+                if (evento.target === pill || evento.target.tagName === 'STRONG') evento.preventDefault();
+            });
+            pill.addEventListener('dblclick', evento => {
+                evento.stopPropagation();
+                if (evento.target.tagName !== 'INPUT') { evento.preventDefault(); iniciar(); }
+            });
+            pill.addEventListener('keydown', evento => {
+                evento.stopPropagation();
+                if (evento.target === pill && ['Enter', ' '].includes(evento.key)) { evento.preventDefault(); iniciar(); }
+            });
+            atualizarPillsInvoiceLista(id, pill);
+        }
+
         function nomeArquivoCommercialInvoice(resp, fallback) {
             const disposition = String(resp && resp.headers && resp.headers.get('Content-Disposition') || '');
             const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
@@ -1962,6 +2118,8 @@
                 btn.textContent = 'Verificando...';
             }
             try {
+                const salvamento = invoicesPendentes.get(listaId);
+                if (salvamento && !(await salvamento)) throw new Error('Salve o número da Invoice antes de gerar o Commercial Invoice.');
                 const listaAtualizada = {
                     ...(lista || {}),
                     ...(await carregarListaCommercialInvoice(listaId))
@@ -2352,6 +2510,7 @@
                     const atual = todasListasCache.find(item => String(item.id) === String(listaId)) || lista;
                     const listaAtualizada = atualizarListaCacheImportacoes(listaId, {
                         ...(data && data.lista ? data.lista : {}),
+                        numero_invoice: atual.numero_invoice,
                         fornecedor_id: atual.fornecedor_id,
                         supplier: atual.supplier,
                         nacionalizador_id: atual.nacionalizador_id,
@@ -2523,7 +2682,7 @@
                 el.innerHTML =
                     '<div class="lista-card-topo">' +
                         '<div class="nome-lista">' + nomeLista + '</div>' +
-                        '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
+                        '<span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                         lojaPill +
                         metaFornecedorListaHtml(l) +
                         metaNacionalizadorListaHtml(l) +
@@ -2562,7 +2721,7 @@
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill]')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill]')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
@@ -2576,6 +2735,7 @@
                     });
                 }
 
+                ativarEdicaoInvoiceLista(el.querySelector('[data-invoice-pill]'), listaId, l);
                 const lojaEl = el.querySelector('[data-loja-pill]');
                 if (lojaEl && listaId) {
                     ativarEdicaoLojaLista(lojaEl, listaId, l, { reaplicarFiltro: true });
@@ -2924,7 +3084,8 @@
             el.innerHTML = cards.map(function(c) {
                 return '<div class="emb-resumo-card' + (c.cotacao ? ' emb-card-cotacao' : '') + '">' +
                     '<div class="emb-label">' + c.label + '</div>' +
-                    '<div class="emb-value">' + c.value + (c.sub ? '<span class="emb-value-sub">' + c.sub + '</span>' : '') + '</div>' +
+                    '<div class="emb-value"' + (c.label === 'Nº Invoice' ? ' data-invoice-summary-ids="' + escaparHtml(JSON.stringify(listaIds || [])) + '"' : '') + '>' +
+                    (c.label === 'Nº Invoice' ? escaparHtml(c.value) : c.value) + (c.sub ? '<span class="emb-value-sub">' + c.sub + '</span>' : '') + '</div>' +
                 '</div>';
             }).join('');
         }
@@ -3510,7 +3671,7 @@
                             var pills = totais.listas.map(function(l) {
                                 var inv = obterInvoiceLista(l, String(l.id || '')).trim();
                                 var label = inv || String(l.nome_lista || 'Sem nome');
-                                return '<span class="meta-pill meta-invoice"><strong>' + escaparHtml(label) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(l)) + '</span></span>';
+                                return '<span class="meta-pill meta-invoice" data-invoice-summary-id="' + escaparHtml(l.id) + '"><strong>' + escaparHtml(label) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(l)) + '</span></span>';
                             });
                             return pills.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + pills.join('') + '</div>' : '';
                         })() +
@@ -3577,8 +3738,8 @@
             if (invLine) {
                 if (identificadores.length) {
                     invLine.innerHTML = '<span class="emb-inv-label">N° Invoice:</span>' +
-                        identificadores.map(function(id) {
-                            return '<span class="emb-inv-pill">' + escaparHtml(id) + '</span>';
+                        identificadores.map(function(id, index) {
+                            return '<span class="emb-inv-pill" data-invoice-summary-id="' + escaparHtml(totais.listas[index].id) + '">' + escaparHtml(id) + '</span>';
                         }).join('');
                 } else {
                     invLine.innerHTML = '';
@@ -3631,7 +3792,11 @@
                 });
                 Promise.all(promises).then(function(resultados) {
                     var todosItens = [].concat.apply([], resultados);
-                    renderCardsEmbarque(todosItens, invoiceStr, cotacaoDolarAtual, _listaIds);
+                    const invoiceAtual = totais.listas.map(l => {
+                        const atual = todasListasCache.find(item => String(item.id) === String(l.id)) || l;
+                        return rotuloListaComLoja(atual, obterInvoiceLista(atual, atual.id) || atual.nome_lista || 'Sem nome');
+                    }).join(', ');
+                    renderCardsEmbarque(todosItens, invoiceAtual, cotacaoDolarAtual, _listaIds);
                 });
             } else {
                 if (cardsDiv) cardsDiv.innerHTML = '';
@@ -3654,7 +3819,7 @@
                         '<div class="acoes-direita"><span class="status">Analisando orçamento</span></div></div>' +
                         '<div class="meta">Itens: ' + numero(l.total_itens || 0) + '&nbsp;&nbsp;|&nbsp;&nbsp;Quantidade total: ' + numero(l.total_quantidade || 0) + '</div>' +
                         '<div class="meta-resumo">' +
-                            '<span class="meta-pill meta-invoice">N° Invoice: <strong>' + (obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
+                            '<span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
                             lojaPill +
                             metaFornecedorListaHtml(l) +
                             metaNacionalizadorListaHtml(l) +
@@ -3665,7 +3830,7 @@
                     if (listaId) {
                         var embarqueId = embarque.id || '';
                         var ir = function(ev) {
-                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input, [data-fornecedor-pill], [data-nacionalizador-pill]')) return;
+                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill]')) return;
                             window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : '');
                         };
                         elL.addEventListener('click', ir);
@@ -3673,6 +3838,7 @@
                             if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ir(); }
                         });
                     }
+                    ativarEdicaoInvoiceLista(elL.querySelector('[data-invoice-pill]'), listaId, l);
                     var lojaElL = elL.querySelector('[data-loja-pill]');
                     if (lojaElL && listaId) {
                         ativarEdicaoLojaLista(lojaElL, listaId, l, { reaplicarFiltro: false });
