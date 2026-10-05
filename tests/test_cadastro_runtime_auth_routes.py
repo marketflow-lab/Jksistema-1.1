@@ -14,6 +14,7 @@ from backend.services import cadastro, cadastro_lojas_listagem, cadastro_lojas_p
 AUTH_RUNTIME_MODULES = (
     "backend.services.cadastro_common",
     "backend.services.cadastro_fornecedores",
+    "backend.services.cadastro_nacionalizadores",
     "backend.services.cadastro_fotos",
     "backend.services.cadastro_importacao",
     "backend.services.cadastro_importacao_catalogos",
@@ -33,6 +34,9 @@ LATE_BOUND_AUTH_ROUTE_NAMES = {
     "criar_fornecedor_cadastro",
     "atualizar_fornecedor_cadastro",
     "excluir_fornecedor_cadastro",
+    "listar_nacionalizadores_cadastro",
+    "criar_nacionalizador_cadastro",
+    "atualizar_nacionalizador_cadastro",
     "obter_importador_loja",
     "salvar_importador_loja",
     "importar_colunas_cadastro_por_sku",
@@ -159,10 +163,10 @@ def test_cadastro_preserves_routes_and_late_bound_auth_dependencies_follow_recon
     router = create_cadastro_router()
     routes = {route.name: route for route in router.routes}
 
-    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 34
-    assert len(router.routes) == 35
+    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 37
+    assert len(router.routes) == 38
     assert LATE_BOUND_AUTH_ROUTE_NAMES <= routes.keys()
-    assert len(LATE_BOUND_AUTH_ROUTE_NAMES) == 26
+    assert len(LATE_BOUND_AUTH_ROUTE_NAMES) == 29
 
     captured = {}
     for name in LATE_BOUND_AUTH_ROUTE_NAMES:
@@ -206,7 +210,7 @@ def test_other_8_existing_routes_and_new_bulk_route_keep_tenant_dependency():
     assert all(
         len(route.dependant.dependencies) == 1
         for route in router.routes
-    ), "todas as 32 rotas anteriores e a nova bulk devem exigir tenant"
+    ), "todas as rotas de Cadastro devem exigir tenant"
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync-provider", "async-provider"])

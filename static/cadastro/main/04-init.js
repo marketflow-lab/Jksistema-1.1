@@ -2,7 +2,7 @@
     'use strict';
 
     const cadastro = global.JKCadastro;
-    const required = ['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importador-loja', 'importacoes-catalogos'];
+    const required = ['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importador-loja', 'nacionalizadores', 'importacoes-catalogos'];
     if (!cadastro || required.some(component => !cadastro.components.has(component))) {
         throw new Error('Componentes da tela principal do Cadastro incompletos.');
     }
@@ -14,6 +14,7 @@
     const actions = cadastro.actions;
     const fornecedores = cadastro.fornecedores;
     const importadorLoja = cadastro.importadorLoja;
+    const nacionalizadores = cadastro.nacionalizadores;
     const importacoesCatalogos = cadastro.importacoesCatalogos;
 
     cadastro.__mainInitialized = true;
@@ -32,6 +33,10 @@
     elements.tabCustos.addEventListener('click', () => secondary.trocarAba('custos'));
     elements.tabFornecedores.addEventListener('click', () => secondary.trocarAba('fornecedores'));
     elements.tabImportadorLoja.addEventListener('click', () => secondary.trocarAba('importadorLoja'));
+    elements.tabNacionalizadores.addEventListener('click', () => {
+        secondary.trocarAba('nacionalizadores');
+        void nacionalizadores.carregar();
+    });
     elements.skuSelect.addEventListener('change', () => secondary.renderDetalhesMlbPorSku(elements.skuSelect.value));
     elements.btnAtualizar.addEventListener('click', actions.carregarProdutos);
     elements.btnSyncNcm.addEventListener('click', actions.sincronizarNcmBackground);
@@ -61,6 +66,9 @@
         fornecedorEditado = false;
         setTimeout(atualizarCadastroRecebido, 0);
     });
+    elements.nacionalizadorForm.addEventListener('reset', () => {
+        setTimeout(atualizarCadastroRecebido, 0);
+    });
     global.jkCadastroPodeReceberSync = () => {
         const state = cadastro.runtime.state;
         const active = document.activeElement;
@@ -68,6 +76,7 @@
             && !state.importacaoCatalogoAplicando && !state.importacaoCatalogoCancelando
             && !state.sincronizacaoArquivoAtiva && !fornecedorEditado
             && !elements.fornecedorId?.value
+            && !nacionalizadores.temEdicaoPendente()
             && !(active && (active.isContentEditable || active.closest?.('#fornecedorForm')));
     };
     async function atualizarCadastroRecebido() {
@@ -102,6 +111,7 @@
         actions.inicializarNcm();
         fornecedores.init();
         importadorLoja.init();
+        nacionalizadores.init();
         importacoesCatalogos.init();
         try {
             if (await actions.inicializarLojas()) {

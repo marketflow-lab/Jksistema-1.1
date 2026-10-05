@@ -77,6 +77,16 @@ class CadastroFornecedorRequest(BaseModel):
     observacao_pagamento: str = ""
 
 
+class CadastroNacionalizadorRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nome_empresa: str
+    cnpj: str = ""
+    endereco_empresa: str = ""
+    nome_contato: str = ""
+    telefone: str = ""
+
+
 class CadastroImportadorLojaRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,5 +108,6 @@ __all__ = [
     "CadastroProdutoLojaRequest",
     "CadastroProdutoLojaAtualizacaoRequest",
     "CadastroFornecedorRequest",
+    "CadastroNacionalizadorRequest",
     "CadastroImportadorLojaRequest",
 ]

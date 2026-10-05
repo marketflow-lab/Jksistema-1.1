@@ -37,6 +37,7 @@
                 <button id="tabCustos" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelCustos">Custos</button>
                 <button id="tabFornecedores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelFornecedores">Fornecedores</button>
                 <button id="tabImportadorLoja" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelImportadorLoja">Importador/loja</button>
+                <button id="tabNacionalizadores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelNacionalizadores">Nacionalizador</button>
             </div>
             <div id="painelProdutos" class="tab-panel" role="tabpanel" aria-labelledby="tabProdutos">
                 <div class="toolbar">
@@ -150,6 +151,42 @@
                     </section>
                 </div>
             </div>
+            <div id="painelNacionalizadores" class="tab-panel" role="tabpanel" aria-labelledby="tabNacionalizadores" hidden>
+                <div id="nacionalizadorStatus" class="status-bar" role="status"></div>
+                <p class="store-scope-hint">Nacionalizadores cadastrados para este cliente, disponíveis às suas lojas.</p>
+                <div class="fornecedores-layout">
+                    <section class="fornecedor-section" aria-labelledby="nacionalizadorFormTitulo">
+                        <h3 id="nacionalizadorFormTitulo">Novo nacionalizador</h3>
+                        <form id="nacionalizadorForm">
+                            <input id="nacionalizadorId" type="hidden">
+                            <fieldset>
+                                <legend>Empresa e contato</legend>
+                                <div class="form-grid">
+                                    <label class="field full">Nome ou razão social (IMPORTER)<input id="nacionalizadorNomeEmpresa" required maxlength="240"></label>
+                                    <label class="field full">CNPJ<input id="nacionalizadorCnpj" maxlength="40"></label>
+                                    <label class="field">Nome do contato (CONTACT)<input id="nacionalizadorNomeContato" maxlength="160"></label>
+                                    <label class="field">Telefone<input id="nacionalizadorTelefone" type="tel" maxlength="80"></label>
+                                </div>
+                            </fieldset>
+                            <fieldset>
+                                <legend>Endereço</legend>
+                                <label class="field">Endereço completo (ADDRESS)<textarea id="nacionalizadorEnderecoEmpresa" maxlength="1200"></textarea></label>
+                            </fieldset>
+                            <div class="actions">
+                                <button id="btnSalvarNacionalizador" class="btn btn-primary" type="submit">Incluir nacionalizador</button>
+                                <button id="btnLimparNacionalizador" class="btn btn-secondary" type="button">Limpar</button>
+                            </div>
+                        </form>
+                    </section>
+                    <section class="fornecedor-section" aria-labelledby="nacionalizadoresListaTitulo">
+                        <div class="fornecedor-lista-header">
+                            <h3 id="nacionalizadoresListaTitulo">Nacionalizadores cadastrados</h3>
+                            <button id="btnAtualizarNacionalizadores" class="btn btn-secondary" type="button">Atualizar</button>
+                        </div>
+                        <div id="listaNacionalizadores" class="fornecedores-lista"></div>
+                    </section>
+                </div>
+            </div>
             <div id="painelImportadorLoja" class="tab-panel" role="tabpanel" aria-labelledby="tabImportadorLoja" hidden>
                 <div id="importadorLojaStatus" class="status-bar" role="status"></div>
                 <section class="fornecedor-section" aria-labelledby="importadorLojaTitulo">
@@ -229,16 +266,17 @@
 </div>
 
 <script src="/cadastro/form/00-core.js?v=20260909-cadastro-bulk-v1"></script>
-<script src="/cadastro/00-runtime.js?v=20260909-ml-partial-photos-v1"></script>
+<script src="/cadastro/00-runtime.js?v=20261005-nacionalizador-v1"></script>
 <script src="/cadastro/01-core.js?v=20260901-cadastro-catalog-imports-v1"></script>
 <script src="/cadastro/main/01-produtos.js?v=20260909-cadastro-bulk-v1"></script>
-<script src="/cadastro/main/02-custos-mlb.js?v=20260828-cadastro-store-scope-v1"></script>
+<script src="/cadastro/main/02-custos-mlb.js?v=20261005-nacionalizador-v1"></script>
 <script src="/cadastro/main/03-produtos-carregamento.js?v=20260909-cadastro-bulk-v1"></script>
-<script src="/cadastro/main/03-actions.js?v=20260909-cadastro-bulk-v1"></script>
+<script src="/cadastro/main/03-actions.js?v=20261005-nacionalizador-v1"></script>
 <script src="/cadastro/main/05-fornecedores.js?v=20260828-cadastro-store-scope-v1"></script>
 <script src="/cadastro/main/05-importador-loja.js?v=20260923-importador-loja-v1"></script>
+<script src="/cadastro/main/05-nacionalizadores.js?v=20261005-nacionalizador-v1"></script>
 <script src="/cadastro/main/06-importacoes-catalogos.js?v=20260909-ml-partial-photos-v1"></script>
-<script src="/cadastro/main/04-init.js?v=20260909-cadastro-bulk-v1"></script>
+<script src="/cadastro/main/04-init.js?v=20261005-nacionalizador-v1"></script>
 <script src="/table_columns.js"></script>
 <script src="/ia-sidebar.js"></script>
 </body>

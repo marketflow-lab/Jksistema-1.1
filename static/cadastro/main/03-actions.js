@@ -98,6 +98,7 @@
             cadastro.fornecedores.atualizarEstadoMutacoes();
         }
         cadastro.importadorLoja?.atualizarEstadoMutacoes();
+        cadastro.nacionalizadores?.atualizarEstadoMutacoes();
     }
 
     cadastro.produtosCarregamento.configurar({ authHeaders, lojaPorId, rotuloLojaExibicao, atualizarEstadoMutacoes });

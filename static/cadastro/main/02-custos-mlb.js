@@ -135,6 +135,7 @@
             custos: [elements.tabCustos, elements.painelCustos],
             fornecedores: [elements.tabFornecedores, elements.painelFornecedores],
             importadorLoja: [elements.tabImportadorLoja, elements.painelImportadorLoja],
+            nacionalizadores: [elements.tabNacionalizadores, elements.painelNacionalizadores],
         };
         const abaAtiva = Object.prototype.hasOwnProperty.call(abas, aba) ? aba : 'produtos';
         Object.entries(abas).forEach(([nome, [tab, painel]]) => {

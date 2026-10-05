@@ -124,6 +124,7 @@ from .sala_reuniao import (
     SalaReuniaoEncerrarTodasRequest,
 )
 from .cadastro import (
+    CadastroNacionalizadorRequest,
     CadastroImportadorLojaRequest,
     CadastroFornecedorRequest,
     CadastroProdutoLojaAtualizacaoRequest,
@@ -247,6 +248,7 @@ __all__ = [
     "SiscomexConfigRequest",
     "CadastroProdutoRequest",
     "CadastroFornecedorRequest",
+    "CadastroNacionalizadorRequest",
     "CadastroImportadorLojaRequest",
     "ImpostoRegraRequest",
     "ImpostosSimulacaoRequest",

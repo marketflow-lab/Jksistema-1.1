@@ -83,6 +83,7 @@ const tabs = {
   custos: ['tabCustos', 'painelCustos'],
   fornecedores: ['tabFornecedores', 'painelFornecedores'],
   importadorLoja: ['tabImportadorLoja', 'painelImportadorLoja'],
+  nacionalizadores: ['tabNacionalizadores', 'painelNacionalizadores'],
 };
 
 function assertAbaAtiva(nomeAtivo) {
@@ -105,6 +106,8 @@ assertAbaAtiva('fornecedores');
 
 secondary.trocarAba('importadorLoja');
 assertAbaAtiva('importadorLoja');
+secondary.trocarAba('nacionalizadores');
+assertAbaAtiva('nacionalizadores');
 
 secondary.trocarAba('aba-inexistente');
 assertAbaAtiva('produtos');
@@ -123,6 +126,9 @@ context.JKCadastro.fornecedores = { init() {} };
 context.JKCadastro.components.add('fornecedores');
 context.JKCadastro.importadorLoja = { init() {}, carregar() {} };
 context.JKCadastro.components.add('importador-loja');
+let cargasNacionalizadores = 0;
+context.JKCadastro.nacionalizadores = { init() {}, carregar() { cargasNacionalizadores += 1; }, temEdicaoPendente() { return false; } };
+context.JKCadastro.components.add('nacionalizadores');
 context.JKCadastro.importacoesCatalogos = { abrir() {}, init() {} };
 context.JKCadastro.components.add('importacoes-catalogos');
 vm.runInContext(read('static/cadastro/main/04-init.js'), context, { filename: 'static/cadastro/main/04-init.js' });
@@ -131,6 +137,9 @@ elements.get('tabFornecedores').click();
 assertAbaAtiva('fornecedores');
 elements.get('tabImportadorLoja').click();
 assertAbaAtiva('importadorLoja');
+elements.get('tabNacionalizadores').click();
+assertAbaAtiva('nacionalizadores');
+assert.strictEqual(cargasNacionalizadores, 1, 'abrir aba deve consultar nacionalizadores');
 
 const html = read('static/cadastro.html');
 assert.match(html, /id="tabFornecedores"[^>]*>Fornecedores<\/button>/);
