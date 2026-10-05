@@ -7,6 +7,7 @@
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
+    <script src="/medias_compras/data-pedido-lista.js?v=20261005-data-pedido-v1"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
 
@@ -406,6 +407,7 @@
         }
 
         .lista-card-topo {
+            flex-wrap: wrap;
             padding-bottom: 10px;
             border-bottom: 1px solid rgba(87, 154, 230, 0.28);
         }
@@ -643,6 +645,10 @@
         .meta-cadastro-lista[aria-busy="true"] { cursor: wait; opacity: 0.65; }
         .meta-cadastro-input[aria-invalid="true"] { outline: 2px solid #f08787; }
         .meta-cadastro-lista .meta-cadastro-input { width: 140px; flex: 1; min-width: 0; }
+        .meta-data-pedido:focus-visible { outline: 2px solid #67caff; outline-offset: 2px; }
+        .meta-data-pedido[aria-busy="true"] { cursor: wait; opacity: 0.65; }
+        .meta-data-pedido-input { width: 142px; }
+        .meta-data-pedido-input[aria-invalid="true"] { outline: 2px solid #f08787; }
 
         .meta-invoice {
             border-color: rgba(255, 214, 150, 0.38);
@@ -2645,6 +2651,18 @@
             return window.JKCadastrosLista.html('nacionalizador', lista);
         }
 
+        function prepararDataPedidoListaCartao(pill, listaId, lista) {
+            window.JKDataPedidoLista.preparar(pill, {
+                id: listaId, headers: obterAuthHeaders, status: setStatus,
+                atual: () => todasListasCache.find(item => String(item.id) === String(listaId)) || lista,
+                salvo: dados => {
+                    const atual = todasListasCache.find(item => String(item.id) === String(listaId)) || lista;
+                    const listaFinal = atualizarListaCacheImportacoes(listaId, { order_date: dados.order_date }, atual.loja);
+                    Object.assign(lista, listaFinal);
+                }
+            });
+        }
+
         function prepararCadastroListaCartao(pill, listaId, lista, tipo) {
             const campoId = tipo === 'fornecedor' ? 'fornecedor_id' : 'nacionalizador_id';
             const campoNome = tipo === 'fornecedor' ? 'supplier' : 'nacionalizador';
@@ -2686,6 +2704,7 @@
                         lojaPill +
                         metaFornecedorListaHtml(l) +
                         metaNacionalizadorListaHtml(l) +
+                        window.JKDataPedidoLista.html(l) +
                         '<div class="lista-card-acoes">' +
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
@@ -2721,7 +2740,7 @@
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill]')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill], [data-order-date-pill]')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
@@ -2742,6 +2761,7 @@
                 }
                 prepararCadastroListaCartao(el.querySelector('[data-fornecedor-pill]'), listaId, l, 'fornecedor');
                 prepararCadastroListaCartao(el.querySelector('[data-nacionalizador-pill]'), listaId, l, 'nacionalizador');
+                prepararDataPedidoListaCartao(el.querySelector('[data-order-date-pill]'), listaId, l);
 
                 const nomeEl = el.querySelector('.nome-lista');
                 if (nomeEl && listaId) {
@@ -3823,6 +3843,7 @@
                             lojaPill +
                             metaFornecedorListaHtml(l) +
                             metaNacionalizadorListaHtml(l) +
+                            window.JKDataPedidoLista.html(l) +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                             '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
@@ -3830,7 +3851,7 @@
                     if (listaId) {
                         var embarqueId = embarque.id || '';
                         var ir = function(ev) {
-                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill]')) return;
+                            if (ev && ev.target && ev.target.closest && ev.target.closest('[data-loja-pill], .meta-loja-input, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill], [data-order-date-pill]')) return;
                             window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId) + (embarqueId ? '&from_embarque=' + encodeURIComponent(embarqueId) : '');
                         };
                         elL.addEventListener('click', ir);
@@ -3845,6 +3866,7 @@
                     }
                     prepararCadastroListaCartao(elL.querySelector('[data-fornecedor-pill]'), listaId, l, 'fornecedor');
                     prepararCadastroListaCartao(elL.querySelector('[data-nacionalizador-pill]'), listaId, l, 'nacionalizador');
+                    prepararDataPedidoListaCartao(elL.querySelector('[data-order-date-pill]'), listaId, l);
                     listasBox.appendChild(elL);
                 });
             }

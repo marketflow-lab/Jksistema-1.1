@@ -262,7 +262,8 @@
     "electron_app/main/modules/context-vault-security.js",
     "electron_app/main/modules/importacoes-tracking-browser.js",
     "static/medias_compras/fornecedores.js",
-    "static/medias_compras/cadastros-lista.js"
+    "static/medias_compras/cadastros-lista.js",
+    "static/medias_compras/data-pedido-lista.js"
   ],
   "requiredSourceGlobs": [
     { "pattern": "python_runtime/portable/python.exe", "min": 1 },
@@ -674,7 +675,8 @@
     "local_app/electron_app/main/modules/context-vault-security.js",
     "local_app/electron_app/main/modules/importacoes-tracking-browser.js",
     "local_app/static/medias_compras/fornecedores.js",
-    "local_app/static/medias_compras/cadastros-lista.js"
+    "local_app/static/medias_compras/cadastros-lista.js",
+    "local_app/static/medias_compras/data-pedido-lista.js"
   ],
   "requiredPackagedSourceParity": [
     "package.json",
@@ -834,7 +836,8 @@
     "firebase-presence.env",
     "context-bundle-manifest.json",
     "static/medias_compras/fornecedores.js",
-    "static/medias_compras/cadastros-lista.js"
+    "static/medias_compras/cadastros-lista.js",
+    "static/medias_compras/data-pedido-lista.js"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",
