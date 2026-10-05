@@ -62,7 +62,7 @@ def test_selected_category_or_subcategory_seeds_only_the_selected_scope(store, c
 
 def test_category_metadata_is_normalized_without_tracking_or_fragments(store):
     category = scope_category("  root  ", "  Ferramentas   eletricas  ", "https://www.mercadolivre.com.br/c/ferramentas/?utm_source=menu&category_id=MLB1574#origin")
-    normalized = {"key": "root", "nome": "Ferramentas eletricas", "url": "https://www.mercadolivre.com.br/c/ferramentas?category_id=MLB1574"}
+    normalized = {"key": "root", "nome": "Ferramentas eletricas", "url": "https://www.mercadolivre.com.br/c/ferramentas/?category_id=MLB1574"}
     assert store.start("cliente-a", "alice", category=category)["checkpoint"]["scope"] == {"category": normalized}
 
 
@@ -76,7 +76,7 @@ def test_specialized_children_observed_in_official_category_index_are_valid_scop
     url = f"https://{host}/{path}/"
     category = scope_category(url, name, url)
     job = store.start("cliente-a", "alice", category=category)
-    normalized = {**category, "url": url.rstrip("/")}
+    normalized = {**category, "url": url}
     assert job["checkpoint"]["scope"] == {"category": normalized}
     assert job["checkpoint"]["categories"] == [normalized]
     restarted = PesquisaMercadoStore(store.info_root)
@@ -594,6 +594,60 @@ def test_http_category_schema_scope_and_ownership(client, store):
     assert client.patch(base + "/checkpoint", json={"checkpoint": {"scope": None}}, headers=headers).status_code == 422
 
 
+@pytest.mark.parametrize("url", [
+    "https://lista.mercadolivre.com.br/veiculos/caminhoes/",
+    "https://lista.mercadolivre.com.br/veiculos/caminhoes",
+    "https://lista.mercadolivre.com.br/veiculos/caminhoes/?category_id=MLB5828&brand=Ford&brand=Volvo&variant=",
+    "https://lista.mercadolivre.com.br/veiculos/caminhoes/usados/volvo/",
+    "https://imoveis.mercadolivre.com.br/apartamentos/",
+])
+def test_http_category_path_survives_start_restart_and_deep_resume(client, store, monkeypatch, url):
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    selected = scope_category("selected", "Categoria selecionada", url)
+    response = client.post("/api/pesquisa-mercado/jobs", json={"category": selected}, headers=headers)
+    assert response.status_code == 200
+    job = response.json()["job"]
+    base = f"/api/pesquisa-mercado/jobs/{job['id']}"
+    assert job["checkpoint"]["scope"] == {"category": selected}
+    assert job["checkpoint"]["categories"] == [selected]
+
+    path, separator, query = url.partition("?")
+    prefix = path if path.endswith("/") else path + "/"
+    suffix = separator + query
+    child = scope_category("child", "Categoria filha", prefix + "filha/" + suffix)
+    deep = scope_category("deep", "Categoria profunda", prefix + "filha/profunda/" + suffix)
+    cursor = {
+        "version": 1, "categories": [selected, child, deep], "categoryIndex": 2,
+        "currentCategory": deep, "page": {"url": deep["url"], "index": 5},
+        "phase": "seller", "discoveryInitialized": True, "seenSellerKeys": ["id:123"],
+    }
+    paused = client.patch(base + "/checkpoint", json={"checkpoint": cursor, "status": "paused"}, headers=headers)
+    assert paused.status_code == 200
+    expected = {**cursor, "scope": {"category": selected}}
+    assert paused.json()["job"]["checkpoint"] == expected
+
+    restarted = PesquisaMercadoStore(store.info_root)
+    monkeypatch.setattr(pesquisa_mercado, "_STORE", restarted)
+    restored = client.get(base, headers=headers)
+    assert restored.status_code == 200
+    assert restored.json()["job"]["checkpoint"] == expected
+    assert restored.json()["job"]["status"] == "paused"
+    for outsider in ["cliente-a:bob", "cliente-b:alice"]:
+        other_headers = {"Authorization": "Bearer " + outsider}
+        assert client.get(base, headers=other_headers).status_code == 404
+        assert client.patch(base + "/checkpoint", json={"status": "running"}, headers=other_headers).status_code == 404
+        assert client.get("/api/pesquisa-mercado/jobs/latest", headers=other_headers).json() == {"job": None}
+    assert restarted.get(job["id"], "cliente-a", "alice")["checkpoint"] == expected
+
+    resumed_cursor = {**cursor, "phase": "discovery"}
+    resumed = client.patch(base + "/checkpoint", json={"checkpoint": resumed_cursor, "status": "running"}, headers=headers)
+    assert resumed.status_code == 200
+    assert resumed.json()["job"]["status"] == "running"
+    expected_resumed = {**resumed_cursor, "scope": {"category": selected}}
+    assert resumed.json()["job"]["checkpoint"] == expected_resumed
+    assert PesquisaMercadoStore(store.info_root).get(job["id"], "cliente-a", "alice")["checkpoint"] == expected_resumed
+
+
 @pytest.mark.parametrize("url,name", [
     ("https://imoveis.mercadolivre.com.br/apartamentos/", "Apartamentos"),
     ("https://servicos.mercadolivre.com.br/educacao/", "Educacao"),
@@ -607,7 +661,7 @@ def test_http_specialized_category_preserves_closed_schema_and_immutable_scope(c
     assert response.status_code == 200
     job = response.json()["job"]
     base = f"/api/pesquisa-mercado/jobs/{job['id']}"
-    expected_scope = {"category": {**category, "url": url.rstrip("/")}}
+    expected_scope = {"category": {**category, "url": url}}
     assert job["checkpoint"]["scope"] == expected_scope
     assert client.patch(base + "/checkpoint", json={"checkpoint": {"scope": {"category": scope_category()}}}, headers=headers).status_code == 422
     assert client.get(base, headers=headers).json()["job"]["checkpoint"]["scope"] == expected_scope

@@ -130,7 +130,7 @@ def normalize_scope_category(value: Any) -> dict:
             raise HTTPException(422, "Link de categoria invalido.")
         if re.match(r"(?:tracking|utm_|matt_|position|type|search_layout)", field, re.I):
             query.pop(field)
-    normalized_url = urlunsplit(("https", host, parts.path.rstrip("/") or "/", urlencode(query, doseq=True), ""))
+    normalized_url = urlunsplit(("https", host, parts.path, urlencode(query, doseq=True), ""))
     return {"key": value["key"].strip(), "nome": _text(value["nome"], 400), "url": normalized_url}
 
 
