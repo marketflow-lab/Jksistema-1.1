@@ -52,6 +52,7 @@ def _configure(monkeypatch, tmp_path):
     monkeypatch.setattr(cadastro_fotos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info_root), raising=False)
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client_id: stores)
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda _client_id: stores)
     monkeypatch.setattr(
         cadastro_fotos,
         "_cadastro_carregar_lojas_foto",

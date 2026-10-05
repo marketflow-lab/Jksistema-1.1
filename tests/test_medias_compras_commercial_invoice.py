@@ -5,13 +5,14 @@ import io
 import json
 
 import pytest
+from fastapi import HTTPException
 from openpyxl import load_workbook
 
 from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import ListaPedidoUpdateRequest
 from backend.services import medias_compras_excel as excel_service
 from backend.services import medias_compras_listas as listas_service
-from backend.services import cadastro_compatibilidade, cadastro_importador_loja
+from backend.services import cadastro_compatibilidade, cadastro_importador_loja, cadastro_nacionalizadores
 
 
 PNG_1X1 = base64.b64decode(
@@ -341,6 +342,277 @@ def test_commercial_invoice_cabecalho_extenso_literal_sem_alterar_cadastro(forne
     assert sheet["A2"].value == "COMMERCIAL INVOICE"
     assert _formulas(sheet) == []
     assert arquivo.read_bytes() == cadastro_original
+
+
+@pytest.fixture
+def nacionalizadores_invoice(tmp_path, monkeypatch):
+    nacionalizador = {
+        "id": "nacionalizador-a",
+        "nome_empresa": "ACME BRASIL COMERCIAL IMPORTADORA E EXPORTADORA LTDA",
+        "endereco_empresa": "RODOVIA DE EXEMPLO, 100, CENTRO, CIDADE EXEMPLO, BRAZIL",
+        "nome_contato": "Contato de Exemplo",
+        "telefone": "+00 0000-0000",
+        "cnpj": "00.000.000/0001-00",
+    }
+    outro = {**nacionalizador, "nome_empresa": "Empresa do cliente B", "endereco_empresa": "Endereco B"}
+    registros = {
+        "tenant-a": [nacionalizador],
+        "tenant-b": [outro, {**outro, "id": "nacionalizador-outro"}],
+    }
+    for client_id, empresas in registros.items():
+        pasta = tmp_path / client_id
+        pasta.mkdir()
+        (pasta / "cadastro_nacionalizadores.json").write_text(
+            json.dumps({"schema": "jk.cadastro.nacionalizadores.v1", "nacionalizadores": empresas}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(excel_service, "get_tenant_path", lambda client_id: str(tmp_path / client_id))
+    monkeypatch.setattr(
+        cadastro_nacionalizadores,
+        "get_tenant_path",
+        lambda *_args: pytest.fail("Invoice deve usar a pasta canonica fornecida pelo exportador"),
+    )
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "visao_produtos_cadastro_contexto_loja",
+        lambda *_args: {"store_id": "", "scope": "unresolved"},
+    )
+    return tmp_path, nacionalizador
+
+
+def test_commercial_invoice_nacionalizador_preserva_layout_totais_foto_e_fontes(nacionalizadores_invoice, monkeypatch):
+    raiz, _registro = nacionalizadores_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_nacionalizadores.json"
+    cadastro_original = arquivo.read_bytes()
+    foto = raiz / "tenant-a" / "cadastro_fotos" / "001.png"
+    foto.parent.mkdir()
+    foto.write_bytes(PNG_1X1)
+    monkeypatch.setattr(
+        excel_service, "_resolver_foto_cadastro_sku",
+        lambda _client_id, sku, _foto_ref: str(foto) if sku == "001" else "",
+    )
+    lista = {**_lista_aprovada(), "nacionalizador_id": "nacionalizador-a", "nacionalizador": "Nome historico"}
+    lista_original = copy.deepcopy(lista)
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a", data_aprovacao="2026-08-18")
+    )
+
+    assert sheet["A4"].value.splitlines() == [
+        "IMPORTER: ACME BRASIL COMERCIAL IMPORTADORA E",
+        "EXPORTADORA LTDA",
+        "ADDRESS: RODOVIA DE EXEMPLO, 100, CENTRO, CIDADE EXEMPLO, BRAZIL",
+        "CONTACT: Contato de Exemplo +00 0000-0000",
+        "CNP.J. 00.000.000/0001-00",
+    ]
+    assert sheet["A4"].font.name == "Times New Roman"
+    assert sheet["A4"].font.sz == 9
+    assert sheet["A4"].font.bold is True
+    assert sheet["A4"].alignment.horizontal == "center"
+    assert sheet["A4"].alignment.vertical == "center"
+    assert sheet["A4"].alignment.wrap_text is True
+    assert sheet["A4"].data_type == "s"
+    assert sheet["A1"].value == "Fornecedor Exemplo Ltd."
+    assert sheet["C3"].value == "JK48-18082026"
+    assert sheet["E3"].value == "August 18, 2026"
+    assert sheet["F4"].value == "STORE: JK Pecas"
+    assert {"A4:E6", "F4:I6", "D9:E9", "D10:E10"} <= {str(r) for r in sheet.merged_cells.ranges}
+    assert sum(sheet.row_dimensions[r].height for r in (4, 5, 6)) == pytest.approx(171)
+    assert sheet.row_dimensions[6].height == 147
+    assert sheet.max_row == 15
+    assert sheet["B9"].value == "SKU 001"
+    assert sheet["G11"].value == 5
+    assert sheet["I11"].value == sheet["I14"].value == 19
+    assert len(sheet._images) == 1
+    assert sheet._images[0].anchor._from.col == 5
+    assert sheet._images[0].anchor._from.row == 8
+    assert _formulas(sheet) == []
+    assert lista == lista_original
+    assert arquivo.read_bytes() == cadastro_original
+
+
+@pytest.mark.parametrize("client_id", ["tenant-a", "tenant-b"])
+def test_commercial_invoice_resolve_mesmo_id_exclusivamente_no_cliente(nacionalizadores_invoice, client_id):
+    raiz, _registro = nacionalizadores_invoice
+    lista = {"nacionalizador_id": "nacionalizador-a", "nacionalizador": "Nome historico", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id=client_id))
+    registros = json.loads((raiz / client_id / "cadastro_nacionalizadores.json").read_text(encoding="utf-8"))
+    cadastro = registros["nacionalizadores"][0]
+    assert f"ADDRESS: {cadastro['endereco_empresa']}" in sheet["A4"].value
+    assert "Nome historico" not in sheet["A4"].value
+    assert ("Empresa do cliente B" in sheet["A4"].value) == (client_id == "tenant-b")
+
+
+@pytest.mark.parametrize("store_id", ["store-a", "store-b"])
+def test_commercial_invoice_nacionalizador_compartilhado_preserva_buyer_da_loja(nacionalizadores_invoice, monkeypatch, store_id):
+    raiz, _registro = nacionalizadores_invoice
+    compradores = {
+        "store-a": {"nome_empresa": "Comprador A", "tax_id": "TAX-A"},
+        "store-b": {"nome_empresa": "Comprador B", "tax_id": "TAX-B"},
+    }
+    (raiz / "tenant-a" / "cadastro_importador_loja.json").write_text(
+        json.dumps({"schema": "jk.cadastro.importador_loja.v1", "lojas": compradores}), encoding="utf-8",
+    )
+    monkeypatch.setattr(cadastro_importador_loja.lojas, "get_tenant_path", lambda client_id: str(raiz / client_id))
+    monkeypatch.setattr(
+        cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+        lambda _client_id, referencia: {"store_id": referencia},
+    )
+    lista = {"store_id": store_id, "loja": "Mesmo nome de loja", "nacionalizador_id": "nacionalizador-a", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert sheet["F4"].value == f"Buyer: {compradores[store_id]['nome_empresa']}\nTAX ID: {compradores[store_id]['tax_id']}"
+    assert sheet["A4"].value.startswith("IMPORTER: ACME BRASIL")
+    assert lista["store_id"] == store_id
+
+
+@pytest.mark.parametrize(
+    ("client_id", "nacionalizador_id"),
+    [("tenant-a", ""), ("tenant-a", "removido"), ("tenant-a", "nacionalizador-outro"),
+     ("tenant-sem-cadastro", "nacionalizador-a"), (None, "nacionalizador-a")],
+)
+def test_commercial_invoice_nacionalizador_ausente_usa_so_nome_historico(
+    nacionalizadores_invoice, client_id, nacionalizador_id,
+):
+    lista = {"nacionalizador_id": nacionalizador_id, "nacionalizador": "Empresa historica", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id=client_id))
+    assert sheet["A4"].value == "IMPORTER: Empresa historica"
+    assert sheet.row_dimensions[6].height == 147
+
+
+@pytest.mark.parametrize("nacionalizador_id", [None, "", "removido", "nacionalizador-outro"])
+def test_commercial_invoice_sem_nome_nacionalizador_mantem_list(nacionalizadores_invoice, nacionalizador_id):
+    lista = {"nome_lista": "Lista antiga", "nacionalizador_id": nacionalizador_id, "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert sheet["A4"].value == "LIST: Lista antiga"
+
+
+def test_commercial_invoice_sem_id_nao_consulta_cadastro_nacionalizadores(monkeypatch):
+    monkeypatch.setattr(
+        cadastro_nacionalizadores, "ler_nacionalizador_por_id",
+        lambda *_args, **_kwargs: pytest.fail("Sem vinculo nao deve consultar cadastro"),
+    )
+    monkeypatch.setattr(
+        cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+        lambda *_args: {"store_id": "", "scope": "unresolved"},
+    )
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes({"nome_lista": "Lista sem vinculo", "itens": []}, client_id="tenant-a")
+    )
+    assert sheet["A4"].value == "LIST: Lista sem vinculo"
+
+
+def test_commercial_invoice_retirada_do_vinculo_volta_ao_nome_da_lista(nacionalizadores_invoice, monkeypatch):
+    from backend.services import medias_compras_common
+
+    raiz, _registro = nacionalizadores_invoice
+    estado = [{"id": "lista-1", "nome_lista": "Lista desvinculada", "nacionalizador_id": "nacionalizador-a",
+               "nacionalizador": "Empresa historica", "itens": []}]
+    monkeypatch.setattr(medias_compras_common, "get_tenant_path", lambda client_id: str(raiz / client_id))
+    monkeypatch.setattr(listas_service, "_carregar_listas_pedidos", lambda _client_id: copy.deepcopy(estado))
+    monkeypatch.setattr(listas_service, "_salvar_listas_pedidos", lambda _client_id, listas: estado.__setitem__(slice(None), listas))
+    monkeypatch.setattr(listas_service, "_limpar_cache_lista_pedido", lambda *_args, **_kwargs: None)
+    asyncio.run(listas_service.api_medias_compras_lista_pedido_editar(
+        "lista-1", ListaPedidoUpdateRequest(nacionalizador_id=""), client_id="tenant-a",
+    ))
+    assert estado[0]["nacionalizador_id"] == estado[0]["nacionalizador"] == ""
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(estado[0], client_id="tenant-a"))
+    assert sheet["A4"].value == "LIST: Lista desvinculada"
+
+
+@pytest.mark.parametrize(("nome_contato", "telefone"), [("Pessoa", ""), ("", "+00 0000-0000"), ("", "")])
+def test_commercial_invoice_nacionalizador_omite_campos_vazios(nacionalizadores_invoice, nome_contato, telefone):
+    raiz, registro = nacionalizadores_invoice
+    registro.update(nome_empresa="Empresa A", nome_contato=nome_contato, telefone=telefone, endereco_empresa="", cnpj="")
+    (raiz / "tenant-a" / "cadastro_nacionalizadores.json").write_text(
+        json.dumps({"schema": "jk.cadastro.nacionalizadores.v1", "nacionalizadores": [registro]}), encoding="utf-8",
+    )
+    lista = {"nacionalizador_id": "nacionalizador-a", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    esperado = "IMPORTER: Empresa A"
+    contato = " ".join(filter(None, (nome_contato, telefone)))
+    if contato:
+        esperado += f"\nCONTACT: {contato}"
+    assert sheet["A4"].value == esperado
+
+
+def test_commercial_invoice_nacionalizador_preserva_token_longo_do_nome(nacionalizadores_invoice):
+    raiz, registro = nacionalizadores_invoice
+    nome = '=HYPERLINK("https://example.invalid/' + "a" * 60 + '","unsafe")'
+    registro["nome_empresa"] = nome
+    (raiz / "tenant-a" / "cadastro_nacionalizadores.json").write_text(
+        json.dumps({"schema": "jk.cadastro.nacionalizadores.v1", "nacionalizadores": [registro]}), encoding="utf-8",
+    )
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"nacionalizador_id": "nacionalizador-a", "itens": []}, client_id="tenant-a",
+    ))
+    assert sheet["A4"].value.startswith("IMPORTER:\n" + nome + "\nADDRESS:")
+    assert sheet["A4"].data_type == "s"
+    assert _formulas(sheet) == []
+
+
+@pytest.mark.parametrize("linhas_endereco", [20, 40, None])
+def test_commercial_invoice_nacionalizador_extenso_literal_ajusta_altura_sem_mutacao(nacionalizadores_invoice, linhas_endereco):
+    raiz, registro = nacionalizadores_invoice
+    registro.update(
+        nome_empresa='=HYPERLINK("https://example.invalid","unsafe")',
+        endereco_empresa=(
+            "W" * 1000 if linhas_endereco is None
+            else "\n".join(f"Endereco exemplo {indice:02}" for indice in range(linhas_endereco))
+        ),
+        nome_contato="Contato de exemplo " * 8,
+        telefone="+00 0000-0000",
+    )
+    arquivo = raiz / "tenant-a" / "cadastro_nacionalizadores.json"
+    arquivo.write_text(json.dumps({"schema": "jk.cadastro.nacionalizadores.v1", "nacionalizadores": [registro]}), encoding="utf-8")
+    bytes_originais = arquivo.read_bytes()
+    lista = {"nacionalizador_id": "nacionalizador-a", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert '=HYPERLINK("https://example.invalid","unsafe")' in sheet["A4"].value
+    if linhas_endereco is None:
+        assert "ADDRESS: " + "W" * 1000 in sheet["A4"].value
+        assert sum(sheet.row_dimensions[r].height for r in (4, 5, 6)) >= 20 * 12
+    else:
+        assert f"Endereco exemplo {linhas_endereco - 1:02}" in sheet["A4"].value
+    assert sheet["A4"].data_type == "s"
+    assert _formulas(sheet) == []
+    _texto, altura = excel_service._bloco_nacionalizador_commercial_invoice(lista, "tenant-a")
+    assert sum(sheet.row_dimensions[r].height for r in (4, 5, 6)) == pytest.approx(altura)
+    assert all(sheet.row_dimensions[r].height <= 409.5 for r in (4, 5, 6))
+    assert sheet.row_dimensions[6].height > 147
+    if linhas_endereco == 40:
+        assert sheet.row_dimensions[4].height > 12.75
+    assert sheet["C9"].value == "TOTAL NET WEIGHT"
+    assert sheet["F4"].value in (None, "")
+    assert arquivo.read_bytes() == bytes_originais
+
+
+@pytest.mark.parametrize("conteudo", ['{', '{"schema":"errado","nacionalizadores":[]}'])
+def test_commercial_invoice_nacionalizador_invalido_nao_esconde_erro_com_historico(nacionalizadores_invoice, conteudo):
+    raiz, _registro = nacionalizadores_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_nacionalizadores.json"
+    arquivo.write_text(conteudo, encoding="utf-8")
+    lista = {"nacionalizador_id": "nacionalizador-a", "nacionalizador": "Empresa historica", "itens": []}
+    with pytest.raises(HTTPException) as erro:
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    assert erro.value.status_code == 500
+    assert arquivo.read_text(encoding="utf-8") == conteudo
+
+
+def test_commercial_invoice_nacionalizador_ilegivel_nao_gera_bloco_parcial(nacionalizadores_invoice, monkeypatch):
+    import builtins
+
+    raiz, _registro = nacionalizadores_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_nacionalizadores.json"
+    abrir_original = builtins.open
+
+    def abrir(caminho, *args, **kwargs):
+        if str(caminho) == str(arquivo):
+            raise PermissionError("arquivo indisponivel")
+        return abrir_original(caminho, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", abrir)
+    with pytest.raises(HTTPException) as erro:
+        excel_service._gerar_commercial_invoice_bytes({"nacionalizador_id": "nacionalizador-a", "itens": []}, client_id="tenant-a")
+    assert erro.value.status_code == 500
 
 
 def test_gerador_inclui_pendentes_e_mantem_numericos_ausentes_em_branco():

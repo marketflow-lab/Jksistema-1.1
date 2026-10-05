@@ -177,6 +177,42 @@ def _cabecalho_fornecedor_commercial_invoice(lista: dict, client_id: str | None)
     return texto, min(409.5, altura)
 
 
+def _bloco_nacionalizador_commercial_invoice(lista: dict, client_id: str | None):
+    cadastro = {"nome_empresa": str(lista.get("nacionalizador") or "").strip()}
+    nacionalizador_id = str(lista.get("nacionalizador_id") or "").strip()
+    if client_id and nacionalizador_id:
+        from backend.services.cadastro_nacionalizadores import ler_nacionalizador_por_id
+
+        cadastro = ler_nacionalizador_por_id(
+            client_id,
+            nacionalizador_id,
+            pasta_tenant=get_tenant_path(client_id),
+        ) or cadastro
+
+    nome = str(cadastro.get("nome_empresa") or "").strip()
+    linhas = [textwrap.fill(f"IMPORTER: {nome}", width=50, break_long_words=False, break_on_hyphens=False)] if nome else []
+    endereco = str(cadastro.get("endereco_empresa") or "").strip()
+    if endereco:
+        linhas.append(f"ADDRESS: {endereco}")
+    contato = " ".join(
+        valor
+        for campo in ("nome_contato", "telefone")
+        if (valor := str(cadastro.get(campo) or "").strip())
+    )
+    if contato:
+        linhas.append(f"CONTACT: {contato}")
+    cnpj = str(cadastro.get("cnpj") or "").strip()
+    if cnpj:
+        linhas.append(f"CNP.J. {cnpj}")
+
+    texto = "\n".join(linhas)
+    # Excel nao ajusta automaticamente a altura de A4:E6, que sao mescladas.
+    # As linhas 4 e 5 somam 24 pontos; a altura usual total e 171 pontos.
+    linhas_visuais = sum(max(1, len(textwrap.wrap(linha, width=50))) for linha in texto.splitlines())
+    altura = max(171, 12 + linhas_visuais * 12)
+    return texto, altura
+
+
 def _resolver_caminho_foto_cadastro_seguro(
     client_id: str | None,
     foto_ref: str,
@@ -328,6 +364,7 @@ def _gerar_commercial_invoice_bytes(
         ws.merge_cells(intervalo)
 
     cabecalho_fornecedor, altura_cabecalho = _cabecalho_fornecedor_commercial_invoice(lista, client_id)
+    texto_nacionalizador, altura_nacionalizador = _bloco_nacionalizador_commercial_invoice(lista, client_id)
     numero_invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
     nome_lista = str(lista.get("nome_lista") or "").strip()
     loja = str(lista.get("loja") or "").strip()
@@ -368,7 +405,7 @@ def _gerar_commercial_invoice_bytes(
     _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_aprovacao))
     _atribuir_texto_excel(ws["F3"], "FROM:")
     _atribuir_texto_excel(ws["H3"], "")
-    _atribuir_texto_excel(ws["A4"], f"LIST: {nome_lista}" if nome_lista else "")
+    _atribuir_texto_excel(ws["A4"], texto_nacionalizador or (f"LIST: {nome_lista}" if nome_lista else ""))
     _atribuir_texto_excel(ws["F4"], texto_comprador)
     _atribuir_texto_excel(ws["A7"], "Descriptions")
 
@@ -388,9 +425,11 @@ def _gerar_commercial_invoice_bytes(
     ws.row_dimensions[1].height = altura_cabecalho
     ws.row_dimensions[2].height = 12
     ws.row_dimensions[3].height = 17.25
-    ws.row_dimensions[4].height = 12.75
-    ws.row_dimensions[5].height = 11.25
-    ws.row_dimensions[6].height = 147
+    altura_restante = max(0, altura_nacionalizador - 171)
+    for linha, altura_base in ((6, 147), (4, 12.75), (5, 11.25)):
+        altura_extra = min(altura_restante, 409.5 - altura_base)
+        ws.row_dimensions[linha].height = altura_base + altura_extra
+        altura_restante -= altura_extra
     ws.row_dimensions[7].height = 11.25
     ws.row_dimensions[8].height = 21.75
 
