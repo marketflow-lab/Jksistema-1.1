@@ -29,13 +29,14 @@ function normalizeCategory(value) {
     const url = canonicalUrl(value.url);
     if (!url) return null;
     const parsed = new URL(url);
-    if (!['lista.mercadolivre.com.br', 'www.mercadolivre.com.br', 'mercadolivre.com.br'].includes(parsed.hostname)) return null;
+    const listingHost = ['lista.mercadolivre.com.br', 'imoveis.mercadolivre.com.br', 'servicos.mercadolivre.com.br'].includes(parsed.hostname);
+    if (!listingHost && !['www.mercadolivre.com.br', 'mercadolivre.com.br'].includes(parsed.hostname)) return null;
     let path;
     try { path = decodeURIComponent(parsed.pathname); } catch (_error) { return null; }
     if (/\/(?:p|up|perfil|loja|stores?|vendedor)(?:\/|$)|\/MLB-\d+|_CustId_|_SellerId_/i.test(path)) return null;
     if ([...parsed.searchParams.keys()].some(key => /^(?:seller|sellerid|custid|customerid|user|userid|wid|itemid|productid|catalogproductid)$/i.test(key.replace(/[_-]/g, '')) || /token|password|senha|secret|authorization|api[_-]?key|cookie/i.test(key))) return null;
     if ([...parsed.searchParams.values()].some(value => /_CustId_|_SellerId_|(?:^|[|,;])(?:item_id|catalog_product_id|seller[_-]?id|cust[_-]?id):/i.test(value))) return null;
-    if (parsed.hostname === 'lista.mercadolivre.com.br' ? parsed.pathname === '/' : !/^\/(?:c|categorias)\/[^/]+/i.test(parsed.pathname)) return null;
+    if (listingHost ? !path.replace(/\//g, '') : !/^\/(?:c|categorias)\/[^/]+/i.test(parsed.pathname)) return null;
     const key = String(value.key || '').trim();
     const nome = String(value.nome || '').replace(/\s+/g, ' ').trim();
     parsed.pathname = parsed.pathname.replace(/\/$/, '') || '/';
@@ -54,6 +55,60 @@ function sameCategoryPage(expected, actual) {
         return JSON.stringify([parsed.hostname.replace(/^www\./, ''), path, categories]);
     };
     try { return identity(expected) === identity(actual); } catch (_error) { return false; }
+}
+
+// Navigation may still expose the previous document or a loading shell. Never
+// consume that tree, and give the requested document time to replace it.
+function categoryPageWaiter(expected) {
+    let lastUrl = '', stableReads = 0;
+    return {
+        actualUrl: '', mismatch: false,
+        observe(actualUrl, ready, loading) {
+            this.actualUrl = actualUrl;
+            this.mismatch = !!expected && !sameCategoryPage(expected, actualUrl);
+            if (this.mismatch || !ready || loading) {
+                lastUrl = ''; stableReads = 0;
+                return false;
+            }
+            const current = canonicalUrl(actualUrl);
+            if (!current) return false;
+            stableReads = lastUrl === current ? stableReads + 1 : 1;
+            lastUrl = current;
+            return stableReads >= 2;
+        }
+    };
+}
+
+function currentPageRequiresLogin(page, browser) {
+    if (!page.authRequired && !page.avantAuthRequired) return false;
+    if (page.readyState === 'loading' || typeof browser.isLoading === 'function' && browser.isLoading()) return false;
+    // A login redirect is allowed, but its document must be the one currently
+    // displayed. Avant pages have no ML URL in the parser and use getURL().
+    if (!page.url) {
+        try {
+            const current = new URL(browser.getURL());
+            return current.protocol === 'https:' && !current.username && !current.password && (!current.port || current.port === '443')
+                && (current.hostname === 'avantprocloud.com.br' || current.hostname.endsWith('.avantprocloud.com.br'));
+        } catch (_error) { return false; }
+    }
+    const documentUrl = value => {
+        if (!allowedUrl(value)) return '';
+        const parsed = new URL(value);
+        // Match the parser's URL cleanup without removing pagination. The
+        // previous page belongs to the same category but is another document.
+        const fragment = parsed.hash.replace(/^#/, '');
+        let wid = new URLSearchParams(fragment).get('wid');
+        if (!wid) {
+            try { wid = new URLSearchParams(decodeURIComponent(fragment)).get('wid'); } catch (_error) {}
+        }
+        if (!parsed.searchParams.has('wid') && /^MLB\d{6,}$/i.test(wid || '')) parsed.searchParams.set('wid', wid.toUpperCase());
+        for (const key of ['polycard_client', 'sid', 'reco_id', 'searchVariation']) parsed.searchParams.delete(key);
+        const normalized = new URL(canonicalUrl(parsed.href));
+        normalized.searchParams.sort();
+        return normalized.href;
+    };
+    const observed = documentUrl(page.url);
+    return !!observed && observed === documentUrl(browser.getURL());
 }
 
 function sellerFromPage(page) {
@@ -220,20 +275,28 @@ class PesquisaMercadoRunner {
             this.check();
             await this.browser.navigate(url, this.controller.signal);
             let page;
+            const destination = categoryPageWaiter(this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null);
             for (let poll = 0; poll < 34; poll += 1) {
                 await this.wait(450);
                 this.check();
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
-                if (page.authRequired) return page;
-                if (purpose === 'category') this.assertCategoryDestination(url, page.url || this.browser.getURL());
+                if (page.authRequired || page.avantAuthRequired) {
+                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true };
+                    if (purpose === 'category') destination.observe(page.url || this.browser.getURL(), false, true);
+                    continue;
+                }
                 const listings = (page.anuncios || []).length > 0;
                 const ready = purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
                     : purpose === 'first-page' ? true // The collector owns settling and scrolling this page.
-                    : listings || (page.categories || []).length > 0 || page.listingUrl || page.categoriesIndexUrl || page.empty;
-                if (ready) return page;
+                    : listings || (page.categories || []).length > 0 || page.listingUrl || (purpose === 'index' && page.categoriesIndexUrl) || page.empty;
+                if (purpose === 'category') {
+                    const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
+                    if (destination.observe(page.url || this.browser.getURL(), ready, loading)) return page;
+                } else if (ready) return page;
             }
-            if (purpose === 'index') return page; // The homepage can link to the full category index instead.
+            if (purpose === 'category' && destination.mismatch) this.assertCategoryDestination(url, destination.actualUrl);
+            if (purpose === 'index' && !page.authRequired && !page.avantAuthRequired) return page; // The homepage can link to the full category index instead.
             throw new Error('A pagina ainda nao apresentou os dados para continuar a pesquisa.');
         });
     }
@@ -292,14 +355,22 @@ class PesquisaMercadoRunner {
                 throw new Error('O controle da proxima pagina da categoria nao respondeu.');
             }
             let page;
+            const destination = categoryPageWaiter(this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? current.url : null);
             for (let poll = 0; poll < 34; poll += 1) {
                 this.check();
                 await this.wait(450);
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
-                if (page.authRequired) return page;
-                this.assertCategoryDestination(current.url, page.url || this.browser.getURL());
-                if (canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty)) return page;
+                this.check();
+                if (page.authRequired || page.avantAuthRequired) {
+                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true };
+                    destination.observe(page.url || this.browser.getURL(), false, true);
+                    continue;
+                }
+                const ready = canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty);
+                const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
+                if (destination.observe(page.url || this.browser.getURL(), ready, loading)) return page;
             }
+            if (destination.mismatch) this.assertCategoryDestination(current.url, destination.actualUrl);
             throw new Error('A proxima pagina da categoria nao terminou de carregar.');
         });
     }
@@ -505,4 +576,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, allowedUrl, canonicalUrl, sellerFromPage, normalizeCategory, sameCategoryPage };
+module.exports = { PesquisaMercadoRunner, allowedUrl, canonicalUrl, sellerFromPage, normalizeCategory, sameCategoryPage, categoryPageWaiter, currentPageRequiresLogin };

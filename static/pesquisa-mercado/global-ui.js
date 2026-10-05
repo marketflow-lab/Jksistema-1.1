@@ -55,6 +55,11 @@
         return typeof value === 'number' && Number.isFinite(value)
             ? value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : safeText(value) || '—';
     }
+    function userErrorMessage(error) {
+        const message = typeof error === 'string' ? error : error && typeof error.message === 'string'
+            ? error.message : 'Não foi possível concluir a operação.';
+        return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser)['"]:\s*(?:Error:\s*)?/, '');
+    }
     function categoryChoice(value) {
         if (!value || typeof value !== 'object') return null;
         const key = safeText(value.key).trim();
@@ -151,7 +156,7 @@
         const status = state.job ? state.job.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status);
-        elements.start.disabled = !sessionToken || state.busy || isActive(state.job) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired;
+        elements.start.disabled = !sessionToken || state.busy || isActive(state.job) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !resumable;
         elements.cancel.disabled = state.busy || !(isActive(state.job) || resumable);
@@ -247,7 +252,7 @@
         } catch (error) {
             if (state.taxonomy === taxonomy && !state.disposed) {
                 taxonomy.error = true;
-                taxonomy.message = error.message;
+                taxonomy.message = userErrorMessage(error);
             }
         } finally {
             if (state.taxonomy === taxonomy && !state.disposed) {
@@ -395,7 +400,7 @@
         refreshTask = (async () => {
             while (refreshRequested && !state.disposed) {
                 refreshRequested = false;
-                try { await loadRankings(); } catch (error) { if (!state.disposed) showMessage(error.message, true); }
+                try { await loadRankings(); } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
             }
         })().finally(() => { refreshTask = null; });
         return refreshTask;
@@ -403,6 +408,7 @@
     async function command(action) {
         if (state.busy || state.disposed) return;
         currentSession();
+        if (action === 'start' && state.taxonomy.error) return;
         if (action === 'start' && (!state.taxonomy.selected || state.taxonomy.authRequired)) {
             state.taxonomy.message = 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.';
             state.taxonomy.error = true;
@@ -421,7 +427,7 @@
                 if (changed) await refresh();
                 else await synchronize();
             }
-        } catch (error) { if (!state.disposed) showMessage(error.message, true); }
+        } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
         finally { state.busy = false; if (!state.disposed) renderControls(); }
     }
     function synchronize() {
@@ -435,7 +441,7 @@
                 if (state.disposed) return;
                 if (updateJob(latest)) await refresh();
                 else if (latest && latest.job == null && !state.job) renderControls();
-            } catch (error) { if (!state.disposed) showMessage(error.message, true); }
+            } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
         })().finally(() => { synchronizeTask = null; });
         return synchronizeTask;
     }
@@ -492,7 +498,7 @@
                 renderTaxonomy();
             }
         } catch (error) {
-            if (!state.disposed) { state.taxonomy.message = error.message; state.taxonomy.error = true; renderTaxonomy(); }
+            if (!state.disposed) { state.taxonomy.message = userErrorMessage(error); state.taxonomy.error = true; renderTaxonomy(); }
         } finally { state.busy = false; if (!state.disposed) renderControls(); }
     });
     for (const mode of ['manual', 'global']) {

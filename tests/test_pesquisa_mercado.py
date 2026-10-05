@@ -66,6 +66,60 @@ def test_category_metadata_is_normalized_without_tracking_or_fragments(store):
     assert store.start("cliente-a", "alice", category=category)["checkpoint"]["scope"] == {"category": normalized}
 
 
+@pytest.mark.parametrize("host,path,name", [
+    ("imoveis.mercadolivre.com.br", "apartamentos", "Apartamentos"),
+    ("imoveis.mercadolivre.com.br", "casas", "Casas"),
+    ("servicos.mercadolivre.com.br", "academia-esportes", "Academia e Esportes"),
+    ("servicos.mercadolivre.com.br", "educacao", "Educacao"),
+])
+def test_specialized_children_observed_in_official_category_index_are_valid_scopes(store, host, path, name):
+    url = f"https://{host}/{path}/"
+    category = scope_category(url, name, url)
+    job = store.start("cliente-a", "alice", category=category)
+    normalized = {**category, "url": url.rstrip("/")}
+    assert job["checkpoint"]["scope"] == {"category": normalized}
+    assert job["checkpoint"]["categories"] == [normalized]
+    restarted = PesquisaMercadoStore(store.info_root)
+    resumed = restarted.checkpoint(job["id"], "cliente-a", "alice", checkpoint={"phase": "seller"}, status="paused")
+    assert resumed["checkpoint"]["scope"] == {"category": normalized}
+
+
+@pytest.mark.parametrize("host", ["imoveis.mercadolivre.com.br", "servicos.mercadolivre.com.br"])
+@pytest.mark.parametrize("path", [
+    "/", "//", "///", "/p/MLB123", "/up/MLBU123", "/MLB-123-produto-_JM", "/loja/vendedor",
+    "/perfil/vendedor", "/_CustId_123", "/casas?seller_id=123", "/casas?wid=MLB123",
+    "/casas?pdp_filters=item_id%3AMLB123", "/casas?pdp_filters=seller_id%3A123", "/casas?access_token=invalid",
+])
+def test_specialized_category_hosts_keep_product_seller_root_and_secret_rejections(store, host, path):
+    with pytest.raises(HTTPException) as error:
+        store.start("cliente-a", "alice", category=scope_category(url=f"https://{host}{path}"))
+    assert error.value.status_code == 422
+    assert not store.info_root.exists()
+
+
+@pytest.mark.parametrize("url", [
+    "https://carros.mercadolivre.com.br/carros-caminhonetes/",
+    "https://motos.mercadolivre.com.br/motos/",
+    "https://imoveis.mercadolivre.com.br.example.test/casas/",
+    "https://outro.mercadolivre.com.br/casas/",
+    "https://usuario:senha@imoveis.mercadolivre.com.br/casas/",
+    "https://servicos.mercadolivre.com.br:443/educacao/",
+])
+def test_category_host_expansion_is_specific_and_keeps_credentials_and_ports_blocked(store, url):
+    with pytest.raises(HTTPException) as error:
+        store.start("cliente-a", "alice", category=scope_category(url=url))
+    assert error.value.status_code == 422
+    assert not store.info_root.exists()
+
+
+@pytest.mark.parametrize("path", ["/", "//", "///"])
+def test_listing_category_root_with_repeated_slashes_is_rejected_before_database_write(store, path):
+    with pytest.raises(HTTPException) as error:
+        store.start("cliente-a", "alice", category=scope_category(url=f"https://lista.mercadolivre.com.br{path}"))
+    assert error.value.status_code == 422
+    assert not store.info_root.exists()
+
+
 @pytest.mark.parametrize("url", [
     "http://www.mercadolivre.com.br/c/ferramentas", "https://example.test/c/ferramentas",
     "https://mercadolivre.com.br.example.test/c/ferramentas", "https://www.mercadolivre.com.br:443/c/ferramentas",
@@ -538,6 +592,25 @@ def test_http_category_schema_scope_and_ownership(client, store):
     assert client.get(base, headers={"Authorization": "Bearer cliente-b:alice"}).status_code == 404
     assert client.patch(base + "/checkpoint", json={"checkpoint": {"phase": "seller"}}, headers=headers).json()["job"]["checkpoint"]["scope"] == {"category": scope_category()}
     assert client.patch(base + "/checkpoint", json={"checkpoint": {"scope": None}}, headers=headers).status_code == 422
+
+
+@pytest.mark.parametrize("url,name", [
+    ("https://imoveis.mercadolivre.com.br/apartamentos/", "Apartamentos"),
+    ("https://servicos.mercadolivre.com.br/educacao/", "Educacao"),
+])
+def test_http_specialized_category_preserves_closed_schema_and_immutable_scope(client, store, url, name):
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    category = scope_category(url, name, url)
+    assert client.post("/api/pesquisa-mercado/jobs", json={"category": {**category, "aliases": []}}, headers=headers).status_code == 422
+    assert not store.info_root.exists()
+    response = client.post("/api/pesquisa-mercado/jobs", json={"category": category}, headers=headers)
+    assert response.status_code == 200
+    job = response.json()["job"]
+    base = f"/api/pesquisa-mercado/jobs/{job['id']}"
+    expected_scope = {"category": {**category, "url": url.rstrip("/")}}
+    assert job["checkpoint"]["scope"] == expected_scope
+    assert client.patch(base + "/checkpoint", json={"checkpoint": {"scope": {"category": scope_category()}}}, headers=headers).status_code == 422
+    assert client.get(base, headers=headers).json()["job"]["checkpoint"]["scope"] == expected_scope
 
 
 def test_http_endpoints_use_stable_auth_dependency_and_sync_database_handlers():

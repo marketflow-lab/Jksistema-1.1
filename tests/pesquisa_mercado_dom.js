@@ -29,6 +29,7 @@ async function run() {
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
         await page.setContent(fixture(Array.from({ length: 121 }, (_, i) => card(i, avant(i + 1))).join('')));
         const all = await page.evaluate(scripts.snapshotScript({ seller }));
+        assert.equal(all.readyState, 'complete', 'snapshot informa o estado de carregamento usado pelo coordenador');
         assert.equal(all.anuncios.length, 121, 'o parser real nao pode cortar a pagina em 100');
         assert.ok(all.anuncios.every(item => item.rankable && item.seller_id === '123456'), JSON.stringify(all.anuncios.slice(0, 2)));
         assert.equal(all.anuncios[120].vendas, 121);
@@ -197,6 +198,47 @@ async function run() {
 
         // Discovery is constrained to category and product elements, not arbitrary links.
         await page.goto('https://www.mercadolivre.com.br/categorias');
+        // Public index shapes and links observed on 2026-10-05, without page header/session data.
+        const realEstate = [
+            ['apartamentos/', 'Apartamentos'], ['casas/', 'Casas'], ['chacaras/', 'Chácaras'], ['fazendas/', 'Fazendas'],
+            ['flat-apart-hotel/', 'Flat - Apart Hotel'], ['galpoes/', 'Galpões'], ['lojas-comerciais/', 'Lojas Comerciais'],
+            ['outros/', 'Outros Imóveis'], ['salas-comerciais/', 'Salas Comerciais'], ['sitios/', 'Sítios'], ['terrenos/', 'Terrenos']
+        ];
+        const services = [
+            ['academia-esportes/', 'Academia e Esportes'], ['animais/', 'Animais'], ['beleza-estetica/', 'Beleza, Estética e Bem Estar'],
+            ['educacao/', 'Educação'], ['festas-eventos/', 'Festas e Eventos'], ['gastronomia/', 'Gastronomia'],
+            ['graficas-impresso/', 'Gráficas e Impressão'], ['lar/', 'Lar'], ['marketing-internet/', 'Marketing e Internet'],
+            ['outros-profissionais/', 'Outros Profissionais'], ['outros/', 'Outros Serviços'], ['saude/', 'Saúde'],
+            ['suporte-tecnico/', 'Suporte Técnico'], ['vestuario/', 'Vestuário'], ['veiculos-transportes/', 'Veículos e Transportes'],
+            ['viagens-turismo/', 'Viagens e Turismo']
+        ];
+        const indexGroup = (name, href, host, children) => '<div class="categories__container"><h2 class="categories__title"><a class="categories__title-link" href="' + href + '">' + name + '</a></h2><ul class="categories__list">'
+            + children.map(([path, label]) => '<li><a href="https://' + host + '/' + path + '">' + label + '</a></li>').join('') + '</ul></div>';
+        await page.setContent('<main>'
+            + indexGroup('Imóveis', 'http://www.mercadolivre.com.br/imoveis/', 'imoveis.mercadolivre.com.br', realEstate)
+            + indexGroup('Serviços', 'https://www.mercadolivre.com.br/c/servicos', 'servicos.mercadolivre.com.br', services)
+            + '<div class="category-list"><a href="http://www.mercadolivre.com.br/c/servicos">Outro HTTP</a><a href="http://www.mercadolivre.com.br/imoveis/?tracking_id=x">HTTP diferente</a><a href="https://imoveis.mercadolivre.com.br/">Host sem categoria</a><a href="https://outro.mercadolivre.com.br/apartamentos/">Host nao reconhecido</a></div>'
+            + '<li class="ui-search-layout__item"><a href="http://produto.mercadolivre.com.br/MLB-10000001-produto-_JM">Produto HTTP</a></li></main>');
+        const specialHosts = await page.evaluate(scripts.discoveryScript());
+        assert.deepEqual(specialHosts.categories.map(item => [item.nome, item.url]), [
+            ['Imóveis', 'https://www.mercadolivre.com.br/c/imoveis'], ['Serviços', 'https://www.mercadolivre.com.br/c/servicos']
+        ], 'apenas o href HTTP exato observado de Imoveis recebe alias HTTPS');
+        assert.deepEqual(specialHosts.categoryTree.map(item => item.children.length), [11, 16], 'nenhum dos 27 filhos publicos de Imoveis e Servicos e omitido');
+        assert.equal(new Set(specialHosts.categoryTree.flatMap(item => item.children.map(child => child.url))).size, 27);
+        assert.deepEqual(specialHosts.categoryTree[0].children.map(item => item.nome), realEstate.map(item => item[1]));
+        assert.deepEqual(specialHosts.categoryTree[1].children.map(item => item.nome), services.map(item => item[1]));
+        assert.equal(specialHosts.anuncios.length, 0, 'excecao do indice nao permite HTTP na coleta de anuncios');
+        assert.equal(specialHosts.readyState, 'complete');
+        await page.evaluate(() => Object.defineProperty(document, 'readyState', { value: 'loading', configurable: true }));
+        assert.equal((await page.evaluate(scripts.discoveryScript())).readyState, 'loading', 'discovery nao declara pronta uma pagina ainda em carregamento');
+        await page.evaluate(() => { delete document.readyState; });
+        await page.goto('https://imoveis.mercadolivre.com.br/apartamentos/');
+        await page.setContent('<main><dl class="ui-search-filter-dl"><h3 class="ui-search-filter-dt-title">Categorias</h3><ul>'
+            + '<li class="ui-search-filter-container"><a href="http://www.mercadolivre.com.br/imoveis/">Imóveis</a></li>'
+            + '<li class="ui-search-filter-container"><a href="https://imoveis.mercadolivre.com.br/apartamentos/aluguel/">Aluguel</a></li></ul></dl></main>');
+        assert.deepEqual((await page.evaluate(scripts.discoveryScript())).categories.map(item => item.url),
+            ['https://imoveis.mercadolivre.com.br/apartamentos/aluguel/'], 'alias HTTP do indice nao reintroduz a raiz ancestral num filtro de apartamento');
+        await page.goto('https://www.mercadolivre.com.br/categorias');
         await page.setContent('<main><div class="categories__container"><h2 class="categories__title" itemprop="name"><a class="categories__title-link" href="https://www.mercadolivre.com.br/c/acessorios-para-veiculos" itemprop="url">Acessorios</a></h2><ul class="categories__list" aria-label="Categoria"><li><a href="https://lista.mercadolivre.com.br/acessorios-veiculos/pecas">Pecas</a></li></ul></div><div class="categories__container"><h2 class="categories__title"><a class="categories__title-link" href="https://www.mercadolivre.com.br/c/agro">Agro</a></h2><ul class="categories__list"><li><a href="https://lista.mercadolivre.com.br/agro/ferramentas">Ferramentas</a></li></ul></div><nav><a href="https://lista.mercadolivre.com.br/promocoes">Promocoes</a></nav><a href="https://example.com/fake">Externo</a><a href="https://www.mercadolivre.com.br/perfil/LOJA_ALVO">Loja</a></main>');
         const discovery = await page.evaluate(scripts.discoveryScript());
         assert.deepEqual(discovery.categories.map(item => item.nome), ['Acessorios', 'Agro'], 'estrutura real do indice mostra somente raizes, sem descendentes ou navegacao avulsa');
@@ -225,6 +267,39 @@ async function run() {
         assert.deepEqual(leaf.categories, []);
         await page.setContent(selectedLeaf.replace('CHILDREN', '<a class="ui-search-filter-hierarchy-link" href="https://lista.mercadolivre.com.br/pecas/motor/bombas">Bombas</a><a href="https://lista.mercadolivre.com.br/pecas/motor/correias">Correias</a>'));
         assert.deepEqual((await page.evaluate(scripts.discoveryScript())).categories.map(item => item.nome), ['Bombas', 'Correias'], 'filhos do grupo Categoria continuam disponiveis apesar dos pais e filtros vizinhos');
+        // Two deeper public levels captured on 2026-10-05; this is a sampled
+        // regression fixture, not an exhaustive traversal of Mercado Livre.
+        const partsUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas-carros-caminhonetes/';
+        const partsSlugs = ['baterias', 'carroceria', 'climatizacao', 'conducao-assistida-avancada', 'eletroventiladores',
+            'eletricos-hibridos-phev', 'escapamentos', 'fechaduras-chaves/fechaduras-chaves', 'filtros', 'freios', 'ignicao',
+            'iluminacao', 'injecao', 'janelas-vedacoes', 'motor', 'outros', 'pecas-exterior/pecas-exterior', 'pecas-interior',
+            'seguranca', 'sistema-eletrico/sistema-eletrico', 'suspensao-direcao/suspensao-direcao', 'transmissao/transmissao'];
+        const motorSlugs = ['bielas', 'bombas', 'cabos-comando', 'carburadores-pecas', 'coletor-escapamento', 'coletores-admissao',
+            'componentes-motor', 'correias', 'coxins-motor', 'distribuicao', 'filtros-oleo', 'intercoolers', 'juntas-selos-ferragens',
+            'kits-motor', 'kits-reconstrucao', 'kits-servico', 'kits-suporte-motor', 'mangueira-intercooler', 'mangueira-linha-tubulacoes',
+            'mangueiras-admissao', 'montagens-tirante-motor', 'motor-completo', 'motores-bloco-curto', 'motores-bloco-longo',
+            'motores-tracao', 'outros', 'polia-virabrequim', 'protetores-laterais-motor', 'radiadores', 'refrigeracao', 'retentores',
+            'rolamentos-motor', 'sensor-oleo', 'sensores', 'tampas-enchimento', 'turbos-supercargadores', 'vareta-nivel-oleo',
+            'virabrequim', 'valvulas-egr', 'valvulas-solenoides'];
+        const deepCategoryFilter = (parent, slugs) => '<main><nav class="andes-breadcrumb"><a href="' + partsUrl + '">Peças</a></nav>'
+            + '<dl class="ui-search-filter-dl"><h3 class="ui-search-filter-dt-title">Categorias</h3><ul>'
+            + slugs.map(slug => '<li class="ui-search-filter-container"><a class="ui-search-link" href="' + parent + slug
+                + '/"><span class="ui-search-filter-name">' + slug.split('/').pop().replace(/-/g, ' ') + '</span></a></li>').join('')
+            + '</ul></dl><dl class="ui-search-filter-dl"><h3 class="ui-search-filter-dt-title">Preço</h3><ul><li class="ui-search-filter-container">'
+            + '<a class="ui-search-link" href="' + parent + '_PriceRange_100-200"><span class="ui-search-filter-name">100 a 200</span></a></li></ul></dl></main>';
+        await page.goto(partsUrl);
+        await page.setContent(deepCategoryFilter(partsUrl, partsSlugs));
+        const deepParts = await page.evaluate(scripts.discoveryScript());
+        assert.equal(deepParts.categories.length, 22, 'estrutura real de Pecas mantem 22 filhos dentro de li.ui-search-filter-container');
+        assert.deepEqual(deepParts.categories.map(item => item.url), partsSlugs.map(slug => partsUrl + slug + '/'));
+        const motorUrl = deepParts.categories.find(item => item.url === partsUrl + 'motor/').url;
+        await page.goto(motorUrl);
+        await page.setContent(deepCategoryFilter(motorUrl, motorSlugs));
+        const deepMotor = await page.evaluate(scripts.discoveryScript());
+        assert.equal(deepMotor.categories.length, 40, 'estrutura real de Motor mantem os 40 filhos aninhados');
+        assert.deepEqual(deepMotor.categories.map(item => item.url), motorSlugs.map(slug => motorUrl + slug + '/'));
+        assert.ok(deepParts.hasChildren && deepMotor.hasChildren);
+        assert.ok(deepMotor.categories.every(item => item.url !== partsUrl), 'breadcrumb para Pecas nao retorna como filho de Motor');
         await page.setContent('<main><div class="ui-search-filter-container"><h3>Preco</h3><a href="https://lista.mercadolivre.com.br/pecas_PriceRange_50-100">R$ 50</a></div></main>');
         assert.equal((await page.evaluate(scripts.discoveryScript())).hasChildren, false, 'filtros nao criam arvore infinita');
         const landingUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/ferramentas-veiculos/ferramentas-baterias/';

@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { PesquisaMercadoRunner, sellerFromPage, allowedUrl, normalizeCategory, sameCategoryPage } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { PesquisaMercadoRunner, sellerFromPage, allowedUrl, normalizeCategory, sameCategoryPage, currentPageRequiresLogin } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 const copy = value => JSON.parse(JSON.stringify(value));
 const base = 'https://www.mercadolivre.com.br';
 
@@ -174,7 +174,7 @@ async function landingAndJavaScriptPagination() {
     assert.strictEqual(h.saved().status, 'completed');
     assert.strictEqual(h.saved().counters.pages, 2, 'landing is not counted as a listing page');
     assert.strictEqual(h.vendors.size, 1);
-    assert.strictEqual(slowReads, 3, 'wait for a hydrated result list before completing a page');
+    assert.strictEqual(slowReads, 4, 'wait for a hydrated result list and confirm two settled readings');
     assert.ok(h.visited.filter(url => url === `${base}/leaf/_NoIndex_True`).length >= 2, 'restore first category page after visiting seller');
     assert.ok(!h.visited.some(url => /anuncios\/111\/2/.test(url)), 'category JavaScript pagination must not visit seller page two');
 }
@@ -293,8 +293,74 @@ async function startDoesNotResumeAnotherScope() {
     assert.deepStrictEqual(h.visited, [selected.url], 'Retomar explicito continua o escopo salvo');
 }
 
+async function categoryNavigationSettles() {
+    const selected = { key: 'cars', nome: 'Carros e Caminhonetes', url: 'https://lista.mercadolivre.com.br/veiculos/carros-caminhonetes' };
+    const other = { key: 'old', nome: 'Anterior', url: 'https://lista.mercadolivre.com.br/anterior' };
+    let reads = 0;
+    const h = harness({ [selected.url]: () => {
+        reads += 1;
+        if (reads <= 2) return { url: `${base}/categorias`, readyState: reads === 1 ? 'loading' : 'complete', authRequired: true };
+        if (reads === 3) return { url: `${base}/categorias`, readyState: 'complete', categories: [other], hasChildren: true };
+        if (reads <= 5) return { url: selected.url + '/', readyState: 'loading', categories: [other], hasChildren: true };
+        return { url: selected.url + '/', readyState: 'complete', empty: true };
+    } });
+    await h.runner.start(selected); await h.runner.task;
+    assert.strictEqual(reads, 7);
+    assert.strictEqual(h.saved().status, 'completed');
+    assert.deepStrictEqual(h.visited, [selected.url], 'a loading category must not be navigated again');
+    assert.deepStrictEqual(h.saved().checkpoint.categories, [selected], 'old and loading trees are never enqueued');
+    assert.deepStrictEqual(h.saved().checkpoint.scope.category, selected);
+    let hydrationReads = 0;
+    const hydration = harness({ [selected.url]: () => {
+        hydrationReads += 1;
+        return { url: selected.url, readyState: 'complete', categoriesIndexUrl: `${base}/categorias`,
+            ...(hydrationReads > 5 ? { empty: true } : {}) };
+    } });
+    await hydration.runner.start(selected); await hydration.runner.task;
+    assert.strictEqual(hydrationReads, 7, 'a navigation-menu index link cannot declare a category fully loaded');
+    assert.strictEqual(hydration.saved().status, 'completed');
+    assert.strictEqual(hydration.saved().counters.pages, 1);
+    for (const host of ['imoveis', 'servicos']) {
+        const native = { key: host, nome: host, url: `https://${host}.mercadolivre.com.br/casas/` };
+        assert.ok(normalizeCategory(native));
+        assert.strictEqual(normalizeCategory({ ...native, url: `https://${host}.mercadolivre.com.br/` }), null);
+        assert.strictEqual(normalizeCategory({ ...native, url: `https://${host}.mercadolivre.com.br/%2F%2F` }), null);
+        assert.strictEqual(normalizeCategory({ ...native, url: native.url + '?seller_id=123' }), null);
+    }
+    const login = harness({ [selected.url]: { url: selected.url, avantAuthRequired: true } });
+    await login.runner.start(selected); await login.runner.task;
+    assert.strictEqual(login.saved().status, 'waiting_login', 'Avant login during category reading pauses collection');
+    assert.deepStrictEqual(login.saved().checkpoint.scope.category, selected);
+    const loginUrl = `${base}/login?from=category`;
+    const redirected = harness({ [selected.url]: { url: loginUrl, readyState: 'complete', authRequired: true } });
+    redirected.runner.browser.getURL = () => loginUrl;
+    await redirected.runner.start(selected); await redirected.runner.task;
+    assert.strictEqual(redirected.saved().status, 'waiting_login', 'an actual ML login redirect still pauses');
+    const nextUrl = selected.url + '/_Desde_49_NoIndex_True';
+    let nextReads = 0;
+    const pagination = harness({
+        [selected.url]: { empty: true, nextUrl },
+        [nextUrl]: () => ++nextReads === 1
+            ? { url: selected.url, readyState: 'complete', avantAuthRequired: true }
+            : { url: nextUrl, readyState: 'complete', empty: true }
+    });
+    await pagination.runner.start(selected); await pagination.runner.task;
+    assert.strictEqual(pagination.saved().status, 'completed', 'login from the previous pagination document is ignored');
+    assert.strictEqual(nextReads, 3);
+    assert.strictEqual(pagination.saved().counters.pages, 2);
+    const authPage = { authRequired: true, readyState: 'complete' };
+    assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: selected.url + '?b=2&a=1' },
+        { getURL: () => selected.url + '?tracking_id=fixture&polycard_client=fixture&a=1&b=2' }), true, 'parser tracking cleanup preserves document identity');
+    assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: `${base}/p/MLB123456?wid=MLB10000001` },
+        { getURL: () => `${base}/p/MLB123456#wid=MLB10000001` }), true, 'parser wid normalization preserves product login');
+    assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: '' }, { getURL: () => selected.url }), false, 'old Avant document cannot pause current ML category');
+    assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: '' }, { getURL: () => 'https://login.avantprocloud.com.br/login' }), true, 'current Avant login remains supported');
+    assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: '' }, { getURL: () => 'https://avantprocloud.com.br.evil.example/login' }), false);
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
+    await categoryNavigationSettles();
     console.log('Pesquisa de Mercado runner: categories, dedup, background, pause, recovery and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });

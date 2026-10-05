@@ -40,25 +40,35 @@ async function loadPesquisaMercadoCategories(runner, parentCategory) {
     pesquisaMercadoCategoryLastUrl = url;
     let page;
     let lastError;
+    let waitingLogin = false;
     try {
         for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
                 if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
                 await browser.navigate(url);
+                const destination = pesquisaMercadoRunnerModule.categoryPageWaiter(url);
                 for (let poll = 0; poll < 34; poll += 1) {
                     await runner.wait(450);
                     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
                     page = await browser.executeJavaScript(runner.scripts.discoveryScript());
                     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-                    if (page.authRequired || page.avantAuthRequired) return { items: [], parentCategory: parent, authRequired: true,
-                        reason: 'Conclua o login no navegador e carregue as categorias novamente.' };
-                    const effectiveUrl = page.url || browser.getURL();
-                    if (!pesquisaMercadoRunnerModule.sameCategoryPage(url, effectiveUrl)) {
-                        throw new Error('O Mercado Livre abriu outra categoria. Recarregue a lista para escolher novamente.');
+                    if (page.authRequired || page.avantAuthRequired) {
+                        if (!pesquisaMercadoRunnerModule.currentPageRequiresLogin(page, browser)) {
+                            destination.observe(page.url || browser.getURL(), false, true);
+                            page = null;
+                            continue;
+                        }
+                        waitingLogin = true;
+                        return { items: [], parentCategory: parent, authRequired: true,
+                            reason: 'Conclua o login no navegador e carregue as categorias novamente.' };
                     }
-                    if ((page.categories || []).length || (page.categoryTree || []).length || parent && ((page.anuncios || []).length || page.empty || page.listingUrl)) break;
+                    const effectiveUrl = page.url || browser.getURL();
+                    const ready = (page.categories || []).length || (page.categoryTree || []).length || parent && ((page.anuncios || []).length || page.empty || page.listingUrl);
+                    const loading = page.readyState === 'loading' || typeof browser.isLoading === 'function' && browser.isLoading();
+                    if (destination.observe(effectiveUrl, ready, loading)) break;
                     page = null;
                 }
+                if (!page && destination.mismatch) throw new Error('O Mercado Livre abriu outra categoria. Recarregue a lista para escolher novamente.');
             } catch (error) {
                 if (pesquisaMercadoQuitting) throw error;
                 lastError = error;
@@ -75,7 +85,7 @@ async function loadPesquisaMercadoCategories(runner, parentCategory) {
         const items = rememberPesquisaMercadoCategories(page.categories);
         return { items, parentCategory: parent };
     } finally {
-        if (page && !page.authRequired && !page.avantAuthRequired) await browser.finish('paused');
+        if (!waitingLogin) await browser.finish('paused');
     }
 }
 
@@ -156,6 +166,9 @@ function pesquisaMercadoBrowserAdapter() {
         },
         getURL() {
             return pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents.getURL() : '';
+        },
+        isLoading() {
+            return !!(pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() && pesquisaMercadoWindow.webContents.isLoadingMainFrame());
         },
         async navigate(url, signal) {
             if (!pesquisaMercadoRunnerModule.allowedUrl(url)) throw new Error('Link fora do Mercado Livre.');

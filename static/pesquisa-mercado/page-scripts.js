@@ -318,14 +318,20 @@
             }
         }
         const categoryData = anchor => {
-            const categoryUrl = absolute(anchor.getAttribute('href'));
+            // The public category index still links this one root through HTTP.
+            // Its confirmed HTTPS destination is a category hub, not a global
+            // permission to follow HTTP links in listings or seller collection.
+            const href = anchor.getAttribute('href');
+            const categoryUrl = absolute(categoryIndexPage && href === 'http://www.mercadolivre.com.br/imoveis/'
+                ? 'https://www.mercadolivre.com.br/c/imoveis' : href);
             const name = clean(anchor.textContent);
             const label = norm(name);
             if (anchor.closest(excludedCategoryArea) || anchor.matches('[aria-current="page"], [aria-disabled="true"]')) return null;
             if (/^(?:ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
             if (!categoryUrl || !name || isProduct(categoryUrl) || identity(categoryUrl).id || identity(categoryUrl).perfilUrl || categoryUrl === url) return null;
             const destination = new URL(categoryUrl), candidatePath = categoryPath(categoryUrl);
-            if (!(destination.hostname === 'lista.mercadolivre.com.br' || /^\/(?:c|categorias)\//.test(destination.pathname))) return null;
+            if (!(['lista.mercadolivre.com.br', 'imoveis.mercadolivre.com.br', 'servicos.mercadolivre.com.br'].includes(destination.hostname)
+                || /^\/(?:c|categorias)\//.test(destination.pathname))) return null;
             if (!candidatePath || candidatePath === '/categorias' || candidatePath === currentCategoryPath || parentCategoryPaths.has(candidatePath)) return null;
             if (!categoryIndexPage && currentCategoryPath.startsWith(candidatePath + '/')) return null;
             if (/_?(?:PriceRange|OrderId|Desde|CustoEnvio|SHIPPING|ITEM_CONDITION|BRAND|LOCATION)_|[?&](?:page|offset|sort|price|shipping|brand|state|city)=/i.test(categoryUrl)) return null;
@@ -362,7 +368,7 @@
         const categoriesIndexUrl = absolute(categoryIndex && categoryIndex.href);
         const scrolling = document.scrollingElement || document.documentElement || document.body;
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
-        return { url, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
+        return { url, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0,
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16

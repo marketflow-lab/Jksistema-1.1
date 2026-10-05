@@ -57,6 +57,8 @@ async function main() {
             if (action === 'categories') {
                 if (mode === 'slow') await new Promise(resolve => { releaseTaxonomy = resolve; });
                 if (mode === 'error') { json({ success: false, message: 'Falha temporária ao carregar categorias.' }); return; }
+                if (mode === 'redirect-error') { json({ ipcError: "Error invoking remote method 'pesquisa-mercado:categories': Error: O ML abriu outra categoria." }); return; }
+                if (mode === 'foreign-error') { json({ ipcError: "Error invoking remote method 'other-module:categories': Error: Mensagem de outra origem." }); return; }
                 if (mode === 'login') { json({ authRequired: true, reason: 'Faça login no Mercado Livre e recarregue a lista.' }); return; }
                 const parent = payload.parentCategory || null;
                 const children = !parent ? [tools, electronics] : parent.key === tools.key ? [electric, manual] : parent.key === electric.key ? [drills] : [];
@@ -81,9 +83,13 @@ async function main() {
         page.on('pageerror', error => errors.push(error.message));
         await page.addInitScript(() => {
             localStorage.setItem('access_token', 'fixture-original-session');
-            const command = action => async payload => (await fetch(`/test/command?action=${action}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-            })).json();
+            const command = action => async payload => {
+                const result = await (await fetch(`/test/command?action=${action}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+                })).json();
+                if (result.ipcError) throw new Error(result.ipcError);
+                return result;
+            };
             window.electronAPI = {
                 startPesquisaMercadoJob: command('start'), getPesquisaMercadoJobStatus: command('status'),
                 getPesquisaMercadoCategories: command('categories'), showPesquisaMercadoBrowser: command('browser'),
@@ -105,6 +111,35 @@ async function main() {
             assert.match(await page.locator('#pm-global-taxonomy-message').textContent(), /Escolha uma categoria ou subcategoria/);
             await page.locator('#pm-global-start').dispatchEvent('click');
             assert.strictEqual(commands.filter(command => command.action === 'start').length, 0, 'seleção obrigatória bloqueia início');
+        });
+        await scenario(async () => {
+            await page.getByRole('button', { name: 'Selecionar Ferramentas e ver subcategorias', exact: true }).click();
+            await page.waitForFunction(() => !document.getElementById('pm-global-start').disabled);
+            mode = 'redirect-error';
+            await page.getByRole('button', { name: 'Selecionar Ferramentas Elétricas e ver subcategorias', exact: true }).click();
+            await page.waitForFunction(() => document.querySelector('#pm-global-taxonomy-message').textContent === 'O ML abriu outra categoria.');
+            assert.doesNotMatch(await page.locator('#pm-global-taxonomy-message').textContent(), /remote method|pesquisa-mercado:categories/);
+            assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true, 'falha na subcategoria impede início acidental no pai');
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-breadcrumb button').count(), 2, 'falha preserva caminho anterior para retry');
+            assert.match(await page.locator('#pm-global-taxonomy-selection').textContent(), /Selecionada: Ferramentas\./);
+            assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 2);
+            const starts = commands.filter(command => command.action === 'start').length;
+            await page.locator('#pm-global-start').dispatchEvent('click');
+            assert.strictEqual(commands.filter(command => command.action === 'start').length, starts, 'click programático também é bloqueado após erro');
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-message').textContent(), 'O ML abriu outra categoria.');
+            mode = 'foreign-error';
+            await page.getByRole('button', { name: 'Selecionar Ferramentas Elétricas e ver subcategorias', exact: true }).click();
+            await page.waitForFunction(() => document.querySelector('#pm-global-taxonomy-message').textContent.includes('other-module:categories'));
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-message').textContent(), "Error invoking remote method 'other-module:categories': Error: Mensagem de outra origem.",
+                'limpeza de mensagens fica restrita aos comandos deste módulo');
+            mode = 'normal';
+            await page.getByRole('button', { name: 'Selecionar Ferramentas Elétricas e ver subcategorias', exact: true }).click();
+            await page.waitForFunction(() => !document.getElementById('pm-global-start').disabled);
+            assert.match(await page.locator('#pm-global-taxonomy-selection').textContent(), /Ferramentas › Ferramentas Elétricas/);
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-message').evaluate(element => element.classList.contains('error')), false, 'retry recompõe o estado sem erro');
+            assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 1);
+            await page.locator('#pm-global-taxonomy-breadcrumb').getByRole('button', { name: 'Todas as categorias', exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
         });
         await scenario(async () => {
             await page.getByRole('button', { name: 'Selecionar Ferramentas e ver subcategorias', exact: true }).click();

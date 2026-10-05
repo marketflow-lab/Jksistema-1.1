@@ -33,6 +33,11 @@ STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024
 MAX_PUBLICATION_BYTES = 64 * 1024 * 1024
 COUNTER_KEYS = ("categories", "pages", "sellers", "ads", "pending")
+CATEGORY_LISTING_HOSTS = {
+    "lista.mercadolivre.com.br",
+    "imoveis.mercadolivre.com.br",
+    "servicos.mercadolivre.com.br",
+}
 _STORE = None
 
 
@@ -115,7 +120,7 @@ def normalize_scope_category(value: Any) -> dict:
     blocked_path = re.search(r"(?:^|/)(?:p|up|perfil|loja|stores?|vendedor)(?:/|$)|/MLB-\d+|_CustId_|_SellerId_", path, re.I)
     if blocked_path or blocked_seller or blocked_product:
         raise HTTPException(422, "Selecione uma categoria do Mercado Livre.")
-    listing = host == "lista.mercadolivre.com.br" and path not in {"", "/"}
+    listing = host in CATEGORY_LISTING_HOSTS and bool(path.strip("/"))
     landing = host in {"mercadolivre.com.br", "www.mercadolivre.com.br"} and bool(re.match(r"/(?:c|categorias)/[^/]+", path))
     if not listing and not landing:
         raise HTTPException(422, "Selecione uma categoria do Mercado Livre.")

@@ -33,6 +33,7 @@ function harness(saved = [], options = {}) {
         setUserAgent(value) { this.userAgent = value; }
         setWindowOpenHandler(handler) { this.windowOpenHandler = handler; }
         getURL() { return this.url; }
+        isLoadingMainFrame() { return !!(options.loading && options.loading(this.url)); }
         isDestroyed() { return false; }
         stop() { this.stops += 1; events.push({ type: 'stop' }); }
         executeJavaScript(code, gesture) {
@@ -42,7 +43,7 @@ function harness(saved = [], options = {}) {
                 return Promise.resolve(typeof fixture === 'function' ? fixture() : fixture || {
                     categories: this.url.endsWith('/categorias') ? [category] : [],
                     anuncios: this.url.endsWith('/categorias') ? [] : [{ id: 'MLB1000000000' }]
-                });
+                }).then(page => ({ url: this.url, ...page }));
             }
             return Promise.resolve({ title: 'fixture result' });
         }
@@ -403,6 +404,45 @@ async function testCategoryRedirectAndQuit() {
     assert.strictEqual(closing.windows[0].destroyed, true, 'category query cannot hold the browser after quit');
 }
 
+async function testCategoryNavigationSettles() {
+    const parent = { key: 'cars', nome: 'Carros e Caminhonetes', url: 'https://lista.mercadolivre.com.br/veiculos/carros-caminhonetes' };
+    const child = { key: 'native', nome: 'Casas', url: 'https://imoveis.mercadolivre.com.br/casas' };
+    const old = { key: 'old', nome: 'Categoria anterior', url: 'https://lista.mercadolivre.com.br/anterior' };
+    let reads = 0;
+    const h = harness([], { withoutChoices: true, categoryPages: {
+        'https://www.mercadolivre.com.br/categorias': { categories: [parent, child] },
+        [parent.url]: () => {
+            reads += 1;
+            if (reads <= 2) return { url: reads === 1 ? '' : 'https://www.mercadolivre.com.br/categorias', readyState: 'complete', avantAuthRequired: true };
+            if (reads === 3) return { url: 'https://www.mercadolivre.com.br/categorias', readyState: 'complete', categories: [old] };
+            if (reads <= 5) return { url: parent.url + '/', readyState: 'loading', anuncios: [{ id: 'temporary' }] };
+            return { url: parent.url + '/', readyState: 'complete', empty: true };
+        },
+        [child.url]: { url: child.url + '/', readyState: 'complete', empty: true }
+    } });
+    await h.command('categories');
+    const result = await h.command('categories', 'one', null, { parentCategory: parent });
+    assert.deepStrictEqual(clone(result), { items: [], parentCategory: parent });
+    assert.strictEqual(reads, 7, 'previous document and loading shell wait for two settled readings');
+    assert.strictEqual(h.windows[0].loads.filter(url => url === parent.url).length, 1, 'transient old URL cannot restart navigation');
+    await assert.rejects(h.command('start', 'one', null, { category: old }), /Escolha uma categoria/, 'old tree never enters choices');
+    const native = await h.command('categories', 'one', null, { parentCategory: child });
+    assert.deepStrictEqual(clone(native.parentCategory), child);
+    assert.deepStrictEqual(clone(native.items), []);
+    await h.api.quit();
+
+    let loadingReads = 0;
+    const loading = harness([], { withoutChoices: true, loading: url => url === parent.url && ++loadingReads <= 2,
+        categoryPages: {
+            'https://www.mercadolivre.com.br/categorias': { categories: [parent] },
+            [parent.url]: { url: parent.url, readyState: 'complete', empty: true }
+        } });
+    await loading.command('categories');
+    await loading.command('categories', 'one', null, { parentCategory: parent });
+    assert.strictEqual(loadingReads, 4, 'Electron loading state must also settle');
+    await loading.api.quit();
+}
+
 async function main() {
     await testBrowserIsolationAndNavigation();
     await testOwnershipAndQueue();
@@ -413,6 +453,7 @@ async function main() {
     await testCategoryLoginBeforeAnyJob();
     await testCategoryTransientRetries();
     await testCategoryRedirectAndQuit();
+    await testCategoryNavigationSettles();
     console.log('Pesquisa de Mercado main browser: janela exclusiva, navegação, ownership, recuperação e encerramento OK');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
