@@ -70,7 +70,6 @@ const requiredSnippets = [
     '.lista-card-base {',
     '.lista-card-excluir {',
     '.lista-card-atualizacao {',
-    'flex-wrap: nowrap;',
     '.documentos-lista-cards {',
     'grid-template-columns: repeat(2, max-content);',
     'justify-content: end;',

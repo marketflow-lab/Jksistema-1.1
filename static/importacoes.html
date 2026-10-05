@@ -58,9 +58,10 @@
         }
 
         .container {
-            max-width: 1160px;
+            width: 100%;
+            max-width: none;
             margin: 0 auto;
-            padding: 24px 26px 34px;
+            padding: 24px clamp(14px, 2vw, 28px) 34px;
         }
 
         .topbar {
@@ -464,7 +465,7 @@
         .lista-card-base {
             padding-top: 10px;
             gap: 6px;
-            flex-wrap: nowrap;
+            flex-wrap: wrap;
         }
 
         .lista-card-base .status {
