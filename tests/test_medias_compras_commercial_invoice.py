@@ -235,6 +235,114 @@ def test_commercial_invoice_usa_todos_os_dados_da_loja_exata(tmp_path, monkeypat
     assert sheet["F4"].value == "STORE: Loja A"
 
 
+@pytest.fixture
+def fornecedores_invoice(tmp_path, monkeypatch):
+    fornecedor = {
+        "id": "fornecedor-a",
+        "nome_empresa": "Fornecedor Atual Co., Ltd.",
+        "nome_contato": "Contato A",
+        "endereco_empresa": "Room 702, Business Building\nNo. 1533, Zhejiang, China",
+        "telefone": "+00 0000-0000",
+        "email": "contato@example.test",
+        "nome_beneficiario": "Beneficiario diferente da empresa",
+        "conta_beneficiario": "dados-bancarios-nao-exportados",
+    }
+    registros = {
+        "tenant-a": [fornecedor, {"id": "fornecedor-b", "nome_empresa": "Fornecedor B"}],
+        "tenant-b": [{"id": "fornecedor-outro", "nome_empresa": "Empresa de outro cliente"}],
+    }
+    for client_id, fornecedores in registros.items():
+        pasta = tmp_path / client_id
+        pasta.mkdir()
+        (pasta / "cadastro_fornecedores.json").write_text(
+            json.dumps({"schema": "jk.cadastro.fornecedores.v1", "fornecedores": fornecedores}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(excel_service, "get_tenant_path", lambda client_id: str(tmp_path / client_id))
+    monkeypatch.setattr(
+        cadastro_compatibilidade,
+        "visao_produtos_cadastro_contexto_loja",
+        lambda *_args: {"store_id": "", "scope": "unresolved"},
+    )
+    return tmp_path, fornecedor
+
+
+def test_commercial_invoice_cabecalho_usa_cadastro_e_formato_da_imagem(fornecedores_invoice):
+    lista = {"supplier": "Nome historico", "fornecedor_id": "fornecedor-a", "itens": []}
+    conteudo = excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    sheet = _carregar_commercial_invoice(conteudo)
+
+    assert sheet["A1"].value.splitlines() == [
+        "Fornecedor Atual Co., Ltd.",
+        "Contact Name: Contato A",
+        "Registered company address: Room 702, Business Building",
+        "No. 1533, Zhejiang, China",
+        "Company Tel: +00 0000-0000",
+        "E-mail: contato@example.test",
+    ]
+    assert "dados-bancarios" not in sheet["A1"].value
+    assert "Beneficiario" not in sheet["A1"].value
+    assert sheet["A1"].alignment.horizontal == "center"
+    assert sheet["A1"].alignment.vertical == "center"
+    assert sheet["A1"].alignment.wrap_text is True
+    assert "A1:I1" in {str(intervalo) for intervalo in sheet.merged_cells.ranges}
+    rich_sheet = load_workbook(io.BytesIO(conteudo), rich_text=True)["Commercial"]
+    blocos = rich_sheet["A1"].value
+    assert blocos[0].font.rFont == "Arial"
+    assert blocos[0].font.sz == 14
+    assert blocos[0].font.b is True
+    assert blocos[1].font.sz == 11
+    assert blocos[1].font.b is True
+    assert sheet["A2"].value == "COMMERCIAL INVOICE"
+    assert _formulas(sheet) == []
+
+
+def test_commercial_invoice_omite_campos_vazios_ao_trocar_fornecedor(fornecedores_invoice):
+    lista = {"supplier": "Nome historico", "fornecedor_id": "fornecedor-b", "itens": []}
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+    assert sheet["A1"].value == "Fornecedor B"
+    assert sheet.row_dimensions[1].height == 93
+
+
+@pytest.mark.parametrize(
+    ("client_id", "fornecedor_id"),
+    [("tenant-a", ""), ("tenant-a", "removido"), ("tenant-a", "fornecedor-outro"),
+     ("tenant-sem-cadastro", "fornecedor-a"), (None, "fornecedor-a")],
+)
+def test_commercial_invoice_preserva_nome_historico_sem_fornecedor_do_cliente(
+    fornecedores_invoice, client_id, fornecedor_id,
+):
+    lista = {"supplier": "Fornecedor legado", "fornecedor_id": fornecedor_id, "itens": []}
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id=client_id)
+    )
+    assert sheet["A1"].value == "Fornecedor legado"
+    assert sheet.row_dimensions[1].height == 93
+
+
+def test_commercial_invoice_cabecalho_extenso_literal_sem_alterar_cadastro(fornecedores_invoice):
+    raiz, fornecedor = fornecedores_invoice
+    fornecedor["nome_empresa"] = '=HYPERLINK("https://example.invalid","unsafe")'
+    fornecedor["endereco_empresa"] = "\n".join(f"Endereco de exemplo {indice}" for indice in range(15))
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    arquivo.write_text(json.dumps({"fornecedores": [fornecedor]}), encoding="utf-8")
+    cadastro_original = arquivo.read_bytes()
+    lista = {"fornecedor_id": "fornecedor-a", "itens": []}
+
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+    assert sheet["A1"].value.startswith("=HYPERLINK")
+    assert sheet["A1"].data_type == "s"
+    assert "Endereco de exemplo 14" in sheet["A1"].value
+    assert sheet.row_dimensions[1].height > 93
+    assert sheet["A2"].value == "COMMERCIAL INVOICE"
+    assert _formulas(sheet) == []
+    assert arquivo.read_bytes() == cadastro_original
+
+
 def test_gerador_inclui_pendentes_e_mantem_numericos_ausentes_em_branco():
     lista = {
         "id": "rascunho",

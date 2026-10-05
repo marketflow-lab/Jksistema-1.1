@@ -156,6 +156,25 @@ def _carregar_fornecedores(client_id: str, *, pasta_tenant: str | None = None) -
     return [dict(item) for item in registros if isinstance(item, dict)]
 
 
+def ler_fornecedor_por_id(
+    client_id: str,
+    fornecedor_id: str | None,
+    *,
+    pasta_tenant: str | None = None,
+) -> dict | None:
+    """Le um fornecedor do cliente sem alterar o cadastro ou exigir seu vinculo."""
+    identificador = str(fornecedor_id or "").strip()
+    if not identificador:
+        return None
+    with _FORNECEDORES_LOCK:
+        fornecedores = _carregar_fornecedores(client_id, pasta_tenant=pasta_tenant)
+        fornecedor = next(
+            (item for item in fornecedores if str(item.get("id") or "").strip() == identificador),
+            None,
+        )
+        return dict(fornecedor) if fornecedor is not None else None
+
+
 def resolver_fornecedor_lista(
     client_id: str,
     fornecedor_id: str | None,
@@ -166,12 +185,7 @@ def resolver_fornecedor_lista(
     identificador = str(fornecedor_id or "").strip()
     if not identificador:
         raise HTTPException(status_code=400, detail="Selecione um fornecedor cadastrado para continuar.")
-    with _FORNECEDORES_LOCK:
-        fornecedores = _carregar_fornecedores(client_id, pasta_tenant=pasta_tenant)
-        fornecedor = next(
-            (item for item in fornecedores if str(item.get("id") or "").strip() == identificador),
-            None,
-        )
+    fornecedor = ler_fornecedor_por_id(client_id, identificador, pasta_tenant=pasta_tenant)
     if fornecedor is None:
         raise HTTPException(status_code=400, detail="Fornecedor não encontrado no cadastro deste cliente.")
     nome = str(fornecedor.get("nome_empresa") or "").strip()
@@ -289,6 +303,7 @@ __all__ = [
     "criar_fornecedor_cadastro",
     "atualizar_fornecedor_cadastro",
     "excluir_fornecedor_cadastro",
+    "ler_fornecedor_por_id",
     "resolver_fornecedor_lista",
     "configure_cadastro_fornecedores_runtime",
 ]

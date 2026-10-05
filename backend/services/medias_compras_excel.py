@@ -5,10 +5,13 @@ from __future__ import annotations
 import io
 import os
 import re
+import textwrap
 import unicodedata
 from datetime import datetime
 
 import openpyxl
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
@@ -125,6 +128,53 @@ def _formatar_data_commercial_invoice(valor) -> str:
         return f"{meses[data.month - 1]} {data.day}, {data.year}"
     except ValueError:
         return texto
+
+
+def _cabecalho_fornecedor_commercial_invoice(lista: dict, client_id: str | None):
+    nome_historico = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+    fornecedor_id = str(lista.get("fornecedor_id") or "").strip()
+    if not client_id or not fornecedor_id:
+        return nome_historico, 93
+
+    from backend.services.cadastro_fornecedores import ler_fornecedor_por_id
+
+    cadastro = ler_fornecedor_por_id(
+        client_id,
+        fornecedor_id,
+        pasta_tenant=get_tenant_path(client_id),
+    )
+    if not cadastro:
+        return nome_historico, 93
+
+    nome = str(cadastro.get("nome_empresa") or "").strip() or nome_historico
+    linhas = [nome]
+    for rotulo, chave in (
+        ("Contact Name", "nome_contato"),
+        ("Registered company address", "endereco_empresa"),
+        ("Company Tel", "telefone"),
+        ("E-mail", "email"),
+    ):
+        valor = str(cadastro.get(chave) or "").strip()
+        if valor:
+            linhas.append(f"{rotulo}: {valor}")
+
+    texto = CellRichText(
+        TextBlock(InlineFont(rFont="Arial", sz=14, b=True, color="000000"), nome),
+        TextBlock(
+            InlineFont(rFont="Arial", sz=11, b=True, color="000000"),
+            "".join(f"\n{linha}" for linha in linhas[1:]),
+        ),
+    )
+    # A altura automatica do Excel nao funciona em celulas mescladas.
+    # Estima tambem as quebras de texto para enderecos extensos.
+    linhas_nome = sum(max(1, len(textwrap.wrap(linha, width=85))) for linha in nome.splitlines()) or 1
+    linhas_dados = sum(
+        max(1, len(textwrap.wrap(linha, width=110)))
+        for dado in linhas[1:]
+        for linha in dado.splitlines()
+    )
+    altura = max(93, 12 + linhas_nome * 18 + linhas_dados * 14)
+    return texto, min(409.5, altura)
 
 
 def _resolver_caminho_foto_cadastro_seguro(
@@ -277,7 +327,7 @@ def _gerar_commercial_invoice_bytes(
     ):
         ws.merge_cells(intervalo)
 
-    fornecedor = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+    cabecalho_fornecedor, altura_cabecalho = _cabecalho_fornecedor_commercial_invoice(lista, client_id)
     numero_invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
     nome_lista = str(lista.get("nome_lista") or "").strip()
     loja = str(lista.get("loja") or "").strip()
@@ -309,7 +359,8 @@ def _gerar_commercial_invoice_bytes(
                 if (valor := str(cadastro_comprador.get(chave) or "").strip())
             )
 
-    _atribuir_texto_excel(ws["A1"], fornecedor)
+    ws["A1"].value = cabecalho_fornecedor
+    ws["A1"].data_type = "s"
     _atribuir_texto_excel(ws["A2"], "COMMERCIAL INVOICE")
     _atribuir_texto_excel(ws["A3"], "INV. No.:")
     _atribuir_texto_excel(ws["C3"], numero_invoice)
@@ -334,7 +385,7 @@ def _gerar_commercial_invoice_bytes(
     for endereco, texto in cabecalhos.items():
         _atribuir_texto_excel(ws[endereco], texto)
 
-    ws.row_dimensions[1].height = 93
+    ws.row_dimensions[1].height = altura_cabecalho
     ws.row_dimensions[2].height = 12
     ws.row_dimensions[3].height = 17.25
     ws.row_dimensions[4].height = 12.75
