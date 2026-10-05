@@ -66,6 +66,8 @@
     };
 
     let browserProxy = null;
+    let manualMode = true;
+    let manualBrowserWanted = false;
     let positionTimer = null;
     let requestSerial = 0;
     const pendingShellRequests = new Map();
@@ -192,7 +194,7 @@
     }
 
     async function aguardarSePausado() {
-        while (state.paused && !state.cancelled) await delay(150);
+        while ((state.paused || !manualMode) && !state.cancelled) await delay(150);
         if (state.cancelled) throw new CancelledError();
     }
 
@@ -323,7 +325,8 @@
         return proxy;
     }
 
-    function navegar(url) {
+    async function navegar(url) {
+        await aguardarSePausado();
         const destino = core.normalizarUrlMercadoLivre(url);
         if (!destino) return Promise.reject(new Error('URL do Mercado Livre invalida.'));
         const proxy = criarProxyNavegador();
@@ -847,6 +850,22 @@
     });
 
     window.addEventListener('resize', agendarPosicao);
+    window.addEventListener('jk-pesquisa-mercado-mode-change', event => {
+        const nextManualMode = !event.detail || event.detail.mode !== 'global';
+        if (nextManualMode === manualMode) return;
+        manualMode = nextManualMode;
+        if (!manualMode) {
+            manualBrowserWanted = !!(browserProxy && browserProxy.visible);
+            esconderNavegador();
+        } else if (manualBrowserWanted && browserProxy && browserProxy.currentUrl) {
+            manualBrowserWanted = false;
+            browserProxy.visible = true;
+            const bounds = obterBoundsNavegador();
+            if (usarShellElectron()) enviarParaShell('jk-ml-browser-show', { url: browserProxy.currentUrl, bounds });
+            else if (hasEmbeddedApi()) window.electronAPI.showEmbeddedMlBrowser(browserProxy.currentUrl, bounds).catch(() => {});
+            agendarPosicao();
+        }
+    });
     window.addEventListener('scroll', agendarPosicao, true);
     window.addEventListener('beforeunload', () => {
         state.cancelled = true;

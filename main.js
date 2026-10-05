@@ -10,6 +10,7 @@ const MAIN_MODULES = [
     path.join(__dirname, 'electron_app', 'main', 'modules', 'window.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'menus-tray.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'favoritos-worker-browser.js'),
+    path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-browser.js'),
     path.join(__dirname, 'electron_app', 'main', 'modules', 'ipc.js')
 ];
 

@@ -287,6 +287,7 @@
             .filter-row input { width: 100%; }
         }
     </style>
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261005-ml-categorias-v2">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
@@ -296,7 +297,7 @@
                 <span class="module-mark">PM</span>
                 <div>
                     <h1>Pesquisa de Mercado</h1>
-                    <p class="subtitle">Percorre o perfil de um vendedor, abre os an&uacute;ncios e organiza os mais vendidos.</p>
+                    <p class="subtitle">Descubra vendedores e compare os an&uacute;ncios com os dados do Avant Pro.</p>
                 </div>
             </div>
             <div class="header-actions">
@@ -305,7 +306,84 @@
             </div>
         </header>
 
+        <div class="pm-mode-tabs" role="tablist" aria-label="Tipo de pesquisa de mercado">
+            <button class="pm-mode-tab" type="button" role="tab" aria-selected="true" aria-controls="pm-panel-manual" id="pm-mode-manual">Consulta por vendedor</button>
+            <button class="pm-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="pm-panel-global" tabindex="-1" id="pm-mode-global">Pesquisa geral no ML</button>
+        </div>
         <main class="panel">
+            <section class="pm-global" id="pm-panel-global" role="tabpanel" aria-labelledby="pm-mode-global" hidden>
+                <div class="pm-global-heading">
+                    <div>
+                        <h2>Pesquisa geral no ML</h2>
+                        <p class="pm-global-note">Escolha uma categoria ou subcategoria. A pesquisa percorre a sele&ccedil;&atilde;o e suas subcategorias, encontra vendedores e analisa os an&uacute;ncios da primeira p&aacute;gina de cada vendedor com o Avant Pro.</p>
+                    </div>
+                </div>
+                <section class="pm-taxonomy" aria-label="Escolher categoria da pesquisa">
+                    <div class="pm-taxonomy-heading">
+                        <h3>Categoria ou subcategoria</h3>
+                        <button class="btn" type="button" id="pm-global-taxonomy-refresh">Carregar categorias</button>
+                    </div>
+                    <nav class="pm-taxonomy-breadcrumb" id="pm-global-taxonomy-breadcrumb" aria-label="Caminho da categoria"></nav>
+                    <div class="pm-taxonomy-list" id="pm-global-taxonomy-list" aria-label="Categorias dispon&iacute;veis"></div>
+                    <div class="pm-taxonomy-message" id="pm-global-taxonomy-message" aria-live="polite">Escolha uma categoria ou subcategoria para iniciar a pesquisa.</div>
+                    <button class="btn" type="button" id="pm-global-taxonomy-browser" hidden>Abrir navegador para login</button>
+                    <div class="pm-taxonomy-start">
+                        <p id="pm-global-taxonomy-selection" class="pm-global-note">Nenhuma categoria selecionada.</p>
+                        <button class="btn btn-primary" type="button" id="pm-global-start" disabled>pesquisar em todo ML</button>
+                    </div>
+                </section>
+                <div class="pm-global-actions" aria-label="Controles da pesquisa em todo ML">
+                    <button class="btn btn-warning" type="button" id="pm-global-pause" disabled>Pausar</button>
+                    <button class="btn" type="button" id="pm-global-resume" disabled>Retomar</button>
+                    <button class="btn btn-danger" type="button" id="pm-global-cancel" disabled>Cancelar</button>
+                    <button class="btn" type="button" id="pm-global-browser" disabled>Mostrar navegador</button>
+                </div>
+                <div class="pm-global-status" aria-live="polite">
+                    <div id="pm-global-scope" class="pm-global-scope">Nenhuma pesquisa iniciada.</div>
+                    <div id="pm-global-status" class="status-message">A pesquisa continua em segundo plano ao usar outros m&oacute;dulos.</div>
+                    <span id="pm-global-category-current" class="section-note">Aguardando categoria</span>
+                </div>
+                <div class="pm-global-stats" aria-label="Progresso da pesquisa em todo ML">
+                    <article class="stat-card"><div class="stat-label">Categorias</div><div id="pm-global-categories-count" class="stat-value">0</div><div class="stat-detail">percorridas</div></article>
+                    <article class="stat-card"><div class="stat-label">P&aacute;ginas</div><div id="pm-global-pages-count" class="stat-value">0</div><div class="stat-detail">consultadas</div></article>
+                    <article class="stat-card"><div class="stat-label">Vendedores</div><div id="pm-global-sellers-count" class="stat-value">0</div><div class="stat-detail">conclu&iacute;dos</div></article>
+                    <article class="stat-card"><div class="stat-label">An&uacute;ncios</div><div id="pm-global-ads-count" class="stat-value">0</div><div class="stat-detail">consultados</div></article>
+                    <article class="stat-card"><div class="stat-label">Pend&ecirc;ncias</div><div id="pm-global-pending-count" class="stat-value">0</div><div class="stat-detail">dados ou falhas</div></article>
+                </div>
+                <div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa">
+                    <button class="pm-global-tab" type="button" role="tab" aria-selected="true" aria-controls="pm-global-ranking-panel" id="pm-global-tab-geral">Ranking geral</button>
+                    <button class="pm-global-tab" type="button" role="tab" aria-selected="false" aria-controls="pm-global-ranking-panel" tabindex="-1" id="pm-global-tab-vendedor">Ranking por vendedor</button>
+                </div>
+                <div class="pm-global-filters">
+                    <input id="pm-global-search" type="search" aria-label="Buscar an&uacute;ncios no ranking" placeholder="Buscar por t&iacute;tulo, MLB ou vendedor">
+                    <select id="pm-global-category" aria-label="Filtrar por categoria"><option value="">Todas as categorias</option></select>
+                    <span id="pm-global-count" class="source-chip">0 an&uacute;ncio(s)</span>
+                </div>
+                <div class="pm-global-results" role="tabpanel" aria-labelledby="pm-global-tab-geral" id="pm-global-ranking-panel">
+                    <aside class="pm-global-sellers" id="pm-global-sellers" aria-label="Escolher vendedor" hidden>
+                        <input id="pm-global-seller-search" type="search" aria-label="Buscar vendedor" placeholder="Buscar vendedor">
+                        <div class="pm-global-seller-list" id="pm-global-seller-list"></div>
+                    </aside>
+                    <div class="pm-global-ranking">
+                        <p id="pm-global-seller-label" hidden>Selecione um vendedor para ver seu ranking.</p>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>Pos.</th><th>Foto</th><th>An&uacute;ncio</th><th>Vendedor</th><th>Pre&ccedil;o</th><th>Vendas</th><th>Data de cria&ccedil;&atilde;o</th><th>M&eacute;dia mensal</th><th>Link</th><th>Situa&ccedil;&atilde;o</th></tr></thead>
+                                <tbody id="pm-global-body"></tbody>
+                            </table>
+                            <div id="pm-global-empty" class="empty-state">Inicie uma pesquisa para consultar os rankings.</div>
+                        </div>
+                        <div class="pm-global-pagination" aria-label="P&aacute;ginas do ranking">
+                            <button class="btn" type="button" id="pm-global-previous" disabled>Anterior</button>
+                            <span id="pm-global-page">P&aacute;gina 1 de 1</span>
+                            <button class="btn" type="button" id="pm-global-next" disabled>Pr&oacute;xima</button>
+                        </div>
+                    </div>
+                </div>
+                <p class="footer-note">Ranking pela m&eacute;dia mensal do Avant, como no Favoritos. An&uacute;ncios sem m&eacute;tricas suficientes ficam ao final, com o motivo e sem posi&ccedil;&atilde;o num&eacute;rica. Os resultados s&atilde;o atualizados a cada vendedor conclu&iacute;do, em p&aacute;ginas de 100 an&uacute;ncios.</p>
+            </section>
+            <div id="pm-panel-manual" role="tabpanel" aria-labelledby="pm-mode-manual">
+            <h2 class="pm-manual-label">Consulta por vendedor</h2>
             <section class="controls" aria-label="Configura&ccedil;&atilde;o da pesquisa de mercado">
                 <div class="control-grid">
                     <div class="field">
@@ -401,11 +479,13 @@
                 </div>
                 <p class="footer-note">An&uacute;ncios sem quantidade de vendas leg&iacute;vel ficam fora do ranking, mas continuam contabilizados no resumo. Quando uma p&aacute;gina de cat&aacute;logo abre com vendedor diferente, o valor dessa p&aacute;gina n&atilde;o &eacute; atribu&iacute;do ao perfil pesquisado.</p>
             </section>
+            </div>
         </main>
     </div>
 
     <script src="/pesquisa-mercado/core.js?v=20260804-pesquisa-mercado-v1"></script>
     <script src="/pesquisa-mercado/runtime.js?v=20260804-pesquisa-mercado-v1"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261005-ml-categorias-v2"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>
 </html>

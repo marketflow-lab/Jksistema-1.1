@@ -1240,6 +1240,9 @@ app.whenReady().then(async () => {
             message: 'Favoritos rodando em segundo plano.'
         });
     });
+    for (const action of ['start', 'status', 'pause', 'resume', 'cancel', 'show-browser', 'categories']) {
+        ipcMain.handle(`pesquisa-mercado:${action}`, (event, payload) => pesquisaMercadoCommand(event, action, payload || {}));
+    }
     ipcMain.handle('favoritos-job-browser-stop', async (event) => {
         assertTrustedFavoritosIpcSender(event, 'favoritos-job-browser-stop');
         return stopFavoritosWorkerBrowser({
@@ -1762,7 +1765,10 @@ app.on('before-quit', (event) => {
         setTimeout(() => resolve({ success: false, timeout: true }), 8000);
     });
     authenticationQuitPersistencePromise = Promise.race([
-        persistAuthenticationState('before-quit-authentication'),
+        Promise.all([
+            persistAuthenticationState('before-quit-authentication'),
+            persistPesquisaMercadoBeforeQuit()
+        ]).then(results => results[0]),
         timeoutPromise
     ])
         .then((result) => {

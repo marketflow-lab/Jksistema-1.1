@@ -49,6 +49,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openEtiquetasPdfInChrome: (pdfBytes, filename) => ipcRenderer.invoke('open-etiquetas-pdf-in-chrome', pdfBytes, filename || ''),
     extractMlSearchResults: (url) => ipcRenderer.invoke('extract-ml-search-results', url),
     startFavoritosJobBrowserBackground: (url) => ipcRenderer.invoke('favoritos-job-browser-start', url || ''),
+    startPesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:start', payload || {}),
+    getPesquisaMercadoCategories: payload => ipcRenderer.invoke('pesquisa-mercado:categories', payload || {}),
+    getPesquisaMercadoJobStatus: payload => ipcRenderer.invoke('pesquisa-mercado:status', payload || {}),
+    pausePesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:pause', payload || {}),
+    resumePesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:resume', payload || {}),
+    cancelPesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:cancel', payload || {}),
+    showPesquisaMercadoBrowser: payload => ipcRenderer.invoke('pesquisa-mercado:show-browser', payload || {}),
+    onPesquisaMercadoProgress: callback => {
+        if (typeof callback !== 'function') return () => {};
+        const listener = (_event, payload) => callback(payload);
+        ipcRenderer.on('pesquisa-mercado:progress', listener);
+        return () => ipcRenderer.removeListener('pesquisa-mercado:progress', listener);
+    },
     stopFavoritosJobBrowserBackground: () => ipcRenderer.invoke('favoritos-job-browser-stop'),
     startFavoritosWorkerBrowser: (url, workerId = 'w0', options = {}) => ipcRenderer.invoke('favoritos-worker:start', url || '', workerId || 'w0', options || {}),
     pauseFavoritosWorkerBrowser: (workerId = 'w0') => ipcRenderer.invoke('favoritos-worker:pause', workerId || 'w0'),

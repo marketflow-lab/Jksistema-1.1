@@ -76,18 +76,7 @@
   function ordenarAnunciosFavoritosRanking(anuncios, sku = '') {
       return filtrarAnunciosIgnoradosRanking(anuncios, sku)
           .map((anuncio, index) => ({ anuncio, index, metrica: calcularMetricasMediaVendas(anuncio) }))
-          .sort((a, b) => {
-              const mediaA = Number.isFinite(a.metrica.media) ? a.metrica.media : -1;
-              const mediaB = Number.isFinite(b.metrica.media) ? b.metrica.media : -1;
-              if (Math.abs(mediaB - mediaA) > 0.0001) return mediaB - mediaA;
-              const vendasB = Number.isFinite(b.metrica.vendas) ? b.metrica.vendas : -1;
-              const vendasA = Number.isFinite(a.metrica.vendas) ? a.metrica.vendas : -1;
-              if (vendasB !== vendasA) return vendasB - vendasA;
-              const posicaoA = Number(a.anuncio.posicao) || 9999;
-              const posicaoB = Number(b.anuncio.posicao) || 9999;
-              if (posicaoA !== posicaoB) return posicaoA - posicaoB;
-              return a.index - b.index;
-          })
+          .sort((a, b) => global.PesquisaMercadoRanking.compareListings(a, b))
           .map(item => {
               const mediaCalculada = Number.isFinite(item.metrica.media) ? item.metrica.media : null;
               item.anuncio.media_vendas_mensal = mediaCalculada;

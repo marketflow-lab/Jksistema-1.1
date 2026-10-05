@@ -145,45 +145,10 @@
         }
 
         function calcularMetricasMediaVendas(anuncio) {
-            const vendas = parseVendasAvantPro(anuncio);
-            const mediaDireta = parseNumeroDecimalFavoritos(
-                anuncio && (
-                    anuncio.media_vendas_mensal ??
-                    anuncio.media_mensal ??
-                    anuncio.ritmo_atual ??
-                    anuncio.ritmo_vendas_mes ??
-                    anuncio.media_vendas_mensal ??
-                    ''
-                )
-            );
-            const dataCriacao = parseDataCriacao(anuncio && anuncio.data_criacao);
-            if (vendas === null || !dataCriacao) {
-                return {
-                    vendas,
-                    meses: null,
-                    media: Number.isFinite(mediaDireta) ? mediaDireta : null,
-                    dataCriacao: dataCriacao || null
-                };
-            }
-
-            const agora = new Date();
-            const diffMs = agora.getTime() - dataCriacao.getTime();
-            if (!Number.isFinite(diffMs) || diffMs < 0) {
-                return {
-                    vendas,
-                    meses: null,
-                    media: Number.isFinite(mediaDireta) ? mediaDireta : null,
-                    dataCriacao
-                };
-            }
-
-            const dias = Math.max(1, diffMs / 86400000);
-            const meses = dias / 30.4375;
-            const mediaCalculada = vendas / meses;
-            const media = Number.isFinite(mediaCalculada)
-                ? mediaCalculada
-                : (Number.isFinite(mediaDireta) ? mediaDireta : null);
-            return { vendas, meses, media, dataCriacao };
+            return global.PesquisaMercadoRanking.calculateMetrics({
+                ...(anuncio || {}),
+                vendas: parseVendasAvantPro(anuncio)
+            });
         }
 
         function formatarMediaVendas(anuncio) {

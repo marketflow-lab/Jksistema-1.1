@@ -20,6 +20,7 @@ function readBrowserAssets(root) {
 function generatedBrowserPaths(root) {
   const assets = readBrowserAssets(root);
   return [
+    'static/pesquisa-mercado/shared-ranking.js',
     assets.runtime,
     assets.pageRuntime,
     ...assets.pageScripts,
@@ -31,6 +32,7 @@ function generatedBrowserPaths(root) {
 function browserSource(root, options = {}) {
   const assets = readBrowserAssets(root);
   const paths = [
+    'static/pesquisa-mercado/shared-ranking.js',
     ...(options.preloaded === false ? [] : PRELOADED_BROWSER_ASSETS),
     assets.runtime,
     ...assets.modules,

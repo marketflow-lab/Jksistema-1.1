@@ -103,6 +103,8 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]
         return "mercado_full"
     if rota.startswith("/api/favoritos/"):
         return "favoritos"
+    if rota.startswith("/api/pesquisa-mercado/"):
+        return "favoritos"
     if rota.startswith("/api/admin/"):
         return "admin_usuarios"
     return None

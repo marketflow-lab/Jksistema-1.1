@@ -2330,6 +2330,10 @@ def _enriquecer_link_html(url: str, max_retries: int = 1, delay: int = 1):
 
 favoritos_endpoint_service.configure_favoritos_endpoints_runtime(sys.modules[__name__])
 app.include_router(create_favoritos_router())
+from backend.routers.pesquisa_mercado import create_pesquisa_mercado_router
+from backend.services.pesquisa_mercado import configure_pesquisa_mercado_store
+configure_pesquisa_mercado_store(PASTA_INFO)
+app.include_router(create_pesquisa_mercado_router())
 
 
 def _financial_comparison_load_ml_stores(client_id: str) -> list[dict]:

@@ -3,6 +3,7 @@
   "version": "20260807-favoritos-sku-modular-v1",
   "entrypoint": "favoritos.html",
   "assets": [
+    "pesquisa-mercado/shared-ranking.js",
     "favoritos/styles.css",
     "favoritos/styles/01-foundation.css",
     "favoritos/styles/02-sku.css",
@@ -131,7 +132,8 @@
     "favoritos/init.js"
   ],
   "sha256": {
-    "favoritos.html": "2939f619a9117281418733bfbcc27219f488fed9a44874e705683e7c50f12cdd",
+    "favoritos.html": "51b499e5695ac45cafa0639dfcee45913924feb721248987efb9a21400e1cfe6",
+    "pesquisa-mercado/shared-ranking.js": "f4302bfce9932bf6c08b69c17b1494afaefcc6d7914e88238ad63109999b7555",
     "favoritos/styles.css": "64b1ab3d9462915fb4ee8a95c8b3688de8c2c4b1553031bfa0010eaaabca1f08",
     "favoritos/styles/01-foundation.css": "ecf44e129b48a9cb5dd7222af5f718600031f62946696601cfda14f6325fadff",
     "favoritos/styles/02-sku.css": "585fe80c43c5726d09a5842461c12f095a6ebb9b3e81e0d433a7287ca418223b",
@@ -169,7 +171,7 @@
     "favoritos/v2/browser/page-scripts/legacy-extract.js": "d1db08fd545794ff3281d440bb8fa9799937cd9a954eba449f3ce18fe71749ed",
     "favoritos/v2/browser/navigation-search.js": "86e4f1591d62222f1393f59908c97172283b069a8fbf871a9ecc2a7f1b81ba50",
     "favoritos/v2/browser/avant-cache-compat.js": "7a98178b3a00014817d60a9516d1d70d4fd8316e4b2af22340e39c050746d8ec",
-    "favoritos/v2/browser/browser-ui.js": "f150ff3976cfe2180d1d648c780fc5b43d71add0dd6bbaeaf164c774817a9c85",
+    "favoritos/v2/browser/browser-ui.js": "dd0d7279a12018e61bbbe4f76234b8170e6e068d70ebe06f92dcb3b7fd29c9cb",
     "favoritos/v2/browser/webview-navigation.js": "b3bcbe33cc452ee8f7ec6c449c78841dd4bbbb722902f2e8160b94171e307041",
     "favoritos/v2/browser/shell-runtime.js": "fee54a2f806f42aa2b445b91f88095ec0c3e6bdab33d0738e57c9d65cc017c80",
     "favoritos/v2/browser/avant-entry.js": "f2703545546b2179f7fd9eaba620da5e26a0e0d8ff9f74d2e71519486e399b7e",
@@ -238,7 +240,7 @@
     "favoritos/v2/search-ranking/10-listing-normalization.js": "b60e34fb1c70b9dfb3758975c9c8e647af8c24c797c95c15548341453097ab10",
     "favoritos/v2/search-ranking/11-enrichment-runtime.js": "9742a056ec61b289e68f6210c5aff2cdc5bb7011b80e1dfdc46a80be19947f3a",
     "favoritos/v2/search-ranking/12-enrichment-sources.js": "10626859c3c6e34cb8bfedccd31582de6f49b7efe6c35128b88af38efe38d7aa",
-    "favoritos/v2/search-ranking/13-ranking.js": "411bbdb9b3e4c32f3f4c96771284d7aa9d1c1856241027c96f5f4ef1b411d4df",
+    "favoritos/v2/search-ranking/13-ranking.js": "cf6e4edd890d5b43352de48da63e316776a37d2e3754717b1c360a2f911ed13f",
     "favoritos/v2/search-ranking/14-ai-filter.js": "7d76f86a01260ab63547d96b041cf7cd6f10c82ef3234ab2c35af59d0340d612",
     "favoritos/v2/search-ranking/15-public-api.js": "b319432cf015ff1f1314d5776b98feeb445c04f57de66eb5015121551c8cdea1",
     "favoritos/tabelas-layout/05-resultados-historico.js": "75fd3307f70d66c815fa5d90d07e8e2711092e9b365bc88657203e1f788aad4e",

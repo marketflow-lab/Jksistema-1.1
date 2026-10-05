@@ -1,0 +1,496 @@
+(function (root, factory) {
+    'use strict';
+    if (typeof module === 'object' && module.exports) module.exports = factory(null, require);
+    else root.PesquisaMercadoPageScripts = factory(root, null);
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (root, nodeRequire) {
+    'use strict';
+    let nodeRegistry;
+
+    function defaultRender(name, params) {
+        if (root && root.FavoritosV2 && root.FavoritosV2.browser.pageScripts) {
+            return root.FavoritosV2.browser.pageScripts.render(name, params);
+        }
+        if (!nodeRequire) throw new Error('Scripts do Avant Pro indisponiveis.');
+        if (!nodeRegistry) {
+            // These are the same versioned templates used by Favoritos, not page input.
+            const fs = nodeRequire('fs'), path = nodeRequire('path'), vm = nodeRequire('vm');
+            const context = { window: {} };
+            const directory = path.join(__dirname, '..', 'favoritos', 'v2', 'browser', 'page-scripts');
+            for (const file of ['runtime.js', 'template-bundle-06.js', 'template-bundle-09.js', 'template-bundle-10.js']) {
+                vm.runInNewContext(fs.readFileSync(path.join(directory, file), 'utf8'), context, { filename: file, timeout: 1000 });
+            }
+            nodeRegistry = context.window.FavoritosV2.browser.pageScripts;
+        }
+        return nodeRegistry.render(name, params);
+    }
+
+    // Self contained: serialized into the Mercado Livre renderer. Never follows pagination.
+    function readPage() {
+        const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+        const norm = value => clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        const nodes = (selector, scope) => Array.from((scope || document).querySelectorAll(selector));
+        const absolute = value => {
+            if (!clean(value)) return '';
+            try {
+                const url = new URL(value, location.href);
+                if (url.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)) return '';
+                const fragmentText = url.hash.replace(/^#/, '');
+                let fragmentWid = new URLSearchParams(fragmentText).get('wid');
+                if (!fragmentWid) {
+                    try { fragmentWid = new URLSearchParams(decodeURIComponent(fragmentText)).get('wid'); } catch (_error) {}
+                }
+                if (!url.searchParams.has('wid') && /^MLB\d{6,}$/i.test(fragmentWid || '')) {
+                    url.searchParams.set('wid', fragmentWid.toUpperCase());
+                }
+                url.hash = '';
+                for (const key of ['tracking_id', 'position', 'polycard_client', 'sid', 'reco_id', 'searchVariation']) url.searchParams.delete(key);
+                return url.href;
+            } catch (_error) { return ''; }
+        };
+        const identity = value => {
+            const url = absolute(value);
+            const match = url.match(/_CustId_(\d+)/i) || url.match(/[?&](?:seller_id|custid)=(\d+)/i);
+            const profile = url.match(/^(https:\/\/[^/]+\/perfil\/[^/?#]+)/i);
+            const store = url.match(/^https:\/\/[^/]+\/loja\/([^/?#]+)/i);
+            if (store) return { id: '', perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
+            return { id: match ? match[1] : '', perfilUrl: profile ? profile[1].replace(/\/$/, '') : (match ? 'https://lista.mercadolivre.com.br/_CustId_' + match[1] : ''), store: false };
+        };
+        const productId = (value, element) => {
+            const explicit = clean(element && (element.getAttribute('data-item-id') || element.getAttribute('data-id')));
+            const raw = clean(value);
+            const match = raw.match(/[?&](?:wid|item_id)=(MLB\d{6,})(?:[&#]|$)/i)
+                || explicit.match(/\b(MLB-?\d{6,})\b/i)
+                || raw.match(/\b(MLB-\d{6,})\b/i);
+            return match ? match[1].replace('-', '').toUpperCase() : '';
+        };
+        const isProduct = value => /\/MLB-\d{6,}|\/(?:p|up)\/MLB|[?&](?:wid|item_id)=MLB/i.test(value);
+        const firstLink = (scope, selector) => nodes(selector, scope).find(item => absolute(item.getAttribute('href')));
+        const content = document.querySelector('main') || document.body;
+        const url = absolute(location.href);
+        const bodyText = norm(document.body && (document.body.innerText || document.body.textContent));
+        const loginForm = document.querySelector('input[type="password"], form[action*="login"], #login_user_form');
+        const authRequired = /\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
+            || !!loginForm || !!document.querySelector('[data-testid="captcha"], iframe[src*="captcha"]');
+        const avantDialog = nodes('[role="dialog"], [class*="avantpro"][class*="modal"], [class*="avantpro"][class*="login"]')
+            .find(node => /avant\s*pro|avantpro/.test(norm(node.textContent)) && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
+        const officialStore = nodes('a[href*="/loja/"]', content).find(anchor => {
+            if (!identity(anchor.getAttribute('href')).store || anchor.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]')) return false;
+            const label = norm([anchor.textContent, anchor.getAttribute('aria-label'), anchor.getAttribute('title')].join(' '));
+            const nearbyLabel = norm(anchor.parentElement && anchor.parentElement.textContent);
+            return /\bloja\b/.test(label) || (nearbyLabel.length < 160 && /\bloja oficial/.test(nearbyLabel)) || !!anchor.closest('[class*="official-store"], [data-testid*="official-store"]');
+        });
+        const headerSeller = firstLink(content, '.ui-pdp-seller__link, .ui-pdp-seller__link-trigger, .ui-pdp-seller__header__info-container a[href], .ui-seller-info a[href], .seller-info a[href], [data-testid="seller-info"] a[href]') || officialStore;
+        const currentIdentity = identity(url);
+        const headerIdentity = identity(headerSeller && headerSeller.href);
+        const primaryStore = currentIdentity.store ? currentIdentity : (headerIdentity.store ? headerIdentity : null);
+        const allAds = nodes('a[href]', content).find(anchor => {
+            if (anchor.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]')) return false;
+            const label = norm(anchor.textContent);
+            if (!/^(?:todos os (?:produtos|anuncios)|(?:ver|veja|ir para)\s+(?:todos?|mais|os|as)?\s*(?:os\s+|as\s+)?(?:anuncios|produtos))/.test(label)) return false;
+            const candidate = absolute(anchor.getAttribute('href'));
+            if (!candidate) return false;
+            return !primaryStore || identity(candidate).perfilUrl === primaryStore.perfilUrl;
+        });
+        const allIdentity = identity(allAds && allAds.href);
+        const primaryIdentity = currentIdentity.id || currentIdentity.perfilUrl ? currentIdentity : (headerIdentity.id || headerIdentity.perfilUrl ? headerIdentity : allIdentity);
+        const sellerId = primaryIdentity.id || '';
+        const perfilUrl = primaryIdentity.perfilUrl || '';
+        const vendedor = clean(headerSeller && headerSeller.textContent)
+            || clean((document.querySelector('.ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"]') || {}).textContent);
+        const sellerFirstPage = (currentIdentity.id || (currentIdentity.store && new URL(url).hostname === 'lista.mercadolivre.com.br')) && !isProduct(url)
+            && !/_Desde_(?:[2-9]\d*|1\d+)|[?&](?:page|offset)=(?:[2-9]\d*|1\d+)/i.test(url);
+        const allAdsUrl = absolute(allAds && allAds.getAttribute('href')) || (sellerFirstPage ? url : '');
+        const categoryPath = value => {
+            try { return new URL(value).pathname.replace(/\/_NoIndex_True\/?$/i, '').replace(/\/$/, ''); } catch (_error) { return ''; }
+        };
+        const categoryListing = !isProduct(url) && !currentIdentity.id && !currentIdentity.perfilUrl
+            ? nodes('a[href]', content).find(anchor => {
+                if (!/^ver (?:tudo|todos(?: os produtos)?)$/.test(norm(anchor.textContent))) return false;
+                if (anchor.closest('[class*="carousel"], [class*="recommend"], [class*="trending"], [data-testid="trends"]')) return false;
+                const candidate = absolute(anchor.getAttribute('href'));
+                return candidate && candidate !== url && !isProduct(candidate)
+                    && new URL(candidate).hostname === 'lista.mercadolivre.com.br'
+                    && categoryPath(candidate) === categoryPath(url);
+            }) : null;
+        const listingUrl = absolute(categoryListing && categoryListing.getAttribute('href'));
+        const next = document.querySelector('a[rel="next"], .andes-pagination__button--next a, [data-andes-pagination-control="next"], a.andes-pagination__link[title="Seguinte"], a[aria-label="Seguinte"]');
+        const nextDisabled = next && (next.matches('[disabled], [aria-disabled="true"]') || next.closest('[aria-disabled="true"], .andes-pagination__button--disabled'));
+        const hasNext = !!(next && !nextDisabled);
+        const nextUrl = hasNext ? absolute(next.getAttribute('href')) : '';
+        const cards = [];
+        const seenElements = new Set();
+        const cardSelector = '.ui-search-layout__item, .poly-card, .ui-search-result, [data-testid="search-result"], .ui-search-result__wrapper';
+        const metricRows = scope => nodes('.avantpro-product-info-row', scope);
+        const metricNumber = value => {
+            let text = clean(value).toLowerCase().replace(/^\+\s*/, '');
+            const matched = text.match(/^(\d[\d.,]*)(?:\s*(mil|k|mi|milh[aoõ]+es?))?$/i);
+            if (!matched) return null;
+            text = matched[1];
+            if (/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(text)) text = text.replace(/\./g, '').replace(',', '.');
+            else if (/^\d+(?:,\d+)?$/.test(text)) text = text.replace(',', '.');
+            else if (!/^\d+\.\d{1,2}$/.test(text)) return null;
+            const suffix = matched[2] || '';
+            const amount = Number(text) * (/^(mil|k)$/i.test(suffix) ? 1000 : (suffix ? 1000000 : 1));
+            return Number.isFinite(amount) && amount >= 0 && amount <= Number.MAX_SAFE_INTEGER ? amount : null;
+        };
+        const metricDate = value => {
+            const text = clean(value);
+            const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s|$)/);
+            const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]|$)/);
+            if (!br && !iso) return '';
+            const year = Number(br ? br[3] : iso[1]), month = Number(br ? br[2] : iso[2]), day = Number(br ? br[1] : iso[3]);
+            const date = new Date(Date.UTC(year, month - 1, day));
+            if (year < 1900 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
+            return String(day).padStart(2, '0') + '/' + String(month).padStart(2, '0') + '/' + year;
+        };
+        const readMetrics = rows => {
+            const metrics = { total: null, totalLabel: '', totalPriority: 0, estimated: null, monthly: null, monthlyLabel: '', created: '', sellerName: '', sellerId: '', perfilUrl: '', rows: 0 };
+            for (const row of rows) {
+                const labelNode = row.querySelector('.avantpro-product-info-row-label');
+                const valueNode = row.querySelector('.avantpro-product-info-row-value');
+                if (!labelNode || !valueNode) continue;
+                const label = norm(labelNode.textContent);
+                const value = clean(valueNode.getAttribute('title') || valueNode.textContent);
+                if (!label || !value) continue;
+                metrics.rows += 1;
+                if (/^(?:vendas? (?:do|deste) (?:produto|anuncio|item|catalogo)|quantidade vendida|vendas? do vendedor neste anuncio)$/.test(label)) {
+                    const total = metricNumber(value);
+                    const priority = /(?:anuncio|item)/.test(label) ? 2 : 1;
+                    if (Number.isSafeInteger(total) && priority >= metrics.totalPriority) {
+                        metrics.total = total;
+                        metrics.totalLabel = label;
+                        metrics.totalPriority = priority;
+                    }
+                } else if (/^vendas? estimadas?$/.test(label)) metrics.estimated = metricNumber(value);
+                else if (/^ritmo atual(?:\s|\(|$)/.test(label)) {
+                    metrics.monthly = metricNumber(value);
+                    metrics.monthlyLabel = label;
+                } else if (/^(?:anuncio|catalogo) criado em$|^criado em$/.test(label)) metrics.created = metricDate(value);
+                else if (/^(?:nome do )?vendedor$/.test(label)) {
+                    metrics.sellerName = value;
+                    const anchor = row.querySelector('a[href]');
+                    const evidence = identity(anchor && anchor.getAttribute('href'));
+                    metrics.sellerId = evidence.id;
+                    metrics.perfilUrl = evidence.perfilUrl;
+                }
+            }
+            return metrics;
+        };
+        const floatingRows = metricRows(document).filter(row => {
+            if (row.closest(cardSelector)) return false;
+            const rect = row.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0 && window.getComputedStyle(row).visibility !== 'hidden';
+        });
+        const structuredCache = window.__JK_PM_AVANT_STRUCTURED_CACHE || (window.__JK_PM_AVANT_STRUCTURED_CACHE = Object.create(null));
+        const currentClick = window.__JK_AVANT_LAST_CARD_CLICKED || {};
+        const resolvedKeys = (window.__JK_AVANT_LAST_QUEUE_RESULT || {}).resolvedKeys || [];
+        const resultRoot = content.querySelector('.ui-search-layout, [data-testid="search-results"], .ui-search-results') || content;
+        nodes(cardSelector, resultRoot).forEach(node => {
+            if (node.closest('[class*="recommend"], [class*="carousel"], .ui-recommendations')) return;
+            const outer = node.closest('.ui-search-layout__item, [data-testid="search-result"]') || node;
+            if (seenElements.has(outer)) return;
+            seenElements.add(outer);
+            cards.push(outer);
+        });
+        const anuncios = [], known = new Set();
+        for (const card of cards) {
+            const link = nodes('a[href]', card).find(anchor => isProduct(absolute(anchor.getAttribute('href'))));
+            if (!link) continue;
+            const productUrl = absolute(link.getAttribute('href'));
+            const id = productId(productUrl, card);
+            const key = id || productUrl;
+            if (known.has(key)) continue;
+            known.add(key);
+            const sellerLink = nodes('a[href]', card).find(anchor => {
+                const info = identity(anchor.getAttribute('href'));
+                return info.id || info.perfilUrl;
+            });
+            const cardIdentity = identity(sellerLink && sellerLink.href);
+            const attributedSeller = clean(card.getAttribute('data-seller-id')) || cardIdentity.id;
+            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"], [data-jk-field]', card);
+            const avantText = norm(avantRoots.map(node => node.textContent).join(' '));
+            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).find(anchor => {
+                const info = identity(anchor.href); return info.id || info.perfilUrl;
+            });
+            const avantIdentity = identity(avantLink && avantLink.href);
+            const localRows = metricRows(card);
+            let metrics = readMetrics(localRows);
+            const clickedId = clean(currentClick.id || currentClick.mlb).replace('-', '').toUpperCase();
+            const capturedCurrent = !!(id && clickedId === id && resolvedKeys.includes('id:' + id));
+            if (!localRows.length && capturedCurrent && floatingRows.length) {
+                metrics = readMetrics(floatingRows);
+                if (metrics.rows) structuredCache[key] = metrics;
+            } else if (!localRows.length && structuredCache[key]) metrics = structuredCache[key];
+            const image = card.querySelector('img');
+            const title = card.querySelector('.poly-component__title, .ui-search-item__title, h2, h3') || link;
+            const oldPrice = '.poly-price__old, .andes-money-amount--previous, .andes-money-amount--previous-price, [class*="previous-price"], .price-tag__disabled, s, del';
+            const priceScopes = nodes('.poly-price__current, .ui-search-price__second-line', card);
+            const priceFractions = priceScopes.flatMap(scope => nodes('.andes-money-amount__fraction, .price-tag-fraction', scope))
+                .concat(nodes('.andes-money-amount__fraction, .price-tag-fraction', card));
+            const price = priceFractions.find(node => !node.closest(oldPrice));
+            const amount = price && (price.closest('.andes-money-amount, .price-tag') || price.parentElement);
+            const cents = amount && amount.querySelector('.andes-money-amount__cents, .price-tag-cents');
+            const integerPart = price ? Number(clean(price.textContent).replace(/\./g, '').replace(',', '.')) : NaN;
+            const centsText = clean(cents && cents.textContent).replace(/\D/g, '');
+            const priceValue = Number.isFinite(integerPart) ? integerPart + (centsText ? Number(centsText) / 100 : 0) : null;
+            anuncios.push({
+                id, key, url: productUrl, titulo: clean(title.textContent), imagem: image ? (image.getAttribute('data-src') || image.currentSrc || image.src || '') : '',
+                preco: priceValue,
+                posicao: anuncios.length + 1, catalogo: /\/(?:p|up)\/MLB/i.test(productUrl),
+                seller_id: attributedSeller, seller_perfil_url: cardIdentity.perfilUrl,
+                vendedor: clean(sellerLink && sellerLink.textContent),
+                _avantEvidence: {
+                    present: avantRoots.length > 0,
+                    sellerId: avantIdentity.id || metrics.sellerId, perfilUrl: avantIdentity.perfilUrl || metrics.perfilUrl,
+                    sellerMetric: metrics.totalPriority === 2, metrics
+                }
+            });
+        }
+        // Item pages are used for discovery and optional explicit detail collection.
+        if (!anuncios.length && isProduct(url) && document.querySelector('.ui-pdp-title, [data-testid="product-title"]')) {
+            const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
+            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"]', content);
+            const text = norm(avantRoots.map(node => node.textContent).join(' '));
+            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).find(anchor => identity(anchor.href).id || identity(anchor.href).perfilUrl);
+            const proof = identity(avantLink && avantLink.href);
+            const metrics = readMetrics(floatingRows);
+            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/(?:p|up)\/MLB/i.test(url),
+                seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
+                _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, sellerMetric: metrics.totalPriority === 2, metrics }
+            });
+        }
+        const categories = [], categorySeen = new Set();
+        const categoryIndexPage = /^\/categorias\/?$/.test(location.pathname);
+        const excludedCategoryArea = '[class*="carousel"], [class*="recommend"], [class*="trending"], [data-testid="trends"], [class*="breadcrumb"], [aria-label*="breadcrumb" i], [aria-label*="caminho" i], [data-testid="breadcrumb"], .ui-search-filter-hierarchy--parent, .ui-search-filter-hierarchy--selected';
+        const parentCategoryPaths = new Set(nodes('[class*="breadcrumb"] a[href], [aria-label*="breadcrumb" i] a[href], [data-testid="breadcrumb"] a[href]', content)
+            .map(anchor => categoryPath(absolute(anchor.getAttribute('href')))));
+        const currentCategoryPath = categoryPath(url);
+        const containers = categoryIndexPage ? nodes('.categories__container, .categories, .category-list, .categories-list, [data-testid="categories"]', content)
+            .filter(group => !group.closest(excludedCategoryArea)) : [];
+        let categoryLinks = [];
+        for (const group of containers.filter(group => !containers.some(other => other !== group && other.contains(group)))) {
+            let links = nodes('a[href]', group);
+            if (categoryIndexPage) {
+                // Category directories can also list grandchildren. Prefer their
+                // highest heading links, then the outermost list level.
+                const headingLevel = anchor => {
+                    const heading = anchor.closest('h1, h2, h3, h4, h5, h6') || anchor.querySelector('h1, h2, h3, h4, h5, h6');
+                    return heading ? Number(heading.tagName.slice(1)) : Infinity;
+                };
+                const titles = links.filter(anchor => anchor.matches('.categories__title-link') || anchor.closest('.categories__title'));
+                const bestHeading = Math.min(Infinity, ...links.map(headingLevel));
+                if (titles.length) links = titles;
+                else if (Number.isFinite(bestHeading)) links = links.filter(anchor => headingLevel(anchor) === bestHeading);
+                else {
+                    const listDepth = anchor => {
+                        let depth = 0;
+                        for (let parent = anchor.parentElement; parent && parent !== group; parent = parent.parentElement) {
+                            if (parent.matches('ul, ol')) depth += 1;
+                        }
+                        return depth;
+                    };
+                    const shallowest = Math.min(Infinity, ...links.map(listDepth));
+                    links = links.filter(anchor => listDepth(anchor) === shallowest);
+                }
+            }
+            categoryLinks = categoryLinks.concat(links);
+        }
+        // Mercado Livre has many filter groups. Only Category is a tree edge;
+        // price, location, shipping and sort links are not child categories.
+        const groupSelector = '.ui-search-filter-container, .ui-search-filter-dl, [data-filter-id], [data-testid="category-filter"]';
+        const groupKind = group => {
+            const title = nodes('.ui-search-filter-dt, .ui-search-filter-dt-title, .ui-search-filter-title, h2, h3, legend', group)
+                .find(node => node.closest(groupSelector) === group);
+            const filterId = group.getAttribute('data-filter-id');
+            if (filterId) return filterId === 'category' ? 'category' : 'other';
+            if (group.getAttribute('data-testid') === 'category-filter') return 'category';
+            return title ? (/^categorias?$/.test(norm(title.textContent)) ? 'category' : 'other') : '';
+        };
+        const groups = nodes(groupSelector, content);
+        for (const group of groups) {
+            if (groupKind(group) === 'category') {
+                categoryLinks = categoryLinks.concat(nodes('a[href]', group).filter(anchor => {
+                    for (let parent = anchor.parentElement; parent && parent !== group; parent = parent.parentElement) {
+                        if (parent.matches(groupSelector) && groupKind(parent) === 'other') return false;
+                    }
+                    return true;
+                }));
+            }
+        }
+        const categoryData = anchor => {
+            const categoryUrl = absolute(anchor.getAttribute('href'));
+            const name = clean(anchor.textContent);
+            const label = norm(name);
+            if (anchor.closest(excludedCategoryArea) || anchor.matches('[aria-current="page"], [aria-disabled="true"]')) return null;
+            if (/^(?:ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
+            if (!categoryUrl || !name || isProduct(categoryUrl) || identity(categoryUrl).id || identity(categoryUrl).perfilUrl || categoryUrl === url) return null;
+            const destination = new URL(categoryUrl), candidatePath = categoryPath(categoryUrl);
+            if (!(destination.hostname === 'lista.mercadolivre.com.br' || /^\/(?:c|categorias)\//.test(destination.pathname))) return null;
+            if (!candidatePath || candidatePath === '/categorias' || candidatePath === currentCategoryPath || parentCategoryPaths.has(candidatePath)) return null;
+            if (!categoryIndexPage && currentCategoryPath.startsWith(candidatePath + '/')) return null;
+            if (/_?(?:PriceRange|OrderId|Desde|CustoEnvio|SHIPPING|ITEM_CONDITION|BRAND|LOCATION)_|[?&](?:page|offset|sort|price|shipping|brand|state|city)=/i.test(categoryUrl)) return null;
+            const id = categoryUrl.match(/(?:_CATEGORY_|\/)(MLB\d+)/i);
+            return { key: id ? id[1].toUpperCase() : categoryUrl, nome: name, url: categoryUrl };
+        };
+        for (const anchor of categoryLinks) {
+            const category = categoryData(anchor);
+            if (!category || categorySeen.has(category.url)) continue;
+            categorySeen.add(category.url);
+            categories.push(category);
+        }
+        // The canonical index exposes both roots and their direct children.
+        // /c/... can be a marketing landing; do not infer its tree from carousels.
+        const categoryTree = categoryIndexPage ? categories.map(category => ({ ...category, children: [] })) : [];
+        if (categoryIndexPage) {
+            for (const group of nodes('.categories__container', content)) {
+                const title = group.querySelector('.categories__title-link, .categories__title a[href]');
+                const rootCategory = title && categoryData(title);
+                const tree = rootCategory && categoryTree.find(category => category.url === rootCategory.url);
+                if (!tree) continue;
+                const seenChildren = new Set();
+                tree.children = nodes('.categories__list a[href]', group)
+                    .filter(anchor => anchor.closest('.categories__container') === group)
+                    .map(categoryData)
+                    .filter(child => {
+                        if (!child || child.url === tree.url || seenChildren.has(child.url)) return false;
+                        seenChildren.add(child.url);
+                        return true;
+                    });
+            }
+        }
+        const categoryIndex = nodes('a[href]').find(anchor => /^(?:ver (?:mais|todas as)|todas as|mais) categorias$/.test(norm(anchor.textContent)) && /\/categorias\/?(?:$|\?)/.test(absolute(anchor.href)));
+        const categoriesIndexUrl = absolute(categoryIndex && categoryIndex.href);
+        const scrolling = document.scrollingElement || document.documentElement || document.body;
+        const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
+        return { url, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
+            authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0,
+            empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
+            y, height, viewport, atBottom: y + viewport >= height - 16
+        };
+    }
+
+    function clickNextCategoryPage(expectedUrl) {
+        const canonical = value => {
+            try {
+                const url = new URL(value, location.href);
+                if (url.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)) return '';
+                url.hash = '';
+                for (const key of ['tracking_id', 'position', 'polycard_client', 'sid', 'reco_id', 'searchVariation']) url.searchParams.delete(key);
+                return url.href;
+            } catch (_error) { return ''; }
+        };
+        const current = canonical(location.href);
+        if (!expectedUrl || !current || current !== canonical(expectedUrl)) return { clicked: false, hasNext: false, reason: 'category_url_mismatch' };
+        if (/_CustId_|_SellerId_|[?&](?:seller_id|custid|cust_id)=|\/(?:perfil|loja|stores?|p|up)\/|\/MLB-\d+/i.test(current)) return { clicked: false, hasNext: false, reason: 'not_category_page' };
+        const next = document.querySelector('a[rel="next"], .andes-pagination__button--next a, [data-andes-pagination-control="next"], a.andes-pagination__link[title="Seguinte"], a[aria-label="Seguinte"]');
+        if (!next || next.matches('[disabled], [aria-disabled="true"]') || next.closest('[aria-disabled="true"], .andes-pagination__button--disabled')) return { clicked: false, hasNext: false, reason: 'no_next_page' };
+        const destination = next.getAttribute('href');
+        if (destination && !canonical(destination)) return { clicked: false, hasNext: false, reason: 'invalid_next_url' };
+        next.click();
+        return { clicked: true, hasNext: true, reason: 'next_clicked' };
+    }
+
+    async function withItemLinks(extract) {
+        // Favoritos' parser predates #wid links. Preserve that identity while
+        // its existing DOM parser runs, then restore the exact original hrefs.
+        const changed = [];
+        for (const anchor of document.querySelectorAll('a[href*="#"]')) {
+            try {
+                const original = anchor.getAttribute('href');
+                const url = new URL(original, location.href);
+                if (url.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(url.hostname) || url.searchParams.has('wid')) continue;
+                let wid = new URLSearchParams(url.hash.slice(1)).get('wid');
+                if (!wid) {
+                    try { wid = new URLSearchParams(decodeURIComponent(url.hash.slice(1))).get('wid'); } catch (_error) {}
+                }
+                if (!/^MLB\d{6,}$/i.test(wid || '')) continue;
+                url.searchParams.set('wid', wid.toUpperCase());
+                url.hash = '';
+                const canonical = url.href;
+                anchor.setAttribute('href', canonical);
+                changed.push({ anchor, original, canonical });
+            } catch (_error) {}
+        }
+        try { return await extract(); }
+        finally {
+            for (const item of changed) {
+                if (item.anchor.getAttribute('href') === item.canonical) item.anchor.setAttribute('href', item.original);
+            }
+        }
+    }
+
+    function mergeAvant(page, raw, seller) {
+        const norm = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const profile = value => {
+            try {
+                const url = new URL(value);
+                const store = url.pathname.match(/^\/loja\/([^/]+)/i);
+                if (store) return 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase();
+                return (url.origin + url.pathname.replace(/\/$/, '')).toLowerCase();
+            } catch (_err) { return ''; }
+        };
+        const wantedId = String(seller.sellerId || seller.seller_id || seller.id || '').replace(/^seller:/, '');
+        const wantedProfile = profile(seller.perfilUrl || seller.seller_perfil_url);
+        const wantedName = norm(seller.vendedor || seller.nome);
+        const same = (id, url) => wantedId && id ? wantedId === String(id) : !!(wantedProfile && profile(url) === wantedProfile);
+        const pageMatches = same(page.sellerId, page.perfilUrl);
+        const avant = Array.isArray(raw && raw.anuncios) ? raw.anuncios : [];
+        page.anuncios = page.anuncios.map(base => {
+            const found = avant.find(item => (base.id && String(item.id || item.mlb).replace('-', '') === base.id) || (item.url && item.url.split('#')[0] === base.url.split('#')[0])) || {};
+            const evidence = base._avantEvidence || {};
+            const metrics = evidence.metrics || {};
+            const idConflict = !!(base.seller_id && wantedId && String(base.seller_id) !== wantedId);
+            const directMatches = same(base.seller_id, base.seller_perfil_url);
+            const scoped = !idConflict && (directMatches || ((!base.seller_id && !base.seller_perfil_url) && pageMatches));
+            const sellerId = base.seller_id || (scoped ? page.sellerId : '');
+            const sellerProfile = base.seller_perfil_url || (scoped ? page.perfilUrl : '');
+            const strongNumeric = wantedId && (String(base.seller_id || '') === wantedId || String(evidence.sellerId || '') === wantedId);
+            const storeBrand = /\/loja\//.test(wantedProfile) || seller.seller_name_kind === 'store_brand';
+            const observedName = metrics.sellerName || found.vendedor || '';
+            const nameConflict = !!(!strongNumeric && !storeBrand && wantedName && observedName && wantedName !== norm(observedName));
+            // Only the explicit structured label is a total. Favoritos' historical
+            // fallback may substitute estimated sales or parse PT-BR thousands as decimals.
+            const source = 'avantpro_dom_estruturado';
+            const monthlySource = 'avantpro_dom_estruturado';
+            const sales = metrics.total;
+            const monthly = metrics.monthly;
+            const validSales = Number.isFinite(sales) && sales >= 0;
+            const validMonthly = Number.isFinite(monthly) && monthly >= 0;
+            const catalogueProof = !base.catalogo || (evidence.sellerMetric && same(evidence.sellerId, evidence.perfilUrl));
+            const rankable = scoped && !nameConflict && catalogueProof && (validSales || validMonthly);
+            const item = { ...base, vendedor: observedName || base.vendedor || page.vendedor,
+                seller_id: sellerId, seller_perfil_url: sellerProfile,
+                avant_seller_id: evidence.sellerId || '', avant_seller_perfil_url: evidence.perfilUrl || '',
+                seller_confirmed: scoped && !nameConflict, vendas: validSales ? sales : null,
+                vendasFonte: validSales ? source : '', vendas_fonte: validSales ? source : '',
+                vendas_rotulo: metrics.totalLabel || '', vendas_estimadas: Number.isFinite(metrics.estimated) ? metrics.estimated : null,
+                media_mensal: validMonthly ? monthly : null, media_mensal_fonte: validMonthly ? monthlySource : '',
+                data_criacao: metrics.created || '', dataCriacaoFonte: metrics.created ? source : '',
+                rankable, status: rankable ? 'analisado' : (!scoped || nameConflict ? 'vendedor_nao_confirmado' : (!catalogueProof ? 'catalogo_sem_evidencia_vendedor' : 'sem_dados_avant'))
+            };
+            item.erro = rankable ? '' : (!scoped || nameConflict ? 'Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado.' : (!catalogueProof ? 'O catalogo nao apresentou vendas Avant Pro comprovadas para este vendedor.' : 'O Avant Pro ainda nao apresentou dados de vendas ou ritmo mensal para este anuncio.'));
+            delete item._avantEvidence;
+            return item;
+        });
+        return page;
+    }
+
+    function create(options) {
+        const render = options && options.renderAvantScript || defaultRender;
+        const discoveryScript = () => '/*pm:discovery*/(' + readPage.toString() + ')()';
+        const snapshotScript = options => {
+            const seller = options && options.seller || {};
+            const extract = render('extrair-anuncios-avant-pro-dom-webview-1', { p0: String(Number.MAX_SAFE_INTEGER) }).trim().replace(/;\s*$/, '');
+            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')();const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
+        };
+        const clickAvantScript = () => {
+            const script = render('acionar-cards-avant-pro-fila-webview-1', { p0: '1', p1: '3', p2: '4500', p3: 'true', p4: 'true' }).trim().replace(/;\s*$/, '');
+            return '/*pm:avant-click*/(' + withItemLinks.toString() + ')(()=>(' + script + '))';
+        };
+        const scrollScript = target => '/*pm:scroll*/(function(){const el=document.scrollingElement||document.documentElement;const y=' + (target === 'top' ? '0' : 'Math.min(el.scrollHeight, (window.scrollY||el.scrollTop||0)+Math.max(350,window.innerHeight*0.75))') + ';window.scrollTo(0,y);return {y:y,height:el.scrollHeight};})()';
+        const prepareScript = () => '/*pm:prepare*/window.__JK_PM_AVANT_STRUCTURED_CACHE=Object.create(null);' + render('coletar-primeira-pagina-favoritos-controlada-1', {});
+        const nextCategoryPageScript = expectedUrl => '/*pm:next-category*/(' + clickNextCategoryPage.toString() + ')(' + JSON.stringify(String(expectedUrl || '')) + ')';
+        return Object.freeze({ discoveryScript, sellerInfoScript: discoveryScript, snapshotScript, clickAvantScript, scrollScript, prepareScript, nextCategoryPageScript });
+    }
+    return Object.freeze({ create, ...create() });
+});
