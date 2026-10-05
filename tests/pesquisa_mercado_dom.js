@@ -2,6 +2,7 @@
 const assert = require('assert');
 const { chromium } = require('playwright');
 const scripts = require('../static/pesquisa-mercado/page-scripts');
+const { normalizeCategory } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 const { collectFirstPage } = require('../static/pesquisa-mercado/shared-collector');
 const { createPageScriptRenderer } = require('./helpers/favoritos_browser_sources');
 const path = require('path');
@@ -214,6 +215,22 @@ async function run() {
         ];
         const indexGroup = (name, href, host, children) => '<div class="categories__container"><h2 class="categories__title"><a class="categories__title-link" href="' + href + '">' + name + '</a></h2><ul class="categories__list">'
             + children.map(([path, label]) => '<li><a href="https://' + host + '/' + path + '">' + label + '</a></li>').join('') + '</ul></div>';
+        const vehicles = [
+            ['veiculos/caminhoes/', 'Caminhões'], ['veiculos/carros-antigos/', 'Carros Antigos'],
+            ['veiculos/carros-caminhonetes/', 'Carros e Caminhonetes'], ['veiculos/consorcios/', 'Consórcios'],
+            ['veiculos/motorhomes/', 'Motorhomes'], ['veiculos/motos/', 'Motos'], ['veiculos/nautica/', 'Náutica'],
+            ['veiculos/outros/', 'Outros'], ['veiculos/veiculos-pesados/', 'Veículos Pesados'], ['veiculos/onibus/', 'Ônibus']
+        ];
+        await page.setContent('<main>' + indexGroup('Carros, Motos e Outros',
+            'https://www.mercadolivre.com.br/c/carros-motos-e-outros', 'lista.mercadolivre.com.br', vehicles) + '</main>');
+        const vehicleTree = await page.evaluate(scripts.discoveryScript());
+        assert.equal(vehicleTree.categories.length, 1);
+        assert.equal(vehicleTree.categoryTree[0].children.length, 10, 'índice mantém os dez filhos públicos de veículos');
+        const vehicleUrls = vehicles.map(([relative]) => 'https://lista.mercadolivre.com.br/' + relative);
+        assert.deepEqual(vehicleTree.categoryTree[0].children.map(item => item.url), vehicleUrls);
+        assert.deepEqual(vehicleTree.categoryTree[0].children.map(normalizeCategory).map(item => item.url), vehicleUrls,
+            'extrator → normalizador não pode retirar a barra que mantém o caminho /veiculos no Mercado Livre');
+        assert.deepEqual(vehicleTree.categoryTree[0].children.map(item => item.nome), vehicles.map(item => item[1]));
         await page.setContent('<main>'
             + indexGroup('Imóveis', 'http://www.mercadolivre.com.br/imoveis/', 'imoveis.mercadolivre.com.br', realEstate)
             + indexGroup('Serviços', 'https://www.mercadolivre.com.br/c/servicos', 'servicos.mercadolivre.com.br', services)
@@ -298,6 +315,17 @@ async function run() {
         const deepMotor = await page.evaluate(scripts.discoveryScript());
         assert.equal(deepMotor.categories.length, 40, 'estrutura real de Motor mantem os 40 filhos aninhados');
         assert.deepEqual(deepMotor.categories.map(item => item.url), motorSlugs.map(slug => motorUrl + slug + '/'));
+        assert.deepEqual(deepParts.categories.map(normalizeCategory).map(item => item.url), partsSlugs.map(slug => partsUrl + slug + '/'),
+            'os 22 links profundos de Peças mantêm suas URLs depois da normalização');
+        assert.deepEqual(deepMotor.categories.map(normalizeCategory).map(item => item.url), motorSlugs.map(slug => motorUrl + slug + '/'),
+            'os 40 links profundos de Motor mantêm suas URLs depois da normalização');
+        const queryUrl = motorUrl + 'bombas/?tracking_id=fixture&original_category_landing=true#menu';
+        await page.setContent('<main><dl class="ui-search-filter-dl"><h3>Categorias</h3><a href="' + queryUrl + '">Bombas</a></dl></main>');
+        const queryCategory = (await page.evaluate(scripts.discoveryScript())).categories[0];
+        assert.equal(queryCategory.url, motorUrl + 'bombas/?original_category_landing=true',
+            'discovery remove tracking e fragmento sem perder slash ou query de navegação');
+        assert.equal(normalizeCategory(queryCategory).url, motorUrl + 'bombas/?original_category_landing=true',
+            'normalização mantém a query funcional e a barra do filho profundo');
         assert.ok(deepParts.hasChildren && deepMotor.hasChildren);
         assert.ok(deepMotor.categories.every(item => item.url !== partsUrl), 'breadcrumb para Pecas nao retorna como filho de Motor');
         await page.setContent('<main><div class="ui-search-filter-container"><h3>Preco</h3><a href="https://lista.mercadolivre.com.br/pecas_PriceRange_50-100">R$ 50</a></div></main>');

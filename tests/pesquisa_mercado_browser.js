@@ -62,7 +62,7 @@ function harness(saved = [], options = {}) {
         focus() { this.focused = true; }
         destroy() { this.destroyed = true; events.push({ type: 'destroy' }); this.emit('closed'); }
         loadURL(url) {
-            this.webContents.url = url; this.loads.push(url); events.push({ type: 'load', url });
+            this.webContents.url = options.redirects && options.redirects[url] || url; this.loads.push(url); events.push({ type: 'load', url });
             return this.blockLoads ? new Promise(resolve => { this.releaseLoad = resolve; }) : Promise.resolve();
         }
     }
@@ -80,7 +80,7 @@ function harness(saved = [], options = {}) {
     function serve(options, payload) {
         const owner = options.headers.Authorization === 'Bearer fixture-owner-one' ? 'one'
             : options.headers.Authorization === 'Bearer fixture-owner-two' ? 'two' : null;
-        requests.push({ method: options.method, path: options.path, owner });
+        requests.push({ method: options.method, path: options.path, owner, body: payload ? JSON.parse(payload) : null });
         if (!owner) return { status: 401, data: { detail: 'Sessão inválida.' } };
         if (options.path === '/api/pesquisa-mercado/jobs/latest') {
             return { status: 200, data: { job: clone([...jobs.values()].filter(job => job.owner === owner).at(-1) || null) } };
@@ -138,7 +138,7 @@ function harness(saved = [], options = {}) {
         stopFavoritosWorkersPool: () => { throw new Error('A pesquisa não deve tocar no pool Favoritos.'); },
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
-            if (filename.endsWith('pesquisa-mercado-runner.js')) return { ...runnerModule, PesquisaMercadoRunner: DormantRunner };
+            if (filename.endsWith('pesquisa-mercado-runner.js')) return { ...runnerModule, PesquisaMercadoRunner: options.realRunner ? runnerModule.PesquisaMercadoRunner : DormantRunner };
             if (filename.endsWith('page-scripts.js')) return { discoveryScript: () => 'fixture:categories' };
             if (filename.endsWith('shared-collector.js')) return {};
             throw new Error(`Dependência inesperada: ${path.basename(filename)}`);
@@ -443,7 +443,74 @@ async function testCategoryNavigationSettles() {
     await loading.api.quit();
 }
 
+async function testPublicVehicleUrlsPreserveTrailingSlash() {
+    const hub = { key: 'vehicles', nome: 'Carros, Motos e Outros', url: 'https://www.mercadolivre.com.br/c/carros-motos-e-outros' };
+    const slugs = ['caminhoes', 'carros-antigos', 'carros-caminhonetes', 'consorcios', 'motorhomes',
+        'motos', 'nautica', 'outros', 'veiculos-pesados', 'onibus'];
+    // Public links from the category index. The slash is part of the requested
+    // resource: the observed slashless Caminhoes request became a generic search.
+    const children = slugs.map(slug => ({ key: 'https://lista.mercadolivre.com.br/veiculos/' + slug + '/',
+        nome: slug, url: 'https://lista.mercadolivre.com.br/veiculos/' + slug + '/' }));
+    const categoryPages = {
+        'https://www.mercadolivre.com.br/categorias': { categories: [hub], categoryTree: [{ ...hub, children }] }
+    };
+    const redirects = {};
+    for (const child of children) {
+        const slashless = child.url.replace(/\/$/, '');
+        const genericSearch = slashless.replace('/veiculos/', '/');
+        redirects[slashless] = genericSearch;
+        categoryPages[child.url] = { readyState: 'complete', empty: true };
+        categoryPages[genericSearch] = { readyState: 'complete', empty: true };
+    }
+    const h = harness([], { withoutChoices: true, realRunner: true, categoryPages, redirects });
+    try {
+        await h.command('categories');
+        const directory = await h.command('categories', 'one', null, { parentCategory: hub });
+        for (const child of children) {
+            const leaf = await h.command('categories', 'one', null, { parentCategory: child });
+            assert.deepStrictEqual(clone(leaf), { items: [], parentCategory: child },
+                'seletor mantém a URL pública com slash para ' + child.nome);
+            assert.strictEqual(h.windows[0].loads.at(-1), child.url,
+                'navegação não pode transformar categoria de veículos em busca genérica');
+            assert.strictEqual(h.windows[0].webContents.getURL(), child.url);
+        }
+        assert.deepStrictEqual(clone(directory.items), children, 'os dez links públicos permanecem íntegros no cache do seletor');
+        for (const child of children) {
+            const before = h.windows[0].loads.length;
+            const started = await h.command('start', 'one', null, { category: child });
+            await h.api.coordinator().task;
+            const post = h.requests.filter(request => request.method === 'POST').at(-1);
+            assert.deepStrictEqual(post.body, { category: child }, 'POST deve preservar escopo e URL escolhidos');
+            const saved = h.jobs.get(started.job.id);
+            assert.strictEqual(saved.status, 'completed', 'categoria vazia continua válida e concluível');
+            assert.deepStrictEqual(saved.checkpoint.scope.category, child, 'checkpoint mantém a URL depois do POST e da gravação incremental');
+            assert.strictEqual(saved.checkpoint.categories[0].url, child.url);
+            assert.deepStrictEqual(h.windows[0].loads.slice(before), [child.url],
+                'executor real abre a mesma URL do seletor depois de iniciar');
+            assert.strictEqual(saved.counters.pages, 1);
+            assert.strictEqual(saved.counters.sellers, 0);
+        }
+        assert(!h.windows[0].loads.some(url => Object.hasOwn(redirects, url)),
+            'nenhuma das dez categorias usa o endereço sem slash que redireciona para busca');
+    } finally { await h.api.quit(); }
+
+    const observed = children[0];
+    const legacy = { ...observed, url: observed.url.replace(/\/$/, '') };
+    const redirected = harness([], { withoutChoices: true, categoryPages: {
+        'https://www.mercadolivre.com.br/categorias': { categories: [legacy] },
+        'https://lista.mercadolivre.com.br/caminhoes': { readyState: 'complete', empty: true }
+    }, redirects: { [legacy.url]: 'https://lista.mercadolivre.com.br/caminhoes' } });
+    try {
+        await redirected.command('categories');
+        await assert.rejects(redirected.command('categories', 'one', null, { parentCategory: legacy }), /outra categoria/,
+            'perda real de /veiculos continua sendo rejeitada; não aceitar alias para busca genérica');
+        assert.strictEqual(redirected.windows[0].webContents.getURL(), 'https://lista.mercadolivre.com.br/caminhoes');
+        assert.strictEqual(redirected.windows[0].loads.filter(url => url === legacy.url).length, 3);
+        assert.strictEqual(redirected.jobs.size, 0, 'falha do seletor não pode iniciar uma execução');
+    } finally { await redirected.api.quit(); }
+}
 async function main() {
+    await testPublicVehicleUrlsPreserveTrailingSlash();
     await testBrowserIsolationAndNavigation();
     await testOwnershipAndQueue();
     await testOrphanAndShowCursor();

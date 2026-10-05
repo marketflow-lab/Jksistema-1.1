@@ -39,7 +39,8 @@ function normalizeCategory(value) {
     if (listingHost ? !path.replace(/\//g, '') : !/^\/(?:c|categorias)\/[^/]+/i.test(parsed.pathname)) return null;
     const key = String(value.key || '').trim();
     const nome = String(value.nome || '').replace(/\s+/g, ' ').trim();
-    parsed.pathname = parsed.pathname.replace(/\/$/, '') || '/';
+    // Keep the pathname discovered in navigation: ML can interpret a listing
+    // URL without its trailing slash as a generic search outside that category.
     return key && key.length <= 500 && nome && nome.length <= 400 && url.length <= 4000 ? { key, nome, url: parsed.href } : null;
 }
 
