@@ -961,6 +961,350 @@
         .card[data-key="configuracoes"] { --module: #be87ff; --module-alt: #e4cfff; --module-soft: rgba(190, 135, 255, 0.33); --module-glow: rgba(190, 135, 255, 0.23); }
         .card[data-key="importacoes"] { --module: #ffdd75; --module-alt: #fff3c8; --module-soft: rgba(255, 221, 117, 0.35); --module-glow: rgba(255, 221, 117, 0.24); }
         .card[data-key="admin_usuarios"] { --module: #8fd3ff; --module-alt: #d6efff; --module-soft: rgba(143, 211, 255, 0.32); --module-glow: rgba(143, 211, 255, 0.22); }
+
+        /* Menu central: os controles e estilos das laterais permanecem independentes. */
+        .container.dashboard-menu {
+            max-width: 1420px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        .dashboard-menu .dashboard-menu-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .dashboard-menu .dashboard-menu-brand {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            min-width: 0;
+        }
+
+        .dashboard-menu .dashboard-menu-logo {
+            display: block;
+            width: 166px;
+            height: 78px;
+            object-fit: cover;
+            object-position: 50% 30%;
+            border-radius: 10px;
+            background: #fff;
+            box-sizing: border-box;
+            padding: 6px;
+        }
+
+        .dashboard-menu .dashboard-menu-brand h1 {
+            margin: 0;
+            padding-left: 20px;
+            border-left: 1px solid #4ebde9;
+            color: #f2f7ff;
+            font-size: clamp(1.7rem, 3.2vw, 2.6rem);
+            line-height: 1.1;
+            letter-spacing: -0.7px;
+            white-space: nowrap;
+            text-shadow: none;
+        }
+
+        .dashboard-menu .dashboard-menu-search {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 0 1 300px;
+            min-width: 220px;
+            padding: 12px 14px;
+            border: 1px solid #37638d;
+            border-radius: 12px;
+            background: rgba(12, 36, 62, 0.92);
+            color: #9edbff;
+        }
+
+        .dashboard-menu .dashboard-menu-search svg {
+            width: 20px;
+            height: 20px;
+            flex: 0 0 auto;
+        }
+
+        .dashboard-menu .dashboard-menu-search:focus-within {
+            border-color: #87d8ff;
+            box-shadow: 0 0 0 3px rgba(91, 194, 255, 0.14);
+        }
+
+        .dashboard-menu .dashboard-menu-search input {
+            width: 100%;
+            min-width: 0;
+            padding: 0;
+            border: 0;
+            outline: 0;
+            background: transparent;
+            color: #f2f7ff;
+            font: inherit;
+            font-size: 0.9rem;
+            color-scheme: dark;
+        }
+
+        .dashboard-menu .dashboard-menu-search input::placeholder { color: #b5cbe2; }
+
+        .dashboard-menu .dashboard-menu-sr {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip-path: inset(50%);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .dashboard-menu .dashboard-menu-feedback {
+            margin: 0 0 12px;
+            color: #b9cde5;
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+
+        .dashboard-menu #cards.dashboard-menu-groups {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 18px;
+            align-items: stretch;
+        }
+
+        .dashboard-menu .dashboard-menu-group {
+            min-width: 0;
+            overflow: hidden;
+            border: 1px solid #367da7;
+            border-radius: 14px;
+            background: linear-gradient(145deg, #102944, #0c1e33);
+            box-shadow: 0 8px 22px rgba(0, 0, 0, 0.17);
+        }
+
+        .dashboard-menu .dashboard-menu-cover {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 176px;
+            padding: 22px;
+            overflow: hidden;
+            isolation: isolate;
+        }
+
+        .dashboard-menu .dashboard-menu-cover::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: -2;
+            background-color: #173f5e;
+            background-image: url("/img/dashboard/menu-covers.png");
+            background-size: 200% 200%;
+            background-position: var(--cover-x, 0%) var(--cover-y, 0%);
+            background-repeat: no-repeat;
+        }
+
+        .dashboard-menu .dashboard-menu-cover::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: -1;
+            background:
+                linear-gradient(90deg, rgba(3, 20, 37, 0.97), rgba(3, 20, 37, 0.82) 38%, rgba(3, 20, 37, 0.04) 78%),
+                linear-gradient(0deg, rgba(8, 27, 45, 0.55), transparent 40%);
+        }
+
+        .dashboard-menu .dashboard-menu-group-symbol {
+            width: 28px;
+            height: 28px;
+            color: var(--group-accent, #75d4ff);
+            margin-bottom: 10px;
+        }
+
+        .dashboard-menu .dashboard-menu-cover h2 {
+            margin: 0;
+            color: #f5f9ff;
+            font-size: clamp(1.25rem, 1.65vw, 1.65rem);
+            font-weight: 750;
+            line-height: 1.18;
+            max-width: 80%;
+            letter-spacing: -0.3px;
+        }
+
+        .dashboard-menu .dashboard-menu-cover p {
+            max-width: 230px;
+            margin: 10px 0 0;
+            color: #d3e4f5;
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }
+
+        .dashboard-menu .dashboard-menu-cover h2::after {
+            content: "";
+            display: block;
+            width: 32px;
+            height: 2px;
+            margin-top: 10px;
+            border-radius: 2px;
+            background: #61d5ff;
+        }
+
+        .dashboard-menu .dashboard-menu-module-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 9px;
+            padding: 0 11px 11px;
+        }
+
+        .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid {
+            grid-template-columns: repeat(12, minmax(0, 1fr));
+        }
+
+        .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid > .card {
+            grid-column: span 3;
+        }
+
+        .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid > .card:nth-child(n+5) {
+            grid-column: span 4;
+        }
+
+        .dashboard-menu .dashboard-menu-group[data-group="operacao"] .dashboard-menu-module-grid,
+        .dashboard-menu .dashboard-menu-group[data-group="custos"] .dashboard-menu-module-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .dashboard-menu .card.dashboard-menu-module {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: flex-end;
+            min-width: 0;
+            min-height: 126px;
+            margin: 0;
+            padding: 10px 10px 11px;
+            border: 1px solid #3c6588;
+            border-radius: 10px;
+            background: linear-gradient(155deg, rgba(18, 52, 80, 0.98), rgba(10, 29, 48, 0.98));
+            box-shadow: none;
+            text-align: left;
+            backdrop-filter: none;
+            will-change: auto;
+            transition: background 0.16s ease, border-color 0.16s ease;
+            isolation: auto;
+        }
+
+        .dashboard-menu .card.dashboard-menu-module::before,
+        .dashboard-menu .card.dashboard-menu-module::after { display: none; }
+
+        .dashboard-menu .card.dashboard-menu-module:hover {
+            transform: none;
+            animation: none;
+            border-color: #80d6ff;
+            background: linear-gradient(155deg, #1c4568, #133550);
+            box-shadow: none;
+        }
+
+        .dashboard-menu .card.dashboard-menu-module:focus-visible {
+            outline: 2px solid #98e2ff;
+            outline-offset: -3px;
+            border-color: #98e2ff;
+        }
+
+        .dashboard-menu .dashboard-menu-illustration {
+            display: block;
+            flex: 0 0 auto;
+            width: 82px;
+            height: 82px;
+            max-width: 100%;
+            background-image: url("/img/dashboard/menu-illustrations.png");
+            background-size: 500% 400%;
+            background-position: var(--module-sprite-x, 0%) var(--module-sprite-y, 0%);
+            background-repeat: no-repeat;
+            pointer-events: none;
+        }
+
+        .dashboard-menu .dashboard-menu-illustration--gutter { clip-path: inset(12% 0 0); }
+
+        .dashboard-menu .dashboard-menu-module-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 7px;
+            width: 100%;
+            min-width: 0;
+            margin-top: 4px;
+        }
+
+        .dashboard-menu .card.dashboard-menu-module h3 {
+            margin: 0;
+            color: #f0f6ff;
+            font-size: 0.83rem;
+            font-weight: 700;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+            text-shadow: none;
+        }
+
+        .dashboard-menu .dashboard-menu-module-arrow {
+            position: absolute;
+            top: 14px;
+            right: 10px;
+            width: 13px;
+            height: 13px;
+            color: #b9dbf8;
+        }
+
+        .dashboard-menu .dashboard-menu-empty {
+            grid-column: 1 / -1;
+            padding: 30px 24px;
+            border: 1px solid #37638d;
+            border-radius: 12px;
+            background: #0f2238;
+            color: #eaf4ff;
+            line-height: 1.5;
+        }
+
+        .dashboard-menu .dashboard-menu-empty p { margin: 0; }
+        .dashboard-menu .dashboard-menu-empty button { margin-top: 14px; }
+
+        @media (max-width: 1100px) {
+            .dashboard-menu .dashboard-menu-header { gap: 16px; }
+            .dashboard-menu .dashboard-menu-brand { gap: 14px; }
+            .dashboard-menu .dashboard-menu-logo { width: 138px; height: 64px; padding: 4px; }
+            .dashboard-menu .dashboard-menu-brand h1 { padding-left: 14px; }
+            .dashboard-menu .dashboard-menu-cover { min-height: 156px; padding: 18px; }
+            .dashboard-menu .dashboard-menu-module-grid,
+            .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid,
+            .dashboard-menu .dashboard-menu-group[data-group="operacao"] .dashboard-menu-module-grid,
+            .dashboard-menu .dashboard-menu-group[data-group="custos"] .dashboard-menu-module-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid > .card,
+            .dashboard-menu .dashboard-menu-group[data-group="ml"] .dashboard-menu-module-grid > .card:nth-child(n+5) { grid-column: auto; }
+            .dashboard-menu .dashboard-menu-illustration { width: 74px; height: 74px; }
+        }
+
+        @media (max-width: 760px) {
+            .dashboard-menu .dashboard-menu-header { align-items: stretch; flex-direction: column; gap: 16px; margin-bottom: 18px; }
+            .dashboard-menu .dashboard-menu-brand { gap: 14px; }
+            .dashboard-menu .dashboard-menu-brand h1 { font-size: 1.7rem; }
+            .dashboard-menu .dashboard-menu-search { flex-basis: auto; min-width: 0; }
+            .dashboard-menu #cards.dashboard-menu-groups { grid-template-columns: 1fr; gap: 14px; }
+            .dashboard-menu .dashboard-menu-cover { min-height: 152px; padding: 18px; }
+            .dashboard-menu .dashboard-menu-cover h2 { font-size: 1.45rem; }
+            .dashboard-menu .dashboard-menu-module-grid { gap: 8px; padding: 0 10px 10px; }
+            .dashboard-menu .card.dashboard-menu-module { min-height: 124px; padding: 10px; }
+            .dashboard-menu .card.dashboard-menu-module h3 { font-size: 0.88rem; }
+        }
+
+        @media (max-width: 420px) {
+            .dashboard-menu .dashboard-menu-brand { gap: 12px; }
+            .dashboard-menu .dashboard-menu-logo { width: 115px; height: 54px; padding: 4px; }
+            .dashboard-menu .dashboard-menu-brand h1 { padding-left: 12px; font-size: 1.5rem; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .dashboard-menu .card.dashboard-menu-module { transition: none; }
+        }
     </style>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -1010,14 +1354,21 @@
     </div>
 </aside>
 
-<div class="container">
-    <div class="hero">
-        <h1>🚀 JK Sistema de Gestão</h1>
-        <p class="subtitle">Painel central com acesso rápido aos módulos do sistema</p>
-    </div>
-    
-    <div id="cards" class="grid"></div>
-</div>
+<main class="container dashboard-menu" aria-label="Menu principal">
+    <header class="dashboard-menu-header">
+        <div class="dashboard-menu-brand">
+            <img class="dashboard-menu-logo" src="/img/Logo%20Trend2.png" alt="Trend Minas" width="166" height="78">
+            <h1>JK Sistema</h1>
+        </div>
+        <label class="dashboard-menu-search" for="dashboard-menu-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 5 5"></path></svg>
+            <span class="dashboard-menu-sr">Buscar um módulo</span>
+            <input id="dashboard-menu-search" type="search" placeholder="Buscar um módulo..." autocomplete="off" aria-controls="cards">
+        </label>
+    </header>
+    <p id="dashboard-menu-feedback" class="dashboard-menu-feedback" role="status" aria-live="polite"></p>
+    <div id="cards" class="grid dashboard-menu-groups"></div>
+</main>
 
 <div id="dashboard-status-balloon" class="dashboard-status-balloon hidden is-loading" role="status" aria-live="polite">
     <span class="dashboard-status-icon" aria-hidden="true"></span>
@@ -1773,48 +2124,182 @@
         });
     })();
 
+    const dashboardMenuGroups = [
+        {
+            key: 'ml', title: 'Mercado Livre', desc: 'Campanhas, pesquisas e atendimento.',
+            accent: '#f7d358', coverX: '0%', coverY: '0%',
+            symbol: '<path d="M3 3h2l3 12h10l3-9H6M10 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2M18 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2"/>',
+            keys: ['analise_promo', 'renovacao_fixa', 'anuncios_ml', 'favoritos', 'avant', 'pesquisa_mercado', 'perguntas_pos_venda']
+        },
+        {
+            key: 'operacao', title: 'Operação e estoque', desc: 'Produtos, pedidos e logística.',
+            accent: '#74d9ff', coverX: '100%', coverY: '0%',
+            symbol: '<path d="m12 3 9 5v9l-9 5-9-5V8l9-5Zm-9 5 9 5 9-5M12 13v9"/>',
+            keys: ['vendas', 'etiquetas', 'cadastro', 'estoque', 'mercado_full', 'medias_compras']
+        },
+        {
+            key: 'custos', title: 'Importação e custos', desc: 'Importações, impostos e simulações.',
+            accent: '#58d8f8', coverX: '0%', coverY: '100%',
+            symbol: '<path d="M4 15h16l-3 5H7l-3-5ZM7 15V8h10v7M10 8V4h4v4M3 21l3 1 3-1 3 1 3-1 3 1 3-1"/>',
+            keys: ['importacoes', 'impostos', 'simulador']
+        },
+        {
+            key: 'sistema', title: 'Sistema e equipe', desc: 'Usuários, conexões e colaboração.',
+            accent: '#c4afff', coverX: '100%', coverY: '100%',
+            symbol: '<circle cx="12" cy="7" r="3"/><path d="M6 22v-3a6 6 0 0 1 12 0v3M3 9a2 2 0 1 0 0-4M21 9a2 2 0 1 0 0-4M1 19v-3a4 4 0 0 1 3-4M23 19v-3a4 4 0 0 0-3-4"/>',
+            keys: ['admin_usuarios', 'integracao', 'sala_reuniao', 'configuracoes']
+        }
+    ];
+
+    const dashboardMenuIllustrationKeys = [
+        'admin_usuarios', 'analise_promo', 'renovacao_fixa', 'anuncios_ml', 'etiquetas',
+        'integracao', 'cadastro', 'estoque', 'mercado_full', 'vendas',
+        'favoritos', 'avant', 'pesquisa_mercado', 'perguntas_pos_venda', 'sala_reuniao',
+        'medias_compras', 'impostos', 'simulador', 'importacoes', 'configuracoes'
+    ];
+
+    function normalizarBuscaDashboard(value) {
+        return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    }
+
+    function criarCardMenuDashboard(mod) {
+        const a = document.createElement('a');
+        a.className = 'card dashboard-menu-module';
+        a.dataset.key = String(mod.key || '');
+        a.title = String(mod.desc || '');
+        if (mod.dev) {
+            a.href = '#';
+            a.addEventListener('click', (event) => { event.preventDefault(); alert('Em desenvolvimento'); });
+        } else {
+            a.href = mod.href;
+        }
+
+        const illustration = document.createElement('span');
+        illustration.className = 'dashboard-menu-illustration';
+        illustration.setAttribute('aria-hidden', 'true');
+        const index = dashboardMenuIllustrationKeys.indexOf(mod.key);
+        if (index >= 0) {
+            if (Math.floor(index / 5) === 1) illustration.classList.add('dashboard-menu-illustration--gutter');
+            illustration.style.setProperty('--module-sprite-x', String((index % 5) * 25) + '%');
+            illustration.style.setProperty('--module-sprite-y', String(Math.floor(index / 5) * (100 / 3)) + '%');
+        }
+        a.appendChild(illustration);
+
+        const label = document.createElement('span');
+        label.className = 'dashboard-menu-module-label';
+        const title = document.createElement('h3');
+        const match = String(mod.title || '').match(/^(\S+)\s+(.+)$/);
+        title.textContent = match ? match[2] : String(mod.title || 'Módulo');
+        label.appendChild(title);
+        a.appendChild(label);
+
+        const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        arrow.setAttribute('class', 'dashboard-menu-module-arrow');
+        arrow.setAttribute('viewBox', '0 0 16 16');
+        arrow.setAttribute('fill', 'none');
+        arrow.setAttribute('stroke', 'currentColor');
+        arrow.setAttribute('stroke-width', '1.5');
+        arrow.setAttribute('aria-hidden', 'true');
+        arrow.setAttribute('focusable', 'false');
+        const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        arrowPath.setAttribute('d', 'm6 3 5 5-5 5');
+        arrow.appendChild(arrowPath);
+        a.appendChild(arrow);
+        return a;
+    }
+
     function renderizarCardsDashboard() {
         const cards = document.getElementById('cards');
         if (!cards) return;
         cards.innerHTML = '';
+        const search = document.getElementById('dashboard-menu-search');
+        const query = normalizarBuscaDashboard(search ? search.value : '');
+        let visibleCount = 0;
 
-        if (!enabled.length) {
-            const empty = document.createElement('div');
-            empty.className = 'dashboard-empty-state';
-            empty.innerHTML = `
-                <p>Nenhum módulo habilitado para seu usuário.</p>
-                <div class="dashboard-empty-actions">
-                    <button class="modal-secondary" type="button" onclick="sair()">Sair e entrar novamente</button>
-                </div>
-            `;
-            cards.appendChild(empty);
-            return;
+        dashboardMenuGroups.forEach(group => {
+            const groupModules = group.keys
+                .map(key => enabled.find(mod => mod.key === key))
+                .filter(mod => mod && (!query || normalizarBuscaDashboard(String(mod.title || '') + ' ' + String(mod.desc || '') + ' ' + group.title).includes(query)));
+            if (!groupModules.length) return;
+
+            const section = document.createElement('section');
+            section.className = 'dashboard-menu-group';
+            section.dataset.group = group.key;
+            section.style.setProperty('--cover-x', group.coverX);
+            section.style.setProperty('--cover-y', group.coverY);
+            section.style.setProperty('--group-accent', group.accent);
+            section.setAttribute('aria-labelledby', 'dashboard-menu-group-' + group.key);
+
+            const header = document.createElement('header');
+            header.className = 'dashboard-menu-cover';
+            const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            symbol.setAttribute('class', 'dashboard-menu-group-symbol');
+            symbol.setAttribute('viewBox', '0 0 24 24');
+            symbol.setAttribute('fill', 'none');
+            symbol.setAttribute('stroke', 'currentColor');
+            symbol.setAttribute('stroke-width', '1.8');
+            symbol.setAttribute('stroke-linecap', 'round');
+            symbol.setAttribute('stroke-linejoin', 'round');
+            symbol.setAttribute('aria-hidden', 'true');
+            symbol.setAttribute('focusable', 'false');
+            symbol.innerHTML = group.symbol;
+            header.appendChild(symbol);
+            const title = document.createElement('h2');
+            title.id = 'dashboard-menu-group-' + group.key;
+            title.textContent = group.title;
+            header.appendChild(title);
+            const description = document.createElement('p');
+            description.textContent = group.desc;
+            header.appendChild(description);
+            section.appendChild(header);
+
+            const moduleGrid = document.createElement('div');
+            moduleGrid.className = 'dashboard-menu-module-grid';
+            groupModules.forEach(mod => moduleGrid.appendChild(criarCardMenuDashboard(mod)));
+            section.appendChild(moduleGrid);
+            cards.appendChild(section);
+            visibleCount += groupModules.length;
+        });
+
+        const feedback = document.getElementById('dashboard-menu-feedback');
+        if (feedback) {
+            feedback.textContent = query
+                ? visibleCount + (visibleCount === 1 ? ' módulo encontrado.' : ' módulos encontrados.')
+                : visibleCount + (visibleCount === 1 ? ' módulo disponível.' : ' módulos disponíveis.');
         }
 
-        enabled.forEach(mod => {
-            const a = document.createElement('a');
-            a.className = 'card';
-            a.dataset.key = String(mod.key || '');
-            a.style.setProperty('--d', String(Math.min(560, cards.childElementCount * 40)) + 'ms');
-            if (mod.dev) {
-                a.href = '#';
-                a.addEventListener('click', (e) => { e.preventDefault(); alert('Em desenvolvimento'); });
+        if (!visibleCount) {
+            const empty = document.createElement('div');
+            empty.className = 'dashboard-menu-empty dashboard-empty-state';
+            const message = document.createElement('p');
+            message.textContent = query
+                ? 'Nenhum módulo encontrado. Tente outro nome ou limpe a busca.'
+                : 'Nenhum módulo habilitado para seu usuário.';
+            empty.appendChild(message);
+            if (query) {
+                const clearButton = document.createElement('button');
+                clearButton.className = 'modal-secondary';
+                clearButton.type = 'button';
+                clearButton.textContent = 'Limpar busca';
+                clearButton.addEventListener('click', () => {
+                    search.value = '';
+                    renderizarCardsDashboard();
+                    search.focus();
+                });
+                empty.appendChild(clearButton);
             } else {
-                a.href = mod.href;
+                const exitButton = document.createElement('button');
+                exitButton.className = 'modal-secondary';
+                exitButton.type = 'button';
+                exitButton.textContent = 'Sair e entrar novamente';
+                exitButton.addEventListener('click', sair);
+                empty.appendChild(exitButton);
             }
-            const m = String(mod.title || '').match(/^(\S+)\s+(.+)$/);
-            const icon = m ? m[1] : '•';
-            const titleText = m ? m[2] : String(mod.title || 'Módulo');
-            a.innerHTML =
-                '<div class="card-head">' +
-                    '<span class="card-icon" aria-hidden="true">' + icon + '</span>' +
-                    '<div class="card-title"><h2>' + titleText + '</h2></div>' +
-                '</div>' +
-                '<p>' + mod.desc + '</p>';
-            cards.appendChild(a);
-        });
+            cards.appendChild(empty);
+        }
     }
 
+    document.getElementById('dashboard-menu-search')?.addEventListener('input', renderizarCardsDashboard);
     renderizarCardsDashboard();
     atualizarBotaoCentralUsuarios();
     atualizarSessaoDashboard();
