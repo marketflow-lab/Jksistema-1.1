@@ -287,7 +287,7 @@
             .filter-row input { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261005-ml-categorias-v2">
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261006-ml-status-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
@@ -338,10 +338,15 @@
                     <button class="btn btn-danger" type="button" id="pm-global-cancel" disabled>Cancelar</button>
                     <button class="btn" type="button" id="pm-global-browser" disabled>Mostrar navegador</button>
                 </div>
-                <div class="pm-global-status" aria-live="polite">
+                <div id="pm-global-status-panel" class="pm-global-status" data-state="idle" aria-live="polite">
                     <div id="pm-global-scope" class="pm-global-scope">Nenhuma pesquisa iniciada.</div>
-                    <div id="pm-global-status" class="status-message">A pesquisa continua em segundo plano ao usar outros m&oacute;dulos.</div>
+                    <div class="pm-global-status-heading">
+                        <span class="pm-global-status-indicator" aria-hidden="true"></span>
+                        <div id="pm-global-status" class="status-message">Pronto para pesquisar</div>
+                    </div>
+                    <div id="pm-global-status-detail" class="pm-global-status-detail">Escolha uma categoria e clique em pesquisar em todo ML.</div>
                     <span id="pm-global-category-current" class="section-note">Aguardando categoria</span>
+                    <div id="pm-global-status-warning" class="pm-global-status-warning" hidden></div>
                 </div>
                 <div class="pm-global-stats" aria-label="Progresso da pesquisa em todo ML">
                     <article class="stat-card"><div class="stat-label">Categorias</div><div id="pm-global-categories-count" class="stat-value">0</div><div class="stat-detail">percorridas</div></article>
@@ -485,7 +490,7 @@
 
     <script src="/pesquisa-mercado/core.js?v=20260804-pesquisa-mercado-v1"></script>
     <script src="/pesquisa-mercado/runtime.js?v=20260804-pesquisa-mercado-v1"></script>
-    <script src="/pesquisa-mercado/global-ui.js?v=20261005-ml-categorias-v2"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261006-ml-status-v1"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>
 </html>

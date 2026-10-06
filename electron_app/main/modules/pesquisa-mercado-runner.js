@@ -120,13 +120,28 @@ function sellerFromPage(page) {
     return key ? { key, id, nome: String(page.vendedor || page.sellerName || ''), perfilUrl: profile } : null;
 }
 
+const PROGRESS_PHASES = new Set(['preparing', 'categories', 'discovery', 'seller', 'collecting',
+    'pagination', 'finalizing', 'completed', 'completed_partial', 'paused', 'cancelled', 'waiting_login', 'failed']);
+
+function progressState(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const text = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600) : '';
+    return { phase: PROGRESS_PHASES.has(source.phase) ? source.phase : '', detail: text(source.detail), warning: text(source.warning) };
+}
+
 function initialCheckpoint(saved) {
-    return {
+    const checkpoint = {
         version: 1, phase: 'categories', categories: [], categoryIndex: 0,
         currentCategory: null, page: null, categorySeenPages: [], seenSeedIds: [],
         seenSellerKeys: [], incompleteCategories: [], discoveryInitialized: false,
         ...clone(saved || {})
     };
+    checkpoint.progress = progressState(checkpoint.progress);
+    if (!checkpoint.progress.warning) {
+        const previous = Array.isArray(checkpoint.incompleteCategories) ? checkpoint.incompleteCategories.at(-1) : null;
+        checkpoint.progress.warning = progressState({ warning: previous && previous.motivo }).warning;
+    }
+    return checkpoint;
 }
 
 class PesquisaMercadoRunner {
@@ -151,7 +166,15 @@ class PesquisaMercadoRunner {
         const { id, status, revision, counters, message, created_at, updated_at } = this.job;
         return { job: { id, status, revision, counters, message, created_at, updated_at,
             scopeCategory: this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category || null,
-            currentCategory: this.checkpoint && this.checkpoint.currentCategory || null } };
+            currentCategory: this.checkpoint && this.checkpoint.currentCategory || null,
+            progress: progressState(this.checkpoint && this.checkpoint.progress) } };
+    }
+
+    setProgress(phase, detail) {
+        if (this.stopStatus && phase !== this.stopStatus) return;
+        this.checkpoint.progress = progressState({ ...this.checkpoint.progress, phase, detail });
+        this.job.message = this.checkpoint.progress.detail;
+        this.emit(this.snapshot());
     }
 
     async start(category) {
@@ -182,6 +205,8 @@ class PesquisaMercadoRunner {
         this.stopStatus = '';
         this.controller = new AbortController();
         this.job.status = 'running';
+        this.setProgress('preparing', ['paused', 'waiting_login', 'failed'].includes(job.status)
+            ? 'Retomando a pesquisa a partir do progresso salvo.' : this.job.message || 'Preparando a pesquisa no Mercado Livre.');
         this.task = this.run().finally(() => { this.task = null; });
         // Caller receives an immediate response; failures are represented in job status.
         return this.snapshot();
@@ -191,9 +216,11 @@ class PesquisaMercadoRunner {
         const response = await this.api('GET', jobId ? `${ROOT}/${encodeURIComponent(jobId)}` : `${ROOT}/latest`);
         if (this.task && this.job && response.job && this.job.id === response.job.id) return this.snapshot();
         if (response.job && response.job.status === 'running' && !this.task) {
+            const message = 'Pesquisa recuperada. Clique em Retomar para continuar.';
+            const checkpoint = clone(response.job.checkpoint || {});
+            checkpoint.progress = progressState({ ...initialCheckpoint(checkpoint).progress, phase: 'paused', detail: message });
             return this.api('PATCH', `${ROOT}/${encodeURIComponent(response.job.id)}/checkpoint`, {
-                checkpoint: response.job.checkpoint, counters: response.job.counters, status: 'paused',
-                message: 'Pesquisa recuperada. Clique em Retomar para continuar.'
+                checkpoint, counters: response.job.counters, status: 'paused', message
             });
         }
         return response;
@@ -217,7 +244,7 @@ class PesquisaMercadoRunner {
         this.job.status = status;
         if (this.controller) this.controller.abort();
         if (typeof this.browser.stop === 'function') this.browser.stop();
-        this.job.message = status === 'cancelled' ? 'Pesquisa cancelada; resultados preservados.' : 'Pesquisa pausada; progresso salvo.';
+        this.setProgress(status, status === 'cancelled' ? 'Pesquisa cancelada; resultados preservados.' : 'Pesquisa pausada; progresso salvo.');
         await this.save();
         return this.snapshot();
     }
@@ -231,7 +258,7 @@ class PesquisaMercadoRunner {
             const response = await this.api('PATCH', `${ROOT}/${encodeURIComponent(this.job.id)}/checkpoint`, {
                 checkpoint, status: this.stopStatus || status, counters, message
             });
-            this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status };
+            this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status, message: this.checkpoint.progress.detail };
             if (checkpoint.discoveredSeed && this.checkpoint.discoveredSeed && checkpoint.discoveredSeed.key === this.checkpoint.discoveredSeed.key) {
                 delete this.checkpoint.discoveredSeed;
             }
@@ -381,7 +408,7 @@ class PesquisaMercadoRunner {
         if (category && !this.checkpoint.incompleteCategories.some(item => item.key === category.key)) {
             this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.') });
         }
-        this.job.message = message;
+        this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
 
     async publishSeller(seller, result) {
@@ -395,7 +422,7 @@ class PesquisaMercadoRunner {
         const response = await this.api('PUT', `${ROOT}/${encodeURIComponent(this.job.id)}/vendedores/${encodeURIComponent(seller.key)}`, {
             seller: { ...seller, categoria: category && category.nome || '' }, anuncios
         });
-        this.job = { ...this.job, ...response.job };
+        this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status, message: this.checkpoint.progress.detail };
         this.rememberSeller(seller.key);
         if (result.incomplete) this.incomplete('Alguns anuncios ficaram sem dados suficientes do Avant.');
         this.emit(this.snapshot());
@@ -421,12 +448,13 @@ class PesquisaMercadoRunner {
         if (!key || this.seenSeeds.has(key)) return;
         const history = await this.api('GET', `${ROOT}/${encodeURIComponent(this.job.id)}/descoberta?seed_key=${encodeURIComponent(key)}`);
         if (history.seen) { this.seenSeeds.add(key); return; }
+        this.setProgress('discovery', `Consultando anuncio${seed.id ? ' ' + seed.id : ''} para identificar o vendedor...`);
         const page = await this.read(seed.url, 'item');
         let seller = sellerFromPage(page);
         if (!seller) throw new Error('Nao foi possivel confirmar o perfil do vendedor deste anuncio.');
         const discoveredKey = seller.key;
         if (!(await this.sellerPublished(seller.key))) {
-            this.job.message = `Consultando a primeira pagina de ${seller.nome || seller.id || 'vendedor'}...`;
+            this.setProgress('seller', `Consultando a primeira pagina de ${seller.nome || seller.id || 'vendedor'}...`);
             this.checkpoint.phase = 'seller';
             await this.save();
             const profile = await this.read(seller.perfilUrl, 'seller');
@@ -440,14 +468,18 @@ class PesquisaMercadoRunner {
             if (seller.id && listingSeller && listingSeller.id && seller.id !== listingSeller.id) throw new Error('A listagem retornou anuncios de outro vendedor.');
             if (!seller.id && listingSeller && listingSeller.id) seller = { ...seller, ...listingSeller, nome: listingSeller.nome || seller.nome };
             if (!(await this.sellerPublished(seller.key))) {
+                this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
                 const result = await this.attempt(() => this.collector.collectFirstPage({
                     browser: this.browser, signal: this.controller.signal, seller: {
                         ...seller, sellerId: seller.id, vendedor: seller.nome
                     }, wait: this.wait,
                     onProgress: progress => {
                         if (this.stopStatus) return;
-                        this.job.message = `Coletando ${seller.nome || seller.id}: ${Number(progress.coletados || progress.total || 0)} anuncio(s).`;
-                        this.emit(this.snapshot());
+                        const total = Number(progress.coletados || progress.total || 0);
+                        const avant = Number(progress.com_dados_avant);
+                        const detail = `Consultando ${seller.nome || seller.id || 'vendedor'}: ${total} anuncio(s) encontrado(s)`
+                            + (Number.isFinite(avant) ? `; ${avant} com dados do Avant.` : '.');
+                        this.setProgress('collecting', detail);
                     }
                 }));
                 this.check();
@@ -460,6 +492,7 @@ class PesquisaMercadoRunner {
         this.checkpoint.discoveredSeed = { key, id: seed.id || '', url: seed.url,
             category_key: this.checkpoint.currentCategory.key, seller_key: seller.key, status: 'consulted' };
         this.checkpoint.phase = 'discovery';
+        this.setProgress('discovery', `Descobrindo outros vendedores em ${this.checkpoint.currentCategory.nome}...`);
     }
 
     async run() {
@@ -468,6 +501,7 @@ class PesquisaMercadoRunner {
             this.check();
             await this.save();
             if (!this.checkpoint.discoveryInitialized) {
+                this.setProgress('categories', 'Carregando as categorias do Mercado Livre...');
                 const root = await this.read('https://www.mercadolivre.com.br/', 'index');
                 this.enqueueCategories(root.categories);
                 if (!this.checkpoint.categories.length) {
@@ -483,7 +517,7 @@ class PesquisaMercadoRunner {
                 const category = this.checkpoint.categories[this.checkpoint.categoryIndex];
                 this.checkpoint.currentCategory = category;
                 if (!this.checkpoint.page) {
-                    this.job.message = `Descobrindo vendedores em ${category.nome}...`;
+                    this.setProgress('categories', `Descobrindo vendedores em ${category.nome}...`);
                     try {
                         let page = await this.readCategory(category);
                         this.enqueueCategories(page.categories);
@@ -534,6 +568,7 @@ class PesquisaMercadoRunner {
                         break;
                     }
                     try {
+                        this.setProgress('pagination', `Abrindo a proxima pagina de ${category.nome} para descobrir outros vendedores...`);
                         const page = await this.nextCategoryPage(current);
                         if (!page) break;
                         const loaded = canonicalUrl(page.url || next);
@@ -553,13 +588,14 @@ class PesquisaMercadoRunner {
                 }
                 await this.finishCategory();
             }
+            this.setProgress('finalizing', 'Finalizando a pesquisa e salvando os resultados...');
             this.job.status = this.checkpoint.incompleteCategories.length ? 'completed_partial' : 'completed';
-            this.job.message = this.job.status === 'completed' ? 'Pesquisa concluida.' : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.';
+            this.setProgress(this.job.status, this.job.status === 'completed' ? 'Pesquisa concluida.' : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
             await this.save();
         } catch (err) {
             this.job.status = this.stopStatus || (err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
-            this.job.message = this.stopStatus ? this.job.message : err.waitingLogin ? err.message :
-                this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.';
+            if (!this.stopStatus) this.setProgress(this.job.status, err.waitingLogin ? err.message :
+                this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.');
             try { await this.save(); } catch (_saveError) { this.emit(this.snapshot()); }
         } finally {
             if (typeof this.browser.finish === 'function') await this.browser.finish(this.job.status).catch(() => {});
@@ -567,6 +603,7 @@ class PesquisaMercadoRunner {
     }
 
     async finishCategory() {
+        this.setProgress('finalizing', `Finalizando a categoria ${this.checkpoint.currentCategory.nome} e salvando os resultados...`);
         this.checkpoint.categoryIndex += 1;
         this.checkpoint.page = null;
         this.checkpoint.categorySeenPages = [];
