@@ -64,9 +64,11 @@
             padding: 24px clamp(14px, 2vw, 28px) 34px;
         }
 
+        body:has(> .jk-nav-card-group) .container { padding-top: 84px; }
+
         .topbar {
             display: grid;
-            grid-template-columns: 1.2fr 1fr 1fr 1fr auto;
+            grid-template-columns: minmax(0, 1.1fr) repeat(3, minmax(0, 1fr)) auto;
             gap: 12px;
             margin-bottom: 18px;
             align-items: center;
@@ -81,86 +83,132 @@
             text-shadow: 0 8px 30px rgba(28, 162, 255, 0.32);
         }
 
+        .importacao-bandeiras-defs {
+            position: absolute;
+            width: 0;
+            height: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+
         .fx-box,
         .clock-box {
+            position: relative;
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            min-height: 68px;
-            padding: 10px 14px;
-            border-radius: 13px;
-            border: 1px solid var(--border);
-            background: linear-gradient(180deg, rgba(13, 24, 43, 0.9), rgba(10, 19, 35, 0.95));
-            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.1), 0 14px 28px rgba(0, 0, 0, 0.3);
-            backdrop-filter: blur(8px);
+            gap: 12px;
+            min-width: 0;
+            min-height: 88px;
+            padding: 14px;
+            border-radius: 12px;
+            border: 1px solid #4c7fa3;
+            background: linear-gradient(120deg, #173959, #0d2035);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
         }
 
-        .fx-box {
-            border-color: rgba(99, 187, 255, 0.55);
-            background: linear-gradient(180deg, rgba(14, 33, 59, 0.92), rgba(10, 22, 40, 0.96));
-            box-shadow: inset 0 1px 0 rgba(185, 226, 255, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(99, 187, 255, 0.18);
+        .fx-box::before,
+        .clock-box::before {
+            content: "";
+            position: absolute;
+            top: 16px;
+            bottom: 16px;
+            left: 0;
+            width: 3px;
+            border-radius: 0 3px 3px 0;
+            background: #75c6ff;
         }
 
         .clock-box {
-            border-color: rgba(255, 166, 94, 0.52);
-            background: linear-gradient(180deg, rgba(56, 34, 19, 0.9), rgba(33, 22, 14, 0.95));
-            box-shadow: inset 0 1px 0 rgba(255, 214, 180, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 166, 94, 0.16);
+            border-color: #a35750;
+            background: linear-gradient(120deg, #67292b, #341c24);
         }
 
+        .clock-box::before { background: #f1b468; }
+
         .clock-box.brasilia {
-            border-color: rgba(104, 214, 142, 0.54);
-            background: linear-gradient(180deg, rgba(19, 60, 36, 0.9), rgba(13, 40, 25, 0.95));
-            box-shadow: inset 0 1px 0 rgba(186, 255, 210, 0.14), 0 14px 28px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(104, 214, 142, 0.16);
+            border-color: #3c8360;
+            background: linear-gradient(120deg, #1b4b37, #11291f);
         }
+
+        .clock-box.brasilia::before { background: #8fd46d; }
+
+        .importacao-pais-icon {
+            display: grid;
+            place-items: center;
+            flex: 0 0 46px;
+            width: 46px;
+            height: 44px;
+            border-radius: 9px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .importacao-bandeira {
+            display: block;
+            width: 33px;
+            height: 23px;
+            flex-shrink: 0;
+            border-radius: 3px;
+            overflow: hidden;
+            box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.13);
+        }
+
+        .cotacao-bandeiras { position: relative; }
+
+        .cotacao-bandeiras .importacao-bandeira {
+            position: absolute;
+            width: 28px;
+            height: 19px;
+        }
+
+        .cotacao-bandeiras .importacao-bandeira:first-child { top: 5px; left: 4px; }
+        .cotacao-bandeiras .importacao-bandeira:last-child { right: 3px; bottom: 4px; }
+
+        .fx-content,
+        .clock-content { flex: 1; min-width: 0; }
 
         .clock-label,
         .fx-label {
-            color: var(--muted);
-            font-size: 0.78rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 2px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            line-height: 1.3;
+            margin-bottom: 7px;
+            letter-spacing: 0;
         }
 
-        .fx-label {
-            color: #9ecfff;
-        }
+        .fx-label { color: #b5cfe9; }
+        .clock-label { color: #f3cec0; }
+        .clock-box.brasilia .clock-label { color: #cfdfbf; }
 
-        .clock-label {
-            color: #ffca9f;
-        }
+        .fx-value-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; }
 
+        .fx-value,
         .clock-value {
-            color: #ffc68f;
-            font-size: 1.65rem;
+            font-size: 1.6rem;
             font-weight: 800;
-            line-height: 1;
-            text-shadow: 0 0 16px rgba(255, 170, 104, 0.24);
+            line-height: 1.1;
+            letter-spacing: -0.3px;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
         }
 
-        .clock-box.brasilia .clock-label {
-            color: #9be9b6;
+        .fx-value { color: #bce5ff; max-width: 100%; }
+        .clock-value { color: #ffe0b4; white-space: nowrap; }
+        .clock-box.brasilia .clock-value { color: #bbf2cb; }
+
+        .fx-currency {
+            border: 1px solid rgba(255, 255, 255, 0.16);
+            border-radius: 4px;
+            padding: 3px 4px;
+            color: #b9d8ed;
+            font-size: 0.5rem;
+            white-space: nowrap;
         }
 
-        .clock-box.brasilia .clock-value {
-            color: #7bffab;
-            text-shadow: 0 0 16px rgba(98, 255, 152, 0.24);
-        }
-
-        .fx-value {
-            color: #9dd6ff;
-            font-size: 1.7rem;
-            font-weight: 800;
-            line-height: 1;
-            text-shadow: 0 0 16px rgba(99, 187, 255, 0.22);
-        }
-
-        .fx-time {
-            color: #d2e6ff;
-            font-size: 0.9rem;
-            font-weight: 700;
-        }
+        .fx-update { align-self: flex-end; text-align: right; white-space: nowrap; }
+        .fx-update-label { display: block; font-size: 0.5rem; color: #adc1d8; margin-bottom: 3px; }
+        .fx-time { font-size: 0.625rem; color: #d2e6ff; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .clock-country { align-self: flex-end; font-size: 0.5rem; letter-spacing: 1px; color: #e5dbc9; white-space: nowrap; }
 
         .back-btn {
             display: inline-flex;
@@ -215,6 +263,80 @@
             flex-wrap: wrap;
             position: relative;
             z-index: 1;
+        }
+
+        .toolbar .importacao-acao {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            min-height: 36px;
+            padding: 9px 12px;
+            border-radius: 7px;
+            border-color: #3a5978;
+            background: #1b2d43;
+            color: #d7e7fb;
+            font-family: inherit;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 0;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+            transition: background 0.15s ease, border-color 0.15s ease;
+        }
+
+        .toolbar .importacao-acao::before {
+            content: "";
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            background: currentColor;
+            -webkit-mask: var(--acao-icone) center / contain no-repeat;
+            mask: var(--acao-icone) center / contain no-repeat;
+        }
+
+        .importacao-acao--atualizar { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M20%207v5h-5M4%2017v-5h5%22%2F%3E%3Cpath%20d%3D%22M6.2%207A7%207%200%200%201%2018%205l2%202M4%2017l2%202a7%207%200%200%200%2011.8-2%22%2F%3E%3C%2Fsvg%3E"); }
+        .importacao-acao--importar { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%2016V3m-5%205%205-5%205%205M4%2014v6h16v-6%22%2F%3E%3C%2Fsvg%3E"); }
+        .importacao-acao--medias { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%204v16h16M8%2015v-4m5%204V7m5%208v-6%22%2F%3E%3C%2Fsvg%3E"); }
+
+        .toolbar .importacao-acao:hover {
+            transform: none;
+            background: #28425f;
+            border-color: #77b8ea;
+            color: #d7e7fb;
+            box-shadow: none;
+        }
+
+        .toolbar .importacao-acao--importar {
+            border-color: #67c4ff;
+            color: #061b2b;
+            background: linear-gradient(110deg, #59bfff, #83d2ff);
+            box-shadow: 0 3px 12px rgba(49, 153, 224, 0.14);
+        }
+
+        .toolbar .importacao-acao--importar:hover { background: #a2deff; color: #061b2b; }
+        .toolbar .importacao-acao:focus-visible { outline: 2px solid #a2d8ff; outline-offset: 3px; }
+        .toolbar .importacao-acao:disabled { opacity: 0.65; cursor: wait; }
+
+        .toolbar .importacao-monitor {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 7px 9px;
+            border: 1px solid #365c7c;
+            border-radius: 6px;
+            background: #183148;
+            color: #a5d8ff;
+            font-size: 0.65rem;
+            line-height: 1.3;
+        }
+
+        .toolbar .importacao-monitor::before {
+            content: "";
+            width: 5px;
+            height: 5px;
+            flex-shrink: 0;
+            border-radius: 50%;
+            background: #7ad8ac;
         }
 
         .loja-filtro-area {
@@ -905,6 +1027,22 @@
             line-height: 1.5;
         }
 
+        @media (min-width: 981px) and (max-width: 1100px) {
+            .fx-box, .clock-box { padding: 12px; gap: 8px; }
+            .importacao-pais-icon { flex-basis: 40px; width: 40px; }
+            .fx-value, .clock-value { font-size: 1.35rem; }
+            .clock-label, .fx-label { font-size: 0.65rem; }
+            .clock-country, .fx-currency { display: none; }
+            .fx-box { flex-wrap: wrap; }
+            .fx-update { display: flex; align-items: center; justify-content: flex-end; gap: 5px; width: 100%; }
+            .fx-update-label { margin-bottom: 0; }
+        }
+
+        @media (max-width: 380px) {
+            .fx-value, .clock-value { font-size: 1.4rem; }
+            .clock-country, .fx-currency { display: none; }
+        }
+
         @media (max-width: 980px) {
             .lista-card-topo { flex-wrap: wrap; }
             .topbar {
@@ -923,6 +1061,8 @@
         }
 
         @media (max-width: 760px) {
+            body:has(> .jk-nav-card-group) .container { padding-top: 70px; }
+
             .container {
                 padding: 18px 14px 24px;
             }
@@ -1580,37 +1720,142 @@
     </style>
 </head>
 <body>
+    <svg class="importacao-bandeiras-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+        <defs>
+            <symbol id="importacao-bandeira-us" viewBox="0 0 190 100">
+                <rect width="190" height="100" fill="#fff"/>
+                <rect y="0" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="15.384615384615385" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="30.76923076923077" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="46.15384615384615" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="61.53846153846154" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="76.92307692307692" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect y="92.3076923076923" width="190" height="7.6923076923076925" fill="#b22234"/>
+                <rect width="76" height="53.85" fill="#3c3b6e"/>
+                <polygon fill="#fff" points="6.33,2.98 6.87,4.64 8.61,4.64 7.20,5.66 7.74,7.32 6.33,6.30 4.92,7.32 5.46,5.66 4.05,4.64 5.79,4.64"/>
+                <polygon fill="#fff" points="19.00,2.98 19.54,4.64 21.28,4.64 19.87,5.66 20.41,7.32 19.00,6.30 17.59,7.32 18.13,5.66 16.72,4.64 18.46,4.64"/>
+                <polygon fill="#fff" points="31.67,2.98 32.21,4.64 33.95,4.64 32.54,5.66 33.08,7.32 31.67,6.30 30.26,7.32 30.80,5.66 29.39,4.64 31.13,4.64"/>
+                <polygon fill="#fff" points="44.34,2.98 44.88,4.64 46.62,4.64 45.21,5.66 45.75,7.32 44.34,6.30 42.93,7.32 43.47,5.66 42.06,4.64 43.80,4.64"/>
+                <polygon fill="#fff" points="57.01,2.98 57.55,4.64 59.29,4.64 57.88,5.66 58.42,7.32 57.01,6.30 55.60,7.32 56.14,5.66 54.73,4.64 56.47,4.64"/>
+                <polygon fill="#fff" points="69.68,2.98 70.22,4.64 71.96,4.64 70.55,5.66 71.09,7.32 69.68,6.30 68.27,7.32 68.81,5.66 67.40,4.64 69.14,4.64"/>
+                <polygon fill="#fff" points="12.67,8.36 13.21,10.02 14.95,10.02 13.54,11.04 14.08,12.70 12.67,11.68 11.26,12.70 11.80,11.04 10.39,10.02 12.13,10.02"/>
+                <polygon fill="#fff" points="25.34,8.36 25.88,10.02 27.62,10.02 26.21,11.04 26.75,12.70 25.34,11.68 23.93,12.70 24.47,11.04 23.06,10.02 24.80,10.02"/>
+                <polygon fill="#fff" points="38.01,8.36 38.55,10.02 40.29,10.02 38.88,11.04 39.42,12.70 38.01,11.68 36.60,12.70 37.14,11.04 35.73,10.02 37.47,10.02"/>
+                <polygon fill="#fff" points="50.68,8.36 51.22,10.02 52.96,10.02 51.55,11.04 52.09,12.70 50.68,11.68 49.27,12.70 49.81,11.04 48.40,10.02 50.14,10.02"/>
+                <polygon fill="#fff" points="63.35,8.36 63.89,10.02 65.63,10.02 64.22,11.04 64.76,12.70 63.35,11.68 61.94,12.70 62.48,11.04 61.07,10.02 62.81,10.02"/>
+                <polygon fill="#fff" points="6.33,13.74 6.87,15.40 8.61,15.40 7.20,16.42 7.74,18.08 6.33,17.06 4.92,18.08 5.46,16.42 4.05,15.40 5.79,15.40"/>
+                <polygon fill="#fff" points="19.00,13.74 19.54,15.40 21.28,15.40 19.87,16.42 20.41,18.08 19.00,17.06 17.59,18.08 18.13,16.42 16.72,15.40 18.46,15.40"/>
+                <polygon fill="#fff" points="31.67,13.74 32.21,15.40 33.95,15.40 32.54,16.42 33.08,18.08 31.67,17.06 30.26,18.08 30.80,16.42 29.39,15.40 31.13,15.40"/>
+                <polygon fill="#fff" points="44.34,13.74 44.88,15.40 46.62,15.40 45.21,16.42 45.75,18.08 44.34,17.06 42.93,18.08 43.47,16.42 42.06,15.40 43.80,15.40"/>
+                <polygon fill="#fff" points="57.01,13.74 57.55,15.40 59.29,15.40 57.88,16.42 58.42,18.08 57.01,17.06 55.60,18.08 56.14,16.42 54.73,15.40 56.47,15.40"/>
+                <polygon fill="#fff" points="69.68,13.74 70.22,15.40 71.96,15.40 70.55,16.42 71.09,18.08 69.68,17.06 68.27,18.08 68.81,16.42 67.40,15.40 69.14,15.40"/>
+                <polygon fill="#fff" points="12.67,19.12 13.21,20.78 14.95,20.78 13.54,21.80 14.08,23.46 12.67,22.44 11.26,23.46 11.80,21.80 10.39,20.78 12.13,20.78"/>
+                <polygon fill="#fff" points="25.34,19.12 25.88,20.78 27.62,20.78 26.21,21.80 26.75,23.46 25.34,22.44 23.93,23.46 24.47,21.80 23.06,20.78 24.80,20.78"/>
+                <polygon fill="#fff" points="38.01,19.12 38.55,20.78 40.29,20.78 38.88,21.80 39.42,23.46 38.01,22.44 36.60,23.46 37.14,21.80 35.73,20.78 37.47,20.78"/>
+                <polygon fill="#fff" points="50.68,19.12 51.22,20.78 52.96,20.78 51.55,21.80 52.09,23.46 50.68,22.44 49.27,23.46 49.81,21.80 48.40,20.78 50.14,20.78"/>
+                <polygon fill="#fff" points="63.35,19.12 63.89,20.78 65.63,20.78 64.22,21.80 64.76,23.46 63.35,22.44 61.94,23.46 62.48,21.80 61.07,20.78 62.81,20.78"/>
+                <polygon fill="#fff" points="6.33,24.50 6.87,26.16 8.61,26.16 7.20,27.18 7.74,28.84 6.33,27.82 4.92,28.84 5.46,27.18 4.05,26.16 5.79,26.16"/>
+                <polygon fill="#fff" points="19.00,24.50 19.54,26.16 21.28,26.16 19.87,27.18 20.41,28.84 19.00,27.82 17.59,28.84 18.13,27.18 16.72,26.16 18.46,26.16"/>
+                <polygon fill="#fff" points="31.67,24.50 32.21,26.16 33.95,26.16 32.54,27.18 33.08,28.84 31.67,27.82 30.26,28.84 30.80,27.18 29.39,26.16 31.13,26.16"/>
+                <polygon fill="#fff" points="44.34,24.50 44.88,26.16 46.62,26.16 45.21,27.18 45.75,28.84 44.34,27.82 42.93,28.84 43.47,27.18 42.06,26.16 43.80,26.16"/>
+                <polygon fill="#fff" points="57.01,24.50 57.55,26.16 59.29,26.16 57.88,27.18 58.42,28.84 57.01,27.82 55.60,28.84 56.14,27.18 54.73,26.16 56.47,26.16"/>
+                <polygon fill="#fff" points="69.68,24.50 70.22,26.16 71.96,26.16 70.55,27.18 71.09,28.84 69.68,27.82 68.27,28.84 68.81,27.18 67.40,26.16 69.14,26.16"/>
+                <polygon fill="#fff" points="12.67,29.88 13.21,31.54 14.95,31.54 13.54,32.56 14.08,34.22 12.67,33.20 11.26,34.22 11.80,32.56 10.39,31.54 12.13,31.54"/>
+                <polygon fill="#fff" points="25.34,29.88 25.88,31.54 27.62,31.54 26.21,32.56 26.75,34.22 25.34,33.20 23.93,34.22 24.47,32.56 23.06,31.54 24.80,31.54"/>
+                <polygon fill="#fff" points="38.01,29.88 38.55,31.54 40.29,31.54 38.88,32.56 39.42,34.22 38.01,33.20 36.60,34.22 37.14,32.56 35.73,31.54 37.47,31.54"/>
+                <polygon fill="#fff" points="50.68,29.88 51.22,31.54 52.96,31.54 51.55,32.56 52.09,34.22 50.68,33.20 49.27,34.22 49.81,32.56 48.40,31.54 50.14,31.54"/>
+                <polygon fill="#fff" points="63.35,29.88 63.89,31.54 65.63,31.54 64.22,32.56 64.76,34.22 63.35,33.20 61.94,34.22 62.48,32.56 61.07,31.54 62.81,31.54"/>
+                <polygon fill="#fff" points="6.33,35.26 6.87,36.92 8.61,36.92 7.20,37.94 7.74,39.60 6.33,38.58 4.92,39.60 5.46,37.94 4.05,36.92 5.79,36.92"/>
+                <polygon fill="#fff" points="19.00,35.26 19.54,36.92 21.28,36.92 19.87,37.94 20.41,39.60 19.00,38.58 17.59,39.60 18.13,37.94 16.72,36.92 18.46,36.92"/>
+                <polygon fill="#fff" points="31.67,35.26 32.21,36.92 33.95,36.92 32.54,37.94 33.08,39.60 31.67,38.58 30.26,39.60 30.80,37.94 29.39,36.92 31.13,36.92"/>
+                <polygon fill="#fff" points="44.34,35.26 44.88,36.92 46.62,36.92 45.21,37.94 45.75,39.60 44.34,38.58 42.93,39.60 43.47,37.94 42.06,36.92 43.80,36.92"/>
+                <polygon fill="#fff" points="57.01,35.26 57.55,36.92 59.29,36.92 57.88,37.94 58.42,39.60 57.01,38.58 55.60,39.60 56.14,37.94 54.73,36.92 56.47,36.92"/>
+                <polygon fill="#fff" points="69.68,35.26 70.22,36.92 71.96,36.92 70.55,37.94 71.09,39.60 69.68,38.58 68.27,39.60 68.81,37.94 67.40,36.92 69.14,36.92"/>
+                <polygon fill="#fff" points="12.67,40.64 13.21,42.30 14.95,42.30 13.54,43.32 14.08,44.98 12.67,43.96 11.26,44.98 11.80,43.32 10.39,42.30 12.13,42.30"/>
+                <polygon fill="#fff" points="25.34,40.64 25.88,42.30 27.62,42.30 26.21,43.32 26.75,44.98 25.34,43.96 23.93,44.98 24.47,43.32 23.06,42.30 24.80,42.30"/>
+                <polygon fill="#fff" points="38.01,40.64 38.55,42.30 40.29,42.30 38.88,43.32 39.42,44.98 38.01,43.96 36.60,44.98 37.14,43.32 35.73,42.30 37.47,42.30"/>
+                <polygon fill="#fff" points="50.68,40.64 51.22,42.30 52.96,42.30 51.55,43.32 52.09,44.98 50.68,43.96 49.27,44.98 49.81,43.32 48.40,42.30 50.14,42.30"/>
+                <polygon fill="#fff" points="63.35,40.64 63.89,42.30 65.63,42.30 64.22,43.32 64.76,44.98 63.35,43.96 61.94,44.98 62.48,43.32 61.07,42.30 62.81,42.30"/>
+                <polygon fill="#fff" points="6.33,46.02 6.87,47.68 8.61,47.68 7.20,48.70 7.74,50.36 6.33,49.34 4.92,50.36 5.46,48.70 4.05,47.68 5.79,47.68"/>
+                <polygon fill="#fff" points="19.00,46.02 19.54,47.68 21.28,47.68 19.87,48.70 20.41,50.36 19.00,49.34 17.59,50.36 18.13,48.70 16.72,47.68 18.46,47.68"/>
+                <polygon fill="#fff" points="31.67,46.02 32.21,47.68 33.95,47.68 32.54,48.70 33.08,50.36 31.67,49.34 30.26,50.36 30.80,48.70 29.39,47.68 31.13,47.68"/>
+                <polygon fill="#fff" points="44.34,46.02 44.88,47.68 46.62,47.68 45.21,48.70 45.75,50.36 44.34,49.34 42.93,50.36 43.47,48.70 42.06,47.68 43.80,47.68"/>
+                <polygon fill="#fff" points="57.01,46.02 57.55,47.68 59.29,47.68 57.88,48.70 58.42,50.36 57.01,49.34 55.60,50.36 56.14,48.70 54.73,47.68 56.47,47.68"/>
+                <polygon fill="#fff" points="69.68,46.02 70.22,47.68 71.96,47.68 70.55,48.70 71.09,50.36 69.68,49.34 68.27,50.36 68.81,48.70 67.40,47.68 69.14,47.68"/>
+            </symbol>
+            <symbol id="importacao-bandeira-br" viewBox="0 0 140 98">
+                <rect width="140" height="98" fill="#009739"/>
+                <path d="M70 12L123 49 70 86 17 49Z" fill="#ffdf00"/>
+                <circle cx="70" cy="49" r="24.5" fill="#012169"/>
+                <path d="M47 42Q70 39 93 58" fill="none" stroke="#fff" stroke-width="4"/>
+                <circle cx="58" cy="53" r="0.8" fill="#fff"/>
+                <circle cx="68" cy="52" r="0.8" fill="#fff"/>
+                <circle cx="77" cy="60" r="0.8" fill="#fff"/>
+                <circle cx="84" cy="57" r="0.8" fill="#fff"/>
+                <circle cx="63" cy="62" r="0.8" fill="#fff"/>
+                <circle cx="70" cy="66" r="0.8" fill="#fff"/>
+                <circle cx="57" cy="59" r="0.8" fill="#fff"/>
+                <circle cx="76" cy="68" r="0.8" fill="#fff"/>
+                <circle cx="83" cy="66" r="0.8" fill="#fff"/>
+                <circle cx="66" cy="58" r="0.8" fill="#fff"/>
+                <circle cx="73" cy="56" r="0.8" fill="#fff"/>
+                <circle cx="86" cy="61" r="0.8" fill="#fff"/>
+            </symbol>
+            <symbol id="importacao-bandeira-cn" viewBox="0 0 150 100">
+                <rect width="150" height="100" fill="#de2910"/>
+                <polygon fill="#ffde00" points="25.00,10.00 28.37,20.36 39.27,20.36 30.45,26.77 33.82,37.14 25.00,30.73 16.18,37.14 19.55,26.77 10.73,20.36 21.63,20.36"/>
+                <polygon fill="#ffde00" points="45.71,12.57 48.10,9.83 46.23,6.72 49.57,8.14 51.96,5.40 51.64,9.02 54.98,10.44 51.44,11.25 51.12,14.87 49.25,11.76"/>
+                <polygon fill="#ffde00" points="55.05,20.71 58.31,19.11 57.80,15.51 60.33,18.12 63.59,16.52 61.89,19.73 64.42,22.34 60.84,21.71 59.14,24.93 58.63,21.33"/>
+                <polygon fill="#ffde00" points="55.19,33.63 58.82,33.50 59.82,30.00 61.07,33.42 64.70,33.29 61.84,35.52 63.08,38.94 60.07,36.91 57.21,39.15 58.21,35.65"/>
+                <polygon fill="#ffde00" points="46.10,41.88 49.49,43.16 51.76,40.32 51.60,43.95 54.99,45.23 51.49,46.19 51.32,49.82 49.33,46.79 45.82,47.75 48.09,44.91"/>
+            </symbol>
+        </defs>
+    </svg>
     <div class="container">
         <div class="topbar">
             <h1>Importações</h1>
             <div class="fx-box">
-                <div>
-                    <div class="fx-label">Dólar x Real (USD/BRL)</div>
-                    <div id="fxValue" class="fx-value">Carregando...</div>
+                <div class="importacao-pais-icon cotacao-bandeiras">
+                    <svg class="importacao-bandeira" role="img" aria-label="Estados Unidos" focusable="false"><use href="#importacao-bandeira-us"></use></svg>
+                    <svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="#importacao-bandeira-br"></use></svg>
                 </div>
-                <div id="fxTime" class="fx-time">--:--:--</div>
+                <div class="fx-content">
+                    <div class="fx-label">Dólar x Real</div>
+                    <div class="fx-value-row">
+                        <div id="fxValue" class="fx-value">Carregando...</div>
+                        <span class="fx-currency">USD/BRL</span>
+                    </div>
+                </div>
+                <div class="fx-update">
+                    <span class="fx-update-label">Atualizado</span>
+                    <div id="fxTime" class="fx-time">--:--:--</div>
+                </div>
             </div>
             <div class="clock-box brasilia">
-                <div>
+                <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="#importacao-bandeira-br"></use></svg></div>
+                <div class="clock-content">
                     <div class="clock-label">Horário de Brasília</div>
                     <div id="clockBrasilia" class="clock-value">--:--:--</div>
                 </div>
+                <span class="clock-country">BRASIL</span>
             </div>
             <div class="clock-box">
-                <div>
+                <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="China" focusable="false"><use href="#importacao-bandeira-cn"></use></svg></div>
+                <div class="clock-content">
                     <div class="clock-label">Horário em Pequim</div>
                     <div id="clockBeijing" class="clock-value">--:--:--</div>
                 </div>
+                <span class="clock-country">CHINA</span>
             </div>
             <a class="back-btn" href="/dashboard.html">Voltar</a>
         </div>
 
         <div class="card">
             <div class="toolbar">
-                <button class="btn" id="btnAtualizar" type="button">Atualizar listas</button>
-                <button class="btn" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
-                <a class="btn" href="medias_compras.html">Abrir Médias e Pedidos</a>
-                <span class="badge">Status monitorado: Analisando orçamento</span>
+                <button class="btn importacao-acao importacao-acao--atualizar" id="btnAtualizar" type="button">Atualizar listas</button>
+                <button class="btn importacao-acao importacao-acao--importar" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
+                <a class="btn importacao-acao importacao-acao--medias" href="medias_compras.html">Abrir Médias e Pedidos</a>
+                <span class="badge importacao-monitor">Status monitorado: Analisando orçamento</span>
             </div>
             <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
                 <div class="loja-filtro-label">Filtrar listas por loja</div>
