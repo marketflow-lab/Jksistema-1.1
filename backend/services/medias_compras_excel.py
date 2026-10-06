@@ -13,7 +13,10 @@ import openpyxl
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.cell.text import InlineFont
 from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 from backend.services import medias_compras_common as medias_common
 from backend.services.medias_compras_common import *
@@ -110,7 +113,11 @@ def _formatar_data_commercial_invoice(valor) -> str:
     if not texto:
         return ""
     try:
-        data = datetime.fromisoformat(texto.replace("Z", "+00:00"))
+        data = (
+            datetime.strptime(texto, "%d/%m/%Y")
+            if re.fullmatch(r"\d{2}/\d{2}/\d{4}", texto)
+            else datetime.fromisoformat(texto.replace("Z", "+00:00"))
+        )
         meses = (
             "January",
             "February",
@@ -402,7 +409,8 @@ def _gerar_commercial_invoice_bytes(
     _atribuir_texto_excel(ws["A3"], "INV. No.:")
     _atribuir_texto_excel(ws["C3"], numero_invoice)
     _atribuir_texto_excel(ws["D3"], "DATE:")
-    _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_aprovacao))
+    data_invoice = str(lista.get("order_date") or "").strip() or data_aprovacao
+    _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_invoice))
     _atribuir_texto_excel(ws["F3"], "FROM:")
     _atribuir_texto_excel(ws["H3"], "")
     _atribuir_texto_excel(ws["A4"], texto_nacionalizador or (f"LIST: {nome_lista}" if nome_lista else ""))
@@ -432,6 +440,19 @@ def _gerar_commercial_invoice_bytes(
         altura_restante -= altura_extra
     ws.row_dimensions[7].height = 11.25
     ws.row_dimensions[8].height = 21.75
+
+    for coluna, largura in {
+        "A": 6,
+        "B": 15.63,
+        "C": 15.88,
+        "D": 14.38,
+        "E": 27.75,
+        "F": 18.25,
+        "G": 13,
+        "H": 13.13,
+        "I": 12.38,
+    }.items():
+        ws.column_dimensions[coluna].width = largura
 
     primeira_linha_item = 9
     total_unidades = 0
@@ -512,14 +533,31 @@ def _gerar_commercial_invoice_bytes(
                 imagem = XLImage(caminho_foto)
                 largura = float(getattr(imagem, "width", 0) or 0)
                 altura = float(getattr(imagem, "height", 0) or 0)
-                altura_alvo = 74
                 if largura > 0 and altura > 0:
-                    imagem.height = altura_alvo
-                    imagem.width = max(38, min(138, int(altura_alvo * (largura / altura))))
-                else:
-                    imagem.height = altura_alvo
-                    imagem.width = 74
-                ws.add_image(imagem, f"F{linha}")
+                    # Usa uma caixa interna conservadora para a coluna PIC
+                    # e uma unica escala para preservar a proporcao da foto.
+                    largura_celula = int(ws.column_dimensions["F"].width * 7)
+                    altura_celula = points_to_pixels(ws.row_dimensions[linha].height)
+                    margem = 4
+                    escala = min(
+                        (largura_celula - 2 * margem) / largura,
+                        (altura_celula - 2 * margem) / altura,
+                    )
+                    imagem.width = largura * escala
+                    imagem.height = altura * escala
+                    imagem.anchor = OneCellAnchor(
+                        _from=AnchorMarker(
+                            col=5,
+                            row=linha - 1,
+                            colOff=pixels_to_EMU((largura_celula - imagem.width) / 2),
+                            rowOff=pixels_to_EMU((altura_celula - imagem.height) / 2),
+                        ),
+                        ext=XDRPositiveSize2D(
+                            cx=pixels_to_EMU(imagem.width),
+                            cy=pixels_to_EMU(imagem.height),
+                        ),
+                    )
+                    ws.add_image(imagem)
             except Exception:
                 pass
 
@@ -572,19 +610,6 @@ def _gerar_commercial_invoice_bytes(
     _atribuir_texto_excel(ws.cell(linha_rodape, 5), "")
     _atribuir_texto_excel(ws.cell(linha_rodape, 9), "Company stamp and signature")
     ws.row_dimensions[linha_rodape].height = 101.25
-
-    for coluna, largura in {
-        "A": 6,
-        "B": 15.63,
-        "C": 15.88,
-        "D": 14.38,
-        "E": 27.75,
-        "F": 18.25,
-        "G": 13,
-        "H": 13.13,
-        "I": 12.38,
-    }.items():
-        ws.column_dimensions[coluna].width = largura
 
     for linha in range(1, linha_rodape + 1):
         for coluna in range(1, 10):

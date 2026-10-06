@@ -93,6 +93,7 @@ function criarAmbiente(fetchImpl, armazenamento = '{}') {
         },
     };
     const window = {
+        JKDataPedidoLista: { async aguardarSalvamento() { return true; } },
         alert(mensagem) { alertas.push(mensagem); },
     };
     const URL = {

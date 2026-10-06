@@ -1,7 +1,8 @@
 (function () {
     'use strict';
 
-    const salvando = new Set();
+    const salvando = new Map();
+    const editores = new Map();
     const controles = new WeakMap();
     const escapar = valor => String(valor || '').replace(/[&<>"']/g, caractere =>
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[caractere]);
@@ -52,6 +53,9 @@
     function iniciar(pill, contexto) {
         const { id } = contexto;
         if (pill.querySelector('input') || salvando.has(id)) return;
+        const aberto = editores.get(id);
+        if (aberto && aberto.pill.isConnected) { aberto.input.focus(); return; }
+        editores.delete(id);
         const original = String(contexto.atual().order_date || '').trim();
         const valorInicial = normalizarData(original);
         const input = document.createElement('input');
@@ -69,6 +73,7 @@
         const fechar = recuperarFoco => {
             if (encerrado) return;
             encerrado = true;
+            if (editores.get(id)?.pill === pill) editores.delete(id);
             pill.replaceChildren();
             atualizar(id);
             if (recuperarFoco && pill.isConnected) pill.focus();
@@ -79,47 +84,54 @@
             contexto.status(mensagem);
             if (input.isConnected) input.focus();
         };
-        const salvar = async () => {
-            if (encerrado || !pill.isConnected || salvando.has(id)) return;
+        const salvar = () => {
+            const pendente = salvando.get(id);
+            if (pendente) return pendente;
+            if (encerrado || !pill.isConnected) return Promise.resolve(true);
             const valor = input.value;
-            if (!alterado || (valor === valorInicial && (!original || valorInicial))) {
-                fechar(document.activeElement === input);
-                return;
-            }
             if (!input.validity.valid || (valor && normalizarData(valor) !== valor)) {
                 erro('Informe uma data do pedido válida.');
-                return;
+                return Promise.resolve(false);
+            }
+            if ((!alterado && valor === valorInicial) || (valor === valorInicial && (!original || valorInicial))) {
+                fechar(document.activeElement === input);
+                return Promise.resolve(true);
             }
             if (valor === String(contexto.atual().order_date || '').trim()) {
                 fechar(document.activeElement === input);
-                return;
+                return Promise.resolve(true);
             }
             const recuperarFoco = document.activeElement === input;
-            salvando.add(id);
             input.removeAttribute('aria-invalid');
             input.removeAttribute('title');
+            const operacao = Promise.resolve().then(async () => {
+                let sucesso = false;
+                try {
+                    contexto.status('Salvando data do pedido...');
+                    const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(id), {
+                        method: 'PUT', headers: { ...contexto.headers(), 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ order_date: valor })
+                    });
+                    const dados = await resposta.json();
+                    if (!resposta.ok) throw new Error(dados.detail || 'Não foi possível salvar a data do pedido.');
+                    contexto.salvo(dados.lista || { order_date: valor });
+                    sucesso = true;
+                    contexto.status('Data do pedido atualizada com sucesso.');
+                } catch (falha) {
+                    erro(falha.message || 'Não foi possível salvar a data do pedido.');
+                } finally {
+                    salvando.delete(id);
+                    atualizar(id);
+                    if (sucesso) fechar(recuperarFoco && (document.activeElement === input || document.activeElement === document.body));
+                    else if (recuperarFoco && input.isConnected) input.focus();
+                }
+                return sucesso;
+            });
+            salvando.set(id, operacao);
             atualizar(id);
-            contexto.status('Salvando data do pedido...');
-            let sucesso = false;
-            try {
-                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(id), {
-                    method: 'PUT', headers: { ...contexto.headers(), 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_date: valor })
-                });
-                const dados = await resposta.json();
-                if (!resposta.ok) throw new Error(dados.detail || 'Não foi possível salvar a data do pedido.');
-                contexto.salvo(dados.lista || { order_date: valor });
-                sucesso = true;
-                contexto.status('Data do pedido atualizada com sucesso.');
-            } catch (falha) {
-                erro(falha.message || 'Não foi possível salvar a data do pedido.');
-            } finally {
-                salvando.delete(id);
-                atualizar(id);
-                if (sucesso) fechar(recuperarFoco && (document.activeElement === input || document.activeElement === document.body));
-                else if (recuperarFoco && input.isConnected) input.focus();
-            }
+            return operacao;
         };
+        editores.set(id, { pill, input, salvar });
         const marcarAlteracao = () => {
             alterado = true;
             input.removeAttribute('aria-invalid');
@@ -164,5 +176,15 @@
         atualizar(contexto.id);
     }
 
-    window.JKDataPedidoLista = { html, preparar };
+    async function aguardarSalvamento(id) {
+        id = String(id || '');
+        const pendente = salvando.get(id);
+        if (pendente) return await pendente;
+        const editor = editores.get(id);
+        if (editor && editor.pill.isConnected) return await editor.salvar();
+        editores.delete(id);
+        return true;
+    }
+
+    window.JKDataPedidoLista = { html, preparar, aguardarSalvamento };
 })();

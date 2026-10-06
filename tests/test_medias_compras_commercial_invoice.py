@@ -7,6 +7,8 @@ import json
 import pytest
 from fastapi import HTTPException
 from openpyxl import load_workbook
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from PIL import Image
 
 from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import ListaPedidoUpdateRequest
@@ -68,6 +70,62 @@ def _formulas(sheet):
         for cell in row
         if cell.data_type == "f"
     ]
+
+
+@pytest.mark.parametrize(
+    ("data_pedido", "data_aprovacao", "esperado"),
+    [
+        ("2026-10-05", "2026-08-18", "October 5, 2026"),
+        (" 2026-10-05 ", "2026-08-18", "October 5, 2026"),
+        ("05/10/2026", "2026-08-18", "October 5, 2026"),
+        ("2026-10-05T23:00:00Z", "2026-08-18", "October 5, 2026"),
+        ("", "2026-08-18T14:30:00", "August 18, 2026"),
+        (None, "2026-08-18", "August 18, 2026"),
+        ("  ", "2026-08-18", "August 18, 2026"),
+        ("", "", None),
+        ("Data historica pendente", "2026-08-18", "Data historica pendente"),
+        ("31/02/2026", "2026-08-18", "31/02/2026"),
+        ("=1+1", "2026-08-18", "=1+1"),
+    ],
+)
+def test_commercial_invoice_prioriza_data_pedido_e_preserva_fallback(
+    data_pedido, data_aprovacao, esperado,
+):
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"order_date": data_pedido, "itens": []}, data_aprovacao=data_aprovacao,
+    ))
+    assert sheet["E3"].value == esperado
+    assert _formulas(sheet) == []
+
+
+@pytest.mark.parametrize("dimensoes", [(640, 80), (80, 640), (240, 240), (1, 1)])
+def test_commercial_invoice_foto_cabe_na_celula_sem_deformar(tmp_path, monkeypatch, dimensoes):
+    foto = tmp_path / "produto.png"
+    Image.new("RGB", dimensoes, "gray").save(foto)
+    monkeypatch.setattr(excel_service, "_resolver_caminho_foto_commercial_invoice", lambda *_args: str(foto))
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes({
+        "itens": [{"SKU": "001", "Quantidade": 2, "Valor unidade": 3.5}],
+    }))
+
+    assert len(sheet._images) == 1
+    ancora = sheet._images[0].anchor
+    assert ancora._from.col == 5
+    assert ancora._from.row == 8
+    largura_celula = pixels_to_EMU(int(sheet.column_dimensions["F"].width * 7))
+    altura_celula = pixels_to_EMU(points_to_pixels(sheet.row_dimensions[9].height))
+    margem = pixels_to_EMU(4)
+    assert ancora._from.colOff >= margem
+    assert ancora._from.rowOff >= margem
+    assert ancora._from.colOff + ancora.ext.cx <= largura_celula - margem
+    assert ancora._from.rowOff + ancora.ext.cy <= altura_celula - margem
+    assert abs(2 * ancora._from.colOff + ancora.ext.cx - largura_celula) <= 2
+    assert abs(2 * ancora._from.rowOff + ancora.ext.cy - altura_celula) <= 2
+    assert ancora.ext.cx / ancora.ext.cy == pytest.approx(dimensoes[0] / dimensoes[1], rel=1e-5)
+    assert sheet["G9"].value == 2
+    assert sheet["I9"].value == 7
+    assert sheet["I10"].value == 7
+    assert sheet.column_dimensions["F"].width == 18.25
+    assert sheet.row_dimensions[9].height == 60
 
 
 def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monkeypatch):

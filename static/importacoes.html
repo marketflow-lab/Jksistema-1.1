@@ -7,7 +7,7 @@
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
-    <script src="/medias_compras/data-pedido-lista.js?v=20261005-data-pedido-v1"></script>
+    <script src="/medias_compras/data-pedido-lista.js?v=20261006-data-pedido-v2"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
 
@@ -2127,6 +2127,7 @@
             try {
                 const salvamento = invoicesPendentes.get(listaId);
                 if (salvamento && !(await salvamento)) throw new Error('Salve o número da Invoice antes de gerar o Commercial Invoice.');
+                if (!(await window.JKDataPedidoLista.aguardarSalvamento(listaId))) throw new Error('Salve a data do pedido antes de gerar o Commercial Invoice.');
                 const listaAtualizada = {
                     ...(lista || {}),
                     ...(await carregarListaCommercialInvoice(listaId))

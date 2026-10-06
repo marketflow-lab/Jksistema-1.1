@@ -35,7 +35,7 @@ function fixture() {
       { ...structuredClone(base), id: 'legacy-text', nome_lista: 'Pedido com data histórica', order_date: 'Data histórica pendente' },
       { ...structuredClone(base), id: 'iso-date', nome_lista: 'Pedido com data ISO', order_date: '2026-01-01' },
     ],
-    updates: [], routeErrors: [], dateGate: null, failNextDate: false, staleDateResponse: false,
+    updates: [], detailReads: [], commercialInvoices: [], routeErrors: [], dateGate: null, failNextDate: false, staleDateResponse: false,
   };
 }
 
@@ -72,12 +72,25 @@ async function installRoutes(page, state) {
       if (pathname === '/api/medias-compras/listas-pedidos') {
         return json(route, { listas: structuredClone(state.lists) });
       }
+      const documentMatch = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)\/commercial-invoice$/);
+      if (documentMatch) {
+        const list = state.lists.find(item => item.id === decodeURIComponent(documentMatch[1]));
+        assert(list, 'Documento deve referenciar uma lista sintética existente');
+        state.commercialInvoices.push({ id: list.id, order_date: list.order_date });
+        return route.fulfill({ status: 200,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          headers: { 'Content-Disposition': 'attachment; filename="commercial_invoice_fixture.xlsx"' },
+          body: Buffer.from('PK synthetic document') });
+      }
       const match = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)$/);
       if (match) {
         const id = decodeURIComponent(match[1]);
         const list = state.lists.find(item => item.id === id);
         assert(list, 'A requisição deve referenciar uma lista sintética existente');
-        if (request.method() === 'GET') return json(route, { lista: structuredClone(list) });
+        if (request.method() === 'GET') {
+          state.detailReads.push({ id, order_date: list.order_date });
+          return json(route, { lista: structuredClone(list) });
+        }
         assert.strictEqual(request.method(), 'PUT');
         assert.strictEqual(request.headers().authorization, 'Bearer synthetic');
         const payload = request.postDataJSON();
@@ -388,6 +401,135 @@ async function testInteractions(browser) {
   }
 }
 
+function commercialButton(page, id = 'order') {
+  return datePill(page, id).locator('xpath=ancestor::div[contains(@class,"lista-item")][1]')
+    .locator('[data-commercial-invoice]');
+}
+
+async function waitDocument(page, action) {
+  const ready = page.waitForEvent('download', { timeout: 10000 });
+  await action();
+  const download = await ready;
+  assert.strictEqual(await download.failure(), null);
+  assert.strictEqual(download.suggestedFilename(), 'commercial_invoice_fixture.xlsx');
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-commercial-invoice]')]
+    .every(button => !button.disabled));
+}
+
+async function testCommercialInvoiceDates(browser) {
+  const { page, context, state, errors } = await newFixturePage(browser, 'America/Sao_Paulo');
+  try {
+    for (const id of ['order', 'legacy-br', 'legacy-text']) {
+      const before = state.updates.length;
+      const original = state.lists.find(list => list.id === id).order_date;
+      await openDate(page, id);
+      await waitDocument(page, () => commercialButton(page, id).click());
+      assert.strictEqual(state.updates.length, before, 'Data ausente ou legada não editada não deve gerar PUT');
+      assert.deepStrictEqual(state.commercialInvoices.at(-1), { id, order_date: original });
+    }
+
+    console.log('PASS Commercial Invoice: dados sem edição');
+    let release;
+    state.dateGate = new Promise(resolve => { release = resolve; });
+    const beforeReads = state.detailReads.length;
+    const beforeDocuments = state.commercialInvoices.length;
+    const beforeUpdates = state.updates.length;
+    const input = await openDate(page);
+    await input.fill('2026-10-14');
+    const started = page.waitForRequest(request => request.method() === 'PUT' &&
+      request.postDataJSON()?.order_date === '2026-10-14');
+    const button = commercialButton(page);
+    await button.click();
+    await started;
+    assert.strictEqual(await button.isDisabled(), true);
+    assert.strictEqual(await input.isDisabled(), true);
+    await page.waitForTimeout(100);
+    assert.strictEqual(state.detailReads.length, beforeReads, 'GET da lista deve aguardar o PUT da data');
+    assert.strictEqual(state.commercialInvoices.length, beforeDocuments, 'Documento deve aguardar a data salva');
+    assert.strictEqual(state.updates.length, beforeUpdates + 1, 'Blur e espera do documento devem compartilhar um PUT');
+    await page.evaluate(() => { window.esperaDaData = window.JKDataPedidoLista.aguardarSalvamento('order'); });
+    await waitDocument(page, async () => { state.dateGate = null; release(); });
+    assert.strictEqual(await page.evaluate(() => window.esperaDaData), true, 'Espera paralela da mesma lista deve concluir com sucesso');
+    await waitClosed(page, 'order', '14/10/2026');
+    assert.deepStrictEqual(state.detailReads.slice(beforeReads), [{ id: 'order', order_date: '2026-10-14' }]);
+    assert.deepStrictEqual(state.commercialInvoices.slice(beforeDocuments), [{ id: 'order', order_date: '2026-10-14' }]);
+
+    console.log('PASS Commercial Invoice: data salva antes do documento');
+    // Clique DOM não move o foco: a API deve salvar o editor ainda aberto, mesmo sem evento input.
+    const programmatic = await openDate(page);
+    await programmatic.evaluate(element => { element.value = '2026-10-15'; });
+    const programmaticBefore = state.updates.length;
+    await waitDocument(page, () => page.evaluate(() => {
+      document.querySelector('#listaWrap [data-lista-order-date-id="order"]')
+        .closest('.lista-item').querySelector('[data-commercial-invoice]').click();
+    }));
+    assert.strictEqual(state.updates.length, programmaticBefore + 1);
+    assert.deepStrictEqual(state.commercialInvoices.at(-1), { id: 'order', order_date: '2026-10-15' });
+    await waitClosed(page, 'order', '15/10/2026');
+
+    console.log('PASS Commercial Invoice: editor programático salvo');
+    state.failNextDate = true;
+    state.dateGate = new Promise(resolve => { release = resolve; });
+    const failedReads = state.detailReads.length;
+    const failedDocuments = state.commercialInvoices.length;
+    const failedUpdates = state.updates.length;
+    const failed = await openDate(page);
+    await failed.fill('2026-10-16');
+    const failedStarted = page.waitForRequest(request => request.method() === 'PUT' &&
+      request.postDataJSON()?.order_date === '2026-10-16');
+    await commercialButton(page).click();
+    await failedStarted;
+    await page.evaluate(() => { window.esperaDaData = window.JKDataPedidoLista.aguardarSalvamento('order'); });
+    const alertReady = page.waitForEvent('dialog', { timeout: 10000 });
+    state.dateGate = null;
+    release();
+    const alert = await alertReady;
+    assert.strictEqual(alert.message(), 'Salve a data do pedido antes de gerar o Commercial Invoice.');
+    await alert.dismiss();
+    assert.strictEqual(await page.evaluate(() => window.esperaDaData), false, 'PUT com falha deve retornar false para todos os aguardantes');
+    assert.strictEqual(state.detailReads.length, failedReads);
+    assert.strictEqual(state.commercialInvoices.length, failedDocuments);
+    assert.strictEqual(state.updates.length, failedUpdates + 1, 'Falha não deve repetir automaticamente o PUT');
+    assert.strictEqual(state.lists[0].order_date, '2026-10-15');
+    assert.strictEqual(await failed.inputValue(), '2026-10-16');
+    assert.strictEqual(await failed.getAttribute('aria-invalid'), 'true');
+    assert.strictEqual(await failed.isDisabled(), false);
+    await page.waitForFunction(() => !document.querySelector('#listaWrap [data-commercial-invoice]').disabled);
+    await waitDocument(page, () => commercialButton(page).click());
+    await waitClosed(page, 'order', '16/10/2026');
+    assert.strictEqual(state.updates.length, failedUpdates + 2, 'Novo clique após falha deve permitir uma única nova tentativa');
+    assert.deepStrictEqual(state.commercialInvoices.at(-1), { id: 'order', order_date: '2026-10-16' });
+
+    console.log('PASS Commercial Invoice: falha e nova tentativa');
+    const invalid = await openDate(page);
+    await invalid.evaluate(element => {
+      element.value = '10000-01-01';
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    assert.strictEqual(await invalid.evaluate(element => element.validity.valid), false);
+    const invalidCounts = [state.updates.length, state.detailReads.length, state.commercialInvoices.length];
+    const invalidAlert = page.waitForEvent('dialog', { timeout: 10000 });
+    const invalidClick = page.evaluate(() => document.querySelector('#listaWrap [data-lista-order-date-id="order"]')
+      .closest('.lista-item').querySelector('[data-commercial-invoice]').click());
+    const dialog = await invalidAlert;
+    assert.strictEqual(dialog.message(), 'Salve a data do pedido antes de gerar o Commercial Invoice.');
+    await dialog.dismiss();
+    await invalidClick;
+    assert.deepStrictEqual([state.updates.length, state.detailReads.length, state.commercialInvoices.length], invalidCounts,
+      'Data inválida deve interromper a geração antes de qualquer requisição');
+    assert.strictEqual(await page.evaluate(() => window.JKDataPedidoLista.aguardarSalvamento('order')), false);
+    await invalid.press('Escape');
+    await waitClosed(page, 'order', '16/10/2026');
+    assert.strictEqual(await page.evaluate(() => window.JKDataPedidoLista.aguardarSalvamento('order')), true,
+      'Cancelar o rascunho inválido deve permitir usar a data persistida');
+    assert.deepStrictEqual(errors, []);
+    assert.deepStrictEqual(state.routeErrors, []);
+    console.log('PASS Commercial Invoice: datas ausentes/legadas, PUT atrasado, espera compartilhada, editor programático, falha/retry e data inválida');
+  } finally {
+    await context.close();
+  }
+}
+
 async function testTimezones(browser) {
   for (const timezoneId of ['Pacific/Honolulu', 'Pacific/Kiritimati']) {
     const { page, context, state, errors } = await newFixturePage(browser, timezoneId);
@@ -414,6 +556,7 @@ async function testTimezones(browser) {
   const browser = await chromium.launch({ headless: true });
   try {
     await testInteractions(browser);
+    await testCommercialInvoiceDates(browser);
     await testTimezones(browser);
   } finally {
     await browser.close();
