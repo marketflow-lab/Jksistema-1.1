@@ -153,6 +153,34 @@
             renderTabela(colunasMesesAtuais, visiveis, 'lista');
         }
 
+        async function consultarVisaoComRetentativa(url, opcoes, geracaoAtual) {
+            const codigosTemporarios = new Set(['stores_snapshot_initializing', 'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
+            for (let tentativa = 0; tentativa <= 4; tentativa++) {
+                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
+                const resp = await fetchLatest('visao', url, opcoes);
+                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
+                if (resp.ok) return resp;
+                const erro = await resp.json().catch(() => ({}));
+                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
+                const detalhe = erro && erro.detail;
+                const mensagem = typeof detalhe === 'string' && detalhe.trim() ? detalhe :
+                    (detalhe && typeof detalhe.message === 'string' && detalhe.message.trim() ? detalhe.message :
+                        'Erro ao consultar visao de medias e compras.');
+                const retryAfter = String(resp.headers.get('Retry-After') || '').trim();
+                const dataRetryAfter = Date.parse(retryAfter);
+                const esperaSolicitada = /^\d+(\.\d+)?$/.test(retryAfter) ? Number(retryAfter) :
+                    (Number.isFinite(dataRetryAfter) ? Math.max(0, (dataRetryAfter - Date.now()) / 1000) : 2);
+                const esperaSegundos = Math.max(Math.min(2 ** (tentativa + 1), 8), esperaSolicitada);
+                if (resp.status === 503 && detalhe && codigosTemporarios.has(detalhe.code) &&
+                    tentativa < 4 && esperaSegundos <= 10) {
+                    setStatus('Preparando dados da loja. Nova tentativa ' + (tentativa + 1) + ' de 4...');
+                    await new Promise(resolve => setTimeout(resolve, esperaSegundos * 1000));
+                    continue;
+                }
+                throw new Error(mensagem);
+            }
+        }
+
         async function carregarVisao(meses) {
             const geracaoAtual = ++geracaoCarregamentoVisao;
             ocultarBalaoEstoqueEmTransito();
@@ -172,18 +200,15 @@
                     params.set('loja', lojaSolicitada);
                     params.set('store_id', String(storeIdSelecionado || ''));
                 }
-                const resp = await fetchLatest('visao', '/api/medias-compras/visao?' + params.toString(), {
+                const resp = await consultarVisaoComRetentativa('/api/medias-compras/visao?' + params.toString(), {
                     method: 'GET',
                     headers: {
                         ...obterAuthHeaders()
                     }
-                });
+                }, geracaoAtual);
 
                 if (geracaoAtual !== geracaoCarregamentoVisao) return;
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Erro ao consultar visão de médias e compras.');
-                }
+                if (!resp) return;
 
                 const data = await resp.json();
                 if (geracaoAtual !== geracaoCarregamentoVisao) return;
