@@ -195,6 +195,9 @@
         renderizarAnunciosIgnoradosSku();
         carregarAnunciosIgnoradosSkuServidor();
         carregarHistoricoFavoritosServidor();
+        if (window.FavoritosV2.execution.checkpoints) {
+            window.FavoritosV2.execution.checkpoints.list().catch(() => {});
+        }
         favoritosCarregarLojasEntrada();
         setBrowserStatus('Pronto para abrir dentro do programa.');
     }

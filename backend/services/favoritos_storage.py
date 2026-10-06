@@ -1155,6 +1155,46 @@ def _favoritos_deduplicar_anuncios_historico(anuncios: list[dict]) -> list[dict]
     return saida
 
 
+def _favoritos_anexar_proveniencia_anuncio_historico(saida: dict, raw: dict) -> None:
+    # Preserve new evidence only when supplied; legacy snapshots keep their shape.
+    for camel, snake in (("tituloFonte", "titulo_fonte"), ("fotoFonte", "foto_fonte"),
+                         ("linkFonte", "link_fonte"), ("precoFonte", "preco_fonte"),
+                         ("vendedorFonte", "vendedor_fonte"), ("dataCriacaoFonte", "data_criacao_fonte")):
+        if camel in raw or snake in raw:
+            saida[camel] = _favoritos_limpar_texto_historico(raw.get(camel) or raw.get(snake), 80)
+            saida[snake] = _favoritos_limpar_texto_historico(raw.get(snake) or raw.get(camel), 80)
+    for field in ("origem_dados", "media_mensal_fonte", "ritmo_atual_fonte", "ritmo_vendas_mes_fonte", "capturado_em", "estado_qualidade"):
+        if field in raw:
+            saida[field] = _favoritos_limpar_texto_historico(raw.get(field), 80)
+    for field in ("media_mensal", "ritmo_atual", "ritmo_vendas_mes", "capturado_em_ms"):
+        if field in raw:
+            saida[field] = _favoritos_numero_historico(raw.get(field))
+    for field in ("cacheAvant", "suspeito"):
+        if field in raw:
+            saida[field] = bool(raw.get(field))
+    if "link_normalizado" in raw:
+        saida["link_normalizado"] = _favoritos_limpar_texto_historico(raw.get("link_normalizado"), 800)
+
+
+def _favoritos_normalizar_checkpoint_ref(raw: Any) -> dict | None:
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        return None
+    checkpoint_id = str(raw.get("id") or "")
+    if not re.fullmatch(r"[0-9a-f-]{36}", checkpoint_id):
+        return None
+    if raw.get("estado_coleta") not in ("parcial", "concluida"):
+        return None
+    return {
+        "id": checkpoint_id,
+        "version": 1,
+        "estado_coleta": raw["estado_coleta"],
+        "root_id": _favoritos_limpar_texto_historico(raw.get("root_id"), 80),
+        "parent_id": _favoritos_limpar_texto_historico(raw.get("parent_id"), 80),
+        "parent_history_entry_id": _favoritos_limpar_texto_historico(raw.get("parent_history_entry_id"), 80),
+        "retomada_numero": max(1, min(10000, _favoritos_int_historico(raw.get("retomada_numero"), 1))),
+    }
+
+
 def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
     if not isinstance(lista, list):
         return []
@@ -1251,6 +1291,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                     "campos_origem": _favoritos_lista_texto_historico(anuncio.get("campos_origem"), 80, 3),
                     "motivo_ia": _favoritos_limpar_texto_historico(anuncio.get("motivo_ia") or anuncio.get("motivo"), 240),
                 })
+                _favoritos_anexar_proveniencia_anuncio_historico(anuncios_saida[-1], anuncio)
             anuncios_saida = _favoritos_deduplicar_anuncios_historico(anuncios_saida)[:FAVORITOS_HISTORICO_ANUNCIOS_MAX]
             removidos_ia_saida: list[dict] = []
             for anuncio in (grupo.get("removidos_ia") or grupo.get("removidosIa") or [])[:80]:
@@ -1276,6 +1317,7 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                     "thumbnail": _favoritos_limpar_texto_historico(anuncio.get("thumbnail") or anuncio.get("imagem"), 800),
                     "motivo_ia": _favoritos_limpar_texto_historico(anuncio.get("motivo_ia") or anuncio.get("motivo"), 240),
                 })
+                _favoritos_anexar_proveniencia_anuncio_historico(removidos_ia_saida[-1], anuncio)
             if not anuncios_saida and not removidos_ia_saida:
                 continue
             termos_saida = []
@@ -1304,6 +1346,14 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                         "percentual": _favoritos_numero_historico(desconto_raw.get("percentual")),
                     },
                 }
+            checkpoint_ref = _favoritos_normalizar_checkpoint_ref(grupo.get("checkpoint_ref"))
+            avulso = bool(grupo.get("avulso") or grupo.get("pesquisa_avulsa") or sku.strip().lower() == "avulso")
+            pesquisa_avulsa = bool(grupo.get("pesquisa_avulsa") or grupo.get("avulso") or sku.strip().lower() == "avulso")
+            if checkpoint_ref:
+                if "avulso" in grupo:
+                    avulso = bool(grupo["avulso"])
+                if "pesquisa_avulsa" in grupo:
+                    pesquisa_avulsa = bool(grupo["pesquisa_avulsa"])
             grupo_saida = {
                 "sku": sku,
                 "titulo": _favoritos_limpar_texto_historico(grupo.get("titulo"), 500),
@@ -1312,8 +1362,8 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
                 "bloquear_atualizacao_historico": bool(grupo.get("bloquear_atualizacao_historico", True)),
                 "termos": termos_saida,
                 "opcoes_promocao": opcoes_promocao_saida,
-                "avulso": bool(grupo.get("avulso") or grupo.get("pesquisa_avulsa") or sku.strip().lower() == "avulso"),
-                "pesquisa_avulsa": bool(grupo.get("pesquisa_avulsa") or grupo.get("avulso") or sku.strip().lower() == "avulso"),
+                "avulso": avulso,
+                "pesquisa_avulsa": pesquisa_avulsa,
                 "total_anuncios": len(anuncios_saida),
                 "usou_ia": bool(grupo.get("usou_ia")),
                 "ia_confirmados": _favoritos_int_historico(grupo.get("ia_confirmados"), 0),
@@ -1326,6 +1376,8 @@ def _favoritos_normalizar_historico(lista: Any) -> list[dict]:
             duracao_grupo_ms = _favoritos_duracao_execucao_ms(grupo.get("duracao_execucao_ms"))
             if duracao_grupo_ms is not None:
                 grupo_saida["duracao_execucao_ms"] = duracao_grupo_ms
+            if checkpoint_ref:
+                grupo_saida["checkpoint_ref"] = checkpoint_ref
             grupos_saida.append(grupo_saida)
         alteracoes_saida: list[dict] = []
         for alteracao in (entrada.get("alteracoes_favoritos") or [])[:80]:
@@ -1438,6 +1490,8 @@ def _favoritos_normalizar_resumo_coleta_historico(valor: Any) -> list[dict]:
             "origens_dados": _favoritos_normalizar_contadores_resumo_historico(resumo.get("origens_dados")),
             "amostras_incompletos": _favoritos_normalizar_amostras_resumo_historico(resumo.get("amostras_incompletos")),
         })
+        if "tempo_navegacao_ms" in resumo:
+            saida[-1]["tempo_navegacao_ms"] = _favoritos_contador_historico(resumo.get("tempo_navegacao_ms"), 7 * 24 * 60 * 60 * 1000)
     return saida
 
 
@@ -1931,6 +1985,45 @@ def _favoritos_salvar_historico(
             conn.close()
 
 
+def _favoritos_checkpoint_upsert_historico(client_id: str, username: str, entrada: dict) -> dict:
+    """Publish exactly one checkpoint snapshot without replacing other history rows."""
+    normalizado = _favoritos_normalizar_historico([entrada])
+    if len(normalizado) != 1:
+        raise HTTPException(status_code=422, detail="Snapshot de ranking invalido.")
+    entrada = normalizado[0]
+    _favoritos_aplicar_usuario_padrao_historico([entrada], username)
+    caminho = _favoritos_arquivo_historico(client_id, username)
+    _favoritos_migrar_historico_json_para_sqlite(client_id, username)
+    with _favoritos_historico_lock_for_path(caminho):
+        conn = _favoritos_historico_sqlite_connect(caminho)
+        try:
+            _favoritos_historico_ensure_schema(conn)
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT payload_json FROM favoritos_historico_entries WHERE id=?", (entrada["id"],)).fetchone()
+            if row:
+                existente = _favoritos_normalizar_historico([json.loads(row[0])])
+                if not existente or _favoritos_historico_hash_payload(existente[0]) != _favoritos_historico_hash_payload(entrada):
+                    raise HTTPException(status_code=409, detail="ID de snapshot ja existe com outro conteudo.")
+                conn.commit()
+                return existente[0]
+            agora = datetime.now().isoformat(timespec="seconds")
+            payload_json = _favoritos_historico_payload_json(entrada)
+            conn.execute(
+                "INSERT INTO favoritos_historico_entries (id,data_iso,loja,usuario,nome_usuario,username,tipo,total_skus,total_anuncios,payload_json,payload_hash,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
+                (entrada["id"], entrada.get("data_iso") or "", entrada.get("loja") or "", entrada.get("usuario") or "", entrada.get("nome_usuario") or "", entrada.get("username") or "", entrada.get("tipo") or "", entrada.get("total_skus") or 0, entrada.get("total_anuncios") or 0, payload_json, _favoritos_historico_hash_payload(entrada), agora, agora),
+            )
+            conn.execute("DELETE FROM favoritos_historico_entries WHERE id NOT IN (SELECT id FROM favoritos_historico_entries ORDER BY data_iso DESC, sort_order ASC LIMIT ?)", (FAVORITOS_HISTORICO_MAX,))
+            _favoritos_historico_meta_set(conn, "updated_at", agora)
+            conn.commit()
+            return entrada
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def _favoritos_usuario_pode_sync_historico(usuario: dict, client_id: str) -> bool:
     if not isinstance(usuario, dict):
         return False
@@ -2009,7 +2102,7 @@ def _favoritos_propagar_historico_para_usuarios(client_id: str, source_username:
             if resultado.get("changed"):
                 atualizados.append(username)
         except Exception as exc:
-            logger.warning("[Favoritos Sync] Falha ao propagar historico de %s para %s: %s", source_norm, username, exc)
+            logger.warning("[Favoritos Sync] Falha ao propagar historico entre usuarios.")
             falhas.append({"username": username, "error": str(exc)})
     return {
         "eligible_users": usuarios,
@@ -2075,7 +2168,7 @@ def _favoritos_historico_publicar_evento_realtime(client_id: str, source_usernam
         ref.set(payload)
         return True
     except Exception as exc:
-        logger.warning("[Favoritos Sync] Falha ao publicar evento realtime: %s", exc)
+        logger.warning("[Favoritos Sync] Falha ao publicar evento realtime.")
         return False
 
 

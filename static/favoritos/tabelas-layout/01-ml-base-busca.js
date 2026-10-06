@@ -135,6 +135,13 @@
         }
 
         async function consultarItemApiMercadoLivreSemDedupe(itemId) {
+            const controle = arguments[1];
+            const verificar = () => { if (controle) controle.verificar(); };
+            const executar = factory => {
+                verificar();
+                return controle ? controle.aguardar(factory) : factory();
+            };
+            verificar();
             itemId = String(itemId || '').trim().toUpperCase();
             if (!itemId) return null;
             consultarItemApiMercadoLivre.cache = consultarItemApiMercadoLivre.cache || new Map();
@@ -147,7 +154,8 @@
             let viaElectron = null;
             if (window.electronAPI && typeof window.electronAPI.getMlPublicItemInfo === 'function') {
                 try {
-                    const retorno = await window.electronAPI.getMlPublicItemInfo(itemId);
+                    const retorno = await executar(() => window.electronAPI.getMlPublicItemInfo(itemId));
+                    verificar();
                     if (retorno) {
                         const urlElectron = normalizarUrlItemMercadoLivreFavoritos(retorno.url || retorno.permalink || retorno.link, retorno.id || itemId);
                         const imagemElectron = obterImagemAnuncioFavoritos(retorno);
@@ -206,21 +214,25 @@
                         }
                     }
                 } catch (err) {
+                    verificar();
                     console.warn('Falha ao consultar API ML pelo Electron:', itemId, err);
                 }
             }
             try {
-                const itemResp = await fetch(`https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`, {
+                const itemResp = await executar(() => fetch(`https://api.mercadolibre.com/items/${encodeURIComponent(itemId)}`, {
                     headers: { 'Accept': 'application/json' }
-                });
+                }));
+                verificar();
                 if (!itemResp.ok) {
                     if (viaElectron && temInformacao(viaElectron)) {
+                        verificar();
                         consultarItemApiMercadoLivre.cache.set(itemId, viaElectron);
                         return viaElectron;
                     }
                     return null;
                 }
-                const item = await itemResp.json();
+                const item = await executar(() => itemResp.json());
+                verificar();
                 const seller = item && typeof item.seller === 'object' ? item.seller : {};
                 const officialStore = item && typeof item.official_store === 'object' ? item.official_store : {};
                 let vendedor = escolherNomeVendedor([
@@ -241,11 +253,13 @@
 
                 if (sellerId) {
                     try {
-                        const userResp = await fetch(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`, {
+                        const userResp = await executar(() => fetch(`https://api.mercadolibre.com/users/${encodeURIComponent(sellerId)}`, {
                             headers: { 'Accept': 'application/json' }
-                        });
+                        }));
+                        verificar();
                         if (userResp.ok) {
-                            const user = await userResp.json();
+                            const user = await executar(() => userResp.json());
+                            verificar();
                             const nomeUsuario = escolherNomeVendedor([
                                 { valor: user.official_store_name, prioridade: 130 },
                                 { valor: user.official_store && user.official_store.name, prioridade: 130 },
@@ -255,7 +269,7 @@
                                 vendedor = nomeUsuario;
                             }
                         }
-                    } catch (e) {}
+                    } catch (e) { verificar(); }
                 }
 
                 const info = {
@@ -371,20 +385,28 @@
                 }
                 if (!temInformacao(finalInfo)) {
                     if (viaElectron && temInformacao(viaElectron)) {
+                        verificar();
                         consultarItemApiMercadoLivre.cache.set(itemId, viaElectron);
                         return viaElectron;
                     }
                     return null;
                 }
+                verificar();
                 consultarItemApiMercadoLivre.cache.set(itemId, finalInfo);
                 return finalInfo;
             } catch (err) {
+                verificar();
                 console.warn('Falha ao consultar API pública do ML:', itemId, err);
                 return null;
             }
         }
 
         async function consultarItemApiMercadoLivre(itemId) {
+            const controle = arguments[1];
+            if (controle) {
+                controle.verificar();
+                return controle.aguardar(() => consultarItemApiMercadoLivreSemDedupe(itemId, controle));
+            }
             itemId = String(itemId || '').trim().toUpperCase();
             if (!itemId) return null;
             consultarItemApiMercadoLivre.cache = consultarItemApiMercadoLivre.cache || new Map();

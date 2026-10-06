@@ -1,3 +1,180 @@
+        let favoritosCheckpointLeaseTimer = null;
+
+        function metasCheckpointFavoritos() {
+            const servico = window.FavoritosV2 && window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+            return servico && Array.isArray(servico.items) ? servico.items : [];
+        }
+
+        function idCheckpointFavoritos(grupo, entrada = null) {
+            return String(grupo && grupo.checkpoint_ref && grupo.checkpoint_ref.id
+                || grupo && grupo.checkpoint_id || entrada && entrada.checkpoint_id
+                || grupo && (grupo.estado_coleta || grupo.estado_fechamento) && grupo.id || '').trim();
+        }
+
+        function metaCheckpointFavoritos(grupo, entrada = null) {
+            const id = idCheckpointFavoritos(grupo, entrada);
+            const entradaId = String(entrada && (entrada.id || entrada.history_entry_id) || '').trim();
+            return metasCheckpointFavoritos().find(meta => id ? String(meta.id) === id
+                : entradaId && String(meta.history_entry_id || '') === entradaId
+                    && String(meta.sku || '').toLowerCase() === String(grupo && grupo.sku || '').toLowerCase()) || null;
+        }
+
+        function checkpointFavoritosPodeRetomar(meta) {
+            if (!meta || meta.retomado_por || !meta.id || !(Number(meta.revision) > 0)) return false;
+            const termos = Array.isArray(meta.termos) ? meta.termos : [];
+            return termos.some(termo => termo && termo.estado !== 'concluida')
+                || ['parcial', 'cancelada', 'erro', 'coletando'].includes(meta.estado_coleta)
+                || meta.estado_fechamento !== 'confirmado';
+        }
+
+        function renderizarEstadoCheckpointFavoritos(container, grupo, entrada = null) {
+            if (!container || !grupo) return null;
+            const meta = metaCheckpointFavoritos(grupo, entrada);
+            const id = idCheckpointFavoritos(grupo, entrada) || meta && String(meta.id || '');
+            if (!id) return null;
+            const estado = String(grupo.checkpoint_ref && grupo.checkpoint_ref.estado_coleta
+                || grupo.coleta_status || entrada && entrada.coleta_status || grupo.estado_coleta
+                || meta && meta.estado_coleta || '').trim();
+            const fechamento = String(meta && meta.estado_fechamento || grupo.estado_fechamento || '');
+            const incompleta = ['parcial', 'cancelada', 'erro', 'coletando'].includes(estado);
+            const podeRetomar = checkpointFavoritosPodeRetomar(meta);
+            if (!incompleta && !podeRetomar && fechamento !== 'fechamento_pendente') return null;
+            const totalCandidatos = Math.max(0, Number(grupo.total_candidatos ?? (meta && meta.total_candidatos)) || 0);
+            const totalRankeados = grupo.total_rankeados ?? (meta && meta.total_rankeados);
+            const temTotalRanking = Array.isArray(grupo.anuncios) || (totalRankeados !== undefined && totalRankeados !== null);
+            const total = Array.isArray(grupo.anuncios) ? grupo.anuncios.length
+                : temTotalRanking ? Math.max(0, Number(totalRankeados) || 0) : totalCandidatos;
+            const bloco = document.createElement('div');
+            bloco.className = 'ml-favoritos-checkpoint-status ml-favoritos-termos';
+            bloco.setAttribute('data-checkpoint-id', id);
+            bloco.setAttribute('role', 'status');
+            bloco.setAttribute('aria-live', 'polite');
+            const rotulo = document.createElement('strong');
+            rotulo.textContent = estado === 'cancelada' ? 'Coleta cancelada'
+                : estado === 'coletando' ? 'Coleta em andamento'
+                : incompleta ? (total ? 'Ranking parcial' : 'Coleta parcial sem anúncios')
+                : 'Finalização pendente';
+            bloco.appendChild(rotulo);
+            const detalhe = document.createElement('div');
+            const termos = Array.isArray(meta && meta.termos) ? meta.termos
+                : Array.isArray(grupo.termos) ? grupo.termos : [];
+            const pendentes = termos.filter(termo => termo && typeof termo === 'object' && ['pendente', 'parcial'].includes(termo.estado));
+            const pesquisas = pendentes.map((termo, index) => `Pesquisa ${Number(termo.campo) || index + 1}: ${String(termo.termo || '').trim()}`);
+            if (!meta && !pesquisas.length && Array.isArray(grupo.resumo_coleta)) {
+                grupo.resumo_coleta.filter(resumo => resumo && (resumo.tempo_esgotado || resumo.login_avant_bloqueado))
+                    .forEach(resumo => {
+                        const campo = Number(resumo.campo || resumo.pesquisa) || 1;
+                        const termo = termos.find(item => item && typeof item === 'object' && Number(item.campo) === campo);
+                        const texto = String(resumo.termo || termo && termo.termo || '').trim();
+                        pesquisas.push(`Pesquisa ${campo}${texto ? `: ${texto}` : ''}`);
+                    });
+            }
+            const titulo = String(grupo.titulo || meta && meta.titulo || '').trim();
+            const loja = String(meta && meta.loja || grupo.loja || entrada && entrada.loja || '').trim();
+            detalhe.textContent = `${total} anúncio(s) ${temTotalRanking ? 'rankeado(s)' : 'preservado(s)'}${temTotalRanking && !total && totalCandidatos ? ` | ${totalCandidatos} candidato(s) preservado(s)` : ''}${loja ? ` | Loja: ${loja}` : ''}`
+                + (pesquisas.length ? ` | Pesquisas incompletas: ${pesquisas.join(' | ')}` : (podeRetomar ? ' | Coleta preservada para recalcular o ranking.' : ''));
+            if (titulo && !Array.isArray(grupo.anuncios)) detalhe.textContent = `${titulo} | ${detalhe.textContent}`;
+            bloco.appendChild(detalhe);
+            if (meta && meta.retomado_por) {
+                const continuacao = document.createElement('div');
+                continuacao.textContent = 'Coleta continuada em uma nova execução.';
+                bloco.appendChild(continuacao);
+            } else if (podeRetomar) {
+                const botao = document.createElement('button');
+                botao.type = 'button';
+                botao.className = 'btn-back ml-favoritos-refazer-btn ml-favoritos-retomar-btn';
+                const emColeta = Number(meta.lease_expires_at_ms) > Date.now();
+                if (emColeta) agendarAtualizacaoLeaseCheckpointsFavoritos();
+                const emExecucao = typeof mlFavoritosEmExecucao !== 'undefined' && mlFavoritosEmExecucao;
+                botao.textContent = emColeta ? 'Coleta em andamento' : 'Retomar coleta';
+                botao.disabled = !!(emColeta || emExecucao);
+                botao.title = emColeta ? 'Aguarde a coleta atual terminar ou a reserva expirar.'
+                    : emExecucao ? 'Aguarde a execução atual terminar.'
+                    : pendentes.length ? 'Continuar as pesquisas incompletas usando os anúncios preservados.'
+                    : 'Recalcular o ranking usando os candidatos preservados.';
+                botao.addEventListener('keydown', event => event.stopPropagation());
+                botao.addEventListener('click', async event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (botao.disabled) return;
+                    const servico = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+                    if (!servico || typeof servico.retomar !== 'function') return;
+                    botao.disabled = true;
+                    botao.textContent = 'Retomando coleta…';
+                    try {
+                        await servico.retomar(String(meta.id), Number(meta.revision));
+                    } catch (erro) {
+                        detalhe.textContent = `Não foi possível retomar: ${String(erro && erro.message || 'Tente novamente.')}`;
+                    } finally {
+                        botao.textContent = 'Retomar coleta';
+                        const atual = metasCheckpointFavoritos().find(item => String(item.id) === String(meta.id));
+                        botao.disabled = !!(atual && Number(atual.lease_expires_at_ms) > Date.now()
+                            || typeof mlFavoritosEmExecucao !== 'undefined' && mlFavoritosEmExecucao);
+                        if (atual && !checkpointFavoritosPodeRetomar(atual)) botao.hidden = true;
+                    }
+                });
+                bloco.appendChild(botao);
+            }
+            container.appendChild(bloco);
+            return bloco;
+        }
+
+        function renderizarCheckpointsPendentesFavoritos(container, historico = null, sku = '') {
+            if (!container) return 0;
+            const vistos = new Set();
+            (Array.isArray(historico) ? historico : []).forEach(entrada => {
+                (Array.isArray(entrada && entrada.grupos) ? entrada.grupos : []).forEach(grupo => {
+                    const id = idCheckpointFavoritos(grupo, entrada);
+                    if (id) vistos.add(id);
+                });
+            });
+            const chaveSku = String(sku || '').trim().toLowerCase();
+            const metas = metasCheckpointFavoritos().filter(meta => checkpointFavoritosPodeRetomar(meta)
+                && !vistos.has(String(meta.id)) && (!chaveSku || String(meta.sku || '').toLowerCase() === chaveSku));
+            metas.forEach(meta => {
+                const card = document.createElement('section');
+                card.className = 'ml-favoritos-sku-card ml-favoritos-checkpoint-pending';
+                const head = document.createElement('div');
+                head.className = 'ml-favoritos-sku-head';
+                const titulo = document.createElement('h4');
+                titulo.className = 'ml-favoritos-sku-title';
+                titulo.textContent = `${String(meta.sku || 'AVULSO')}${meta.titulo ? ` - ${meta.titulo}` : ''}`;
+                head.appendChild(titulo);
+                renderizarEstadoCheckpointFavoritos(head, meta);
+                card.appendChild(head);
+                container.appendChild(card);
+            });
+            return metas.length;
+        }
+
+        function agendarAtualizacaoLeaseCheckpointsFavoritos() {
+            if (favoritosCheckpointLeaseTimer) clearTimeout(favoritosCheckpointLeaseTimer);
+            favoritosCheckpointLeaseTimer = null;
+            const agora = Date.now();
+            const vencimentos = metasCheckpointFavoritos().filter(checkpointFavoritosPodeRetomar)
+                .map(meta => Number(meta.lease_expires_at_ms) || 0).filter(prazo => prazo > agora);
+            if (!vencimentos.length) return;
+            favoritosCheckpointLeaseTimer = setTimeout(() => {
+                favoritosCheckpointLeaseTimer = null;
+                atualizarUiCheckpointsFavoritos();
+            }, Math.min(Math.max(1, Math.min(...vencimentos) - agora + 25), 120025));
+        }
+
+        function atualizarUiCheckpointsFavoritos() {
+            if (typeof renderizarFavoritosOutrosAnuncios === 'function') {
+                renderizarFavoritosOutrosAnuncios(typeof favMlSkuSelecionado === 'undefined' ? '' : favMlSkuSelecionado);
+            }
+            if (typeof renderizarHistoricoFavoritos === 'function') renderizarHistoricoFavoritos();
+            agendarAtualizacaoLeaseCheckpointsFavoritos();
+        }
+
+        window.FavoritosV2 = window.FavoritosV2 || {};
+        window.FavoritosV2.checkpointUi = {
+            renderGroup: renderizarEstadoCheckpointFavoritos,
+            renderPending: renderizarCheckpointsPendentesFavoritos,
+            refresh: atualizarUiCheckpointsFavoritos
+        };
+
         function atualizarBotaoIncluirAnuncioRankingFavoritos(habilitado = false) {
             if (!favRankingIncluirAnuncioBtnEl) return;
             const skuSelecionado = String(favMlSkuSelecionado || '').trim();
@@ -1102,6 +1279,8 @@
             renderizarHistoricoSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
             renderizarHistoricoFavoritos();
+            const checkpoints = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+            if (checkpoints && typeof checkpoints.list === 'function') checkpoints.list().catch(() => {});
             if (!mlSkusAnunciosLojaAtual.length && !mlSkuCarregamentoEmAndamento) {
                 carregarSkuFavoritos(mlSkuLojaSelecionada || skuLojaSelecionada || '');
             }
@@ -1119,15 +1298,17 @@
 
             if (!skuSelecionadoChave) {
                 const recentes = montarUltimosFavoritosRankeados(ML_FAVORITOS_HISTORICO_MAX, historico);
+                const pendentes = renderizarCheckpointsPendentesFavoritos(mlHistoricoFavoritosListEl, historico);
                 if (mlHistoricoFavoritosStatusEl) {
                     mlHistoricoFavoritosStatusEl.textContent = recentes.length
                         ? `Ultimos favoritos feitos${lojaAtualTexto ? ` para a loja ${lojaAtualTexto}` : ''}. Clique em um item para abrir os anuncios rankeados.`
+                        : pendentes ? `${pendentes} coleta(s) preservada(s). Use Retomar coleta para continuar.`
                         : `Nenhum favorito salvo no historico do servidor${lojaAtualTexto ? ` para a loja ${lojaAtualTexto}` : ''}.`;
                 }
                 mlHistoricoFavoritosEmptyEl.textContent = recentes.length
                     ? ''
                     : 'Nenhum favorito salvo ainda.';
-                mlHistoricoFavoritosEmptyEl.classList.toggle('hidden', recentes.length > 0);
+                mlHistoricoFavoritosEmptyEl.classList.toggle('hidden', recentes.length > 0 || pendentes > 0);
                 if (recentes.length) {
                     const lista = document.createElement('div');
                     lista.className = 'ml-favoritos-recentes-list';
@@ -1158,18 +1339,19 @@
                             ...grupo,
                             anuncios: filtrarAnunciosIgnoradosRanking(grupo && grupo.anuncios, grupo && grupo.sku)
                         }))
-                        .filter(grupo => grupo.anuncios.length || obterRemovidosIaGrupoFavoritos(grupo).length)
+                        .filter(grupo => grupo.anuncios.length || obterRemovidosIaGrupoFavoritos(grupo).length || idCheckpointFavoritos(grupo))
                 }))
                 .filter(entrada => entrada.grupos.length);
 
+            const pendentes = renderizarCheckpointsPendentesFavoritos(mlHistoricoFavoritosListEl, historicoFiltrado, skuSelecionado);
             mlHistoricoFavoritosEmptyEl.textContent = historicoComSku.length && !historicoFiltrado.length
                 ? `Todos os anuncios salvos para o SKU ${skuSelecionado} estao na lista de ignorados.`
                 : `Nenhum historico salvo para o SKU ${skuSelecionado}.`;
-            mlHistoricoFavoritosEmptyEl.classList.toggle('hidden', historicoFiltrado.length > 0);
+            mlHistoricoFavoritosEmptyEl.classList.toggle('hidden', historicoFiltrado.length > 0 || pendentes > 0);
             if (mlHistoricoFavoritosStatusEl) {
                 mlHistoricoFavoritosStatusEl.textContent = historicoFiltrado.length
                     ? `${historicoFiltrado.length} execucao(oes) encontrada(s) para o SKU ${skuSelecionado}. Cada execucao mostra os ${ML_FAVORITOS_HISTORICO_ANUNCIOS_MAX} melhores anuncios classificados.`
-                    : '';
+                    : pendentes ? `${pendentes} coleta(s) preservada(s) para o SKU ${skuSelecionado}. Use Retomar coleta para continuar.` : '';
             }
             historicoFiltrado.forEach(entrada => {
                 const card = document.createElement('section');
@@ -1238,6 +1420,7 @@
                     grupoHead.appendChild(excluirBtn);
                     bloco.appendChild(grupoHead);
                     bloco.appendChild(termos);
+                    renderizarEstadoCheckpointFavoritos(bloco, grupo, entrada);
                     if (typeof criarBlocoResumoColetaFavoritos === 'function') {
                         const resumoColeta = criarBlocoResumoColetaFavoritos(grupo);
                         if (resumoColeta) bloco.appendChild(resumoColeta);

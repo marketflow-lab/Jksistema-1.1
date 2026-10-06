@@ -59,6 +59,7 @@
                     : 'Nenhuma pesquisa preenchida para este SKU.';
                 head.appendChild(titulo);
                 head.appendChild(termos);
+                if (window.FavoritosV2.checkpointUi) window.FavoritosV2.checkpointUi.renderGroup(head, grupo);
                 const resumoColeta = criarBlocoResumoColetaFavoritos(grupo);
                 if (resumoColeta) head.appendChild(resumoColeta);
                 card.appendChild(head);
@@ -354,6 +355,21 @@
             };
         }
 
+        function normalizarReferenciaCheckpointHistoricoFavoritos(raw) {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Number(raw.version) !== 1) return null;
+            const id = String(raw.id || '').trim();
+            if (!id || !['parcial', 'concluida'].includes(raw.estado_coleta)) return null;
+            return {
+                id,
+                version: 1,
+                estado_coleta: raw.estado_coleta,
+                root_id: String(raw.root_id || '').trim(),
+                parent_id: String(raw.parent_id || '').trim(),
+                parent_history_entry_id: String(raw.parent_history_entry_id || '').trim(),
+                retomada_numero: Math.max(1, Math.min(10000, Number(raw.retomada_numero) || 1))
+            };
+        }
+
         function normalizarHistoricoFavoritosFrontend(lista) {
             if (!Array.isArray(lista)) return [];
             const usuarioAtual = nomeUsuarioHistoricoFavoritosAtual();
@@ -366,8 +382,16 @@
                     const grupos = Array.isArray(entrada.grupos)
                         ? entrada.grupos.map(grupo => {
                             const anuncios = normalizarListaAnunciosHistoricoFavoritosFrontend(grupo && grupo.anuncios);
+                            const checkpointRef = normalizarReferenciaCheckpointHistoricoFavoritos(grupo && grupo.checkpoint_ref);
                             return {
                                 ...grupo,
+                                ...(checkpointRef ? {
+                                    checkpoint_ref: checkpointRef,
+                                    checkpoint_id: checkpointRef.id,
+                                    coleta_status: checkpointRef.estado_coleta,
+                                    parent_history_entry_id: checkpointRef.parent_history_entry_id,
+                                    retomada_numero: checkpointRef.retomada_numero
+                                } : {}),
                                 duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms),
                                 total_anuncios: anuncios.length,
                                 anuncios,
@@ -854,6 +878,7 @@
                     const removidosIa = grupo.removidos_ia.slice(0, 80).map(anuncioHistoricoPayload);
                     const opcoesPromocao = window.FavoritosV2.promotionEffectuation.publicApi.options.resolverOpcoesPromocaoGrupoFavoritos(grupo, grupo && grupo.sku);
                     const duracaoExecucaoMs = normalizarDuracaoExecucaoFavoritosMs(grupo && grupo.duracao_execucao_ms);
+                    const checkpointRef = normalizarReferenciaCheckpointHistoricoFavoritos(grupo && grupo.checkpoint_ref);
                     return {
                         sku: grupo && grupo.sku || '',
                         titulo: grupo && grupo.titulo || '',
@@ -864,6 +889,12 @@
                         opcoes_promocao: opcoesPromocao || null,
                         avulso: grupoRankingFavoritosEhAvulso(grupo),
                         pesquisa_avulsa: grupoRankingFavoritosEhAvulso(grupo),
+                        ...(checkpointRef ? { checkpoint_ref: checkpointRef } : {}),
+                        checkpoint_id: checkpointRef ? checkpointRef.id : String(grupo.checkpoint_id || ''),
+                        coleta_status: checkpointRef ? checkpointRef.estado_coleta : String(grupo.coleta_status || ''),
+                        parent_history_entry_id: checkpointRef ? checkpointRef.parent_history_entry_id : String(grupo.parent_history_entry_id || ''),
+                        historico_origem_id: String(grupo.historico_origem_id || ''),
+                        retomada_numero: checkpointRef ? checkpointRef.retomada_numero : Math.max(0, Number(grupo.retomada_numero) || 0),
                         duracao_execucao_ms: duracaoExecucaoMs,
                         duracao_tarefa_ms: Math.max(0, Number(grupo && grupo.duracao_tarefa_ms) || 0),
                         timings: grupo && grupo.timings && typeof grupo.timings === 'object'
@@ -916,7 +947,7 @@
                         anuncios
                     };
                 })
-                .filter(grupo => grupo.sku && (grupo.anuncios.length || grupo.removidos_ia.length));
+                .filter(grupo => grupo.sku && (grupo.anuncios.length || grupo.removidos_ia.length || grupo.checkpoint_id));
 
             const opcoesEntrada = gruposHistorico.map(grupo => grupo.opcoes_promocao).find(Boolean) || null;
             const duracoesExecucao = gruposHistorico
@@ -1223,7 +1254,7 @@
                     const sku = String(grupo && grupo.sku || '').trim();
                     if (!sku) continue;
                     const anuncios = filtrarAnunciosIgnoradosRanking(grupo && grupo.anuncios, grupo && grupo.sku);
-                    if (!anuncios.length) continue;
+                    if (!anuncios.length && !grupo.checkpoint_id && !normalizarReferenciaCheckpointHistoricoFavoritos(grupo.checkpoint_ref)) continue;
                     recentes.push({
                         entrada,
                         entrada_id: idEntradaHistoricoFavoritos(entrada),
@@ -1272,6 +1303,7 @@
             meta.textContent = `${item.total_anuncios} anuncio(s) rankeado(s) | ${data}${duracaoExecucao ? ` | Tempo total: ${duracaoExecucao}` : ''}${item.loja ? ` | Loja: ${item.loja}` : ''}${sufixoUsuarioHistoricoFavoritos(item.entrada || item)}`;
             conteudo.appendChild(titulo);
             conteudo.appendChild(meta);
+            if (window.FavoritosV2.checkpointUi) window.FavoritosV2.checkpointUi.renderGroup(conteudo, item.grupo || item, item.entrada);
             const termosTexto = formatarTermosPesquisaFavoritos(item && item.grupo && item.grupo.termos);
             if (termosTexto) {
                 const termos = document.createElement('span');
@@ -2263,6 +2295,7 @@
                 if (historico) {
                     return {
                         grupo: historico.grupo,
+                        entrada: historico.entrada,
                         data_iso: historico.entrada && historico.entrada.data_iso || historico.grupo.data_iso || '',
                         loja: historico.entrada && historico.entrada.loja || historico.grupo.loja || ''
                     };

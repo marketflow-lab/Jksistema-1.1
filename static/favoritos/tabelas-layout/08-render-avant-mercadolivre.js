@@ -129,7 +129,10 @@
             const recentes = montarUltimosFavoritosRankeados(limiteBusca, historicoBase)
                 .filter(item => !chaveSku || skuChaveSku(item && item.sku) === chaveSku)
                 .slice(0, ML_FAVORITOS_HISTORICO_MAX);
-            if (!recentes.length) return false;
+            const pendentesContainer = document.createElement('div');
+            const pendentes = window.FavoritosV2.checkpointUi
+                ? window.FavoritosV2.checkpointUi.renderPending(pendentesContainer, historicoBase || lerHistoricoFavoritos(), skuSelecionado) : 0;
+            if (!recentes.length && !pendentes) return false;
 
             favOutrosAnunciosEmptyEl.classList.add('hidden');
             if (favRankingDataEl) {
@@ -147,6 +150,7 @@
             recentes.forEach(item => {
                 lista.appendChild(criarBotaoFavoritoRecente(item, abrirFavoritoRecenteNaAbaFavoritos));
             });
+            if (pendentes) td.appendChild(pendentesContainer);
             td.appendChild(lista);
             tr.appendChild(td);
             favOutrosAnunciosBodyEl.appendChild(tr);
@@ -199,6 +203,9 @@
                 favRankingDataEl.textContent = dataRanking
                     ? `${entradaSelecionada === FAV_ML_RANKING_ATUAL_ID ? 'Ranking atual feito em' : 'Ranking do historico feito em'} ${dataRanking}${lojaRanking ? ` | Loja: ${lojaRanking}` : ''}${usuarioRanking ? ` | Usuario: ${usuarioRanking}` : ''}`
                     : (entradaSelecionada === FAV_ML_RANKING_ATUAL_ID ? 'Ranking atual para este SKU.' : 'Ranking do historico selecionado para este SKU.');
+            }
+            if (window.FavoritosV2.checkpointUi && favRankingDataEl) {
+                window.FavoritosV2.checkpointUi.renderGroup(favRankingDataEl, grupo, resultadoRanking.entrada);
             }
             if (grupo.erro) {
                 favOutrosAnunciosEmptyEl.textContent = grupo.erro;
@@ -283,6 +290,8 @@
             window.FavoritosV2.execution.publicApi.renderizarFavoritosSkuSidebar();
             renderizarSkuSidebarMercadoLivre();
             renderizarFavoritosOutrosAnuncios(favMlSkuSelecionado);
+            const checkpoints = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+            if (checkpoints && typeof checkpoints.list === 'function') checkpoints.list().catch(() => {});
             if (favMlSkuSelecionado) {
                 renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
             } else {

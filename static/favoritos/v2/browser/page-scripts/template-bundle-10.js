@@ -71,6 +71,7 @@
                         return /informacoes?\\s+avant|informacoes?\\s+avantpro|avantpro\\s+info|carregar\\s+dados\\s+avant|dados\\s+avantpro|dados\\s+avant\\s*pro/.test(explicito)
                             && /avant\\s*pro|avantpro|informacoes?\\s+avant/.test(alvo + ' ' + contexto);
                     };
+                    verificarTentativa();
                     var store = window.__JK_AVANT_CARD_QUEUE_CLICKED_KEYS || {};
                     window.__JK_AVANT_CARD_QUEUE_CLICKED_KEYS = store;
                     window.__JK_AVANT_CARD_DATA_CACHE = window.__JK_AVANT_CARD_DATA_CACHE || {};
@@ -189,6 +190,11 @@
                         var canonicalCache = baseParaCache.mlb ? ('mlb:' + baseParaCache.mlb) : (baseParaCache.link ? ('link:' + String(baseParaCache.link).toLowerCase()) : '');
                         var cacheAtual = canonicalCache && window.__JK_AVANT_CARD_DATA_CACHE && window.__JK_AVANT_CARD_DATA_CACHE[canonicalCache];
                         var cacheTemDados = !!(cacheAtual && (cacheAtual.vendasFonte || cacheAtual.vendedorFonte || cacheAtual.data_criacao || cacheAtual.media_mensal || cacheAtual.visitas));
+                        verificarTentativa();
+                        if (typeof __jkFavoritosConfirmedKeys !== 'undefined' && __jkFavoritosConfirmedKeys.indexOf(String(canonicalCache).toLowerCase()) >= 0) {
+                          resolvedKeys.push(key);
+                          continue;
+                        }
                         if (!key || tentativas >= maxTentativasPorCard) continue;
                         if (cacheTemDados) {
                             resolvedKeys.push(key);
@@ -196,6 +202,7 @@
                         }
                         if (cardTemDadosAvant(card)) {
                             var capturadoExistente = await capturarPainelAvantParaCard(card, '', baseParaCache);
+                            verificarTentativa();
                             if (capturadoExistente) {
                                 store[key] = { count: tentativas + 1, at: Date.now(), semClique: true };
                                 keys.push(key);
@@ -220,6 +227,7 @@
                         store[key] = { count: tentativas + 1, at: Date.now() };
                         try { alvo.scrollIntoView && alvo.scrollIntoView({ block: 'center', inline: 'center' }); } catch (_scrollErr) {}
                         await sleep(80);
+                        verificarTentativa();
                         try {
                             var rect = alvo.getBoundingClientRect ? alvo.getBoundingClientRect() : null;
                             var opts = rect ? { bubbles: true, cancelable: true, view: window, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 } : { bubbles: true, cancelable: true, view: window };
@@ -238,6 +246,7 @@
                             });
                         } catch (_clickOuterErr) {}
                         var capturado = await capturarPainelAvantParaCard(card, snapshotAntes, baseParaCache);
+                        verificarTentativa();
                         if (capturado) {
                             capturados.push(capturado);
                             resolvedKeys.push(key);
@@ -245,6 +254,7 @@
                             pendingKeys.push(key);
                         }
                         await sleep(80);
+                        verificarTentativa();
                     }
                     var textoPaginaAvant = checkLogin ? normalizar([
                         document.body && (document.body.innerText || document.body.textContent),
@@ -283,6 +293,7 @@
                     if (clicked > 0 && capturados.length === 0 && loginAvantBloqueando) {
                         window.__JK_AVANT_CARD_QUEUE_CLICK_SLOW = true;
                     }
+                    verificarTentativa();
                     var incrementalState = window.__JK_FAVORITOS_INCREMENTAL_COLLECTOR_V1;
                     if (incrementalState) {
                         Array.from(new Set(pendingKeys)).forEach(function (key) {
@@ -300,8 +311,13 @@
             `);
   pageScripts.registerPart('coletar-primeira-pagina-favoritos-controlada-1', 0, `
                 (function () {
+                    if (typeof __jkFavoritosVerificar === 'function') __jkFavoritosVerificar();
                     window.__JK_AVANT_CARD_QUEUE_CLICKED_KEYS = {};
                     window.__JK_AVANT_CARD_DATA_CACHE = {};
+                    (typeof __jkFavoritosSeedConfirmed !== 'undefined' ? __jkFavoritosSeedConfirmed : []).forEach(function (item) {
+                      var key = String(item.chave_canonica || item.chaveCanonica || (item.id || item.mlb ? 'mlb:' + (item.id || item.mlb) : '')).toLowerCase();
+                      if (key) window.__JK_AVANT_CARD_DATA_CACHE[key] = item;
+                    });
                     window.__JK_AVANT_LAST_PANEL_SNAPSHOT = '';
                     window.__JK_AVANT_LAST_CARD_CLICKED = null;
                     window.__JK_AVANT_CARD_CLICKED_AT = 0;
@@ -320,6 +336,8 @@
                             observer: null
                         };
                         incremental.observer = new MutationObserver(function () {
+                            try { if (typeof __jkFavoritosVerificar === 'function') __jkFavoritosVerificar(); }
+                            catch (_expired) { incremental.observer.disconnect(); return; }
                             incremental.mutationVersion += 1;
                             incremental.lastMutationAt = Date.now();
                         });
@@ -425,6 +443,7 @@
                     var ultimaMudanca = Date.now();
                     while (Date.now() - inicio < maxWaitMs) {
                         await sleep(pollMs);
+                        if (typeof __jkFavoritosVerificar === 'function') __jkFavoritosVerificar();
                         var atual = snapshot();
                         if (atual !== ultimo) {
                             ultimo = atual;

@@ -475,6 +475,8 @@
                     favoritosLimparDadosSkusLojaSemCache(nomeLoja);
                 }
             }
+            const checkpoints = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+            if (checkpoints) checkpoints.list().catch(() => {});
             return anterior !== nova;
         }
 

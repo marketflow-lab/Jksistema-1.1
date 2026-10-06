@@ -8,9 +8,11 @@
                     var maxRuntimeMs = __JK_ACIONAR_CARDS_AVANT_PRO_FILA_WEBVIEW_1_P2__;
                     var deepScan = __JK_ACIONAR_CARDS_AVANT_PRO_FILA_WEBVIEW_1_P3__;
                     var checkLogin = __JK_ACIONAR_CARDS_AVANT_PRO_FILA_WEBVIEW_1_P4__;
+                    var verificarTentativa = typeof __jkFavoritosVerificar === 'function' ? __jkFavoritosVerificar : function () {};
+                    verificarTentativa();
                     var startedAt = Date.now();
                     var endAt = startedAt + maxRuntimeMs;
-                    var hasTime = function (bufferMs) { return Date.now() + (Number(bufferMs) || 0) < endAt; };
+                    var hasTime = function (bufferMs) { verificarTentativa(); return Date.now() + (Number(bufferMs) || 0) < endAt; };
                     var sleep = function (ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); };
                     var normalizar = function (value) {
                         var text = String(value || '').replace(/\\s+/g, ' ').trim();
@@ -571,6 +573,7 @@
                         var origemCard = false;
                         for (var tentativa = 0; tentativa < 3 && hasTime(260); tentativa += 1) {
                             await sleep(tentativa === 0 ? 120 : 180);
+                            verificarTentativa();
                             rowsCaptura = linhasAvantPainel(card);
                             if (rowsCaptura.length) {
                                 origemCard = true;
@@ -617,6 +620,7 @@
                         item.chaveCanonica = canonical;
                         item.__capturadoDoPainelAvant = true;
                         item.__capturadoEm = Date.now();
+                        verificarTentativa();
                         var cache = window.__JK_AVANT_CARD_DATA_CACHE || {};
                         cache[canonical] = Object.assign({}, cache[canonical] || {}, item);
                         window.__JK_AVANT_CARD_DATA_CACHE = cache;

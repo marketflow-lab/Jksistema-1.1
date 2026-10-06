@@ -170,6 +170,7 @@
                         }
                         anuncios.push(item);
                     });
+                    if (typeof __jkFavoritosVerificar === 'function') __jkFavoritosVerificar();
                     var cache = window.__JK_AVANT_CARD_DATA_CACHE || {};
                     anuncios.forEach(function (item) {
                         cache[item.chave_canonica] = Object.assign({}, cache[item.chave_canonica] || {}, item);

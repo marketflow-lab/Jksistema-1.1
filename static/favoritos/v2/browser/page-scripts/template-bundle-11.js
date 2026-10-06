@@ -494,7 +494,7 @@
                             title: document.title || ''
                         };
                     };
-                    return new Promise(function (resolve) {
+                    return new Promise(function (resolve, reject) {
                         var done = false;
                         var readyAt = 0;
                         var finish = function (result) {
@@ -505,6 +505,8 @@
                         };
                         var check = function () {
                             if (done) return;
+                            try { if (typeof __jkFavoritosVerificar === 'function') __jkFavoritosVerificar(); }
+                            catch (expired) { done = true; clearTimeout(timer); reject(expired); return; }
                             var atual = snapshot();
                             if (atual.ready) {
                                 if (!readyAt) readyAt = Date.now();

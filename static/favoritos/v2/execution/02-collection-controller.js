@@ -37,6 +37,9 @@ function criarContextoPrimeiraPaginaFavoritos(info, pesquisa, opcoes = {}) {
         webview,
         workerId,
         informarStatus,
+        onSnapshot: opcoes.onSnapshot,
+        anunciosSeed: opcoes.anunciosSeed || [],
+        confirmedKeys: opcoes.confirmedKeys || [],
         limite: limiteAnunciosPrimeiraPesquisa,
         url,
         inicioNavegacao: Date.now()
@@ -123,6 +126,8 @@ async function executarColetaPrimeiraPaginaFavoritos(contexto) {
         titulo: 'Coleta da pagina'
     });
     if (typeof coletarPrimeiraPaginaFavoritosControlada !== 'function') return null;
+    contexto.coletaAtiva = true;
+    contexto.snapshotColeta = null;
     const executarColetaControlada = (signal) => coletarPrimeiraPaginaFavoritosControlada({
         maxAnuncios: limiteAnunciosPrimeiraPesquisa,
         tempoLimiteMs: 90000,
@@ -130,25 +135,41 @@ async function executarColetaPrimeiraPaginaFavoritos(contexto) {
         loteCliques: 6,
         signal: signal || window.FavoritosV2.searchRanking.publicApi.control.sinalFavoritosAtual(),
         webview: contexto.webview || undefined,
+        anunciosSeed: contexto.anunciosSeed,
+        confirmedKeys: contexto.confirmedKeys,
+        onSnapshot: snapshot => {
+            if (!contexto.coletaAtiva || mlFavoritosCancelado) return;
+            contexto.snapshotColeta = snapshot;
+            if (typeof contexto.onSnapshot === 'function') contexto.onSnapshot(snapshot);
+        },
         onProgress: progresso => publicarProgressoPrimeiraPaginaFavoritos(contexto, progresso)
     });
     const promise = typeof window.FavoritosV2.searchRanking.publicApi.control.executarComTimeoutFavoritos === 'function'
         ? window.FavoritosV2.searchRanking.publicApi.control.executarComTimeoutFavoritos(executarColetaControlada, 92000, window.FavoritosV2.searchRanking.publicApi.control.sinalFavoritosAtual())
         : executarColetaControlada(window.FavoritosV2.searchRanking.publicApi.control.sinalFavoritosAtual());
     return promise.catch((err) => {
+        if (!mlFavoritosCancelado && err && err.favoritosTimeout) {
+            const snapshot = contexto.snapshotColeta || { anuncios: [], totalVisiveis: 0, confirmedKeys: [] };
+            return {
+                ...snapshot, success: true, tempoEsgotado: true, motivoEncerramento: 'tempo_limite',
+                resumo: { tempo_esgotado: true, motivo_encerramento: 'tempo_limite' }
+            };
+        }
         if (mlFavoritosCancelado || (err && (
             err.loginMercadoLivreNecessario
             || err.name === 'AbortError'
             || err.name === 'TimeoutError'
             || err.favoritosTimeout
         ))) throw err;
+        if (err && (err.checkpointFailure || err.checkpointStatus)) throw err;
         console.warn('Coleta controlada da primeira pagina falhou:', err);
         return null;
-    });
+    }).finally(() => { contexto.coletaAtiva = false; });
 }
 
 function publicarProgressoPrimeiraPaginaFavoritos(contexto, progresso) {
     if (mlFavoritosCancelado || !mlFavoritosEmExecucao) return;
+    if (contexto.coletaAtiva === false) return;
     contexto.informarStatus(
         formatarProgressoColetaPrimeiraPaginaFavoritos(contexto.pesquisa && contexto.pesquisa.campo || 1, progresso),
         { manterNavegadorVisivel: true, larga: true, titulo: 'Coleta da pagina' }
@@ -169,6 +190,7 @@ function validarResultadoPrimeiraPaginaFavoritos(resultado, workerId = '') {
 async function resolverAnunciosPrimeiraPaginaFavoritos(contexto, resultado) {
     let anuncios = listaAnunciosResultadoColetaFavoritos(resultado);
     let totalVisiveis = totalVisiveisResultadoColetaFavoritos(resultado, anuncios);
+    if (resultado && resultado.tempoEsgotado) return { anuncios, totalVisiveis };
     if (!anuncios.length && typeof rolarMercadoLivreFavoritos === 'function') {
         await rolarMercadoLivreFavoritos(0, contexto.webview || undefined).catch(() => null);
         await esperarNovaColetaFavoritos(900);
@@ -241,6 +263,7 @@ function anexarMetadadosPrimeiraPaginaFavoritos(saida, resultado, totalVisiveis,
         __favoritosResumo: resumo,
         __favoritosAvantNaoVinculado: avantNaoVinculado,
         __favoritosTempoEsgotado: !!(resultado && resultado.tempoEsgotado),
+        __favoritosConfirmedKeys: resultado && resultado.confirmedKeys || [],
         __favoritosLoginAvantBloqueado: loginBloqueado
     };
     try {

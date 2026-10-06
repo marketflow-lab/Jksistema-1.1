@@ -144,21 +144,37 @@ async function rankearAvulsoMercadoLivre(opcoes = {}) {
     const preparacao = prepararRankingAvulsoFavoritos(opcoes);
     if (preparacao.abortar) return;
     const contexto = preparacao.contexto;
+    const checkpoints = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
     try {
+        if (checkpoints) await checkpoints.start(contexto);
         const coleta = await coletarRankingAvulsoFavoritos(contexto);
         const unicos = await enriquecerRankingAvulsoFavoritos(contexto, coleta.coletados);
+        if (contexto.checkpointSession) {
+            checkpoints.updatePool(contexto.checkpointSession, unicos);
+            await checkpoints.flush(contexto.checkpointSession);
+        }
         const grupoRanking = await calcularRankingAvulsoFavoritos(contexto, unicos, coleta.resumosColeta);
+        if (contexto.checkpointSession) {
+            checkpoints.bindGroup(grupoRanking, contexto.checkpointSession);
+            Object.defineProperty(grupoRanking, '_checkpointSession', { value: contexto.checkpointSession });
+        }
         const confirmacao = await salvarRankingAvulsoFavoritos(grupoRanking);
         concluirRankingAvulsoFavoritos(grupoRanking, confirmacao);
     } catch (err) {
+        if (contexto.checkpointSession) {
+            const cancelado = mlFavoritosCancelado || (err && (err.canceladoFavoritos || err.name === 'AbortError'));
+            await checkpoints.stop(contexto.checkpointSession, cancelado ? 'cancelada' : 'erro').catch(() => {});
+        }
         tratarErroRankingAvulsoFavoritos(err);
     } finally {
+        if (contexto.checkpointSession) clearInterval(contexto.checkpointSession.timer);
         limparEstadoRankingAvulsoFavoritos();
+        if (window.FavoritosV2.checkpointUi) window.FavoritosV2.checkpointUi.refresh();
     }
 }
 
 function prepararRankingAvulsoFavoritos(opcoes) {
-    const termos = normalizarTermosPesquisaFavoritos(opcoes.termos || obterTermosPesquisaAvulsaMl());
+    const termos = normalizarTermosPesquisaFavoritos(opcoes.termos || obterTermosPesquisaAvulsaMl()).slice(0, 3);
     if (!termos.length) {
         window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus('Preencha pelo menos uma pesquisa para fazer o rankeamento avulso.', {
             erro: true,
@@ -216,24 +232,30 @@ function prepararRankingAvulsoFavoritos(opcoes) {
 }
 
 async function coletarRankingAvulsoFavoritos(contexto) {
-    const coletados = [];
-    const resumosColeta = [];
+    const checkpoints = window.FavoritosV2.execution && window.FavoritosV2.execution.checkpoints;
+    const session = contexto.checkpointSession;
+    const coletados = session ? JSON.parse(JSON.stringify(session.draft.candidatos || [])) : [];
+    const resumosColeta = session ? JSON.parse(JSON.stringify(session.draft.resumo_coleta || [])) : [];
     for (let pesquisaIndex = 0; pesquisaIndex < contexto.termos.length; pesquisaIndex += 1) {
         window.FavoritosV2.searchRanking.publicApi.control.verificarCancelamentoFavoritos();
         const pesquisa = contexto.termos[pesquisaIndex];
-        window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Ranqueamento avulso: pesquisando Pesquisa ${pesquisa.campo} - ${pesquisa.termo}`);
+        const seed = session ? checkpoints.termSeed(session, pesquisa) : { anuncios: [], confirmedKeys: [] };
+        if (seed.term && seed.term.estado === 'concluida') continue;
+        window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus('Ranqueamento avulso: pesquisando Pesquisa ' + pesquisa.campo + ' - ' + pesquisa.termo);
         const anuncios = await coletarAnunciosPrimeiraPaginaFavoritosSemFluxoAntigo(contexto.info, pesquisa, {
             primeiraPesquisa: pesquisaIndex === 0,
             maxAnuncios: Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80,
             titulo: contexto.tituloProcesso,
-            subtitulo: `Pesquisa ${pesquisa.campo}: ${pesquisa.termo}`,
-            avulso: true
+            subtitulo: 'Pesquisa ' + pesquisa.campo + ': ' + pesquisa.termo,
+            avulso: true,
+            anunciosSeed: seed.anuncios,
+            confirmedKeys: seed.confirmedKeys,
+            onSnapshot: session ? snapshot => checkpoints.updateTerm(session, pesquisa, snapshot, 'parcial') : null
         });
         window.FavoritosV2.searchRanking.publicApi.control.verificarCancelamentoFavoritos();
         let normalizadosPesquisa = anuncios.map(anuncio => window.FavoritosV2.searchRanking.publicApi.listings.normalizarAnuncioFavoritosPesquisa(anuncio, contexto.skuRanking, pesquisa));
         await window.FavoritosV2.searchRanking.publicApi.enrichment.enriquecerAnunciosFavoritosRanking(normalizadosPesquisa, contexto.contextoEnriquecimento);
         normalizadosPesquisa = normalizadosPesquisa.map(anuncio => window.FavoritosV2.searchRanking.publicApi.listings.normalizarAnuncioFavoritosPesquisa(anuncio, contexto.skuRanking, pesquisa));
-        normalizadosPesquisa.forEach(anuncio => coletados.push(anuncio));
         const resumoPesquisa = montarResumoPesquisaFavoritos(
             pesquisaIndex + 1,
             Number(anuncios.__favoritosTotalVisiveis) || anuncios.length,
@@ -241,14 +263,24 @@ async function coletarRankingAvulsoFavoritos(contexto) {
             anuncios.__favoritosResumo
         );
         resumoPesquisa.tempo_esgotado = !!anuncios.__favoritosTempoEsgotado;
-        resumosColeta.push({ ...resumoPesquisa, termo: pesquisa.termo, campo: pesquisa.campo });
+        const resumo = { ...resumoPesquisa, termo: pesquisa.termo, campo: pesquisa.campo };
+        const resumoIndex = resumosColeta.findIndex(item => Number(item.campo) === Number(pesquisa.campo));
+        if (resumoIndex < 0) resumosColeta.push(resumo);
+        else resumosColeta[resumoIndex] = resumo;
+        if (session) {
+            checkpoints.updateTerm(session, pesquisa, {
+                anuncios: normalizadosPesquisa,
+                confirmedKeys: anuncios.__favoritosConfirmedKeys || []
+            }, resumoPesquisa.tempo_esgotado ? 'parcial' : 'concluida', resumo);
+            await checkpoints.flush(session);
+        } else normalizadosPesquisa.forEach(anuncio => coletados.push(anuncio));
         window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(formatarResumoPesquisaFavoritos(resumoPesquisa), {
             manterNavegadorVisivel: true,
             larga: true,
             titulo: 'Resumo da coleta'
         });
     }
-    return { coletados, resumosColeta };
+    return { coletados: session ? session.draft.candidatos : coletados, resumosColeta };
 }
 
 async function enriquecerRankingAvulsoFavoritos(contexto, coletados) {
@@ -300,7 +332,7 @@ async function calcularRankingAvulsoFavoritos(contexto, unicos, resumosColeta) {
         ...contexto.info,
         sku: contexto.info.sku || contexto.skuRanking,
         loja: contexto.info.loja || favoritosLojaSelecionadaParaApi() || '',
-        avulso: true,
+        avulso: contexto.info.avulso,
         anuncios: window.FavoritosV2.searchRanking.publicApi.ranking.limitarAnunciosFavoritosRanking(anunciosAvulsosRanking),
         removidos_ia: filtroIa.removidos,
         removidos_ia_total: filtroIa.removidosTotal,
@@ -316,6 +348,11 @@ async function calcularRankingAvulsoFavoritos(contexto, unicos, resumosColeta) {
 }
 
 async function salvarRankingAvulsoFavoritos(grupoRanking) {
+    if (grupoRanking._checkpointSession) {
+        const confirmacao = await window.FavoritosV2.execution.checkpoints.finalize(grupoRanking._checkpointSession, grupoRanking);
+        guardarResultadoRankingFavorito(grupoRanking);
+        return confirmacao;
+    }
     guardarResultadoRankingFavorito(grupoRanking);
     const entradaHistoricoAvulso = registrarHistoricoFavoritos([grupoRanking]);
     if (!entradaHistoricoAvulso) {
@@ -340,13 +377,14 @@ function concluirRankingAvulsoFavoritos(grupoRanking, confirmacaoHistoricoAvulso
     renderizarFavoritosOutrosAnuncios(grupoRanking.sku);
     if (grupoRankingFavoritosEhAvulso(grupoRanking)) renderizarFavoritosAnunciosMl([], grupoRanking.sku);
     else carregarFavoritosAnunciosSku(grupoRanking.sku, grupoRanking.loja || favMlLojaSelecionada);
-    window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Ranqueamento avulso concluido: ${grupoRanking.anuncios.length} anuncio(s) rankeado(s).`, {
-        tempoMs: 7000
-    });
-    if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = 'Ranqueamento avulso concluido';
-    if (mlWorkModalSubtitleEl) {
-        mlWorkModalSubtitleEl.textContent = `${grupoRanking.anuncios.length} anuncio(s) rankeado(s).`;
-    }
+    const parcial = grupoRanking.coleta_status === 'parcial';
+    const tituloResultado = parcial
+        ? (grupoRanking.anuncios.length ? 'Ranking parcial' : 'Coleta parcial sem anúncios')
+        : 'Ranqueamento avulso concluido';
+    const mensagemResultado = tituloResultado + ': ' + grupoRanking.anuncios.length + ' anuncio(s) rankeado(s).';
+    window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(mensagemResultado, { tempoMs: 7000 });
+    if (mlWorkModalTitleEl) mlWorkModalTitleEl.textContent = tituloResultado;
+    if (mlWorkModalSubtitleEl) mlWorkModalSubtitleEl.textContent = mensagemResultado;
     const finalizouEmSegundoPlano = mlFavoritosExecucaoEmSegundoPlano;
     mlFavoritosEmExecucao = false;
     mlFavoritosExecucaoEmSegundoPlano = false;
@@ -356,6 +394,7 @@ function concluirRankingAvulsoFavoritos(grupoRanking, confirmacaoHistoricoAvulso
         finishedAt: mlFavoritosExecucaoIniciadaEmMs + Number(confirmacaoHistoricoAvulso.duracao_execucao_ms || 0)
     });
     if (!finalizouEmSegundoPlano) mudarAba('favoritos');
+    if (window.FavoritosV2.checkpointUi) window.FavoritosV2.checkpointUi.refresh();
 }
 
 function tratarErroRankingAvulsoFavoritos(err) {

@@ -2,9 +2,9 @@
   "schema": "jk.favoritos.sku.contract.v1",
   "baseline": {
     "source_sha256": "f00dd5bd453ba02ffccfbf5b70be66823bdde946e7f6d690e7a01713a104261c",
-    "line_count": 1937,
+    "line_count": 1939,
     "function_count": 92,
-    "source_sha256_normalized": "539326e85834f8a1927aff92d494a786c0b2a0af7b1becf5bfd31ba4bd1dfbc9"
+    "source_sha256_normalized": "60e1315758251b0e2adeacf1fb023e503c480957386660ed503f11f23c5c65f9"
   },
   "readiness": "__FAVORITOS_SKU_READY__",
   "components": [

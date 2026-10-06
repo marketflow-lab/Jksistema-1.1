@@ -133,6 +133,9 @@
             const lista = Array.isArray(anuncios) ? anuncios : [];
             if (!lista.length || typeof consultarItemApiMercadoLivre !== 'function') return lista;
             const deadline = Number(opcoes.deadlineMs) || 0;
+            const controle = opcoes.controle;
+            const verificar = () => { if (controle) controle.verificar(); };
+            const restante = () => Math.max(0, Math.min(deadline ? deadline - Date.now() : Infinity, controle ? controle.restante() : Infinity));
             const maxItens = Math.max(0, Number(opcoes.maxItens) || 0);
             const timeoutMs = Math.max(1200, Math.min(Number(opcoes.timeoutMs) || 3500, 8000));
             const pendentesTodos = lista.filter(item => {
@@ -146,14 +149,19 @@
             const pendentes = maxItens > 0 ? pendentesTodos.slice(0, maxItens) : pendentesTodos;
             if (!pendentes.length) return lista;
             await executarFilaLimitadaFavoritos(pendentes, opcoes.concorrencia || 4, async (alvo) => {
-                if (deadline && Date.now() > deadline - 1500) return;
+                verificar();
+                if (restante() <= 0) return;
                 const itemId = normalizarMlbFavoritosCanonico(alvo && (alvo.id || alvo.mlb || alvo.url || alvo.link || alvo.permalink));
                 if (!itemId) return;
                 try {
-                    const apiInfo = await Promise.race([
-                        consultarItemApiMercadoLivre(itemId),
-                        esperar(timeoutMs).then(() => null)
-                    ]);
+                    let timer = null;
+                    const consultar = () => Promise.race([
+                      consultarItemApiMercadoLivre(itemId, controle),
+                      new Promise(resolve => { timer = setTimeout(() => resolve(null), Math.min(timeoutMs, restante())); })
+                    ]).finally(() => { if (timer !== null) clearTimeout(timer); });
+                    const apiInfo = await (controle ? controle.aguardar(consultar) : consultar());
+                    verificar();
+                    if (restante() <= 0) return;
                     if (!apiInfo) return;
                     const completo = prepararAnuncioMercadoLivreCanonico(apiInfo, 'mercado_livre_api');
                     const mescladoLista = mesclarAnunciosAvant([alvo], [completo]);
@@ -168,6 +176,7 @@
                     Object.assign(alvo, mesclado);
                     alvo.estado_qualidade = classificarQualidadeAnuncioFavoritosCanonico(alvo);
                 } catch (err) {
+                    if (err.name === 'AbortError' || err.favoritosOrcamentoEsgotado) throw err;
                     console.warn('Nao foi possivel completar base ML pela API:', itemId, err);
                 }
             });
@@ -214,10 +223,14 @@
             const limite = Math.max(20, Math.min(Number(opcoes.limite) || Number(ML_FAVORITOS_COLETA_ANUNCIOS_MAX) || 80, 100));
             const deadline = Number(opcoes.deadlineMs) || (Date.now() + 25000);
             const onProgress = opcoes.onProgress;
+            const controle = opcoes.controle;
+            const verificar = () => { if (controle) controle.verificar(); };
+            const executar = factory => controle ? controle.aguardar(factory) : Promise.resolve().then(factory);
+            verificar();
             let anuncios = [];
             let ultimaAssinatura = '';
             let estaveis = 0;
-            const metricaInicial = await obterMetricaRolagemMercadoLivreFavoritos(webview);
+            const metricaInicial = await executar(() => obterMetricaRolagemMercadoLivreFavoritos(webview));
             const originalY = Math.max(0, Number(metricaInicial && metricaInicial.y) || 0);
             let viewport = Math.max(560, Number(metricaInicial && metricaInicial.view) || 800);
             let y = 0;
@@ -225,17 +238,22 @@
 
             while (Date.now() < deadline) {
                 passos += 1;
-                await rolarMercadoLivreFavoritos(y, webview);
-                await esperar(420);
-                const basico = await extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null);
+                verificar();
+                await executar(() => rolarMercadoLivreFavoritos(y, webview));
+                if (controle) await controle.esperar(Math.min(420, deadline - Date.now()));
+                else await esperar(420);
+                const basico = await executar(() => extrairCardsMercadoLivreBasicoWebview({ limite, webview }).catch(() => null));
+                verificar();
                 anuncios = mesclarAnunciosAvant(anuncios, (basico && basico.anuncios) || []);
-                const metricaAtual = await obterMetricaRolagemMercadoLivreFavoritos(webview);
+                if (typeof opcoes.onSnapshot === 'function') opcoes.onSnapshot({ anuncios, totalVisiveis: anuncios.length });
+                const metricaAtual = await executar(() => obterMetricaRolagemMercadoLivreFavoritos(webview));
                 viewport = Math.max(560, Number(metricaAtual && metricaAtual.view) || viewport);
                 const resumo = resumoPrimeiraPaginaFavoritos(anuncios.length, anuncios, {
                     etapa: 'materializando',
                     y: metricaAtual && metricaAtual.y,
                     height: metricaAtual && metricaAtual.height
                 });
+                verificar();
                 emitirProgressoPrimeiraPaginaFavoritos(onProgress, resumo);
 
                 const assinatura = anuncios.map(chaveAnuncioPrimeiraPaginaFavoritos).filter(Boolean).join('|');
@@ -248,7 +266,7 @@
                 y = proximoY;
             }
 
-            await rolarMercadoLivreFavoritos(originalY, webview);
+            if (Date.now() < deadline) await executar(() => rolarMercadoLivreFavoritos(originalY, webview));
             return {
                 anuncios: anuncios.slice(0, limite),
                 totalVisiveis: Math.min(limite, anuncios.length),

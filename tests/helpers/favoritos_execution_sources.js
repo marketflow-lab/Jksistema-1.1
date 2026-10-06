@@ -12,6 +12,7 @@ const executionComponentFiles = Object.freeze([
   '05-legacy-renderer.js',
   '06-job-runtime.js',
   '07-job-controls.js',
+  '07-ranking-checkpoints.js',
   '08-ranking-entrypoints.js',
   '09-sidebar-render.js',
   '10-table-layout.js',

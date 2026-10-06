@@ -16,12 +16,26 @@ from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
+from datetime import datetime, timezone
+from backend.services import favoritos_checkpoints as _checkpoint_service
+from backend.services import favoritos_storage as _checkpoint_history_storage
+from backend.schemas.favoritos_checkpoints import (
+    FavoritosCheckpointCreateRequest,
+    FavoritosCheckpointUpdateRequest,
+    FavoritosCheckpointResumeRequest,
+    FavoritosCheckpointFinalizeRequest,
+)
 
 
 FAVORITOS_ENDPOINTS: tuple[str, ...] = ('favoritos_listar_skus', 'favoritos_skus_ocultos_get', 'favoritos_skus_ocultos_put', 'favoritos_vendedores_ignorados_get', 'favoritos_vendedores_ignorados_put', 'favoritos_anuncios_ignorados_get', 'favoritos_anuncios_ignorados_put', 'favoritos_historico_get', 'favoritos_historico_put', 'favoritos_historico_realtime_sync', 'favoritos_planilhas_lojas_get', 'favoritos_planilhas_lojas_put', 'favoritos_planilhas_colar_historico', 'favoritos_ml_listar_skus_anuncios', 'favoritos_ml_listar_promocoes_ativas', 'favoritos_ml_validar_efetivacao', 'favoritos_ml_efetivar_promocao', 'favoritos_ml_listar_anuncios_sku', 'favoritos_salvar_pesquisas_sku', 'favoritos_gerar_pesquisas_sku_ia', 'favoritos_filtrar_ranking_ia', 'favoritos_buscar_descricao_sku', 'favoritos_buscar_descricoes_skus', 'favoritos_ml_primeira_pagina', 'favoritos_ml_enriquecer_datas', 'favoritos_pesquisar')
+
+FAVORITOS_ENDPOINTS += (
+    "favoritos_checkpoints_create", "favoritos_checkpoints_list", "favoritos_checkpoints_get",
+    "favoritos_checkpoints_update", "favoritos_checkpoints_resume", "favoritos_checkpoints_finalize",
+)
 
 _TENANT_DEPENDENCY = None
 FAVORITOS_DESCRICAO_CACHE_LOCK = threading.RLock()
@@ -392,6 +406,148 @@ def favoritos_anuncios_ignorados_put(
         "anuncios_ignorados": payload.get("anuncios_ignorados") or {},
         "updated_at": payload.get("updated_at"),
     }
+
+
+def _favoritos_checkpoint_loja(client_id: str, loja: str) -> str:
+    chave = _chave_loja_favoritos(loja)
+    if not chave:
+        raise HTTPException(status_code=422, detail="Escolha a loja original da coleta.")
+    for candidata in _lojas_favoritos_com_ml(client_id):
+        nome = str(candidata.get("nome") or "").strip()
+        if _chave_loja_favoritos(nome) == chave:
+            return nome
+    raise HTTPException(status_code=403, detail="Loja nao pertence ao cliente autenticado ou nao tem Mercado Livre conectado.")
+
+
+def _favoritos_checkpoint_store(client_id: str, username: str):
+    return _checkpoint_service.CheckpointStore(
+        get_tenant_path(client_id), username,
+        lambda entrada: _checkpoint_history_storage._favoritos_checkpoint_upsert_historico(client_id, username, entrada),
+        _checkpoint_history_storage._favoritos_normalizar_resumo_coleta_historico,
+    )
+
+
+def _favoritos_checkpoint_snapshot(data: dict, grupo: dict | None, username: str):
+    if not data["candidatos"]:
+        return None
+    if not isinstance(grupo, dict):
+        raise HTTPException(status_code=422, detail="Ranking calculado obrigatorio para concluir o snapshot.")
+    candidates = {_checkpoint_service._candidate_key(item): item for item in data["candidatos"]}
+    explicit_empty_ranking = isinstance(grupo.get("anuncios"), list)
+    grupo = dict(grupo)
+    for field in ("anuncios", "removidos_ia"):
+        items = grupo[field] if field in grupo else grupo.get("removidosIa", []) if field == "removidos_ia" else []
+        if not isinstance(items, list) or len(items) > 80:
+            raise HTTPException(status_code=422, detail="Lista de anuncios do snapshot invalida.")
+        saved_items = []
+        for item in items:
+            if not isinstance(item, dict) or _checkpoint_service._candidate_key(item) not in candidates:
+                raise HTTPException(status_code=422, detail="Snapshot contem anuncio ausente do checkpoint.")
+            saved = dict(candidates[_checkpoint_service._candidate_key(item)])
+            saved.update(item)
+            # A ranked subset retains the source evidence in the complete saved pool.
+            for key, value in candidates[_checkpoint_service._candidate_key(item)].items():
+                if saved.get(key) in (None, "", [], {}) and value not in (None, "", [], {}):
+                    saved[key] = value
+            saved_items.append(saved)
+        grupo[field] = saved_items
+    if not grupo["anuncios"] and not grupo["removidos_ia"]:
+        if not explicit_empty_ranking:
+            raise HTTPException(status_code=422, detail="Calculo explicito do ranking obrigatorio para os candidatos salvos.")
+        # Ignored listings may leave a valid calculated ranking empty; the pool stays durable.
+        return None
+    # Identity and origin are always materialized from the authenticated checkpoint.
+    avulso = data["opcoes"].get("avulso")
+    if avulso is None:
+        avulso = data["sku"].strip().upper() == "AVULSO"
+    grupo = {
+        **grupo, "sku": data["sku"], "titulo": data["titulo"], "loja": data["loja"], "avulso": avulso,
+        "pesquisa_avulsa": avulso, "termos": [{"campo": term["campo"], "termo": term["termo"]} for term in data["termos"]],
+        "duracao_execucao_ms": data["duracao_execucao_ms"], "resumo_coleta": data["resumo_coleta"],
+        "checkpoint_ref": {"id": data["id"], "version": 1, "estado_coleta": data["estado_coleta"],
+                           "root_id": data["root_id"], "parent_id": data["parent_id"],
+                           "parent_history_entry_id": data["parent_history_entry_id"], "retomada_numero": data["retomada_numero"]},
+    }
+    entrada = {
+        "id": data["history_entry_id"], "tipo": "ranking", "data_iso": datetime.now(timezone.utc).isoformat(),
+        "loja": data["loja"], "usuario": username, "nome_usuario": username, "username": username,
+        "duracao_execucao_ms": data["duracao_execucao_ms"], "grupos": [grupo],
+    }
+    normalizado = _checkpoint_history_storage._favoritos_normalizar_historico([entrada])
+    return normalizado[0] if normalizado else None
+
+
+def favoritos_checkpoints_create(req: FavoritosCheckpointCreateRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    loja = _favoritos_checkpoint_loja(client_id, req.loja)
+    data = _favoritos_checkpoint_store(client_id, username).create(req.model_dump(mode="json"), loja)
+    return {"success": True, "checkpoint": data}
+
+
+def favoritos_checkpoints_list(request: Request, loja: str, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    canonical = _favoritos_checkpoint_loja(client_id, loja)
+    return {"success": True, "checkpoints": _favoritos_checkpoint_store(client_id, username).list(canonical)}
+
+
+def favoritos_checkpoints_get(checkpoint_id: str, request: Request, loja: str, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    canonical = _favoritos_checkpoint_loja(client_id, loja)
+    return {"success": True, "checkpoint": _favoritos_checkpoint_store(client_id, username).get(checkpoint_id, canonical)}
+
+
+def favoritos_checkpoints_update(checkpoint_id: str, req: FavoritosCheckpointUpdateRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    loja = _favoritos_checkpoint_loja(client_id, req.loja)
+    data = _favoritos_checkpoint_store(client_id, username).update(checkpoint_id, req.model_dump(mode="json", exclude_unset=True), loja)
+    return {"success": True, "checkpoint": data}
+
+
+def favoritos_checkpoints_resume(checkpoint_id: str, req: FavoritosCheckpointResumeRequest, request: Request, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    loja = _favoritos_checkpoint_loja(client_id, req.loja)
+    data = _favoritos_checkpoint_store(client_id, username).resume(checkpoint_id, req.model_dump(mode="json"), loja)
+    return {"success": True, "checkpoint": data}
+
+
+def _favoritos_checkpoint_sync_confirmado(client_id: str, username: str) -> dict | None:
+    # The durable close is already confirmed; sharing cannot undo that result.
+    try:
+        sharing_enabled = globals().get("_shared_sync_auto_enabled")
+        if not callable(sharing_enabled) or not sharing_enabled():
+            return None
+        payload = _favoritos_carregar_historico(client_id, username)
+        sync = _favoritos_propagar_historico_para_usuarios(client_id, username, payload)
+        published = False
+        if not sync.get("skipped"):
+            published = _favoritos_historico_publicar_evento_realtime(client_id, username, {
+                "updated_users": sync.get("updated_users") or [],
+                "eligible_count": len(sync.get("eligible_users") or []),
+                "item_count": len(payload.get("historico") or []),
+            })
+        return {"confirmed": True, "event_published": bool(published), "failed_count": len(sync.get("failed") or [])}
+    except Exception:
+        return {"confirmed": True, "event_published": False, "pending": True}
+
+
+def favoritos_checkpoints_finalize(checkpoint_id: str, req: FavoritosCheckpointFinalizeRequest, request: Request, background_tasks: BackgroundTasks, client_id: str = Depends(get_tenant_id)):
+    username = _extrair_username_do_request(request)
+    loja = _favoritos_checkpoint_loja(client_id, req.loja)
+    result = _favoritos_checkpoint_store(client_id, username).finalize(
+        checkpoint_id, req.model_dump(mode="json"), loja,
+        lambda data, grupo: _favoritos_checkpoint_snapshot(data, grupo, username),
+    )
+    newly_confirmed = result.pop("_newly_confirmed", False)
+    if newly_confirmed and result.get("historico_entry"):
+        try:
+            enabled = globals().get("_shared_sync_auto_enabled")
+            sharing_enabled = callable(enabled) and enabled()
+        except Exception:
+            sharing_enabled = False
+        if sharing_enabled:
+            background_tasks.add_task(_favoritos_checkpoint_sync_confirmado, client_id, username)
+            result["realtime_sync"] = {"scheduled": True}
+    return {"success": True, **result}
 
 
 def favoritos_historico_get(request: Request, client_id: str = Depends(get_tenant_id)):

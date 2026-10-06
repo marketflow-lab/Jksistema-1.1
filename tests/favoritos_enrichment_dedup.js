@@ -282,6 +282,7 @@ function createHistoryHarness(deduplicarAnunciosFavoritos) {
     context.normalizarDuracaoExecucaoFavoritosMs = extractFunction('normalizarDuracaoExecucaoFavoritosMs', context, historySource);
     context.normalizarAnuncioHistoricoFavoritosFrontend = extractFunction('normalizarAnuncioHistoricoFavoritosFrontend', context, historySource);
     context.normalizarListaAnunciosHistoricoFavoritosFrontend = extractFunction('normalizarListaAnunciosHistoricoFavoritosFrontend', context, historySource);
+    context.normalizarReferenciaCheckpointHistoricoFavoritos = extractFunction('normalizarReferenciaCheckpointHistoricoFavoritos', context, historySource);
     context.normalizarHistoricoFavoritosFrontend = extractFunction('normalizarHistoricoFavoritosFrontend', context, historySource);
     return context;
 }
