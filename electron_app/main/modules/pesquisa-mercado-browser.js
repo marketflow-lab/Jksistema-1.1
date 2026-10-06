@@ -1,4 +1,8 @@
 const pesquisaMercadoRunnerModule = require(path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-runner.js'));
+const pesquisaMercadoTaxonomyModule = require(path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-taxonomy.js'));
+const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyService({
+    cachePath: path.join(app.getPath('userData'), 'public-mlb-taxonomy-v1.json')
+});
 let pesquisaMercadoCoordinator = null;
 let pesquisaMercadoWindow = null;
 let pesquisaMercadoBrowserJobId = '';
@@ -28,65 +32,21 @@ function knownPesquisaMercadoCategory(raw) {
     return { ...known };
 }
 
-async function loadPesquisaMercadoCategories(runner, parentCategory) {
+async function loadPesquisaMercadoCategories(runner, parentCategory, forceRefresh = false) {
     if (runner.task) throw new Error('Pause ou encerre a pesquisa antes de consultar outras categorias.');
     const parent = parentCategory == null ? null : knownPesquisaMercadoCategory(parentCategory);
-    if (parent && pesquisaMercadoCategoryChildren.has(parent.url)) {
-        return { items: pesquisaMercadoCategoryChildren.get(parent.url), parentCategory: parent };
-    }
-    const browser = runner.browser;
-    await browser.prepare();
-    const url = parent ? parent.url : 'https://www.mercadolivre.com.br/categorias';
-    pesquisaMercadoCategoryLastUrl = url;
-    let page;
-    let lastError;
-    let waitingLogin = false;
-    try {
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-                if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-                await browser.navigate(url);
-                const destination = pesquisaMercadoRunnerModule.categoryPageWaiter(url);
-                for (let poll = 0; poll < 34; poll += 1) {
-                    await runner.wait(450);
-                    if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-                    page = await browser.executeJavaScript(runner.scripts.discoveryScript());
-                    if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-                    if (page.authRequired || page.avantAuthRequired) {
-                        if (!pesquisaMercadoRunnerModule.currentPageRequiresLogin(page, browser)) {
-                            destination.observe(page.url || browser.getURL(), false, true);
-                            page = null;
-                            continue;
-                        }
-                        waitingLogin = true;
-                        return { items: [], parentCategory: parent, authRequired: true,
-                            reason: 'Conclua o login no navegador e carregue as categorias novamente.' };
-                    }
-                    const effectiveUrl = page.url || browser.getURL();
-                    const ready = (page.categories || []).length || (page.categoryTree || []).length || parent && ((page.anuncios || []).length || page.empty || page.listingUrl);
-                    const loading = page.readyState === 'loading' || typeof browser.isLoading === 'function' && browser.isLoading();
-                    if (destination.observe(effectiveUrl, ready, loading)) break;
-                    page = null;
-                }
-                if (!page && destination.mismatch) throw new Error('O Mercado Livre abriu outra categoria. Recarregue a lista para escolher novamente.');
-            } catch (error) {
-                if (pesquisaMercadoQuitting) throw error;
-                lastError = error;
-                page = null;
-            }
-            if (page) break;
-            if (attempt < 2) await runner.wait(600 * (attempt + 1));
-        }
-        if (!page) throw lastError || new Error('Nao foi possivel carregar as categorias do Mercado Livre. Tente novamente.');
-        for (const group of page.categoryTree || []) {
-            const roots = rememberPesquisaMercadoCategories([group]);
-            if (roots.length) pesquisaMercadoCategoryChildren.set(roots[0].url, rememberPesquisaMercadoCategories(group.children));
-        }
-        const items = rememberPesquisaMercadoCategories(page.categories);
-        return { items, parentCategory: parent };
-    } finally {
-        if (!waitingLogin) await browser.finish('paused');
-    }
+    if (typeof forceRefresh !== 'boolean') throw new Error('Atualizacao de categorias invalida.');
+    const snapshot = await pesquisaMercadoTaxonomy.load({ forceRefresh });
+    if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
+    const previous = [...pesquisaMercadoCategoryChoices.values()].map(item => snapshot.get(item.key)).filter(Boolean);
+    pesquisaMercadoCategoryChoices.clear();
+    rememberPesquisaMercadoCategories(previous);
+    const selected = parent ? snapshot.get(parent.key) : null;
+    if (parent && !selected) throw new Error('Esta categoria deixou de estar disponivel. Atualize a lista desde Todas as categorias.');
+    if (selected) rememberPesquisaMercadoCategories([selected]);
+    const items = rememberPesquisaMercadoCategories(snapshot.children(selected && selected.key));
+    return { items, parentCategory: selected, complete: snapshot.complete,
+        updatedAt: snapshot.updatedAt, summary: snapshot.summary, childCounts: snapshot.childCounts(items.map(item => item.key)) };
 }
 
 function pesquisaMercadoBackendRequest(method, pathname, body, token = pesquisaMercadoAuthToken) {
@@ -211,6 +171,7 @@ function getPesquisaMercadoCoordinator() {
     const sharedDir = path.join(__dirname, 'static', 'pesquisa-mercado');
     pesquisaMercadoCoordinator = new pesquisaMercadoRunnerModule.PesquisaMercadoRunner({
         api: pesquisaMercadoBackendRequest,
+        taxonomy: pesquisaMercadoTaxonomy,
         browser: pesquisaMercadoBrowserAdapter(),
         pageScripts: require(path.join(sharedDir, 'page-scripts.js')),
         collector: require(path.join(sharedDir, 'shared-collector.js')),
@@ -249,7 +210,7 @@ async function executePesquisaMercadoCommand(action, payload) {
         pesquisaMercadoCategoryChildren.clear();
         pesquisaMercadoCategoryLastUrl = '';
     }
-    if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload.parentCategory);
+    if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload.parentCategory, payload.forceRefresh === undefined ? false : payload.forceRefresh);
     if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
     if (action === 'status') return runner.status(payload.jobId || '');
     if (action === 'resume') return runner.resume(jobId);

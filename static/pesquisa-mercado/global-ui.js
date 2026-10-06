@@ -11,7 +11,7 @@
     const pageSize = 100;
     const categoryCommandTimeout = 3 * (35000 + 15000) + 30000;
     const emptyTaxonomy = () => ({ trail: [], parent: null, selected: null, items: [], loaded: false,
-        loading: false, authRequired: false, error: false, message: 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.' });
+        loading: false, authRequired: false, error: false, summary: null, updatedAt: '', childCounts: {}, requestId: 0, message: 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.' });
     const state = {
         job: null, scopeCategory: null, mode: 'manual', taxonomy: emptyTaxonomy(), tab: 'geral', query: '', category: '', seller: '', sellers: [],
         offsets: { geral: 0, vendedor: 0 }, rankings: { geral: null, vendedor: null },
@@ -30,7 +30,7 @@
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
-        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection']) elements[name] = el(name);
+        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated']) elements[name] = el(name);
 
     const safeText = value => String(value == null ? '' : value);
     const escaped = value => safeText(value).replace(/[&<>"']/g, character => ({
@@ -61,7 +61,9 @@
         return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser)['"]:\s*(?:Error:\s*)?/, '');
     }
     function categoryChoice(value) {
-        if (!value || typeof value !== 'object') return null;
+        if (!value || typeof value !== 'object' || Array.isArray(value)
+            || Object.keys(value).some(key => !['key', 'nome', 'url'].includes(key))
+            || typeof value.key !== 'string' || typeof value.nome !== 'string' || typeof value.url !== 'string') return null;
         const key = safeText(value.key).trim();
         const nome = safeText(value.nome).trim();
         const url = safeUrl(value.url, false);
@@ -123,6 +125,7 @@
         if (state.job && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.job.id;
         if (action === 'start') payload.category = categoryChoice(extras.category);
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
+        if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
         if (action === 'browser' && extras.purpose === 'categories') payload.purpose = 'categories';
         const api = electronApi();
         const result = api && typeof api[methods[action]] === 'function'
@@ -198,16 +201,21 @@
             button.setAttribute('aria-label', `Selecionar ${category.nome} e ver subcategorias`);
             const name = document.createElement('span');
             name.textContent = category.nome;
-            const arrow = document.createElement('span');
-            arrow.textContent = '›';
-            arrow.setAttribute('aria-hidden', 'true');
+            const count = document.createElement('span');
+            count.className = 'pm-taxonomy-count';
+            const children = taxonomy.childCounts[category.key];
+            count.textContent = children === 0 ? 'Último nível' : `${number(children)} subcategorias`;
             button.appendChild(name);
-            button.appendChild(arrow);
+            button.appendChild(count);
             button.addEventListener('click', () => loadTaxonomy(category, taxonomy.trail.concat(category)));
             elements['taxonomy-list'].appendChild(button);
         }
         const message = isActive(state.job) ? 'A seleção de uma nova categoria fica disponível ao concluir ou cancelar esta pesquisa.'
             : taxonomy.loading ? 'Carregando categorias do Mercado Livre…' : taxonomy.message;
+        elements['taxonomy-summary'].textContent = taxonomy.summary
+            ? `Árvore oficial: ${number(taxonomy.summary.rootCount)} categorias principais · ${number(taxonomy.summary.subcategoryCount)} subcategorias · até ${number(taxonomy.summary.maxDepth)} níveis.` : '';
+        elements['taxonomy-updated'].textContent = taxonomy.updatedAt
+            ? `Atualizada em ${new Date(taxonomy.updatedAt).toLocaleString('pt-BR')}` : '';
         elements['taxonomy-message'].textContent = message;
         elements['taxonomy-message'].classList.toggle('error', taxonomy.error);
         elements['taxonomy-list'].setAttribute('aria-busy', taxonomy.loading ? 'true' : 'false');
@@ -218,44 +226,62 @@
             : 'Nenhuma categoria selecionada.';
         renderControls();
     }
-    async function loadTaxonomy(parentCategory = null, trail = []) {
+    async function loadTaxonomy(parentCategory = null, trail = [], forceRefresh = false) {
         if (synchronizeTask) await synchronizeTask;
         currentSession();
         const taxonomy = state.taxonomy;
         if (state.disposed || state.mode !== 'global' || !sessionToken || isActive(state.job) || state.busy || taxonomy.loading) return;
+        const requestId = ++taxonomy.requestId;
         taxonomy.loading = true;
         taxonomy.error = false;
         taxonomy.authRequired = false;
         renderTaxonomy();
         try {
-            const result = await invoke('categories', { parentCategory });
-            if (state.disposed || state.taxonomy !== taxonomy) return;
+            const result = await invoke('categories', { parentCategory, forceRefresh });
+            if (state.disposed || state.taxonomy !== taxonomy || taxonomy.requestId !== requestId) return;
             if (result && result.authRequired) {
                 taxonomy.authRequired = true;
                 taxonomy.error = true;
                 taxonomy.message = result.reason || 'Conclua o login no navegador e depois recarregue as categorias.';
                 return;
             }
-            if (!result || !Array.isArray(result.items)) throw new Error('O aplicativo não retornou a lista de categorias.');
+            const incomplete = 'Não foi possível carregar a árvore completa de categorias. Clique em Atualizar lista para tentar novamente.';
+            const summary = result && result.summary;
+            const counts = result && result.childCounts;
+            if (!result || result.complete !== true || !Array.isArray(result.items)
+                || !summary || !['total', 'rootCount', 'subcategoryCount', 'maxDepth'].every(key => Number.isSafeInteger(summary[key]) && summary[key] >= 0)
+                || summary.rootCount < 1 || summary.maxDepth < 1 || summary.total !== summary.rootCount + summary.subcategoryCount
+                || typeof result.updatedAt !== 'string' || !Number.isFinite(Date.parse(result.updatedAt))
+                || !counts || typeof counts !== 'object' || Array.isArray(counts)) throw new Error(incomplete);
             const selected = categoryChoice(result.parentCategory);
-            if (parentCategory && (!selected || selected.key !== parentCategory.key)) throw new Error('A categoria retornada não corresponde à seleção. Recarregue a lista.');
+            if (parentCategory ? !selected || selected.key !== parentCategory.key : result.parentCategory !== null) {
+                throw new Error('A categoria retornada não corresponde à seleção. Recarregue a lista.');
+            }
+            const categories = result.items.map(categoryChoice);
+            if (categories.some(category => !category) || new Set(categories.map(category => category.key)).size !== categories.length
+                || categories.some(category => !Object.prototype.hasOwnProperty.call(counts, category.key)
+                    || !Number.isSafeInteger(counts[category.key]) || counts[category.key] < 0 || counts[category.key] > summary.total)
+                || !selected && categories.length !== summary.rootCount) throw new Error(incomplete);
             taxonomy.parent = selected;
             taxonomy.selected = selected;
             taxonomy.trail = selected ? trail.slice(0, -1).concat(selected) : [];
-            taxonomy.items = result.items.map(categoryChoice).filter(Boolean);
+            taxonomy.items = categories;
+            taxonomy.summary = summary;
+            taxonomy.updatedAt = result.updatedAt;
+            taxonomy.childCounts = counts;
             taxonomy.loaded = true;
             taxonomy.message = selected ? taxonomy.items.length
                 ? 'Pesquise na categoria selecionada ou escolha uma das subcategorias abaixo.'
-                : 'Esta subcategoria não possui outras subcategorias. Clique em pesquisar para iniciar.'
+                : 'Esta categoria é o último nível da árvore oficial. Clique em pesquisar para iniciar.'
                 : taxonomy.items.length ? 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.'
                     : 'Nenhuma categoria foi encontrada. Atualize a lista para tentar novamente.';
         } catch (error) {
-            if (state.taxonomy === taxonomy && !state.disposed) {
+            if (state.taxonomy === taxonomy && taxonomy.requestId === requestId && !state.disposed) {
                 taxonomy.error = true;
                 taxonomy.message = userErrorMessage(error);
             }
         } finally {
-            if (state.taxonomy === taxonomy && !state.disposed) {
+            if (state.taxonomy === taxonomy && taxonomy.requestId === requestId && !state.disposed) {
                 taxonomy.loading = false;
                 renderTaxonomy();
             }
@@ -486,7 +512,7 @@
         debounce = window.setTimeout(refresh, 250);
     }
     for (const action of ['start', 'pause', 'resume', 'cancel', 'browser']) elements[action].addEventListener('click', () => command(action));
-    elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail));
+    elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail, true));
     elements['taxonomy-browser'].addEventListener('click', async () => {
         if (state.busy || isActive(state.job) || state.disposed) return;
         state.busy = true;

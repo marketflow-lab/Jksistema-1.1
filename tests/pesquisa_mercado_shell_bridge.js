@@ -38,7 +38,9 @@ async function main() {
     await send('start', { authToken: 'fixture-token' });
     assert.strictEqual(commands.length, 0, 'pesquisa exige categoria selecionada');
     await send('start', { authToken: 'fixture-token', category: { ...category, script: 'untrusted()' }, code: 'untrusted()', arbitrary: true });
-    assert.deepStrictEqual(commands, [{ authToken: 'fixture-token', category }], 'payload encaminhado usa allowlist de categoria');
+    assert.strictEqual(commands.length, 0, 'payload com campos extras é rejeitado pelo schema fechado');
+    await send('start', { authToken: 'fixture-token', category });
+    assert.deepStrictEqual(commands, [{ authToken: 'fixture-token', category }], 'payload válido preserva categoria');
     assert.deepStrictEqual(messages.at(-1), { origin: 'http://127.0.0.1:8001', value: {
         channel: 'jk-pesquisa-mercado-result', requestId: 'pm-123-1', result: { job: { id: 'job-1' } }
     } });
@@ -46,10 +48,22 @@ async function main() {
     assert.strictEqual(commands.length, 1, 'categoria de host externo é rejeitada');
     await send('categories', { authToken: 'fixture-token', arbitrary: true });
     await send('categories', { authToken: 'fixture-token', parentCategory: { ...category, code: 'untrusted()' } });
-    assert.deepStrictEqual(categoryCalls, [{ authToken: 'fixture-token' }, { authToken: 'fixture-token', parentCategory: category }]);
+    assert.strictEqual(categoryCalls.length, 0, 'campos extras no comando ou categoria são rejeitados');
+    await send('categories', { authToken: 'fixture-token' });
+    await send('categories', { authToken: 'fixture-token', parentCategory: category });
+    await send('categories', { authToken: 'fixture-token', parentCategory: category, forceRefresh: true });
+    await send('categories', { authToken: 'fixture-token', forceRefresh: false });
+    assert.deepStrictEqual(categoryCalls, [{ authToken: 'fixture-token' }, { authToken: 'fixture-token', parentCategory: category },
+        { authToken: 'fixture-token', parentCategory: category, forceRefresh: true }, { authToken: 'fixture-token', forceRefresh: false }]);
+    for (const forceRefresh of ['true', 1, null, [], {}]) await send('categories', { authToken: 'fixture-token', forceRefresh });
+    await send('start', { authToken: 'fixture-token', category, forceRefresh: true });
+    assert.strictEqual(commands.length, 1, 'refresh só é permitido em categories');
+    assert.strictEqual(categoryCalls.length, 4, 'refresh exige booleano');
     await send('categories', { authToken: 'fixture-token', parentCategory: { ...category, key: '' } });
-    assert.strictEqual(categoryCalls.length, 2, 'categoria incompleta não é encaminhada');
+    assert.strictEqual(categoryCalls.length, 4, 'categoria incompleta não é encaminhada');
     await send('browser', { authToken: 'fixture-token', purpose: 'categories', jobId: 'old-job', code: 'untrusted()' });
+    assert.strictEqual(browserCalls.length, 0, 'schema do navegador rejeita campos extras');
+    await send('browser', { authToken: 'fixture-token', purpose: 'categories' });
     assert.deepStrictEqual(browserCalls, [{ authToken: 'fixture-token', purpose: 'categories' }], 'login de categorias pode abrir navegador antes de criar pesquisa');
     await send('browser', { authToken: 'fixture-token', purpose: 'arbitrary' });
     assert.strictEqual(browserCalls.length, 1, 'finalidade de navegador usa allowlist');

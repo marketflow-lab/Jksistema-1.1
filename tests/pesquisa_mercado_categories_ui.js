@@ -14,6 +14,15 @@ const electric = { key: 'MLB-ELETRICAS', nome: 'Ferramentas Elétricas', url: 'h
 const manual = { key: 'MLB-MANUAIS', nome: 'Ferramentas Manuais', url: 'https://lista.mercadolivre.com.br/ferramentas/manuais/' };
 const drills = { key: 'MLB-BROCAS', nome: 'Brocas', url: 'https://lista.mercadolivre.com.br/ferramentas/brocas/' };
 const electronics = { key: 'MLB-ELETRONICOS', nome: 'Eletrônicos', url: 'https://www.mercadolivre.com.br/c/eletronicos' };
+const baseTree = new Map([[null, [tools, electronics]], [tools.key, [electric, manual]], [electric.key, [drills]]]);
+const deepCategories = Array.from({ length: 7 }, (_, index) => ({ key: `MLB${900000 + index}`, nome: `Nível ${index + 1}`, url: `https://lista.mercadolivre.com.br/_CatId_MLB${900000 + index}` }));
+const deepTree = new Map([[null, [deepCategories[0]]], ...deepCategories.slice(0, -1).map((category, index) => [category.key, [deepCategories[index + 1]]])]);
+const wideCategories = Array.from({ length: 120 }, (_, index) => ({ key: `MLB${800000 + index}`, nome: `Categoria ${index + 1}`, url: `https://lista.mercadolivre.com.br/_CatId_MLB${800000 + index}` }));
+function categoryResponse(parent = null, tree = baseTree, summary = { total: 5, rootCount: 2, subcategoryCount: 3, maxDepth: 3 }) {
+    const items = tree.get(parent && parent.key) || [];
+    return { parentCategory: parent, items, complete: true, updatedAt: '2026-10-06T10:07:07.000Z', summary,
+        childCounts: Object.fromEntries(items.map(category => [category.key, (tree.get(category.key) || []).length])) };
+}
 
 async function main() {
     let job = null;
@@ -61,14 +70,21 @@ async function main() {
                 if (mode === 'foreign-error') { json({ ipcError: "Error invoking remote method 'other-module:categories': Error: Mensagem de outra origem." }); return; }
                 if (mode === 'login') { json({ authRequired: true, reason: 'Faça login no Mercado Livre e recarregue a lista.' }); return; }
                 const parent = payload.parentCategory || null;
-                const children = !parent ? [tools, electronics] : parent.key === tools.key ? [electric, manual] : parent.key === electric.key ? [drills] : [];
-                json({ parentCategory: parent, items: children }); return;
+                let response = mode === 'deep' ? categoryResponse(parent, deepTree, { total: 7, rootCount: 1, subcategoryCount: 6, maxDepth: 7 })
+                    : mode === 'wide' ? categoryResponse(parent, new Map([[null, wideCategories]]), { total: 120, rootCount: 120, subcategoryCount: 0, maxDepth: 1 })
+                        : categoryResponse(parent);
+                if (mode === 'incomplete') response = { ...response, complete: false, items: [] };
+                if (mode === 'invalid-item') response.items = [{ key: 'MLB123', nome: 'Categoria inválida', url: 'https://evil.example/' }];
+                if (mode === 'missing-count') response.childCounts = {};
+                if (mode === 'missing-summary') delete response.summary;
+                if (mode === 'wrong-root') response.parentCategory = tools;
+                json(response); return;
             }
             if (action === 'start') job = legacyStart ? { id: 'legacy-job', status: 'running', revision: 1, counters: { ads: 1 }, checkpoint: {} }
                 : { id: 'scoped-job', status: 'running', revision: 1, scopeCategory: payload.category,
                     checkpoint: { scope: { category: payload.category } }, counters: { categories: 0, pages: 1, sellers: 1, ads: 1, pending: 0 } };
             if (action === 'browser') { json({ success: true }); return; }
-            json({ job: action === 'status' && payload.authToken === 'fixture-new-session' ? null : job }); return;
+            json({ job: action === 'status' && payload.authToken !== 'fixture-original-session' ? null : job }); return;
         }
         if (url.pathname.endsWith('/vendedores')) { json({ items: [{ seller_key: 'id:1', vendedor: 'Loja Teste', ads: items.length }] }); return; }
         if (url.pathname.endsWith('/categorias')) { json({ items: [{ categoria: 'Ferramentas', status: 'completed' }] }); return; }
@@ -149,7 +165,7 @@ async function main() {
             await page.getByRole('button', { name: 'Selecionar Ferramentas Elétricas e ver subcategorias', exact: true }).click();
             await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 1);
             await page.getByRole('button', { name: 'Selecionar Brocas e ver subcategorias', exact: true }).click();
-            await page.waitForFunction(() => document.querySelector('#pm-global-taxonomy-message').textContent.includes('não possui outras'));
+            await page.waitForFunction(() => document.querySelector('#pm-global-taxonomy-message').textContent.includes('último nível'));
             assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 0);
             assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), false, 'folha sem filhos é pesquisável');
             assert.deepStrictEqual(commands.filter(command => command.action === 'categories').at(-1).payload.parentCategory, drills);
@@ -202,6 +218,51 @@ async function main() {
             assert.match(await page.locator('#pm-global-scope').textContent(), /Brocas/, 'seleção futura não muda escopo do resultado salvo');
         });
         await scenario(async () => {
+            await page.locator('#pm-global-taxonomy-breadcrumb').getByRole('button', { name: 'Todas as categorias', exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
+            assert.match(await page.locator('#pm-global-taxonomy-summary').textContent(), /2 categorias principais.*3 subcategorias.*3 níveis/);
+            assert.match(await page.locator('#pm-global-taxonomy-updated').textContent(), /06\/10\/2026/);
+            assert.deepStrictEqual(await page.locator('.pm-taxonomy-count').allTextContents(), ['2 subcategorias', 'Último nível']);
+            mode = 'deep';
+            await page.locator('#pm-global-taxonomy-refresh').click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 1);
+            assert.strictEqual(commands.filter(command => command.action === 'categories').at(-1).payload.forceRefresh, true, 'atualizar lista força renovação da árvore');
+            for (const category of deepCategories) {
+                await page.getByRole('button', { name: `Selecionar ${category.nome} e ver subcategorias`, exact: true }).click();
+                await page.waitForFunction(name => document.getElementById('pm-global-taxonomy-selection').textContent.includes(name), category.nome);
+                assert.strictEqual(commands.filter(command => command.action === 'categories').at(-1).payload.forceRefresh, undefined, 'navegação normal aproveita cache');
+            }
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-breadcrumb button').count(), 8, 'todos os sete níveis são navegáveis');
+            assert.match(await page.locator('#pm-global-taxonomy-message').textContent(), /último nível da árvore oficial/);
+            assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), false);
+            mode = 'wide';
+            await page.locator('#pm-global-taxonomy-breadcrumb').getByRole('button', { name: 'Todas as categorias', exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 120);
+            assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 120, 'não corta irmãos após cem registros');
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-list').evaluate(element => element.scrollHeight > element.clientHeight), true, 'lista mantém rolagem no nível atual');
+            await page.setViewportSize({ width: 390, height: 844 });
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-list').evaluate(element => element.scrollWidth <= element.clientWidth), true, 'seletor cabe em tela estreita');
+            await page.setViewportSize({ width: 1440, height: 1000 });
+            mode = 'normal';
+            await page.locator('#pm-global-taxonomy-refresh').click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
+        });
+        await scenario(async () => {
+            for (const invalidMode of ['incomplete', 'invalid-item', 'missing-count', 'missing-summary', 'wrong-root']) {
+                mode = invalidMode;
+                await page.locator('#pm-global-taxonomy-refresh').click();
+                await page.waitForFunction(() => document.getElementById('pm-global-taxonomy-message').classList.contains('error') && !document.getElementById('pm-global-taxonomy-refresh').disabled);
+                assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true, `resposta ${invalidMode} bloqueia início`);
+                assert.doesNotMatch(await page.locator('#pm-global-taxonomy-message').textContent(), /último nível/, 'falha de completude nunca vira folha');
+                assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 2, 'falha preserva lista anterior para nova tentativa');
+                mode = 'normal';
+                await page.locator('#pm-global-taxonomy-refresh').click();
+                await page.waitForFunction(() => !document.getElementById('pm-global-taxonomy-message').classList.contains('error'));
+            }
+            await page.getByRole('button', { name: 'Selecionar Ferramentas e ver subcategorias', exact: true }).click();
+            await page.waitForFunction(() => !document.getElementById('pm-global-start').disabled);
+        });
+        await scenario(async () => {
             mode = 'error';
             await page.locator('#pm-global-taxonomy-refresh').click();
             await page.waitForFunction(() => document.querySelector('#pm-global-taxonomy-message').textContent.includes('Falha temporária'));
@@ -223,6 +284,24 @@ async function main() {
             await page.locator('#pm-global-taxonomy-refresh').click();
             await page.waitForFunction(() => document.getElementById('pm-global-taxonomy-browser').hidden && !document.getElementById('pm-global-start').disabled);
             assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), false);
+        });
+        await scenario(async () => {
+            mode = 'slow';
+            await page.locator('#pm-global-taxonomy-refresh').click();
+            await page.waitForFunction(() => document.getElementById('pm-global-taxonomy-list').getAttribute('aria-busy') === 'true');
+            await page.evaluate(() => {
+                localStorage.setItem('access_token', 'fixture-race-session');
+                dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));
+            });
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 0);
+            mode = 'normal';
+            releaseTaxonomy();
+            await page.waitForTimeout(100);
+            assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 0, 'resposta da sessão anterior não repõe árvore');
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-summary').textContent(), '', 'resumo também pertence à geração de sessão atual');
+            assert.strictEqual(await page.locator('#pm-global-taxonomy-message').evaluate(element => element.classList.contains('error')), false, 'erro tardio também é descartado');
+            await page.locator('#pm-global-taxonomy-refresh').click();
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
         });
         await scenario(async () => {
             await page.evaluate(() => {
@@ -259,12 +338,12 @@ async function main() {
             await bridgePage.waitForFunction(() => !!window.categoryRequest);
             await bridgePage.clock.fastForward(50000);
             assert.match(await frame.locator('#pm-global-taxonomy-message').textContent(), /Carregando categorias/, 'comando de categorias pode demorar mais de 45 segundos');
-            await bridgePage.evaluate(items => {
+            await bridgePage.evaluate(result => {
                 const request = window.categoryRequest;
                 window.categoryRequest = null;
                 request.source.postMessage({ channel: 'jk-pesquisa-mercado-result', requestId: request.requestId,
-                    result: { items, parentCategory: null } }, location.origin);
-            }, [tools, electronics]);
+                    result }, location.origin);
+            }, categoryResponse());
             await frame.locator('.pm-taxonomy-item').last().waitFor();
             assert.strictEqual(await frame.locator('.pm-taxonomy-item').count(), 2, 'resposta tardia dentro do prazo atualiza a árvore');
             await frame.locator('#pm-global-taxonomy-refresh').click();
@@ -272,14 +351,39 @@ async function main() {
             await bridgePage.clock.fastForward(180001);
             await frame.locator('#pm-global-taxonomy-message').filter({ hasText: 'não respondeu' }).waitFor();
             assert.strictEqual(await frame.locator('#pm-global-taxonomy-refresh').isDisabled(), false, 'timeout limpa loading e permite retry');
-            await bridgePage.evaluate(items => {
+            await bridgePage.evaluate(result => {
                 const request = window.categoryRequest;
                 request.source.postMessage({ channel: 'jk-pesquisa-mercado-result', requestId: request.requestId,
-                    result: { items, parentCategory: null } }, location.origin);
-            }, [electronics]);
+                    result }, location.origin);
+            }, categoryResponse(null, new Map([[null, [electronics]]]), { total: 1, rootCount: 1, subcategoryCount: 0, maxDepth: 1 }));
             await bridgePage.waitForTimeout(50);
             assert.strictEqual(await frame.locator('.pm-taxonomy-item').count(), 2, 'resposta após timeout não repõe request expirado');
             await bridgePage.close();
+        });
+        await scenario(async () => {
+            const disposedPage = await browser.newPage();
+            await disposedPage.addInitScript(() => {
+                localStorage.setItem('access_token', 'fixture-disposed-session');
+                window.module = { exports: {} };
+                window.electronAPI = {
+                    getPesquisaMercadoJobStatus: async () => ({ job: null }),
+                    getPesquisaMercadoCategories: () => new Promise(resolve => { window.__releaseDisposedCategories = resolve; })
+                };
+            });
+            await disposedPage.goto(`http://127.0.0.1:${server.address().port}/pesquisa_mercado.html`);
+            await disposedPage.evaluate(() => {
+                window.__disposedUI = window.module.exports(window);
+                window.__disposedUI.changeMode('global');
+            });
+            await disposedPage.waitForFunction(() => typeof window.__releaseDisposedCategories === 'function');
+            await disposedPage.evaluate(result => {
+                window.__disposedUI.dispose();
+                window.__releaseDisposedCategories(result);
+            }, categoryResponse());
+            await disposedPage.waitForTimeout(50);
+            assert.strictEqual(await disposedPage.locator('.pm-taxonomy-item').count(), 0, 'resposta após dispose não publica categorias');
+            assert.strictEqual(await disposedPage.evaluate(() => window.__disposedUI.state.taxonomy.loaded), false);
+            await disposedPage.close();
         });
         assert.deepStrictEqual(errors, []);
         console.log(`Pesquisa de Mercado categorias UI: ${scenarios} cenários de abas, hierarquia, escopo, erro, login e sessão OK`);

@@ -245,6 +245,7 @@
     "static/pesquisa-mercado/page-scripts.js",
     "electron_app/main/modules/pesquisa-mercado-browser.js",
     "electron_app/main/modules/pesquisa-mercado-runner.js",
+    "electron_app/main/modules/pesquisa-mercado-taxonomy.js",
     "backend/routers/pesquisa_mercado.py",
     "backend/schemas/pesquisa_mercado.py",
     "backend/services/pesquisa_mercado.py",
@@ -663,6 +664,7 @@
     "local_app/static/pesquisa-mercado/page-scripts.js",
     "local_app/electron_app/main/modules/pesquisa-mercado-browser.js",
     "local_app/electron_app/main/modules/pesquisa-mercado-runner.js",
+    "local_app/electron_app/main/modules/pesquisa-mercado-taxonomy.js",
     "local_app/backend/routers/pesquisa_mercado.py",
     "local_app/backend/schemas/pesquisa_mercado.py",
     "local_app/backend/services/pesquisa_mercado.py",
@@ -837,7 +839,11 @@
     "context-bundle-manifest.json",
     "static/medias_compras/fornecedores.js",
     "static/medias_compras/cadastros-lista.js",
-    "static/medias_compras/data-pedido-lista.js"
+    "static/medias_compras/data-pedido-lista.js",
+    "electron_app/main/modules/pesquisa-mercado-taxonomy.js",
+    "electron_app/main/modules/pesquisa-mercado-browser.js",
+    "electron_app/main/modules/pesquisa-mercado-runner.js",
+    "static/pesquisa-mercado/page-scripts.js"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",

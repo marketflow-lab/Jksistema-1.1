@@ -13,7 +13,8 @@
     const appOrigin = new URL(context.appUrl).origin;
     let unsubscribe = null;
     function categoryChoice(value) {
-        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        if (!value || typeof value !== 'object' || Array.isArray(value)
+            || Object.keys(value).some(key => !['key', 'nome', 'url'].includes(key))) return null;
         if (typeof value.key !== 'string' || !value.key.trim() || value.key.length > 2048
             || typeof value.nome !== 'string' || !value.nome.trim() || value.nome.length > 500
             || typeof value.url !== 'string' || value.url.length > 4096) return null;
@@ -62,11 +63,26 @@
             return;
         }
         const input = data.payload;
+        const fields = { start: ['authToken', 'category'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
+            status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId'],
+            cancel: ['authToken', 'jobId'], browser: ['authToken', 'jobId', 'purpose'] };
+        if (!input || typeof input !== 'object' || Array.isArray(input)
+            || Object.keys(input).some(key => !fields[data.action].includes(key))) {
+            reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Argumentos do comando da pesquisa inválidos.' });
+            return;
+        }
         if (!input || typeof input.authToken !== 'string' || !input.authToken || input.authToken.length > 8192) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Entre no JK Sistema para consultar a pesquisa.' });
             return;
         }
         const payload = { authToken: input.authToken };
+        if (data.action === 'categories' && Object.prototype.hasOwnProperty.call(input, 'forceRefresh')) {
+            if (typeof input.forceRefresh !== 'boolean') {
+                reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Atualização das categorias inválida.' });
+                return;
+            }
+            payload.forceRefresh = input.forceRefresh;
+        }
         if (data.action === 'start' || data.action === 'categories' && input.parentCategory != null) {
             const field = data.action === 'start' ? 'category' : 'parentCategory';
             const category = categoryChoice(input[field]);

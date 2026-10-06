@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { PesquisaMercadoRunner, sellerFromPage, allowedUrl, normalizeCategory, sameCategoryPage, currentPageRequiresLogin } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { PesquisaMercadoRunner, sellerFromPage, allowedUrl, normalizeCategory, sameCategoryPage, verifiedCategoryPage, currentPageRequiresLogin, validateCheckpointTaxonomy } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 const copy = value => JSON.parse(JSON.stringify(value));
 const base = 'https://www.mercadolivre.com.br';
 
@@ -358,9 +358,54 @@ async function categoryNavigationSettles() {
     assert.strictEqual(currentPageRequiresLogin({ ...authPage, url: '' }, { getURL: () => 'https://avantprocloud.com.br.evil.example/login' }), false);
 }
 
+async function officialTaxonomyScope() {
+    const category = id => ({key: id, nome: id, url: `https://lista.mercadolivre.com.br/_CatId_${id}`});
+    const root=category('MLB100'), branch=category('MLB101'), leaf=category('MLB102'), outside=category('MLB200');
+    const tree={MLB100:[branch], MLB101:[leaf], MLB102:[], MLB200:[]};
+    const native='https://lista.mercadolivre.com.br/pecas/filtros/';
+    const attach = h => { let loads=0; h.runner.taxonomy={load:async()=>{loads+=1;return {complete:true,updatedAt:'2026-10-06T10:00:00Z',get:key=>[root,branch,leaf,outside].find(c=>c.key===key),children:key=>copy(tree[key])};}}; return ()=>loads; };
+    const h=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,empty:true,categories:[outside],hasChildren:true}});
+    const loads=attach(h);
+    await h.runner.start(root); await h.runner.task;
+    assert.equal(loads(),1);
+    assert.equal(h.saved().status,'completed');
+    assert.deepEqual(h.visited,[leaf.url],'intermediate official nodes need no partial DOM discovery');
+    assert.deepEqual(h.saved().checkpoint.categories.map(c=>c.key),[root.key,branch.key,leaf.key]);
+    assert.deepEqual(Object.keys(h.saved().checkpoint.officialTaxonomy.children),[root.key,branch.key,leaf.key]);
+    assert.equal(h.saved().counters.pages,1);
+    for(const alter of [
+        c=>{c.officialTaxonomy.children.MLB102=[root];},
+        c=>{c.officialTaxonomy.children.MLB200=[];},
+        c=>{c.categories.push(outside);},
+        c=>{c.currentCategory=outside;},
+        c=>{c.officialTaxonomy.children.MLB101=[outside];}
+    ]) {const corrupt=copy(h.saved().checkpoint);alter(corrupt);assert.throws(()=>validateCheckpointTaxonomy(corrupt),/arvore preservada/);}
+
+    for(const evidence of [{},{effectiveCategoryId:outside.key},{effectiveCategoryId:leaf.key,categoryIdentityConflict:true}]) {
+        const blocked=harness({[leaf.url]:{url:native,empty:true,categories:[outside],...evidence}}); attach(blocked);
+        await blocked.runner.start(root); await blocked.runner.task;
+        assert.equal(blocked.saved().status,'completed_partial','redirect requires nonconflicting exact category evidence');
+        assert.equal(blocked.saved().counters.pages,0);
+        assert.deepEqual(blocked.saved().checkpoint.categories.map(c=>c.key),[root.key,branch.key,leaf.key]);
+    }
+    assert.equal(verifiedCategoryPage(leaf.url,native,leaf.key,leaf.key),true);
+    assert.equal(verifiedCategoryPage(leaf.url,native,leaf.key,outside.key),false);
+    assert.equal(verifiedCategoryPage(leaf.url,'https://lista.mercadolivre.com.br/_CustId_123',leaf.key,leaf.key),false);
+    assert.equal(verifiedCategoryPage(leaf.url,'https://example.com/cat',leaf.key,leaf.key),false);
+    // Resume uses the snapshot saved for this owner; a later refresh cannot
+    // add an unrelated public node to the in-flight selection.
+    const resumed=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,empty:true}});
+    resumed.restoreCheckpoint({...h.saved(),status:'paused',checkpoint:{...h.saved().checkpoint,categoryIndex:2,page:null}});
+    resumed.runner.taxonomy={load:async()=>{throw new Error('changed taxonomy must not be loaded on resume');}};
+    await resumed.runner.resume('run-1'); await resumed.runner.task;
+    assert.equal(resumed.saved().status,'completed');
+    assert.deepEqual(resumed.visited,[leaf.url]);
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
     await categoryNavigationSettles();
+    await officialTaxonomyScope();
     console.log('Pesquisa de Mercado runner: categories, dedup, background, pause, recovery and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });

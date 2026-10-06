@@ -28,6 +28,48 @@ function harness(saved = [], options = {}) {
     const pool = { active: true, workers: new Map([['w1', { id: 'existing-favoritos-window' }]]) };
     let serial = saved.length;
     let releaseRestore = null;
+    let releaseTaxonomy = null;
+    const taxonomyCalls = [];
+    const taxonomyConstructors = [];
+    function taxonomySnapshot() {
+        const dump = options.taxonomyDump;
+        const roots = dump ? Object.values(dump).filter(node => node.path_from_root.length === 1).map(node => node.id)
+            : options.taxonomyRoots || [category];
+        const children = dump ? Object.fromEntries(Object.values(dump).map(node => [node.id, node.children_categories.map(child => child.id)]))
+            : options.taxonomyChildren || {};
+        const nodes = new Map();
+        if (dump) for (const node of Object.values(dump)) nodes.set(node.id, { key: node.id, nome: node.name,
+            url: node.permalink || `https://lista.mercadolivre.com.br/_CatId_${node.id}` });
+        else {
+            for (const node of roots) nodes.set(node.key, clone(node));
+            for (const list of Object.values(children)) for (const node of list) nodes.set(node.key, clone(node));
+        }
+        const rootIds = roots.map(node => typeof node === 'string' ? node : node.key);
+        const childIds = Object.fromEntries(Object.entries(children).map(([key, list]) => [key,
+            list.map(node => typeof node === 'string' ? node : node.key)]));
+        const pending = rootIds.map(key => [key, 1]);
+        let maxDepth = 0;
+        for (let index = 0; index < pending.length; index += 1) {
+            const [key, depth] = pending[index];
+            maxDepth = Math.max(maxDepth, depth);
+            pending.push(...(childIds[key] || []).map(child => [child, depth + 1]));
+        }
+        return { complete: true, updatedAt: '2026-10-06T10:07:07.000Z',
+            summary: { total: nodes.size, rootCount: rootIds.length, subcategoryCount: nodes.size - rootIds.length, maxDepth },
+            get: key => nodes.get(key) || null,
+            children: key => (key == null ? rootIds : childIds[key] || []).map(child => nodes.get(child)),
+            childCounts: keys => Object.fromEntries(keys.map(key => [key, (childIds[key] || []).length])) };
+    }
+    class FakeTaxonomyService {
+        constructor(config) { taxonomyConstructors.push(clone(config)); }
+        async load(input = {}) {
+            taxonomyCalls.push(clone(input));
+            events.push({ type: 'taxonomy-load', owner: requests.at(-1) && requests.at(-1).owner, forceRefresh: !!input.forceRefresh });
+            if (options.blockTaxonomy) await new Promise(resolve => { releaseTaxonomy = resolve; });
+            if (options.taxonomyFailure || input.forceRefresh && options.failRefresh) throw new Error('Fixture: árvore oficial temporariamente indisponível.');
+            return taxonomySnapshot();
+        }
+    }
     class FakeWebContents extends EventEmitter {
         constructor() { super(); this.url = ''; this.stops = 0; this.scripts = []; }
         setUserAgent(value) { this.userAgent = value; }
@@ -123,6 +165,7 @@ function harness(saved = [], options = {}) {
     const mainWindow = { isDestroyed: () => false, webContents: new FakeWebContents() };
     const sandbox = {
         path, __dirname: root, http, Buffer, JK_LOCAL_BACKEND_PORT: 8001, BrowserWindow: FakeBrowserWindow,
+        app: { getPath: name => { assert.strictEqual(name, 'userData'); return path.join(root, 'fixture-public-cache-only'); } },
         ML_BROWSER_USER_AGENT: 'fixture-user-agent', mainWindow,
         getMlSession: () => session,
         restaurarSessaoAvantProAntesDeAbrirNavegador: async () => {
@@ -138,6 +181,7 @@ function harness(saved = [], options = {}) {
         stopFavoritosWorkersPool: () => { throw new Error('A pesquisa não deve tocar no pool Favoritos.'); },
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
+            if (filename.endsWith('pesquisa-mercado-taxonomy.js')) return { TaxonomyService: FakeTaxonomyService };
             if (filename.endsWith('pesquisa-mercado-runner.js')) return { ...runnerModule, PesquisaMercadoRunner: options.realRunner ? runnerModule.PesquisaMercadoRunner : DormantRunner };
             if (filename.endsWith('page-scripts.js')) return { discoveryScript: () => 'fixture:categories' };
             if (filename.endsWith('shared-collector.js')) return {};
@@ -161,8 +205,9 @@ function harness(saved = [], options = {}) {
         authToken: owner === 'one' ? 'fixture-owner-one' : 'fixture-owner-two', ...(jobId ? { jobId } : {}),
         ...(action === 'start' ? { category } : {}), ...extra
     });
-    return { api: sandbox.testAPI, sandbox, command, events, requests, windows, jobs, pool, session,
-        releaseRestore: () => { if (releaseRestore) releaseRestore(); } };
+    return { api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, options, taxonomyCalls, taxonomyConstructors,
+        releaseRestore: () => { if (releaseRestore) releaseRestore(); },
+        releaseTaxonomy: () => { if (releaseTaxonomy) releaseTaxonomy(); }, taxonomyWaiting: () => !!releaseTaxonomy };
 }
 
 async function testBrowserIsolationAndNavigation() {
@@ -323,124 +368,125 @@ async function testSwitchingPausedJobsShowsOwnedCursor() {
 }
 
 async function testCategorySelectionAndIsolation() {
-    const hub = { key: 'hub', nome: 'Acessórios', url: 'https://www.mercadolivre.com.br/c/acessorios-para-veiculos' };
-    const child = { key: 'child', nome: 'Peças', url: 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas' };
-    const h = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': { categories: [hub], categoryTree: [{ ...hub, children: [child] }] },
-        [child.url]: { categories: [], anuncios: [{ id: 'MLB1000000001' }] }
-    } });
+    const hub = { key: 'MLB5672', nome: 'Acessórios', url: 'https://www.mercadolivre.com.br/c/acessorios-para-veiculos' };
+    const child = { key: 'MLB191834', nome: 'Filtros', url: 'https://lista.mercadolivre.com.br/_CatId_MLB191834' };
+    const h = harness([], { withoutChoices: true, taxonomyRoots: [hub], taxonomyChildren: { [hub.key]: [child] } });
     await assert.rejects(h.command('start'), /Escolha uma categoria/);
     assert.strictEqual(h.jobs.size, 0, 'não iniciar uma varredura ampla sem escolha confirmada');
     const roots = await h.command('categories');
-    assert.deepStrictEqual(clone(roots.items), [hub]);
+    assert.deepStrictEqual(clone(roots), { items: [hub], parentCategory: null, complete: true,
+        updatedAt: '2026-10-06T10:07:07.000Z', summary: { total: 2, rootCount: 1, subcategoryCount: 1, maxDepth: 2 }, childCounts: { [hub.key]: 1 } });
     assert.strictEqual(h.jobs.size, 0, 'abrir o seletor não cria execução');
     const children = await h.command('categories', 'one', null, { parentCategory: hub });
     assert.deepStrictEqual(clone(children.items), [child]);
-    assert.strictEqual(h.windows[0].loads.length, 1, 'filhos canônicos do índice dispensam o hub promocional');
+    assert.strictEqual(h.windows.length, 0, 'raiz e filhos oficiais dispensam BrowserWindow');
     const leaf = await h.command('categories', 'one', null, { parentCategory: child });
-    assert.strictEqual(leaf.items.length, 0, 'categoria final é pesquisável mesmo sem filhos');
-    await assert.rejects(h.command('start', 'one', null, { category: { ...child, nome: 'Nome alterado' } }), /Escolha uma categoria/);
+    assert.deepStrictEqual(clone(leaf), { ...clone(roots), items: [], parentCategory: child, childCounts: {} }, 'folha confirmada preserva metadados da árvore completa');
+    await h.command('categories', 'one', null, { parentCategory: child, forceRefresh: true });
+    const refreshedAncestor = await h.command('categories', 'one', null, { parentCategory: hub });
+    assert.deepStrictEqual(clone(refreshedAncestor.items), [child], 'refresh profundo preserva navegacao pelo breadcrumb conhecido');
+    const beforeUnknown = h.taxonomyCalls.length;
+    for (const invalid of [
+        { ...child, key: 'MLB9999999' }, { ...child, nome: 'Nome alterado' },
+        { ...child, url: 'https://evil.example/' }, { ...child, url: 'https://lista.mercadolivre.com.br/categoria-inventada' }
+    ]) {
+        await assert.rejects(h.command('categories', 'one', null, { parentCategory: invalid }), /Escolha uma categoria/);
+        await assert.rejects(h.command('start', 'one', null, { category: invalid }), /Escolha uma categoria/);
+    }
+    assert.strictEqual(h.taxonomyCalls.length, beforeUnknown, 'seleção fabricada não chega ao cache público');
     const started = await h.command('start', 'one', null, { category: child });
     assert.deepStrictEqual(clone(started.job.scopeCategory), child);
     assert.deepStrictEqual(h.jobs.get(started.job.id).checkpoint.scope.category, child);
     await assert.rejects(h.command('categories'), /Pause ou encerre/);
+    const beforeOtherOwner = h.taxonomyCalls.length;
     await assert.rejects(h.command('categories', 'two'), /n[aã]o encontrada/);
+    assert.strictEqual(h.taxonomyCalls.length, beforeOtherOwner, 'proprietário inválido é rejeitado antes do cache');
     await h.command('pause', 'one', started.job.id);
     await h.api.coordinator().task;
-    await assert.rejects(h.command('categories', 'one', null, { parentCategory: { ...child, url: 'https://evil.example/' } }), /Escolha uma categoria/);
     await assert.rejects(h.command('start', 'two', null, { category: child }), /Escolha uma categoria/, 'lista de uma sessão não autoriza outra');
     await h.api.quit();
 }
 
-async function testCategoryLoginBeforeAnyJob() {
-    const h = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': { authRequired: true }
+async function testPublicTaxonomyAuthorizationBeforeCache() {
+    const h = harness([], { withoutChoices: true, taxonomyDump: {
+        MLB100: { id: 'MLB100', name: 'Categoria oficial', permalink: 'https://www.mercadolivre.com.br/c/ferramentas',
+            path_from_root: [{ id: 'MLB100' }], children_categories: [{ id: 'MLB101' }] },
+        MLB101: { id: 'MLB101', name: 'Subcategoria oficial', permalink: null,
+            path_from_root: [{ id: 'MLB100' }, { id: 'MLB101' }], children_categories: [] }
     } });
-    const result = await h.command('categories');
-    assert.strictEqual(result.authRequired, true);
+    const roots = await h.command('categories');
+    const again = await h.command('categories');
+    assert.deepStrictEqual(clone(again), clone(roots), 'mesma árvore pública pode ser reutilizada');
+    assert.deepStrictEqual(h.events.filter(event => event.type === 'taxonomy-load').map(event => event.owner), ['one', 'one']);
+    assert.strictEqual(h.requests.filter(request => request.path === '/api/pesquisa-mercado/jobs/latest').length, 2, 'JK autoriza cada consulta antes de reutilizar cache');
+    await assert.rejects(h.api.command(h.trusted, 'categories', { authToken: 'fixture-invalid-owner' }), /Sessão inválida/);
+    assert.strictEqual(h.taxonomyCalls.length, 2, 'token inválido não lê nem aquece o cache');
+    assert.strictEqual(h.api.peek().token, 'fixture-owner-one', 'falha de autorização preserva proprietário anterior');
+    const child = await h.command('categories', 'one', null, { parentCategory: roots.items[0] });
+    assert.strictEqual(child.items[0].key, 'MLB101');
+    assert.strictEqual(child.items[0].url, 'https://lista.mercadolivre.com.br/_CatId_MLB101');
+    assert.strictEqual(h.windows.length, 0, 'taxonomia pública não depende do login ML nem abre navegador');
+    assert.strictEqual(h.events.filter(event => ['restore', 'extensions', 'create'].includes(event.type)).length, 0);
+    assert.strictEqual(h.taxonomyConstructors.length, 1);
+    assert.match(h.taxonomyConstructors[0].cachePath, /fixture-public-cache-only[\\/]public-mlb-taxonomy-v1\.json$/);
+    await h.command('categories', 'two');
+    await assert.rejects(h.command('start', 'two', null, { category: roots.items[0], authToken: 'fixture-owner-one' }), /Escolha uma categoria/, 'troca de token limpa escolhas, mesmo com cache público comum');
     assert.strictEqual(h.jobs.size, 0);
-    await h.command('show-browser', 'one', null, { purpose: 'categories' });
-    assert.strictEqual(h.windows[0].visible, true, 'login de categorias permite mostrar navegador antes de iniciar pesquisa');
     await h.api.quit();
 }
 
-async function testCategoryTransientRetries() {
-    let attempts = 0;
-    const h = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': () => {
-            if (++attempts < 3) throw new Error('Temporary page failure');
-            return { categories: [category] };
-        }
-    } });
-    const result = await h.command('categories');
-    assert.deepStrictEqual(clone(result.items), [category]);
-    assert.strictEqual(h.windows[0].loads.length, 3, 'two additional retries after transient failures');
+async function testTaxonomyRefreshFlagsAndFailure() {
+    const h = harness([], { withoutChoices: true });
+    await h.command('categories');
+    const beforeInvalid = h.taxonomyCalls.length;
+    for (const forceRefresh of [null, 'true', 1, [], {}]) {
+        await assert.rejects(h.command('categories', 'one', null, { forceRefresh }), /Atualizacao de categorias invalida/);
+    }
+    assert.strictEqual(h.taxonomyCalls.length, beforeInvalid, 'refresh malformado não chega ao serviço');
+    await h.command('categories', 'one', null, { forceRefresh: false });
+    await h.command('categories', 'one', null, { forceRefresh: true });
+    assert.deepStrictEqual(h.taxonomyCalls, [{ forceRefresh: false }, { forceRefresh: false }, { forceRefresh: true }]);
+    h.options.failRefresh = true;
+    await assert.rejects(h.command('categories', 'one', null, { forceRefresh: true }), /temporariamente indisponível/);
+    assert.strictEqual(h.jobs.size, 0, 'falha no refresh não inicia execução');
+    const cached = await h.command('categories', 'one', null, { parentCategory: category });
+    assert.deepStrictEqual(clone(cached.parentCategory), category, 'falha de refresh preserva escolha anterior válida');
+    h.options.failRefresh = false;
+    const refreshed = await h.command('categories', 'one', null, { forceRefresh: true });
+    assert.strictEqual(refreshed.complete, true, 'nova tentativa pode renovar árvore');
+    assert.strictEqual(h.windows.length, 0, 'erro da API nunca abre fallback de scrape');
+    await h.api.quit();
+}
+
+async function testTaxonomyRemovedCategoryRefresh() {
+    const removed = { key: 'MLB700', nome: 'Categoria removida', url: 'https://lista.mercadolivre.com.br/_CatId_MLB700' };
+    const replacement = { key: 'MLB701', nome: 'Categoria atual', url: 'https://lista.mercadolivre.com.br/_CatId_MLB701' };
+    const h = harness([], { withoutChoices: true, taxonomyRoots: [removed] });
+    await h.command('categories');
+    h.options.taxonomyRoots = [replacement];
+    await assert.rejects(h.command('categories', 'one', null, { parentCategory: removed, forceRefresh: true }), /deixou de estar disponivel/);
+    const roots = await h.command('categories', 'one', null, { forceRefresh: true });
+    assert.deepStrictEqual(clone(roots.items), [replacement]);
+    await assert.rejects(h.command('start', 'one', null, { category: removed }), /Escolha uma categoria/, 'refresh da raiz invalida seleção removida');
     assert.strictEqual(h.jobs.size, 0);
+    assert.strictEqual(h.windows.length, 0);
     await h.api.quit();
 }
 
-async function testCategoryRedirectAndQuit() {
-    const parent = { key: 'motor', nome: 'Motor', url: 'https://lista.mercadolivre.com.br/pecas/motor' };
-    const sibling = { key: 'freios', nome: 'Freios', url: 'https://lista.mercadolivre.com.br/pecas/freios' };
-    const h = harness([], { categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': { categories: [parent] },
-        [parent.url]: { url: 'https://lista.mercadolivre.com.br/pecas', categories: [sibling] }
-    } });
-    await h.command('categories');
-    await assert.rejects(h.command('categories', 'one', null, { parentCategory: parent }), /outra categoria/);
-    await assert.rejects(h.command('start', 'one', null, { category: sibling }), /Escolha uma categoria/);
-    await h.api.quit();
-
-    let release;
-    const closing = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': () => new Promise(resolve => { release = resolve; })
-    } });
-    const load = closing.command('categories');
-    while (!release) await new Promise(resolve => setImmediate(resolve));
-    const quit = closing.api.quit();
-    release({ categories: [] });
-    await assert.rejects(load, /encerrando/);
-    await quit;
-    assert.strictEqual(closing.windows[0].destroyed, true, 'category query cannot hold the browser after quit');
-}
-
-async function testCategoryNavigationSettles() {
-    const parent = { key: 'cars', nome: 'Carros e Caminhonetes', url: 'https://lista.mercadolivre.com.br/veiculos/carros-caminhonetes' };
-    const child = { key: 'native', nome: 'Casas', url: 'https://imoveis.mercadolivre.com.br/casas' };
-    const old = { key: 'old', nome: 'Categoria anterior', url: 'https://lista.mercadolivre.com.br/anterior' };
-    let reads = 0;
-    const h = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': { categories: [parent, child] },
-        [parent.url]: () => {
-            reads += 1;
-            if (reads <= 2) return { url: reads === 1 ? '' : 'https://www.mercadolivre.com.br/categorias', readyState: 'complete', avantAuthRequired: true };
-            if (reads === 3) return { url: 'https://www.mercadolivre.com.br/categorias', readyState: 'complete', categories: [old] };
-            if (reads <= 5) return { url: parent.url + '/', readyState: 'loading', anuncios: [{ id: 'temporary' }] };
-            return { url: parent.url + '/', readyState: 'complete', empty: true };
-        },
-        [child.url]: { url: child.url + '/', readyState: 'complete', empty: true }
-    } });
-    await h.command('categories');
-    const result = await h.command('categories', 'one', null, { parentCategory: parent });
-    assert.deepStrictEqual(clone(result), { items: [], parentCategory: parent });
-    assert.strictEqual(reads, 7, 'previous document and loading shell wait for two settled readings');
-    assert.strictEqual(h.windows[0].loads.filter(url => url === parent.url).length, 1, 'transient old URL cannot restart navigation');
-    await assert.rejects(h.command('start', 'one', null, { category: old }), /Escolha uma categoria/, 'old tree never enters choices');
-    const native = await h.command('categories', 'one', null, { parentCategory: child });
-    assert.deepStrictEqual(clone(native.parentCategory), child);
-    assert.deepStrictEqual(clone(native.items), []);
-    await h.api.quit();
-
-    let loadingReads = 0;
-    const loading = harness([], { withoutChoices: true, loading: url => url === parent.url && ++loadingReads <= 2,
-        categoryPages: {
-            'https://www.mercadolivre.com.br/categorias': { categories: [parent] },
-            [parent.url]: { url: parent.url, readyState: 'complete', empty: true }
-        } });
-    await loading.command('categories');
-    await loading.command('categories', 'one', null, { parentCategory: parent });
-    assert.strictEqual(loadingReads, 4, 'Electron loading state must also settle');
-    await loading.api.quit();
+async function testTaxonomyQuitInflight() {
+    const h = harness([], { withoutChoices: true, blockTaxonomy: true });
+    const loading = h.command('categories');
+    while (!h.taxonomyWaiting()) await tick();
+    const quitting = h.api.quit();
+    h.releaseTaxonomy();
+    await assert.rejects(loading, /encerrando/);
+    await quitting;
+    assert.strictEqual(h.windows.length, 0, 'consulta atrasada não deixa navegador após encerramento');
+    assert.strictEqual(h.jobs.size, 0);
+    assert.strictEqual(h.api.peek().token, '');
+    const loads = h.taxonomyCalls.length;
+    await assert.rejects(h.command('categories'), /encerrando/);
+    assert.strictEqual(h.taxonomyCalls.length, loads, 'encerramento bloqueia novas consultas');
 }
 
 async function testPublicVehicleUrlsPreserveTrailingSlash() {
@@ -462,21 +508,22 @@ async function testPublicVehicleUrlsPreserveTrailingSlash() {
         categoryPages[child.url] = { readyState: 'complete', empty: true };
         categoryPages[genericSearch] = { readyState: 'complete', empty: true };
     }
-    const h = harness([], { withoutChoices: true, realRunner: true, categoryPages, redirects });
+    const h = harness([], { withoutChoices: true, realRunner: true, categoryPages, redirects,
+        taxonomyRoots: [hub], taxonomyChildren: { [hub.key]: children } });
     try {
         await h.command('categories');
         const directory = await h.command('categories', 'one', null, { parentCategory: hub });
         for (const child of children) {
             const leaf = await h.command('categories', 'one', null, { parentCategory: child });
-            assert.deepStrictEqual(clone(leaf), { items: [], parentCategory: child },
+            assert.deepStrictEqual(clone(leaf.items), [],
                 'seletor mantém a URL pública com slash para ' + child.nome);
-            assert.strictEqual(h.windows[0].loads.at(-1), child.url,
-                'navegação não pode transformar categoria de veículos em busca genérica');
-            assert.strictEqual(h.windows[0].webContents.getURL(), child.url);
+            assert.deepStrictEqual(clone(leaf.parentCategory), child);
+            assert.strictEqual(leaf.complete, true);
+            assert.strictEqual(h.windows.length, 0, 'seleção pública histórica mantém URL sem navegar navegador');
         }
         assert.deepStrictEqual(clone(directory.items), children, 'os dez links públicos permanecem íntegros no cache do seletor');
         for (const child of children) {
-            const before = h.windows[0].loads.length;
+            const before = h.windows.length ? h.windows[0].loads.length : 0;
             const started = await h.command('start', 'one', null, { category: child });
             await h.api.coordinator().task;
             const post = h.requests.filter(request => request.method === 'POST').at(-1);
@@ -496,18 +543,35 @@ async function testPublicVehicleUrlsPreserveTrailingSlash() {
 
     const observed = children[0];
     const legacy = { ...observed, url: observed.url.replace(/\/$/, '') };
-    const redirected = harness([], { withoutChoices: true, categoryPages: {
-        'https://www.mercadolivre.com.br/categorias': { categories: [legacy] },
+    const redirected = harness([], { withoutChoices: true, realRunner: true, taxonomyRoots: [legacy], categoryPages: {
         'https://lista.mercadolivre.com.br/caminhoes': { readyState: 'complete', empty: true }
     }, redirects: { [legacy.url]: 'https://lista.mercadolivre.com.br/caminhoes' } });
     try {
         await redirected.command('categories');
-        await assert.rejects(redirected.command('categories', 'one', null, { parentCategory: legacy }), /outra categoria/,
-            'perda real de /veiculos continua sendo rejeitada; não aceitar alias para busca genérica');
+        const started = await redirected.command('start', 'one', null, { category: legacy });
+        await redirected.api.coordinator().task;
+        const saved = redirected.jobs.get(started.job.id);
+        assert.strictEqual(saved.status, 'completed_partial', 'executor rejeita perda real de /veiculos');
+        assert.strictEqual(saved.counters.pages, 0, 'busca genérica não pode ser contada como categoria');
         assert.strictEqual(redirected.windows[0].webContents.getURL(), 'https://lista.mercadolivre.com.br/caminhoes');
-        assert.strictEqual(redirected.windows[0].loads.filter(url => url === legacy.url).length, 3);
-        assert.strictEqual(redirected.jobs.size, 0, 'falha do seletor não pode iniciar uma execução');
+        assert.strictEqual(redirected.windows[0].loads.filter(url => url === legacy.url).length, 1, 'divergência confirmada de escopo interrompe sem repetir navegador');
+        assert.deepStrictEqual(saved.checkpoint.scope.category, legacy, 'erro de redirecionamento preserva escopo histórico');
     } finally { await redirected.api.quit(); }
+
+    const resumed = harness([{ id: 'legacy-slash-job', owner: 'one', status: 'paused', revision: 3, counters: {}, checkpoint: {
+        scope: { category: observed }, categories: [observed], categoryIndex: 0, discoveryInitialized: true,
+        currentCategory: observed, incompleteCategories: []
+    } }], { realRunner: true, withoutChoices: true, categoryPages: { [observed.url]: { readyState: 'complete', empty: true } } });
+    try {
+        await resumed.command('resume', 'one', 'legacy-slash-job');
+        await resumed.api.coordinator().task;
+        const saved = resumed.jobs.get('legacy-slash-job');
+        assert.strictEqual(saved.status, 'completed');
+        assert.deepStrictEqual(saved.checkpoint.scope.category, observed, 'retomada preserva URL com slash do checkpoint histórico');
+        assert.deepStrictEqual(resumed.windows[0].loads, [observed.url]);
+        assert.strictEqual(resumed.taxonomyCalls.length, 0, 'job histórico não precisa trocar escopo pelo cache atual');
+    } finally { await resumed.api.quit(); }
+
 }
 async function main() {
     await testPublicVehicleUrlsPreserveTrailingSlash();
@@ -517,10 +581,10 @@ async function main() {
     await testQuitDuringPreparation();
     await testSwitchingPausedJobsShowsOwnedCursor();
     await testCategorySelectionAndIsolation();
-    await testCategoryLoginBeforeAnyJob();
-    await testCategoryTransientRetries();
-    await testCategoryRedirectAndQuit();
-    await testCategoryNavigationSettles();
+    await testPublicTaxonomyAuthorizationBeforeCache();
+    await testTaxonomyRefreshFlagsAndFailure();
+    await testTaxonomyRemovedCategoryRefresh();
+    await testTaxonomyQuitInflight();
     console.log('Pesquisa de Mercado main browser: janela exclusiva, navegação, ownership, recuperação e encerramento OK');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -67,6 +67,66 @@
         const firstLink = (scope, selector) => nodes(selector, scope).find(item => absolute(item.getAttribute('href')));
         const content = document.querySelector('main') || document.body;
         const url = absolute(location.href);
+        // Read only category identity for this listing. Product/recommendation
+        // category IDs and available_filters must never prove a redirect scope.
+        let categoryIdentityConflict = false;
+        const effectiveCategoryId = (() => {
+            if (isProduct(url) || currentListingIsSeller()) return '';
+            const evidence = new Set();
+            const add = value => { if (typeof value === 'string' && /^MLB\d+$/.test(value)) evidence.add(value); };
+            function currentListingIsSeller() { const seller = identity(url); return !!(seller.id || seller.perfilUrl); }
+            try {
+                const parsed = new URL(url);
+                for (const match of decodeURIComponent(parsed.pathname).matchAll(/_(?:CatId|CATEGORY)_(MLB\d+)(?=_|\/|$)/gi)) add(match[1].toUpperCase());
+                for (const [key, value] of parsed.searchParams) if (/^(?:category|category_id|categoryid)$/i.test(key)) add(value.toUpperCase());
+            } catch (_error) {}
+            for (const element of nodes('meta[name="category_id"], meta[property="category_id"], main[data-category-id]')) add(element.getAttribute('content') || element.getAttribute('data-category-id'));
+            const inspect = state => {
+                if (!state || typeof state !== 'object' || Array.isArray(state)) return;
+                add(state.category_id); add(state.categoryId);
+                if (Array.isArray(state.filters)) {
+                    for (const filter of state.filters) {
+                        if (!filter || filter.id !== 'category' || !Array.isArray(filter.values) || filter.values.length !== 1) continue;
+                        add(filter.values[0] && filter.values[0].id);
+                    }
+                }
+            };
+            const inspectDocumentState = state => {
+                if (!state || typeof state !== 'object') return;
+                const initial = state.initialState, props = state.props && state.props.pageProps;
+                for (const source of [state, state.pageState, state.search, initial, initial && initial.pageState,
+                    initial && initial.search, initial && initial.pageState && initial.pageState.search,
+                    props, props && props.initialState, props && props.initialState && props.initialState.pageState]) inspect(source);
+            };
+            for (const script of nodes('script#__PRELOADED_STATE__, script#__NEXT_DATA__').slice(0, 12)) {
+                const text = script.textContent || '';
+                if (text.length > 8 * 1024 * 1024) continue;
+                try { inspectDocumentState(JSON.parse(text)); } catch (_error) {}
+            }
+            // ML may serialize the same state as an assignment. Parse its JSON
+            // literal; never execute script text or walk arbitrary nested data.
+            for (const script of nodes('script:not([src])').slice(0, 40)) {
+                const text = script.textContent || '';
+                if (text.length > 8 * 1024 * 1024) continue;
+                const match = text.match(/(?:window\.)?__PRELOADED_STATE__\s*=\s*/);
+                if (!match) continue;
+                const start = match.index + match[0].length;
+                if (text[start] !== '{') continue;
+                let depth = 0, quoted = false, escaped = false;
+                for (let index = start; index < text.length; index += 1) {
+                    const char = text[index];
+                    if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false; }
+                    else if (char === '"') quoted = true;
+                    else if (char === '{') depth += 1;
+                    else if (char === '}' && --depth === 0) {
+                        try { inspectDocumentState(JSON.parse(text.slice(start, index + 1))); } catch (_error) {}
+                        break;
+                    }
+                }
+            }
+            categoryIdentityConflict = evidence.size > 1;
+            return evidence.size === 1 ? [...evidence][0] : '';
+        })();
         const bodyText = norm(document.body && (document.body.innerText || document.body.textContent));
         const loginForm = document.querySelector('input[type="password"], form[action*="login"], #login_user_form');
         const authRequired = /\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
@@ -368,7 +428,7 @@
         const categoriesIndexUrl = absolute(categoryIndex && categoryIndex.href);
         const scrolling = document.scrollingElement || document.documentElement || document.body;
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
-        return { url, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
+        return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0,
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16
