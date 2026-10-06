@@ -27,7 +27,7 @@
     let synchronizeTask = null;
     let sessionToken = window.localStorage.getItem('access_token') || '';
     const elements = {};
-    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'status', 'category-current',
+    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
@@ -151,8 +151,51 @@
         return data;
     }
     function showMessage(message, error) {
+        if (state.activeJob) {
+            elements['status-warning'].textContent = message;
+            elements['status-warning'].hidden = !message;
+            elements['status-warning'].classList.toggle('error', !!error);
+            return;
+        }
+        elements.status.classList.remove("success");
         elements.status.textContent = message;
         elements.status.classList.toggle('error', !!error);
+        elements['status-panel'].dataset.state = 'idle';
+        elements['status-detail'].textContent = '';
+        elements['status-warning'].textContent = '';
+        elements['status-warning'].hidden = true;
+        elements['status-warning'].classList.remove('error');
+    }
+    function renderStatus(job) {
+        const labels = { queued: 'Preparando a pesquisa', running: 'O sistema está pesquisando', pausing: 'Pausando a pesquisa',
+            paused: 'Pesquisa pausada', waiting_login: 'Aguardando login', interrupted: 'Pesquisa interrompida',
+            completed: 'Pesquisa concluída', completed_partial: 'Pesquisa concluída com pendências',
+            cancelled: 'Pesquisa cancelada', failed: 'Pesquisa interrompida por uma falha' };
+        const details = { queued: 'Preparando o navegador e a categoria selecionada.',
+            running: 'A pesquisa continua em segundo plano. Os resultados serão atualizados durante a coleta.',
+            pausing: 'Salvando o progresso para pausar a pesquisa.', paused: 'O progresso foi salvo. Clique em Retomar para continuar.',
+            waiting_login: 'Conclua o login solicitado no navegador e clique em Retomar.', interrupted: 'O progresso foi preservado. Clique em Retomar para continuar.',
+            completed: 'A pesquisa terminou. Os resultados estão disponíveis nos rankings abaixo.',
+            completed_partial: 'A pesquisa terminou. Consulte as pendências e as categorias incompletas nos resultados.',
+            cancelled: 'Os resultados já consultados permanecem disponíveis.', failed: 'O progresso foi preservado. Clique em Retomar para tentar continuar.' };
+        const checkpoint = job.checkpoint || {};
+        const progress = job.progress || checkpoint.progress || {};
+        const active = ['running', 'queued', 'pausing'].includes(job.status);
+        const message = safeText(job.message);
+        const legacyWarning = active && /^Alguns an[uú]ncios ficaram sem dados suficientes do Avant/i.test(message);
+        let warning = safeText(progress.warning || (legacyWarning ? message : ''));
+        if (!warning && Number((job.counters || {}).pending) > 0) warning = 'Existem pendências de dados ou falhas de consulta.';
+        if (warning && job.status === 'running') warning += ' A pesquisa continua.';
+        const detail = active ? safeText(progress.detail || (legacyWarning ? '' : message))
+            : progress.phase === job.status ? safeText(progress.detail) : '';
+        elements['status-panel'].dataset.state = safeText(job.status || 'idle');
+        elements.status.textContent = labels[job.status] || 'Acompanhando a pesquisa';
+        elements.status.classList.toggle('error', job.status === 'failed');
+        elements.status.classList.toggle('success', job.status === 'completed');
+        elements['status-detail'].textContent = detail || details[job.status] || 'Acompanhando o progresso salvo.';
+        elements['status-warning'].textContent = warning;
+        elements['status-warning'].hidden = !warning;
+        elements['status-warning'].classList.remove('error');
     }
     function isActive(job) {
         return !!job && ['queued', 'running', 'pausing', 'paused', 'waiting_login'].includes(job.status);
@@ -335,13 +378,10 @@
         for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = number(counters[name] || 0);
         const checkpoint = job.checkpoint || {};
         const currentCategory = job.currentCategory || checkpoint.currentCategory || checkpoint.category || checkpoint.category_name;
-        elements['category-current'].textContent = typeof currentCategory === 'object' && currentCategory
-            ? safeText(currentCategory.nome || currentCategory.name || currentCategory.categoria || 'Aguardando categoria') : safeText(currentCategory || 'Aguardando categoria');
-        const labels = { queued: 'Preparando pesquisa.', running: 'Pesquisa em andamento.', paused: 'Pesquisa pausada.',
-            waiting_login: 'Conclua o login no navegador e clique em Retomar.', interrupted: 'Pesquisa disponível para retomada.',
-            completed: 'Pesquisa concluída.', completed_partial: 'Pesquisa concluída com categorias incompletas.',
-            cancelled: 'Pesquisa cancelada. Os resultados permanecem disponíveis.', failed: 'A pesquisa foi interrompida por uma falha.' };
-        showMessage(job.message || labels[job.status] || 'Acompanhando pesquisa.', job.status === 'failed');
+        const categoryName = typeof currentCategory === 'object' && currentCategory
+            ? safeText(currentCategory.nome || currentCategory.name || currentCategory.categoria) : safeText(currentCategory);
+        elements['category-current'].textContent = categoryName ? `Categoria atual: ${categoryName}` : 'Aguardando categoria';
+        renderStatus(job);
         renderControls();
         return changed;
     }

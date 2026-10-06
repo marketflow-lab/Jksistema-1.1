@@ -26,8 +26,25 @@
 .pm-global-heading h2 { margin: 0 0 8px; font-size: 20px; }
 .pm-global-note { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0; }
 .pm-global-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-.pm-global-status { padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; margin-bottom: 14px; }
-.pm-global-status .section-note { display: block; margin-top: 6px; }
+.pm-global-status { padding: 18px 20px; border: 1px solid var(--line-strong); border-radius: 9px; margin-bottom: 14px; background: rgba(11, 25, 40, .5); }
+.pm-global-status-heading { display: flex; align-items: center; gap: 12px; margin: 4px 0 12px; }
+.pm-global-status-heading .status-message { font-size: 22px; font-weight: 700; overflow-wrap: anywhere; }
+.pm-global-status-indicator { width: 20px; height: 20px; flex: 0 0 20px; border: 2px solid var(--muted); border-radius: 50%; }
+.pm-global-status[data-state="running"] .pm-global-status-indicator,
+.pm-global-status[data-state="queued"] .pm-global-status-indicator,
+.pm-global-status[data-state="pausing"] .pm-global-status-indicator { border-color: var(--line); border-top-color: var(--brand-2); border-right-color: var(--brand-2); animation: pm-status-spin 1s linear infinite; }
+.pm-global-status[data-state="paused"] .pm-global-status-indicator,
+.pm-global-status[data-state="waiting_login"] .pm-global-status-indicator,
+.pm-global-status[data-state="completed_partial"] .pm-global-status-indicator { border-color: var(--warning); }
+.pm-global-status[data-state="completed"] .pm-global-status-indicator { border-color: var(--success); background: rgba(52, 211, 153, .15); }
+.pm-global-status[data-state="failed"] .pm-global-status-indicator { border-color: var(--danger); }
+.pm-global-status-detail { color: #cce8f7; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.pm-global-status .section-note { display: block; margin-top: 8px; overflow-wrap: anywhere; }
+.pm-global-status-warning { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--warning); background: rgba(251, 191, 36, .06); color: #ffe59a; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.pm-global-status-warning.error { color: var(--danger); border-color: var(--danger); }
+.pm-global-status-warning[hidden] { display: none; }
+@keyframes pm-status-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pm-global-status[data-state] .pm-global-status-indicator { animation: none; } }
 .pm-global-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0 20px; }
 .pm-global-stats .stat-card { padding: 12px 14px; }
 .pm-global-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
@@ -60,6 +77,8 @@
 }
 @media (max-width: 640px) {
     .pm-global { padding: 18px 12px; }
+    .pm-global-status { padding: 16px; }
+    .pm-global-status-heading .status-message { font-size: 19px; }
     .pm-global-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .pm-global-results { flex-direction: column; }
     .pm-global-sellers { width: 100%; flex-basis: auto; }

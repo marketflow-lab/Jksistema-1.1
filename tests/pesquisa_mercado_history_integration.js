@@ -5,6 +5,7 @@ const path=require('path');
 const os=require('os');
 const net=require('net');
 const {spawn,execFile}=require('child_process');
+const {performance}=require('perf_hooks');
 const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..');
 
@@ -14,11 +15,20 @@ async function main(){
  const fixtureRoot=fs.mkdtempSync(path.join(os.tmpdir(),'jk-pm-history-e2e-'));
  const child=spawn('py',['-3',path.join(__dirname,'pesquisa_mercado_history_fixture.py'),String(port),fixtureRoot],{
   cwd:root,windowsHide:true,env:{...process.env,PYTHONPATH:root,PYTHONDONTWRITEBYTECODE:'1',PYTHONUTF8:'1'},stdio:['ignore','pipe','pipe']});
- let output='',browser;child.stdout.on('data',s=>output+=s);child.stderr.on('data',s=>output+=s);
+ let output='',browser,spawnError;child.stdout.on('data',s=>output=(output+s).slice(-12000));child.stderr.on('data',s=>output=(output+s).slice(-12000));
+ child.on('error',error=>{spawnError=error;});
  try{
-  let meta;
-  for(let n=0;n<100;n++){if(child.exitCode!=null)throw new Error(`Fixture exited ${child.exitCode}: ${output}`);try{const r=await fetch(origin+'/fixture/meta');if(r.ok){meta=await r.json();break;}}catch(_){}await new Promise(r=>setTimeout(r,100));}
-  assert.ok(meta,`Fixture startup failed: ${output}`);
+  let meta,lastProbeError='';
+  const startupStarted=performance.now(),startupDeadline=startupStarted+30000;
+  while(performance.now()<startupDeadline){
+   if(spawnError)throw new Error(`Fixture spawn failed (${spawnError.code||'unknown'}): ${spawnError.message}`);
+   if(child.exitCode!=null||child.signalCode!=null)throw new Error(`Fixture exited code=${child.exitCode} signal=${child.signalCode}: ${output}`);
+   try{const timeout=Math.max(1,Math.ceil(Math.min(500,startupDeadline-performance.now())));const r=await fetch(origin+'/fixture/meta',{signal:AbortSignal.timeout(timeout)});if(r.ok){meta=await r.json();break;}lastProbeError=`HTTP ${r.status}`;}catch(error){lastProbeError=error.message;}
+   const remaining=startupDeadline-performance.now();if(remaining>0)await new Promise(r=>setTimeout(r,Math.min(100,remaining)));
+  }
+  if(spawnError)throw new Error(`Fixture spawn failed (${spawnError.code||'unknown'}): ${spawnError.message}`);
+  assert.ok(meta,`Fixture startup timed out after ${Math.round(performance.now()-startupStarted)} ms; pid=${child.pid||'unavailable'} code=${child.exitCode} signal=${child.signalCode}; last probe: ${lastProbeError}; output: ${output||'(empty)'}`);
+  console.log(`Fixture synthetic SQLite/FastAPI ready in ${Math.round(performance.now()-startupStarted)} ms`);
   browser=await chromium.launch({headless:true});
   const context=await browser.newContext({viewport:{width:1440,height:960}});
   await context.addInitScript(()=>{
@@ -65,7 +75,21 @@ async function main(){
   assert.equal(commands[0].action,'pause');assert.equal(commands[0].payload.jobId,meta.current,'pause targets active job, never the historical selection');
   assert.deepEqual(mutations,[],'history and consolidated issue only API GETs');
   const artifacts=process.env.JK_HISTORY_SCREENSHOTS;
-  if(artifacts){assert.ok(fs.existsSync(artifacts));await page.evaluate(()=>{const badge=document.createElement('span');badge.className='source-chip';badge.textContent='Dados ilustrativos de verificação';document.querySelector('.header-actions').appendChild(badge);});await page.locator('#pm-mode-history').click();await page.screenshot({path:path.join(artifacts,'historico-1.0.176.png'),fullPage:true});await page.locator('#pm-mode-consolidated').click();await page.locator('#pm-consolidated-refresh').click();await page.waitForFunction(()=>!window.__jkPesquisaMercadoHistory.state.consolidated.busy);await page.screenshot({path:path.join(artifacts,'consolidado-1.0.176.png'),fullPage:true});}
+  if(artifacts){
+   assert.ok(fs.existsSync(artifacts));
+   await page.evaluate(()=>{const badge=document.createElement('span');badge.className='source-chip';badge.textContent='Dados ilustrativos de verificação';document.querySelector('.header-actions').appendChild(badge);});
+   await page.locator('#pm-mode-history').click();
+   await page.waitForFunction(({old,current})=>{
+    const h=window.__jkPesquisaMercadoHistory.state.history;
+    return h.loaded&&!h.busy&&!h.scopesBusy&&!h.detailBusy&&h.detailId===old&&h.detail&&h.detailItems.length===2&&h.items.some(job=>job.id===current&&job.status==='paused');
+   },meta);
+   assert.match(await page.locator(`#pm-history-list article:has([data-consult-job="${meta.current}"])`).innerText(),/Pausada/,'historical card must reflect the current paused research before capture');
+   await page.screenshot({path:path.join(artifacts,'historico-1.0.177.png'),fullPage:true});
+   await page.locator('#pm-mode-consolidated').click();
+   await page.locator('#pm-consolidated-refresh').click();
+   await page.waitForFunction(()=>{const c=window.__jkPesquisaMercadoHistory.state.consolidated;return c.loaded&&!c.busy&&!c.scopesBusy&&!c.originBusy;});
+   await page.screenshot({path:path.join(artifacts,'consolidado-1.0.177.png'),fullPage:true});
+  }
   await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'consolidated mobile overflow');await page.locator('#pm-mode-history').click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'history mobile overflow');
   assert.deepEqual(errors,[]);
   console.log('Pesquisa Mercado E2E SQLite/FastAPI/UI: leitura histórica, dedup/latest pending, origens, teclado, progresso independente, pausa ativa e 390 px OK');

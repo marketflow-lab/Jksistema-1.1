@@ -24,7 +24,10 @@ async function main() {
     items.push({ id: 'MLB2000000001', titulo: 'Catálogo divergente', vendedor: 'Loja B', seller_key: 'id:2',
         categoria: 'Ferramentas', rank: null, erro: 'Vendedor divergente' });
     let job = { id: 'job-test', status: 'running', revision: 1, counters: { categories: 1, pages: 2, sellers: 2, ads: 107, pending: 2 }, currentCategory: 'Ferramentas',
-        scopeCategory: { key: 'MLB-FERRAMENTAS', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' } };
+        scopeCategory: { key: 'MLB-FERRAMENTAS', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' },
+        message: 'Coletando Loja A: 33 anuncio(s).', progress: { phase: 'collecting',
+            detail: 'Coletando dados do Avant Pro de Loja A: 33 anúncios coletados.',
+            warning: 'Alguns anúncios ficaram sem dados suficientes do Avant Pro.' } };
     const commands = [];
     const requests = [];
     const server = http.createServer((req, res) => {
@@ -88,6 +91,10 @@ async function main() {
         await page.goto(`${origin}/pesquisa_mercado.html`);
         await page.locator('#pm-mode-global').click();
         await page.waitForFunction(() => document.querySelectorAll('#pm-global-body tr').length === 100);
+        assert.strictEqual(await page.locator('#pm-global-status').textContent(), 'O sistema está pesquisando');
+        assert.match(await page.locator('#pm-global-status-detail').textContent(), /Loja A: 33/);
+        assert.match(await page.locator('#pm-global-status-warning').textContent(), /Avant Pro.*A pesquisa continua/);
+        assert.strictEqual(await page.locator('#pm-global-status-panel').getAttribute('data-state'), 'running');
         assert.strictEqual(await page.locator('#pm-global-start').textContent(), 'pesquisar em todo ML');
         assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true, 'uma execução ativa bloqueia nova pesquisa');
         assert.match(await page.locator('#pm-global-scope').textContent(), /Ferramentas/, 'escopo persistido fica visível na aba da pesquisa');
@@ -112,7 +119,7 @@ async function main() {
         job = { ...job, revision: 2, counters: { ...job.counters, ads: 108 }, currentCategory: { key: 'MLB1', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' } };
         await page.evaluate(value => window.__pmProgress({ job: value }), job);
         await page.waitForFunction(() => document.querySelectorAll('#pm-global-body tr').length === 7);
-        assert.strictEqual(await page.locator('#pm-global-category-current').textContent(), 'Ferramentas', 'nome da categoria atual vem do runner');
+        assert.strictEqual(await page.locator('#pm-global-category-current').textContent(), 'Categoria atual: Ferramentas', 'nome da categoria atual vem do runner');
         assert.strictEqual(await page.locator('#pm-global-tab-vendedor').getAttribute('aria-selected'), 'true', 'progresso preserva a aba ativa');
         await page.locator('#pm-global-tab-geral').click();
         assert.match(await page.locator('#pm-global-count').textContent(), /108/, 'progresso atualiza também ranking geral em cache');
@@ -125,6 +132,9 @@ async function main() {
         assert.ok(requests.some(params => params.get('category') === 'Ferramentas' && params.get('q') === 'Novo produto'));
         await page.locator('#pm-global-pause').click();
         await page.waitForFunction(() => !document.getElementById('pm-global-resume').disabled);
+        assert.strictEqual(await page.locator('#pm-global-status').textContent(), 'Pesquisa pausada');
+        assert.match(await page.locator('#pm-global-status-detail').textContent(), /Retomar/);
+        assert.doesNotMatch(await page.locator('#pm-global-status-warning').textContent(), /A pesquisa continua/);
         assert.strictEqual(await page.evaluate(() => window.__lastCommandPayload.jobId), job.id);
         await page.locator('#pm-global-resume').click();
         await page.waitForFunction(() => !document.getElementById('pm-global-pause').disabled);
@@ -151,6 +161,32 @@ async function main() {
         assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true, 'nova pesquisa exige selecionar uma categoria');
         assert.strictEqual(await page.locator('#pm-global-browser').isDisabled(), true, 'execução encerrada não oferece navegador ativo');
         assert.strictEqual(await page.locator('#pm-btn-analisar').isDisabled(), false, 'controles manuais são independentes');
+        assert.strictEqual(await page.locator('#pm-global-status').textContent(), 'Pesquisa cancelada');
+        for (const [status, title] of [['waiting_login', 'Aguardando login'],
+            ['completed', 'Pesquisa concluída'], ['completed_partial', 'Pesquisa concluída com pendências'],
+            ['failed', 'Pesquisa interrompida por uma falha']]) {
+            job = { ...job, status, revision: job.revision + 1 };
+            await page.evaluate(value => window.__pmProgress({ job: value }), job);
+            assert.strictEqual(await page.locator('#pm-global-status').textContent(), title);
+            assert.doesNotMatch(await page.locator('#pm-global-status-detail').textContent(), /33 anúncios coletados/, 'estado encerrado não mostra atividade de coleta antiga');
+        }
+        job = { ...job, status: 'running', revision: job.revision + 1, progress: undefined,
+            message: 'Alguns anuncios ficaram sem dados suficientes do Avant.' };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.strictEqual(await page.locator('#pm-global-status').textContent(), 'O sistema está pesquisando', 'execução legada com aviso continua explícita');
+        assert.match(await page.locator('#pm-global-status-warning').textContent(), /Avant/);
+        assert.doesNotMatch(await page.locator('#pm-global-status-detail').textContent(), /dados suficientes/);
+        job = { ...job, revision: job.revision + 1, message: 'Descobrindo vendedores em Ferramentas.',
+            progress: { phase: 'discovery', detail: '<script>untrusted()</script>', warning: '<img src=x onerror=untrusted()>' } };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.strictEqual(await page.locator('#pm-global-status-panel script, #pm-global-status-panel img').count(), 0, 'status externo usa texto, sem executar HTML');
+        assert.match(await page.locator('#pm-global-status-detail').textContent(), /<script>/);
+        for (const width of [390, 1440]) {
+            await page.setViewportSize({ width, height: 900 });
+            assert.strictEqual(await page.locator('#pm-global-status-panel').evaluate(element => element.scrollWidth > element.clientWidth), false, 'status cabe na tela sem cortar texto');
+        }
+        await page.emulateMedia({ reducedMotion: 'reduce' });
+        assert.strictEqual(await page.locator('.pm-global-status-indicator').evaluate(element => getComputedStyle(element).animationName), 'none');
         assert.deepStrictEqual(errors, []);
         await page.setViewportSize({ width: 640, height: 900 });
         assert.strictEqual(await page.locator('#pm-global-start').isVisible(), true);
@@ -160,6 +196,8 @@ async function main() {
         });
         assert.strictEqual(await page.locator('#pm-global-body tr').count(), 0, 'logout limpa os anúncios da tela');
         assert.strictEqual(await page.locator('#pm-global-ads-count').textContent(), '0', 'logout limpa dados da sessão anterior');
+        assert.strictEqual(await page.locator('#pm-global-status-detail').textContent(), '', 'logout limpa a etapa da sessão anterior');
+        assert.strictEqual(await page.locator('#pm-global-status-warning').textContent(), '', 'logout limpa o aviso da sessão anterior');
         assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true);
         await page.evaluate(() => window.__pmProgress({ job: { id: 'job-test', status: 'running', revision: 999 } }));
         assert.strictEqual(await page.locator('#pm-global-body tr').count(), 0, 'evento antigo após logout não repõe dados');

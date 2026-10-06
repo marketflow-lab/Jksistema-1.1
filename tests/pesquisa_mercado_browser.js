@@ -312,7 +312,10 @@ async function testOrphanAndShowCursor() {
     const status = await h.command('status');
     assert.strictEqual(status.job.status, 'paused', 'uma execução órfã é persistida como pausada');
     assert.strictEqual(h.jobs.get('saved-job').counters.ads, 30);
-    assert.deepStrictEqual(h.jobs.get('saved-job').checkpoint, checkpoint, 'recuperação preserva o cursor');
+    const { progress, ...restoredCursor } = h.jobs.get('saved-job').checkpoint;
+    assert.deepStrictEqual(restoredCursor, checkpoint, 'recuperação preserva o cursor');
+    assert.strictEqual(progress.phase, 'paused', 'recuperação informa progresso pausado');
+    assert.strictEqual(progress.detail, status.job.message, 'recuperação preserva a instrução para retomar');
     assert.strictEqual(h.windows.length, 0, 'consultar estado não retoma nem cria navegador');
     const shown = await h.command('show-browser', 'one', 'saved-job');
     const win = h.windows[0];

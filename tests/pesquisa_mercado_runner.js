@@ -122,6 +122,8 @@ async function pauseAndResume() {
     await h.runner.resume('run-1');
     await h.runner.task;
     assert.strictEqual(h.saved().status, 'completed');
+    assert.strictEqual(h.saved().checkpoint.progress.phase, 'completed');
+    assert.strictEqual(h.saved().checkpoint.progress.detail, h.saved().message, 'legacy message remains compatible with progress detail');
     assert.strictEqual(h.vendors.size, 1);
     assert.strictEqual(collections, 2);
 }
@@ -139,6 +141,8 @@ async function waitingLoginAndRetries() {
     await h.runner.start(); await h.runner.task;
     assert.strictEqual(attempts, 3, 'initial plus exactly two additional retries');
     assert.strictEqual(h.saved().status, 'waiting_login');
+    assert.strictEqual(h.saved().checkpoint.progress.phase, 'waiting_login');
+    assert.strictEqual(h.saved().checkpoint.progress.detail, h.saved().message, 'login reason remains available');
     assert.strictEqual(h.saved().checkpoint.categoryIndex, 0);
     const snapshot = await h.runner.status();
     assert.strictEqual(snapshot.job.status, 'waiting_login');
@@ -148,6 +152,8 @@ async function recoveredJob() {
     const h = harness({});
     const response = await h.runner.status();
     assert.strictEqual(response.job.status, 'paused', 'orphaned persisted running job requires explicit resume');
+    assert.strictEqual(response.job.checkpoint.progress.phase, 'paused', 'recovery replaces stale activity with the paused state');
+    assert.strictEqual(response.job.checkpoint.progress.detail, response.job.message);
     assert.strictEqual(h.runner.task, null);
     assert.strictEqual(allowedUrl('https://evil.example/'), false);
     assert.strictEqual(allowedUrl('http://www.mercadolivre.com.br/'), false);
@@ -196,6 +202,98 @@ async function atomicPublicationRecovery() {
     assert.strictEqual(calls, 1, 'SQL publication must prevent recollection after crash before checkpoint');
     assert.strictEqual(h.saved().status, 'completed');
     assert.strictEqual(h.vendors.size, 1);
+}
+
+async function pauseDuringPublication() {
+    const h = harness({
+        [`${base}/`]: { categories: [{ key: 'a', nome: 'A', url: `${base}/a` }] },
+        [`${base}/a`]: { anuncios: [{ id: 'seed-a', url: `${base}/product-a` }] },
+        [`${base}/product-a`]: seller('111'), [`${base}/perfil/111`]: seller('111'), [`${base}/anuncios/111`]: {}
+    });
+    let entered, release;
+    const publishing = new Promise(resolve => { entered = resolve; });
+    const delayedResponse = new Promise(resolve => { release = resolve; });
+    const api = h.runner.api;
+    h.runner.api = async (method, path, body) => {
+        const result = await api(method, path, body);
+        if (method === 'PUT') { entered(); await delayedResponse; }
+        return result;
+    };
+    await h.runner.start();
+    await publishing;
+    await h.runner.stop('paused');
+    const eventsBeforeRelease = h.events.length;
+    release();
+    await h.runner.task;
+    assert.strictEqual(h.saved().status, 'paused', 'late publication cannot resume a stopped job');
+    assert.ok(h.events.slice(eventsBeforeRelease).every(event => event.job.status === 'paused'), 'late responses keep the paused state in progress events');
+    assert.ok(h.events.slice(eventsBeforeRelease).every(event => event.job.progress.phase === 'paused'), 'discovery cannot replace the paused activity');
+    assert.strictEqual(h.runner.snapshot().job.message, 'Pesquisa pausada; progresso salvo.');
+}
+
+async function progressWarningAndRestart() {
+    const warning = 'Alguns anuncios ficaram sem dados suficientes do Avant.';
+    const pages = {
+        [`${base}/`]: { categories: [{ key: 'a', nome: 'A', url: `${base}/a` }] },
+        [`${base}/a`]: { anuncios: [{ id: 'seed-a', url: `${base}/product-a` }, { id: 'seed-b', url: `${base}/product-b` }] },
+        [`${base}/product-a`]: seller('111'), [`${base}/perfil/111`]: seller('111'), [`${base}/anuncios/111`]: {},
+        [`${base}/product-b`]: seller('222'), [`${base}/perfil/222`]: seller('222'), [`${base}/anuncios/222`]: {}
+    };
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const h = harness(pages, async ({ seller, onProgress, signal }) => {
+        onProgress({ total: 2, com_dados_avant: 1 });
+        if (seller.id === '222') {
+            entered();
+            await new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+                const error = new Error('aborted'); error.name = 'AbortError'; reject(error);
+            }, { once: true }));
+        }
+        return { anuncios: [{ id: 'MLB1000000001', rankable: true }], incomplete: true };
+    });
+    await h.runner.start();
+    await started;
+    const partial = h.events.find(event => event.job.status === 'running' && event.job.progress.warning === warning);
+    assert.ok(partial, 'incomplete Avant collection still reports a running job');
+    assert.strictEqual(partial.job.progress.phase, 'collecting');
+    assert.match(partial.job.progress.detail, /Seller 111: 2 anuncio\(s\).*1 com dados do Avant/);
+    assert.strictEqual(partial.job.message, partial.job.progress.detail, 'warning does not replace the current activity');
+    const nextSeller = h.events.find(event => event.job.progress.phase === 'seller' && /Seller 222/.test(event.job.progress.detail));
+    assert.ok(nextSeller, 'the next seller replaces the previous activity');
+    assert.strictEqual(nextSeller.job.progress.warning, warning, 'the warning remains secondary on subsequent stages');
+    await h.runner.stop('paused');
+    await h.runner.task;
+    const paused = h.saved();
+    assert.strictEqual(paused.checkpoint.progress.phase, 'paused');
+    assert.strictEqual(paused.checkpoint.progress.warning, warning, 'pause persists the warning with the cursor');
+    assert.strictEqual(paused.checkpoint.page.index, 1, 'pause retains the seller that was being collected');
+
+    const collected = [];
+    const restarted = harness(pages, async ({ seller, onProgress }) => {
+        collected.push(seller.id);
+        onProgress({ total: 1, com_dados_avant: 1 });
+        return { anuncios: [{ id: 'MLB2000000001', rankable: true }] };
+    });
+    restarted.restoreCheckpoint({ ...paused, checkpoint: { ...paused.checkpoint,
+        auth: { accessToken: 'fixture-secret' }, progress: { ...paused.checkpoint.progress, extra: { accessToken: 'fixture-secret' } }
+    } });
+    const resumed = await restarted.runner.resume('run-1');
+    assert.strictEqual(resumed.job.status, 'running');
+    assert.strictEqual(resumed.job.progress.phase, 'preparing');
+    assert.match(resumed.job.progress.detail, /Retomando/);
+    assert.strictEqual(resumed.job.progress.warning, warning, 'restart restores the saved warning');
+    await restarted.runner.task;
+    assert.deepStrictEqual(collected, ['222'], 'restart preserves the published seller and resumes only the interrupted one');
+    assert.strictEqual(restarted.saved().status, 'completed_partial');
+    assert.strictEqual(restarted.saved().checkpoint.progress.phase, 'completed_partial');
+    assert.strictEqual(restarted.saved().message, 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
+    assert.ok(restarted.events.every(event => !('checkpoint' in event.job)), 'progress never exposes the full checkpoint');
+    assert.ok(restarted.events.every(event => !JSON.stringify(event).includes('fixture-secret')), 'extra persisted metadata is excluded from public progress');
+
+    const legacy = harness({});
+    legacy.restoreCheckpoint({ ...legacy.saved(), checkpoint: { incompleteCategories: [{ key: 'a', motivo: warning }] } });
+    const recovered = await legacy.runner.status();
+    assert.strictEqual(recovered.job.checkpoint.progress.warning, warning, 'older checkpoints retain their saved warning');
 }
 
 async function selectedCategoryScope() {
@@ -369,6 +467,7 @@ async function officialTaxonomyScope() {
     await h.runner.start(root); await h.runner.task;
     assert.equal(loads(),1);
     assert.equal(h.saved().status,'completed');
+    assert.equal(h.saved().checkpoint.progress.phase,'completed','official taxonomy preserves the final progress state');
     assert.deepEqual(h.visited,[leaf.url],'intermediate official nodes need no partial DOM discovery');
     assert.deepEqual(h.saved().checkpoint.categories.map(c=>c.key),[root.key,branch.key,leaf.key]);
     assert.deepEqual(Object.keys(h.saved().checkpoint.officialTaxonomy.children),[root.key,branch.key,leaf.key]);
@@ -385,6 +484,8 @@ async function officialTaxonomyScope() {
         const blocked=harness({[leaf.url]:{url:native,empty:true,categories:[outside],...evidence}}); attach(blocked);
         await blocked.runner.start(root); await blocked.runner.task;
         assert.equal(blocked.saved().status,'completed_partial','redirect requires nonconflicting exact category evidence');
+        assert.equal(blocked.saved().checkpoint.progress.phase,'completed_partial');
+        assert.match(blocked.saved().checkpoint.progress.warning,/Categoria indisponivel/,'scope failure remains a secondary warning');
         assert.equal(blocked.saved().counters.pages,0);
         assert.deepEqual(blocked.saved().checkpoint.categories.map(c=>c.key),[root.key,branch.key,leaf.key]);
     }
@@ -407,5 +508,7 @@ async function officialTaxonomyScope() {
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
     await categoryNavigationSettles();
     await officialTaxonomyScope();
-    console.log('Pesquisa de Mercado runner: categories, dedup, background, pause, recovery and retries OK');
+    await progressWarningAndRestart();
+    await pauseDuringPublication();
+    console.log('Pesquisa de Mercado runner: official taxonomy, categories, dedup, background, pause, recovery, progress warnings and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });
