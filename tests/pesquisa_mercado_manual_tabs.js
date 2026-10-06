@@ -61,6 +61,10 @@ async function check(shell) {
     assert.strictEqual(h.proxy().visible, false);
     assert.strictEqual(h.operations.at(-1).channel, 'jk-ml-browser-hide');
     h.mode('global');
+    h.mode('history');
+    h.mode('consolidated');
+    assert.strictEqual(h.proxy().visible, false, 'history and consolidated keep the manual browser hidden');
+    assert.strictEqual(h.shows().length, 1, 'historical consultation must not reopen the manual browser');
     let complete = false;
     const pending = h.navegar(second).then(() => { complete = true; });
     await new Promise(resolve => setTimeout(resolve, 180));
@@ -75,7 +79,8 @@ async function check(shell) {
     assert.strictEqual(h.state.ads.length, 1, 'switching preserves manual results');
 
     h.state.paused = true;
-    h.mode('global');
+    h.mode('history');
+    h.mode('consolidated');
     h.mode('manual');
     const paused = h.navegar(first);
     const count = h.shows().length;

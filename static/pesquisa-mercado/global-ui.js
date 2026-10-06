@@ -8,12 +8,13 @@
     const el = name => document.getElementById(`pm-global-${name}`);
     if (!el('start')) return null;
 
+    const modes = ['manual', 'global', 'history', 'consolidated'];
     const pageSize = 100;
     const categoryCommandTimeout = 3 * (35000 + 15000) + 30000;
     const emptyTaxonomy = () => ({ trail: [], parent: null, selected: null, items: [], loaded: false,
         loading: false, authRequired: false, error: false, summary: null, updatedAt: '', childCounts: {}, requestId: 0, message: 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.' });
     const state = {
-        job: null, scopeCategory: null, mode: 'manual', taxonomy: emptyTaxonomy(), tab: 'geral', query: '', category: '', seller: '', sellers: [],
+        activeJob: null, scopeCategory: null, mode: 'manual', taxonomy: emptyTaxonomy(), tab: 'geral', query: '', category: '', seller: '', sellers: [],
         offsets: { geral: 0, vendedor: 0 }, rankings: { geral: null, vendedor: null },
         disposed: false, busy: false, generation: 0, commandSerial: 0
     };
@@ -78,7 +79,7 @@
         const current = window.localStorage.getItem('access_token') || '';
         if (current !== sessionToken) {
             sessionToken = current;
-            state.job = null;
+            state.activeJob = null;
             state.scopeCategory = null;
             state.taxonomy = emptyTaxonomy();
             state.seller = '';
@@ -93,6 +94,7 @@
             for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = '0';
             elements['category-current'].textContent = 'Aguardando categoria';
             renderScope();
+            renderActiveResearch();
             renderTaxonomy();
             renderSellers();
             renderRanking();
@@ -122,7 +124,7 @@
         const authToken = currentSession();
         if (!authToken) throw new Error('Entre no JK Sistema para consultar a pesquisa.');
         const payload = { authToken };
-        if (state.job && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.job.id;
+        if (state.activeJob && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.activeJob.id;
         if (action === 'start') payload.category = categoryChoice(extras.category);
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
@@ -156,23 +158,23 @@
         return !!job && ['queued', 'running', 'pausing', 'paused', 'waiting_login'].includes(job.status);
     }
     function renderControls() {
-        const status = state.job ? state.job.status : '';
+        const status = state.activeJob ? state.activeJob.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status);
-        elements.start.disabled = !sessionToken || state.busy || isActive(state.job) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
+        elements.start.disabled = !sessionToken || state.busy || isActive(state.activeJob) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !resumable;
-        elements.cancel.disabled = state.busy || !(isActive(state.job) || resumable);
-        elements.browser.disabled = state.busy || !(isActive(state.job) || resumable);
-        const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.job);
+        elements.cancel.disabled = state.busy || !(isActive(state.activeJob) || resumable);
+        elements.browser.disabled = state.busy || !(isActive(state.activeJob) || resumable);
+        const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.activeJob);
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
-        elements['taxonomy-browser'].disabled = !sessionToken || state.busy || isActive(state.job);
+        elements['taxonomy-browser'].disabled = !sessionToken || state.busy || isActive(state.activeJob);
         for (const button of elements['taxonomy-list'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
         for (const button of elements['taxonomy-breadcrumb'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
     }
     function renderScope() {
         elements.scope.textContent = state.scopeCategory ? `Escopo da pesquisa: ${state.scopeCategory.nome}`
-            : state.job ? 'Escopo da pesquisa: execução anterior.' : 'Nenhuma pesquisa iniciada.';
+            : state.activeJob ? 'Escopo da pesquisa: execução anterior.' : 'Nenhuma pesquisa iniciada.';
     }
     function renderTaxonomy() {
         const taxonomy = state.taxonomy;
@@ -210,7 +212,7 @@
             button.addEventListener('click', () => loadTaxonomy(category, taxonomy.trail.concat(category)));
             elements['taxonomy-list'].appendChild(button);
         }
-        const message = isActive(state.job) ? 'A seleção de uma nova categoria fica disponível ao concluir ou cancelar esta pesquisa.'
+        const message = isActive(state.activeJob) ? 'A seleção de uma nova categoria fica disponível ao concluir ou cancelar esta pesquisa.'
             : taxonomy.loading ? 'Carregando categorias do Mercado Livre…' : taxonomy.message;
         elements['taxonomy-summary'].textContent = taxonomy.summary
             ? `Árvore oficial: ${number(taxonomy.summary.rootCount)} categorias principais · ${number(taxonomy.summary.subcategoryCount)} subcategorias · até ${number(taxonomy.summary.maxDepth)} níveis.` : '';
@@ -230,7 +232,7 @@
         if (synchronizeTask) await synchronizeTask;
         currentSession();
         const taxonomy = state.taxonomy;
-        if (state.disposed || state.mode !== 'global' || !sessionToken || isActive(state.job) || state.busy || taxonomy.loading) return;
+        if (state.disposed || state.mode !== 'global' || !sessionToken || isActive(state.activeJob) || state.busy || taxonomy.loading) return;
         const requestId = ++taxonomy.requestId;
         taxonomy.loading = true;
         taxonomy.error = false;
@@ -288,8 +290,9 @@
         }
     }
     function changeMode(mode) {
+        if (!modes.includes(mode) || state.disposed) return;
         state.mode = mode;
-        for (const value of ['manual', 'global']) {
+        for (const value of modes) {
             const active = value === mode;
             const button = document.getElementById(`pm-mode-${value}`);
             button.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -299,22 +302,34 @@
         window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-mode-change', { detail: { mode } }));
         if (mode === 'global' && !state.taxonomy.loaded && !state.taxonomy.loading) loadTaxonomy();
     }
+    function renderActiveResearch() {
+        const bar = document.getElementById('pm-active-research');
+        if (!bar) return;
+        const job = state.activeJob;
+        bar.hidden = !isActive(job);
+        if (!isActive(job)) return;
+        const labels = { paused: 'Pesquisa pausada', waiting_login: 'Pesquisa aguardando login' };
+        document.getElementById('pm-active-research-label').textContent = labels[job.status] || 'Pesquisa em andamento';
+        document.getElementById('pm-active-research-detail').textContent =
+            `${state.scopeCategory ? state.scopeCategory.nome : 'Pesquisa geral no ML'} · ${number(job.counters && job.counters.ads || 0)} anúncios salvos`;
+    }
     function updateJob(raw) {
         const job = raw && Object.prototype.hasOwnProperty.call(raw, 'job') ? raw.job : raw;
         if (!job || !job.id) return false;
-        if (state.job && state.job.id === job.id && Number(job.revision) < Number(state.job.revision)) return false;
-        const changed = !state.job || state.job.id !== job.id || state.job.revision !== job.revision;
-        if (!state.job || state.job.id !== job.id) {
+        if (state.activeJob && state.activeJob.id === job.id && Number(job.revision) < Number(state.activeJob.revision)) return false;
+        const changed = !state.activeJob || state.activeJob.id !== job.id || state.activeJob.revision !== job.revision;
+        if (!state.activeJob || state.activeJob.id !== job.id) {
             state.offsets = { geral: 0, vendedor: 0 };
             state.rankings = { geral: null, vendedor: null };
             state.seller = '';
             state.generation += 1;
             state.scopeCategory = null;
         }
-        state.job = job;
+        state.activeJob = job;
         const scopeCategory = categoryChoice(job.scopeCategory || job.checkpoint && job.checkpoint.scope && job.checkpoint.scope.category);
         if (scopeCategory) state.scopeCategory = scopeCategory;
         renderScope();
+        renderActiveResearch();
         renderTaxonomy();
         const counters = job.counters || {};
         for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = number(counters[name] || 0);
@@ -379,7 +394,7 @@
         const offset = state.offsets[state.tab];
         elements.empty.hidden = rows.length > 0;
         elements.empty.textContent = state.tab === 'vendedor' && !state.seller
-            ? 'Selecione um vendedor para ver seu ranking.' : state.job
+            ? 'Selecione um vendedor para ver seu ranking.' : state.activeJob
                 ? 'Nenhum anúncio disponível para estes filtros.' : 'Inicie uma pesquisa para consultar os rankings.';
         elements.count.textContent = `${number(total)} anúncio(s)`;
         elements.page.textContent = `Página ${Math.floor(offset / pageSize) + 1} de ${Math.max(1, Math.ceil(total / pageSize))}`;
@@ -387,12 +402,12 @@
         elements.next.disabled = offset + pageSize >= total;
     }
     async function loadRankings() {
-        if (!state.job || state.disposed) return;
-        const jobId = state.job.id;
+        if (!state.activeJob || state.disposed) return;
+        const jobId = state.activeJob.id;
         const generation = state.generation;
         const base = `/jobs/${encodeURIComponent(jobId)}`;
         const [sellers, categories] = await Promise.all([request(`${base}/vendedores`), request(`${base}/categorias`)]);
-        if (state.disposed || generation !== state.generation || jobId !== state.job.id) { refreshRequested = true; return; }
+        if (state.disposed || generation !== state.generation || jobId !== state.activeJob.id) { refreshRequested = true; return; }
         state.sellers = Array.isArray(sellers.items) ? sellers.items : [];
         if (state.seller && !state.sellers.some(seller => seller.seller_key === state.seller)) state.seller = '';
         if (!state.seller && state.sellers.length) state.seller = state.sellers[0].seller_key;
@@ -415,7 +430,7 @@
             if (tab === 'vendedor') params.set('seller_key', state.seller);
             return request(`${base}/ranking?${params}`);
         }));
-        if (state.disposed || generation !== state.generation || jobId !== state.job.id) { refreshRequested = true; return; }
+        if (state.disposed || generation !== state.generation || jobId !== state.activeJob.id) { refreshRequested = true; return; }
         tabs.forEach((tab, index) => { state.rankings[tab] = results[index]; });
         renderRanking();
     }
@@ -441,7 +456,7 @@
             renderTaxonomy();
             return;
         }
-        if (action === 'start' && (isActive(state.job) || state.taxonomy.loading)) return;
+        if (action === 'start' && (isActive(state.activeJob) || state.taxonomy.loading)) return;
         state.busy = true;
         renderControls();
         try {
@@ -466,7 +481,7 @@
                     ? await invoke('status') : await request('/jobs/latest');
                 if (state.disposed) return;
                 if (updateJob(latest)) await refresh();
-                else if (latest && latest.job == null && !state.job) renderControls();
+                else if (latest && latest.job == null && !state.activeJob) renderControls();
             } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
         })().finally(() => { synchronizeTask = null; });
         return synchronizeTask;
@@ -475,8 +490,8 @@
         if (state.disposed) return;
         currentSession();
         const job = payload && payload.job;
-        if (!state.job) { if (sessionToken) synchronize(); return; }
-        if (!job || job.id !== state.job.id) return;
+        if (!state.activeJob) { if (sessionToken) synchronize(); return; }
+        if (!job || job.id !== state.activeJob.id) return;
         if (updateJob(payload)) refresh();
     }
     function onMessage(event) {
@@ -514,7 +529,7 @@
     for (const action of ['start', 'pause', 'resume', 'cancel', 'browser']) elements[action].addEventListener('click', () => command(action));
     elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail, true));
     elements['taxonomy-browser'].addEventListener('click', async () => {
-        if (state.busy || isActive(state.job) || state.disposed) return;
+        if (state.busy || isActive(state.activeJob) || state.disposed) return;
         state.busy = true;
         renderControls();
         try {
@@ -527,13 +542,18 @@
             if (!state.disposed) { state.taxonomy.message = userErrorMessage(error); state.taxonomy.error = true; renderTaxonomy(); }
         } finally { state.busy = false; if (!state.disposed) renderControls(); }
     });
-    for (const mode of ['manual', 'global']) {
+    const followActive = document.getElementById('pm-active-research-follow');
+    if (followActive) followActive.addEventListener('click', () => changeMode('global'));
+    window.__jkPesquisaMercadoChangeMode = changeMode;
+    for (const mode of modes) {
         const button = document.getElementById(`pm-mode-${mode}`);
         button.addEventListener('click', () => changeMode(mode));
         button.addEventListener('keydown', event => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
             event.preventDefault();
-            const next = event.key === 'Home' ? 'manual' : event.key === 'End' ? 'global' : mode === 'manual' ? 'global' : 'manual';
+            const index = modes.indexOf(mode);
+            const next = event.key === 'Home' ? modes[0] : event.key === 'End' ? modes[modes.length - 1]
+                : modes[(index + (event.key === 'ArrowRight' ? 1 : -1) + modes.length) % modes.length];
             changeMode(next);
             document.getElementById(`pm-mode-${next}`).focus();
         });
@@ -572,6 +592,7 @@
     }
     function dispose() {
         state.disposed = true;
+        if (window.__jkPesquisaMercadoChangeMode === changeMode) delete window.__jkPesquisaMercadoChangeMode;
         if (typeof unsubscribe === 'function') unsubscribe();
         window.clearInterval(polling);
         window.clearTimeout(debounce);
@@ -587,6 +608,7 @@
     renderControls();
     renderTaxonomy();
     renderScope();
+    renderActiveResearch();
     renderRanking();
     synchronize();
     polling = window.setInterval(synchronize, 15000);

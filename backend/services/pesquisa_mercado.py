@@ -158,6 +158,16 @@ def _seller_identity(seller: dict) -> tuple[str, str]:
     return (seller_id if seller_id.isdigit() else "", _canonical_profile(seller.get("perfilUrl")))
 
 
+def _consolidated_seller_identity(seller: dict, job_id: str, seller_key: str) -> str:
+    seller_id, profile = _seller_identity(seller)
+    if seller_id:
+        return "id:" + seller_id
+    if profile:
+        return profile
+    # An unconfirmed name must never merge two different sellers or catalog offers.
+    return "unconfirmed:" + job_id + ":" + seller_key
+
+
 def _matches_identity(seller: dict, seller_id: Any, profile: Any) -> bool:
     expected_id, expected_profile = _seller_identity(seller)
     observed_id = _text(seller_id, 80)
@@ -343,8 +353,62 @@ class PesquisaMercadoStore:
                     for row in conn.execute("SELECT job_id,seller_key,ad_key,payload FROM pm_ads").fetchall():
                         conn.execute("UPDATE pm_ads SET ranking_key=? WHERE job_id=? AND seller_key=? AND ad_key=?", (_ranking_key(json.loads(row["payload"])), row["job_id"], row["seller_key"], row["ad_key"]))
                 conn.execute("CREATE INDEX IF NOT EXISTS pm_ads_shared_ranking ON pm_ads(job_id,ranking_key COLLATE PM_RANKING)")
+                try:
+                    self._migrate_history(conn)
+                except Exception:
+                    conn.close()
+                    raise
                 self._initialized.add(str(path))
         return conn
+
+    @staticmethod
+    def _migrate_history(conn):
+        """Project small metadata without inventing an observation time for old data."""
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            job_columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_jobs)")}
+            for name in ("scope_key", "scope_name", "scope_url", "scope_search"):
+                if name not in job_columns:
+                    conn.execute(f"ALTER TABLE pm_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            if "scope_key" not in job_columns:
+                cursor = conn.execute("SELECT id,json_extract(checkpoint,'$.scope.category.key') AS scope_key,json_extract(checkpoint,'$.scope.category.nome') AS scope_name,json_extract(checkpoint,'$.scope.category.url') AS scope_url FROM pm_jobs WHERE json_valid(checkpoint)")
+                while rows := cursor.fetchmany(100):
+                    for row in rows:
+                        name = _text(row["scope_name"], 400)
+                        conn.execute("UPDATE pm_jobs SET scope_key=?,scope_name=?,scope_url=?,scope_search=? WHERE id=?", (_text(row["scope_key"], 500), name, _ml_url(row["scope_url"]), name.casefold(), row["id"]))
+            seller_columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_sellers)")}
+            for name, definition in (("observed_at", "TEXT"), ("publication_sequence", "INTEGER NOT NULL DEFAULT 0"), ("seller_identity", "TEXT NOT NULL DEFAULT ''")):
+                if name not in seller_columns:
+                    conn.execute(f"ALTER TABLE pm_sellers ADD COLUMN {name} {definition}")
+            if "seller_identity" not in seller_columns:
+                cursor = conn.execute("SELECT job_id,seller_key,payload FROM pm_sellers")
+                while rows := cursor.fetchmany(100):
+                    for row in rows:
+                        identity = _consolidated_seller_identity(json.loads(row["payload"]), row["job_id"], row["seller_key"])
+                        conn.execute("UPDATE pm_sellers SET seller_identity=? WHERE job_id=? AND seller_key=?", (identity, row["job_id"], row["seller_key"]))
+            conn.execute("CREATE TABLE IF NOT EXISTS pm_owner_revisions (tenant TEXT NOT NULL,username TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(tenant,username))")
+            conn.execute("INSERT OR IGNORE INTO pm_owner_revisions SELECT tenant,username,SUM(revision) FROM pm_jobs GROUP BY tenant,username")
+            conn.execute("CREATE TABLE IF NOT EXISTS pm_sequences (name TEXT PRIMARY KEY,value INTEGER NOT NULL)")
+            conn.execute("INSERT OR IGNORE INTO pm_sequences VALUES('publication',0)")
+            conn.execute("CREATE INDEX IF NOT EXISTS pm_jobs_history ON pm_jobs(tenant,username,created_at DESC,id DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS pm_jobs_scope ON pm_jobs(tenant,username,scope_key,created_at DESC,id DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS pm_sellers_identity ON pm_sellers(seller_identity,observed_at DESC,publication_sequence DESC)")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _bump_owner_revision(conn, tenant: str, user: str):
+        conn.execute("INSERT INTO pm_owner_revisions VALUES(?,?,1) ON CONFLICT(tenant,username) DO UPDATE SET revision=revision+1", (tenant, user))
+
+    @staticmethod
+    def _owner_revision(conn, tenant: str, user: str, expected=None) -> int:
+        row = conn.execute("SELECT revision FROM pm_owner_revisions WHERE tenant=? AND username=?", (tenant, user)).fetchone()
+        revision = row[0] if row else 0
+        if expected is not None and expected != revision:
+            raise HTTPException(409, {"code": "research_revision_changed", "message": "As pesquisas foram atualizadas. Atualize a consulta.", "owner_revision": revision})
+        return revision
 
     @contextmanager
     def _connection(self, tenant: str, write: bool = False):
@@ -403,6 +467,9 @@ class PesquisaMercadoStore:
             counters = _json(dict.fromkeys(COUNTER_KEYS, 0), 1024)
             message = f"Preparando pesquisa em {normalized_category['nome']}." if normalized_category else "Preparando pesquisa em todo ML."
             conn.execute("INSERT INTO pm_jobs(id,tenant,username,status,checkpoint,counters,message,created_at,updated_at) VALUES(?,?,?,'running',?,?,?,?,?)", (job_id, tenant, user, _json(checkpoint, MAX_CHECKPOINT_BYTES), counters, message, now, now))
+            if normalized_category:
+                conn.execute("UPDATE pm_jobs SET scope_key=?,scope_name=?,scope_url=?,scope_search=? WHERE id=?", (normalized_category["key"], normalized_category["nome"], normalized_category["url"], normalized_category["nome"].casefold(), job_id))
+            self._bump_owner_revision(conn, tenant, user)
             return self._public(self._job(conn, job_id, tenant, user))
 
     def latest(self, client_id: str, username: str) -> dict | None:
@@ -472,6 +539,7 @@ class PesquisaMercadoStore:
                 conn.execute("INSERT INTO pm_discovery(job_id,seed_key,category_key,status,item_id,url) VALUES(?,?,?,?,?,?) ON CONFLICT(job_id,seed_key) DO UPDATE SET category_key=excluded.category_key,status=excluded.status,item_id=excluded.item_id,url=excluded.url", discovery)
                 next_counters["pending"] = self._pending(conn, job_id)
             conn.execute("UPDATE pm_jobs SET status=?,checkpoint=?,counters=?,message=?,revision=revision+1,updated_at=? WHERE id=?", (next_status, next_checkpoint, _json(next_counters, 1024), next_message, _now(), job_id))
+            self._bump_owner_revision(conn, tenant, user)
             return self._public(self._job(conn, job_id, tenant, user))
 
     @staticmethod
@@ -516,7 +584,11 @@ class PesquisaMercadoStore:
                 return self._public(row)
             orders = {item["ad_key"]: item["collection_order"] for item in conn.execute("SELECT ad_key,collection_order FROM pm_ads WHERE job_id=? AND seller_key=?", (job_id, key))}
             next_order = row["next_order"]
-            conn.execute("INSERT INTO pm_sellers(job_id,seller_key,payload,digest) VALUES(?,?,?,?) ON CONFLICT(job_id,seller_key) DO UPDATE SET payload=excluded.payload,digest=excluded.digest", (job_id, key, _json(normalized_seller, 10000), digest))
+            conn.execute("UPDATE pm_sequences SET value=value+1 WHERE name='publication'")
+            sequence = conn.execute("SELECT value FROM pm_sequences WHERE name='publication'").fetchone()[0]
+            observed_at = _now()
+            identity = _consolidated_seller_identity(normalized_seller, job_id, key)
+            conn.execute("INSERT INTO pm_sellers(job_id,seller_key,payload,digest,observed_at,publication_sequence,seller_identity) VALUES(?,?,?,?,?,?,?) ON CONFLICT(job_id,seller_key) DO UPDATE SET payload=excluded.payload,digest=excluded.digest,observed_at=excluded.observed_at,publication_sequence=excluded.publication_sequence,seller_identity=excluded.seller_identity", (job_id, key, _json(normalized_seller, 10000), digest, observed_at, sequence, identity))
             conn.execute("DELETE FROM pm_ads WHERE job_id=? AND seller_key=?", (job_id, key))
             for ad_key, ad in unique_ads.items():
                 order = orders.get(ad_key)
@@ -531,7 +603,145 @@ class PesquisaMercadoStore:
             counters = json.loads(row["counters"])
             counters.update(ads=ads_count, pending=self._pending(conn, job_id), sellers=conn.execute("SELECT COUNT(*) FROM pm_sellers WHERE job_id=?", (job_id,)).fetchone()[0])
             conn.execute("UPDATE pm_jobs SET counters=?,next_order=?,revision=revision+1,updated_at=? WHERE id=?", (_json(counters, 1024), next_order, _now(), job_id))
+            self._bump_owner_revision(conn, tenant, user)
             return self._public(self._job(conn, job_id, tenant, user))
+
+    @staticmethod
+    def _page(offset, limit):
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 2**53 - 1 or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise HTTPException(422, "Paginacao invalida.")
+
+    @staticmethod
+    def _scope(row):
+        return {"key": row["scope_key"], "nome": row["scope_name"], "url": row["scope_url"]} if row["scope_key"] else None
+
+    def job_summary(self, job_id: str, client_id: str, username: str) -> dict:
+        tenant, user = self._owner(client_id, username)
+        with self._connection(tenant) as conn:
+            row = conn.execute("SELECT id,status,revision,counters,created_at,updated_at,scope_key,scope_name,scope_url FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user)).fetchone()
+            if row is None:
+                raise HTTPException(404, "Pesquisa nao encontrada.")
+            return {"id": row["id"], "status": row["status"], "revision": row["revision"], "scope_category": self._scope(row), "counters": json.loads(row["counters"]), "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
+    def history(self, client_id: str, username: str, *, offset=0, limit=25, q="", status="", scope_category="", revision=None) -> dict:
+        tenant, user = self._owner(client_id, username)
+        self._page(offset, limit)
+        if status and status not in STATUSES:
+            raise HTTPException(422, "Estado de pesquisa invalido.")
+        clauses, args = ["tenant=?", "username=?"], [tenant, user]
+        for field, value in (("status", status), ("scope_key", scope_category)):
+            if value:
+                clauses.append(field + "=?")
+                args.append(value)
+        if q:
+            clauses.append("(instr(scope_search,?)>0 OR instr(id,?)>0)")
+            args.extend((q.casefold(), q.casefold()))
+        where = " AND ".join(clauses)
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            total = conn.execute("SELECT COUNT(*) FROM pm_jobs WHERE " + where, args).fetchone()[0]
+            rows = conn.execute("SELECT id,status,revision,counters,created_at,updated_at,scope_key,scope_name,scope_url FROM pm_jobs WHERE " + where + " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            items = [{"id": row["id"], "status": row["status"], "revision": row["revision"], "scope_category": self._scope(row), "counters": json.loads(row["counters"]), "created_at": row["created_at"], "updated_at": row["updated_at"]} for row in rows]
+            return {"items": items, "total": total, "owner_revision": owner_revision}
+
+    @staticmethod
+    def _consolidated_query(tenant, user, *, q="", scope_category="", seller_key="", evidence=""):
+        if evidence not in {"", "rankable", "pending"}:
+            raise HTTPException(422, "Filtro de evidencia invalido.")
+        job_where, args = "tenant=? AND username=?", [tenant, user]
+        scope_match = "MAX(CASE WHEN j.scope_key=? THEN 1 ELSE 0 END) OVER (PARTITION BY j.seller_identity,j.ad_key)" if scope_category else "1"
+        if scope_category:
+            args.append(scope_category)
+        sql = """WITH eligible_jobs AS (SELECT id,created_at,status,scope_key,scope_name,scope_url FROM pm_jobs WHERE """ + job_where + """),
+            candidates AS (
+                SELECT a.*,s.seller_identity,s.observed_at,s.publication_sequence,
+                    j.created_at AS research_created_at,j.status AS research_status,
+                    j.scope_key,j.scope_name,j.scope_url,
+                    COALESCE(s.observed_at,j.created_at) AS effective_observed_at,
+                    ROW_NUMBER() OVER (PARTITION BY j.id,s.seller_identity,a.ad_key
+                        ORDER BY COALESCE(s.observed_at,j.created_at) DESC,s.publication_sequence DESC,a.seller_key DESC) AS within_research_number
+                FROM eligible_jobs j JOIN pm_ads a ON a.job_id=j.id
+                    JOIN pm_sellers s ON s.job_id=a.job_id AND s.seller_key=a.seller_key
+            ), per_research AS (SELECT * FROM candidates WHERE within_research_number=1),
+            observations AS (
+                SELECT j.*, """ + scope_match + """ AS scope_match,
+                    COUNT(*) OVER (PARTITION BY seller_identity,ad_key) AS observation_count,
+                    ROW_NUMBER() OVER (PARTITION BY seller_identity,ad_key
+                        ORDER BY effective_observed_at DESC,publication_sequence DESC,research_created_at DESC,job_id DESC) AS observation_number
+                FROM per_research j
+            ), latest AS (SELECT * FROM observations WHERE observation_number=1),
+            selected AS (SELECT * FROM latest WHERE scope_match=1"""
+        # Filtering follows deduplication: a pending latest observation cannot
+        # resurrect a previous Avant metric or duplicate cumulative sales.
+        if q:
+            sql += " AND instr(search_text,?)>0"
+            args.append(q.casefold())
+        if seller_key:
+            sql += " AND seller_identity=?"
+            args.append(seller_key)
+        if evidence:
+            sql += " AND rankable=?"
+            args.append(int(evidence == "rankable"))
+        return sql + ") ", args
+
+    def consolidated_summary(self, client_id: str, username: str, *, revision=None, **filters) -> dict:
+        tenant, user = self._owner(client_id, username)
+        sql, args = self._consolidated_query(tenant, user, **filters)
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            row = conn.execute(sql + "SELECT COUNT(*) AS unique_ads,COUNT(DISTINCT seller_identity) AS sellers,COALESCE(SUM(observation_count),0) AS observations,COALESCE(SUM(rankable),0) AS rankable,MAX(effective_observed_at) AS last_observation_at FROM selected", args).fetchone()
+            scope = filters.get("scope_category", "")
+            jobs = conn.execute(sql + "SELECT COUNT(*) AS researches,MIN(created_at) AS first_research_at,MAX(created_at) AS last_research_at FROM eligible_jobs" + (" WHERE scope_key=?" if scope else ""), (*args, scope) if scope else args).fetchone()
+            return {**dict(jobs), **dict(row), "pending": row["unique_ads"] - row["rankable"], "owner_revision": owner_revision}
+
+    def consolidated_ranking(self, client_id: str, username: str, *, offset=0, limit=100, revision=None, **filters) -> dict:
+        tenant, user = self._owner(client_id, username)
+        self._page(offset, limit)
+        sql, args = self._consolidated_query(tenant, user, **filters)
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            total = conn.execute(sql + "SELECT COUNT(*) FROM selected", args).fetchone()[0]
+            rows = conn.execute(sql + "SELECT payload,ad_key,seller_identity,job_id,effective_observed_at,observed_at,observation_count,scope_key,scope_name,scope_url FROM selected ORDER BY ranking_key COLLATE PM_RANKING,job_id,seller_identity,ad_key LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            items = []
+            for index, row in enumerate(rows):
+                ad = json.loads(row["payload"])
+                ad.update(ad_key=row["ad_key"], seller_key=row["seller_identity"], source_job_id=row["job_id"], observed_at=row["effective_observed_at"], date_approximate=row["observed_at"] is None, observations=row["observation_count"], research_count=row["observation_count"], scope_category=self._scope(row), rank=offset + index + 1 if ad["rankable"] else None)
+                items.append(ad)
+            return {"items": items, "total": total, "owner_revision": owner_revision}
+
+    def consolidated_sellers(self, client_id: str, username: str, *, offset=0, limit=100, revision=None, **filters) -> dict:
+        tenant, user = self._owner(client_id, username)
+        self._page(offset, limit)
+        sql, args = self._consolidated_query(tenant, user, **filters)
+        sql += ", grouped AS (SELECT seller_identity,COUNT(*) AS ads,SUM(CASE WHEN rankable=0 THEN 1 ELSE 0 END) AS pending,MAX(json_extract(payload,'$.vendedor')) AS vendedor FROM selected GROUP BY seller_identity) "
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            total = conn.execute(sql + "SELECT COUNT(*) FROM grouped", args).fetchone()[0]
+            rows = conn.execute(sql + "SELECT seller_identity AS seller_key,vendedor,ads,pending FROM grouped ORDER BY vendedor COLLATE NOCASE,seller_identity LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            return {"items": [dict(row) for row in rows], "total": total, "owner_revision": owner_revision}
+
+    def consolidated_categories(self, client_id: str, username: str, *, offset=0, limit=100, revision=None) -> dict:
+        tenant, user = self._owner(client_id, username)
+        self._page(offset, limit)
+        sql = "WITH scopes AS (SELECT scope_key AS key,MAX(scope_name) AS nome,MAX(scope_url) AS url,COUNT(*) AS researches FROM pm_jobs WHERE tenant=? AND username=? AND scope_key<>'' GROUP BY scope_key) "
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            total = conn.execute(sql + "SELECT COUNT(*) FROM scopes", (tenant, user)).fetchone()[0]
+            rows = conn.execute(sql + "SELECT * FROM scopes ORDER BY nome COLLATE NOCASE,key LIMIT ? OFFSET ?", (tenant, user, limit, offset)).fetchall()
+            return {"items": [dict(row) for row in rows], "total": total, "owner_revision": owner_revision}
+
+    def consolidated_origins(self, client_id: str, username: str, *, ad_key: str, seller_key: str, offset=0, limit=25, revision=None) -> dict:
+        tenant, user = self._owner(client_id, username)
+        self._page(offset, limit)
+        sql, args = self._consolidated_query(tenant, user)
+        args.extend((ad_key, seller_key))
+        joined = " FROM observations WHERE ad_key=? AND seller_identity=?"
+        with self._connection(tenant) as conn:
+            owner_revision = self._owner_revision(conn, tenant, user, revision)
+            total = conn.execute(sql + "SELECT COUNT(*)" + joined, args).fetchone()[0]
+            rows = conn.execute(sql + "SELECT job_id AS source_job_id,research_status AS status,scope_key,scope_name,scope_url,rankable,monthly AS media_vendas_mensal,sales AS vendas,observed_at,effective_observed_at" + joined + " ORDER BY effective_observed_at DESC,publication_sequence DESC,research_created_at DESC,job_id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            items = [{"source_job_id": row["source_job_id"], "status": row["status"], "scope_category": self._scope(row), "observed_at": row["effective_observed_at"], "date_approximate": row["observed_at"] is None, "rankable": bool(row["rankable"]), "media_vendas_mensal": row["media_vendas_mensal"], "vendas": row["vendas"]} for row in rows]
+            return {"items": items, "total": total, "owner_revision": owner_revision}
 
     def ranking(self, job_id: str, client_id: str, username: str, *, offset=0, limit=100, q="", category="", seller_key="") -> dict:
         tenant, user = self._owner(client_id, username)

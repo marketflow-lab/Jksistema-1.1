@@ -851,7 +851,7 @@
 
     window.addEventListener('resize', agendarPosicao);
     window.addEventListener('jk-pesquisa-mercado-mode-change', event => {
-        const nextManualMode = !event.detail || event.detail.mode !== 'global';
+        const nextManualMode = !!event.detail && event.detail.mode === 'manual';
         if (nextManualMode === manualMode) return;
         manualMode = nextManualMode;
         if (!manualMode) {

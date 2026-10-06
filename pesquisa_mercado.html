@@ -287,7 +287,8 @@
             .filter-row input { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261006-ml-taxonomia-v3">
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261006-ml-historico-v4">
+    <link rel="stylesheet" href="/pesquisa-mercado/history-ui.css?v=20261006-ml-historico-v4">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
@@ -309,8 +310,16 @@
         <div class="pm-mode-tabs" role="tablist" aria-label="Tipo de pesquisa de mercado">
             <button class="pm-mode-tab" type="button" role="tab" aria-selected="true" aria-controls="pm-panel-manual" id="pm-mode-manual">Consulta por vendedor</button>
             <button class="pm-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="pm-panel-global" tabindex="-1" id="pm-mode-global">Pesquisa geral no ML</button>
+            <button class="pm-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="pm-panel-history" tabindex="-1" id="pm-mode-history">Histórico de pesquisas</button>
+            <button class="pm-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="pm-panel-consolidated" tabindex="-1" id="pm-mode-consolidated">Consolidado</button>
         </div>
+        <aside class="pm-active-research" id="pm-active-research" aria-label="Pesquisa ativa" hidden>
+            <div><strong id="pm-active-research-label">Pesquisa em andamento</strong><p id="pm-active-research-detail"></p></div>
+            <button class="btn" type="button" id="pm-active-research-follow">Acompanhar</button>
+        </aside>
         <main class="panel">
+            <section id="pm-panel-history" role="tabpanel" aria-labelledby="pm-mode-history" hidden><div id="pm-history-root"></div></section>
+            <section id="pm-panel-consolidated" role="tabpanel" aria-labelledby="pm-mode-consolidated" hidden><div id="pm-consolidated-root"></div></section>
             <section class="pm-global" id="pm-panel-global" role="tabpanel" aria-labelledby="pm-mode-global" hidden>
                 <div class="pm-global-heading">
                     <div>
@@ -485,8 +494,9 @@
     </div>
 
     <script src="/pesquisa-mercado/core.js?v=20260804-pesquisa-mercado-v1"></script>
-    <script src="/pesquisa-mercado/runtime.js?v=20260804-pesquisa-mercado-v1"></script>
-    <script src="/pesquisa-mercado/global-ui.js?v=20261006-ml-taxonomia-v3"></script>
+    <script src="/pesquisa-mercado/runtime.js?v=20261006-ml-historico-v4"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261006-ml-historico-v4"></script>
+    <script src="/pesquisa-mercado/history-ui.js?v=20261006-ml-historico-v4"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>
 </html>
