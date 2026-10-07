@@ -4,54 +4,72 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cadastro de Produtos - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/main.css?v=20260909-ml-partial-photos-v1">
+    <link rel="stylesheet" href="/cadastro/styles/main.css?v=20261007-cadastro-design-v1">
     <script src="/auth.js?v=20260909-sync-manual-cadastro-v1"></script>
     <script src="/ncm-sync.js"></script>
 </head>
-<body>
+<body class="cadastro-page">
+<svg class="cadastro-icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><defs>
+    <symbol id="cadastro-icon-cube" viewBox="0 0 24 24"><path d="m12 3 9 5v8l-9 5-9-5V8l9-5Z M3 8l9 5 9-5 M12 13v8 M7.5 5.5l9 5"/></symbol>
+    <symbol id="cadastro-icon-costs" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6 M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    <symbol id="cadastro-icon-users" viewBox="0 0 24 24"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3 M16 4a3 3 0 0 1 0 6 M21 21v-3a6 6 0 0 0-4-5"/></symbol>
+    <symbol id="cadastro-icon-store" viewBox="0 0 24 24"><path d="M3 10h18l-2-7H5l-2 7Z M4 10v11h16V10 M9 21v-7h6v7 M3 10c0 3 4 3 4 0 0 3 5 3 5 0 0 3 5 3 5 0 0 3 4 3 4 0"/></symbol>
+    <symbol id="cadastro-icon-file" viewBox="0 0 24 24"><path d="M14 2H5v20h14V7l-5-5Z M14 2v6h5 M8 12h8 M8 16h8"/></symbol>
+    <symbol id="cadastro-icon-refresh" viewBox="0 0 24 24"><path d="M20 8a8 8 0 0 0-14-3L3 8 M3 3v5h5 M4 16a8 8 0 0 0 14 3l3-3 M21 21v-5h-5"/></symbol>
+    <symbol id="cadastro-icon-link" viewBox="0 0 24 24"><path d="m10 13 4-4 M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0 M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0" transform="translate(1 0) scale(.9)"/></symbol>
+    <symbol id="cadastro-icon-edit" viewBox="0 0 24 24"><path d="m16 3 5 5-12 12-6 1 1-6L16 3Z M13 6l5 5"/></symbol>
+    <symbol id="cadastro-icon-plus" viewBox="0 0 24 24"><path d="M12 4v16 M4 12h16"/></symbol>
+    <symbol id="cadastro-icon-upload" viewBox="0 0 24 24"><path d="M12 16V3 M7 8l5-5 5 5 M4 16v5h16v-5"/></symbol>
+    <symbol id="cadastro-icon-bling" viewBox="0 0 24 24"><path d="M7 3v18 M7 16a6 6 0 1 0 0-1"/></symbol>
+    <symbol id="cadastro-icon-handshake" viewBox="0 0 24 24"><path d="m2 9 4-5 5 2 2-1 5 1 4 4-4 8-4 3-5-2-4-5-3-5Z M6 4l5 2-3 4c-1 2 2 3 3 1l2-2 5 5 M8 15l4 4 M11 13l5 4"/></symbol>
+    <symbol id="cadastro-icon-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="cadastro-icon-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7 M5 9v12h5v-7h4v7h5V9"/></symbol>
+    <symbol id="cadastro-icon-back" viewBox="0 0 24 24"><path d="M20 12H4 M10 6l-6 6 6 6"/></symbol>
+</defs></svg>
 <div class="container">
     <div class="header">
-        <h1> Cadastro de Produtos</h1>
+        <div class="cadastro-brand"><img src="/img/Logo%20Trend2.png" alt="Trend Minas" width="104" height="56"><span>JK Sistema</span></div>
+        <h1>Cadastro de Produtos</h1>
         <div class="header-actions">
-            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
-            <a class="back-btn" href="/dashboard.html">Voltar</a>
+            <a class="back-btn" href="/dashboard.html"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-home"></use></svg><span>Home</span></a>
+            <a class="back-btn" href="/dashboard.html"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-back"></use></svg><span>Voltar</span></a>
         </div>
     </div>
-
     <div id="statusNcmGlobal" class="status-bar status-ncm-global"></div>
-
     <div class="store-scope">
         <div id="cadastroLojaBotoes" class="loja-group" role="group" aria-label="Selecionar loja do cadastro"></div>
         <select id="cadastroLojaSelect" hidden aria-hidden="true" tabindex="-1"></select>
         <span id="cadastroLojaAviso" class="store-scope-hint" aria-live="polite"></span>
     </div>
-
     <div class="layout">
         <div class="card">
             <div class="card-title-row">
-                <h2>Produtos cadastrados</h2>
+                <h2><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-cube"></use></svg><span>Produtos cadastrados</span></h2>
                 <div id="status" class="status-bar"></div>
             </div>
             <div class="tabs" role="tablist" aria-label="Seções do cadastro">
-                <button id="tabProdutos" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="painelProdutos">Produtos</button>
-                <button id="tabCustos" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelCustos">Custos</button>
-                <button id="tabFornecedores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelFornecedores">Fornecedores</button>
-                <button id="tabImportadorLoja" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelImportadorLoja">Importador/loja</button>
-                <button id="tabNacionalizadores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelNacionalizadores">Nacionalizador</button>
+                <button id="tabProdutos" class="tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="painelProdutos"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-cube"></use></svg><span>Produtos</span></button>
+                <button id="tabCustos" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelCustos"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-costs"></use></svg><span>Custos</span></button>
+                <button id="tabFornecedores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelFornecedores"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-users"></use></svg><span>Fornecedores</span></button>
+                <button id="tabImportadorLoja" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelImportadorLoja"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-store"></use></svg><span>Importador/loja</span></button>
+                <button id="tabNacionalizadores" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="painelNacionalizadores"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-file"></use></svg><span>Nacionalizador</span></button>
             </div>
             <div id="painelProdutos" class="tab-panel" role="tabpanel" aria-labelledby="tabProdutos">
-                <div class="toolbar">
-                    <button id="btnAtualizar" class="btn btn-secondary" type="button">Atualizar lista</button>
-                    <button id="btnSyncNcm" class="btn btn-secondary" type="button">Sincronizar NCM e monofásico</button>
-                    <button id="btnEditarCadastro" class="btn btn-secondary" type="button">Editar</button>
-                    <button id="btnIncluirCadastro" class="btn btn-secondary" type="button">Incluir</button>
-                    <button id="btnImportarColunas" class="btn btn-secondary" type="button">Importar colunas (Excel/CSV)</button>
-                    <button id="btnImportarBling" class="btn btn-secondary btn-provider btn-provider-bling" type="button" disabled>Trazer da Bling</button>
-                    <button id="btnImportarMercadoLivre" class="btn btn-secondary btn-provider btn-provider-mercadolivre" type="button" disabled>Trazer do Mercado Livre</button>
+                <div class="toolbar product-actions">
+                    <button id="btnAtualizar" class="btn btn-secondary" type="button"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-refresh"></use></svg><span>Atualizar lista</span></button>
+                    <button id="btnSyncNcm" class="btn btn-secondary" type="button"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-link"></use></svg><span>Sincronizar NCM e monofásico</span></button>
+                    <button id="btnEditarCadastro" class="btn btn-secondary" type="button"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-edit"></use></svg><span>Editar</span></button>
+                    <button id="btnIncluirCadastro" class="btn btn-primary" type="button"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-plus"></use></svg><span>Incluir</span></button>
+                    <button id="btnImportarColunas" class="btn btn-secondary" type="button"><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-upload"></use></svg><span>Importar colunas (Excel/CSV)</span></button>
+                    <button id="btnImportarBling" class="btn btn-secondary btn-provider btn-provider-bling" type="button" disabled><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-bling"></use></svg><span>Trazer da Bling</span></button>
+                    <button id="btnImportarMercadoLivre" class="btn btn-secondary btn-provider btn-provider-mercadolivre" type="button" disabled><svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-handshake"></use></svg><span>Trazer do Mercado Livre</span></button>
                     <input id="inputImportarColunas" class="file-input-hidden" type="file" accept=".xlsx,.xls,.csv">
-                    <input id="filtro" type="text" placeholder="Filtrar por SKU, nome, categoria ou marca">
                 </div>
-                <div class="table-wrap">
+                <label class="product-search">
+                    <svg class="cadastro-icon" aria-hidden="true" focusable="false"><use href="#cadastro-icon-search"></use></svg>
+                    <input id="filtro" type="search" aria-label="Filtrar produtos por SKU, nome, categoria ou marca" placeholder="Filtrar por SKU, nome, categoria ou marca">
+                </label>
+                <div class="table-wrap products-table" tabindex="0" aria-label="Produtos cadastrados; use as setas para rolar as colunas">
                     <table>
                         <colgroup id="tCols"></colgroup>
                         <thead id="tHead"></thead>
@@ -59,7 +77,6 @@
                     </table>
                 </div>
                 <div id="paginacao" class="paginacao"></div>
-
                 <h2>Detalhes MLB por SKU</h2>
                 <div class="toolbar">
                     <select id="skuSelect" class="toolbar-select sku-select"></select>
@@ -222,7 +239,6 @@
         </div>
     </div>
 </div>
-
 <div id="modalImportacaoCatalogo" class="catalog-import-modal" role="dialog" aria-modal="true" aria-labelledby="importacaoCatalogoTitulo" aria-describedby="importacaoCatalogoDescricao" hidden>
     <section id="importacaoCatalogoDialog" class="catalog-import-dialog" tabindex="-1">
         <header class="catalog-import-header">
@@ -264,7 +280,6 @@
         </footer>
     </section>
 </div>
-
 <script src="/cadastro/form/00-core.js?v=20260909-cadastro-bulk-v1"></script>
 <script src="/cadastro/00-runtime.js?v=20261005-nacionalizador-v1"></script>
 <script src="/cadastro/01-core.js?v=20260901-cadastro-catalog-imports-v1"></script>

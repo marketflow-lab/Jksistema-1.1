@@ -138,3 +138,107 @@
             .catalog-import-modal { padding:8px; }
             .catalog-import-dialog { max-height:calc(100vh - 16px); padding:14px; }
         }
+
+
+/* Visual aprovado do Cadastro. Mantem os campos e as larguras controlados pelo runtime. */
+.cadastro-page {
+    padding:24px; color:#e2ecf9;
+    background:radial-gradient(ellipse at 85% 0, #0b2546 0, transparent 48%), #07111f;
+    min-height:100vh; box-sizing:border-box;
+}
+.cadastro-page .container { max-width:1680px; min-width:0; }
+.cadastro-icon-defs { position:absolute; width:0; height:0; overflow:hidden; }
+.cadastro-icon { width:22px; height:22px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.cadastro-page .header { gap:24px; margin-bottom:22px; }
+.cadastro-brand { display:flex; align-items:center; gap:14px; flex:0 0 auto; padding-right:24px; border-right:1px solid #395b80; }
+.cadastro-brand img { width:104px; height:56px; object-fit:cover; object-position:50% 30%; background:#fff; border-radius:8px; }
+.cadastro-brand span { color:#f3f7ff; font-size:19px; font-weight:700; white-space:nowrap; }
+.cadastro-page h1 { flex:1; color:#f3f7ff; font-size:clamp(24px, 2.3vw, 36px); line-height:1.2; }
+.cadastro-page .header-actions { flex:0 0 auto; }
+.cadastro-page .container .back-btn { display:inline-flex; align-items:center; justify-content:center; gap:10px; min-height:42px; box-sizing:border-box; padding:9px 16px; border:1px solid #315377; border-radius:9px; background:#102642; color:#e2ecf9; font-weight:600; }
+.cadastro-page .container .back-btn:hover { background:#183a60; border-color:#4b83b9; }
+.cadastro-page .store-scope { flex-direction:row; flex-wrap:wrap; align-items:center; gap:12px 18px; margin-bottom:20px; }
+.cadastro-page .loja-group { flex:1 1 auto; gap:8px; }
+.cadastro-page .loja-btn { min-height:42px; padding:10px 14px; border:1px solid #304a6a; border-radius:8px; background:linear-gradient(180deg, #10243d, #0d1b2e); color:#dce8f8; font-size:14px; }
+.cadastro-page .loja-btn:hover { background:#173351; border-color:#5681af; }
+.cadastro-page .loja-btn.active { background:#168bfa; color:#061321; border-color:#39a2ff; box-shadow:0 3px 16px #0784ff26; }
+.cadastro-page .store-scope > .store-scope-hint { flex:0 1 200px; font-size:12px; line-height:1.5; color:#9bc5f0; }
+.cadastro-page .card { padding:20px; border:1px solid #284664; border-radius:13px; background:linear-gradient(145deg, #0e2037, #0a182b); box-shadow:0 12px 40px #00000026; min-width:0; }
+.cadastro-page .card-title-row { gap:24px; margin-bottom:18px; }
+.cadastro-page .card-title-row h2 { display:flex; align-items:center; gap:14px; color:#eef5ff; font-size:22px; }
+.cadastro-page .card-title-row h2 .cadastro-icon { width:34px; height:34px; color:#40bcff; }
+.cadastro-page .card-title-row .status-bar { padding:10px 14px; border-radius:8px; font-size:14px; line-height:1.4; }
+.cadastro-page .card-title-row .status-bar.success { border-color:#15824f; background:#073722; color:#a2f0c2; }
+.cadastro-page .tabs { gap:8px; flex-wrap:nowrap; overflow-x:auto; margin-bottom:20px; border-bottom-color:#2a4260; }
+.cadastro-page .tab-btn { display:inline-flex; align-items:center; gap:10px; flex:0 0 auto; padding:14px 16px; color:#b9cce3; border-bottom-width:3px; font-size:15px; }
+.cadastro-page .tab-btn:hover { background:#142b45; color:#eff6ff; }
+.cadastro-page .tab-btn.active { color:#4cc3ff; border-bottom-color:#329fff; }
+.cadastro-page .product-actions { gap:9px; margin-bottom:16px; }
+.cadastro-page .product-actions .btn { display:inline-flex; align-items:center; justify-content:center; gap:9px; min-height:44px; padding:10px 13px; border-radius:8px; font-size:13px; line-height:1.4; background:linear-gradient(180deg, #152e4d, #10233b); color:#e4efff; border-color:#33597e; }
+.cadastro-page .product-actions .btn:hover:enabled { background:#1b3b61; border-color:#528abf; }
+.cadastro-page .product-actions #btnIncluirCadastro { background:#168bfa; border-color:#39a2ff; color:#fff; box-shadow:0 4px 14px #0784ff26; }
+.cadastro-page .product-actions #btnIncluirCadastro:hover:enabled { background:#329dff; }
+.cadastro-page .product-actions .btn-provider-bling { background:#0b3327; border-color:#24a666; color:#c4f5dd; }
+.cadastro-page .product-actions .btn-provider-bling:hover:enabled { background:#114b37; border-color:#4dd899; }
+.cadastro-page .product-actions .btn-provider-mercadolivre { background:#343016; border-color:#cbb42c; color:#fff1ad; }
+.cadastro-page .product-actions .btn-provider-mercadolivre:hover:enabled { background:#48401b; border-color:#ead44a; }
+.cadastro-page .product-actions .btn:disabled { opacity:.45; }
+.cadastro-page .product-search { display:flex; align-items:center; gap:12px; width:100%; box-sizing:border-box; padding:0 16px; margin-bottom:16px; min-height:50px; background:#0a192c; border:1px solid #3a618c; border-radius:9px; color:#a6c9ee; }
+.cadastro-page .product-search:focus-within { border-color:#58b5ff; box-shadow:0 0 0 3px #269dff20; }
+.cadastro-page .product-search input { flex:1; width:100%; min-width:0; min-height:48px; padding:10px 0; border:0; border-radius:0; background:transparent; color:#eef5ff; font:inherit; font-size:15px; outline:0; }
+.cadastro-page .product-search input::placeholder { color:#9cb6d4; opacity:1; }
+.cadastro-page .products-table { border:1px solid #2b496b; border-radius:10px; scrollbar-color:#365b82 #0b1a2c; }
+.cadastro-page .products-table table { background:#0d1e33; border:0; }
+.cadastro-page .products-table th { padding:14px 16px; background:#0a192c; color:#57c8ff; border-bottom-color:#294867; font-size:14px; }
+.cadastro-page .products-table td { height:76px; box-sizing:border-box; padding:6px 16px; color:#e2ecf9; border-bottom-color:#1d3653; font-size:14px; }
+.cadastro-page .products-table tbody tr:nth-child(even) { background:#0e223b; }
+.cadastro-page .products-table tbody tr:hover { background:#153758; }
+.cadastro-page .products-table .sku-edit-link { color:#58c8ff; }
+.cadastro-page .products-table .muted-cell { color:#a5b8ce; }
+.cadastro-page .products-table .foto-cell { min-width:0; }
+.cadastro-page .products-table .foto-thumb { display:block; box-sizing:border-box; width:64px; height:64px; border-radius:8px; object-fit:contain; border-color:#4b6b8d; background:#f6f8fc; }
+.cadastro-page .products-table .foto-thumb:hover { transform:scale(1.8); }
+.cadastro-page .products-table .foto-empty { display:inline-flex; align-items:center; gap:10px; max-width:100%; color:#a5bdd9; font-size:12px; white-space:normal; line-height:1.3; }
+.cadastro-page .products-table .foto-empty::before { content:""; flex:0 0 42px; width:42px; height:42px; border:1px solid #3c6087; border-radius:7px; background:#122b46 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238aaed3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='3'/%3E%3Ccircle cx='8' cy='8' r='1.5'/%3E%3Cpath d='m3 17 6-6 4 4 3-3 5 5'/%3E%3C/svg%3E") center / 24px no-repeat; }
+.cadastro-page .container :is(button, a, .products-table):focus-visible { outline:2px solid #73c5ff; outline-offset:3px; }
+.cadastro-page .paginacao button { background:#102b49; border-color:#34577c; min-height:36px; }
+.cadastro-page .paginacao button.ativo { background:#168bfa; color:#fff; }
+.cadastro-page #painelProdutos > h2 { margin:24px 0 14px; color:#bad6f5; }
+@media (max-width:1100px) {
+    .cadastro-page .header { flex-wrap:wrap; gap:16px; }
+    .cadastro-brand { padding-right:16px; }
+    .cadastro-page .header-actions { margin-left:auto; }
+    .cadastro-page .store-scope > .store-scope-hint { flex-basis:100%; }
+}
+@media (max-width:640px) {
+    .cadastro-page { padding:14px; }
+    .cadastro-page .header { gap:14px; margin-bottom:18px; }
+    .cadastro-brand { flex-basis:100%; border:0; padding:0; }
+    .cadastro-brand img { width:86px; height:46px; }
+    .cadastro-brand span { font-size:17px; }
+    .cadastro-page h1 { flex-basis:100%; font-size:25px; }
+    .cadastro-page .header-actions { margin-left:0; }
+    .cadastro-page .loja-btn { min-height:40px; padding:8px 11px; font-size:13px; }
+    .cadastro-page .card { padding:12px; }
+    .cadastro-page .card-title-row { gap:12px; }
+    .cadastro-page .card-title-row h2 { font-size:20px; gap:10px; }
+    .cadastro-page .card-title-row .status-bar { font-size:12px; }
+    .cadastro-page .tab-btn { padding:12px 10px; gap:7px; font-size:13px; }
+    .cadastro-page .product-actions { gap:8px; }
+    .cadastro-page .product-actions .btn { flex:1 1 auto; font-size:12px; padding:9px 10px; gap:7px; }
+    .cadastro-page .product-search { padding:0 10px; gap:8px; }
+    .cadastro-page .product-search input { font-size:13px; }
+}
+@media (prefers-reduced-motion:reduce) {
+    .cadastro-page .products-table .foto-thumb { transition:none; }
+}
+
+
+/* Espaco para os controles globais movidos pelo auth, sem alterar a navegacao. */
+.cadastro-page .header-actions:empty { display:none !important; }
+@media (min-width:1101px) {
+    .cadastro-page:has(> .jk-nav-card-group) .header { padding-right:240px; }
+}
+@media (max-width:1100px) {
+    .cadastro-page:has(> .jk-nav-card-group) .container { padding-top:70px; }
+}

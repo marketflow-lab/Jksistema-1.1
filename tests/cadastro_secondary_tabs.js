@@ -142,8 +142,12 @@ assertAbaAtiva('nacionalizadores');
 assert.strictEqual(cargasNacionalizadores, 1, 'abrir aba deve consultar nacionalizadores');
 
 const html = read('static/cadastro.html');
-assert.match(html, /id="tabFornecedores"[^>]*>Fornecedores<\/button>/);
-assert.match(html, /id="tabImportadorLoja"[^>]*>Importador\/loja<\/button>/);
+for (const [id, label] of [['tabFornecedores', 'Fornecedores'], ['tabImportadorLoja', 'Importador/loja']]) {
+  const button = new RegExp(`<button[^>]*id="${id}"[^>]*>([\\s\\S]*?)</button>`).exec(html);
+  assert(button, `aba ${id} deve existir`);
+  const labelText = button[1].replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/g, '').replace(/<[^>]+>/g, '').trim();
+  assert.strictEqual(labelText, label, `aba ${id} deve preservar o texto com icones decorativos`);
+}
 assert.match(html, /id="painelFornecedores"[^>]*aria-labelledby="tabFornecedores"[^>]*hidden/);
 assert.match(html, /id="painelImportadorLoja"[^>]*aria-labelledby="tabImportadorLoja"[^>]*hidden/);
 for (const field of ['importadorNomeEmpresa', 'importadorTaxId', 'importadorTelefone', 'importadorEmail', 'importadorContato', 'importadorLogradouro', 'importadorBairro', 'importadorCidade', 'importadorCep', 'importadorEstado', 'importadorPais']) {
