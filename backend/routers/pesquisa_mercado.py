@@ -11,6 +11,7 @@ from backend.schemas.pesquisa_mercado import (
     PesquisaMercadoStatus,
     PesquisaMercadoHistoryResponse,
     PesquisaMercadoHistoryJobResponse,
+    PesquisaMercadoDeleteResponse,
     PesquisaMercadoConsolidatedSummaryResponse,
     PesquisaMercadoConsolidatedRankingResponse,
     PesquisaMercadoConsolidatedSellersResponse,
@@ -64,6 +65,10 @@ def create_pesquisa_mercado_router() -> APIRouter:
     @router.get("/jobs/{job_id}")
     def get(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
         return {"job": get_pesquisa_mercado_store().get(job_id, client_id, _username(request))}
+
+    @router.delete("/jobs/{job_id}", response_model=PesquisaMercadoDeleteResponse)
+    def delete(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return get_pesquisa_mercado_store().delete(job_id, client_id, _username(request))
 
     @router.get("/jobs/{job_id}/resumo", response_model=PesquisaMercadoHistoryJobResponse)
     def job_summary(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):

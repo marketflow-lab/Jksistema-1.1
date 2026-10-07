@@ -62,6 +62,12 @@ class PesquisaMercadoClosedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PesquisaMercadoDeleteResponse(PesquisaMercadoClosedResponse):
+    deleted: Literal[True]
+    job_id: str
+    revision: int
+
+
 class PesquisaMercadoCounters(PesquisaMercadoClosedResponse):
     categories: int
     pages: int

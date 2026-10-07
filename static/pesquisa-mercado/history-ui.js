@@ -32,7 +32,7 @@
     const scopeName = job => text(scope(job) && scope(job).nome) || 'Todo o Mercado Livre';
     const freshHistory = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', status: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0,
-        detail: null, detailId: '', detailTab: 'geral', detailQuery: '', detailCategory: '', detailSeller: '',
+        deleteId: '', deleteBusy: '', detail: null, detailId: '', detailTab: 'geral', detailQuery: '', detailCategory: '', detailSeller: '',
         detailSellers: [], detailCategories: [], detailItems: [], detailTotal: 0, detailOffset: 0, detailBusy: false, namesBusy: false, namesLogin: false, detailNeedsRefresh: false, detailGeneration: 0 });
     const freshConsolidated = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', evidence: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0, summary: null,
@@ -45,15 +45,15 @@
     const timers = new Map();
     const el = id => document.getElementById(`pm-${id}`);
     function listen(target, type, callback) { target.addEventListener(type, callback); removers.push(() => target.removeEventListener(type, callback)); }
-    function cancelReads(prefix) {
-        for (const [controller, group] of controllers) if (group.startsWith(prefix)) { controller.abort(); controllers.delete(controller); }
+    function cancelReads(prefix, includeMutations = false) {
+        for (const [controller, group] of controllers) if (group.startsWith(prefix) && (includeMutations || !group.startsWith('mutation-'))) { controller.abort(); controllers.delete(controller); }
     }
     function message(panel, value, error) { el(`${panel}-message`).textContent = value; el(`${panel}-message`).classList.toggle('error', !!error); }
     function currentSession() {
         const current = window.localStorage.getItem('access_token') || '';
         if (current !== sessionToken) {
             sessionToken = current;
-            cancelReads('');
+            cancelReads('', true);
             for (const timer of timers.values()) window.clearTimeout(timer);
             timers.clear();
             state.history = freshHistory(); state.consolidated = freshConsolidated();
@@ -62,7 +62,7 @@
         }
         return current;
     }
-    async function request(path, params, group) {
+    async function request(path, params, group, method = 'GET') {
         const token = currentSession();
         if (!token) throw new Error('Entre no JK Sistema para consultar as pesquisas.');
         const query = new URLSearchParams();
@@ -71,13 +71,14 @@
         controllers.set(controller, group);
         try {
             const response = await window.fetch(`/api/pesquisa-mercado${path}${query.size ? `?${query}` : ''}`, {
-                headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal
+                method, headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal
             });
             if (currentSession() !== token || state.disposed) throw new DOMException('Consulta encerrada.', 'AbortError');
             if (!response.ok) {
                 const error = new Error(response.status === 401 || response.status === 403
-                    ? 'A sessão do JK Sistema precisa ser renovada.' : response.status === 409
-                        ? 'As pesquisas foram atualizadas. A consulta foi reiniciada na primeira página.' : 'Não foi possível consultar as pesquisas salvas. Tente atualizar.');
+                    ? 'A sessão do JK Sistema precisa ser renovada.' : method === 'DELETE'
+                        ? response.status === 409 ? 'Cancele a pesquisa antes de apagar seu histórico.' : 'Não foi possível apagar a pesquisa. Tente novamente.'
+                        : response.status === 409 ? 'As pesquisas foram atualizadas. A consulta foi reiniciada na primeira página.' : 'Não foi possível consultar as pesquisas salvas. Tente atualizar.');
                 error.status = response.status;
                 throw error;
             }
@@ -129,12 +130,75 @@
         if (selected && !data.scopes.some(item => item.key === selected.key)) data.scopes.push(selected);
     }
     function renderHistory() {
+        const focused = document.activeElement;
+        const focusAttribute = focused && el('history-list').contains(focused) && ['data-consult-job', 'data-delete-job', 'data-confirm-delete-job', 'data-cancel-delete-job'].find(attribute => focused.hasAttribute(attribute));
+        const focusJob = focusAttribute && focused.getAttribute(focusAttribute);
         const h = state.history;
         el('history-count').textContent = `${number(h.total)} pesquisas`;
         el('history-refresh').disabled = h.busy;
         renderScopes('history');
-        el('history-list').innerHTML = h.items.map(job => `<article class="pm-saved-card${job.id === h.detailId ? ' selected' : ''}"><div class="pm-saved-card-top"><span>${escaped(date(job.created_at))}</span>${statusChip(job.status)}</div><h3>${escaped(scopeName(job))}</h3><div class="pm-saved-card-foot"><span>${number(job.counters && job.counters.sellers || 0)} vendedores · ${number(job.counters && job.counters.ads || 0)} anúncios</span><button type="button" class="btn${job.id === h.detailId ? ' btn-primary' : ''}" data-consult-job="${escaped(job.id)}">${job.id === h.detailId ? 'Em consulta' : 'Consultar'}</button></div></article>`).join('');
+        el('history-list').innerHTML = h.items.map(job => {
+            const terminal = ['completed', 'completed_partial', 'cancelled', 'failed'].includes(job.status);
+            const available = canDelete(job);
+            const deleting = h.deleteBusy === job.id;
+            return `<article class="pm-saved-card${job.id === h.detailId ? ' selected' : ''}"><div class="pm-saved-card-top"><span>${escaped(date(job.created_at))}</span>${statusChip(job.status)}</div><h3>${escaped(scopeName(job))}</h3><div class="pm-saved-card-foot"><span>${number(job.counters && job.counters.sellers || 0)} vendedores · ${number(job.counters && job.counters.ads || 0)} anúncios</span><div class="pm-saved-card-actions"><button type="button" class="btn${job.id === h.detailId ? ' btn-primary' : ''}" data-consult-job="${escaped(job.id)}">${job.id === h.detailId ? 'Em consulta' : 'Consultar'}</button><button type="button" class="btn pm-saved-delete" data-delete-job="${escaped(job.id)}" aria-label="Apagar pesquisa ${escaped(scopeName(job))} de ${escaped(date(job.created_at))}"${available ? '' : ' disabled'}>${deleting ? 'Apagando…' : 'Apagar'}</button></div></div>${!terminal ? '<p class="pm-saved-note pm-saved-delete-note">Cancele a pesquisa antes de apagar.</p>' : ''}${h.deleteId === job.id ? `<div class="pm-saved-delete-confirm" role="group" aria-label="Confirmar exclusão da pesquisa"><p>Apagar esta pesquisa e seus resultados? Ela também será removida do consolidado. Esta ação não pode ser desfeita.</p><div class="pm-saved-card-actions"><button type="button" class="btn" data-cancel-delete-job="${escaped(job.id)}"${h.deleteBusy ? ' disabled' : ''}>Cancelar</button><button type="button" class="btn pm-saved-delete" data-confirm-delete-job="${escaped(job.id)}"${available ? '' : ' disabled'}>${deleting ? 'Apagando…' : 'Confirmar exclusão'}</button></div></div>` : ''}</article>`;
+        }).join('');
         renderPager('history', h.offset, h.total, 25, h.busy);
+        if (focusAttribute) {
+            const next = Array.from(el('history-list').querySelectorAll(`[${focusAttribute}]`)).find(button => button.getAttribute(focusAttribute) === focusJob && !button.disabled)
+                || el('history-list').querySelector('[data-consult-job]') || el('history-count');
+            if (next === el('history-count')) next.tabIndex = -1;
+            next.focus();
+        }
+    }
+    function canDelete(job) {
+        const h = state.history;
+        return !!job && !h.deleteBusy && !h.busy && !h.namesBusy
+            && ['completed', 'completed_partial', 'cancelled', 'failed'].includes(job.status)
+            && (typeof window.__jkPesquisaMercadoCanDeleteJob !== 'function' || window.__jkPesquisaMercadoCanDeleteJob(job.id));
+    }
+    function focusDelete(jobId, attribute) {
+        const button = Array.from(historyRoot.querySelectorAll(`[${attribute}]`)).find(button => button.getAttribute(attribute) === jobId);
+        if (button) button.focus();
+    }
+    async function deleteJob(jobId) {
+        currentSession();
+        const h = state.history, job = h.items.find(item => item.id === jobId);
+        if (state.disposed || h.deleteId !== jobId || !canDelete(job)) return;
+        h.deleteBusy = jobId; window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-history-delete-change')); renderHistory(); renderDetail(); message('history', 'Apagando pesquisa…');
+        try {
+            let missing = false;
+            try { await request(`/jobs/${encodeURIComponent(jobId)}`, {}, 'mutation-delete', 'DELETE'); }
+            catch (error) { if (error.status !== 404) throw error; missing = true; }
+            if (state.disposed || state.history !== h) return;
+            cancelReads('history-list'); cancelReads('history-scope'); cancelReads('consolidated');
+            for (const key of ['history', 'consolidated']) { window.clearTimeout(timers.get(key)); timers.delete(key); }
+            h.generation += 1; h.busy = h.scopesBusy = false;
+            h.items = h.items.filter(item => item.id !== jobId); h.total = Math.max(0, h.total - 1);
+            h.offset = Math.min(h.offset, Math.max(0, Math.ceil(h.total / 25) - 1) * 25);
+            h.deleteId = ''; h.revision = null; h.loaded = false;
+            if (h.detailId === jobId) {
+                cancelReads('history-detail'); window.clearTimeout(timers.get('detail')); timers.delete('detail'); h.detailGeneration += 1;
+                h.detailId = ''; h.detail = null; h.detailSellers = []; h.detailCategories = []; h.detailItems = [];
+                h.detailTotal = h.detailOffset = 0; h.detailBusy = h.detailNeedsRefresh = h.namesLogin = false;
+                el('history-detail-search').value = ''; message('history-detail', '');
+            }
+            const c = state.consolidated;
+            c.generation += 1; c.originGeneration += 1; c.revision = null; c.loaded = false;
+            c.items = []; c.total = c.offset = 0; c.summary = c.origin = null; c.originItems = [];
+            c.busy = c.originBusy = c.scopesBusy = false;
+            renderHistory(); renderDetail(); renderConsolidated(); renderOrigins();
+            window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-job-deleted', { detail: { jobId } }));
+            if (state.mode === 'history') await loadHistory(false);
+            else if (state.mode === 'consolidated') await loadConsolidated(true);
+            if (!state.disposed && state.history === h) message('history', missing ? 'A pesquisa já não está disponível.' : 'Pesquisa apagada. Seus resultados foram removidos do consolidado.');
+        } catch (error) {
+            if (!state.disposed && state.history === h && error.name !== 'AbortError') message('history', error.message, true);
+        } finally {
+            h.deleteBusy = '';
+            window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-history-delete-change'));
+            if (!state.disposed && state.history === h) { renderHistory(); renderDetail(); }
+        }
     }
     function rankCells(item) {
         const ranked = Number.isInteger(item.rank) && item.rank > 0;
@@ -151,7 +215,7 @@
     function renderDetail() {
         const h = state.history;
         el('history-detail-body').hidden = !h.detail;
-        el('history-refresh-names').disabled = h.namesBusy || h.detailBusy || !h.detail || ['running', 'waiting_login', 'queued', 'pausing'].includes(h.detail.status);
+        el('history-refresh-names').disabled = !!h.deleteBusy || h.namesBusy || h.detailBusy || !h.detail || ['running', 'waiting_login', 'queued', 'pausing'].includes(h.detail.status);
         el('history-names-browser').hidden = !h.namesLogin;
         el('history-names-browser').disabled = h.namesBusy;
         const heading = el('history-detail-heading');
@@ -196,7 +260,9 @@
             if (state.history !== h || h.generation !== generation || state.disposed) return;
             const categories = h.revision === data.owner_revision && h.loaded ? null : await request('/consolidado/categorias', { offset: 0, limit: 100, revision: data.owner_revision }, 'history-list');
             if (state.history !== h || h.generation !== generation || state.disposed) return;
-            h.items = Array.isArray(data.items) ? data.items : []; h.total = Number(data.total) || 0; h.revision = data.owner_revision; h.loaded = true;
+            h.items = Array.isArray(data.items) ? data.items : [];
+            if (!h.items.some(item => item.id === h.deleteId)) h.deleteId = '';
+            h.total = Number(data.total) || 0; h.revision = data.owner_revision; h.loaded = true;
             if (categories) replaceScopes(h, categories);
             message('history', `${retried ? 'As pesquisas foram atualizadas; consulta reiniciada na primeira página. ' : ''}${h.items.length ? 'Resultados salvos. Consultar não inicia outra pesquisa.' : 'Nenhuma pesquisa corresponde aos filtros.'}`);
         } catch (error) {
@@ -382,8 +448,8 @@
     }
     listen(el('history-refresh-names'), 'click', async () => {
         const h = state.history, jobId = h.detailId;
-        if (!jobId || h.namesBusy || !h.detail || ['running', 'waiting_login'].includes(h.detail.status)) return;
-        h.namesBusy = true; renderDetail(); message('history-detail', 'Consultando os nomes das lojas…');
+        if (!jobId || h.deleteBusy || h.namesBusy || !h.detail || ['running', 'waiting_login'].includes(h.detail.status)) return;
+        h.namesBusy = true; renderHistory(); renderDetail(); message('history-detail', 'Consultando os nomes das lojas…');
         try {
             if (typeof window.__jkPesquisaMercadoRefreshNames !== 'function') throw new Error('Abra a pesquisa no aplicativo JK Sistema.');
             const result = await window.__jkPesquisaMercadoRefreshNames(jobId);
@@ -392,7 +458,7 @@
             await refreshDetail();
             if (state.history === h && h.detailId === jobId && !state.disposed) message('history-detail', result.message || `${number(result.updated || 0)} nomes atualizados. ${number(result.pending || 0)} nomes pendentes.`, !!result.requiresLogin);
         } catch (error) { if (!state.disposed && state.history === h && h.detailId === jobId) message('history-detail', error.message, true); }
-        finally { h.namesBusy = false; if (!state.disposed) renderDetail(); }
+        finally { h.namesBusy = false; if (!state.disposed) { renderHistory(); renderDetail(); } }
     });
     listen(el('history-names-browser'), 'click', async () => {
         try { await window.__jkPesquisaMercadoNamesBrowser(state.history.detailId); }
@@ -406,6 +472,21 @@
     });
     listen(el('history-status'), 'change', () => filtersChanged('history'));
     listen(el('consolidated-evidence'), 'change', () => filtersChanged('consolidated'));
+    listen(window, 'jk-pesquisa-mercado-operation-change', () => renderHistory());
+    listen(historyRoot, 'click', event => {
+        const action = event.target.closest('[data-delete-job], [data-confirm-delete-job], [data-cancel-delete-job]');
+        if (!action || !historyRoot.contains(action) || action.disabled) return;
+        currentSession();
+        const h = state.history;
+        if (action.hasAttribute('data-confirm-delete-job')) { deleteJob(action.dataset.confirmDeleteJob); return; }
+        if (action.hasAttribute('data-cancel-delete-job')) {
+            if (h.deleteBusy) return;
+            h.deleteId = ''; renderHistory(); focusDelete(action.dataset.cancelDeleteJob, 'data-delete-job'); return;
+        }
+        const jobId = action.dataset.deleteJob;
+        if (!canDelete(h.items.find(item => item.id === jobId))) return;
+        h.deleteId = jobId; message('history', 'Confirme abaixo para apagar a pesquisa.'); renderHistory(); focusDelete(jobId, 'data-cancel-delete-job');
+    });
     for (const root of [historyRoot, consolidatedRoot]) listen(root, 'click', event => {
         const consult = event.target.closest('[data-consult-job]');
         if (consult && root.contains(consult)) openDetail(consult.dataset.consultJob);
@@ -431,7 +512,7 @@
     listen(window, 'jk-pesquisa-mercado-mode-change', event => changeMode(event.detail && event.detail.mode));
     listen(window, 'storage', event => { if (event.key === 'access_token' || event.key === null) { currentSession(); if (sessionToken) { if (state.mode === 'history') loadHistory(true); else if (state.mode === 'consolidated') loadConsolidated(true); } } });
     function dispose() {
-        state.disposed = true; cancelReads(''); for (const timer of timers.values()) window.clearTimeout(timer); timers.clear();
+        state.disposed = true; cancelReads('', true); for (const timer of timers.values()) window.clearTimeout(timer); timers.clear();
         for (const remove of removers) remove();
     }
     listen(window, 'beforeunload', dispose);

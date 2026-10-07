@@ -38,10 +38,11 @@ store.publish(current['id'], 'id:456', 'fixture-client', 'alice', seller('456'),
     ad(100000003, 'Filtro de óleo', 90, 900, '456')])
 
 async def auth(request, authorization=None):
-    if authorization != 'Bearer fixture-alice':
+    tenants = {'Bearer fixture-alice': 'fixture-client', 'Bearer fixture-pages': 'fixture-pages', 'Bearer fixture-last': 'fixture-last'}
+    if authorization not in tenants:
         raise HTTPException(401, 'Fixture session required')
     request.state.username = 'alice'
-    return 'fixture-client'
+    return tenants[authorization]
 
 favoritos_endpoints._TENANT_DEPENDENCY = auth
 app = FastAPI()
@@ -69,5 +70,19 @@ async def pause(request: Request):
     if payload.get('jobId') != current['id']:
         raise HTTPException(422, 'Wrong active job')
     return {'job': store.checkpoint(current['id'], 'fixture-client', 'alice', status='paused')}
+
+
+@app.post('/fixture/deletion-scenarios')
+def deletion_scenarios():
+    def seed(tenant, count):
+        for index in range(count):
+            scope = {**category, 'key': 'MLB' + str(30000 + index), 'nome': f'Pesquisa descartável {index:02d}',
+                     'url': 'https://lista.mercadolivre.com.br/_CatId_MLB' + str(30000 + index)}
+            job = store.start(tenant, 'alice', category=scope)
+            store.publish(job['id'], 'id:123', tenant, 'alice', seller('123'), [
+                ad(300000001 + index, f'Anúncio descartável {index:02d}', 10, 100)])
+            store.checkpoint(job['id'], tenant, 'alice', status='completed')
+        return [item['id'] for item in store.history(tenant, 'alice', limit=100)['items']]
+    return {'pages': seed('fixture-pages', 26), 'last': seed('fixture-last', 1)}
 
 uvicorn.run(app, host='127.0.0.1', port=int(sys.argv[1]), access_log=False, log_level='error')

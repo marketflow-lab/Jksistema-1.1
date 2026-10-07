@@ -558,6 +558,20 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             return self._public(self._job(conn, job_id, tenant, user))
 
+    def delete(self, job_id: str, client_id: str, username: str) -> dict:
+        """Remove a closed research and its observations in one owner-scoped write."""
+        tenant, user = self._owner(client_id, username)
+        with self._connection(tenant, write=True) as conn:
+            job = self._job(conn, job_id, tenant, user)
+            if job["status"] not in TERMINAL_STATUSES:
+                raise HTTPException(409, "Cancele a pesquisa antes de apagar seu historico.")
+            # Also cover legacy schemas accepted by migration without cascade FKs.
+            for table in ("pm_ads", "pm_sellers", "pm_discovery"):
+                conn.execute(f"DELETE FROM {table} WHERE job_id=?", (job_id,))
+            conn.execute("DELETE FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user))
+            self._bump_owner_revision(conn, tenant, user)
+            return {"deleted": True, "job_id": job_id, "revision": self._owner_revision(conn, tenant, user)}
+
     def checkpoint(self, job_id: str, client_id: str, username: str, *, checkpoint=None, status=None, counters=None, message=None) -> dict:
         tenant, user = self._owner(client_id, username)
         if status is not None and status not in STATUSES:

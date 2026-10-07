@@ -157,7 +157,9 @@ async function main() {
         await page.locator('#pm-global-resume').click();
         await page.waitForFunction(() => !document.getElementById('pm-global-pause').disabled);
         await page.locator('#pm-global-cancel').click();
-        await page.waitForFunction(() => document.getElementById('pm-global-cancel').disabled);
+        await page.waitForFunction(() => document.getElementById('pm-global-cancel').disabled
+            && document.getElementById('pm-global-status').textContent === 'Pesquisa cancelada'
+            && !document.getElementById('pm-global-taxonomy-refresh').disabled);
         assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true, 'nova pesquisa exige selecionar uma categoria');
         assert.strictEqual(await page.locator('#pm-global-browser').isDisabled(), true, 'execução encerrada não oferece navegador ativo');
         assert.strictEqual(await page.locator('#pm-btn-analisar').isDisabled(), false, 'controles manuais são independentes');

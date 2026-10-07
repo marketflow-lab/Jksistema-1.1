@@ -38,6 +38,7 @@ async function main(){
    window.electronAPI={getPesquisaMercadoJobStatus:get,pausePesquisaMercadoJob:command('pause'),resumePesquisaMercadoJob:command('resume'),cancelPesquisaMercadoJob:command('cancel'),startPesquisaMercadoJob:command('start'),showPesquisaMercadoBrowser:command('browser'),onPesquisaMercadoProgress(cb){window.__pmProgress=cb;return()=>{};}};
   });
   const page=await context.newPage(),errors=[],mutations=[];
+  page.on('dialog',dialog=>{errors.push('Deletion used a native dialog');dialog.dismiss();});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('request',req=>{if(new URL(req.url()).pathname.startsWith('/api/pesquisa-mercado')&&req.method()!=='GET')mutations.push(req.method()+' '+req.url());});
   await page.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
@@ -45,6 +46,15 @@ async function main(){
   await page.waitForFunction(()=>!document.getElementById('pm-active-research').hidden);
   await page.locator('#pm-mode-history').click();
   await page.locator(`#pm-history-list [data-consult-job="${meta.old}"]`).waitFor();
+  assert.equal(await page.locator(`[data-delete-job="${meta.current}"]`).isDisabled(),true,'running research cannot be deleted');
+  const beforeCancel=await (await fetch(origin+'/api/pesquisa-mercado/jobs',{headers:{Authorization:'Bearer fixture-alice'}})).json();
+  await page.locator(`[data-delete-job="${meta.old}"]`).click();
+  await page.locator(`[data-confirm-delete-job="${meta.old}"]`).waitFor();
+  await page.locator(`[data-cancel-delete-job="${meta.old}"]`).click();
+  await page.locator(`[data-confirm-delete-job="${meta.old}"]`).waitFor({state:'hidden'});
+  assert.deepEqual(mutations,[],'canceling inline deletion cannot send a mutation');
+  const afterCancel=await (await fetch(origin+'/api/pesquisa-mercado/jobs',{headers:{Authorization:'Bearer fixture-alice'}})).json();
+  assert.equal(afterCancel.owner_revision,beforeCancel.owner_revision,'canceling cannot change the saved research');
   await page.locator(`#pm-history-list [data-consult-job="${meta.old}"]`).click();
   await page.waitForFunction(()=>document.querySelectorAll('#pm-history-detail-rows tr').length===2);
   assert.match(await page.locator('#pm-history-detail-heading').innerText(),/Peças de Carros/);
@@ -91,8 +101,95 @@ async function main(){
    await page.screenshot({path:path.join(artifacts,'consolidado-1.0.177.png'),fullPage:true});
   }
   await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'consolidated mobile overflow');await page.locator('#pm-mode-history').click();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'history mobile overflow');
+  await page.setViewportSize({width:1440,height:960});
+  await page.locator('#pm-mode-history').click();
+  await page.locator(`#pm-history-list [data-consult-job="${meta.old}"]`).waitFor();
+  await page.locator(`#pm-history-list [data-consult-job="${meta.old}"]`).click();
+  await page.waitForFunction(()=>document.querySelectorAll('#pm-history-detail-rows tr').length===2);
+  assert.equal(await page.locator(`[data-delete-job="${meta.current}"]`).isDisabled(),true,'paused research must remain protected');
+  await page.locator(`[data-delete-job="${meta.old}"]`).click();
+  await page.locator(`[data-confirm-delete-job="${meta.old}"]`).waitFor();
+  const deletionResponse=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname===`/api/pesquisa-mercado/jobs/${meta.old}`);
+  await page.locator(`[data-confirm-delete-job="${meta.old}"]`).click();
+  assert.equal((await deletionResponse).status(),200);
+  await page.locator(`#pm-history-list [data-consult-job="${meta.old}"]`).waitFor({state:'hidden'});
+  await page.waitForFunction(()=>{const h=window.__jkPesquisaMercadoHistory.state.history;return !h.detailId&&!h.detail&&h.detailItems.length===0&&!h.busy;});
+  assert.equal(await page.locator('#pm-history-detail-body').isVisible(),false,'deleting selected research clears the detail');
+  assert.equal(await page.locator('#pm-history-detail-rows tr').count(),0);
+  assert.match(await page.locator('#pm-history-detail-heading').innerText(),/Selecione uma pesquisa/);
+  assert.equal((await fetch(origin+`/api/pesquisa-mercado/jobs/${meta.old}/ranking`,{headers:{Authorization:'Bearer fixture-alice'}})).status,404,'deleted results cannot be consulted again');
+  const preservedActive=await (await fetch(origin+`/api/pesquisa-mercado/jobs/${meta.current}`,{headers:{Authorization:'Bearer fixture-alice'}})).json();
+  assert.equal(preservedActive.job.status,'paused');
+  assert.deepEqual(await page.evaluate(()=>window.__commands),commands,'deletion never executes pause/resume/cancel on another research');
+  await page.locator('#pm-mode-consolidated').click();
+  await page.waitForFunction(()=>{const c=window.__jkPesquisaMercadoHistory.state.consolidated;return c.loaded&&!c.busy&&c.summary&&c.summary.researches===1;});
+  assert.equal(await page.locator('#pm-consolidated-rows tr').count(),3);
+  const remainingBomba=page.locator('#pm-consolidated-rows tr').filter({hasText:'Bomba de combustível'});
+  assert.match(await remainingBomba.innerText(),/200/);
+  assert.match(await remainingBomba.innerText(),/1 pesquisa/,'consolidated counts exclude the deleted research');
+  await remainingBomba.locator('[data-origin-index]').click();
+  await page.waitForFunction(()=>document.querySelectorAll('#pm-consolidated-origin-list [data-consult-job]').length===1);
+  assert.equal(await page.locator(`#pm-consolidated-origin-list [data-consult-job="${meta.old}"]`).count(),0);
+  assert.equal(await page.locator(`#pm-consolidated-origin-list [data-consult-job="${meta.current}"]`).count(),1);
+  assert.equal(mutations.filter(value=>value.startsWith('DELETE ')).length,1,'one confirmation sends exactly one deletion');
+
+  // Separate synthetic owners keep pagination/empty-state cases independent
+  // from the operational research used above.
+  const deletionScenarios=await (await fetch(origin+'/fixture/deletion-scenarios',{method:'POST'})).json();
+  async function openDeletionScenario(token){
+   const scenarioContext=await browser.newContext({viewport:{width:1440,height:960}});
+   await scenarioContext.addInitScript(token=>{
+    localStorage.setItem('access_token',token);window.__commands=[];
+    const get=async()=> (await fetch('/api/pesquisa-mercado/jobs/latest',{headers:{Authorization:`Bearer ${token}`}})).json();
+    window.electronAPI={getPesquisaMercadoJobStatus:get,onPesquisaMercadoProgress(){return()=>{};}};
+   },token);
+   const scenarioPage=await scenarioContext.newPage();
+   scenarioPage.on('pageerror',error=>errors.push(error.message));
+   scenarioPage.on('dialog',dialog=>{errors.push('Deletion used a native dialog');dialog.dismiss();});
+   await scenarioPage.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort());
+   await scenarioPage.goto(origin+'/pesquisa_mercado.html');
+   await scenarioPage.locator('#pm-mode-history').click();
+   return {context:scenarioContext,page:scenarioPage};
+  }
+  async function confirmDeletion(target,id){
+   await target.locator(`[data-delete-job="${id}"]`).click();
+   await target.locator(`[data-confirm-delete-job="${id}"]`).waitFor();
+   const response=target.waitForResponse(result=>result.request().method()==='DELETE'&&new URL(result.url()).pathname===`/api/pesquisa-mercado/jobs/${id}`);
+   await target.locator(`[data-confirm-delete-job="${id}"]`).click();
+   assert.equal((await response).status(),200);
+   await target.locator(`[data-delete-job="${id}"]`).waitFor({state:'hidden'});
+   await target.waitForFunction(()=>{const h=window.__jkPesquisaMercadoHistory.state.history;return !h.busy&&!h.deleteBusy;});
+  }
+  const pagesCase=await openDeletionScenario('fixture-pages');
+  try{
+   await pagesCase.page.waitForFunction(()=>document.querySelectorAll('#pm-history-list .pm-saved-card').length===25);
+   await pagesCase.page.locator('#pm-history-next').click();
+   await pagesCase.page.waitForFunction(()=>document.querySelectorAll('#pm-history-list .pm-saved-card').length===1);
+   const lastPageId=await pagesCase.page.locator('#pm-history-list [data-delete-job]').getAttribute('data-delete-job');
+   assert.ok(deletionScenarios.pages.includes(lastPageId));
+   await confirmDeletion(pagesCase.page,lastPageId);
+   await pagesCase.page.waitForFunction(()=>{const h=window.__jkPesquisaMercadoHistory.state.history;return h.offset===0&&h.total===25&&h.items.length===25&&!h.busy;});
+   assert.equal(await pagesCase.page.locator('#pm-history-previous').isDisabled(),true);
+   assert.equal(await pagesCase.page.locator('#pm-history-next').isDisabled(),true,'last-page deletion returns to an existing page');
+  }finally{await pagesCase.context.close();}
+  const lastCase=await openDeletionScenario('fixture-last');
+  try{
+   const id=deletionScenarios.last[0];
+   await lastCase.page.locator(`[data-consult-job="${id}"]`).waitFor();
+   await lastCase.page.locator(`[data-consult-job="${id}"]`).click();
+   await lastCase.page.waitForFunction(()=>document.querySelectorAll('#pm-history-detail-rows tr').length===1);
+   await confirmDeletion(lastCase.page,id);
+   await lastCase.page.waitForFunction(()=>{const h=window.__jkPesquisaMercadoHistory.state.history;return h.total===0&&h.items.length===0&&!h.detailId&&!h.detail&&h.detailItems.length===0;});
+   assert.match(await lastCase.page.locator('#pm-history-count').innerText(),/0 pesquisas/);
+   assert.equal(await lastCase.page.locator('#pm-history-list .pm-saved-card').count(),0);
+   assert.match(await lastCase.page.locator('#pm-history-message').innerText(),/Pesquisa apagada|Nenhuma pesquisa/);
+   assert.equal(await lastCase.page.locator('#pm-history-detail-body').isVisible(),false);
+   await lastCase.page.locator('#pm-mode-consolidated').click();
+   await lastCase.page.waitForFunction(()=>{const c=window.__jkPesquisaMercadoHistory.state.consolidated;return c.loaded&&!c.busy&&c.summary&&c.summary.researches===0;});
+   assert.equal(await lastCase.page.locator('#pm-consolidated-rows tr').count(),0,'last research deletion removes all consolidated results');
+  }finally{await lastCase.context.close();}
   assert.deepEqual(errors,[]);
-  console.log('Pesquisa Mercado E2E SQLite/FastAPI/UI: leitura histórica, dedup/latest pending, origens, teclado, progresso independente, pausa ativa e 390 px OK');
+  console.log('Pesquisa Mercado E2E SQLite/FastAPI/UI: leitura histórica, dedup/latest pending, origens, teclado, progresso independente, pausa ativa, exclusão real confirmada/cancelada, páginas, último registro e 390 px OK');
  }finally{
   if(browser)await browser.close();
   if(child.exitCode==null&&child.pid){if(process.platform==='win32')await new Promise(resolve=>execFile('taskkill',['/PID',String(child.pid),'/T','/F'],{windowsHide:true},()=>resolve()));else child.kill('SIGTERM');}

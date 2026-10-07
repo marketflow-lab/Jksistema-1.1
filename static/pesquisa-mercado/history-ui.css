@@ -71,3 +71,10 @@
     .pm-saved-detail-filters select { max-width: none; }
     .pm-saved-pagination { font-size: 11px; }
 }
+
+.pm-saved-card-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.pm-saved-delete { color: #fda4af; border-color: rgba(251, 113, 133, .45); }
+.pm-saved-delete:hover:not(:disabled) { background: rgba(251, 113, 133, .12); }
+.pm-saved-delete-note { margin-top: 9px; }
+.pm-saved-delete-confirm { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(251, 113, 133, .35); }
+.pm-saved-delete-confirm p { margin: 0 0 10px; font-size: 12px; line-height: 1.6; color: #fecdd3; }

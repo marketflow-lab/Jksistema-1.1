@@ -155,7 +155,8 @@ async function main() {
             assert.strictEqual(await page.locator('#pm-global-taxonomy-message').evaluate(element => element.classList.contains('error')), false, 'retry recompõe o estado sem erro');
             assert.strictEqual(await page.locator('.pm-taxonomy-item').count(), 1);
             await page.locator('#pm-global-taxonomy-breadcrumb').getByRole('button', { name: 'Todas as categorias', exact: true }).click();
-            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2
+                && document.getElementById('pm-global-taxonomy-list').getAttribute('aria-busy') === 'false');
         });
         await scenario(async () => {
             await page.getByRole('button', { name: 'Selecionar Ferramentas e ver subcategorias', exact: true }).click();
@@ -219,7 +220,9 @@ async function main() {
         });
         await scenario(async () => {
             await page.locator('#pm-global-taxonomy-breadcrumb').getByRole('button', { name: 'Todas as categorias', exact: true }).click();
-            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2);
+            await page.waitForFunction(() => document.querySelectorAll('.pm-taxonomy-item').length === 2
+                && document.getElementById('pm-global-taxonomy-list').getAttribute('aria-busy') === 'false'
+                && document.getElementById('pm-global-taxonomy-selection').textContent === 'Nenhuma categoria selecionada.');
             assert.match(await page.locator('#pm-global-taxonomy-summary').textContent(), /2 categorias principais.*3 subcategorias.*3 níveis/);
             assert.match(await page.locator('#pm-global-taxonomy-updated').textContent(), /06\/10\/2026/);
             assert.deepStrictEqual(await page.locator('.pm-taxonomy-count').allTextContents(), ['2 subcategorias', 'Último nível']);

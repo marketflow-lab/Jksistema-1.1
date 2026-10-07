@@ -19,6 +19,7 @@
         disposed: false, busy: false, generation: 0, commandSerial: 0
     };
     const pending = new Map();
+    const deletedJobs = new Set();
     let unsubscribe = null;
     let polling = null;
     let debounce = null;
@@ -80,6 +81,7 @@
         const current = window.localStorage.getItem('access_token') || '';
         if (current !== sessionToken) {
             sessionToken = current;
+            deletedJobs.clear();
             state.activeJob = null;
             state.namesLogin = false;
             state.scopeCategory = null;
@@ -205,20 +207,22 @@
         return !!job && ['queued', 'running', 'pausing', 'paused', 'waiting_login'].includes(job.status);
     }
     function renderControls() {
+        const deleting = window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy;
         const status = state.activeJob ? state.activeJob.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status);
         elements.start.disabled = !sessionToken || state.busy || isActive(state.activeJob) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
         elements.pause.disabled = state.busy || !running;
-        elements.resume.disabled = state.busy || !resumable;
-        elements.cancel.disabled = state.busy || !(isActive(state.activeJob) || resumable);
+        elements.resume.disabled = state.busy || !!deleting || !resumable;
+        elements.cancel.disabled = state.busy || !!deleting || !(isActive(state.activeJob) || resumable);
         elements.browser.disabled = state.busy || !(isActive(state.activeJob) || resumable || state.namesLogin);
-        if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
+        if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !!deleting || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
         const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.activeJob);
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
         elements['taxonomy-browser'].disabled = !sessionToken || state.busy || isActive(state.activeJob);
         for (const button of elements['taxonomy-list'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
         for (const button of elements['taxonomy-breadcrumb'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
+        window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-operation-change'));
     }
     function renderScope() {
         elements.scope.textContent = state.scopeCategory ? `Escopo da pesquisa: ${state.scopeCategory.nome}`
@@ -361,9 +365,34 @@
         document.getElementById('pm-active-research-detail').textContent =
             `${state.scopeCategory ? state.scopeCategory.nome : 'Pesquisa geral no ML'} · ${number(job.counters && job.counters.ads || 0)} anúncios salvos`;
     }
+    function clearJob() {
+        state.activeJob = null; state.namesLogin = false; state.scopeCategory = null;
+        state.seller = ''; state.sellers = []; state.offsets = { geral: 0, vendedor: 0 };
+        state.rankings = { geral: null, vendedor: null }; state.generation += 1;
+        elements.category.innerHTML = '<option value="">Todas as categorias</option>'; state.category = '';
+        for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = '0';
+        elements['category-current'].textContent = 'Aguardando categoria';
+        renderScope(); renderActiveResearch(); renderSellers(); renderRanking(); renderControls();
+        showMessage('Escolha uma categoria para iniciar uma pesquisa.');
+    }
+    const onJobDeleted = event => {
+        const jobId = event.detail && event.detail.jobId;
+        if (state.disposed || !jobId) return;
+        currentSession(); deletedJobs.add(jobId);
+        if (state.activeJob && state.activeJob.id === jobId) clearJob();
+    };
+    window.addEventListener('jk-pesquisa-mercado-job-deleted', onJobDeleted);
+    const onDeleteChange = () => { if (!state.disposed) renderControls(); };
+    window.addEventListener('jk-pesquisa-mercado-history-delete-change', onDeleteChange);
+    const canDeleteJob = () => !state.busy && !state.namesBusy && !state.disposed;
+    window.__jkPesquisaMercadoCanDeleteJob = canDeleteJob;
     function updateJob(raw) {
         const job = raw && Object.prototype.hasOwnProperty.call(raw, 'job') ? raw.job : raw;
-        if (!job || !job.id) return false;
+        if (!job || !job.id) {
+            if (raw && Object.prototype.hasOwnProperty.call(raw, 'job') && raw.job === null && state.activeJob) { clearJob(); return true; }
+            return false;
+        }
+        if (deletedJobs.has(job.id)) return false;
         if (state.activeJob && state.activeJob.id === job.id && Number(job.revision) < Number(state.activeJob.revision)) return false;
         const changed = !state.activeJob || state.activeJob.id !== job.id || state.activeJob.revision !== job.revision;
         if (!state.activeJob || state.activeJob.id !== job.id) {
@@ -453,7 +482,7 @@
         const generation = state.generation;
         const base = `/jobs/${encodeURIComponent(jobId)}`;
         const [sellers, categories] = await Promise.all([request(`${base}/vendedores`), request(`${base}/categorias`)]);
-        if (state.disposed || generation !== state.generation || jobId !== state.activeJob.id) { refreshRequested = true; return; }
+        if (state.disposed || generation !== state.generation || !state.activeJob || jobId !== state.activeJob.id) { refreshRequested = true; return; }
         state.sellers = Array.isArray(sellers.items) ? sellers.items : [];
         if (state.seller && !state.sellers.some(seller => seller.seller_key === state.seller)) state.seller = '';
         if (!state.seller && state.sellers.length) state.seller = state.sellers[0].seller_key;
@@ -476,7 +505,7 @@
             if (tab === 'vendedor') params.set('seller_key', state.seller);
             return request(`${base}/ranking?${params}`);
         }));
-        if (state.disposed || generation !== state.generation || jobId !== state.activeJob.id) { refreshRequested = true; return; }
+        if (state.disposed || generation !== state.generation || !state.activeJob || jobId !== state.activeJob.id) { refreshRequested = true; return; }
         tabs.forEach((tab, index) => { state.rankings[tab] = results[index]; });
         renderRanking();
     }
@@ -487,13 +516,14 @@
         refreshTask = (async () => {
             while (refreshRequested && !state.disposed) {
                 refreshRequested = false;
-                try { await loadRankings(); } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
+                const generation = state.generation;
+                try { await loadRankings(); } catch (error) { if (!state.disposed && generation === state.generation) showMessage(userErrorMessage(error), true); }
             }
         })().finally(() => { refreshTask = null; });
         return refreshTask;
     }
     async function refreshNames(jobId) {
-        if (state.busy || state.disposed) throw new Error('Aguarde a operação atual.');
+        if (state.busy || state.disposed || window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy) throw new Error('Aguarde a operação atual.');
         if (!jobId) throw new Error('Escolha uma pesquisa salva.');
         state.busy = state.namesBusy = true; renderControls();
         try {
@@ -510,7 +540,7 @@
     window.__jkPesquisaMercadoRefreshNames = refreshNames;
     window.__jkPesquisaMercadoNamesBrowser = jobId => invoke('browser', { jobId, purpose: 'names' });
     async function command(action) {
-        if (state.busy || state.disposed) return;
+        if (state.busy || state.disposed || window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy) return;
         currentSession();
         if (action === 'refresh-names') {
             showMessage('Consultando os nomes das lojas…');
@@ -552,10 +582,12 @@
         if (synchronizeTask) return synchronizeTask;
         synchronizeTask = (async () => {
             try {
+                currentSession();
+                const generation = state.generation, token = sessionToken;
                 const api = electronApi();
                 const latest = (api && typeof api.getPesquisaMercadoJobStatus === 'function') || window.top !== window
                     ? await invoke('status') : await request('/jobs/latest');
-                if (state.disposed) return;
+                if (state.disposed || generation !== state.generation || currentSession() !== token) return;
                 if (updateJob(latest)) await refresh();
                 else if (latest && latest.job == null && !state.activeJob) renderControls();
             } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
@@ -675,6 +707,9 @@
         window.clearTimeout(debounce);
         window.removeEventListener('message', onMessage);
         window.removeEventListener('storage', onStorage);
+        window.removeEventListener('jk-pesquisa-mercado-job-deleted', onJobDeleted);
+        window.removeEventListener('jk-pesquisa-mercado-history-delete-change', onDeleteChange);
+        if (window.__jkPesquisaMercadoCanDeleteJob === canDeleteJob) delete window.__jkPesquisaMercadoCanDeleteJob;
         for (const item of pending.values()) {
             window.clearTimeout(item.timer);
             item.reject(new Error('A tela foi fechada.'));
