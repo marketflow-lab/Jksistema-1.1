@@ -1431,13 +1431,16 @@ def _promo_ajustar_preco_painel_seller_campaign(
     raw_campanha: dict,
     promotion_type: str,
     promocoes_item,
+    *,
+    campaign_id_esperado: str = "",
+    item_id_esperado: str = "",
 ) -> dict:
-    """Replica a escolha de preco exibida pelo painel para campanha flexivel.
+    """Aplica a regra de proposta do sistema a campanhas flexiveis.
 
-    Em candidato SELLER_CAMPAIGN, a API publica devolve um limite maximo e uma
-    sugestao. O painel usa a sugestao somente quando ela coincide com uma
-    oferta SMART ainda candidata/elegivel do anuncio; nos demais casos exibe o
-    limite maximo. Precos efetivamente ativos continuam vindo de ``price``.
+    Usa o maior preco permitido (menor desconto) em candidatos. Preserva a
+    compatibilidade com a sugestao de uma SMART candidata/elegivel do mesmo
+    anuncio. Precos ativos, boosts e arquivos explicitos seguem seus fluxos.
+    O nome e a chave de metadados existentes sao mantidos por compatibilidade.
     """
     if not isinstance(raw_campanha, dict):
         return raw_campanha
@@ -1448,10 +1451,22 @@ def _promo_ajustar_preco_painel_seller_campaign(
         or raw_campanha.get("type")
         or ""
     ).strip().upper()
-    if tipo not in {"SELLER_CAMPAIGN", "SELLER_CAMPAIGNS"}:
+    if tipo not in {"DEAL", "SELLER_CAMPAIGN", "SELLER_CAMPAIGNS"}:
         return raw_campanha
 
+    if campaign_id_esperado or item_id_esperado:
+        campaign_id, tipo_confirmado, item_id, confirmado = _promo_identidade_financeira_raw(raw_campanha)
+        if (
+            not confirmado
+            or campaign_id.lower() != str(campaign_id_esperado).strip().lower()
+            or tipo_confirmado.upper() != tipo
+            or item_id.upper() != str(item_id_esperado).strip().upper()
+        ):
+            return raw_campanha
+
     subtipo = str(raw_campanha.get("sub_type") or raw_campanha.get("subType") or "").strip().upper()
+    if tipo == "DEAL" and subtipo != "FLEXIBLE_PERCENTAGE":
+        return raw_campanha
     if subtipo and subtipo != "FLEXIBLE_PERCENTAGE":
         return raw_campanha
 
@@ -1464,16 +1479,48 @@ def _promo_ajustar_preco_painel_seller_campaign(
     if status not in {"candidate", "eligible"}:
         return raw_campanha
 
+    boosted_raw = raw_campanha.get("boosted_offer")
+    if (
+        boosted_raw is True
+        or (isinstance(boosted_raw, (int, float)) and not isinstance(boosted_raw, bool) and boosted_raw == 1)
+        or str(boosted_raw or "").strip().lower() in {"true", "1", "yes", "sim"}
+    ):
+        return raw_campanha
+
     preco_maximo = _parse_float_flex(raw_campanha.get("max_discounted_price"))
     preco_sugerido = _parse_float_flex(raw_campanha.get("suggested_discounted_price"))
-    if preco_maximo is None or preco_maximo <= 0:
+    preco_minimo = _parse_float_flex(raw_campanha.get("min_discounted_price"))
+    if preco_maximo is None or not math.isfinite(preco_maximo) or preco_maximo <= 0:
+        return raw_campanha
+    if preco_minimo is not None and (
+        not math.isfinite(preco_minimo) or preco_minimo < 0 or preco_minimo > preco_maximo
+    ):
         return raw_campanha
 
     preco_painel = float(preco_maximo)
     fonte = "max_discounted_price"
-    if preco_sugerido is not None and preco_sugerido > 0:
+    item_referencia = str(item_id_esperado or raw_campanha.get("_jk_item_id_consultado") or raw_campanha.get("item_id") or "").strip().upper()
+    if (
+        preco_sugerido is not None
+        and math.isfinite(preco_sugerido)
+        and max(preco_minimo or 0, 0) <= preco_sugerido <= preco_maximo
+        and preco_sugerido > 0
+    ):
         for promocao in promocoes_item or []:
             if not isinstance(promocao, dict):
+                continue
+            itens_explicitos = _promo_raw_valores_explicitos(promocao, ("item_id", "itemId", "mlb"))
+            item_raw = promocao.get("item")
+            if isinstance(item_raw, dict) and item_raw.get("id"):
+                itens_explicitos.add(str(item_raw["id"]).strip())
+            elif isinstance(item_raw, str):
+                itens_explicitos.add(item_raw.strip())
+            raw_id = str(promocao.get("id") or "").strip()
+            if raw_id.upper().startswith("MLB"):
+                itens_explicitos.add(raw_id)
+            for oferta in _promo_raw_valores_explicitos(promocao, ("offer_id", "offerId", "ref_id", "refId")):
+                itens_explicitos.update(re.findall(r"MLB\d+", oferta.upper()))
+            if item_referencia and any(item.upper() != item_referencia for item in itens_explicitos):
                 continue
             tipo_item = str(promocao.get("promotion_type") or promocao.get("type") or "").strip().upper()
             status_item = str(promocao.get("status") or promocao.get("status_item") or "").strip().lower()
@@ -1636,6 +1683,10 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                 raw_b_detalhe_acao = dict(detalhe_b)
                 raw_b_item = detalhe_b
         raw_b_participacao = dict(raw_b_detalhe_acao or raw_b_origem_acao or raw_b_item) if isinstance(raw_b_item, dict) else {}
+        raw_b_participacao = _promo_ajustar_preco_painel_seller_campaign(
+            raw_b_participacao, promo_b_type, promocoes_item_a,
+            campaign_id_esperado=promo_b, item_id_esperado=item_id,
+        )
         offer_id_participacao = _ml_promocao_raw_offer_id(raw_b_participacao)
         preco_b_acao_raw, desc_b_acao_raw = _ml_extrair_preco_promocao_raw(
             raw_b_participacao,
@@ -1729,7 +1780,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
         frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
-        custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
+        custo = _resolver_maior_custo_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
         if imposto_rate is None:
             imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku_display)
@@ -2242,6 +2293,10 @@ async def analisar_promo_via_api_sem_arquivos(
                 if not raw_b_item:
                     raw_b_item = {}
         raw_b_participacao = dict(raw_b_detalhe_acao or raw_b_origem_acao or raw_b_item) if isinstance(raw_b_item, dict) else {}
+        raw_b_participacao = _promo_ajustar_preco_painel_seller_campaign(
+            raw_b_participacao, promo_meta.get("promo_b_type") or "", promocoes_item_a,
+            campaign_id_esperado=promo_meta["promo_b"], item_id_esperado=item_id,
+        )
         offer_id_participacao = _ml_promocao_raw_offer_id(raw_b_participacao)
         preco_b_acao_raw, desc_b_acao_raw = _ml_extrair_preco_promocao_raw(
             raw_b_participacao,
@@ -2381,7 +2436,7 @@ async def analisar_promo_via_api_sem_arquivos(
         frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
         frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
-        custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
+        custo = _resolver_maior_custo_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
         if imposto_rate is None:
             imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku_display)
@@ -3078,6 +3133,10 @@ async def analisar_promo_via_api_com_arquivos(
             except Exception:
                 raw_b_item = {}
         raw_b_participacao = dict(raw_b_item) if isinstance(raw_b_item, dict) else {}
+        raw_b_participacao = _promo_ajustar_preco_painel_seller_campaign(
+            raw_b_participacao, promo_b_type, promocoes_item_a,
+            campaign_id_esperado=promo_b_id, item_id_esperado=item_id,
+        )
         offer_id_participacao = _ml_promocao_raw_offer_id(raw_b_participacao)
         preco_b_acao_raw, desc_b_acao_raw = _ml_extrair_preco_promocao_raw(
             raw_b_participacao,
@@ -3177,7 +3236,7 @@ async def analisar_promo_via_api_com_arquivos(
         frete_gratis_a_api = bool(shipping_data_a.get("free_shipping")) or (buyer_cost_a is not None and buyer_cost_a <= 0)
         frete_gratis_b_api = bool(shipping_data_b.get("free_shipping")) or (buyer_cost_b is not None and buyer_cost_b <= 0)
 
-        custo = _resolver_custo_medio_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display, sku_base])
+        custo = _resolver_maior_custo_por_skus(custos_por_sku, skus_variacoes or [sku, sku_display, sku_base])
         imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku)
         if imposto_rate is None:
             imposto_rate = _resolver_imposto_rate_por_sku(impostos_por_sku, sku_display)
@@ -3606,7 +3665,12 @@ async def analisar_promo_automatico(
             desconto_pct = ((preco_original - preco_atual) / preco_original) * 100.0
         desconto_pct = desconto_pct or 0.0
 
-        custo = _resolver_custo_medio_por_skus(custos_por_sku, sku)
+        skus_variacoes = [
+            variacao.get("sku")
+            for variacao in item.get("variations") or []
+            if isinstance(variacao, dict) and variacao.get("sku")
+        ]
+        custo = _resolver_maior_custo_por_skus(custos_por_sku, skus_variacoes or sku)
         margem_pct = None
         if custo is not None and preco_atual > 0:
             margem_pct = ((preco_atual - float(custo)) / preco_atual) * 100.0

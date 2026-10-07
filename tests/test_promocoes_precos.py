@@ -150,6 +150,103 @@ class PromocoesPrecosTests(unittest.TestCase):
 
         self.assertEqual(ajustado["_jk_preco_painel_seller_campaign"], 73.05)
 
+    def test_deal_flexivel_propoe_maior_preco_permitido(self):
+        # Cenario de proposta: os limites anteriores do anuncio real nao estao
+        # disponiveis depois que a participacao passa a started.
+        payload = {
+            "id": "P-DEAL-TESTE", "type": "DEAL", "item_id": "MLB1988895735",
+            "status": "candidate", "sub_type": "FLEXIBLE_PERCENTAGE",
+            "price": 0, "original_price": 126.46,
+            "suggested_discounted_price": 91.74,
+            "min_discounted_price": 75.88, "max_discounted_price": 120.13,
+            "_jk_contexto_promocao_confirmado": True,
+            "_jk_campaign_id_consultado": "P-DEAL-TESTE",
+            "_jk_promotion_type_consultado": "DEAL",
+            "_jk_item_id_consultado": "MLB1988895735",
+        }
+        for tipo in ("DEAL", "SELLER_CAMPAIGN"):
+            with self.subTest(tipo=tipo):
+                raw = dict(payload, type=tipo, _jk_promotion_type_consultado=tipo)
+                adjusted = analise._promo_ajustar_preco_painel_seller_campaign(
+                    raw, tipo, [], campaign_id_esperado="P-DEAL-TESTE",
+                    item_id_esperado="MLB1988895735",
+                )
+                price, discount = pricing._ml_extrair_preco_promocao_raw(adjusted)
+                self.assertEqual(price, 120.13)
+                self.assertAlmostEqual(discount, (126.46 - 120.13) / 126.46 * 100)
+                self.assertNotIn("_jk_preco_painel_seller_campaign", raw)
+
+    def test_deal_preserva_preco_ativo_e_modalidades_sem_proposta_flexivel(self):
+        raw = {
+            "type": "DEAL", "status": "candidate", "price": 91.74,
+            "sub_type": "FLEXIBLE_PERCENTAGE", "original_price": 126.46,
+            "suggested_discounted_price": 91.74, "max_discounted_price": 120.13,
+        }
+        casos = (
+            {"status": "started"}, {"status": "pending"},
+            {"sub_type": "FIXED_AMOUNT"}, {"sub_type": ""},
+            {"boosted_offer": True, "total_price_for_boosted_offer": 88.99},
+        )
+        for mudancas in casos:
+            with self.subTest(mudancas=mudancas):
+                payload = dict(raw, **mudancas)
+                adjusted = analise._promo_ajustar_preco_painel_seller_campaign(payload, "DEAL", [])
+                self.assertIs(adjusted, payload)
+                price, _discount = pricing._ml_extrair_preco_promocao_raw(adjusted)
+                self.assertEqual(price, mudancas.get("total_price_for_boosted_offer", 91.74))
+
+    def test_deal_nao_ajusta_contexto_divergente_ou_nao_confirmado(self):
+        raw = {
+            "id": "P-DEAL-TESTE", "type": "DEAL", "item_id": "MLB1988895735",
+            "status": "candidate", "sub_type": "FLEXIBLE_PERCENTAGE",
+            "suggested_discounted_price": 91.74, "max_discounted_price": 120.13,
+            "_jk_contexto_promocao_confirmado": True,
+            "_jk_campaign_id_consultado": "P-DEAL-TESTE",
+            "_jk_promotion_type_consultado": "DEAL",
+            "_jk_item_id_consultado": "MLB1988895735",
+        }
+        for mudancas in (
+            {"id": "P-OUTRA"}, {"item_id": "MLB888"},
+            {"type": "SMART"}, {"_jk_contexto_promocao_confirmado": False},
+        ):
+            with self.subTest(mudancas=mudancas):
+                payload = dict(raw, **mudancas)
+                adjusted = analise._promo_ajustar_preco_painel_seller_campaign(
+                    payload, "DEAL", [], campaign_id_esperado="P-DEAL-TESTE",
+                    item_id_esperado="MLB1988895735",
+                )
+                self.assertIs(adjusted, payload)
+
+    def test_smart_sugerida_precisa_ser_candidata_do_item_e_dentro_dos_limites(self):
+        raw = {
+            "type": "DEAL", "item_id": "MLB1988895735", "status": "candidate",
+            "sub_type": "FLEXIBLE_PERCENTAGE", "suggested_discounted_price": 91.74,
+            "min_discounted_price": 75.88, "max_discounted_price": 120.13,
+        }
+        smart = {"type": "SMART", "item_id": "MLB1988895735", "status": "candidate", "price": 91.74}
+        casos = (
+            ({}, {}, 91.74),
+            ({}, {"status": "started"}, 120.13),
+            ({}, {"item_id": "MLB888"}, 120.13),
+            ({}, {"itemId": "MLB888"}, 120.13),
+            ({}, {"item": {"id": "MLB888"}}, 120.13),
+            ({}, {"id": "MLB888"}, 120.13),
+            ({}, {"offer_id": "OFFER-MLB888-1"}, 120.13),
+            ({}, {"refId": "CANDIDATE-MLB888-1"}, 120.13),
+            ({"min_discounted_price": 100}, {}, 120.13),
+            ({"suggested_discounted_price": 130}, {"price": 130}, 120.13),
+        )
+        for candidato, oferta, esperado in casos:
+            with self.subTest(candidato=candidato, oferta=oferta):
+                adjusted = analise._promo_ajustar_preco_painel_seller_campaign(
+                    dict(raw, **candidato), "DEAL", [dict(smart, **oferta)],
+                )
+                self.assertEqual(adjusted["_jk_preco_painel_seller_campaign"], esperado)
+        for mudancas in ({"max_discounted_price": float("inf")}, {"min_discounted_price": 130}):
+            with self.subTest(mudancas=mudancas):
+                payload = dict(raw, **mudancas)
+                self.assertIs(analise._promo_ajustar_preco_painel_seller_campaign(payload, "DEAL", [smart]), payload)
+
     def test_caso_real_boost_usa_preco_final_ativo(self):
         payload = {
             "promotion_id": "P-AGOSTO-TOP-ITENS",

@@ -400,6 +400,16 @@ def _resolver_custo_medio_por_skus(custos_por_sku: dict, *sku_valores):
     return sum(custos) / len(custos)
 
 
+def _resolver_maior_custo_por_skus(custos_por_sku: dict, *sku_valores):
+    """Usa o maior custo cadastrado entre os SKUs das variacoes do anuncio."""
+    custos = []
+    for sku in _extrair_skus_para_custo(*sku_valores):
+        custo = _parse_float_flex(_resolver_custo_por_sku(custos_por_sku, sku))
+        if custo is not None and math.isfinite(custo) and custo >= 0:
+            custos.append(float(custo))
+    return max(custos) if custos else None
+
+
 def _resolver_imposto_rate_por_sku(impostos_por_sku: dict, sku_bruto: str):
     if not sku_bruto:
         return None
@@ -426,7 +436,7 @@ def _to_rate_safe(v):
     # Aceita tanto 12 quanto 0.12 como entrada de percentual.
     return (float(x) / 100.0) if float(x) > 1.0 else float(x)
 
-PEER_EXPORTS = ['_listar_arquivos_cadastro_custos', '_iterar_dfs_cadastro_custos', 'invalidar_cache_custos_impostos', '_carregar_custos_cadastro_por_sku', '_carregar_impostos_cadastro_por_sku', '_carregar_custos_impostos_cadastro_por_sku_loja', '_resolver_custo_por_sku', '_extrair_skus_para_custo', '_resolver_custo_medio_por_skus', '_resolver_imposto_rate_por_sku', '_to_float_safe', '_to_rate_safe']
+PEER_EXPORTS = ['_listar_arquivos_cadastro_custos', '_iterar_dfs_cadastro_custos', 'invalidar_cache_custos_impostos', '_carregar_custos_cadastro_por_sku', '_carregar_impostos_cadastro_por_sku', '_carregar_custos_impostos_cadastro_por_sku_loja', '_resolver_custo_por_sku', '_extrair_skus_para_custo', '_resolver_custo_medio_por_skus', '_resolver_maior_custo_por_skus', '_resolver_imposto_rate_por_sku', '_to_float_safe', '_to_rate_safe']
 __all__ = PEER_EXPORTS + ["configure_promocoes_core_custos_runtime"]
 
 configure_promocoes_core_custos_runtime()

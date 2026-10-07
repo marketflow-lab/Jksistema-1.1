@@ -63,6 +63,30 @@ class PromocoesCustosCacheTests(unittest.TestCase):
         time.sleep(0.04)
         yield self.dataframe.copy(), str(self.cadastro)
 
+    def test_variacoes_usam_maior_custo_e_preservam_media_para_outros_modulos(self):
+        mapa = {"79": 23.71, "78": 28.39}
+        self.assertEqual(custos._resolver_maior_custo_por_skus(mapa, "79 / 78"), 28.39)
+        self.assertEqual(custos._resolver_custo_medio_por_skus(mapa, "79 / 78"), 26.05)
+
+    def test_maior_custo_considera_todas_variacoes_e_skus_repetidos(self):
+        mapa = {"A": 10, "B": 12, "C": 14, "D": 16, "E": 40}
+        self.assertEqual(
+            custos._resolver_maior_custo_por_skus(mapa, ["A", "B", "C", "D", "E", "A"]),
+            40,
+        )
+
+    def test_maior_custo_preserva_sku_unico_zero_e_custo_ausente(self):
+        mapa = {"A": 28.39, "ZERO": 0}
+        self.assertEqual(custos._resolver_maior_custo_por_skus(mapa, "A"), 28.39)
+        self.assertEqual(custos._resolver_maior_custo_por_skus(mapa, "ZERO / AUSENTE"), 0)
+        self.assertEqual(custos._resolver_maior_custo_por_skus(mapa, "A / AUSENTE"), 28.39)
+        self.assertIsNone(custos._resolver_maior_custo_por_skus(mapa, "AUSENTE"))
+
+    def test_maior_custo_ignora_valores_invalidos(self):
+        mapa = {"A": -10, "B": float("inf"), "C": float("nan"), "D": 40}
+        self.assertEqual(custos._resolver_maior_custo_por_skus(mapa, list(mapa)), 40)
+        self.assertIsNone(custos._resolver_maior_custo_por_skus(mapa, ["A", "B", "C"]))
+
     def test_second_lookup_is_cached_and_returns_independent_maps(self):
         started = time.perf_counter()
         first_custos, first_impostos = custos._carregar_custos_impostos_base("cliente", False)

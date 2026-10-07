@@ -1258,6 +1258,10 @@ def montar_analise_promo_local(dfs_candidatos):
         custo_por_sku = custo_por_sku_opt
         imposto_por_sku = imposto_por_sku_opt
 
+    def _buscar_maior_custo_por_sku(sku_val: str) -> str:
+        custo = _resolver_maior_custo_por_skus(custo_por_sku, sku_val)
+        return formatar_moeda_br(custo) if custo is not None else ""
+
     def _buscar_valor_por_sku(mapa_valores: dict, sku_val: str) -> str:
         sku_val = _txt_clean(sku_val)
         if not sku_val:
@@ -1361,7 +1365,7 @@ def montar_analise_promo_local(dfs_candidatos):
                     }
                     break
         frete_final = _buscar_frete_por_sku_ou_mlb(sku_final, key_item)
-        custo_final = _buscar_valor_por_sku(custo_por_sku, sku_final)
+        custo_final = _buscar_maior_custo_por_sku(sku_final)
         imposto_pct_final = _buscar_valor_por_sku(imposto_por_sku, sku_final)
         preco_final_ml = promo_ml_info.get("PreÃ§o Final ML") or mml
         if preco_final_ml == m21 and not promo_ml_info.get("PreÃ§o Final ML"):
@@ -1427,7 +1431,7 @@ def montar_analise_promo_local(dfs_candidatos):
                 'SKU': sku_promo,
                 'TÃ­tulo': titulo_promo,
                 'Frete': _buscar_frete_por_sku_ou_mlb(sku_promo, k),
-                'Custo': _buscar_valor_por_sku(custo_por_sku, sku_promo),
+                'Custo': _buscar_maior_custo_por_sku(sku_promo),
                 'Imposto %': _buscar_valor_por_sku(imposto_por_sku, sku_promo),
                 'SituaÃƒÂ§ÃƒÂ£o': fixa_status_por_item.get(k, 'Ativo' if k in fixa_mlbs_set else 'Sem promocao fixa'),
                 'Status': fixa_status_por_item.get(k, 'Ativo' if k in fixa_mlbs_set else 'Sem promocao fixa'),

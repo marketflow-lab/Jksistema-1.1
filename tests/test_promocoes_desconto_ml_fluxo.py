@@ -9,7 +9,7 @@ from backend.services import mercadolivre_legacy_core as mlcore
 from backend.services import mercadolivre_legacy_promocoes as promotions
 from backend.services import promocoes_api_analise as analysis
 from backend.services import promocoes_api_jobs as jobs
-from backend.services import promocoes_core
+from backend.services import promocoes_core, cadastro_common
 
 
 ITEM_ID = "MLB999000111"
@@ -27,11 +27,15 @@ def _valor_por_sufixo(row: dict, sufixo: str):
 class PromocoesDescontoMlFluxoTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        promocoes_core.configure_promocoes_core_runtime(peers={
+            "_normalizar_sku_mes": cadastro_common._normalizar_sku_mes,
+        })
         core_peers = {
             nome: getattr(promocoes_core, nome)
             for nome in promocoes_core.__all__
             if hasattr(promocoes_core, nome)
         }
+        core_peers["_normalizar_sku_mes"] = cadastro_common._normalizar_sku_mes
         mlcore.configure_mercadolivre_legacy_core_runtime(peers=core_peers)
         peers = dict(core_peers)
         peers.update({
@@ -53,6 +57,8 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         frete_b_data: dict | None = None,
         promocoes_item: list[dict] | None = None,
         custo: float = 18.38,
+        custos_por_sku: dict | None = None,
+        variacoes: list[dict] | None = None,
         imposto_rate: float = 0.24,
         com_arquivos: bool = False,
         promo_b_id: str = PROMO_B_ID,
@@ -170,10 +176,17 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             patch.object(analysis, "_ml_listar_itens_promocao_com_raw", side_effect=listar_a),
             patch.object(analysis, "_ml_listar_itens_promocao_multistatus_com_raw", side_effect=listar_b),
             patch.object(analysis, "_ml_buscar_itens_batch", side_effect=lambda *a, **k: ([copy.deepcopy(item)], a[2])),
-            patch.object(analysis, "_carregar_custos_impostos_cadastro_por_sku_loja", return_value=({}, {})),
-            patch.object(analysis, "_resolver_custo_medio_por_skus", return_value=custo),
+            patch.object(analysis, "_carregar_custos_impostos_cadastro_por_sku_loja", return_value=(custos_por_sku or {}, {})),
+            patch.object(
+                analysis,
+                "_resolver_maior_custo_por_skus",
+                side_effect=lambda mapa, *skus: (
+                    promocoes_core._resolver_maior_custo_por_skus(mapa, *skus)
+                    if custos_por_sku is not None else custo
+                ),
+            ),
             patch.object(analysis, "_resolver_imposto_rate_por_sku", return_value=imposto_rate),
-            patch.object(analysis, "_ml_extrair_variacoes_resumo", return_value=[]),
+            patch.object(analysis, "_ml_extrair_variacoes_resumo", return_value=variacoes or []),
             patch.object(analysis, "_ml_obter_item_promocao_raw", side_effect=detalhar),
             patch.object(
                 analysis,
@@ -272,6 +285,134 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         if retornar_resultado:
             return resultado
         return capturadas[0], resultado["analises"][0]["data"][0]
+
+    def test_proposta_flexivel_b_usa_mesmo_preco_no_financeiro_e_na_exibicao(self):
+        raw = {
+            "id": "P-DEAL-TESTE", "type": "DEAL", "status": "candidate",
+            "sub_type": "FLEXIBLE_PERCENTAGE", "original_price": 126.46,
+            "price": 0, "suggested_discounted_price": 91.74,
+            "max_discounted_price": 120.13, "min_discounted_price": 75.88,
+        }
+        for tipo in ("DEAL", "SELLER_CAMPAIGN"):
+            for modo in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+                with self.subTest(tipo=tipo, modo=modo):
+                    interna, saida = self._executar_fluxo(
+                        dict(raw, type=tipo), promo_b_id="P-DEAL-TESTE", promo_b_type=tipo,
+                        price_info={"price": 99.90, "standard_price": 126.46, "original_price": 126.46},
+                        custo=28.39, imposto_rate=0.20, preco_arquivo=120.13,
+                        fee_por_preco={120.13: {"ad_cost": 19.82}},
+                        frete_b_data={"shipping_cost": 18.15}, **modo,
+                    )
+                    self.assertEqual(saida["action_deal_price"], 120.13)
+                    self.assertEqual(saida["deal_price"], 120.13)
+                    self.assertEqual(_valor_por_sufixo(saida, "o Final ML"), "R$ 120,13")
+                    self.assertEqual(saida["Imposto ML"], "R$ 24,03")
+                    self.assertEqual(interna["action_valor_liquido_ml"], 29.74)
+                    self.assertAlmostEqual(interna["action_margem_ml"], 29.744 / 120.13 * 100)
+                    self.assertEqual(saida["Margem ML"], "24,76%")
+                    self.assertTrue(saida["action_financeiro_estimado"])
+                    self.assertFalse(saida["action_financeiro_exato"])
+
+    def test_deal_started_mantem_preco_da_participacao_nos_tres_fluxos(self):
+        # Forma atual obtida para a participacao 10.10: started a 91,74 sem limites.
+        raw = {"id": "P-MLB18061082", "type": "DEAL", "status": "started", "price": 91.74, "original_price": 126.46}
+        for modo in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            with self.subTest(modo=modo):
+                interna, saida = self._executar_fluxo(
+                    raw, promo_b_id="P-MLB18061082", promo_b_type="DEAL",
+                    preco_arquivo=91.74, **modo,
+                )
+                self.assertEqual(saida["action_deal_price"], 91.74)
+                self.assertEqual(saida["deal_price"], 91.74)
+                self.assertEqual(_valor_por_sufixo(saida, "o Final ML"), "R$ 91,74")
+                self.assertTrue(interna["action_ja_participa"])
+
+    def test_preco_explicito_do_arquivo_prevalece_sobre_proposta_flexivel(self):
+        raw = {
+            "id": "P-DEAL-TESTE", "type": "DEAL", "status": "candidate",
+            "sub_type": "FLEXIBLE_PERCENTAGE", "original_price": 126.46,
+            "suggested_discounted_price": 91.74, "max_discounted_price": 120.13,
+        }
+        interna, saida = self._executar_fluxo(
+            raw, promo_b_id="P-DEAL-TESTE", promo_b_type="DEAL",
+            com_arquivos=True, preco_arquivo=105.50,
+        )
+        self.assertEqual(interna["action_deal_price"], 105.50)
+        self.assertEqual(_valor_por_sufixo(saida, "o Final ML"), "R$ 105,50")
+
+    def test_maior_custo_da_variacao_alimenta_margens_nos_tres_fluxos(self):
+        raw_b = {
+            "id": PROMO_B_ID, "type": "SMART", "status": "started",
+            "price": 114.22, "original_price": 149.24,
+        }
+        mapa = {"A": 10, "B": 12, "C": 14, "D": 16, "E": 40}
+        variacoes = [{"sku": sku} for sku in mapa]
+        for modo in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            with self.subTest(modo=modo):
+                _base, referencia = self._executar_fluxo(raw_b, custo=40, **modo)
+                interna, exibida = self._executar_fluxo(
+                    raw_b, custos_por_sku=mapa, variacoes=variacoes, **modo,
+                )
+                self.assertEqual(exibida["Custo"], "R$ 40,00")
+                self.assertEqual(interna["SKU"], "A / B / C / D")
+                self.assertEqual(exibida["SKU"], "A / B / C / D")
+                self.assertEqual(
+                    _valor_por_sufixo(exibida, "quido ML"),
+                    _valor_por_sufixo(referencia, "quido ML"),
+                )
+                self.assertEqual(interna["action_margem_ml"], _base["action_margem_ml"])
+                self.assertEqual(interna["action_valor_liquido_ml"], _base["action_valor_liquido_ml"])
+                self.assertEqual(exibida["Margem"], referencia["Margem"])
+                self.assertEqual(exibida["Margem ML"], referencia["Margem ML"])
+
+    def test_analise_automatica_considera_variacao_mais_cara_fora_do_sku_exibido(self):
+        anuncio = {
+            "id": ITEM_ID, "sku": "A / B / C / D", "price": 100,
+            "variations": [{"sku": sku} for sku in ("A", "B", "C", "D", "E")],
+        }
+        with (
+            patch.object(analysis, "listar_anuncios_mercado_livre", return_value={"results": [anuncio]}, create=True),
+            patch.object(analysis, "_salvar_planilha_analise_promo", return_value=None),
+            patch.object(analysis, "_carregar_custos_impostos_cadastro_por_sku_loja", return_value=(
+                {"A": 10, "B": 12, "C": 14, "D": 16, "E": 40}, {},
+            )),
+        ):
+            resultado = asyncio.run(analysis.analisar_promo_automatico(
+                loja="Loja Teste", margem_minima=70, client_id="000002",
+            ))
+        linha = resultado["data"][0]
+        self.assertEqual(linha["Custo"], "R$ 40,00")
+        self.assertEqual(linha["Margem %"], "60%")
+
+    def test_analise_local_usa_maior_custo_nas_duas_montagens(self):
+        base = analysis.pd.DataFrame([{
+            "ITEM_ID": "MLB100", "SKU": "A / B", "TITLE": "Produto",
+            "STATUS": "active", "DISCOUNT_PERCENTAGE": 10,
+        }])
+        promo = analysis.pd.DataFrame([
+            {"ITEM_ID": "MLB200", "SKU": "A / B", "FINAL_PRICE": 90},
+            {"ITEM_ID": "MLB100", "SKU": "A / B", "FINAL_PRICE": 90},
+        ])
+        promo.attrs["tipo_detectado"] = "promo_ml"
+        custos = analysis.pd.DataFrame([
+            {"SKU": "A", "CUSTO": "10,00", "IMPOSTO": "20"},
+            {"SKU": "B", "CUSTO": "40,00", "IMPOSTO": "20"},
+        ])
+        custos.attrs["tipo_detectado"] = "custo"
+        for fallback in (False, True):
+            with self.subTest(fallback=fallback):
+                from backend.services import promocoes_core_analise as local
+                original = local._preprocessar_todos_indices_otimizado
+                with patch.object(
+                    local, "_preprocessar_todos_indices_otimizado",
+                    side_effect=RuntimeError("fallback de teste") if fallback else original,
+                ):
+                    linhas = promocoes_core.montar_analise_promo_local([
+                        base.copy(deep=True), promo.copy(deep=True), custos.copy(deep=True),
+                    ])
+                esperados = ["MLB200", "MLB100"]
+                self.assertEqual([linha["MLB"] for linha in linhas], esperados)
+                self.assertEqual([linha["Custo"] for linha in linhas], ["R$ 40,00"] * len(esperados))
 
     def test_resultado_zero_explica_filtro_sem_liberar_participacoes(self):
         raw_b = {
