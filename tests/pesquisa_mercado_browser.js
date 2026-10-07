@@ -21,6 +21,7 @@ function functionSource(relative, name) {
 
 function harness(saved = [], options = {}) {
     const events = [];
+    const fixtureNameSellers = clone(options.sellers || []);
     const requests = [];
     const windows = [];
     const jobs = new Map(saved.map(job => [job.id, clone(job)]));
@@ -137,9 +138,20 @@ function harness(saved = [], options = {}) {
             jobs.set(job.id, job);
             return { status: 200, data: { job: clone(job) } };
         }
-        const match = options.path.match(/^\/api\/pesquisa-mercado\/jobs\/([^/]+)(\/checkpoint)?$/);
+        const match = options.path.match(/^\/api\/pesquisa-mercado\/jobs\/([^/]+)(\/(?:checkpoint|vendedores|nomes))?$/);
         const job = match && jobs.get(decodeURIComponent(match[1]));
         if (!job || job.owner !== owner) return { status: 404, data: { detail: 'Pesquisa não encontrada.' } };
+        if (options.method === 'GET' && match[2] === '/vendedores') return { status: 200, data: { items: clone(fixtureNameSellers) } };
+        if (options.method === 'PUT' && match[2] === '/nomes') {
+            const body = JSON.parse(payload);
+            for (const update of body.updates) {
+                const seller = fixtureNameSellers.find(item => item.seller_key === update.seller_key);
+                if (seller) seller.nome = update.nome;
+            }
+            job.revision += 1;
+            return { status: 200, data: { updated: body.updates.length,
+                pending: fixtureNameSellers.filter(item => !runnerModule.cleanSellerName(item.nome, item.id)).length, job: clone(job) } };
+        }
         if (options.method === 'PATCH' && match[2]) {
             Object.assign(job, clone(JSON.parse(payload)), { revision: job.revision + 1 });
             events.push({ type: 'persist', status: job.status, owner });
@@ -576,7 +588,37 @@ async function testPublicVehicleUrlsPreserveTrailingSlash() {
     } finally { await resumed.api.quit(); }
 
 }
+async function testNamesCommandOwnershipAndRecovery() {
+    const profile = 'https://lista.mercadolivre.com.br/_CustId_123';
+    const h = harness([
+        { id: 'old-names', owner: 'one', status: 'completed', revision: 4, counters: { ads: 48 }, checkpoint: { phase: 'completed' } },
+        { id: 'another-paused', owner: 'one', status: 'paused', revision: 7, counters: { ads: 15 }, checkpoint: { phase: 'seller' } }
+    ], { sellers: [{ seller_key: 'id:123', key: 'id:123', id: '123', nome: 'Nome pendente — vendedor 123', perfilUrl: profile, name_pending: true }],
+        categoryPages: { [profile]: { sellerId: '123', perfilUrl: profile, vendedor: 'Loja confirmada', readyState: 'complete' } } });
+    const runner = h.api.coordinator();
+    runner.job = clone(h.jobs.get('another-paused')); runner.checkpoint = clone(runner.job.checkpoint);
+    const previous = clone(runner.job), checkpoint = clone(runner.checkpoint);
+    try {
+        await assert.rejects(h.command('refresh-names', 'two', 'old-names'), /Pesquisa não encontrada/);
+        assert.strictEqual(h.windows.length, 0, 'exact ownership is required before profile navigation');
+        const result = await h.command('refresh-names', 'one', 'old-names');
+        assert.strictEqual(result.updated, 1); assert.strictEqual(result.pending, 0);
+        assert.deepStrictEqual(clone(runner.job), previous);
+        assert.deepStrictEqual(clone(runner.checkpoint), checkpoint);
+        assert.strictEqual(h.jobs.get('old-names').status, 'completed');
+        assert.deepStrictEqual(h.windows[0].loads, [profile]);
+        await h.command('show-browser', 'one', 'old-names', { purpose: 'names' });
+        assert.strictEqual(h.windows[0].visible, true);
+        assert.deepStrictEqual(clone(runner.job), previous);
+        assert.ok(!h.requests.some(request => request.method === 'PATCH'), 'old recovery never pauses or resumes the other job');
+        const ipc = fs.readFileSync(path.join(root, 'electron_app/main/modules/ipc.js'), 'utf8');
+        const preload = fs.readFileSync(path.join(root, 'electron_app/preload.js'), 'utf8');
+        assert.match(ipc, /'categories', 'refresh-names'/);
+        assert.match(preload, /refreshPesquisaMercadoNames: payload => ipcRenderer\.invoke\('pesquisa-mercado:refresh-names'/);
+    } finally { await h.api.quit(); }
+}
 async function main() {
+    await testNamesCommandOwnershipAndRecovery();
     await testPublicVehicleUrlsPreserveTrailingSlash();
     await testBrowserIsolationAndNavigation();
     await testOwnershipAndQueue();

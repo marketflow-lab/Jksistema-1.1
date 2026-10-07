@@ -41,6 +41,23 @@ class PesquisaMercadoSellerRequest(BaseModel):
     anuncios: list[dict[str, Any]]
 
 
+class PesquisaMercadoNameUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seller_key: str = Field(min_length=1, max_length=500, strict=True)
+    nome: str = Field(min_length=1, max_length=200, strict=True)
+    seller_id: str = Field(max_length=80, strict=True)
+    seller_perfil_url: str = Field(max_length=4000, strict=True)
+    seller_name_kind: Literal["seller", "store_brand"]
+    source: Literal["perfil", "avant"]
+
+
+class PesquisaMercadoNamesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: list[PesquisaMercadoNameUpdate] = Field(min_length=1, max_length=100)
+
+
 class PesquisaMercadoClosedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

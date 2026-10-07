@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pausePesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:pause', payload || {}),
     resumePesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:resume', payload || {}),
     cancelPesquisaMercadoJob: payload => ipcRenderer.invoke('pesquisa-mercado:cancel', payload || {}),
+    refreshPesquisaMercadoNames: payload => ipcRenderer.invoke('pesquisa-mercado:refresh-names', payload || {}),
     showPesquisaMercadoBrowser: payload => ipcRenderer.invoke('pesquisa-mercado:show-browser', payload || {}),
     onPesquisaMercadoProgress: callback => {
         if (typeof callback !== 'function') return () => {};

@@ -9,6 +9,7 @@ async function main() {
     const commands = [];
     const categoryCalls = [];
     const browserCalls = [];
+    const namesCalls = [];
     const category = { key: 'MLB-FERRAMENTAS', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' };
     let progress;
     let unsubscribed = false;
@@ -20,6 +21,7 @@ async function main() {
         appUrl: 'http://127.0.0.1:8001/dashboard.html',
         findTabBySource: target => target === source ? { tab } : target === otherModule ? { tab: { url: 'http://127.0.0.1:8001/favoritos.html' } } : null,
         getApi: () => ({
+            refreshPesquisaMercadoNames: async payload => { namesCalls.push(payload); return { updated: 1, pending: 0 }; },
             startPesquisaMercadoJob: async payload => { commands.push(payload); return { job: { id: 'job-1' } }; },
             getPesquisaMercadoCategories: async payload => { categoryCalls.push(payload); return { items: [], parentCategory: payload.parentCategory || null }; },
             showPesquisaMercadoBrowser: async payload => { browserCalls.push(payload); return { success: true }; },
@@ -67,6 +69,17 @@ async function main() {
     assert.deepStrictEqual(browserCalls, [{ authToken: 'fixture-token', purpose: 'categories' }], 'login de categorias pode abrir navegador antes de criar pesquisa');
     await send('browser', { authToken: 'fixture-token', purpose: 'arbitrary' });
     assert.strictEqual(browserCalls.length, 1, 'finalidade de navegador usa allowlist');
+    await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job' }, 'https://evil.example');
+    await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job' }, 'http://127.0.0.1:8001', otherModule);
+    await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job', code: 'untrusted()' });
+    await send('refresh-names', { authToken: 'fixture-token' });
+    assert.strictEqual(namesCalls.length, 0, 'recuperacao exige origem, modulo, job e schema fechado');
+    await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job' });
+    assert.deepStrictEqual(namesCalls, [{ authToken: 'fixture-token', jobId: 'saved-job' }]);
+    await send('browser', { authToken: 'fixture-token', purpose: 'names' });
+    assert.strictEqual(browserCalls.length, 1, 'login de nomes exige pesquisa explicita');
+    await send('browser', { authToken: 'fixture-token', purpose: 'names', jobId: 'saved-job' });
+    assert.deepStrictEqual(browserCalls.at(-1), { authToken: 'fixture-token', purpose: 'names', jobId: 'saved-job' });
     await send('subscribe');
     progress({ job: { id: 'job-1', revision: 1 } });
     assert.strictEqual(messages.at(-1).value.channel, 'jk-pesquisa-mercado-progress');
