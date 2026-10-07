@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { browserSource } = require('./helpers/favoritos_browser_sources');
 const { executionSource: readExecutionSource } = require('./helpers/favoritos_execution_sources');
 
@@ -71,10 +72,27 @@ for (const [name, source] of [
     ['ml-browser', mlBrowser],
     ['execucao-render-layout', executionLayout]
 ]) {
-    assert.match(source, /event\.source === window/ , `${name}: fonte da mensagem nao validada`);
-    assert.match(source, /event\.source === window\.parent/, `${name}: frame pai nao validado`);
-    assert.match(source, /event\.origin === window\.location\.origin/, `${name}: origem da mensagem nao validada`);
-    assert.match(source, /if \(!origemConhecida \|\| !origemCompativel\) return;/, `${name}: mensagem insegura nao bloqueada`);
+    assert.match(source, /shellBridge\?\.isTrustedMessage\(event,\s*\[/, `${name}: listener deve usar validador compartilhado de mensagens`);
 }
+
+const messageContext = {
+    FavoritosV2: {},
+    location: { origin: 'http://127.0.0.1:8000' },
+    electronAPI: { executeEmbeddedMlBrowser() {}, getEmbeddedMlBrowserState() {} }
+};
+messageContext.window = messageContext;
+messageContext.top = { postMessage() {} };
+messageContext.parent = messageContext.top;
+vm.createContext(messageContext);
+vm.runInContext(read('static/favoritos/v2/browser/shell-bridge.js'), messageContext);
+const trustedMessage = messageContext.FavoritosV2.browser.shellBridge.isTrustedMessage;
+const allowed = ['jk-ml-browser-execute-result'];
+const response = { source: messageContext.top, origin: 'file://', data: { channel: allowed[0] } };
+assert.strictEqual(trustedMessage(response, allowed), true, 'shell Electron identificado deve ser aceito');
+assert.strictEqual(trustedMessage({ ...response, source: {} }, allowed), false, 'janela externa nao representa o shell');
+assert.strictEqual(trustedMessage({ ...response, origin: 'https://untrusted.test' }, allowed), false, 'origem remota continua bloqueada');
+assert.strictEqual(trustedMessage({ ...response, data: { channel: 'jk-unexpected' } }, allowed), false, 'canal externo continua bloqueado');
+delete messageContext.electronAPI;
+assert.strictEqual(trustedMessage(response, allowed), false, 'pagina sem API Electron local nao ganha excecao para file://');
 
 console.log(`OK: ${protectedChannels.length} IPCs do Favoritos e mensagens frame/shell estao protegidos.`);

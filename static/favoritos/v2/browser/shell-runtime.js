@@ -151,15 +151,13 @@
         }
 
         window.addEventListener('message', (event) => {
-            const origemConhecida = event && (
-                event.source === window
-                || event.source === window.parent
-                || event.source === window.top
-            );
-            const origemCompativel = !event.origin
-                || event.origin === 'null'
-                || event.origin === window.location.origin;
-            if (!origemConhecida || !origemCompativel) return;
+            if (!browser.shellBridge?.isTrustedMessage(event, [
+                'jk-ml-browser-event',
+                'jk-ml-browser-execute-result',
+                'jk-ml-browser-click-result',
+                'jk-ml-browser-type-result',
+                'jk-ml-browser-status-result'
+            ])) return;
             const data = event && event.data ? event.data : {};
             if (!data || typeof data !== 'object') return;
             favoritosBrowserShellBridge?.handleMessage(data);

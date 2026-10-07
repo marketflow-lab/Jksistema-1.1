@@ -153,15 +153,9 @@
         }
 
         window.addEventListener('message', (event) => {
-            const origemConhecida = event && (
-                event.source === window
-                || event.source === window.parent
-                || event.source === window.top
-            );
-            const origemCompativel = !event.origin
-                || event.origin === 'null'
-                || event.origin === window.location.origin;
-            if (!origemConhecida || !origemCompativel) return;
+            if (!window.FavoritosV2.browser.shellBridge?.isTrustedMessage(event, [
+                'jk-favoritos-worker-action'
+            ])) return;
             const data = event && event.data ? event.data : {};
             if (!data || data.channel !== 'jk-favoritos-worker-action') return;
             const action = String(data.action || data.payload && data.payload.action || '').toLowerCase();

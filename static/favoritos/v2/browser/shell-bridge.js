@@ -21,6 +21,22 @@
     }
   }
 
+  function isTrustedMessage(event, allowedChannels) {
+    const data = event && event.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)
+      || !Array.isArray(allowedChannels) || !allowedChannels.includes(data.channel)) return false;
+    const knownSource = event.source === window
+      || event.source === window.parent || event.source === window.top;
+    if (!knownSource) return false;
+    if (event.origin === 'file://') {
+      const api = window.electronAPI;
+      return window.top !== window && event.source === window.top
+        && !!api && typeof api.executeEmbeddedMlBrowser === 'function'
+        && typeof api.getEmbeddedMlBrowserState === 'function';
+    }
+    return !event.origin || event.origin === 'null' || event.origin === window.location.origin;
+  }
+
   function createBridge(contexto = {}) {
     let requestId = 0;
     let lastShow = null;
@@ -163,7 +179,7 @@
       const requestIdAtual = `ml-shell-status-${Date.now()}-${++requestId}`;
       const bounds = getBounds();
       return new Promise((resolve, reject) => {
-        pending.set(requestIdAtual, { resolve, reject });
+        pending.set(requestIdAtual, { resolve, reject, responseChannel: 'jk-ml-browser-status-result' });
         enviar('jk-ml-browser-status', {
           requestId: requestIdAtual,
           expectedUrl: String(urlEsperada || '').trim(),
@@ -235,7 +251,7 @@
           if (direto) return direto;
           const req = `ml-shell-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
-            pending.set(req, { resolve, reject });
+            pending.set(req, { resolve, reject, responseChannel: 'jk-ml-browser-execute-result' });
             enviar('jk-ml-browser-execute', { requestId: req, code });
             setTimeout(() => {
               if (!pending.has(req)) return;
@@ -249,7 +265,7 @@
           if (direto) return direto;
           const req = `ml-shell-click-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
-            pending.set(req, { resolve, reject });
+            pending.set(req, { resolve, reject, responseChannel: 'jk-ml-browser-click-result' });
             enviar('jk-ml-browser-click', { requestId: req, point: point || {} });
             setTimeout(() => {
               if (!pending.has(req)) return;
@@ -263,7 +279,7 @@
           if (direto) return direto;
           const req = `ml-shell-type-${Date.now()}-${++requestId}`;
           return new Promise((resolve, reject) => {
-            pending.set(req, { resolve, reject });
+            pending.set(req, { resolve, reject, responseChannel: 'jk-ml-browser-type-result' });
             enviar('jk-ml-browser-type', { requestId: req, ...(payload || {}) });
             setTimeout(() => {
               if (!pending.has(req)) return;
@@ -354,7 +370,7 @@
         || data.channel === 'jk-ml-browser-status-result'
       ) {
         const item = pending.get(data.requestId);
-        if (!item) return false;
+        if (!item || item.responseChannel !== data.channel) return false;
         pending.delete(data.requestId);
         if (data.error) item.reject(new Error(data.error));
         else if (data.channel === 'jk-ml-browser-status-result') item.resolve(data.result || data);
@@ -428,6 +444,7 @@
 
   Object.assign(shellBridge, {
     usarNavegadorMlNoShellElectron,
+    isTrustedMessage,
     createBridge
   });
 })();

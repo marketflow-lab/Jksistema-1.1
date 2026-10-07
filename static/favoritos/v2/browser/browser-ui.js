@@ -16,7 +16,12 @@
             const vistos = new Set();
             const saida = [];
             (Array.isArray(termos) ? termos : []).forEach((item, index) => {
-                const termo = String(item && (item.termo || item.term || item.valor || item.value) || item || '').trim();
+                const texto = typeof item === 'string' ? item
+                    : item && typeof item === 'object' && !Array.isArray(item)
+                        ? [item.termo, item.term, item.valor, item.value]
+                            .find(value => typeof value === 'string' && value.trim())
+                        : '';
+                const termo = (texto || '').trim();
                 const chave = termo.toLowerCase();
                 if (!termo || vistos.has(chave)) return;
                 vistos.add(chave);
