@@ -27,13 +27,14 @@
     let synchronizeTask = null;
     let sessionToken = window.localStorage.getItem('access_token') || '';
     const elements = {};
-    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
+    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
         'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated']) elements[name] = el(name);
 
     const safeText = value => String(value == null ? '' : value);
+    const sellerLabel = item => window.PesquisaMercadoCore ? window.PesquisaMercadoCore.nomeVendedorParaExibicao(item) : safeText(item.vendedor || item.nome || item.seller_key || 'Nome pendente');
     const escaped = value => safeText(value).replace(/[&<>"']/g, character => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
     })[character]);
@@ -59,7 +60,7 @@
     function userErrorMessage(error) {
         const message = typeof error === 'string' ? error : error && typeof error.message === 'string'
             ? error.message : 'Não foi possível concluir a operação.';
-        return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser)['"]:\s*(?:Error:\s*)?/, '');
+        return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser|refresh-names)['"]:\s*(?:Error:\s*)?/, '');
     }
     function categoryChoice(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -80,6 +81,7 @@
         if (current !== sessionToken) {
             sessionToken = current;
             state.activeJob = null;
+            state.namesLogin = false;
             state.scopeCategory = null;
             state.taxonomy = emptyTaxonomy();
             state.seller = '';
@@ -110,7 +112,7 @@
             const timer = window.setTimeout(() => {
                 pending.delete(requestId);
                 reject(new Error('O aplicativo não respondeu ao comando da pesquisa.'));
-            }, action === 'categories' ? categoryCommandTimeout : 45000);
+            }, action === 'refresh-names' ? 180000 : action === 'categories' ? categoryCommandTimeout : 45000);
             pending.set(requestId, { resolve, reject, timer });
             window.top.postMessage({ channel: 'jk-pesquisa-mercado-command', requestId, action, payload }, '*');
         });
@@ -118,17 +120,19 @@
     const methods = {
         start: 'startPesquisaMercadoJob', status: 'getPesquisaMercadoJobStatus', pause: 'pausePesquisaMercadoJob',
         resume: 'resumePesquisaMercadoJob', cancel: 'cancelPesquisaMercadoJob', browser: 'showPesquisaMercadoBrowser',
-        categories: 'getPesquisaMercadoCategories'
+        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames'
     };
     async function invoke(action, extras = {}) {
         const authToken = currentSession();
         if (!authToken) throw new Error('Entre no JK Sistema para consultar a pesquisa.');
         const payload = { authToken };
         if (state.activeJob && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.activeJob.id;
+        if (extras.jobId) payload.jobId = extras.jobId;
+        if (action === 'refresh-names' && !payload.jobId && state.activeJob) payload.jobId = state.activeJob.id;
         if (action === 'start') payload.category = categoryChoice(extras.category);
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
-        if (action === 'browser' && extras.purpose === 'categories') payload.purpose = 'categories';
+        if (action === 'browser' && ['categories', 'names'].includes(extras.purpose)) payload.purpose = extras.purpose;
         const api = electronApi();
         const result = api && typeof api[methods[action]] === 'function'
             ? await api[methods[action]](payload) : await shellSend(action, payload);
@@ -208,7 +212,8 @@
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !resumable;
         elements.cancel.disabled = state.busy || !(isActive(state.activeJob) || resumable);
-        elements.browser.disabled = state.busy || !(isActive(state.activeJob) || resumable);
+        elements.browser.disabled = state.busy || !(isActive(state.activeJob) || resumable || state.namesLogin);
+        if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
         const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.activeJob);
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
         elements['taxonomy-browser'].disabled = !sessionToken || state.busy || isActive(state.activeJob);
@@ -362,6 +367,7 @@
         if (state.activeJob && state.activeJob.id === job.id && Number(job.revision) < Number(state.activeJob.revision)) return false;
         const changed = !state.activeJob || state.activeJob.id !== job.id || state.activeJob.revision !== job.revision;
         if (!state.activeJob || state.activeJob.id !== job.id) {
+            state.namesLogin = false;
             state.offsets = { geral: 0, vendedor: 0 };
             state.rankings = { geral: null, vendedor: null };
             state.seller = '';
@@ -387,14 +393,14 @@
     }
     function renderSellers() {
         const query = elements['seller-search'].value.trim().toLocaleLowerCase('pt-BR');
-        const sellers = state.sellers.filter(seller => safeText(seller.vendedor || seller.seller_key).toLocaleLowerCase('pt-BR').includes(query));
+        const sellers = state.sellers.filter(seller => `${sellerLabel(seller)} ${seller.seller_key}`.toLocaleLowerCase('pt-BR').includes(query));
         elements['seller-list'].innerHTML = '';
         for (const seller of sellers) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = `pm-global-seller${seller.seller_key === state.seller ? ' selected' : ''}`;
             button.setAttribute('aria-pressed', seller.seller_key === state.seller ? 'true' : 'false');
-            button.textContent = `${seller.vendedor || seller.seller_key}${seller.ads != null ? ` · ${number(seller.ads)} anúncios` : ''}`;
+            button.textContent = `${sellerLabel(seller)}${seller.ads != null ? ` · ${number(seller.ads)} anúncios` : ''}`;
             button.addEventListener('click', () => {
                 state.seller = seller.seller_key;
                 state.offsets.vendedor = 0;
@@ -413,7 +419,7 @@
             elements['seller-list'].appendChild(note);
         }
         const selected = state.sellers.find(seller => seller.seller_key === state.seller);
-        elements['seller-label'].textContent = selected ? selected.vendedor || selected.seller_key : 'Selecione um vendedor para ver seu ranking.';
+        elements['seller-label'].textContent = selected ? sellerLabel(selected) : 'Selecione um vendedor para ver seu ranking.';
     }
     function renderRanking() {
         const data = state.rankings[state.tab];
@@ -425,7 +431,7 @@
             return `<tr><td class="rank-cell">${ranked ? item.rank : ''}</td>` +
                 `<td>${image ? `<img class="pm-global-photo" src="${escaped(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '—'}</td>` +
                 `<td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id)}</small></td>` +
-                `<td>${escaped(item.vendedor || '—')}</td><td>${escaped(formatPrice(item.preco))}</td>` +
+                `<td>${escaped(sellerLabel(item))}</td><td>${escaped(formatPrice(item.preco))}</td>` +
                 `<td class="sales-cell">${number(item.vendas)}</td><td>${escaped(formatDate(item.data_criacao))}</td>` +
                 `<td>${number(item.media_vendas_mensal)}</td><td>${url ? `<a class="link" href="${escaped(url)}" target="_blank" rel="noopener noreferrer">Abrir</a>` : '—'}</td>` +
                 `<td><span class="status-chip${ranked ? '' : ' warning'}">${ranked ? 'Analisado' : escaped(item.erro || item.status || 'Aguardando dados do Avant')}</span></td></tr>`;
@@ -486,10 +492,40 @@
         })().finally(() => { refreshTask = null; });
         return refreshTask;
     }
+    async function refreshNames(jobId) {
+        if (state.busy || state.disposed) throw new Error('Aguarde a operação atual.');
+        if (!jobId) throw new Error('Escolha uma pesquisa salva.');
+        state.busy = state.namesBusy = true; renderControls();
+        try {
+            const result = await invoke('refresh-names', { jobId });
+            if (state.disposed) return result;
+            if (state.activeJob && state.activeJob.id === jobId) {
+                state.namesLogin = !!result.requiresLogin;
+                updateJob(result); await refresh();
+            }
+            window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-names-updated', { detail: { jobId } }));
+            return result;
+        } finally { state.busy = state.namesBusy = false; if (!state.disposed) renderControls(); }
+    }
+    window.__jkPesquisaMercadoRefreshNames = refreshNames;
+    window.__jkPesquisaMercadoNamesBrowser = jobId => invoke('browser', { jobId, purpose: 'names' });
     async function command(action) {
         if (state.busy || state.disposed) return;
         currentSession();
-        if (action === 'start' && state.taxonomy.error) return;
+        if (action === 'refresh-names') {
+            showMessage('Consultando os nomes das lojas…');
+            try {
+                const result = await refreshNames(state.activeJob && state.activeJob.id);
+                showMessage(result.message || `${number(result.updated || 0)} nomes atualizados. ${number(result.pending || 0)} nomes pendentes.`, !!result.requiresLogin);
+            } catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
+            return;
+        }
+        if (action === 'browser' && state.namesLogin) {
+            try { await invoke('browser', { purpose: 'names' }); }
+            catch (error) { showMessage(userErrorMessage(error), true); }
+            return;
+        }
+        if (action === 'start'  && state.taxonomy.error) return;
         if (action === 'start' && (!state.taxonomy.selected || state.taxonomy.authRequired)) {
             state.taxonomy.message = 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.';
             state.taxonomy.error = true;
@@ -512,7 +548,7 @@
         finally { state.busy = false; if (!state.disposed) renderControls(); }
     }
     function synchronize() {
-        if (state.disposed) return Promise.resolve();
+        if (state.disposed || state.namesBusy) return Promise.resolve();
         if (synchronizeTask) return synchronizeTask;
         synchronizeTask = (async () => {
             try {
@@ -566,7 +602,7 @@
         window.clearTimeout(debounce);
         debounce = window.setTimeout(refresh, 250);
     }
-    for (const action of ['start', 'pause', 'resume', 'cancel', 'browser']) elements[action].addEventListener('click', () => command(action));
+    for (const action of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names']) elements[action].addEventListener('click', () => command(action));
     elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail, true));
     elements['taxonomy-browser'].addEventListener('click', async () => {
         if (state.busy || isActive(state.activeJob) || state.disposed) return;
@@ -580,7 +616,7 @@
             }
         } catch (error) {
             if (!state.disposed) { state.taxonomy.message = userErrorMessage(error); state.taxonomy.error = true; renderTaxonomy(); }
-        } finally { state.busy = false; if (!state.disposed) renderControls(); }
+        } finally { state.busy = state.namesBusy = false; if (!state.disposed) renderControls(); }
     });
     const followActive = document.getElementById('pm-active-research-follow');
     if (followActive) followActive.addEventListener('click', () => changeMode('global'));
@@ -633,6 +669,7 @@
     function dispose() {
         state.disposed = true;
         if (window.__jkPesquisaMercadoChangeMode === changeMode) delete window.__jkPesquisaMercadoChangeMode;
+        if (window.__jkPesquisaMercadoRefreshNames === refreshNames) { delete window.__jkPesquisaMercadoRefreshNames; delete window.__jkPesquisaMercadoNamesBrowser; }
         if (typeof unsubscribe === 'function') unsubscribe();
         window.clearInterval(polling);
         window.clearTimeout(debounce);

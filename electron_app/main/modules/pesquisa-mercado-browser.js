@@ -34,6 +34,7 @@ function knownPesquisaMercadoCategory(raw) {
 
 async function loadPesquisaMercadoCategories(runner, parentCategory, forceRefresh = false) {
     if (runner.task) throw new Error('Pause ou encerre a pesquisa antes de consultar outras categorias.');
+    if (runner.namesTask) throw new Error('Aguarde ou interrompa a recuperacao dos nomes antes de consultar outras categorias.');
     const parent = parentCategory == null ? null : knownPesquisaMercadoCategory(parentCategory);
     if (typeof forceRefresh !== 'boolean') throw new Error('Atualizacao de categorias invalida.');
     const snapshot = await pesquisaMercadoTaxonomy.load({ forceRefresh });
@@ -144,7 +145,8 @@ function pesquisaMercadoBrowserAdapter() {
             });
             try {
                 await Promise.race([worker.loadURL(url), interrupted]);
-                pesquisaMercadoBrowserJobId = String(pesquisaMercadoCoordinator && pesquisaMercadoCoordinator.job && pesquisaMercadoCoordinator.job.id || '');
+                pesquisaMercadoBrowserJobId = String(pesquisaMercadoCoordinator && (pesquisaMercadoCoordinator.namesJobId
+                    || pesquisaMercadoCoordinator.job && pesquisaMercadoCoordinator.job.id) || '');
             }
             finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); }
         },
@@ -184,6 +186,14 @@ function getPesquisaMercadoCoordinator() {
 
 function pesquisaMercadoCommand(event, action, payload = {}) {
     assertTrustedFavoritosIpcSender(event, `pesquisa-mercado:${action}`);
+    if ((action === 'pause' || action === 'cancel') && pesquisaMercadoCoordinator && pesquisaMercadoCoordinator.namesTask
+        && String(payload.jobId || '') === pesquisaMercadoCoordinator.namesJobId) {
+        // Abort only the name lookup; the original research status is preserved.
+        return pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(payload.jobId)}`, undefined, payload.authToken).then(() => {
+            pesquisaMercadoCoordinator.cancelNameRecovery();
+            return pesquisaMercadoCoordinator.namesTask;
+        });
+    }
     const command = pesquisaMercadoCommandQueue.then(() => executePesquisaMercadoCommand(action, payload));
     pesquisaMercadoCommandQueue = command.catch(() => {});
     return command;
@@ -191,7 +201,7 @@ function pesquisaMercadoCommand(event, action, payload = {}) {
 
 async function executePesquisaMercadoCommand(action, payload) {
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando; a pesquisa sera preservada.');
-    if (!['start', 'status', 'resume', 'pause', 'cancel', 'show-browser', 'categories'].includes(action)) throw new Error('Comando de pesquisa desconhecido.');
+    if (!['start', 'status', 'resume', 'pause', 'cancel', 'show-browser', 'categories', 'refresh-names'].includes(action)) throw new Error('Comando de pesquisa desconhecido.');
     const token = String(payload.authToken || '').trim();
     const runner = getPesquisaMercadoCoordinator();
     const jobId = String(payload.jobId || runner.job && runner.job.id || '');
@@ -214,6 +224,7 @@ async function executePesquisaMercadoCommand(action, payload) {
     if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
     if (action === 'status') return runner.status(payload.jobId || '');
     if (action === 'resume') return runner.resume(jobId);
+    if (action === 'refresh-names') return runner.refreshNames(jobId);
     if (action === 'pause' || action === 'cancel') {
         if (!jobId) return { job: null };
         if (!runner.task || !runner.job || runner.job.id !== jobId) {
@@ -234,7 +245,15 @@ async function executePesquisaMercadoCommand(action, payload) {
             return { success: true };
         }
         const response = jobId ? await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`) : authorizedLatest;
-        if (!response || !response.job || !['running', 'paused', 'waiting_login', 'failed'].includes(response.job.status)) throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
+        if (!response || !response.job || payload.purpose !== 'names' && !['running', 'paused', 'waiting_login', 'failed'].includes(response.job.status)) throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
+        if (payload.purpose === 'names') {
+            if (runner.task || runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
+            await runner.browser.prepare();
+            const worker = ensurePesquisaMercadoBrowser();
+            if (!worker.webContents.getURL()) await runner.browser.navigate('https://www.mercadolivre.com.br/');
+            worker.show(); worker.focus();
+            return { success: true };
+        }
         if (!runner.task) {
             runner.job = response.job;
             runner.checkpoint = response.job.checkpoint || {};
@@ -258,7 +277,7 @@ async function executePesquisaMercadoCommand(action, payload) {
 
 async function persistPesquisaMercadoBeforeQuit() {
     pesquisaMercadoQuitting = true;
-    if (pesquisaMercadoCoordinator) pesquisaMercadoCoordinator.browser.stop();
+    if (pesquisaMercadoCoordinator) { pesquisaMercadoCoordinator.cancelNameRecovery(); pesquisaMercadoCoordinator.browser.stop(); }
     await pesquisaMercadoCommandQueue;
     const runner = pesquisaMercadoCoordinator;
     try {

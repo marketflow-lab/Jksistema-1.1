@@ -7,7 +7,7 @@
     const allowed = Object.freeze({
         start: 'startPesquisaMercadoJob', status: 'getPesquisaMercadoJobStatus', pause: 'pausePesquisaMercadoJob',
         resume: 'resumePesquisaMercadoJob', cancel: 'cancelPesquisaMercadoJob', browser: 'showPesquisaMercadoBrowser',
-        categories: 'getPesquisaMercadoCategories'
+        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames'
     });
     const subscribers = new Set();
     const appOrigin = new URL(context.appUrl).origin;
@@ -65,7 +65,7 @@
         const input = data.payload;
         const fields = { start: ['authToken', 'category'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
             status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId'],
-            cancel: ['authToken', 'jobId'], browser: ['authToken', 'jobId', 'purpose'] };
+            cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId'], browser: ['authToken', 'jobId', 'purpose'] };
         if (!input || typeof input !== 'object' || Array.isArray(input)
             || Object.keys(input).some(key => !fields[data.action].includes(key))) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Argumentos do comando da pesquisa inválidos.' });
@@ -93,20 +93,20 @@
             payload[field] = category;
         }
         if (data.action === 'browser' && input.purpose != null) {
-            if (input.purpose !== 'categories') {
+            if (!['categories', 'names'].includes(input.purpose)) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Finalidade do navegador inválida.' });
                 return;
             }
-            payload.purpose = 'categories';
+            payload.purpose = input.purpose;
         }
-        if (['pause', 'resume', 'cancel', 'browser'].includes(data.action) && input.jobId != null && !payload.purpose) {
+        if (['pause', 'resume', 'cancel', 'browser', 'refresh-names'].includes(data.action) && input.jobId != null && payload.purpose !== 'categories') {
             if (typeof input.jobId !== 'string' || !input.jobId || input.jobId.length > 128) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Pesquisa inválida.' });
                 return;
             }
             payload.jobId = input.jobId;
         }
-        if ((data.action === 'resume' || data.action === 'cancel') && !payload.jobId) {
+        if ((['resume', 'cancel', 'refresh-names'].includes(data.action) || data.action === 'browser' && payload.purpose === 'names') && !payload.jobId) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Pesquisa inválida.' });
             return;
         }

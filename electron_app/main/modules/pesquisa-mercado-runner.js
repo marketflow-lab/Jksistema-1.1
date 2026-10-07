@@ -138,12 +138,76 @@ function currentPageRequiresLogin(page, browser) {
     return !!observed && observed === documentUrl(browser.getURL());
 }
 
+function cleanSellerName(value, id = '') {
+    if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) return '';
+    const name = value.replace(/\s+/g, ' ').trim().slice(0, 200);
+    const normalized = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (!name || /^(?:id:)?[\d\s.,_-]+$/.test(normalized)
+        || /^(?:nome (?:pendente|nao identificado)|vendedor (?:nao identificado|desconhecido))\b/.test(normalized)
+        || /^(?:(?:ir para|visitar|acessar|ver|conhecer) (?:a |o )?)?(?:loja(?: oficial)?|perfil(?: do vendedor)?|vendedor|todos os (?:produtos|anuncios))$/.test(normalized)
+        || /^(?:ver|veja) (?:todos os |mais )?(?:produtos|anuncios)$/.test(normalized)
+        || /^(?:seller|comprar|saiba mais)$/.test(normalized)) return '';
+    return name;
+}
+
+function sellerIdentity(value) {
+    const ids = new Set(), profileIds = new Set();
+    const declared = String(value.id || value.sellerId || value.seller_id || '').trim();
+    if (/^\d+$/.test(declared)) ids.add(declared);
+    const url = canonicalUrl(value.perfilUrl || value.seller_perfil_url || value.sellerUrl);
+    let profile = '';
+    if (url) {
+        const parsed = new URL(url);
+        for (const match of parsed.pathname.matchAll(/_(?:CustId|SellerId)_(\d+)/gi)) profileIds.add(match[1]);
+        for (const [key, id] of parsed.searchParams) if (/^(?:seller_id|cust_?id)$/i.test(key) && /^\d+$/.test(id)) profileIds.add(id);
+        for (const id of profileIds) ids.add(id);
+        try {
+            if (profileIds.size === 1) profile = `id:${[...profileIds][0]}`;
+            else if (/^\/loja\//i.test(parsed.pathname)) profile = `store:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
+            else if (/^\/perfil\//i.test(parsed.pathname)) profile = `profile:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
+        } catch (_error) { return { id: '', profile: '', conflict: true }; }
+    }
+    return { id: ids.size === 1 ? [...ids][0] : '', profile, conflict: ids.size > 1 };
+}
+
+function sameSeller(expected, observed) {
+    if (expected.seller_identity_conflict || observed.seller_identity_conflict) return false;
+    const left = sellerIdentity(expected), right = sellerIdentity(observed);
+    if (left.conflict || right.conflict) return false;
+    if (left.profile && right.profile && !left.profile.startsWith('id:') && !right.profile.startsWith('id:') && left.profile !== right.profile) return false;
+    if (left.id && right.id) return left.id === right.id;
+    return !!(left.profile && right.profile && left.profile === right.profile);
+}
+
+function enrichSellerName(seller, anuncios) {
+    const current = cleanSellerName(seller.nome, seller.id);
+    if (current) return { ...seller, nome: current };
+    const names = new Map();
+    for (const item of anuncios || []) {
+        const name = cleanSellerName(item.vendedor, seller.id);
+        if (!name || item.seller_confirmed !== true || !sameSeller(seller, item)) continue;
+        if ((item.avant_seller_id || item.avant_seller_perfil_url) && !sameSeller(seller, {
+            id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+        })) continue;
+        const kind = item.seller_name_kind === 'store_brand' ? 'store_brand' : 'seller';
+        names.set(name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(), {
+            nome: name, seller_name_kind: kind, seller_name_source: item.seller_name_source === 'perfil' ? 'perfil' : 'avant',
+            seller_name_id: item.avant_seller_id || item.seller_id || '',
+            seller_name_profile_url: item.avant_seller_perfil_url || item.seller_perfil_url || ''
+        });
+    }
+    return names.size === 1 ? { ...seller, ...names.values().next().value } : { ...seller, nome: '' };
+}
+
 function sellerFromPage(page) {
+    if (page.seller_identity_conflict || sellerIdentity(page).conflict) return null;
     const profile = canonicalUrl(page.perfilUrl || page.sellerUrl);
     const match = profile.match(/(?:_CustId_|[?&]seller_id=)(\d+)/i);
     const id = String(page.sellerId || page.seller_id || match && match[1] || '').trim();
     const key = id ? `id:${id}` : profile ? `perfil:${profile}` : '';
-    return key ? { key, id, nome: String(page.vendedor || page.sellerName || ''), perfilUrl: profile } : null;
+    return key ? { key, id, nome: cleanSellerName(page.vendedor || page.sellerName, id), perfilUrl: profile,
+        seller_name_kind: page.seller_name_kind === 'store_brand' || /\/loja\//.test(profile) ? 'store_brand' : 'seller',
+        seller_name_source: 'perfil' } : null;
 }
 
 const PROGRESS_PHASES = new Set(['preparing', 'categories', 'discovery', 'seller', 'collecting',
@@ -221,6 +285,11 @@ class PesquisaMercadoRunner {
         this.controller = null;
         this.stopStatus = '';
         this.saveQueue = Promise.resolve();
+        this.namesTask = null;
+        this.namesController = null;
+        this.namesJobId = '';
+        this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
+        this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
     }
 
     snapshot() {
@@ -241,6 +310,7 @@ class PesquisaMercadoRunner {
     }
 
     async start(category) {
+        if (this.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de iniciar uma pesquisa.');
         const selected = category === undefined ? null : normalizeCategory(category);
         if (category !== undefined && !selected) throw new Error('Escolha uma categoria ou subcategoria valida.');
         const response = await this.api('POST', ROOT, selected ? { category: selected } : {});
@@ -255,6 +325,7 @@ class PesquisaMercadoRunner {
     }
 
     attach(job) {
+        if (this.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de retomar uma pesquisa.');
         if (!job || !job.id) throw new Error('A pesquisa nao retornou uma execucao valida.');
         if (this.task) {
             if (this.job.id !== job.id) throw new Error('Outra pesquisa ja esta em execucao neste aplicativo.');
@@ -288,6 +359,140 @@ class PesquisaMercadoRunner {
             });
         }
         return response;
+    }
+
+    refreshNames(jobId) {
+        if (this.task || this.namesTask) return Promise.reject(new Error('Pause ou encerre a pesquisa antes de recuperar os nomes.'));
+        if (!jobId) return Promise.reject(new Error('Escolha uma pesquisa para recuperar os nomes.'));
+        this.namesJobId = String(jobId);
+        this.namesController = new AbortController();
+        this.namesTask = this.recoverNames(this.namesJobId, this.namesController.signal).finally(() => {
+            this.namesTask = null; this.namesController = null; this.namesJobId = '';
+        });
+        return this.namesTask;
+    }
+
+    cancelNameRecovery() {
+        if (this.namesController) this.namesController.abort();
+        if (this.namesTask && typeof this.browser.stop === 'function') this.browser.stop();
+    }
+
+    async nameStep(operation, signal) {
+        if (signal.aborted) { const error = new Error('Recuperacao interrompida.'); error.name = 'AbortError'; throw error; }
+        let abort;
+        const interrupted = new Promise((_resolve, reject) => {
+            abort = () => { const error = new Error('Recuperacao interrompida.'); error.name = 'AbortError'; reject(error); };
+            signal.addEventListener('abort', abort, { once: true });
+        });
+        try { return await Promise.race([Promise.resolve().then(operation), interrupted]); }
+        finally { signal.removeEventListener('abort', abort); }
+    }
+
+    async readSellerName(seller, signal) {
+        if (!sameSeller(seller, seller)) return null;
+        const profile = canonicalUrl(seller.perfilUrl) || (/^\d+$/.test(String(seller.id || ''))
+            ? `https://lista.mercadolivre.com.br/_CustId_${seller.id}` : '');
+        if (!profile) return null;
+        await this.nameStep(() => this.browser.navigate(profile, signal), signal);
+        const candidate = page => {
+            const confirmed = sellerFromPage(page);
+            if (!confirmed || !sameSeller(seller, confirmed)) return null;
+            if (confirmed.nome) return { seller_key: seller.seller_key || seller.key, nome: confirmed.nome,
+                seller_id: confirmed.id || seller.id || '', seller_perfil_url: confirmed.perfilUrl,
+                seller_name_kind: confirmed.seller_name_kind, source: 'perfil' };
+            return null;
+        };
+        let page, target = profile;
+        for (let poll = 0; poll < 8; poll += 1) {
+            await this.nameStep(() => this.wait(450), signal);
+            page = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.discoveryScript()), signal);
+            if (!page) continue;
+            if (currentPageRequiresLogin(page, this.browser)) { const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            if (page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading()) continue;
+            // Discard a previous document still visible during navigation.
+            if (page.url && canonicalUrl(page.url) !== canonicalUrl(this.browser.getURL())) continue;
+            const found = candidate(page);
+            if (found) return found;
+            if (sameSeller(seller, page) && allowedUrl(page.allAdsUrl) && canonicalUrl(page.allAdsUrl) !== target) {
+                target = canonicalUrl(page.allAdsUrl);
+                await this.nameStep(() => this.browser.navigate(target, signal), signal);
+                continue;
+            }
+            if (sameSeller(seller, page)) break;
+        }
+        if (!page || !sameSeller(seller, page) || typeof this.scripts.snapshotScript !== 'function') return null;
+        if (typeof this.scripts.prepareScript === 'function') await this.nameStep(() => this.browser.executeJavaScript(this.scripts.prepareScript()), signal);
+        for (let poll = 0; poll < 3; poll += 1) {
+            const snapshot = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.snapshotScript({ seller: {
+                ...seller, nome: '', vendedor: '', sellerId: seller.id
+            } })), signal);
+            if (!snapshot) continue;
+            if (currentPageRequiresLogin(snapshot, this.browser)) { const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            if (!sameSeller(seller, snapshot) || snapshot.url && canonicalUrl(snapshot.url) !== canonicalUrl(this.browser.getURL())) return null;
+            const enriched = enrichSellerName({ ...seller, nome: '' }, snapshot.anuncios);
+            if (enriched.nome) return { seller_key: seller.seller_key || seller.key, nome: enriched.nome,
+                seller_id: enriched.seller_name_id || snapshot.sellerId || '',
+                seller_perfil_url: enriched.seller_name_profile_url || snapshot.perfilUrl || '',
+                seller_name_kind: enriched.seller_name_kind, source: enriched.seller_name_source };
+            if (typeof this.scripts.clickAvantScript !== 'function') break;
+            const click = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.clickAvantScript()), signal);
+            if (click && click.loginBlocked) { const error = new Error('Conclua o login do Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            await this.nameStep(() => this.wait(450), signal);
+        }
+        return null;
+    }
+
+    async recoverNames(jobId, signal) {
+        const base = `${ROOT}/${encodeURIComponent(jobId)}`;
+        let timer, updated = 0, pending = 0, requiresLogin = false, timedOut = false, job, prepared = false;
+        const updates = [];
+        const flush = async () => {
+            if (!updates.length) return;
+            const result = await this.api('PUT', `${base}/nomes`, { updates: updates.splice(0, 100) });
+            updated += Number(result.updated || 0); pending = Number(result.pending || 0); job = result.job || job;
+        };
+        timer = setTimeout(() => { timedOut = true; this.cancelNameRecovery(); }, this.namesBudgetMs);
+        try {
+            // Resolve this exact job's ownership before creating or navigating a browser.
+            const authorized = await this.nameStep(() => this.api('GET', base), signal);
+            job = authorized.job;
+            if (!job || ['running', 'waiting_login'].includes(job.status)) throw new Error('Pause ou encerre a pesquisa antes de recuperar os nomes.');
+            const response = await this.nameStep(() => this.api('GET', `${base}/vendedores`), signal);
+            const affected = (response.items || []).filter(seller => seller.name_pending === true || !cleanSellerName(seller.nome || seller.vendedor, seller.id));
+            pending = affected.length;
+            if (!pending) return { updated, pending, job, requiresLogin: false, message: 'Os nomes desta pesquisa ja estao identificados.' };
+            if (typeof this.browser.prepare === 'function') await this.nameStep(() => this.browser.prepare(), signal);
+            prepared = true;
+            for (const seller of affected) {
+                if (signal.aborted) break;
+                const controller = new AbortController();
+                const abort = () => controller.abort();
+                signal.addEventListener('abort', abort, { once: true });
+                const sellerTimer = setTimeout(() => { controller.abort(); if (typeof this.browser.stop === 'function') this.browser.stop(); }, this.namesSellerTimeoutMs);
+                try {
+                    const update = await this.readSellerName(seller, controller.signal);
+                    if (update && !signal.aborted) updates.push(update);
+                    if (updates.length === 100) await flush();
+                } catch (error) {
+                    if (error.status === 401 || error.status === 403 || error.status === 404) throw error;
+                    if (error.waitingLogin) { requiresLogin = true; break; }
+                    // A single timeout or unavailable profile remains pending.
+                } finally { clearTimeout(sellerTimer); signal.removeEventListener('abort', abort); }
+            }
+            await flush();
+            return { updated, pending, job, requiresLogin,
+                message: requiresLogin ? 'Conclua o login no navegador e recupere os nomes novamente.'
+                    : timedOut ? 'Tempo de consulta encerrado; nomes confirmados foram salvos. Repita para consultar os pendentes.'
+                    : signal.aborted ? 'Recuperacao interrompida; nomes confirmados foram salvos.'
+                    : pending ? 'Nomes confirmados foram salvos. Alguns vendedores continuam pendentes de consulta.' : 'Nomes das lojas atualizados.' };
+        } catch (error) {
+            if (error.name !== 'AbortError') throw error;
+            await flush();
+            return { updated, pending, job, requiresLogin, message: 'Consulta interrompida; repita para recuperar os nomes pendentes.' };
+        } finally {
+            clearTimeout(timer);
+            if (prepared && typeof this.browser.finish === 'function') await this.browser.finish(requiresLogin ? 'waiting_login' : 'completed');
+        }
     }
 
     async resume(jobId) {
@@ -519,6 +724,7 @@ class PesquisaMercadoRunner {
     }
 
     async publishSeller(seller, result) {
+        seller = enrichSellerName(seller, result.anuncios);
         const category = this.checkpoint.currentCategory;
         const anuncios = (result.anuncios || []).map((item, index) => ({
             ...item, seller_key: seller.key, vendedor: item.vendedor || seller.nome,
@@ -567,13 +773,15 @@ class PesquisaMercadoRunner {
             const profile = await this.read(seller.perfilUrl, 'seller');
             const confirmed = sellerFromPage(profile);
             if (seller.id && confirmed && confirmed.id && seller.id !== confirmed.id) throw new Error('O perfil retornou um vendedor diferente do anuncio consultado.');
-            if (confirmed && confirmed.id) seller = { ...seller, ...confirmed, nome: confirmed.nome || seller.nome };
+            if (confirmed && sameSeller(seller, confirmed)) seller = { ...seller, ...confirmed, key: seller.key, id: confirmed.id || seller.id, nome: confirmed.nome || seller.nome };
             const allAdsUrl = canonicalUrl(profile.allAdsUrl || page.allAdsUrl);
             if (!allAdsUrl) throw new Error('A opcao ver todos os anuncios deste vendedor nao foi encontrada.');
             const allAdsPage = await this.read(allAdsUrl, 'first-page');
             const listingSeller = sellerFromPage(allAdsPage);
             if (seller.id && listingSeller && listingSeller.id && seller.id !== listingSeller.id) throw new Error('A listagem retornou anuncios de outro vendedor.');
-            if (!seller.id && listingSeller && listingSeller.id) seller = { ...seller, ...listingSeller, nome: listingSeller.nome || seller.nome };
+            if (listingSeller && sameSeller(seller, listingSeller)) seller = { ...seller, ...listingSeller, key: listingSeller.id ? listingSeller.key : seller.key, id: listingSeller.id || seller.id,
+                nome: seller.seller_name_kind === 'store_brand' && seller.nome ? seller.nome : listingSeller.nome || seller.nome,
+                seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
             if (!(await this.sellerPublished(seller.key))) {
                 this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
                 const result = await this.attempt(() => this.collector.collectFirstPage({
@@ -723,4 +931,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, allowedUrl, canonicalUrl, sellerFromPage, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };
+module.exports = { PesquisaMercadoRunner, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };

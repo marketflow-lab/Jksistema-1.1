@@ -49,7 +49,11 @@
         };
         const identity = value => {
             const url = absolute(value);
-            const match = url.match(/_CustId_(\d+)/i) || url.match(/[?&](?:seller_id|custid)=(\d+)/i);
+            const ids = new Set();
+            for (const match of url.matchAll(/_(?:CustId|SellerId)_(\d+)/gi)) ids.add(match[1]);
+            if (url) for (const [key, id] of new URL(url).searchParams) if (/^(?:seller_id|cust_?id)$/i.test(key) && /^\d+$/.test(id)) ids.add(id);
+            if (ids.size > 1) return { id: '', perfilUrl: '', store: false, conflict: true };
+            const match = ids.size ? [null, [...ids][0]] : null;
             const profile = url.match(/^(https:\/\/[^/]+\/perfil\/[^/?#]+)/i);
             const store = url.match(/^https:\/\/[^/]+\/loja\/([^/?#]+)/i);
             if (store) return { id: '', perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
@@ -153,10 +157,25 @@
         });
         const allIdentity = identity(allAds && allAds.href);
         const primaryIdentity = currentIdentity.id || currentIdentity.perfilUrl ? currentIdentity : (headerIdentity.id || headerIdentity.perfilUrl ? headerIdentity : allIdentity);
+        const headerConflict = !!currentIdentity.conflict || !!headerIdentity.conflict || !!(
+            currentIdentity.id && headerIdentity.id && currentIdentity.id !== headerIdentity.id
+            || currentIdentity.perfilUrl && headerIdentity.perfilUrl && !currentIdentity.id && !headerIdentity.id
+                && currentIdentity.perfilUrl.toLowerCase() !== headerIdentity.perfilUrl.toLowerCase());
         const sellerId = primaryIdentity.id || '';
         const perfilUrl = primaryIdentity.perfilUrl || '';
-        const vendedor = clean(headerSeller && headerSeller.textContent)
-            || clean((document.querySelector('.ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"]') || {}).textContent);
+        const nameText = value => {
+            const name = clean(value), normalized = norm(name);
+            return !name || name === sellerId || /^(?:id:)?[\d\s.,_-]+$/.test(normalized)
+                || /^(?:(?:ir para|visitar|acessar|ver|conhecer) (?:a |o )?)?(?:loja(?: oficial)?|perfil(?: do vendedor)?|vendedor|todos os (?:produtos|anuncios))$/.test(normalized)
+                || /^(?:ver|veja) (?:todos os |mais )?(?:produtos|anuncios)$/.test(normalized)
+                || /^(?:nome (?:pendente|nao identificado)|vendedor (?:nao identificado|desconhecido))\b/.test(normalized)
+                || /^(?:vendedor|seller|comprar|saiba mais)$/.test(normalized) ? '' : name;
+        };
+        const nameSelectors = '.ui-pdp-seller__header__title, .ui-pdp-seller__nickname, .ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"], .ui-ms-profile__name, .ui-ms-profile__title';
+        const named = nodes(nameSelectors, content).filter(node => !node.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]'))
+            .map(node => nameText(node.textContent)).find(Boolean);
+        const storeTitle = currentIdentity.store && !isProduct(url) ? nameText((content.querySelector('h1') || {}).textContent) : '';
+        const vendedor = headerConflict ? '' : named || nameText(headerSeller && headerSeller.textContent) || storeTitle;
         const sellerFirstPage = (currentIdentity.id || (currentIdentity.store && new URL(url).hostname === 'lista.mercadolivre.com.br')) && !isProduct(url)
             && !/_Desde_(?:[2-9]\d*|1\d+)|[?&](?:page|offset)=(?:[2-9]\d*|1\d+)/i.test(url);
         const allAdsUrl = absolute(allAds && allAds.getAttribute('href')) || (sellerFirstPage ? url : '');
@@ -232,6 +251,7 @@
                     const evidence = identity(anchor && anchor.getAttribute('href'));
                     metrics.sellerId = evidence.id;
                     metrics.perfilUrl = evidence.perfilUrl;
+                    metrics.identityConflict = !!evidence.conflict;
                 }
             }
             return metrics;
@@ -302,7 +322,7 @@
                 _avantEvidence: {
                     present: avantRoots.length > 0,
                     sellerId: avantIdentity.id || metrics.sellerId, perfilUrl: avantIdentity.perfilUrl || metrics.perfilUrl,
-                    sellerMetric: metrics.totalPriority === 2, metrics
+                    identityConflict: !!(avantIdentity.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics
                 }
             });
         }
@@ -316,7 +336,7 @@
             const metrics = readMetrics(floatingRows);
             anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/(?:p|up)\/MLB/i.test(url),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
-                _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, sellerMetric: metrics.totalPriority === 2, metrics }
+                _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
         }
         const categories = [], categorySeen = new Set();
@@ -428,7 +448,7 @@
         const categoriesIndexUrl = absolute(categoryIndex && categoryIndex.href);
         const scrolling = document.scrollingElement || document.documentElement || document.body;
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
-        return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_name_kind: primaryIdentity.store ? 'store_brand' : 'seller', allAdsUrl,
+        return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0,
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16
@@ -497,7 +517,6 @@
         };
         const wantedId = String(seller.sellerId || seller.seller_id || seller.id || '').replace(/^seller:/, '');
         const wantedProfile = profile(seller.perfilUrl || seller.seller_perfil_url);
-        const wantedName = norm(seller.vendedor || seller.nome);
         const same = (id, url) => wantedId && id ? wantedId === String(id) : !!(wantedProfile && profile(url) === wantedProfile);
         const pageMatches = same(page.sellerId, page.perfilUrl);
         const avant = Array.isArray(raw && raw.anuncios) ? raw.anuncios : [];
@@ -512,8 +531,19 @@
             const sellerProfile = base.seller_perfil_url || (scoped ? page.perfilUrl : '');
             const strongNumeric = wantedId && (String(base.seller_id || '') === wantedId || String(evidence.sellerId || '') === wantedId);
             const storeBrand = /\/loja\//.test(wantedProfile) || seller.seller_name_kind === 'store_brand';
-            const observedName = metrics.sellerName || found.vendedor || '';
-            const nameConflict = !!(!strongNumeric && !storeBrand && wantedName && observedName && wantedName !== norm(observedName));
+            const meaningfulName = value => {
+                const text = String(value || '').replace(/\s+/g, ' ').trim();
+                const normalized = text.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                return !text || text === wantedId || /^(?:id:)?[\d\s.,_-]+$/.test(normalized)
+                    || /^(?:(?:ir para|visitar|acessar|ver|conhecer) (?:a |o )?)?(?:loja(?: oficial)?|perfil(?: do vendedor)?|vendedor|todos os (?:produtos|anuncios))$/.test(normalized)
+                    || /^(?:ver|veja) (?:todos os |mais )?(?:produtos|anuncios)$/.test(normalized)
+                    || /^(?:nome (?:pendente|nao identificado)|vendedor (?:nao identificado|desconhecido))\b/.test(normalized)
+                || /^(?:vendedor|seller|comprar|saiba mais)$/.test(normalized) ? '' : text;
+            };
+            const observedName = meaningfulName(metrics.sellerName) || meaningfulName(found.vendedor);
+            const identityConflict = !!evidence.identityConflict || !!((evidence.sellerId || evidence.perfilUrl) && !same(evidence.sellerId, evidence.perfilUrl));
+            const targetName = meaningfulName(seller.vendedor || seller.nome);
+            const nameConflict = identityConflict || !!(!strongNumeric && !storeBrand && targetName && observedName && norm(targetName) !== norm(observedName));
             // Only the explicit structured label is a total. Favoritos' historical
             // fallback may substitute estimated sales or parse PT-BR thousands as decimals.
             const source = 'avantpro_dom_estruturado';
@@ -524,7 +554,9 @@
             const validMonthly = Number.isFinite(monthly) && monthly >= 0;
             const catalogueProof = !base.catalogo || (evidence.sellerMetric && same(evidence.sellerId, evidence.perfilUrl));
             const rankable = scoped && !nameConflict && catalogueProof && (validSales || validMonthly);
-            const item = { ...base, vendedor: observedName || base.vendedor || page.vendedor,
+            const item = { ...base, vendedor: nameConflict ? '' : observedName || meaningfulName(base.vendedor) || meaningfulName(page.vendedor),
+                seller_name_kind: observedName ? 'seller' : page.seller_name_kind || 'seller',
+                seller_name_source: observedName ? 'avant' : 'perfil',
                 seller_id: sellerId, seller_perfil_url: sellerProfile,
                 avant_seller_id: evidence.sellerId || '', avant_seller_perfil_url: evidence.perfilUrl || '',
                 seller_confirmed: scoped && !nameConflict, vendas: validSales ? sales : null,

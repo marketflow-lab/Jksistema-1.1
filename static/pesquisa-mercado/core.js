@@ -13,6 +13,21 @@
         return String(valor == null ? '' : valor).replace(/\s+/g, ' ').trim();
     }
 
+    function nomeVendedorParaExibicao(item) {
+        const nome = texto(item && (item.vendedor || item.nome));
+        const normalizado = nome.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        const generico = !nome || /^(?:id:)?[\d\s.,_-]+$/.test(normalizado)
+            || /^(?:nome pendente|vendedor (?:nao identificado|desconhecido))\b/.test(normalizado)
+            || /^(?:loja(?: oficial)?|vendedor|seller|todos os (?:produtos|anuncios)|comprar|saiba mais)$/.test(normalizado)
+            || /^(?:ir para|ver|veja|visitar|acessar|conhecer)(?: a| o)? (?:loja(?: oficial)?|perfil(?: do vendedor)?|vendedor)$/.test(normalizado)
+            || /^(?:ver|veja) (?:todos os |mais )?(?:produtos|anuncios)$/.test(normalizado);
+        if (!generico) return nome;
+        const key = texto(item && item.seller_key);
+        const id = texto(item && item.seller_id) || (/^id:\d+$/.test(key) ? key.slice(3) : '')
+            || (/^\d+$/.test(texto(item && item.id)) ? texto(item.id) : '');
+        return 'Nome pendente' + (id ? ' — vendedor ' + id : '');
+    }
+
     function normalizarIdentidade(valor) {
         return texto(valor)
             .normalize('NFD')
@@ -237,6 +252,7 @@
         filtrarMaisVendidos,
         identidadePerfil,
         normalizarAnuncio,
+        nomeVendedorParaExibicao,
         normalizarEntradaVendedor,
         normalizarIdentidade,
         normalizarNumeroVendas,

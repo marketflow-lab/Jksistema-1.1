@@ -12,6 +12,7 @@
         cancelled: 'Cancelada', completed: 'Concluída', completed_partial: 'Concluída parcialmente', failed: 'Falha',
         queued: 'Preparando', pausing: 'Pausando', interrupted: 'Interrompida' };
     const text = value => String(value == null ? '' : value);
+    const sellerLabel = item => window.PesquisaMercadoCore ? window.PesquisaMercadoCore.nomeVendedorParaExibicao(item) : text(item.vendedor || item.nome || item.seller_key || 'Nome pendente');
     const escaped = value => text(value).replace(/[&<>"']/g, value => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[value]);
     const number = value => value !== null && value !== '' && Number.isFinite(Number(value))
         ? Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—';
@@ -32,7 +33,7 @@
     const freshHistory = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', status: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0,
         detail: null, detailId: '', detailTab: 'geral', detailQuery: '', detailCategory: '', detailSeller: '',
-        detailSellers: [], detailCategories: [], detailItems: [], detailTotal: 0, detailOffset: 0, detailBusy: false, detailNeedsRefresh: false, detailGeneration: 0 });
+        detailSellers: [], detailCategories: [], detailItems: [], detailTotal: 0, detailOffset: 0, detailBusy: false, namesBusy: false, namesLogin: false, detailNeedsRefresh: false, detailGeneration: 0 });
     const freshConsolidated = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', evidence: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0, summary: null,
         origin: null, originItems: [], originTotal: 0, originOffset: 0, originBusy: false, originGeneration: 0 });
@@ -94,7 +95,7 @@
         <div class="pm-saved-field"><label for="pm-history-status">Situação da pesquisa</label><select id="pm-history-status"><option value="">Todas as situações</option>${Object.entries(statuses).filter(([key]) => !['queued', 'pausing', 'interrupted'].includes(key)).map(([key, value]) => `<option value="${key}">${value}</option>`).join('')}</select></div></div>
         <p class="pm-saved-message" id="pm-history-message" role="status"></p><div class="pm-saved-grid"><div><p class="pm-saved-note" id="pm-history-count">0 pesquisas</p><div class="pm-saved-list" id="pm-history-list"></div>${pager('history', 'Páginas do histórico')}</div>
         <section class="pm-saved-detail" aria-label="Resultado da pesquisa escolhida"><div class="pm-saved-detail-heading" id="pm-history-detail-heading"><span class="pm-saved-eyebrow">Consulta de pesquisa salva</span><h3>Selecione uma pesquisa</h3></div>
-        <div class="pm-saved-detail-body" id="pm-history-detail-body" hidden><div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa salva"><button type="button" class="pm-global-tab" role="tab" aria-selected="true" aria-controls="pm-history-ranking-panel" id="pm-history-tab-geral">Ranking geral</button><button type="button" class="pm-global-tab" role="tab" aria-selected="false" aria-controls="pm-history-ranking-panel" tabindex="-1" id="pm-history-tab-vendedor">Ranking por vendedor</button></div>
+        <div class="pm-saved-detail-body" id="pm-history-detail-body" hidden><div class="pm-global-actions"><button type="button" class="btn" id="pm-history-refresh-names">Atualizar nomes das lojas</button><button type="button" class="btn" id="pm-history-names-browser" hidden>Mostrar navegador</button></div><div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa salva"><button type="button" class="pm-global-tab" role="tab" aria-selected="true" aria-controls="pm-history-ranking-panel" id="pm-history-tab-geral">Ranking geral</button><button type="button" class="pm-global-tab" role="tab" aria-selected="false" aria-controls="pm-history-ranking-panel" tabindex="-1" id="pm-history-tab-vendedor">Ranking por vendedor</button></div>
         <div class="pm-saved-detail-filters"><input type="search" id="pm-history-detail-search" maxlength="200" aria-label="Buscar anúncios da pesquisa salva" placeholder="Título, MLB ou vendedor"><select id="pm-history-detail-category" aria-label="Escopo dos resultados"><option value="">Todos os escopos dos resultados</option></select><select id="pm-history-detail-seller" aria-label="Vendedor da pesquisa salva" hidden></select></div>
         <div id="pm-history-ranking-panel" role="tabpanel" aria-labelledby="pm-history-tab-geral"><p class="pm-saved-message" id="pm-history-detail-message" role="status"></p><div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Média mensal</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-history-detail-rows"></tbody></table></div>${pager('history-detail', 'Páginas da pesquisa escolhida')}</div></div></section></div>
         <p class="pm-saved-note" style="margin-top:16px">Consultas manuais por vendedor feitas anteriormente não foram gravadas e não aparecem neste histórico.</p>`;
@@ -137,7 +138,7 @@
     }
     function rankCells(item) {
         const ranked = Number.isInteger(item.rank) && item.rank > 0;
-        return `<td class="rank-cell">${ranked ? item.rank : ''}</td><td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id || item.ad_key)}</small></td><td>${escaped(item.vendedor || '—')}</td><td>${escaped(price(item.preco))}</td><td>${number(item.vendas)}</td><td>${number(item.media_vendas_mensal)}</td>`;
+        return `<td class="rank-cell">${ranked ? item.rank : ''}</td><td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id || item.ad_key)}</small></td><td>${escaped(sellerLabel(item))}</td><td>${escaped(price(item.preco))}</td><td>${number(item.vendas)}</td><td>${number(item.media_vendas_mensal)}</td>`;
     }
     function evidenceCell(item) {
         const ranked = Number.isInteger(item.rank) && item.rank > 0;
@@ -150,12 +151,15 @@
     function renderDetail() {
         const h = state.history;
         el('history-detail-body').hidden = !h.detail;
+        el('history-refresh-names').disabled = h.namesBusy || h.detailBusy || !h.detail || ['running', 'waiting_login', 'queued', 'pausing'].includes(h.detail.status);
+        el('history-names-browser').hidden = !h.namesLogin;
+        el('history-names-browser').disabled = h.namesBusy;
         const heading = el('history-detail-heading');
         heading.innerHTML = `<span class="pm-saved-eyebrow">Consulta de pesquisa salva</span><h3>${h.detail ? escaped(scopeName(h.detail)) : h.detailBusy ? 'Carregando pesquisa…' : 'Selecione uma pesquisa'}</h3>${h.detail ? `<p class="pm-saved-note">${escaped(date(h.detail.created_at))} · ${escaped(statuses[h.detail.status] || h.detail.status)} · ${number(h.detail.counters && h.detail.counters.ads || 0)} anúncios</p>` : ''}`;
         for (const tab of ['geral', 'vendedor']) { el(`history-tab-${tab}`).setAttribute('aria-selected', text(tab === h.detailTab)); el(`history-tab-${tab}`).tabIndex = tab === h.detailTab ? 0 : -1; }
         el('history-ranking-panel').setAttribute('aria-labelledby', `pm-history-tab-${h.detailTab}`);
         el('history-detail-seller').hidden = h.detailTab !== 'vendedor';
-        el('history-detail-seller').innerHTML = h.detailSellers.map(item => `<option value="${escaped(item.seller_key)}">${escaped(item.vendedor || item.seller_key)}</option>`).join('');
+        el('history-detail-seller').innerHTML = h.detailSellers.map(item => `<option value="${escaped(item.seller_key)}">${escaped(sellerLabel(item))}</option>`).join('');
         el('history-detail-seller').value = h.detailSeller;
         el('history-detail-category').innerHTML = '<option value="">Todos os escopos dos resultados</option>' + h.detailCategories.map(item => `<option value="${escaped(item.categoria)}">${escaped(item.categoria)}${item.status === 'incomplete' ? ' (incompleta)' : ''}</option>`).join('');
         el('history-detail-category').value = h.detailCategory;
@@ -224,7 +228,7 @@
             else changeMode('history');
         } finally { openingDetail = false; }
         const h = state.history;
-        h.detailId = jobId; h.detail = null; h.detailItems = []; h.detailTab = 'geral'; h.detailQuery = ''; h.detailCategory = ''; h.detailSeller = ''; h.detailOffset = 0;
+        h.detailId = jobId; h.namesLogin = false; h.detail = null; h.detailItems = []; h.detailTab = 'geral'; h.detailQuery = ''; h.detailCategory = ''; h.detailSeller = ''; h.detailOffset = 0;
         el('history-detail-search').value = '';
         const generation = ++h.detailGeneration;
         cancelReads('history-detail'); h.detailBusy = true; renderHistory(); renderDetail();
@@ -376,6 +380,30 @@
             if (panel === 'history') loadHistory(false); else loadConsolidated(false);
         });
     }
+    listen(el('history-refresh-names'), 'click', async () => {
+        const h = state.history, jobId = h.detailId;
+        if (!jobId || h.namesBusy || !h.detail || ['running', 'waiting_login'].includes(h.detail.status)) return;
+        h.namesBusy = true; renderDetail(); message('history-detail', 'Consultando os nomes das lojas…');
+        try {
+            if (typeof window.__jkPesquisaMercadoRefreshNames !== 'function') throw new Error('Abra a pesquisa no aplicativo JK Sistema.');
+            const result = await window.__jkPesquisaMercadoRefreshNames(jobId);
+            if (state.disposed || state.history !== h || h.detailId !== jobId) return;
+            h.namesLogin = !!result.requiresLogin;
+            await refreshDetail();
+            if (state.history === h && h.detailId === jobId && !state.disposed) message('history-detail', result.message || `${number(result.updated || 0)} nomes atualizados. ${number(result.pending || 0)} nomes pendentes.`, !!result.requiresLogin);
+        } catch (error) { if (!state.disposed && state.history === h && h.detailId === jobId) message('history-detail', error.message, true); }
+        finally { h.namesBusy = false; if (!state.disposed) renderDetail(); }
+    });
+    listen(el('history-names-browser'), 'click', async () => {
+        try { await window.__jkPesquisaMercadoNamesBrowser(state.history.detailId); }
+        catch (error) { message('history-detail', error.message, true); }
+    });
+    listen(window, 'jk-pesquisa-mercado-names-updated', event => {
+        state.history.loaded = state.consolidated.loaded = false;
+        state.history.revision = state.consolidated.revision = null;
+        if (state.mode === 'history' && !state.history.namesBusy && state.history.detailId === event.detail.jobId) refreshDetail();
+        if (state.mode === 'consolidated') loadConsolidated(true);
+    });
     listen(el('history-status'), 'change', () => filtersChanged('history'));
     listen(el('consolidated-evidence'), 'change', () => filtersChanged('consolidated'));
     for (const root of [historyRoot, consolidatedRoot]) listen(root, 'click', event => {

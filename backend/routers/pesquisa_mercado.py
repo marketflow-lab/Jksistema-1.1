@@ -6,6 +6,7 @@ from typing import Literal
 from backend.schemas.pesquisa_mercado import (
     PesquisaMercadoCheckpointRequest,
     PesquisaMercadoSellerRequest,
+    PesquisaMercadoNamesRequest,
     PesquisaMercadoStartRequest,
     PesquisaMercadoStatus,
     PesquisaMercadoHistoryResponse,
@@ -71,6 +72,10 @@ def create_pesquisa_mercado_router() -> APIRouter:
     @router.patch("/jobs/{job_id}/checkpoint")
     def checkpoint(job_id: str, req: PesquisaMercadoCheckpointRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
         return {"job": get_pesquisa_mercado_store().checkpoint(job_id, client_id, _username(request), checkpoint=req.checkpoint, status=req.status, counters=req.counters, message=req.message)}
+
+    @router.put("/jobs/{job_id}/nomes")
+    def update_names(job_id: str, req: PesquisaMercadoNamesRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return get_pesquisa_mercado_store().update_names(job_id, client_id, _username(request), [update.model_dump() for update in req.updates])
 
     @router.put("/jobs/{job_id}/vendedores/{seller_key:path}")
     def publish(job_id: str, seller_key: str, req: PesquisaMercadoSellerRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):

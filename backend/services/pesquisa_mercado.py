@@ -14,6 +14,7 @@ import re
 import sqlite3
 import threading
 import uuid
+import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,9 +135,21 @@ def normalize_scope_category(value: Any) -> dict:
     return {"key": value["key"].strip(), "nome": _text(value["nome"], 400), "url": normalized_url}
 
 
+def _profile_numeric_ids(value: Any) -> set[str]:
+    url = _ml_url(value)
+    parts = urlsplit(url)
+    ids = set(re.findall(r"_custid_(\d+)", unquote(parts.path), re.I))
+    for field, values in parse_qs(parts.query).items():
+        if field.casefold() in {"seller_id", "cust_id"}:
+            ids.update(value for value in values if value.isdigit())
+    return ids
+
+
 def _canonical_profile(value: Any) -> str:
     url = _ml_url(value)
     if not url:
+        return ""
+    if len(_profile_numeric_ids(url)) > 1:
         return ""
     parts = urlsplit(url)
     path = unquote(parts.path).rstrip("/").lower()
@@ -170,15 +183,75 @@ def _consolidated_seller_identity(seller: dict, job_id: str, seller_key: str) ->
 
 def _matches_identity(seller: dict, seller_id: Any, profile: Any) -> bool:
     expected_id, expected_profile = _seller_identity(seller)
+    if len(_profile_numeric_ids(seller.get("perfilUrl"))) > 1 or len(_profile_numeric_ids(profile)) > 1:
+        return False
     observed_id = _text(seller_id, 80)
+    observed_id = observed_id if observed_id.isdigit() else ""
     observed_profile = _canonical_profile(profile)
-    if expected_id and observed_id:
-        return expected_id == observed_id
-    if expected_id and observed_profile.startswith("id:"):
-        return observed_profile == "id:" + expected_id
-    if expected_profile and observed_id and expected_profile.startswith("id:"):
-        return expected_profile == "id:" + observed_id
-    return bool(expected_profile and observed_profile == expected_profile)
+    expected_numeric = expected_profile[3:] if expected_profile.startswith("id:") else ""
+    observed_numeric = observed_profile[3:] if observed_profile.startswith("id:") else ""
+    # A matching ID must not hide a contradictory profile (or vice versa).
+    expected_ids = {value for value in (expected_id, expected_numeric) if value}
+    observed_ids = {value for value in (observed_id, observed_numeric) if value}
+    if len(expected_ids) > 1 or len(observed_ids) > 1:
+        return False
+    if expected_ids and observed_ids and expected_ids != observed_ids:
+        return False
+    if expected_profile and observed_profile and not expected_profile.startswith("id:") and not observed_profile.startswith("id:") and expected_profile != observed_profile:
+        return False
+    return bool((expected_ids and observed_ids == expected_ids) or (expected_profile and observed_profile == expected_profile))
+
+
+def _seller_name(value: Any) -> str:
+    if not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return ""
+    name = _text(value, 200)
+    folded = "".join(c for c in unicodedata.normalize("NFKD", name.casefold()) if not unicodedata.combining(c))
+    if not name or re.fullmatch(r"(?:id:)?[\d\s.,_-]+", folded) or re.match(r"(?:nome pendente|vendedor (?:nao identificado|desconhecido))\b", folded):
+        return ""
+    if folded in {"loja oficial", "loja", "vendedor", "seller", "todos os produtos", "todos os anuncios", "ver todos os produtos", "ver todos os anuncios", "comprar", "saiba mais"}:
+        return ""
+    if re.fullmatch(r"(?:ir para|visitar|acessar|ver|conhecer)(?: a| o)? (?:loja(?: oficial)?|perfil(?: do vendedor)?|vendedor)", folded):
+        return ""
+    return name
+
+
+def _pending_seller_name(seller: dict) -> str:
+    seller_id, _ = _seller_identity(seller)
+    return "Nome pendente — vendedor " + (seller_id or "sem ID")
+
+
+def _ad_search(ad: dict) -> str:
+    return " ".join((ad["titulo"], ad["vendedor"], ad["id"])).casefold()
+
+
+def _publication_seller(key: str, seller: dict, anuncios: list[dict]) -> dict:
+    normalized = {
+        "key": key, "id": _text(seller.get("id"), 80), "nome": _seller_name(seller.get("nome")),
+        "perfilUrl": _ml_url(seller.get("perfilUrl")), "categoria": _text(seller.get("categoria"), 400),
+        "seller_name_kind": "store_brand" if seller.get("seller_name_kind") == "store_brand" else "seller",
+    }
+    if normalized["nome"]:
+        normalized["seller_name_source"] = "avant" if seller.get("seller_name_source") == "avant" else "perfil"
+    else:
+        candidates = {}
+        for raw in anuncios:
+            sources = (_text(raw.get(field), 100).lower() for field in ("vendasFonte", "media_mensal_fonte"))
+            avant = raw.get("seller_name_source") == "avant" or any(source in {"avant", "avant_pro", "avant-pro"} or source.startswith("avantpro") for source in sources)
+            name = _seller_name(raw.get("vendedor") or raw.get("sellerName"))
+            belongs = _matches_identity(normalized, raw.get("seller_id") or raw.get("vendedor_id") or raw.get("sellerId"), raw.get("seller_perfil_url") or raw.get("vendedorPerfilUrl"))
+            proof = raw.get("avant_seller_id") or raw.get("avant_seller_perfil_url")
+            if proof and not _matches_identity(normalized, raw.get("avant_seller_id"), raw.get("avant_seller_perfil_url")):
+                belongs = False
+            if avant and belongs and name and raw.get("seller_confirmed") is not False:
+                kind = "store_brand" if raw.get("seller_name_kind") == "store_brand" else "seller"
+                candidates[(name.casefold(), kind)] = name
+        if len(candidates) == 1:
+            (_, kind), name = next(iter(candidates.items()))
+            normalized.update(nome=name, seller_name_kind=kind, seller_name_source="avant")
+        else:
+            normalized["nome"] = _pending_seller_name(normalized)
+    return normalized
 
 
 def _normalize_ad(raw: dict, seller: dict, original_index: int) -> tuple[str, dict]:
@@ -307,6 +380,8 @@ class PesquisaMercadoStore:
         conn = sqlite3.connect(str(path), timeout=15, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.create_collation("PM_RANKING", _ranking_compare)
+        conn.create_function("PM_VALID_NAME", 1, lambda value: bool(_seller_name(value)), deterministic=True)
+        conn.create_function("PM_FOLD", 1, lambda value: str(value or "").casefold(), deterministic=True)
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=15000")
         with self._schema_lock:
@@ -563,12 +638,7 @@ class PesquisaMercadoStore:
         key = _text(seller_key, 500)
         if not key or key != str(seller_key) or str(seller.get("key") or key) != key:
             raise HTTPException(422, "Identificador de vendedor invalido.")
-        normalized_seller = {
-            "key": key, "id": _text(seller.get("id"), 80), "nome": _text(seller.get("nome"), 200),
-            "perfilUrl": _ml_url(seller.get("perfilUrl")), "categoria": _text(seller.get("categoria"), 400),
-        }
-        if not normalized_seller["nome"]:
-            normalized_seller["nome"] = normalized_seller["id"] or "Vendedor nao identificado"
+        normalized_seller = _publication_seller(key, seller, anuncios)
         unique_ads: dict[str, dict] = {}
         for index, raw in enumerate(anuncios):
             ad_key, ad = _normalize_ad(raw, normalized_seller, index)
@@ -579,9 +649,19 @@ class PesquisaMercadoStore:
             row = self._job(conn, job_id, tenant, user)
             if row["status"] not in ACTIVE_STATUSES:
                 raise HTTPException(409, "Pesquisa encerrada. Coleta tardia descartada.")
-            previous = conn.execute("SELECT digest FROM pm_sellers WHERE job_id=? AND seller_key=?", (job_id, key)).fetchone()
+            previous = conn.execute("SELECT digest,payload FROM pm_sellers WHERE job_id=? AND seller_key=?", (job_id, key)).fetchone()
             if previous is not None and previous["digest"] == digest:
                 return self._public(row)
+            if previous is not None:
+                previous_seller = json.loads(previous["payload"])
+                same_identity = _matches_identity(previous_seller, normalized_seller["id"], normalized_seller["perfilUrl"])
+                # A late/stale collector must not erase a previously verified name.
+                if same_identity and _seller_name(previous_seller.get("nome")) and (not _seller_name(normalized_seller["nome"]) or previous_seller.get("name_updated_at") or (previous_seller.get("seller_name_kind") == "store_brand" and normalized_seller["seller_name_kind"] == "seller")):
+                    for field in ("nome", "seller_name_kind", "seller_name_source", "name_updated_at"):
+                        if field in previous_seller:
+                            normalized_seller[field] = previous_seller[field]
+                    for ad in unique_ads.values():
+                        ad["vendedor"] = normalized_seller["nome"]
             orders = {item["ad_key"]: item["collection_order"] for item in conn.execute("SELECT ad_key,collection_order FROM pm_ads WHERE job_id=? AND seller_key=?", (job_id, key))}
             next_order = row["next_order"]
             conn.execute("UPDATE pm_sequences SET value=value+1 WHERE name='publication'")
@@ -597,7 +677,7 @@ class PesquisaMercadoStore:
                     next_order += 1
                 ad["ordem_coleta"] = order
                 ad["posicao_original"] = ad["posicao"]
-                search = " ".join((ad["titulo"], ad["vendedor"], ad["id"])).casefold()
+                search = _ad_search(ad)
                 conn.execute("INSERT INTO pm_ads VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (job_id, key, ad_key, _json(ad, 30000), ad["categoria"], search, int(ad["rankable"]), ad["media_vendas_mensal"], ad["vendas"], ad["posicao"], order, _ranking_key(ad)))
             ads_count = conn.execute("SELECT COUNT(*) FROM pm_ads WHERE job_id=?", (job_id,)).fetchone()[0]
             counters = json.loads(row["counters"])
@@ -605,6 +685,58 @@ class PesquisaMercadoStore:
             conn.execute("UPDATE pm_jobs SET counters=?,next_order=?,revision=revision+1,updated_at=? WHERE id=?", (_json(counters, 1024), next_order, _now(), job_id))
             self._bump_owner_revision(conn, tenant, user)
             return self._public(self._job(conn, job_id, tenant, user))
+
+    def update_names(self, job_id: str, client_id: str, username: str, updates: list[dict]) -> dict:
+        """Enrich names only, under the same write lock as seller publications."""
+        tenant, user = self._owner(client_id, username)
+        required = {"seller_key", "nome", "seller_id", "seller_perfil_url", "seller_name_kind", "source"}
+        if not isinstance(updates, list) or not 1 <= len(updates) <= 100:
+            raise HTTPException(422, "Lote de nomes invalido.")
+        keys = set()
+        for update in updates:
+            if not isinstance(update, dict) or set(update) != required or any(not isinstance(value, str) for value in update.values()):
+                raise HTTPException(422, "Atualizacao de nome invalida.")
+            if not _seller_name(update["nome"]) or len(update["nome"]) > 200 or update["seller_name_kind"] not in {"seller", "store_brand"} or update["source"] not in {"perfil", "avant"}:
+                raise HTTPException(422, "Nome ou origem do vendedor invalido.")
+            key = update["seller_key"]
+            if not key or _text(key, 500) != key or key in keys or len(update["seller_id"]) > 80 or len(update["seller_perfil_url"]) > 4000:
+                raise HTTPException(422, "Identificador de vendedor invalido.")
+            if update["seller_id"] and not update["seller_id"].isdigit():
+                raise HTTPException(422, "Identidade do vendedor invalida.")
+            if update["seller_perfil_url"] and not _canonical_profile(update["seller_perfil_url"]):
+                raise HTTPException(422, "Perfil do vendedor invalido.")
+            keys.add(key)
+        with self._connection(tenant, write=True) as conn:
+            job = self._job(conn, job_id, tenant, user)
+            if job["status"] in {"running", "waiting_login"}:
+                raise HTTPException(409, "Pause a pesquisa antes de recuperar nomes.")
+            changed = 0
+            for update in updates:
+                row = conn.execute("SELECT payload FROM pm_sellers WHERE job_id=? AND seller_key=?", (job_id, update["seller_key"])).fetchone()
+                if row is None:
+                    raise HTTPException(404, "Vendedor da pesquisa nao encontrado.")
+                seller = json.loads(row["payload"])
+                if not _matches_identity(seller, update["seller_id"], update["seller_perfil_url"]):
+                    raise HTTPException(422, "Identidade do vendedor nao confirmada.")
+                if seller.get("seller_name_kind") == "store_brand" and _seller_name(seller.get("nome")) and update["seller_name_kind"] == "seller":
+                    # The official store brand and the account nickname are distinct.
+                    continue
+                name = _seller_name(update["nome"])
+                if seller.get("nome") == name and seller.get("seller_name_kind", "seller") == update["seller_name_kind"]:
+                    continue
+                seller.update(nome=name, seller_name_kind=update["seller_name_kind"], seller_name_source=update["source"], name_updated_at=_now())
+                conn.execute("UPDATE pm_sellers SET payload=? WHERE job_id=? AND seller_key=?", (_json(seller, 10000), job_id, update["seller_key"]))
+                rows = conn.execute("SELECT ad_key,payload FROM pm_ads WHERE job_id=? AND seller_key=?", (job_id, update["seller_key"])).fetchall()
+                for ad_row in rows:
+                    ad = json.loads(ad_row["payload"])
+                    ad["vendedor"] = name
+                    conn.execute("UPDATE pm_ads SET payload=?,search_text=? WHERE job_id=? AND seller_key=? AND ad_key=?", (_json(ad, 30000), _ad_search(ad), job_id, update["seller_key"], ad_row["ad_key"]))
+                changed += 1
+            if changed:
+                conn.execute("UPDATE pm_jobs SET revision=revision+1 WHERE id=?", (job_id,))
+                self._bump_owner_revision(conn, tenant, user)
+            pending = conn.execute("SELECT COUNT(*) FROM pm_sellers WHERE job_id=? AND NOT PM_VALID_NAME(json_extract(payload,'$.nome'))", (job_id,)).fetchone()[0]
+            return {"updated": changed, "pending": pending, "job": self._public(self._job(conn, job_id, tenant, user))}
 
     @staticmethod
     def _page(offset, limit):
@@ -653,8 +785,17 @@ class PesquisaMercadoStore:
         if scope_category:
             args.append(scope_category)
         sql = """WITH eligible_jobs AS (SELECT id,created_at,status,scope_key,scope_name,scope_url FROM pm_jobs WHERE """ + job_where + """),
+            name_candidates AS (
+                SELECT s.seller_identity,json_extract(s.payload,'$.nome') AS nome,
+                    ROW_NUMBER() OVER (PARTITION BY s.seller_identity ORDER BY
+                        COALESCE(json_extract(s.payload,'$.name_updated_at'),s.observed_at,j.created_at) DESC,
+                        s.publication_sequence DESC,j.created_at DESC,j.id DESC,s.seller_key DESC) AS name_number
+                FROM pm_sellers s JOIN eligible_jobs j ON j.id=s.job_id
+                WHERE PM_VALID_NAME(json_extract(s.payload,'$.nome'))
+            ), latest_names AS (SELECT seller_identity,nome FROM name_candidates WHERE name_number=1),
             candidates AS (
                 SELECT a.*,s.seller_identity,s.observed_at,s.publication_sequence,
+                    COALESCE(n.nome,'Nome pendente — vendedor ' || NULLIF(json_extract(s.payload,'$.id'),''),'Nome pendente — vendedor sem ID') AS seller_display_name,
                     j.created_at AS research_created_at,j.status AS research_status,
                     j.scope_key,j.scope_name,j.scope_url,
                     COALESCE(s.observed_at,j.created_at) AS effective_observed_at,
@@ -662,6 +803,7 @@ class PesquisaMercadoStore:
                         ORDER BY COALESCE(s.observed_at,j.created_at) DESC,s.publication_sequence DESC,a.seller_key DESC) AS within_research_number
                 FROM eligible_jobs j JOIN pm_ads a ON a.job_id=j.id
                     JOIN pm_sellers s ON s.job_id=a.job_id AND s.seller_key=a.seller_key
+                    LEFT JOIN latest_names n ON n.seller_identity=s.seller_identity
             ), per_research AS (SELECT * FROM candidates WHERE within_research_number=1),
             observations AS (
                 SELECT j.*, """ + scope_match + """ AS scope_match,
@@ -674,8 +816,8 @@ class PesquisaMercadoStore:
         # Filtering follows deduplication: a pending latest observation cannot
         # resurrect a previous Avant metric or duplicate cumulative sales.
         if q:
-            sql += " AND instr(search_text,?)>0"
-            args.append(q.casefold())
+            sql += " AND (instr(search_text,?)>0 OR instr(PM_FOLD(seller_display_name),?)>0)"
+            args.extend((q.casefold(), q.casefold()))
         if seller_key:
             sql += " AND seller_identity=?"
             args.append(seller_key)
@@ -701,11 +843,11 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             owner_revision = self._owner_revision(conn, tenant, user, revision)
             total = conn.execute(sql + "SELECT COUNT(*) FROM selected", args).fetchone()[0]
-            rows = conn.execute(sql + "SELECT payload,ad_key,seller_identity,job_id,effective_observed_at,observed_at,observation_count,scope_key,scope_name,scope_url FROM selected ORDER BY ranking_key COLLATE PM_RANKING,job_id,seller_identity,ad_key LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            rows = conn.execute(sql + "SELECT payload,seller_display_name,ad_key,seller_identity,job_id,effective_observed_at,observed_at,observation_count,scope_key,scope_name,scope_url FROM selected ORDER BY ranking_key COLLATE PM_RANKING,job_id,seller_identity,ad_key LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
             items = []
             for index, row in enumerate(rows):
                 ad = json.loads(row["payload"])
-                ad.update(ad_key=row["ad_key"], seller_key=row["seller_identity"], source_job_id=row["job_id"], observed_at=row["effective_observed_at"], date_approximate=row["observed_at"] is None, observations=row["observation_count"], research_count=row["observation_count"], scope_category=self._scope(row), rank=offset + index + 1 if ad["rankable"] else None)
+                ad.update(vendedor=row["seller_display_name"], ad_key=row["ad_key"], seller_key=row["seller_identity"], source_job_id=row["job_id"], observed_at=row["effective_observed_at"], date_approximate=row["observed_at"] is None, observations=row["observation_count"], research_count=row["observation_count"], scope_category=self._scope(row), rank=offset + index + 1 if ad["rankable"] else None)
                 items.append(ad)
             return {"items": items, "total": total, "owner_revision": owner_revision}
 
@@ -713,7 +855,7 @@ class PesquisaMercadoStore:
         tenant, user = self._owner(client_id, username)
         self._page(offset, limit)
         sql, args = self._consolidated_query(tenant, user, **filters)
-        sql += ", grouped AS (SELECT seller_identity,COUNT(*) AS ads,SUM(CASE WHEN rankable=0 THEN 1 ELSE 0 END) AS pending,MAX(json_extract(payload,'$.vendedor')) AS vendedor FROM selected GROUP BY seller_identity) "
+        sql += ", grouped AS (SELECT seller_identity,COUNT(*) AS ads,SUM(CASE WHEN rankable=0 THEN 1 ELSE 0 END) AS pending,seller_display_name AS vendedor FROM selected GROUP BY seller_identity,seller_display_name) "
         with self._connection(tenant) as conn:
             owner_revision = self._owner_revision(conn, tenant, user, revision)
             total = conn.execute(sql + "SELECT COUNT(*) FROM grouped", args).fetchone()[0]
@@ -760,10 +902,12 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             job = self._job(conn, job_id, tenant, user)
             total = conn.execute("SELECT COUNT(*) FROM pm_ads WHERE " + where, args).fetchone()[0]
-            rows = conn.execute("SELECT payload FROM pm_ads WHERE " + where + " ORDER BY ranking_key COLLATE PM_RANKING LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            rows = conn.execute("SELECT payload,(SELECT s.payload FROM pm_sellers s WHERE s.job_id=pm_ads.job_id AND s.seller_key=pm_ads.seller_key) AS seller_payload FROM pm_ads WHERE " + where + " ORDER BY ranking_key COLLATE PM_RANKING LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
             items = []
             for index, row in enumerate(rows):
                 ad = json.loads(row["payload"])
+                if not _seller_name(ad.get("vendedor")):
+                    ad["vendedor"] = _pending_seller_name(json.loads(row["seller_payload"]))
                 ad["rank"] = offset + index + 1 if ad["rankable"] else None
                 items.append(ad)
             return {"items": items, "total": total, "revision": job["revision"]}
@@ -778,7 +922,13 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             self._job(conn, job_id, tenant, user)
             rows = conn.execute("SELECT s.seller_key,s.payload,COUNT(a.ad_key) AS ads,COALESCE(SUM(CASE WHEN a.rankable=0 THEN 1 ELSE 0 END),0) AS pending FROM pm_sellers s LEFT JOIN pm_ads a ON a.job_id=s.job_id AND a.seller_key=s.seller_key WHERE " + where + " GROUP BY s.seller_key,s.payload ORDER BY s.rowid", args).fetchall()
-            return {"items": [{**json.loads(row["payload"]), "seller_key": row["seller_key"], "vendedor": json.loads(row["payload"])["nome"], "ads": row["ads"], "pending": row["pending"], "status": "completed"} for row in rows]}
+            items = []
+            for row in rows:
+                seller = json.loads(row["payload"])
+                seller["name_pending"] = not bool(_seller_name(seller.get("nome")))
+                seller["nome"] = _seller_name(seller.get("nome")) or _pending_seller_name(seller)
+                items.append({**seller, "seller_key": row["seller_key"], "vendedor": seller["nome"], "ads": row["ads"], "pending": row["pending"], "status": "completed"})
+            return {"items": items}
 
     def categories(self, job_id: str, client_id: str, username: str) -> dict:
         tenant, user = self._owner(client_id, username)
