@@ -55,6 +55,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         item_overrides: dict | None = None,
         fee_por_preco: dict | None = None,
         frete_b_data: dict | None = None,
+        frete_por_preco: dict | None = None,
         promocoes_item: list[dict] | None = None,
         custo: float = 18.38,
         custos_por_sku: dict | None = None,
@@ -150,6 +151,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 "shipping_price_context": preco_b,
                 "shipping_cost_retry_source": "users/shipping_options/free/contexto",
             }
+            frete_b.update(copy.deepcopy((frete_por_preco or {}).get(round(preco_b, 2), {})))
             frete_b.update(copy.deepcopy(frete_b_data or {}))
             return (
                 {
@@ -313,6 +315,40 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     self.assertEqual(saida["Margem ML"], "24,76%")
                     self.assertTrue(saida["action_financeiro_estimado"])
                     self.assertFalse(saida["action_financeiro_exato"])
+
+    def test_deal_sem_subtipo_cota_preco_final_correto_nos_tres_fluxos(self):
+        # Valores da proposta 11.11; a fixture vincula o item ao contexto consultado.
+        raw = {
+            "id": "P-MLB17909028", "type": "DEAL", "status": "candidate",
+            "price": 0, "original_price": 131.52,
+            "min_discounted_price": 26.31, "max_discounted_price": 127.57,
+            "suggested_discounted_price": 114.41,
+        }
+        for modo in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            with self.subTest(modo=modo):
+                interna, saida = self._executar_fluxo(
+                    raw, promo_b_id="P-MLB17909028", promo_b_type="DEAL",
+                    price_info={"price": 124.94, "standard_price": 131.52, "original_price": 131.52},
+                    custo=23.12, imposto_rate=0.24, preco_arquivo=127.57,
+                    promocoes_item=[],
+                    fee_por_preco={114.41: {"ad_cost": 19.45}, 127.57: {"ad_cost": 21.69}},
+                    frete_por_preco={114.41: {"shipping_cost": 14.95}, 127.57: {"shipping_cost": 16.95}},
+                    **modo,
+                )
+                self.assertEqual(saida["action_deal_price"], 127.57)
+                self.assertEqual(saida["deal_price"], 127.57)
+                self.assertEqual(saida["pricing_price"], 127.57)
+                self.assertEqual(_valor_por_sufixo(saida, "o Final ML"), "R$ 127,57")
+                self.assertEqual(saida["Tarifa ML"], "R$ 21,69")
+                self.assertEqual(saida["Frete ML"], "R$ 16,95")
+                self.assertEqual(saida["Imposto ML"], "R$ 30,62")
+                self.assertEqual(saida["Custo"], "R$ 23,12")
+                self.assertEqual(interna["action_valor_liquido_ml"], 35.19)
+                # A margem usa a precisao financeira completa, antes do arredondamento em centavos.
+                self.assertAlmostEqual(interna["action_margem_ml"], 35.1932 / 127.57 * 100)
+                self.assertEqual(saida["Margem ML"], "27,59%")
+                self.assertTrue(saida["action_financeiro_estimado"])
+                self.assertFalse(saida["action_financeiro_exato"])
 
     def test_deal_started_mantem_preco_da_participacao_nos_tres_fluxos(self):
         # Forma atual obtida para a participacao 10.10: started a 91,74 sem limites.

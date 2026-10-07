@@ -176,6 +176,76 @@ class PromocoesPrecosTests(unittest.TestCase):
                 self.assertAlmostEqual(discount, (126.46 - 120.13) / 126.46 * 100)
                 self.assertNotIn("_jk_preco_painel_seller_campaign", raw)
 
+    @staticmethod
+    def _proposta_deal_sem_subtipo():
+        # Forma retornada pela API para MLB7651450184 na campanha 11.11.
+        return {
+            "id": "P-MLB17909028", "type": "DEAL", "item_id": "MLB7651450184",
+            "status": "candidate", "price": 0, "original_price": 131.52,
+            "min_discounted_price": 26.31, "max_discounted_price": 127.57,
+            "suggested_discounted_price": 114.41,
+            "_jk_contexto_promocao_confirmado": True,
+            "_jk_campaign_id_consultado": "P-MLB17909028",
+            "_jk_promotion_type_consultado": "DEAL",
+            "_jk_item_id_consultado": "MLB7651450184",
+        }
+
+    def test_deal_sem_subtipo_usa_limite_confirmado_da_proposta(self):
+        for status in ("candidate", "eligible"):
+            for subtipo in ({}, {"sub_type": None}, {"subType": ""}):
+                for contexto in ({}, {
+                    "campaign_id_esperado": "P-MLB17909028",
+                    "item_id_esperado": "MLB7651450184",
+                }):
+                    with self.subTest(status=status, subtipo=subtipo, contexto=contexto):
+                        raw = dict(self._proposta_deal_sem_subtipo(), status=status, **subtipo)
+                        original = dict(raw)
+                        ajustado = analise._promo_ajustar_preco_painel_seller_campaign(
+                            raw, "DEAL", [], **contexto,
+                        )
+                        preco, desconto = pricing._ml_extrair_preco_promocao_raw(ajustado)
+                        self.assertEqual(preco, 127.57)
+                        self.assertAlmostEqual(desconto, (131.52 - 127.57) / 131.52 * 100)
+                        self.assertEqual(ajustado["_jk_preco_painel_fonte"], "max_discounted_price")
+                        self.assertEqual(raw, original)
+                        self.assertEqual(ajustado.get("sub_type"), original.get("sub_type"))
+                        self.assertEqual(ajustado.get("subType"), original.get("subType"))
+
+    def test_deal_sem_subtipo_preserva_dados_ativos_ou_inconsistentes(self):
+        casos = [
+            {"status": "started"}, {"status": "pending"},
+            {"sub_type": "FIXED_AMOUNT"}, {"subType": "FIXED_PERCENTAGE"},
+            {"price": 114.41}, {"deal_price": 114.41},
+            {"promotion_price": 114.41}, {"final_price": 114.41},
+            {"boosted_offer": True}, {"boosted_offer": "true"},
+            {"_jk_contexto_promocao_confirmado": False},
+            {"_jk_campaign_id_consultado": ""}, {"_jk_item_id_consultado": ""},
+            {"id": "P-OUTRA"}, {"type": "SMART"}, {"item_id": "MLB888"},
+            {"itemId": "MLB888"}, {"campaign_id": "P-OUTRA"},
+            {"original_price": None}, {"original_price": 127.57},
+            {"original_price": 100}, {"min_discounted_price": None},
+            {"min_discounted_price": 0}, {"min_discounted_price": -1},
+            {"min_discounted_price": 127.57}, {"min_discounted_price": 130},
+            {"max_discounted_price": 0}, {"max_discounted_price": 131.52},
+            {"suggested_discounted_price": 0}, {"suggested_discounted_price": 26},
+            {"suggested_discounted_price": 130},
+        ]
+        casos.extend(
+            {campo: invalido}
+            for campo in ("original_price", "min_discounted_price", "max_discounted_price", "suggested_discounted_price")
+            for invalido in (float("nan"), float("inf"))
+        )
+        for mudancas in casos:
+            for contexto in ({}, {
+                "campaign_id_esperado": "P-MLB17909028",
+                "item_id_esperado": "MLB7651450184",
+            }):
+                with self.subTest(mudancas=mudancas, contexto=contexto):
+                    raw = dict(self._proposta_deal_sem_subtipo(), **mudancas)
+                    self.assertIs(analise._promo_ajustar_preco_painel_seller_campaign(
+                        raw, "DEAL", [], **contexto,
+                    ), raw)
+
     def test_deal_preserva_preco_ativo_e_modalidades_sem_proposta_flexivel(self):
         raw = {
             "type": "DEAL", "status": "candidate", "price": 91.74,

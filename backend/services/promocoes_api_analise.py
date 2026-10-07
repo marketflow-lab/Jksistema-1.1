@@ -1439,7 +1439,9 @@ def _promo_ajustar_preco_painel_seller_campaign(
 
     Usa o maior preco permitido (menor desconto) em candidatos. Preserva a
     compatibilidade com a sugestao de uma SMART candidata/elegivel do mesmo
-    anuncio. Precos ativos, boosts e arquivos explicitos seguem seus fluxos.
+    anuncio. DEAL sem subtipo exige contexto confirmado e limites coerentes
+    de uma proposta sem preco efetivo. Precos ativos, boosts e arquivos
+    explicitos seguem seus fluxos.
     O nome e a chave de metadados existentes sao mantidos por compatibilidade.
     """
     if not isinstance(raw_campanha, dict):
@@ -1465,8 +1467,6 @@ def _promo_ajustar_preco_painel_seller_campaign(
             return raw_campanha
 
     subtipo = str(raw_campanha.get("sub_type") or raw_campanha.get("subType") or "").strip().upper()
-    if tipo == "DEAL" and subtipo != "FLEXIBLE_PERCENTAGE":
-        return raw_campanha
     if subtipo and subtipo != "FLEXIBLE_PERCENTAGE":
         return raw_campanha
 
@@ -1496,6 +1496,28 @@ def _promo_ajustar_preco_painel_seller_campaign(
         not math.isfinite(preco_minimo) or preco_minimo < 0 or preco_minimo > preco_maximo
     ):
         return raw_campanha
+
+    if tipo == "DEAL" and not subtipo:
+        # A API pode omitir o subtipo. Inferimos a proposta apenas com o item
+        # vinculado a campanha consultada e uma faixa valida de desconto.
+        _campaign_id, tipo_confirmado, _item_id, confirmado = _promo_identidade_financeira_raw(raw_campanha)
+        preco_original = _parse_float_flex(raw_campanha.get("original_price"))
+        if (
+            not confirmado
+            or tipo_confirmado.upper() != tipo
+            or _promo_preco_efetivo_raw(raw_campanha) is not None
+            or preco_original is None
+            or not math.isfinite(preco_original)
+            or preco_minimo is None
+            or not 0 < preco_minimo < preco_maximo < preco_original
+        ):
+            return raw_campanha
+        if raw_campanha.get("suggested_discounted_price") is not None and (
+            preco_sugerido is None
+            or not math.isfinite(preco_sugerido)
+            or not preco_minimo <= preco_sugerido <= preco_maximo
+        ):
+            return raw_campanha
 
     preco_painel = float(preco_maximo)
     fonte = "max_discounted_price"
