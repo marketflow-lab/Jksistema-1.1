@@ -149,13 +149,17 @@ def test_estimativa_chega_ao_json_com_flags_em_todos_os_modos(fluxo, modo, meli,
     assert participacoes["promocoes"] == []
 
 
+@pytest.mark.parametrize("modo", ["direta", "job", "arquivos"])
 @pytest.mark.parametrize("faltante", ["frete", "custo", "imposto"])
-def test_tarifa_estimada_nao_preenche_outros_componentes_ausentes(fluxo, faltante):
+def test_tarifa_estimada_nao_preenche_outros_componentes_ausentes(fluxo, faltante, modo):
     opcoes = {"frete_b_data": {"shipping_cost": None}} if faltante == "frete" else {faltante if faltante == "custo" else "imposto_rate": None}
     raw = {"id": flow.PROMO_B_ID, "promotion_id": flow.PROMO_B_ID,
            "promotion_type": "SMART", "status": "candidate", "item_id": flow.ITEM_ID,
            "price": 110.79, "original_price": 149.24}
-    interna, linha = fluxo._executar_fluxo(raw, **opcoes)
+    interna, linha = fluxo._executar_fluxo(
+        raw, **opcoes, com_arquivos=modo == "arquivos",
+        via_api_direta=modo == "direta", preco_arquivo=110.79,
+    )
     assert linha["_jk_tarifa_ml_estimada"] is True
     assert linha["action_financeiro_estimado"] is False
     assert linha["Desconto ML"] == "Não informado pela API"
@@ -164,6 +168,7 @@ def test_tarifa_estimada_nao_preenche_outros_componentes_ausentes(fluxo, faltant
     assert linha["action_financeiro_exato"] is False
     assert linha["Margem ML"] == ""
     assert faltante in linha["action_financeiro_motivo"]
+    assert analysis._normalizar_decisao_planilha(linha["A\u00c3\u00a7\u00c3\u00a3o"]) == analysis._normalizar_decisao_planilha("Nao participar")
 
 
 def test_tarifa_confirmada_tem_prioridade_e_sem_estimado(fluxo):
@@ -340,3 +345,41 @@ def test_zero_de_oferta_em_outro_preco_nao_confirma_analise_com_arquivo(fluxo):
     assert linha["action_desconto_ml"] is None
     assert linha["_jk_desconto_ml_confiavel"] is False
     assert linha["Desconto ML"] == "Não informado pela API"
+
+
+@pytest.mark.parametrize("modo", ["direta", "job", "arquivos"])
+@pytest.mark.parametrize("estimada", [True, False])
+@pytest.mark.parametrize("tarifa,margem_ml,minimo,participar", [
+    (24.08, "19,60%", 15, True),
+    (31.08, "14,10%", 15, False),
+    (29.30, "15,50%", 15, False),
+    (24.08, "19,60%", 20, False),
+])
+def test_sugestao_compara_margens_independente_de_tarifa_estimada(
+    fluxo, modo, estimada, tarifa, margem_ml, minimo, participar,
+):
+    raw = {"id": flow.PROMO_B_ID, "promotion_type": "SMART", "status": "candidate",
+           "item_id": flow.ITEM_ID, "price": 127.16, "original_price": 149.24}
+    if not estimada:
+        raw["sale_fee_amount"] = tarifa
+    interna, linha = fluxo._executar_fluxo(
+        raw, custo=36.27, imposto_rate=.2, margem_minima=minimo,
+        raw_a_overrides={"price": 112.89},
+        price_info={"price": 112.89, "standard_price": 149.24, "original_price": 149.24,
+                    "promotion_id": flow.PROMO_A_ID, "promotion_type": "SELLER_CAMPAIGN"},
+        item_overrides={"price": 112.89}, fee_por_preco={127.16: {"ad_cost": tarifa}},
+        com_arquivos=modo == "arquivos", via_api_direta=modo == "direta", preco_arquivo=127.16,
+    )
+    assert linha["Margem"] == "15,89%"
+    assert linha["Margem ML"] == margem_ml
+    esperado = analysis._normalizar_decisao_planilha(
+        "Participar" if participar else "Nao participar"
+    )
+    assert analysis._normalizar_decisao_planilha(linha["A\u00c3\u00a7\u00c3\u00a3o"]) == esperado
+    assert analysis._normalizar_decisao_planilha(interna["A\u00c3\u00a7\u00c3\u00a3o"]) == esperado
+    assert linha["action_financeiro_exato"] is (not estimada)
+    assert linha["action_financeiro_estimado"] is estimada
+    assert linha["_jk_tarifa_ml_estimada"] is estimada
+    if estimada:
+        assert linha["action_financeiro_motivo"] == "Margem calculada com tarifa estimada."
+        assert linha["action_financeiro_estimativa_motivo"]

@@ -57,7 +57,16 @@ const { chromium } = require('playwright');
         { MLB: 'MLB000', 'Tarifa ML': 'R$ 3,00', 'Desconto ML': 'Não informado pela API',
           action_desconto_ml: null, _jk_desconto_ml_estimado: true,
           'Ação': 'Não participar', _jk_tarifa_ml_estimada: false, action_financeiro_estimado: false },
+        { MLB: 'MLB654', Status: 'Ativo', Margem: '15,89%', 'Margem ML': '19,60%',
+          'Tarifa ML': 'R$ 6,66', 'Valor líquido ML': 'R$ 10,18',
+          'Ação': 'Participar', 'Desconto ML': 'R$ 1,03', action_desconto_ml: 1.03,
+          _jk_desconto_ml_estimado: true, _jk_desconto_ml_estimativa_motivo: motivo,
+          _jk_desconto_ml_confiavel: false,
+          _jk_tarifa_ml_estimada: true, _jk_tarifa_ml_estimativa_motivo: motivo,
+          action_financeiro_estimado: true, action_financeiro_estimativa_motivo: motivo,
+          action_financeiro_exato: false },
       ];
+      normalizeApiDatasetRules(currentData);
       window.originalRows = JSON.stringify(currentData);
       renderTable(currentData);
     });
@@ -99,6 +108,42 @@ const { chromium } = require('playwright');
     assert.strictEqual(await page.evaluate(() => JSON.stringify(currentData) === originalRows), true,
       'rendering must preserve raw numeric values and backend decisions');
     assert.strictEqual(await page.evaluate(() => parsePercentValue(getTableCellValue(currentData[0], 'Margem ML'))), 28.01);
+
+    const estimatedSuggestion = rows.nth(5);
+    async function assertEstimatedSuggestion(action, participatingCount) {
+      assert.strictEqual(await estimatedSuggestion.locator('select').inputValue(), action);
+      assert.strictEqual(await page.locator('#totalParticipar').textContent(), String(participatingCount));
+      assert.strictEqual(await page.locator('#totalAnuncios').textContent(), '6');
+      assert.deepStrictEqual(await page.evaluate(() => ({
+        action: currentData[5]['Ação'], alias: currentData[5]['Participar ou não'],
+        margin: currentData[5].Margem, proposedMargin: currentData[5]['Margem ML'],
+        exact: currentData[5].action_financeiro_exato,
+        estimatedFee: currentData[5]._jk_tarifa_ml_estimada,
+        estimatedDiscount: currentData[5]._jk_desconto_ml_estimado,
+        estimatedFinances: currentData[5].action_financeiro_estimado,
+      })), {
+        action, alias: action, margin: '15,89%', proposedMargin: '19,60%', exact: false,
+        estimatedFee: true, estimatedDiscount: true, estimatedFinances: true,
+      }, 'normalization and decisions must preserve the estimated financial context');
+      const badges = estimatedSuggestion.locator('.promo-estimate-badge');
+      assert.strictEqual(await badges.count(), 4, 'a Participar recommendation must keep all estimation badges');
+      for (let index = 0; index < 4; index++) {
+        assert.strictEqual(await badges.nth(index).textContent(), 'Estimado');
+        assert.strictEqual(await badges.nth(index).isVisible(), true);
+      }
+    }
+    await assertEstimatedSuggestion('Participar', 3);
+    assert.strictEqual(await estimatedSuggestion.locator('.promo-decision-reason').first().isVisible(), false,
+      'estimated finances must not introduce a rejection reason for a Participar recommendation');
+    await page.evaluate(() => renderTable(normalizeApiDatasetRules(currentData)));
+    await assertEstimatedSuggestion('Participar', 3);
+    await estimatedSuggestion.locator('select').selectOption('Não participar');
+    await page.evaluate(() => renderTable(normalizeApiDatasetRules(currentData)));
+    await assertEstimatedSuggestion('Não participar', 2);
+    await estimatedSuggestion.locator('select').selectOption('Participar');
+    await page.evaluate(() => renderTable(normalizeApiDatasetRules(currentData)));
+    await assertEstimatedSuggestion('Participar', 3);
+
     await page.addStyleTag({ content: `
       #tabelaAnalise { table-layout: fixed; width: 390px; }
       #tabelaAnalise th, #tabelaAnalise td { width: 65px; min-width: 65px; max-width: 65px; box-sizing: border-box; }

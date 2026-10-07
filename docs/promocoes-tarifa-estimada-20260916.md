@@ -7,6 +7,16 @@ do valor líquido e da margem. O motivo da estimativa
 fica disponível ao passar o mouse ou focar o destaque. A exportação XLSX acrescenta
 `(Estimado)` aos mesmos valores.
 
+## Sugestão de participação (07/10/2026)
+
+A sugestão compara as margens disponíveis da promoção atual e da campanha
+selecionada, inclusive quando a tarifa da proposta é estimada. O selo
+**Estimado** e seus motivos continuam visíveis. Uma margem de 19,60% contra
+15,89% passa a sugerir **Participar** quando atende à margem mínima configurada.
+As regras de margem mínima, tolerância e promoção programada continuam aplicadas.
+Sem os dados necessários para calcular ambas as margens, a análise mantém
+**Não participar**. Os três fluxos (direta, job e com arquivos) usam esse critério.
+
 ## Critério de cálculo
 
 1. A tarifa confirmada continua tendo prioridade.

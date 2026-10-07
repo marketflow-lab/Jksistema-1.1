@@ -1918,7 +1918,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             promotion_type_esperado=promo_b_type,
         )
         presente_b = item_id in ids_b
-        if not financeiro_acao["exato"] or not _promo_margens_aprovadas_por_status(
+        if not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
             status_promo_a,
@@ -2578,7 +2578,7 @@ async def analisar_promo_via_api_sem_arquivos(
             imposto_rate,
             promotion_type_esperado=promo_meta.get("promo_b_type") or "",
         )
-        if not financeiro_acao["exato"] or not _promo_margens_aprovadas_por_status(
+        if not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
             status_promo_a,
@@ -3398,10 +3398,7 @@ async def analisar_promo_via_api_com_arquivos(
         else:
             status = status_exibicao_promo_a
 
-        tem_valores_comparacao = financeiro_acao["exato"] and margem_a is not None
-        if not tem_valores_comparacao:
-            decisao = "NÃ£o participar"
-        elif not _promo_margens_aprovadas_por_status(
+        if not _promo_margens_aprovadas_por_status(
             margem_a,
             financeiro_acao["margem"],
             status_promo_a,

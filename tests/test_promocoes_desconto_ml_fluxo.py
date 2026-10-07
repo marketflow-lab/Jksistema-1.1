@@ -66,6 +66,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         raw_a_overrides: dict | None = None,
         retornar_resultado: bool = False,
         via_api_direta: bool = False,
+        margem_minima: float = -100,
         margem_tolerancia: float = 0,
         preco_arquivo: float = 148.46,
     ):
@@ -246,7 +247,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 resultado_direto = analysis.analisar_promo_via_api(analysis.PromoAnaliseApiRequest(
                     loja="Loja Teste", promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN", promocao_b_id=promo_b_id,
-                    promocao_b_type=promo_b_type, margem_minima=-100,
+                    promocao_b_type=promo_b_type, margem_minima=margem_minima,
                     promocao_b_files=["promocao.xlsx"],
                     margem_tolerancia=margem_tolerancia,
                 ), client_id="000002")
@@ -263,7 +264,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     loja="Loja Teste",
                     promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN",
-                    margem_minima=-100,
+                    margem_minima=margem_minima,
                     margem_tolerancia=margem_tolerancia,
                     promocoes_b_meta=json.dumps([meta]),
                     files=[UploadTeste()],
@@ -274,7 +275,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     loja="Loja Teste",
                     promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN",
-                    margem_minima=-100,
+                    margem_minima=margem_minima,
                     margem_tolerancia=margem_tolerancia,
                     promocoes_b_meta=json.dumps([meta]),
                     client_id="000002",
