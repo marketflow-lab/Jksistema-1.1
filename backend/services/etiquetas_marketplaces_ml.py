@@ -214,6 +214,7 @@ def processar_mercado_livre(uploaded_file):
         if not dados_sku:
             dados_sku = _extrair_dados_ml_da_pagina(texto_pagina)
         
+        # Mantem a escala original; a DANFE usa a margem lateral existente.
         nova_pagina.show_pdf_page(fitz.Rect(0, 0, 283, 390), doc_origem, i)
         
         if dados_sku:
@@ -223,31 +224,65 @@ def processar_mercado_livre(uploaded_file):
             sku_text = "SKU N/D"
             color_sku = (1, 0, 0)
 
-        nova_pagina.insert_text(fitz.Point(281, 300), sku_text, fontsize=8, color=color_sku, rotate=90)
         nova_pagina.draw_line(fitz.Point(0, 390), fitz.Point(283, 390), color=(0,0,0), width=1)
-        nova_pagina.insert_text(fitz.Point(95, 396), "CHAVE DE ACESSO / VENDA", fontsize=5, color=(0, 0, 0))
+        for tamanho_sku in (12, 11, 10, 9, 8, 7):
+            linhas_sku = [""]
+            for caractere in sku_text:
+                candidato = linhas_sku[-1] + caractere
+                if fitz.get_text_length(candidato, fontname="hebo", fontsize=tamanho_sku) > 271:
+                    linhas_sku.append(caractere)
+                else:
+                    linhas_sku[-1] = candidato
+            espaco_restante = nova_pagina.insert_textbox(
+                fitz.Rect(6, 397, 277, 424), "\n".join(linha.strip() for linha in linhas_sku),
+                fontsize=tamanho_sku, fontname="hebo", color=color_sku, align=1,
+            )
+            if espaco_restante >= 0:
+                break
 
         chave_numeros = None
         if page_declaracao:
             chave_numeros = extrair_chave_acesso(page_declaracao.get_text())
         elif "CHAVE DE ACESSO" in texto_atual:
-             chave_numeros = extrair_chave_acesso(page_atual.get_text())
+            chave_numeros = extrair_chave_acesso(page_atual.get_text())
 
         codigo_barra_base = chave_numeros or id_correspondente
-
+        titulo_codigo = "CHAVE DE ACESSO / VENDA"
         if codigo_barra_base:
             texto_codigo = chave_numeros if chave_numeros else f"VENDA {id_correspondente}"
-            nova_pagina.insert_text(fitz.Point(45, 402), texto_codigo, fontsize=5.5, color=(0, 0, 0))
+            tamanho_codigo = 5.5
+            cor_codigo = (0, 0, 0)
+        else:
+            texto_codigo = "CODIGO NAO ENCONTRADO"
+            tamanho_codigo = 5
+            cor_codigo = (0.5, 0.5, 0.5)
+
+        comprimento_titulo = fitz.get_text_length(titulo_codigo, fontsize=5)
+        comprimento_codigo = fitz.get_text_length(texto_codigo, fontsize=tamanho_codigo)
+        fim_titulo = (390 - comprimento_titulo - 8 - comprimento_codigo) / 2 + comprimento_titulo
+        nova_pagina.insert_text(
+            fitz.Point(262.5, fim_titulo), titulo_codigo,
+            fontsize=5, color=(0, 0, 0), rotate=90,
+        )
+        nova_pagina.insert_text(
+            fitz.Point(262.5, fim_titulo + 8 + comprimento_codigo), texto_codigo,
+            fontsize=tamanho_codigo, color=cor_codigo, rotate=90,
+        )
+        if codigo_barra_base:
             img_bytes = gerar_imagem_barcode(codigo_barra_base)
             if img_bytes:
-                nova_pagina.insert_image(fitz.Rect(0, 403, 283, 425), stream=img_bytes)
-        else:
-            nova_pagina.insert_text(fitz.Point(70, 410), "CODIGO NAO ENCONTRADO", fontsize=5, color=(0.5, 0.5, 0.5))
+                # Mantem amplo o eixo dos modulos; apenas encurta a altura das barras.
+                nova_pagina.insert_image(
+                    fitz.Rect(264.2, 20, 283, 385), stream=img_bytes,
+                    rotate=90, keep_proportion=False,
+                )
 
         count_etiquetas += 1
         num_pag_text = f"{count_etiquetas}"
-        nova_pagina.draw_rect(fitz.Rect(250, 0, 283, 15), color=None, fill=(1,1,1)) 
-        nova_pagina.insert_text(fitz.Point(255, 12), num_pag_text, fontsize=12, color=(0,0,0))
+        tamanho_contador = min(12, 21 / fitz.get_text_length(num_pag_text, fontsize=1))
+        nova_pagina.insert_text(
+            fitz.Point(260, 13), num_pag_text, fontsize=tamanho_contador, color=(0,0,0),
+        )
         
         i += salto
 
