@@ -266,7 +266,10 @@
     "electron_app/main/modules/importacoes-tracking-browser.js",
     "static/medias_compras/fornecedores.js",
     "static/medias_compras/cadastros-lista.js",
-    "static/medias_compras/data-pedido-lista.js"
+    "static/medias_compras/data-pedido-lista.js",
+    "static/dashboard/menu-icons.js",
+    "static/dashboard/menu-motion.js",
+    "static/dashboard/menu-motion.css"
   ],
   "requiredSourceGlobs": [
     { "pattern": "python_runtime/portable/python.exe", "min": 1 },
@@ -685,7 +688,10 @@
     "local_app/electron_app/main/modules/importacoes-tracking-browser.js",
     "local_app/static/medias_compras/fornecedores.js",
     "local_app/static/medias_compras/cadastros-lista.js",
-    "local_app/static/medias_compras/data-pedido-lista.js"
+    "local_app/static/medias_compras/data-pedido-lista.js",
+    "local_app/static/dashboard/menu-icons.js",
+    "local_app/static/dashboard/menu-motion.js",
+    "local_app/static/dashboard/menu-motion.css"
   ],
   "requiredPackagedSourceParity": [
     "package.json",
@@ -855,7 +861,10 @@
     "static/pesquisa-mercado/history-ui.css",
     "backend/routers/pesquisa_mercado.py",
     "backend/schemas/pesquisa_mercado.py",
-    "backend/services/pesquisa_mercado.py"
+    "backend/services/pesquisa_mercado.py",
+    "static/dashboard/menu-icons.js",
+    "static/dashboard/menu-motion.js",
+    "static/dashboard/menu-motion.css"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",
