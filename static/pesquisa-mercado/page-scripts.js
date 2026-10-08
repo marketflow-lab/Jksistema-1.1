@@ -73,25 +73,29 @@
         const url = absolute(location.href);
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
-        let categoryIdentityConflict = false;
+        let categoryIdentityConflict = false, categoryDocumentIdentity = false;
         const effectiveCategoryId = (() => {
             if (isProduct(url) || currentListingIsSeller()) return '';
-            const evidence = new Set();
-            const add = value => { if (typeof value === 'string' && /^MLB\d+$/.test(value)) evidence.add(value); };
+            const evidence = new Set(), documentEvidence = new Set();
+            const add = (value, fromDocument = false) => {
+                if (typeof value !== 'string' || !/^MLB\d+$/.test(value)) return;
+                evidence.add(value);
+                if (fromDocument) documentEvidence.add(value);
+            };
             function currentListingIsSeller() { const seller = identity(url); return !!(seller.id || seller.perfilUrl); }
             try {
                 const parsed = new URL(url);
                 for (const match of decodeURIComponent(parsed.pathname).matchAll(/_(?:CatId|CATEGORY)_(MLB\d+)(?=_|\/|$)/gi)) add(match[1].toUpperCase());
                 for (const [key, value] of parsed.searchParams) if (/^(?:category|category_id|categoryid)$/i.test(key)) add(value.toUpperCase());
             } catch (_error) {}
-            for (const element of nodes('meta[name="category_id"], meta[property="category_id"], main[data-category-id]')) add(element.getAttribute('content') || element.getAttribute('data-category-id'));
+            for (const element of nodes('meta[name="category_id"], meta[property="category_id"], main[data-category-id]')) add(element.getAttribute('content') || element.getAttribute('data-category-id'), true);
             const inspect = state => {
                 if (!state || typeof state !== 'object' || Array.isArray(state)) return;
-                add(state.category_id); add(state.categoryId);
+                add(state.category_id, true); add(state.categoryId, true);
                 if (Array.isArray(state.filters)) {
                     for (const filter of state.filters) {
                         if (!filter || filter.id !== 'category' || !Array.isArray(filter.values) || filter.values.length !== 1) continue;
-                        add(filter.values[0] && filter.values[0].id);
+                        add(filter.values[0] && filter.values[0].id, true);
                     }
                 }
             };
@@ -129,6 +133,7 @@
                 }
             }
             categoryIdentityConflict = evidence.size > 1;
+            categoryDocumentIdentity = documentEvidence.size === 1 && !categoryIdentityConflict;
             return evidence.size === 1 ? [...evidence][0] : '';
         })();
         const bodyText = norm(document.body && (document.body.innerText || document.body.textContent));
@@ -446,10 +451,29 @@
         }
         const categoryIndex = nodes('a[href]').find(anchor => /^(?:ver (?:mais|todas as)|todas as|mais) categorias$/.test(norm(anchor.textContent)) && /\/categorias\/?(?:$|\?)/.test(absolute(anchor.href)));
         const categoriesIndexUrl = absolute(categoryIndex && categoryIndex.href);
+        // The ML rescue component marks an unrecognized search route. An ID
+        // merely present in that route cannot prove a legitimate empty category.
+        const categoryRescue = nodes('.ui-search-rescue .ui-search-rescue__title', content)
+            .some(title => !title.closest(excludedCategoryArea) && title.getClientRects().length > 0
+                && norm(title.textContent) === 'nao encontramos resultados para a sua busca');
+        const categoryHeading = nodes('h1', content).some(heading => clean(heading.textContent)
+            && !heading.closest(excludedCategoryArea + ', .ui-search-rescue'));
+        const categoryBreadcrumb = nodes('[class*="breadcrumb"] a[href], [aria-label*="breadcrumb" i] a[href], [aria-label*="caminho" i] a[href], [data-testid="breadcrumb"] a[href]', content)
+            .some(anchor => {
+                const href = absolute(anchor.getAttribute('href'));
+                if (!href || isProduct(href) || identity(href).id || identity(href).perfilUrl) return false;
+                const parsed = new URL(href), pathname = categoryPath(href);
+                return (['lista.mercadolivre.com.br', 'imoveis.mercadolivre.com.br', 'servicos.mercadolivre.com.br'].includes(parsed.hostname)
+                    && pathname && pathname !== '/') || (['www.mercadolivre.com.br', 'mercadolivre.com.br'].includes(parsed.hostname)
+                    && /^\/(?:c|categorias)\/[^/]+/.test(pathname));
+            });
+        const categoryNotFound = categoryRescue && anuncios.length === 0 && !isProduct(url)
+            && !currentIdentity.id && !currentIdentity.perfilUrl && !authRequired
+            && !categoryHeading && !categoryBreadcrumb && !categoryDocumentIdentity;
         const scrolling = document.scrollingElement || document.documentElement || document.body;
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
         return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
-            authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0,
+            authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16
         };
