@@ -517,3 +517,198 @@ def test_negative_analysis_decision_keeps_lightning_out_of_automatic_queue():
     assert [row["lightning_start_date"] for row in payload["promocoes"][0]["items"]] == [
         offer(9)["start_date"], offer(12)["start_date"]
     ]
+
+
+# The real API exposes candidate references and stock bounds before assigning
+# a calendar. Confirmation must still come from scoped, fresh reads.
+def undated_offer(**changes):
+    raw = offer()
+    raw.pop("start_date")
+    raw.pop("finish_date")
+    raw.update(changes)
+    return raw
+
+
+def observed_pending(day=10, **changes):
+    raw = offer(day, status="pending")
+    raw["ref_id"] = f"OFFER-{ITEM_ID}-{day}"
+    raw.update(changes)
+    return raw
+
+
+def changing_reads(monkeypatch, before, after):
+    events = []
+    def lookup(client, store, cfg, item, **kwargs):
+        assert item == ITEM_ID and kwargs == {"force_refresh": True}
+        events.append("GET")
+        records = before if len(events) == 1 else after
+        return copy.deepcopy(records), cfg
+    monkeypatch.setattr(participation, "_ml_obter_promocoes_item", lookup, raising=False)
+    return events
+
+
+def test_undated_candidate_exposes_pending_schedule_and_stock():
+    raw = undated_offer()
+    row = selected(raw)
+    assert row["lightning_schedule_pending"] is True
+    assert row["lightning_action_blocked"] is False
+    assert row["lightning_start_date"] == row["lightning_finish_date"] == ""
+    assert row["lightning_stock_min"] == 5 and row["lightning_stock_max"] == 20
+
+
+@pytest.mark.parametrize("changes", [
+    {"price": True}, {"price": False}, {"price": 0}, {"price": "NaN"},
+    {"ref_id": f"CANDIDATE-MLB888777666-9"}, {"ref_id": ""},
+    {"_jk_contexto_promocao_confirmado": False},
+    {"start_date": 0}, {"start_date": True}, {"start_date": "invalid"},
+    {"start_date": offer()["start_date"]}, {"offer": {"finish_date": 1}},
+    {"min_stock": True}, {"min_stock": None}, {"max_stock": 4},
+])
+def test_unproven_undated_invitation_remains_blocked(changes):
+    row = selected(undated_offer(**changes))
+    assert row["lightning_schedule_pending"] is False
+    assert row["lightning_action_blocked"] is True
+
+
+@pytest.mark.parametrize("changes", [{}, {"start_date": None, "finish_date": " "}])
+def test_undated_invite_posts_then_confirms_new_dated_participation(ml, monkeypatch, changes):
+    raw = undated_offer(**changes)
+    pending = observed_pending()
+    events = changing_reads(monkeypatch, [raw], [pending])
+    original_request = participation._ml_api_request
+    def request(*args, **kwargs):
+        events.append("POST")
+        return original_request(*args, **kwargs)
+    monkeypatch.setattr(participation, "_ml_api_request", request)
+    ml.response = (201, {"price": 66.32, "original_price": 92.28})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    detail = result["detalhes"][0]
+    assert events == ["GET", "POST", "GET"]
+    assert detail["outcome"] == "applied" and detail["status"] == "pending"
+    assert detail["lightning_schedule_pending"] is False
+    assert detail["lightning_start_date"] == pending["start_date"]
+    assert detail["lightning_finish_date"] == pending["finish_date"]
+    assert detail["client_ref"] == "selected-date"
+    assert ml.calls[0][4]["json"] == {"promotion_type": "LIGHTNING", "deal_price": 66.32, "stock": 6}
+
+
+@pytest.mark.parametrize("changes", [
+    {"price": 65.32}, {"price": True}, {"min_stock": 6}, {"max_stock": 21},
+    {"start_date": offer()["start_date"]}, {"start_date": 0},
+    {"status": "pending"}, {"type": "DEAL"}, {"item_id": "MLB888777666"},
+    {"promotion_id": "LGH-OTHER"}, {"seller_id": "222"},
+])
+def test_fresh_undated_invite_changes_block_without_post(ml, monkeypatch, changes):
+    raw = undated_offer()
+    fresh(monkeypatch, [undated_offer(**changes)])
+    row = selected(raw)
+    row["lightning_schedule_pending"] = True  # UI assertions cannot override GET.
+    result = apply([row], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "blocked"
+    assert ml.calls == []
+
+
+def test_undated_missing_invite_does_not_claim_unrelated_existing_window(ml, monkeypatch):
+    raw = undated_offer()
+    fresh(monkeypatch, [observed_pending()])
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "blocked" and ml.calls == []
+
+
+def test_distinct_undated_candidates_at_same_price_are_ambiguous(ml, monkeypatch):
+    raw = undated_offer()
+    other = undated_offer(ref_id=f"CANDIDATE-{ITEM_ID}-other")
+    fresh(monkeypatch, [raw, other])
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "blocked" and ml.calls == []
+
+
+@pytest.mark.parametrize("changes", [{"price": 65.32}, {"max_stock": 21}, {"status": "pending"}])
+def test_duplicate_reference_with_conflicting_observations_blocks(ml, monkeypatch, changes):
+    raw = undated_offer()
+    fresh(monkeypatch, [raw, undated_offer(**changes)])
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "blocked" and ml.calls == []
+
+
+def test_identical_duplicate_candidate_observations_have_one_submission(ml, monkeypatch):
+    raw = undated_offer()
+    changing_reads(monkeypatch, [raw, copy.deepcopy(raw)], [observed_pending()])
+    ml.response = (201, {"price": 66.32})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "applied" and len(ml.calls) == 1
+
+
+@pytest.mark.parametrize("after", [
+    [], [undated_offer()], [observed_pending(price=65.32)],
+    [observed_pending(), observed_pending(12)],
+    [observed_pending(status="candidate")],
+    [observed_pending(item_id="MLB888777666")],
+    [observed_pending(type="DEAL")], [observed_pending(seller_id="222")],
+])
+def test_undated_post_without_unique_current_effect_is_unknown(ml, monkeypatch, after):
+    raw = undated_offer()
+    changing_reads(monkeypatch, [raw], after)
+    ml.response = (201, observed_pending())  # Direct body alone cannot confirm it.
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "unknown" and len(ml.calls) == 1
+
+
+def test_undated_post_ignores_foreign_participations(ml, monkeypatch):
+    raw = undated_offer()
+    changing_reads(monkeypatch, [raw], [observed_pending(item_id="MLB888777666"),
+        observed_pending(promotion_id="LGH-OTHER"), observed_pending()])
+    ml.response = (201, {"price": 66.32})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "applied" and len(ml.calls) == 1
+
+
+@pytest.mark.parametrize("after", [observed_pending(9), observed_pending(9, ref_id=f"OFFER-{ITEM_ID}-changed")])
+def test_previous_participation_cannot_confirm_undated_post(ml, monkeypatch, after):
+    raw, previous = undated_offer(), observed_pending(9)
+    changing_reads(monkeypatch, [raw, previous], [after])
+    ml.response = (201, {"price": 66.32})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "unknown" and len(ml.calls) == 1
+
+
+def test_new_pending_window_is_distinguished_from_previous_participation(ml, monkeypatch):
+    raw, previous, new = undated_offer(), observed_pending(9), observed_pending(10)
+    changing_reads(monkeypatch, [raw, previous], [previous, new])
+    ml.response = (201, {"price": 66.32})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    detail = result["detalhes"][0]
+    assert detail["outcome"] == "applied" and detail["lightning_start_date"] == new["start_date"]
+    assert len(ml.calls) == 1
+
+
+def test_undated_already_error_cannot_claim_another_schedule_or_send_put(ml, monkeypatch):
+    raw = undated_offer()
+    changing_reads(monkeypatch, [raw], [observed_pending()])
+    ml.response = (400, {"message": "already participating in promotion"})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "rejected"
+    assert [call[2] for call in ml.calls] == ["POST"]
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+def test_duplicate_selected_invite_never_reposts_even_if_result_unknown(ml, monkeypatch, confirmed):
+    raw = undated_offer()
+    changing_reads(monkeypatch, [raw], [observed_pending()] if confirmed else [raw])
+    ml.response = (201, {"price": 66.32})
+    one, two = selected(raw), selected(raw)
+    two["client_ref"] = "duplicate-row"
+    result = apply([one, two], campaign=CAMPAIGN, kind="LIGHTNING")
+    expected = ["applied", "already_participating"] if confirmed else ["unknown", "unknown"]
+    assert [detail["outcome"] for detail in result["detalhes"]] == expected
+    assert result["detalhes"][1]["client_ref"] == "duplicate-row"
+    assert len(ml.calls) == 1
+
+
+def test_scoped_owner_matches_before_and_after_inclusion(ml, monkeypatch):
+    monkeypatch.setattr(participation, "_obter_cfg_ml", lambda client, store: {"scope": (client, store), "user_id": "111"})
+    raw = undated_offer(seller_id=111)
+    changing_reads(monkeypatch, [raw], [observed_pending(seller_id=111)])
+    ml.response = (201, {"price": 66.32})
+    result = apply([selected(raw)], campaign=CAMPAIGN, kind="LIGHTNING")
+    assert result["detalhes"][0]["outcome"] == "applied" and len(ml.calls) == 1

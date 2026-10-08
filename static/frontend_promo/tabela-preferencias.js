@@ -101,7 +101,14 @@ function formatarDataHoraRelampago(value) {
     return `${Number(dia)}/${mesNome}/${ano}${hora !== undefined ? ` às ${hora}:${minuto || '00'}` : ''}`;
 }
 
+function temAgendaPendenteRelampago(row) {
+    return row?.lightning_schedule_pending === true
+        && !String(row?.lightning_start_date || '').trim()
+        && !String(row?.lightning_finish_date || '').trim();
+}
+
 function formatarJanelaOfertaRelampago(row) {
+    if (temAgendaPendenteRelampago(row)) return 'Data e horário serão informados pelo Mercado Livre após a inclusão.';
     const inicio = formatarDataHoraRelampago(row?.lightning_start_date);
     const fim = formatarDataHoraRelampago(row?.lightning_finish_date);
     const temFuso = value => /(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value || '').trim());

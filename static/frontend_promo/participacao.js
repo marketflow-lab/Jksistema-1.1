@@ -84,7 +84,17 @@ function montarLinhasResultadoParticipacao(payload, result) {
                 ? detalhePorReferencia.get(chaveResultadoParticipacao(promotionId, item.client_ref))
                 : detalhePorItem.get(chave);
             const detalhe = candidatos?.length === 1 ? candidatos[0] : null;
-            const base = textoItemParticipacao(item);
+            const agendaConfirmada = typeof isLinhaOfertaRelampago === 'function'
+                && isLinhaOfertaRelampago(item) && detalhe?.success === true && !detalhe?.error
+                && ['applied', 'already_participating'].includes(detalhe?.outcome)
+                && formatarDataHoraRelampago(detalhe?.lightning_start_date)
+                && formatarDataHoraRelampago(detalhe?.lightning_finish_date);
+            const base = textoItemParticipacao(agendaConfirmada ? {
+                ...item,
+                lightning_start_date: detalhe.lightning_start_date,
+                lightning_finish_date: detalhe.lightning_finish_date,
+                lightning_schedule_pending: false,
+            } : item);
             const mensagem = detalhe?.message || detalhe?.error || '';
             const entrada = { ...base, nota: [base.nota, mensagem].filter(Boolean).join(' · ') };
             const outcome = detalhe?.outcome || (
@@ -258,6 +268,8 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
                 return [identificacao, formatarJanelaOfertaRelampago(item), aviso].join(' · ');
             })
             .filter(Boolean);
+        const agendasPendentes = promotionType.toUpperCase() === 'LIGHTNING'
+            ? items.filter(item => temAgendaPendenteRelampago(item)).length : 0;
         const outrosItems = Math.max(0, total - amostraItems.length);
         const amostraTexto = amostraItems.length
             ? `${amostraItems.join(' · ')}${outrosItems > 0 ? ` · +${outrosItems} outro(s)` : ''}`
@@ -298,6 +310,12 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
                         Confira o resumo antes de continuar.
                     </p>
                     <div class="promo-confirm-grid">${cardsHtml}</div>
+                    ${agendasPendentes ? `
+                        <div class="promo-confirm-alert">
+                            <strong>Agenda das ofertas relâmpago</strong>
+                            <span>${agendasPendentes} oferta(s) serão enviadas à API com a agenda ainda indisponível. Data e horário serão informados pelo Mercado Livre após a inclusão.</span>
+                        </div>
+                    ` : ''}
                     ${impedimentosRelampago.length ? `
                         <div class="promo-confirm-alert">
                             <strong>Ofertas com impedimento</strong>
@@ -393,6 +411,7 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
                     lightning_offer_key: String(row.lightning_offer_key || '').trim(),
                     lightning_start_date: String(row.lightning_start_date || '').trim(),
                     lightning_finish_date: String(row.lightning_finish_date || '').trim(),
+                    lightning_schedule_pending: row.lightning_schedule_pending === true,
                     lightning_stock_min: row.lightning_stock_min ?? null,
                     lightning_stock_max: row.lightning_stock_max ?? null,
                     lightning_stock: obterEstoqueReservadoRelampago(row),

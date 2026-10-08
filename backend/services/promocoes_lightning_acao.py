@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from backend.services.promocoes_lightning import (
     LIGHTNING_OFFERS_KEY, merge_lightning_raw,
@@ -12,6 +13,7 @@ LIGHTNING_ROW_FIELDS = (
     "lightning_offer_key", "lightning_start_date", "lightning_finish_date",
     "lightning_stock_min", "lightning_stock_max", "lightning_stock",
     "lightning_offer_count", "lightning_action_blocked", "lightning_action_reason",
+    "lightning_schedule_pending",
 )
 
 
@@ -39,6 +41,78 @@ def lightning_stock_bounds(raw):
     return confirmed(("min_stock", "minimum_stock", "min_stock_quantity"), "min"), confirmed((
         "max_stock", "maximum_stock", "max_stock_quantity",
     ), "max")
+
+
+def lightning_has_schedule_data(raw):
+    """Nontext and partial date values are evidence of an invalid schedule."""
+    if not isinstance(raw, dict):
+        return False
+    date_fields = ("start_date", "startDate", "date_start", "begin_date",
+                   "finish_date", "finishDate", "end_date", "endDate", "date_end")
+    containers = [raw] + [raw[key] for key in ("offer", "promotion", "campaign", "deal")
+                          if isinstance(raw.get(key), dict)]
+    return any(value is not None and not (isinstance(value, str) and not value.strip())
+               for container in containers for key in date_fields
+               if key in container for value in (container[key],))
+
+
+def lightning_reference(raw):
+    containers = [raw] + [raw[key] for key in ("offer", "promotion", "campaign", "deal")
+                          if isinstance(raw.get(key), dict)] if isinstance(raw, dict) else []
+    references = {str(container[key] or "").strip().upper()
+                  for container in containers for key in (
+                      "offer_id", "offerId", "ref_id", "refId", "candidate_offer_id", "candidateOfferId")
+                  if container.get(key)}
+    return next(iter(references)) if len(references) == 1 else ""
+
+
+def lightning_schedule_pending(raw, campaign_id, item_id):
+    """Only a proven, priced candidate may await scheduling after its inclusion."""
+    if not isinstance(raw, dict) or lightning_has_schedule_data(raw):
+        return False
+    expected = {"_jk_campaign_id_consultado": campaign_id,
+                "_jk_item_id_consultado": item_id,
+                "_jk_promotion_type_consultado": "LIGHTNING"}
+    if raw.get("_jk_contexto_promocao_confirmado") is not True or any(
+        str(raw.get(key) or "").strip().upper() != str(value or "").strip().upper()
+        for key, value in expected.items()
+    ):
+        return False
+    containers = [raw] + [raw[key] for key in ("offer", "promotion", "campaign", "deal")
+                          if isinstance(raw.get(key), dict)]
+    for container in containers:
+        for keys, wanted in (
+            (("promotion_id", "promotionId", "campaign_id", "campaignId", "deal_id", "dealId"), campaign_id),
+            (("item_id", "itemId", "item_id_to"), item_id),
+            (("type", "promotion_type", "promotionType", "campaign_type", "campaignType"), "LIGHTNING"),
+        ):
+            if any(str(container[key]).strip().upper() != str(wanted).strip().upper()
+                   for key in keys if container.get(key)):
+                return False
+    raw_id = str(raw.get("id") or "").strip().upper()
+    if (raw_id.startswith("LGH-") and raw_id != str(campaign_id).upper()) or (
+        raw_id.startswith("MLB") and raw_id != str(item_id).upper()
+    ):
+        return False
+    status = raw.get("status") or raw.get("state") or raw.get("status_item") or raw.get("_jk_status_item_consultado")
+    if isinstance(status, dict):
+        status = status.get("id") or status.get("name") or status.get("status")
+    if str(status or "").strip().lower() not in {"candidate", "eligible"}:
+        return False
+    reference = lightning_reference(raw)
+    matched = re.fullmatch(r"CANDIDATE-(MLB\d+)-.+", reference)
+    if not matched or matched.group(1) != str(item_id).strip().upper():
+        return False
+    raw_price = raw.get("price") if "price" in raw else raw.get("deal_price")
+    if isinstance(raw_price, bool):
+        return False
+    try:
+        price = float(raw_price)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    minimum, maximum = lightning_stock_bounds(raw)
+    return (math.isfinite(price) and price > 0 and minimum is not None and maximum is not None
+            and minimum > 0 and maximum >= minimum)
 
 
 def lightning_same_window(left, right):
@@ -92,8 +166,9 @@ def lightning_row_fields(raw, promotion_type, campaign_id, item_id):
     count = int(raw.get("_jk_lightning_offer_count") or len(offers) or 1)
     start, finish = lightning_offer_window(raw)
     minimum, maximum = lightning_stock_bounds(raw)
+    schedule_pending = lightning_schedule_pending(raw, campaign_id, item_id)
     reason = ""
-    if not lightning_window_valid(raw):
+    if not lightning_window_valid(raw) and not schedule_pending:
         reason = "Data e horario desta oferta nao foram confirmados. Execute uma nova analise."
     elif minimum is None or maximum is None or minimum <= 0 or maximum < minimum:
         reason = "Os limites de estoque desta oferta nao foram confirmados. Execute uma nova analise."
@@ -103,6 +178,7 @@ def lightning_row_fields(raw, promotion_type, campaign_id, item_id):
         "lightning_stock_min": minimum, "lightning_stock_max": maximum,
         "lightning_stock": minimum if minimum is not None and minimum > 0 and maximum is not None and maximum >= minimum else None,
         "lightning_offer_count": count,
+        "lightning_schedule_pending": schedule_pending,
         "lightning_action_blocked": bool(reason), "lightning_action_reason": reason,
     }
     if reason:

@@ -26,6 +26,10 @@ class Element {
   querySelectorAll() { return []; }
   addEventListener(name, callback) { this.listeners[name] = callback; }
   change(value) { this.value = value; this.listeners.change?.call(this); }
+  remove() {
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+  }
 }
 
 const ids = Object.fromEntries([
@@ -45,6 +49,7 @@ const context = {
     querySelector: selector => selector.endsWith('thead tr') ? thead : selector.endsWith('tbody') ? tbody : null,
     createElement: () => new Element(),
     addEventListener() {},
+    removeEventListener() {},
   },
   window: { addEventListener() {} },
   localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
@@ -109,6 +114,7 @@ function assertOfferPayload(items, expectedRows) {
     assert.strictEqual(items[index].lightning_finish_date, row.lightning_finish_date);
     assert.strictEqual(items[index].lightning_stock, row.lightning_stock);
     assert.strictEqual(items[index].lightning_action_blocked, false);
+    assert.strictEqual(items[index].lightning_schedule_pending, row.lightning_schedule_pending === true);
   });
 }
 
@@ -205,7 +211,72 @@ const naiveWindow = context.formatarJanelaOfertaRelampago({
 assert(naiveWindow.includes('fuso não informado'));
 assert(!naiveWindow.includes('Brasília'));
 
+const schedulePendingText = 'Data e horário serão informados pelo Mercado Livre após a inclusão.';
+const schedulePending = {
+  ...rows[0], MLB: 'MLB789', 'Ação': 'Participar', action_offer_id: 'CANDIDATE-MLB789-TESTE',
+  action_financeiro_exato: false, action_financeiro_estimado: true, action_tecnico_apto: true,
+  lightning_offer_key: 'LGH-TESTE:MLB789:CANDIDATE', lightning_start_date: '', lightning_finish_date: '',
+  lightning_stock: 5, lightning_action_blocked: false, lightning_action_reason: '', lightning_schedule_pending: true,
+};
+installAnalysis([schedulePending]);
+assert.strictEqual(context.formatarJanelaOfertaRelampago(schedulePending), schedulePendingText);
+assert(tbody.children[0].children[0].textContent.includes(schedulePendingText));
+assert.strictEqual(context.obterAvisoParticipacaoPromocoes(schedulePending), '');
+const pendingPayload = context.montarPayloadParticipacoesPromocoes(0);
+assertOfferPayload(pendingPayload.promocoes[0].items, [schedulePending]);
+assertOfferPayload(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes[0].items, [schedulePending]);
+assert.strictEqual(pendingPayload.promocoes[0].items[0].offer_id, schedulePending.action_offer_id);
+assert.strictEqual(pendingPayload.promocoes[0].items[0].deal_price, 66.32);
+const assignedResult = { detalhes: [{
+  promotion_id: 'LGH-TESTE', client_ref: pendingPayload.promocoes[0].items[0].client_ref,
+  outcome: 'applied', success: true, lightning_schedule_pending: false,
+  lightning_start_date: '2026-10-12T15:00:00Z', lightning_finish_date: '2026-10-13T03:00:00Z',
+}] };
+const assignedSummary = context.montarLinhasResultadoParticipacao(pendingPayload, assignedResult);
+assert(assignedSummary[0].confirmados[0].nota.includes('12/out/2026 às 12:00'));
+assert(!assignedSummary[0].confirmados[0].nota.includes(schedulePendingText));
+assert.strictEqual(schedulePending.lightning_start_date, '', 'a resposta não deve alterar a análise ou escolher datas');
+const rejectedSummary = context.montarLinhasResultadoParticipacao(pendingPayload, {
+  detalhes: assignedResult.detalhes.map(detail => ({ ...detail, outcome: 'rejected', success: false })),
+});
+assert(rejectedSummary[0].falhas[0].nota.includes(schedulePendingText), 'um resultado recusado não confirma calendário');
+const contradictorySummary = context.montarLinhasResultadoParticipacao(pendingPayload, {
+  detalhes: assignedResult.detalhes.map(detail => ({ ...detail, error: 'Resultado ainda não confirmado.' })),
+});
+assert(contradictorySummary[0].indeterminados[0].nota.includes(schedulePendingText), 'resultado com erro não confirma calendário');
+
+const partialWindow = { ...schedulePending, lightning_start_date: rows[0].lightning_start_date,
+  lightning_action_blocked: true, lightning_action_reason: 'Janela parcial da oferta não confirmada.' };
+installAnalysis([partialWindow]);
+assert(!context.formatarJanelaOfertaRelampago(partialWindow).includes(schedulePendingText));
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes.length, 0);
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes.length, 0);
+installAnalysis([{ ...schedulePending, lightning_stock: null }]);
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes.length, 0);
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes.length, 0);
+installAnalysis([{ ...schedulePending, lightning_action_blocked: true, lightning_action_reason: invalidReason }]);
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes.length, 0, 'agenda pendente não contorna bloqueio técnico');
+installAnalysis([{ ...schedulePending, 'Ação': 'Não participar' }]);
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(0).promocoes.length, 0, 'agenda pendente não aprova a análise');
+assert.strictEqual(context.montarPayloadParticipacoesPromocoes(null, { automatica: true }).promocoes.length, 0);
+installAnalysis([schedulePending]);
+vm.runInContext("apiAnalisesPorCampanha[0].origem_loja = 'Outra Loja'", context);
+assert.throws(() => context.montarPayloadParticipacoesPromocoes(0), /não pertence/);
+vm.runInContext("apiAnalisesPorCampanha[0].origem_loja = 'Loja Teste'; apiAnalisesPorCampanha[0].origem_client_id = 'outro-cliente'", context);
+assert.throws(() => context.montarPayloadParticipacoesPromocoes(0), /não pertence/);
+installAnalysis([schedulePending]);
+
 async function checkParticipation() {
+  const previewPromise = context.pedirConfirmacaoParticipacaoCampanhaApi({
+    nome: 'Ofertas relâmpago', total: 1, loja: 'Loja Teste', promo: pendingPayload.promocoes[0],
+    analise: { data: [schedulePending], promo_b_id: 'LGH-TESTE', promo_b_type: 'LIGHTNING' }, campanha: lightning,
+  });
+  const preview = context.document.body.children[context.document.body.children.length - 1];
+  assert(preview.innerHTML.includes('Agenda das ofertas relâmpago'));
+  assert(preview.innerHTML.includes('1 oferta(s) serão enviadas à API com a agenda ainda indisponível.'));
+  assert(preview.innerHTML.includes(schedulePendingText));
+  preview.listeners.click({ target: { closest: selector => selector === '[data-cancel-promo-participation]' } });
+  assert.strictEqual(await previewPromise, false);
   const approved = rows.map(row => ({ ...row, 'Ação': 'Participar' }));
   installAnalysis(approved);
   const messages = [], requests = [], alerts = [];
@@ -251,6 +322,19 @@ async function checkParticipation() {
   await context.confirmarParticipacaoCampanhaApi(0);
   assert.strictEqual(requests.length, 2, 'dados inválidos impedem chamadas manuais e automáticas');
   assert.strictEqual(alerts[alerts.length - 1], invalidReason);
+
+  installAnalysis([schedulePending]);
+  await context.confirmarParticipacaoCampanhaApi(0);
+  assert.strictEqual(requests.length, 3, 'candidata sem agenda pode ser confirmada manualmente');
+  assertOfferPayload(requests[2].promocoes[0].items, [schedulePending]);
+  const pendingAutomaticResult = await context.executarParticipacaoAutomaticaPromocoes();
+  assert.strictEqual(requests.length, 4, 'candidata aprovada sem agenda pode ser enviada automaticamente');
+  assert.strictEqual(pendingAutomaticResult.total_sucesso, 1);
+  assertOfferPayload(requests[3].promocoes[0].items, [schedulePending]);
+  context.getApiAutoPrefs = () => ({ enabled: true, approvalRequired: true });
+  assert.strictEqual(await context.executarParticipacaoAutomaticaPromocoes(), null);
+  assert.strictEqual(requests.length, 4, 'agenda pendente preserva Não aprovar automaticamente');
+  assert(messages[messages.length - 1].includes('aprovacao automatica esta desativada'));
 }
 checkParticipation().then(() => console.log('promocoes lightning multiple date participation runtime checks passed')).catch(error => {
   console.error(error);
