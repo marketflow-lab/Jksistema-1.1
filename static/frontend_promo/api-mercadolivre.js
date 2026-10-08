@@ -369,10 +369,16 @@ function formatPromoDateRange(campanha) {
 
 function formatPromoOption(campanha) {
     const id = campanha.id || '';
-    const nome = campanha.name || campanha.title || id;
+    const nome = getPromoCampaignDisplayName(campanha);
     const status = campanha.status ? ` - ${campanha.status}` : '';
     const periodo = formatPromoDateRange(campanha);
     return `${nome}${status}${periodo} (${id})`;
+}
+
+function getPromoCampaignDisplayName(campanha) {
+    const tipo = String(campanha?.type || campanha?.promotion_type || campanha?.promo_b_type || '').trim().toUpperCase();
+    if (tipo === 'LIGHTNING') return 'Ofertas relâmpago';
+    return String(campanha?.name || campanha?.title || campanha?.id || '').trim();
 }
 
 function promoSelectionGroup(campanha) {
@@ -518,8 +524,10 @@ function findApiPromoBCampaignById(id) {
 }
 
 function buildApiAnalysisTabLabel(analise, idx) {
-    const base = analise?.tab_label || analise?.promo_b_nome || analise?.arquivo_nome || `Campanha ${idx + 1}`;
     const campanhaBase = findApiPromoBCampaignById(analise?.promo_b_id) || {};
+    const tipo = String(analise?.promo_b_type || campanhaBase?.type || campanhaBase?.promotion_type || '').trim().toUpperCase();
+    const base = tipo === 'LIGHTNING' ? 'Ofertas relâmpago'
+        : (analise?.tab_label || analise?.promo_b_nome || analise?.arquivo_nome || `Campanha ${idx + 1}`);
     const campanha = {
         ...(analise || {}),
         ...campanhaBase,
@@ -828,7 +836,7 @@ function renderApiPromoBButtons(campanhas) {
         <div class="api-promo-card-grid">
             ${lista.map((campanha) => {
                 const id = String(campanha?.id || '').trim();
-                const nome = String(campanha?.name || campanha?.title || id || 'Campanha sem nome').trim();
+                const nome = getPromoCampaignDisplayName(campanha) || 'Campanha sem nome';
                 const selecionada = selectedIds.has(id);
                 return `
                     <label class="api-promo-card ${selecionada ? 'is-selected' : ''}">

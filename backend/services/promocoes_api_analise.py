@@ -64,6 +64,14 @@ from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 from backend.services.promocoes_tarifa_estimada import estimar_tarifa_promocao
+from backend.services.promocoes_lightning import merge_lightning_raw
+from backend.services.mercadolivre_legacy_promocoes import (
+    _promo_contextualizar_entry_campanha as _lightning_contextualize,
+    _promo_mesclar_raw_multistatus as _lightning_merge_same,
+)
+from backend.services.promocoes_lightning_acao import (
+    LIGHTNING_ROW_FIELDS, expand_lightning_offers, lightning_row_fields, lightning_scoped_item_offers,
+)
 
 _PROMOCOES_RUNTIME_GET_TENANT_ID = None
 
@@ -1563,6 +1571,41 @@ def _promo_ajustar_preco_painel_seller_campaign(
     return resultado
 
 
+def _promo_enriquecer_janelas_lightning(client_id, loja, cfg, campaign_id, item_ids, raw_by_item):
+    """Gather item-level invitations once per MLB with bounded concurrency."""
+    enriched = dict(raw_by_item or {})
+    snapshots = {}
+    ids = list(dict.fromkeys(item_ids))
+    if not ids:
+        return enriched, snapshots
+
+    def collect(item_id):
+        local_cfg = dict(cfg)
+        records, local_cfg = _ml_obter_promocoes_item(
+            client_id, loja, local_cfg, item_id, force_refresh=True,
+        )
+        offers = lightning_scoped_item_offers(records, campaign_id, item_id, _lightning_contextualize)
+        return records, local_cfg, offers
+
+    with ThreadPoolExecutor(max_workers=min(6, len(ids))) as executor:
+        futures = {executor.submit(collect, item_id): item_id for item_id in ids}
+        for future in as_completed(futures):
+            item_id = futures[future]
+            try:
+                records, local_cfg, offers = future.result()
+            except Exception:
+                # Do not discard campaign-scoped offers on an item lookup failure.
+                snapshots[item_id] = (None, dict(cfg))
+                continue
+            snapshots[item_id] = (records, local_cfg)
+            for offer in offers:
+                enriched[item_id] = merge_lightning_raw(
+                    enriched.get(item_id), offer, campaign_id=campaign_id, item_id=item_id,
+                    merge_same_offer=lambda previous, fresh: {**_lightning_merge_same(previous, fresh), **fresh},
+                )
+    return enriched, snapshots
+
+
 def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends(get_tenant_id)):
     """
     Compara duas promocoes/campanhas existentes do Mercado Livre
@@ -1654,7 +1697,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
 
     custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, req.loja)
 
-    def _montar_linha_item(item_id: str, item: dict, promo_b: str, promo_b_type: str, ids_b: set[str], raw_b: dict, arquivo_nome_b: str):
+    def _montar_linha_item(item_id: str, item: dict, promo_b: str, promo_b_type: str, ids_b: set[str], raw_b: dict, arquivo_nome_b: str, promotions_snapshot=None):
         item = itens_por_id[item_id]
         sku = _ml_extrair_sku(item) or str(item.get("seller_custom_field") or "").strip()
         sku_display = sku
@@ -1687,19 +1730,22 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         raw_b_origem_acao = dict(raw_b_item) if isinstance(raw_b_item, dict) else {}
         raw_b_detalhe_acao = {}
         promocoes_item_a = None
-        try:
-            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
-                client_id,
-                req.loja,
-                cfg_local,
-                item_id,
-                force_refresh=True,
-            )
-        except Exception:
-            promocoes_item_a = None
+        if promotions_snapshot is not None:
+            promocoes_item_a, cfg_local = promotions_snapshot
+        else:
+            try:
+                promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
+                    client_id,
+                    req.loja,
+                    cfg_local,
+                    item_id,
+                    force_refresh=True,
+                )
+            except Exception:
+                promocoes_item_a = None
         if promo_a_type and not raw_a_item:
             raw_a_item, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_a, promo_a_type, item_id)
-        if promo_b_type and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
+        if promo_b_type and not raw_b_item.get("_jk_lightning_selected_offer") and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
             detalhe_b, cfg_local = _ml_obter_item_promocao_raw(client_id, req.loja, cfg_local, promo_b, promo_b_type, item_id)
             if detalhe_b:
                 raw_b_detalhe_acao = dict(detalhe_b)
@@ -2018,6 +2064,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
             **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
+            **lightning_row_fields(raw_b_participacao, promo_b_type, promo_b, item_id),
         }
 
     dados_analise = []
@@ -2028,14 +2075,22 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         ids_intersecao = promo_b_info["ids_intersecao"]
         raw_b = promo_b_info["raw_b"]
         arquivo_nome_b = promo_b_info["arquivo_nome"]
-        item_pairs = [(item_id, itens_por_id[item_id]) for item_id in ids_intersecao if item_id in itens_por_id]
+        available_ids = [item_id for item_id in ids_intersecao if item_id in itens_por_id]
+        promotions_snapshots = {}
+        if promo_b_type.upper() == "LIGHTNING":
+            raw_b, promotions_snapshots = _promo_enriquecer_janelas_lightning(
+                client_id, req.loja, cfg, promo_b, available_ids, raw_b,
+            )
+        offer_pairs = expand_lightning_offers(available_ids, raw_b, promo_b_type, promo_b)
+        item_pairs = [(item_id, itens_por_id[item_id], offer_key, offer_raw)
+                      for item_id, offer_key, offer_raw in offer_pairs]
         logger.info(f"[PROMO API] Comparando promocoes {promo_a} x {promo_b}: {len(item_pairs)} anuncios encontrados")
         if item_pairs:
             max_workers = min(10, max(2, len(item_pairs)))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
-                    executor.submit(_montar_linha_item, item_id, item, promo_b, promo_b_type, ids_b, raw_b, arquivo_nome_b): item_id
-                    for item_id, item in item_pairs
+                    executor.submit(_montar_linha_item, item_id, item, promo_b, promo_b_type, ids_b, {item_id: offer_raw}, arquivo_nome_b, promotions_snapshots.get(item_id)): offer_key
+                    for item_id, item, offer_key, offer_raw in item_pairs
                 }
                 linhas_por_id = {}
                 for future in as_completed(future_map):
@@ -2046,7 +2101,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                             linhas_por_id[item_id] = linha
                     except Exception as e:
                         logger.warning(f"[PROMO API] Falha ao montar item {item_id}: {e}")
-                dados_analise.extend([linhas_por_id[item_id] for item_id, _item in item_pairs if item_id in linhas_por_id])
+                dados_analise.extend([linhas_por_id[offer_key] for _id, _item, offer_key, _raw in item_pairs if offer_key in linhas_por_id])
     dados_analise = [
         row for row in dados_analise
         if row
@@ -2057,9 +2112,11 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     planilha_nome = _salvar_planilha_analise_promo(client_id, dados_analise, prefixo='analise_promo_api')
     df_payload = _build_df_planilha_analise_promo(dados_analise).fillna("")
     dados_payload = df_payload.to_dict(orient="records")
+    for payload_row, source_row in zip(dados_payload, dados_analise):
+        payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
     meta_por_linha = {}
     for item in dados_analise:
-        chave = (str(item.get("MLB") or "").strip(), str(item.get("Campanha ML") or "").strip())
+        chave = (str(item.get("MLB") or "").strip(), str(item.get("Campanha ML") or "").strip(), str(item.get("lightning_offer_key") or ""))
         if not chave[0]:
             continue
         meta_por_linha[chave] = {
@@ -2096,7 +2153,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     for row in dados_payload:
         row['Frete Gratis'] = row.get('Frete GrÃ¡tis', '')
         row['Frete Gratis ML'] = row.get('Frete GrÃ¡tis ML', '')
-        meta = meta_por_linha.get((str(row.get("MLB") or "").strip(), str(row.get("Campanha ML") or "").strip())) or {}
+        meta = meta_por_linha.get((str(row.get("MLB") or "").strip(), str(row.get("Campanha ML") or "").strip(), str(row.get("lightning_offer_key") or ""))) or {}
         if meta.get("offer_id"):
             row["offer_id"] = meta["offer_id"]
         if meta.get("promotion_type"):
@@ -2145,7 +2202,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         "loja": req.loja,
         "promocao_a_id": promo_a,
         "promocao_b_id": promo_b_ids[0] if promo_b_ids else "",
+        "promocao_b_type": promo_b_types[0] if promo_b_types else "",
         "promocao_b_ids": promo_b_ids,
+        "promocao_b_types": promo_b_types,
         "total": len(dados_analise),
         "tempo_segundos": round(time.time() - inicio, 1),
         "data": dados_payload,
@@ -2279,7 +2338,7 @@ async def analisar_promo_via_api_sem_arquivos(
         texto = str(exc or "").strip()
         return texto or exc.__class__.__name__
 
-    def _montar_linha_api(item_id: str, item: dict | None, promo_meta: dict, raw_b: dict):
+    def _montar_linha_api(item_id: str, item: dict | None, promo_meta: dict, raw_b: dict, promotions_snapshot=None):
         item = dict(item or {})
         item.setdefault("id", item_id)
 
@@ -2288,17 +2347,20 @@ async def analisar_promo_via_api_sem_arquivos(
         raw_b_detalhe_acao = {}
         cfg_local = dict(cfg)
         promocoes_item_a = None
-        try:
-            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
-                client_id,
-                loja,
-                cfg_local,
-                item_id,
-                force_refresh=True,
-            )
-        except Exception:
-            promocoes_item_a = None
-        if promo_meta.get("promo_b_type") and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
+        if promotions_snapshot is not None:
+            promocoes_item_a, cfg_local = promotions_snapshot
+        else:
+            try:
+                promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
+                    client_id,
+                    loja,
+                    cfg_local,
+                    item_id,
+                    force_refresh=True,
+                )
+            except Exception:
+                promocoes_item_a = None
+        if promo_meta.get("promo_b_type") and not raw_b_item.get("_jk_lightning_selected_offer") and (not raw_b_item or _promo_status_item_promocao(raw_b_item) in {"candidate", "eligible"}):
             try:
                 detalhe_b, cfg_local = _ml_obter_item_promocao_raw(
                     client_id,
@@ -2683,6 +2745,7 @@ async def analisar_promo_via_api_sem_arquivos(
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
             **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
+            **lightning_row_fields(raw_b_participacao, promo_meta.get("promo_b_type"), promo_meta["promo_b"], item_id),
         }
 
     analises = []
@@ -2787,7 +2850,14 @@ async def analisar_promo_via_api_sem_arquivos(
             for item in (itens_filtrados or [])
             if str(item.get("id") or "").strip()
         }
-        item_pairs = [(item_id, itens_por_id.get(item_id)) for item_id in ids_b]
+        promotions_snapshots = {}
+        if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
+            raw_b, promotions_snapshots = _promo_enriquecer_janelas_lightning(
+                client_id, loja, cfg, promo_meta["promo_b"], ids_b, raw_b,
+            )
+        offer_pairs = expand_lightning_offers(ids_b, raw_b, promo_meta.get("promo_b_type"), promo_meta["promo_b"])
+        item_pairs = [(item_id, itens_por_id.get(item_id), offer_key, offer_raw)
+                      for item_id, offer_key, offer_raw in offer_pairs]
         _emit_progress(
             70 + int((idx / max(1, total_solicitacoes)) * 20),
             f"Montando analise {idx}/{total_solicitacoes} com dados da API...",
@@ -2799,8 +2869,8 @@ async def analisar_promo_via_api_sem_arquivos(
             max_workers = min(10, max(2, len(item_pairs)))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
-                    executor.submit(_montar_linha_api, item_id, item, promo_meta, raw_b): item_id
-                    for item_id, item in item_pairs
+                    executor.submit(_montar_linha_api, item_id, item, promo_meta, {item_id: offer_raw}, promotions_snapshots.get(item_id)): offer_key
+                    for item_id, item, offer_key, offer_raw in item_pairs
                 }
                 linhas_por_id = {}
                 for future in as_completed(future_map):
@@ -2811,7 +2881,7 @@ async def analisar_promo_via_api_sem_arquivos(
                             linhas_por_id[item_id] = linha
                     except Exception:
                         logger.exception("[PROMO API SEM ARQUIVOS] Falha ao montar item %s", item_id)
-                linhas = [linhas_por_id[item_id] for item_id, _ in item_pairs if item_id in linhas_por_id]
+                linhas = [linhas_por_id[offer_key] for _id, _item, offer_key, _raw in item_pairs if offer_key in linhas_por_id]
         total_montadas = len(linhas)
         total_status_ok = sum(1 for row in linhas if _promo_linha_status_ativo_ou_programado(row))
         total_pct_ok = sum(1 for row in linhas if _promo_linha_pct_fixa_maior_que_zero(row))
@@ -2833,8 +2903,10 @@ async def analisar_promo_via_api_sem_arquivos(
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
+        for payload_row, source_row in zip(dados_payload, linhas):
+            payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
         meta_por_linha = {
-            str(item.get("MLB") or "").strip(): {
+            (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
                 "offer_id": str(item.get("offer_id") or "").strip(),
                 "promotion_type": str(item.get("promotion_type") or "").strip(),
                 "deal_price": _parse_float_flex(item.get("deal_price") or item.get("preco_promocional_ml")),
@@ -2871,7 +2943,7 @@ async def analisar_promo_via_api_sem_arquivos(
         for row in dados_payload:
             row["Frete Gratis"] = row.get("Frete GrÃ¡tis", row.get("Frete Gratis", ""))
             row["Frete Gratis ML"] = row.get("Frete GrÃ¡tis ML", row.get("Frete Gratis ML", ""))
-            meta = meta_por_linha.get(str(row.get("MLB") or "").strip()) or {}
+            meta = meta_por_linha.get((str(row.get("MLB") or "").strip(), str(row.get("lightning_offer_key") or ""))) or {}
             if meta.get("offer_id"):
                 row["offer_id"] = meta["offer_id"]
             if meta.get("promotion_type"):
@@ -3089,7 +3161,7 @@ async def analisar_promo_via_api_com_arquivos(
     }
     _emit_progress(66, f"Dados recebidos de {len(itens_por_id)} anuncio(s). Iniciando comparacao...")
 
-    def _montar_linha_arquivo(item_id: str, item: dict | None, entrada_b: dict, promo_meta: dict):
+    def _montar_linha_arquivo(item_id: str, item: dict | None, entrada_b: dict, promo_meta: dict, selected_raw: dict | None = None, promotions_snapshot=None):
         item = dict(item or {})
         item.setdefault("id", item_id)
         if not item.get("title"):
@@ -3130,26 +3202,29 @@ async def analisar_promo_via_api_com_arquivos(
         )
 
         promocoes_item_a = None
-        try:
-            promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
-                client_id,
-                loja,
-                cfg_local,
-                item_id,
-                force_refresh=True,
-            )
-        except Exception:
-            promocoes_item_a = None
+        if promotions_snapshot is not None:
+            promocoes_item_a, cfg_local = promotions_snapshot
+        else:
+            try:
+                promocoes_item_a, cfg_local = _ml_obter_promocoes_item(
+                    client_id,
+                    loja,
+                    cfg_local,
+                    item_id,
+                    force_refresh=True,
+                )
+            except Exception:
+                promocoes_item_a = None
         raw_a_item = raw_a.get(item_id, {})
         if promo_a_type and not raw_a_item:
             try:
                 raw_a_item, cfg_local = _ml_obter_item_promocao_raw(client_id, loja, cfg_local, promo_a, promo_a_type, item_id)
             except Exception:
                 raw_a_item = {}
-        raw_b_item = {}
+        raw_b_item = dict(selected_raw or {})
         promo_b_type = str(promo_meta.get("promo_b_type") or "").strip()
         promo_b_id = str(promo_meta.get("promo_b") or "").strip()
-        if promo_b_type and promo_b_id:
+        if promo_b_type and promo_b_id and not raw_b_item.get("_jk_lightning_selected_offer"):
             try:
                 raw_b_item, cfg_local = _ml_obter_item_promocao_raw(client_id, loja, cfg_local, promo_b_id, promo_b_type, item_id)
             except Exception:
@@ -3164,7 +3239,7 @@ async def analisar_promo_via_api_com_arquivos(
             raw_b_participacao,
             priorizar_percentual_total_api=True,
         )
-        preco_b_arquivo = _parse_float_flex(entrada_b.get("PreÃ§o Final ML"))
+        preco_b_arquivo = (None if selected_raw and promo_b_type.upper() == "LIGHTNING" else _parse_float_flex(entrada_b.get("PreÃ§o Final ML")))
         preco_b_acao = preco_b_arquivo or preco_b_acao_raw
         raw_b_item = dict(raw_b_participacao)
 
@@ -3190,7 +3265,7 @@ async def analisar_promo_via_api_com_arquivos(
                     preco_a_raw, desc_a_raw = _ml_extrair_preco_promocao_raw(raw_a_item, priorizar_percentual_total_api=True)
             except Exception:
                 promocoes_item_a = None
-        preco_b = _promo_preco_arquivo_ou_sale_price(
+        preco_b = preco_b_acao_raw if selected_raw and promo_b_type.upper() == "LIGHTNING" else _promo_preco_arquivo_ou_sale_price(
             raw_b_item,
             price_info,
             promo_b_id,
@@ -3497,12 +3572,26 @@ async def analisar_promo_via_api_com_arquivos(
             "pricing_price": round(float(preco_b), 2) if preco_b is not None else None,
             "pricing_source": _promo_pricing_source(raw_b_item, price_info),
             **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
+            **lightning_row_fields(raw_b_participacao, promo_b_type, promo_b_id, item_id),
         }
 
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
         mapa_promo2 = promo_meta["mapa_promo2"]
         ordem_ids = promo_meta["ordem_ids"]
-        item_pairs = [(item_id, itens_por_id.get(item_id)) for item_id in ordem_ids]
+        raw_windows = {}
+        if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
+            _refs, raw_windows, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
+                client_id, loja, cfg, promo_meta["promo_b"], promotion_type="LIGHTNING",
+                max_items=5000, buscar_detalhes=False,
+            )
+        promotions_snapshots = {}
+        if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
+            raw_windows, promotions_snapshots = _promo_enriquecer_janelas_lightning(
+                client_id, loja, cfg, promo_meta["promo_b"], ordem_ids, raw_windows,
+            )
+        offer_pairs = expand_lightning_offers(ordem_ids, raw_windows, promo_meta.get("promo_b_type"), promo_meta["promo_b"])
+        item_pairs = [(item_id, itens_por_id.get(item_id), offer_key, offer_raw)
+                      for item_id, offer_key, offer_raw in offer_pairs]
         progress_comp = 68 + int((idx / max(1, total_solicitacoes)) * 25)
         _emit_progress(
             progress_comp,
@@ -3520,8 +3609,8 @@ async def analisar_promo_via_api_com_arquivos(
             max_workers = min(10, max(2, len(item_pairs)))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_map = {
-                    executor.submit(_montar_linha_arquivo, item_id, item, mapa_promo2.get(item_id, {}), promo_meta): item_id
-                    for item_id, item in item_pairs
+                    executor.submit(_montar_linha_arquivo, item_id, item, mapa_promo2.get(item_id, {}), promo_meta, offer_raw, promotions_snapshots.get(item_id)): offer_key
+                    for item_id, item, offer_key, offer_raw in item_pairs
                 }
                 linhas_por_id = {}
                 for future in as_completed(future_map):
@@ -3532,7 +3621,7 @@ async def analisar_promo_via_api_com_arquivos(
                             linhas_por_id[item_id] = linha
                     except Exception as e:
                         logger.warning(f"[PROMO API ARQUIVOS] Falha ao montar item {item_id}: {e}")
-                linhas = [linhas_por_id[item_id] for item_id, _ in item_pairs if item_id in linhas_por_id]
+                linhas = [linhas_por_id[offer_key] for _id, _item, offer_key, _raw in item_pairs if offer_key in linhas_por_id]
         linhas, diagnostico, motivo_sem_resultados = _promo_filtrar_resultado_com_diagnostico(linhas, len(item_pairs))
 
         planilha_nome = _salvar_planilha_analise_promo(
@@ -3542,8 +3631,10 @@ async def analisar_promo_via_api_com_arquivos(
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
+        for payload_row, source_row in zip(dados_payload, linhas):
+            payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
         meta_por_linha = {
-            str(item.get("MLB") or "").strip(): {
+            (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
                 "offer_id": str(item.get("offer_id") or "").strip(),
                 "promotion_type": str(item.get("promotion_type") or "").strip(),
                 "deal_price": _parse_float_flex(item.get("deal_price") or item.get("preco_promocional_ml")),
@@ -3580,7 +3671,7 @@ async def analisar_promo_via_api_com_arquivos(
         for row in dados_payload:
             row["Frete Gratis"] = row.get("Frete GrÃ¡tis", row.get("Frete Gratis", ""))
             row["Frete Gratis ML"] = row.get("Frete GrÃ¡tis ML", row.get("Frete Gratis ML", ""))
-            meta = meta_por_linha.get(str(row.get("MLB") or "").strip()) or {}
+            meta = meta_por_linha.get((str(row.get("MLB") or "").strip(), str(row.get("lightning_offer_key") or ""))) or {}
             if meta.get("offer_id"):
                 row["offer_id"] = meta["offer_id"]
             if meta.get("promotion_type"):

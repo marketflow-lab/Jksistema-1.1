@@ -298,7 +298,17 @@ def _build_df_planilha_analise_promo(
     for c in COLUNAS_PLANILHA_ANALISE_PROMO:
         if c not in df.columns:
             df[c] = ''
-    return df[COLUNAS_PLANILHA_ANALISE_PROMO]
+    colunas = list(COLUNAS_PLANILHA_ANALISE_PROMO)
+    if destacar_estimativas and any(item.get("lightning_offer_key") for item in dados_analise or []):
+        # Export windows separately; the canonical API column contract remains intact.
+        for field, label in (
+            ("lightning_start_date", "Oferta relampago - inicio"),
+            ("lightning_finish_date", "Oferta relampago - fim"),
+            ("lightning_offer_key", "Oferta relampago - identidade"),
+        ):
+            df[label] = [item.get(field, "") for item in dados_analise or []]
+            colunas.append(label)
+    return df[colunas]
 
 
 def _salvar_planilha_analise_promo(client_id: str, dados_analise: list[dict], prefixo: str = 'analise_promo') -> str:

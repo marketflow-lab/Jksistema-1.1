@@ -49,6 +49,7 @@ function textoItemParticipacao(item) {
     const partes = [];
     if (sku) partes.push(`SKU ${sku}`);
     if (titulo) partes.push(titulo);
+    if (typeof isLinhaOfertaRelampago === 'function' && isLinhaOfertaRelampago(item)) partes.push(formatarJanelaOfertaRelampago(item));
     const ordem = String(item?.client_ref || '').match(/^\d+:(\d+)$/);
     return { itemId: itemId || (ordem ? `Selecionado ${Number(ordem[1]) + 1} sem MLB` : 'Sem MLB'), nota: partes.join(' · ') };
 }
@@ -241,16 +242,28 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
         const periodo = formatPromoDateRange(campanhaResumo);
         const status = String(campanhaResumo.status || '').trim();
         const items = Array.isArray(promo?.items) ? promo.items : [];
+        const selecionadasAnalise = typeof obterLinhasSelecionadasPromocoes === 'function' ? obterLinhasSelecionadasPromocoes(analise?.data) : [];
+        const linhaDaOferta = item => {
+            const indice = String(item?.client_ref || '').match(/^\d+:(\d+)$/)?.[1];
+            return indice !== undefined ? (selecionadasAnalise[Number(indice)] || item) : item;
+        };
         const amostraItems = items
             .slice(0, 5)
-            .map((item) => String(item?.item_id || item?.sku || item?.titulo || '').trim())
+            .map((item) => {
+                const identificacao = String(item?.item_id || item?.sku || item?.titulo || '').trim();
+                if (promotionType.toUpperCase() !== 'LIGHTNING') return identificacao;
+                const estoque = obterEstoqueReservadoRelampago(item);
+                const aviso = linhaDaOferta(item).action_ja_participa === true ? 'Já participa'
+                    : (estoque !== null ? `Estoque reservado: ${estoque}` : 'Estoque reservado não informado');
+                return [identificacao, formatarJanelaOfertaRelampago(item), aviso].join(' · ');
+            })
             .filter(Boolean);
         const outrosItems = Math.max(0, total - amostraItems.length);
         const amostraTexto = amostraItems.length
             ? `${amostraItems.join(' · ')}${outrosItems > 0 ? ` · +${outrosItems} outro(s)` : ''}`
             : '';
         const cards = [
-            { label: 'Anúncios selecionados para processamento', value: String(total), highlight: true },
+            { label: promotionType.toUpperCase() === 'LIGHTNING' ? 'Ofertas selecionadas para processamento' : 'Anúncios selecionados para processamento', value: String(total), highlight: true },
             { label: 'Campanha', value: nome || 'Campanha sem nome' },
             { label: 'Loja', value: loja || 'Não informada' },
             { label: 'Status / Tipo', value: [status, promotionType].filter(Boolean).join(' · ') || '-' },
@@ -265,6 +278,8 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
                 <strong>${escapeHtml(card.value)}</strong>
             </div>
         `).join('');
+        const impedimentosRelampago = promotionType.toUpperCase() === 'LIGHTNING'
+            ? Array.from(new Set(selecionadasAnalise.map(row => obterAvisoParticipacaoPromocoes(row)).filter(motivo => motivo && motivo !== 'Já participa'))) : [];
 
         const modal = document.createElement('div');
         modal.className = 'promo-confirm-modal-backdrop';
@@ -283,6 +298,12 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
                         Confira o resumo antes de continuar.
                     </p>
                     <div class="promo-confirm-grid">${cardsHtml}</div>
+                    ${impedimentosRelampago.length ? `
+                        <div class="promo-confirm-alert">
+                            <strong>Ofertas com impedimento</strong>
+                            <span>${escapeHtml(impedimentosRelampago.join(' · '))}</span>
+                        </div>
+                    ` : ''}
                     ${amostraTexto ? `
                         <div class="promo-confirm-alert">
                             <strong>Primeiros anúncios na fila</strong>
@@ -340,13 +361,16 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         const campanha = findApiPromoBCampaignById(analise?.promo_b_id) || {};
         const promotionId = String(analise?.promo_b_id || campanha?.id || '').trim();
         const promotionType = String(analise?.promo_b_type || campanha?.type || campanha?.promotion_type || '').trim();
-        const nome = String(analise?.promo_b_nome || campanha?.name || campanha?.title || `Promocao ${idx + 1}`).trim();
+        const nome = promotionType.toUpperCase() === 'LIGHTNING' ? 'Ofertas relâmpago'
+            : String(analise?.promo_b_nome || campanha?.name || campanha?.title || `Promocao ${idx + 1}`).trim();
         const items = selecionadas.map((row, indiceSelecionado) => {
+            const relampago = promotionType.toUpperCase() === 'LIGHTNING';
+            if (relampago && (row.lightning_action_blocked === true || obterMotivoEstoqueRelampago(row))) return null;
             if (opcoes.automatica && Object.prototype.hasOwnProperty.call(row || {}, 'action_tecnico_apto')) {
                 const apto = String(row.action_tecnico_apto ?? '').trim().toLowerCase();
                 if (!['1', 'true', 'sim', 'yes'].includes(apto)) return null;
             }
-            if (opcoes.automatica && Object.prototype.hasOwnProperty.call(row || {}, 'action_financeiro_exato')) {
+            if (opcoes.automatica && !relampago && Object.prototype.hasOwnProperty.call(row || {}, 'action_financeiro_exato')) {
                 const contextoExato = row?.action_financeiro_exato;
                 const contextoExatoTexto = String(contextoExato ?? '').trim().toLowerCase();
                 if (!(contextoExato === true || ['1', 'true', 'sim', 'yes'].includes(contextoExatoTexto))) return null;
@@ -365,6 +389,16 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
                 discount_percentage: discountPct,
                 sku: getValorLinhaPromoAuto(row, ['SKU', 'sku']),
                 titulo: getValorLinhaPromoAuto(row, ['Título', 'Titulo', 'title']),
+                ...(relampago ? {
+                    lightning_offer_key: String(row.lightning_offer_key || '').trim(),
+                    lightning_start_date: String(row.lightning_start_date || '').trim(),
+                    lightning_finish_date: String(row.lightning_finish_date || '').trim(),
+                    lightning_stock_min: row.lightning_stock_min ?? null,
+                    lightning_stock_max: row.lightning_stock_max ?? null,
+                    lightning_stock: obterEstoqueReservadoRelampago(row),
+                    lightning_action_blocked: row.lightning_action_blocked === true,
+                    lightning_action_reason: String(row.lightning_action_reason || row.lightning_action_blocked_reason || '').trim(),
+                } : {}),
             };
         }).filter(Boolean);
 
@@ -384,14 +418,21 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
 async function executarParticipacaoAutomaticaPromocoes() {
     const prefs = getApiAutoPrefs();
     if (!prefs.enabled) return null;
+    const bloqueadasRelampago = (Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha : [])
+        .filter(analise => String(analise?.promo_b_type || '').toUpperCase() === 'LIGHTNING')
+        .flatMap(analise => obterLinhasSelecionadasPromocoes(analise.data))
+        .map(row => obterAvisoParticipacaoPromocoes(row))
+        .filter(motivo => motivo && motivo !== 'Já participa');
+    const avisoRelampago = bloqueadasRelampago.length
+        ? ` ${bloqueadasRelampago.length} oferta(s) relâmpago sem envio automático: ${Array.from(new Set(bloqueadasRelampago)).join(' · ')}` : '';
     const payload = montarPayloadParticipacoesPromocoes(null, { automatica: true });
     const total = payload.promocoes.reduce((sum, promo) => sum + (Array.isArray(promo.items) ? promo.items.length : 0), 0);
     if (!payload.loja || total <= 0) {
-        atualizarStatusAutomacaoPromo('Analise concluida, mas nao ha itens com acao Participar.');
+        atualizarStatusAutomacaoPromo(`Análise concluída sem itens aptos para envio automático.${avisoRelampago}`);
         return null;
     }
     if (prefs.approvalRequired) {
-        atualizarStatusAutomacaoPromo(`Analise concluida. ${total} anuncio(s) ficaram marcados como Participar, mas a aprovacao automatica esta desativada.`);
+        atualizarStatusAutomacaoPromo(`Analise concluida. ${total} anuncio(s) ficaram marcados como Participar, mas a aprovacao automatica esta desativada.${avisoRelampago}`);
         return null;
     }
     atualizarStatusAutomacaoPromo(`Entrando em ${total} anuncio(s) nas promocoes...`);
@@ -407,7 +448,7 @@ async function executarParticipacaoAutomaticaPromocoes() {
         falharStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', erro });
         throw new Error(erro);
     }
-    const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
+    const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).${avisoRelampago}`;
     atualizarStatusAutomacaoPromo(msg);
     concluirStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', result });
     mostrarResumoParticipacaoPromocoes(payload, result, { titulo: 'Entrada concluída nas promoções' });
@@ -430,7 +471,9 @@ async function confirmarParticipacaoCampanhaApi(index) {
     const promo = payload.promocoes[0];
     const total = promo && Array.isArray(promo.items) ? promo.items.length : 0;
     if (!payload.loja || !promo || total <= 0) {
-        alert('Essa campanha não tem anúncios marcados como Participar.');
+        const motivos = String(analise.promo_b_type || '').toUpperCase() === 'LIGHTNING'
+            ? Array.from(new Set(obterLinhasSelecionadasPromocoes(analise.data).map(row => obterAvisoParticipacaoPromocoes(row)).filter(Boolean))) : [];
+        alert(motivos.length ? motivos.join(' · ') : 'Essa campanha não tem anúncios marcados como Participar.');
         return;
     }
     const nome = promo.nome || analise.promo_b_nome || `Campanha ${index + 1}`;

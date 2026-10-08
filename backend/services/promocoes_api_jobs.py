@@ -61,6 +61,7 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.promocoes_lightning_acao import LIGHTNING_ROW_FIELDS
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 
@@ -345,7 +346,7 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
     if not isinstance(analises, list) or not analises:
         analises = [{
             "promo_b_id": resultado.get("promocao_b_id") or "",
-            "promo_b_type": "",
+            "promo_b_type": resultado.get("promocao_b_type") or "",
             "promo_b_nome": "Promocao analisada",
             "data": resultado.get("data") if isinstance(resultado, dict) else [],
         }]
@@ -353,8 +354,8 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
     for idx, analise in enumerate(analises):
         if not isinstance(analise, dict):
             continue
-        promotion_id = str(analise.get("promo_b_id") or analise.get("promotion_id") or "").strip()
-        promotion_type = str(analise.get("promo_b_type") or analise.get("promotion_type") or "").strip()
+        promotion_id = str(analise.get("promo_b_id") or analise.get("promotion_id") or analise.get("promocao_b_id") or "").strip()
+        promotion_type = str(analise.get("promo_b_type") or analise.get("promotion_type") or analise.get("promocao_b_type") or "").strip()
         nome = str(analise.get("promo_b_nome") or analise.get("tab_label") or f"Promocao {idx + 1}").strip()
         rows = analise.get("data") if isinstance(analise.get("data"), list) else []
         items = []
@@ -373,7 +374,9 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
                     or str(tecnico_apto or "").strip().lower() in {"1", "true", "sim", "yes"}
                 ):
                     continue
-            if "action_financeiro_exato" in row:
+            # LIGHTNING follows the approved analysis decision, including an
+            # explicitly estimated margin. Other campaign policies are preserved.
+            if promotion_type.upper() != "LIGHTNING" and "action_financeiro_exato" in row:
                 contexto_exato = row.get("action_financeiro_exato")
                 if not (
                     contexto_exato is True
@@ -403,6 +406,10 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
                     "deal_price": _parse_float_flex(row.get("action_deal_price")),
                     "discount_percentage": _parse_float_flex(row.get("action_discount_percentage")),
                 })
+            if promotion_type.upper() == "LIGHTNING":
+                if row.get("lightning_action_blocked"):
+                    continue
+                item_payload.update({field: row[field] for field in LIGHTNING_ROW_FIELDS if field in row})
             items.append(item_payload)
         if promotion_id and items:
             promocoes.append({

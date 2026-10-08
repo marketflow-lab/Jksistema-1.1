@@ -61,7 +61,80 @@ function obterMotivoSugestaoPromocoes(row) {
 function obterAvisoParticipacaoPromocoes(row) {
     // Somente a análise da campanha selecionada confirma participação.
     // O Status da tabela pode pertencer à promoção usada na comparação.
-    return row?.action_ja_participa === true ? 'Já participa' : '';
+    if (row?.action_ja_participa === true) return 'Já participa';
+    if (!isLinhaOfertaRelampago(row)) return '';
+    if (row.lightning_action_blocked === true) {
+        return String(row.lightning_action_reason || row.lightning_action_blocked_reason || row.action_impedimento_tecnico || '').trim()
+            || 'Dados desta oferta relâmpago não confirmados. Execute uma nova análise antes de participar.';
+    }
+    return obterMotivoEstoqueRelampago(row);
+}
+
+function isLinhaOfertaRelampago(row) {
+    return !!String(row?.lightning_offer_key || '').trim()
+        || String(row?.action_promotion_type || row?.promotion_type || '').trim().toUpperCase() === 'LIGHTNING'
+        || Object.prototype.hasOwnProperty.call(row || {}, 'lightning_action_blocked');
+}
+
+function formatarDataHoraRelampago(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const local = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|\s)?(\d{2})?:?(\d{2})?(?::\d{2}(?:\.\d+)?)?$/);
+    let ano, mes, dia, hora, minuto;
+    if (local) {
+        [, ano, mes, dia, hora, minuto] = local;
+    } else {
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return '';
+        const partes = new Intl.DateTimeFormat('pt-BR', {
+            timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        }).formatToParts(date);
+        const valores = Object.fromEntries(partes.map(parte => [parte.type, parte.value]));
+        ({ year: ano, month: mes, day: dia, hour: hora, minute: minuto } = valores);
+    }
+    const meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+    const mesNome = meses[Number(mes) - 1];
+    if (!mesNome || Number(dia) < 1 || Number(dia) > 31) return '';
+    if (local && (Number(dia) > new Date(Date.UTC(Number(ano), Number(mes), 0)).getUTCDate()
+        || (hora !== undefined && (Number(hora) > 23 || Number(minuto || 0) > 59)))) return '';
+    return `${Number(dia)}/${mesNome}/${ano}${hora !== undefined ? ` às ${hora}:${minuto || '00'}` : ''}`;
+}
+
+function formatarJanelaOfertaRelampago(row) {
+    const inicio = formatarDataHoraRelampago(row?.lightning_start_date);
+    const fim = formatarDataHoraRelampago(row?.lightning_finish_date);
+    const temFuso = value => /(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(value || '').trim());
+    const fuso = temFuso(row?.lightning_start_date) && temFuso(row?.lightning_finish_date) ? 'Brasília' : 'fuso não informado';
+    if (inicio && fim) return `${inicio} até ${fim} (${fuso})`;
+    if (inicio) return `A partir de ${inicio} (${fuso})`;
+    if (fim) return `Até ${fim} (${fuso})`;
+    return 'Data e horário não informados pela API';
+}
+
+function obterEstoqueReservadoRelampago(row) {
+    const raw = row?.lightning_stock;
+    if (raw === null || raw === undefined || typeof raw === 'boolean' || String(raw).trim() === '') return null;
+    const valor = Number(raw);
+    return Number.isSafeInteger(valor) && valor > 0 ? valor : null;
+}
+
+function obterMotivoEstoqueRelampago(row) {
+    if (!isLinhaOfertaRelampago(row) || row.lightning_action_blocked !== false || row.action_ja_participa === true) return '';
+    if (!temLimitesEstoqueRelampago(row)) return 'Limites de estoque desta oferta não confirmados. Execute uma nova análise.';
+    const estoque = obterEstoqueReservadoRelampago(row);
+    if (estoque === null) return 'Informe o estoque reservado para esta oferta relâmpago.';
+    const minimo = Number(row.lightning_stock_min);
+    const maximo = Number(row.lightning_stock_max);
+    if (Number.isSafeInteger(minimo) && minimo > 0 && estoque < minimo) return `O estoque reservado mínimo é ${minimo}.`;
+    if (Number.isSafeInteger(maximo) && maximo > 0 && estoque > maximo) return `O estoque reservado máximo é ${maximo}.`;
+    return '';
+}
+
+function temLimitesEstoqueRelampago(row) {
+    const minimo = Number(row?.lightning_stock_min);
+    const maximo = Number(row?.lightning_stock_max);
+    return Number.isSafeInteger(minimo) && minimo > 0 && Number.isSafeInteger(maximo) && maximo >= minimo;
 }
 
 function _normalizeLookupKeyBase(value) {

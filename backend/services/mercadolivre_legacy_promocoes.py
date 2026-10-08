@@ -39,6 +39,10 @@ from fastapi import Depends, File, Form, Header, HTTPException, Request, UploadF
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.promocoes_lightning import (
+    lightning_offer_key, lightning_offer_window, lightning_offers,
+    lightning_window_valid, merge_lightning_raw,
+)
 
 
 def configure_mercadolivre_legacy_promocoes_runtime(runtime_module=None, peers=None):
@@ -438,7 +442,7 @@ def _promo_contextualizar_entry_campanha(
             if valor_id:
                 campaigns_explicitas.add(valor_id)
     raw_id = str(sanitizado.get("id") or "").strip()
-    if raw_id.upper().startswith(("P-", "DEAL-")):
+    if raw_id.upper().startswith(("P-", "DEAL-", "LGH-")):
         campaigns_explicitas.add(raw_id)
     if any(valor.lower() != campaign_id.lower() for valor in campaigns_explicitas):
         return {}
@@ -507,6 +511,12 @@ def _promo_contextualizar_entry_campanha(
         # A API SMART pode omitir offer_id no candidate. A proveniencia da
         # precificacao continua valida; o gate da acao exige CANDIDATE-{MLB}-.
         offer_coerente = True
+    elif (
+        not offer_id
+        and promotion_type_consultado.upper() == "LIGHTNING"
+        and status_resolvido in {"pending", "programmed", "programada", "scheduled", "started", "active", "approved", "paused"}
+    ):
+        offer_coerente = lightning_window_valid(sanitizado)
     else:
         offer_coerente = False
     if not offer_coerente:
@@ -1488,6 +1498,32 @@ def _ml_listar_itens_promocao_com_raw(
     item_ids = []
     raw_por_item = {}
     promotion_type = str(promotion_type or "").strip()
+    is_lightning = promotion_type.upper() == "LIGHTNING"
+    lightning_count = 0
+
+    def _mesclar_item_raw(item_id, incoming):
+        nonlocal lightning_count
+        current = raw_por_item.get(item_id)
+        if is_lightning:
+            before = len(lightning_offers(current))
+            merged = merge_lightning_raw(
+                current, incoming, campaign_id=campaign_id, item_id=item_id,
+                merge_same_offer=_promo_mesclar_raw_multistatus,
+            )
+            raw_por_item[item_id] = merged
+            lightning_count += len(lightning_offers(merged)) - before
+        else:
+            raw_por_item[item_id] = _promo_mesclar_raw_multistatus(current, incoming)
+
+    def _limite_atingido():
+        return (lightning_count if is_lightning else len(item_ids)) >= max_items
+
+    def _anexar_ofertas(itens):
+        if not is_lightning:
+            return itens
+        return [dict(item, offers=lightning_offers(raw_por_item.get(str(item.get("id") or "").strip())))
+                for item in itens]
+
     status_promocao = str(status_promocao or "").strip()
     status_item_preferencial = str(status_item_preferencial or "").strip()
     promo_url_tpls = []
@@ -1517,6 +1553,8 @@ def _ml_listar_itens_promocao_com_raw(
         promotion_type_consultado = str(
             (params_url_tpl.get("promotion_type") or [""])[0] or ""
         ).strip()
+        if is_lightning and not promotion_type_consultado:
+            promotion_type_consultado = promotion_type
         status_consultado = ""
         status_param_consultado = ""
         if params_url_tpl.get("status_item"):
@@ -1529,15 +1567,20 @@ def _ml_listar_itens_promocao_com_raw(
         limit = 50
         encontrou_endpoint = False
         paginas_lidas = 0
-        max_paginas = max(1, math.ceil(max_items / limit) + 1)
+        max_paginas = max(1, max_items + 1) if is_lightning else max(1, math.ceil(max_items / limit) + 1)
         assinaturas_paginas = set()
+        search_after = ""
+        cursores_vistos = set()
         while True:
             paginas_lidas += 1
             if paginas_lidas > max_paginas:
                 logger.warning(f"[PROMO API] Interrompendo paginacao da promocao {campaign_id}: limite de paginas atingido")
                 break
             sep = "&" if "?" in promo_url_tpl else "?"
-            url = f"{promo_url_tpl}{sep}offset={offset}&limit={limit}"
+            if is_lightning and search_after:
+                url = f"{promo_url_tpl}{sep}search_after={quote_plus(search_after)}&limit={limit}"
+            else:
+                url = f"{promo_url_tpl}{sep}offset={offset}&limit={limit}"
             try:
                 resp, cfg = _ml_api_request_com_retry(
                     client_id,
@@ -1572,11 +1615,14 @@ def _ml_listar_itens_promocao_com_raw(
                 if isinstance(entry, dict):
                     raw_item = entry.get("item")
                     item_obj_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
-                    return str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "")
+                    entry_item_id = str(entry.get("item_id") or entry.get("itemId") or item_obj_id or entry.get("id") or "")
+                    if is_lightning:
+                        return lightning_offer_key(entry, campaign_id=campaign_id, item_id=entry_item_id)
+                    return entry_item_id
                 return str(entry or "")
 
-            assinatura = tuple(_entry_assinatura(entry) for entry in entries[:20])
-            if assinatura and assinatura in assinaturas_paginas:
+            assinatura = tuple(_entry_assinatura(entry) for entry in (entries if is_lightning else entries[:20]))
+            if assinatura and assinatura in assinaturas_paginas and not (is_lightning and search_after):
                 logger.warning(f"[PROMO API] Interrompendo paginacao repetida da promocao {campaign_id}")
                 break
             if assinatura:
@@ -1607,20 +1653,27 @@ def _ml_listar_itens_promocao_com_raw(
                         if not entry_contextualizado:
                             item_id = ""
                         else:
-                            raw_por_item[item_id] = _promo_mesclar_raw_multistatus(
-                                raw_por_item.get(item_id),
-                                entry_contextualizado,
-                            )
+                            _mesclar_item_raw(item_id, entry_contextualizado)
                 else:
                     item_id = str(entry or "").strip()
                 if item_id:
                     item_ids.append(item_id)
-                if len(item_ids) >= max_items:
+                if _limite_atingido():
                     logger.warning(f"[PROMO API] Promocao {campaign_id} limitada a {max_items} anuncios para evitar travamento")
                     break
-            if len(item_ids) >= max_items:
+            if _limite_atingido():
                 break
             paging = data.get("paging") or {}
+            next_cursor = str(data.get("search_after") or paging.get("search_after") or "").strip() if is_lightning else ""
+            if next_cursor:
+                if next_cursor in cursores_vistos:
+                    logger.warning("[PROMO API] Interrompendo cursor repetido da promocao %s", campaign_id)
+                    break
+                cursores_vistos.add(next_cursor)
+                search_after = next_cursor
+                continue
+            if is_lightning and search_after:
+                break
             total = int(paging.get("total") or 0)
             offset += limit
             if not entries or len(entries) < limit or (total and offset >= total):
@@ -1632,9 +1685,9 @@ def _ml_listar_itens_promocao_com_raw(
         item_ids = list(dict.fromkeys(item_ids))
         if not buscar_detalhes:
             itens = [{"id": item_id} for item_id in item_ids]
-            return itens, raw_por_item, cfg
+            return _anexar_ofertas(itens), raw_por_item, cfg
         itens, cfg = _ml_buscar_itens_batch(client_id, loja, cfg, item_ids, progress_callback=progress_callback)
-        return itens, raw_por_item, cfg
+        return _anexar_ofertas(itens), raw_por_item, cfg
 
     if not usar_fallback_pesado:
         logger.warning(f"[PROMO API] Promocao {campaign_id} sem itens no endpoint direto; fallback pesado desativado")
@@ -1644,7 +1697,7 @@ def _ml_listar_itens_promocao_com_raw(
                 itens = [{"id": item_id} for item_id in ids_unicos]
             else:
                 itens, cfg = _ml_buscar_itens_batch(client_id, loja, cfg, ids_unicos, progress_callback=progress_callback)
-            return itens, raw_por_item, cfg
+            return _anexar_ofertas(itens), raw_por_item, cfg
         return [], raw_por_item, cfg
 
     user_id = cfg.get("user_id")
@@ -1692,9 +1745,27 @@ def _ml_listar_itens_promocao_com_raw(
                     promocoes_item = []
                 if campaign_norm in _ml_extrair_ids_promocoes_item(promocoes_item):
                     participantes.append({"id": item_id})
-                    raw_encontrado = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id)
-                    if raw_encontrado:
-                        raw_por_item.setdefault(item_id, raw_encontrado)
+                    if is_lightning:
+                        entries = promocoes_item if isinstance(promocoes_item, list) else []
+                        if isinstance(promocoes_item, dict):
+                            entries = promocoes_item.get("results") or promocoes_item.get("promotions") or []
+                        for raw_entry in entries:
+                            raw_encontrado = _ml_encontrar_promocao_raw_item(raw_entry, campaign_id)
+                            if not raw_encontrado:
+                                continue
+                            source = dict(raw_encontrado)
+                            if not any(source.get(key) for key in ("item_id", "itemId", "item_id_to", "item")):
+                                source["item_id"] = item_id
+                            contextualizado = _promo_contextualizar_entry_campanha(
+                                source, campaign_id=campaign_id,
+                                promotion_type_consultado=promotion_type, item_id=item_id,
+                            )
+                            if contextualizado:
+                                _mesclar_item_raw(item_id, contextualizado)
+                    else:
+                        raw_encontrado = _ml_encontrar_promocao_raw_item(promocoes_item, campaign_id)
+                        if raw_encontrado:
+                            raw_por_item.setdefault(item_id, raw_encontrado)
                     if len(participantes) >= max_items:
                         logger.warning(f"[PROMO API] Varredura da promocao {campaign_id} limitada a {max_items} anuncios")
                         break
@@ -1710,8 +1781,8 @@ def _ml_listar_itens_promocao_com_raw(
     )
     if buscar_detalhes and ids_finais:
         itens_finais, cfg = _ml_buscar_itens_batch(client_id, loja, cfg, ids_finais, progress_callback=progress_callback)
-        return itens_finais, raw_por_item, cfg
-    return [{"id": item_id} for item_id in ids_finais], raw_por_item, cfg
+        return _anexar_ofertas(itens_finais), raw_por_item, cfg
+    return _anexar_ofertas([{"id": item_id} for item_id in ids_finais]), raw_por_item, cfg
 
 
 def _ml_listar_itens_promocao_multistatus_com_raw(
@@ -1726,6 +1797,24 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
     expected_min_items: Optional[int] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
 ):
+    is_lightning = str(promotion_type or "").strip().upper() == "LIGHTNING"
+
+    def _mesclar(item_key, raw):
+        current = raw_total.get(item_key)
+        if is_lightning:
+            raw_total[item_key] = merge_lightning_raw(
+                current, raw, campaign_id=campaign_id, item_id=item_key,
+                merge_same_offer=_promo_mesclar_raw_multistatus,
+            )
+        else:
+            raw_total[item_key] = _promo_mesclar_raw_multistatus(current, raw)
+
+    def _anexar_ofertas(itens):
+        if not is_lightning:
+            return itens
+        return [dict(item, offers=lightning_offers(raw_total.get(str(item.get("id") or "").strip())))
+                for item in itens]
+
     consultas = [
         {"status_promocao": "pending", "status_item_preferencial": ""},
         {"status_promocao": "started", "status_item_preferencial": ""},
@@ -1757,9 +1846,9 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
         for item_id, raw in (raw_por_item or {}).items():
             item_key = str(item_id or "").strip()
             if item_key:
-                raw_atual = raw_total.get(item_key)
-                raw_total[item_key] = _promo_mesclar_raw_multistatus(raw_atual, raw)
-        if len(ids) >= max_items:
+                _mesclar(item_key, raw)
+        total_coletado = sum(len(lightning_offers(raw)) for raw in raw_total.values()) if is_lightning else len(ids)
+        if total_coletado >= max_items:
             break
 
     expected_min = None
@@ -1797,8 +1886,7 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
         for item_id, raw in (raw_extra or {}).items():
             item_key = str(item_id or "").strip()
             if item_key:
-                raw_atual = raw_total.get(item_key)
-                raw_total[item_key] = _promo_mesclar_raw_multistatus(raw_atual, raw)
+                _mesclar(item_key, raw)
 
     if not ids:
         return _ml_listar_itens_promocao_com_raw(
@@ -1818,10 +1906,10 @@ def _ml_listar_itens_promocao_multistatus_com_raw(
     ids = list(dict.fromkeys(ids))[:max_items]
     if buscar_detalhes:
         itens_detalhados, cfg = _ml_buscar_itens_batch(client_id, loja, cfg, ids, progress_callback=progress_callback)
-        return itens_detalhados, raw_total, cfg
-    return [{"id": item_id} for item_id in ids], raw_total, cfg
+        return _anexar_ofertas(itens_detalhados), raw_total, cfg
+    return _anexar_ofertas([{"id": item_id} for item_id in ids]), raw_total, cfg
 
-PEER_EXPORTS = ['_ml_obter_promocoes_item', '_ml_extrair_ids_promocoes_item', '_ml_encontrar_promocao_raw_item', '_promo_status_item_promocao', '_promo_prioridade_status_item', '_promo_entry_item_id', '_promo_erro_candidate_not_found', '_promo_consultar_item_na_campanha', '_calcular_desconto_ml_valor', '_ml_extrair_percentual_total_direto_promocao_raw', '_ml_resolver_percentual_desconto_campanha_raw', '_ml_parse_percentual_promocao_texto', '_ml_extrair_percentual_sugerido_campanha_raw', '_ml_obter_item_promocao_raw', '_ml_promocao_raw_texto', '_ml_promocao_raw_id', '_ml_promocao_raw_tipo', '_ml_promocao_raw_nome', '_ml_promocao_raw_offer_id', '_ml_grupo_promocao_por_meta', '_ml_grupo_promocao_raw', '_ml_resolver_raw_promocao_equivalente_para_analise', '_ml_promocao_raw_esta_ativa_ou_indefinida', '_ml_listar_ids_anuncios_ativos', '_ml_listar_itens_promocao_com_raw', '_ml_listar_itens_promocao_multistatus_com_raw']
+PEER_EXPORTS = ['lightning_offer_key', 'lightning_offer_window', 'lightning_offers', 'lightning_window_valid', '_ml_obter_promocoes_item', '_ml_extrair_ids_promocoes_item', '_ml_encontrar_promocao_raw_item', '_promo_status_item_promocao', '_promo_prioridade_status_item', '_promo_entry_item_id', '_promo_erro_candidate_not_found', '_promo_consultar_item_na_campanha', '_calcular_desconto_ml_valor', '_ml_extrair_percentual_total_direto_promocao_raw', '_ml_resolver_percentual_desconto_campanha_raw', '_ml_parse_percentual_promocao_texto', '_ml_extrair_percentual_sugerido_campanha_raw', '_ml_obter_item_promocao_raw', '_ml_promocao_raw_texto', '_ml_promocao_raw_id', '_ml_promocao_raw_tipo', '_ml_promocao_raw_nome', '_ml_promocao_raw_offer_id', '_ml_grupo_promocao_por_meta', '_ml_grupo_promocao_raw', '_ml_resolver_raw_promocao_equivalente_para_analise', '_ml_promocao_raw_esta_ativa_ou_indefinida', '_ml_listar_ids_anuncios_ativos', '_ml_listar_itens_promocao_com_raw', '_ml_listar_itens_promocao_multistatus_com_raw']
 __all__ = PEER_EXPORTS + ["configure_mercadolivre_legacy_promocoes_runtime"]
 
 configure_mercadolivre_legacy_promocoes_runtime()
