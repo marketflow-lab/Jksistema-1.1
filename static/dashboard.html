@@ -1306,6 +1306,8 @@
             .dashboard-menu .card.dashboard-menu-module { transition: none; }
         }
     </style>
+    <link rel="stylesheet" href="/dashboard/user-sidebar.css?v=20261008-user-sidebar-v1">
+    <script src="/dashboard/user-sidebar.js?v=20261008-user-sidebar-v1" defer></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <link rel="stylesheet" href="/dashboard/menu-motion.css?v=20261008-menu-motion-v1">
     <script src="/dashboard/menu-icons.js?v=20261008-menu-motion-v1" defer></script>
@@ -1313,47 +1315,56 @@
 </head>
 <body>
 
-<div class="user-sidebar-trigger" id="user-sidebar-trigger" aria-hidden="true"></div>
-<aside class="user-sidebar" aria-label="Informações do usuário">
-    <div class="user-sidebar-peek">Usuário</div>
-    <div class="user-sidebar-brand">JK Sistema</div>
+<button class="user-sidebar-trigger" id="user-sidebar-trigger" type="button" aria-label="Abrir painel do usuário" aria-controls="user-sidebar" aria-expanded="false"></button>
+<aside class="user-sidebar" id="user-sidebar" aria-label="Informações do usuário">
+    <div class="user-sidebar-brand"><span class="user-sidebar-logo" aria-hidden="true">JK</span>JK Sistema<span class="user-sidebar-caption">Sua conta</span></div>
     <div class="user-sidebar-profile">
         <div class="user-avatar" id="user-avatar">U</div>
-        <div>
+        <div class="user-profile-text">
             <p class="user-name" id="user-name">Usuário</p>
             <p class="user-email" id="user-email"></p>
         </div>
     </div>
-    <div class="user-sidebar-details">
-        <div class="user-info-row">
-            <span class="user-info-label">Cliente</span>
-            <span class="user-info-value" id="user-client">-</span>
+    <button class="user-sidebar-toggle" id="user-sidebar-toggle" type="button" aria-expanded="false" aria-controls="user-sidebar-content">Conta e opções</button>
+    <div class="user-sidebar-content" id="user-sidebar-content">
+        <div class="user-sidebar-details" aria-label="Dados da conta">
+            <div class="user-info-row">
+                <span class="user-info-label">Cliente</span>
+                <span class="user-info-value" id="user-client">-</span>
+            </div>
+            <div class="user-info-row">
+                <span class="user-info-label">Acesso</span>
+                <span class="user-info-value user-access-badge" id="user-access">-</span>
+            </div>
         </div>
-        <div class="user-info-row">
-            <span class="user-info-label">Acesso</span>
-            <span class="user-info-value" id="user-access">-</span>
-        </div>
-        <div class="user-info-row">
-            <span class="user-info-label">Máquina</span>
-            <span class="user-info-value" id="user-machine">-</span>
-        </div>
-        <div class="user-info-row">
-            <span class="user-info-label">Online</span>
-            <span class="user-info-value" id="user-online-count">Verificando...</span>
+        <section class="user-sidebar-machines" aria-labelledby="user-machines-heading">
+            <div class="user-current-machine">
+                <span class="user-info-label">Este computador</span>
+                <span class="user-info-value" id="user-machine">-</span>
+            </div>
+            <div class="user-machines-heading">
+                <h2 id="user-machines-heading">Máquinas online</h2>
+                <span id="user-online-count">Verificando...</span>
+            </div>
             <div class="user-machine-online-list" id="user-online-machines" aria-live="polite"></div>
+            <p class="user-online-more" id="user-online-more" hidden></p>
+        </section>
+        <div class="user-sidebar-action-group">
+            <h2 class="user-sidebar-group-label">Conta e segurança</h2>
+            <div class="user-sidebar-actions">
+                <button id="btn-admin-usuarios" class="sidebar-admin-users" type="button" onclick="abrirCentralUsuarios()" hidden>Central de usuários</button>
+                <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
+            </div>
         </div>
-        <div class="user-info-row">
-            <span class="user-info-label">Versão</span>
-            <span class="user-info-value" id="app-version">-</span>
+        <div class="user-sidebar-action-group">
+            <h2 class="user-sidebar-group-label">Aplicativo</h2>
+            <div class="user-sidebar-actions">
+                <button id="btn-sincronizar-drive" class="sidebar-drive-sync" type="button" onclick="sincronizarDriveBackup(true)">Sincronizar Drive</button>
+                <button id="btn-verificar-atualizacao" class="sidebar-update" type="button" onclick="verificarAtualizacao()">Verificar atualização</button>
+            </div>
         </div>
-    </div>
-    <div class="user-sidebar-spacer"></div>
-    <div class="user-sidebar-actions">
-        <button id="btn-admin-usuarios" class="sidebar-admin-users" type="button" onclick="abrirCentralUsuarios()" hidden>Central de usuários</button>
-        <button id="btn-sincronizar-drive" class="sidebar-drive-sync" type="button" onclick="sincronizarDriveBackup(true)">Sincronizar Drive</button>
-        <button id="btn-verificar-atualizacao" class="sidebar-update" type="button" onclick="verificarAtualizacao()">Verificar atualização</button>
-        <button class="sidebar-password" type="button" onclick="abrirTrocaSenha()">Trocar senha</button>
-        <button class="sidebar-logout" type="button" onclick="sair()">Sair</button>
+        <div class="user-sidebar-version"><span>Versão do aplicativo</span><span id="app-version">-</span></div>
+        <button class="sidebar-logout" type="button" onclick="sair()">Sair da conta</button>
     </div>
 </aside>
 
@@ -1579,6 +1590,7 @@
     function renderizarMaquinasOnline(payload) {
         const countEl = document.getElementById('user-online-count');
         const listEl = document.getElementById('user-online-machines');
+        const moreEl = document.getElementById('user-online-more');
         if (!countEl || !listEl) return;
         const maquinas = Array.isArray(payload && payload.machines) ? payload.machines : [];
         const total = Number(payload && payload.online_count !== undefined ? payload.online_count : maquinas.length) || 0;
@@ -1586,17 +1598,23 @@
         countEl.title = payload && payload.backend === 'firebase'
             ? 'Sincronizado pelo Firebase'
             : 'Presença local nesta máquina';
+        const visiveis = maquinas.slice(0, 3);
+        if (moreEl) {
+            const restantes = Math.max(0, total - visiveis.length);
+            moreEl.hidden = restantes === 0;
+            moreEl.textContent = restantes === 1 ? '+ 1 máquina online' : `+ ${restantes} máquinas online`;
+        }
 
         if (!maquinas.length) {
-            listEl.innerHTML = '<div class="user-machine-online-item"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">Somente esta sessão</span></div>';
+            listEl.innerHTML = '<div class="user-machine-online-empty">Nenhuma máquina na lista de presença.</div>';
             return;
         }
 
-        listEl.innerHTML = maquinas.slice(0, 3).map((maquina) => {
-            const nome = escaparHtmlSidebar(maquina.label || maquina.machine_id || 'Máquina');
+        listEl.innerHTML = visiveis.map((maquina) => {
+            const nome = maquina.label || maquina.machine_id || 'Máquina';
             const tempo = textoTempoMaquina(maquina.seconds_since_seen);
-            const tag = maquina.current ? 'esta' : tempo;
-            return `<div class="user-machine-online-item" title="${escaparHtmlSidebar(maquina.machine_id || nome)}"><span class="user-machine-online-dot"></span><span class="user-machine-online-name">${nome}</span><span class="user-machine-online-tag">${escaparHtmlSidebar(tag)}</span></div>`;
+            const atual = Boolean(maquina.current);
+            return `<div class="user-machine-online-item${atual ? ' is-current' : ''}" title="${escaparHtmlSidebar(maquina.machine_id || nome)}"><span class="user-machine-online-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 4h18v12H3zM8 20h8M12 16v4"/></svg></span><span class="user-machine-online-details"><span class="user-machine-online-name">${escaparHtmlSidebar(nome)}</span><span class="user-machine-online-status"><span class="user-machine-online-dot"></span>${atual ? 'Sua sessão atual' : 'Online'}</span></span><span class="user-machine-online-tag">${escaparHtmlSidebar(tempo)}</span></div>`;
         }).join('');
     }
 
@@ -1640,12 +1658,12 @@
         const machineEl = document.getElementById('user-machine');
         const versionEl = document.getElementById('app-version');
         if (avatar) avatar.textContent = iniciaisUsuario(nome, email);
-        if (nameEl) nameEl.textContent = nome;
-        if (emailEl) emailEl.textContent = email;
-        if (clientEl) clientEl.textContent = cliente || '-';
+        if (nameEl) { nameEl.textContent = nome; nameEl.title = nome; }
+        if (emailEl) { emailEl.textContent = email; emailEl.title = email; }
+        if (clientEl) { clientEl.textContent = cliente || '-'; clientEl.title = cliente; }
         if (accessEl) accessEl.textContent = usuarioFull() ? 'Completo' : `${enabled.length} módulos`;
         if (machineEl) {
-            machineEl.textContent = maquina ? maquina.slice(0, 18) : '-';
+            machineEl.textContent = maquina || '-';
             machineEl.title = maquina || '';
         }
         if (versionEl) {
@@ -2086,42 +2104,70 @@
         const sidebar = document.querySelector('.user-sidebar');
         const trigger = document.getElementById('user-sidebar-trigger');
         if (!sidebar || document.body.classList.contains('modo-mobile')) return;
+        const telaCompacta = window.matchMedia('(max-width: 720px)');
         let timerFechar = null;
 
         function abrir() {
+            if (telaCompacta.matches) return;
             clearTimeout(timerFechar);
+            sidebar.inert = false;
             document.body.classList.add('sidebar-open');
             sidebar.classList.add('open');
             sidebar.style.transform = 'translate3d(0, 0, 0)';
             sidebar.style.pointerEvents = 'auto';
+            trigger?.setAttribute('aria-expanded', 'true');
         }
 
-        function fechar(rapido = false) {
+        function fechar(rapido = false, forcar = false) {
+            if (telaCompacta.matches) return;
             clearTimeout(timerFechar);
             timerFechar = setTimeout(() => {
-                if (sidebar.matches(':hover')) return;
+                if (telaCompacta.matches || (!forcar && sidebar.matches(':hover'))) return;
                 document.body.classList.remove('sidebar-open');
                 sidebar.classList.remove('open');
-                sidebar.style.transform = 'translate3d(-224px, 0, 0)';
+                sidebar.style.transform = 'translate3d(-100%, 0, 0)';
                 sidebar.style.pointerEvents = 'none';
                 sidebar.querySelectorAll('button, input').forEach(el => el.blur());
+                sidebar.inert = true;
+                trigger?.setAttribute('aria-expanded', 'false');
             }, rapido ? 0 : 120);
         }
 
         trigger?.addEventListener('mouseenter', abrir);
-        sidebar.addEventListener('mouseleave', fechar);
+        trigger?.addEventListener('click', () => {
+            abrir();
+            sidebar.querySelector('.user-sidebar-content button:not([hidden])')?.focus();
+        });
+        sidebar.addEventListener('mouseleave', () => fechar());
         document.body.classList.remove('sidebar-open');
         sidebar.classList.remove('open');
-        sidebar.style.transform = 'translate3d(-224px, 0, 0)';
+        sidebar.style.transform = 'translate3d(-100%, 0, 0)';
         sidebar.style.pointerEvents = 'none';
+        sidebar.inert = !telaCompacta.matches;
+        telaCompacta.addEventListener('change', () => {
+            clearTimeout(timerFechar);
+            document.body.classList.remove('sidebar-open');
+            sidebar.classList.remove('open');
+            sidebar.style.transform = 'translate3d(-100%, 0, 0)';
+            sidebar.style.pointerEvents = 'none';
+            sidebar.inert = !telaCompacta.matches;
+            trigger?.setAttribute('aria-expanded', 'false');
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || telaCompacta.matches || !document.body.classList.contains('sidebar-open')) return;
+            if (document.getElementById('password-modal')?.classList.contains('open')) return;
+            if (sidebar.contains(document.activeElement)) trigger?.focus();
+            fechar(true, true);
+        }, true);
         document.addEventListener('mousemove', (event) => {
+            if (telaCompacta.matches) return;
             if (event.clientX <= 12) {
                 abrir();
                 return;
             }
             if (document.body.classList.contains('sidebar-open')) {
                 const rect = sidebar.getBoundingClientRect();
-                const foraDaSidebar = event.clientX > rect.right + 8 || event.clientY < rect.top || event.clientY > rect.bottom;
+                const foraDaSidebar = event.clientX > sidebar.offsetWidth + 8 || event.clientY < rect.top || event.clientY > rect.bottom;
                 if (foraDaSidebar) fechar(true);
             }
         });
