@@ -12,6 +12,11 @@
     const subscribers = new Set();
     const appOrigin = new URL(context.appUrl).origin;
     let unsubscribe = null;
+    function validAvantEmail(value) {
+        return typeof value === 'string' && value.length <= 254 && value === value.trim()
+            && /^(?=.{1,64}@)[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value)
+            && !value.startsWith('.') && !value.includes('..') && !value.includes('.@');
+    }
     function categoryChoice(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)
             || Object.keys(value).some(key => !['key', 'nome', 'url'].includes(key))) return null;
@@ -63,9 +68,9 @@
             return;
         }
         const input = data.payload;
-        const fields = { start: ['authToken', 'category'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
-            status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId'],
-            cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId'], browser: ['authToken', 'jobId', 'purpose'] };
+        const fields = { start: ['authToken', 'category', 'avantLoginEmail'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
+            status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId', 'avantLoginEmail'],
+            cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId', 'avantLoginEmail'], browser: ['authToken', 'jobId', 'purpose'] };
         if (!input || typeof input !== 'object' || Array.isArray(input)
             || Object.keys(input).some(key => !fields[data.action].includes(key))) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Argumentos do comando da pesquisa inválidos.' });
@@ -76,6 +81,13 @@
             return;
         }
         const payload = { authToken: input.authToken };
+        if (Object.prototype.hasOwnProperty.call(input, 'avantLoginEmail')) {
+            if (!validAvantEmail(input.avantLoginEmail)) {
+                reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'E-mail do Avant Pro inválido.' });
+                return;
+            }
+            payload.avantLoginEmail = input.avantLoginEmail;
+        }
         if (data.action === 'categories' && Object.prototype.hasOwnProperty.call(input, 'forceRefresh')) {
             if (typeof input.forceRefresh !== 'boolean') {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Atualização das categorias inválida.' });

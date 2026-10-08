@@ -1,4 +1,5 @@
 const pesquisaMercadoRunnerModule = require(path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-runner.js'));
+const pesquisaMercadoAvantModule = require(path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-avant-auth.js'));
 const pesquisaMercadoTaxonomyModule = require(path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-taxonomy.js'));
 const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyService({
     cachePath: path.join(app.getPath('userData'), 'public-mlb-taxonomy-v1.json')
@@ -7,6 +8,9 @@ let pesquisaMercadoCoordinator = null;
 let pesquisaMercadoWindow = null;
 let pesquisaMercadoBrowserJobId = '';
 let pesquisaMercadoAuthToken = '';
+let pesquisaMercadoAvantEmail = '';
+let pesquisaMercadoAvantContext = 0;
+let pesquisaMercadoAvantSession = null;
 let pesquisaMercadoQuitting = false;
 let pesquisaMercadoCommandQueue = Promise.resolve();
 let pesquisaMercadoCategoriesToken = '';
@@ -161,6 +165,14 @@ function pesquisaMercadoBrowserAdapter() {
                 ]);
             } finally { clearTimeout(timer); }
         },
+        async ensureAvantSession(options = {}) {
+            if (!pesquisaMercadoAvantSession) pesquisaMercadoAvantSession = new pesquisaMercadoAvantModule.AvantSession({
+                getContents: () => pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents : null,
+                getEmail: () => pesquisaMercadoAvantEmail,
+                getContext: () => pesquisaMercadoAvantContext
+            });
+            return pesquisaMercadoAvantSession.ensure(options);
+        },
         stop() { if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) pesquisaMercadoWindow.webContents.stop(); },
         async finish(status) {
             if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() && status !== 'waiting_login') pesquisaMercadoWindow.hide();
@@ -202,6 +214,10 @@ function pesquisaMercadoCommand(event, action, payload = {}) {
 async function executePesquisaMercadoCommand(action, payload) {
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando; a pesquisa sera preservada.');
     if (!['start', 'status', 'resume', 'pause', 'cancel', 'show-browser', 'categories', 'refresh-names'].includes(action)) throw new Error('Comando de pesquisa desconhecido.');
+    const configAction = ['start', 'resume', 'refresh-names'].includes(action);
+    const hasAvantEmail = Object.prototype.hasOwnProperty.call(payload, 'avantLoginEmail');
+    const avantEmail = hasAvantEmail ? pesquisaMercadoAvantModule.normalizeEmail(payload.avantLoginEmail) : '';
+    if (hasAvantEmail && (!configAction || !avantEmail)) throw new Error('E-mail do Avant Pro invalido.');
     const token = String(payload.authToken || '').trim();
     const runner = getPesquisaMercadoCoordinator();
     const jobId = String(payload.jobId || runner.job && runner.job.id || '');
@@ -210,8 +226,22 @@ async function executePesquisaMercadoCommand(action, payload) {
     // Validate ownership using the new token before replacing the active request context.
     if (runner.task && runner.job) {
         await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(runner.job.id)}`, undefined, token);
+    } else if (runner.namesTask && runner.namesJobId) {
+        await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(runner.namesJobId)}`, undefined, token);
     } else {
         authorizedLatest = await pesquisaMercadoBackendRequest('GET', '/api/pesquisa-mercado/jobs/latest', undefined, token);
+    }
+    if (pesquisaMercadoAuthToken !== token && !runner.task && !runner.namesTask) {
+        pesquisaMercadoAvantEmail = '';
+        pesquisaMercadoAvantContext += 1;
+        pesquisaMercadoAvantSession = null;
+    }
+    if (configAction && !runner.task && !runner.namesTask) {
+        if (pesquisaMercadoAvantEmail !== avantEmail) {
+            pesquisaMercadoAvantContext += 1;
+            pesquisaMercadoAvantSession = null;
+        }
+        pesquisaMercadoAvantEmail = avantEmail;
     }
     pesquisaMercadoAuthToken = token;
     if (pesquisaMercadoCategoriesToken !== token) {
@@ -284,6 +314,9 @@ async function persistPesquisaMercadoBeforeQuit() {
         if (runner && runner.task) await runner.stop('paused');
     } finally {
         pesquisaMercadoAuthToken = '';
+        pesquisaMercadoAvantEmail = '';
+        pesquisaMercadoAvantContext += 1;
+        pesquisaMercadoAvantSession = null;
         pesquisaMercadoCategoriesToken = '';
         pesquisaMercadoCategoryChoices.clear();
         pesquisaMercadoCategoryChildren.clear();

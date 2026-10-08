@@ -27,12 +27,65 @@
     let refreshRequested = false;
     let synchronizeTask = null;
     let sessionToken = window.localStorage.getItem('access_token') || '';
+    const avantEmailStoragePrefix = 'jkPesquisaMercadoAvantEmail:v1:';
+    let avantIdentity = avantConfigurationIdentity(sessionToken);
     const elements = {};
     for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
-        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated']) elements[name] = el(name);
+        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated', 'avant-email', 'avant-email-note']) elements[name] = el(name);
+
+    function avantConfigurationIdentity(token) {
+        if (!token) return '';
+        try {
+            const user = JSON.parse(window.localStorage.getItem('user_data') || 'null');
+            const parts = token.split('.');
+            if (!user || parts.length !== 3) return '';
+            const claims = JSON.parse(decodeURIComponent(Array.from(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+                .map(character => `%${character.charCodeAt(0).toString(16).padStart(2, '0')}`).join('')));
+            if (typeof user.client_id !== 'string' || typeof user.username !== 'string'
+                || typeof claims.client_id !== 'string' || typeof claims.sub !== 'string') return '';
+            const client = user.client_id.trim();
+            const username = user.username.trim();
+            if (!client || !username || client.length > 200 || username.length > 200
+                || /[\u0000-\u001f\u007f]/.test(client + username)
+                || client !== claims.client_id.trim() || username !== claims.sub.trim()) return '';
+            // Claims bind the local preference to its owner; backend verification still authorizes every command.
+            return avantEmailStoragePrefix + encodeURIComponent(JSON.stringify([client, username]));
+        } catch (_error) { return ''; }
+    }
+    function validAvantEmail(value) {
+        return typeof value === 'string' && value.length <= 254 && value === value.trim()
+            && /^(?=.{1,64}@)[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value)
+            && !value.startsWith('.') && !value.includes('..') && !value.includes('.@');
+    }
+    function restoreAvantConfiguration() {
+        if (!elements['avant-email']) return;
+        let saved = '';
+        if (sessionToken && avantIdentity) {
+            try { saved = window.localStorage.getItem(avantIdentity) || ''; } catch (_error) {}
+        }
+        elements['avant-email'].value = validAvantEmail(saved) ? saved : '';
+        elements['avant-email'].setCustomValidity('');
+    }
+    function saveAvantConfiguration() {
+        if (!elements['avant-email']) return '';
+        const value = elements['avant-email'].value.trim();
+        if (value && !validAvantEmail(value)) {
+            elements['avant-email'].setCustomValidity('Informe um e-mail válido do Avant Pro.');
+            throw new Error('Informe um e-mail válido do Avant Pro para o login automático.');
+        }
+        elements['avant-email'].setCustomValidity('');
+        elements['avant-email'].value = value;
+        if (sessionToken && avantIdentity) {
+            try {
+                if (value) window.localStorage.setItem(avantIdentity, value);
+                else window.localStorage.removeItem(avantIdentity);
+            } catch (_error) { /* A sessão atual pode usar o valor mesmo sem armazenamento local. */ }
+        }
+        return value;
+    }
 
     const safeText = value => String(value == null ? '' : value);
     const sellerLabel = item => window.PesquisaMercadoCore ? window.PesquisaMercadoCore.nomeVendedorParaExibicao(item) : safeText(item.vendedor || item.nome || item.seller_key || 'Nome pendente');
@@ -79,8 +132,11 @@
     }
     function currentSession() {
         const current = window.localStorage.getItem('access_token') || '';
-        if (current !== sessionToken) {
+        const identity = avantConfigurationIdentity(current);
+        if (current !== sessionToken || identity !== avantIdentity) {
             sessionToken = current;
+            avantIdentity = identity;
+            restoreAvantConfiguration();
             deletedJobs.clear();
             state.activeJob = null;
             state.namesLogin = false;
@@ -135,6 +191,10 @@
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
         if (action === 'browser' && ['categories', 'names'].includes(extras.purpose)) payload.purpose = extras.purpose;
+        if (['start', 'resume', 'refresh-names'].includes(action)) {
+            const email = saveAvantConfiguration();
+            if (email) payload.avantLoginEmail = email;
+        }
         const api = electronApi();
         const result = api && typeof api[methods[action]] === 'function'
             ? await api[methods[action]](payload) : await shellSend(action, payload);
@@ -211,6 +271,7 @@
         const status = state.activeJob ? state.activeJob.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status);
+        if (elements['avant-email']) elements['avant-email'].disabled = !sessionToken || state.busy || running;
         elements.start.disabled = !sessionToken || state.busy || isActive(state.activeJob) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !!deleting || !resumable;
@@ -680,6 +741,14 @@
     elements.search.addEventListener('input', filtersChanged);
     elements.category.addEventListener('change', filtersChanged);
     elements['seller-search'].addEventListener('input', renderSellers);
+    if (elements['avant-email']) {
+        elements['avant-email'].addEventListener('input', () => elements['avant-email'].setCustomValidity(''));
+        elements['avant-email'].addEventListener('change', () => {
+            currentSession();
+            try { saveAvantConfiguration(); }
+            catch (error) { showMessage(userErrorMessage(error), true); elements['avant-email'].reportValidity(); }
+        });
+    }
     for (const [name, direction] of [['previous', -1], ['next', 1]]) elements[name].addEventListener('click', () => {
         state.offsets[state.tab] = Math.max(0, state.offsets[state.tab] + direction * pageSize);
         state.generation += 1;
@@ -687,7 +756,8 @@
     });
     window.addEventListener('message', onMessage);
     const onStorage = event => {
-        if (event.key !== 'access_token' && event.key !== null) return;
+        if (event.key === avantIdentity) { restoreAvantConfiguration(); return; }
+        if (event.key !== 'access_token' && event.key !== 'user_data' && event.key !== null) return;
         currentSession();
         if (sessionToken) synchronize();
     };
@@ -717,6 +787,7 @@
         pending.clear();
     }
     window.addEventListener('beforeunload', dispose);
+    restoreAvantConfiguration();
     renderControls();
     renderTaxonomy();
     renderScope();

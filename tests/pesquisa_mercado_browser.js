@@ -25,6 +25,7 @@ function harness(saved = [], options = {}) {
     const requests = [];
     const windows = [];
     const jobs = new Map(saved.map(job => [job.id, clone(job)]));
+    const avantChecks = [];
     const session = { partition: 'fixture-ml-session' };
     const pool = { active: true, workers: new Map([['w1', { id: 'existing-favoritos-window' }]]) };
     let serial = saved.length;
@@ -193,6 +194,16 @@ function harness(saved = [], options = {}) {
         stopFavoritosWorkersPool: () => { throw new Error('A pesquisa não deve tocar no pool Favoritos.'); },
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
+            if (filename.endsWith('pesquisa-mercado-avant-auth.js')) return {
+                normalizeEmail: require('../electron_app/main/modules/pesquisa-mercado-avant-auth.js').normalizeEmail,
+                AvantSession: class {
+                    constructor(config) { this.config = config; }
+                    async ensure(input) {
+                        avantChecks.push({ email: this.config.getEmail(), context: this.config.getContext(), contents: this.config.getContents(), input });
+                        return { authenticated: true, attempted: false };
+                    }
+                }
+            };
             if (filename.endsWith('pesquisa-mercado-taxonomy.js')) return { TaxonomyService: FakeTaxonomyService };
             if (filename.endsWith('pesquisa-mercado-runner.js')) return { ...runnerModule, PesquisaMercadoRunner: options.realRunner ? runnerModule.PesquisaMercadoRunner : DormantRunner };
             if (filename.endsWith('page-scripts.js')) return { discoveryScript: () => 'fixture:categories' };
@@ -217,7 +228,7 @@ function harness(saved = [], options = {}) {
         authToken: owner === 'one' ? 'fixture-owner-one' : 'fixture-owner-two', ...(jobId ? { jobId } : {}),
         ...(action === 'start' ? { category } : {}), ...extra
     });
-    return { api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, options, taxonomyCalls, taxonomyConstructors,
+    return { avantChecks, api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, options, taxonomyCalls, taxonomyConstructors,
         releaseRestore: () => { if (releaseRestore) releaseRestore(); },
         releaseTaxonomy: () => { if (releaseTaxonomy) releaseTaxonomy(); }, taxonomyWaiting: () => !!releaseTaxonomy };
 }
@@ -617,7 +628,46 @@ async function testNamesCommandOwnershipAndRecovery() {
         assert.match(preload, /refreshPesquisaMercadoNames: payload => ipcRenderer\.invoke\('pesquisa-mercado:refresh-names'/);
     } finally { await h.api.quit(); }
 }
+async function testAvantConfigurationOwnership() {
+    const h = harness();
+    const email = 'researcher@account.example';
+    const secondEmail = 'other@account.example';
+    try {
+        await assert.rejects(h.command('status', 'one', null, { avantLoginEmail: email }), /E-mail/);
+        await assert.rejects(h.command('start', 'one', null, { avantLoginEmail: 'invalid\naccount' }), /E-mail/);
+        assert.strictEqual(h.requests.length, 0, 'reject invalid configuration before backend/browser');
+        const created = await h.command('start', 'one', null, { avantLoginEmail: email });
+        await h.api.browser().prepare();
+        await h.api.browser().ensureAvantSession({});
+        assert.strictEqual(h.avantChecks.at(-1).email, email);
+        assert.strictEqual(h.avantChecks.at(-1).contents, h.windows[0].webContents, 'login must target the research window');
+        await assert.rejects(h.command('start', 'two', null, { avantLoginEmail: secondEmail }), /Pesquisa n[aã]o encontrada/);
+        await h.api.browser().ensureAvantSession({});
+        assert.strictEqual(h.avantChecks.at(-1).email, email, 'failed ownership cannot change login account');
+        await h.command('pause', 'one', created.job.id);
+        await h.command('status', 'two');
+        await h.api.browser().ensureAvantSession({});
+        assert.strictEqual(h.avantChecks.at(-1).email, '', 'new idle owner cannot inherit email');
+        assert.ok(!JSON.stringify(h.requests).includes(email), 'configuration is never persisted into backend jobs');
+        assert.ok(!JSON.stringify(h.events).includes(email), 'progress never exposes the account');
+    } finally { await h.api.quit(); }
+}
+
+async function testNamesLoginContextOwnership() {
+    const h = harness([{ id: 'private-names', owner: 'one', status: 'completed', revision: 1, counters: { ads: 48 }, checkpoint: {} }]);
+    const runner = h.api.coordinator();
+    await h.command('status', 'one');
+    runner.namesTask = Promise.resolve(); runner.namesJobId = 'private-names';
+    try {
+        await assert.rejects(h.command('status', 'two'), /Pesquisa n[aã]o encontrada/);
+        assert.strictEqual(h.api.peek().token, 'fixture-owner-one', 'pending names keep their authorized backend context');
+        assert.strictEqual(h.windows.length, 0);
+    } finally { runner.namesTask = null; await h.api.quit(); }
+}
+
 async function main() {
+    await testNamesLoginContextOwnership();
+    await testAvantConfigurationOwnership();
     await testNamesCommandOwnershipAndRecovery();
     await testPublicVehicleUrlsPreserveTrailingSlash();
     await testBrowserIsolationAndNavigation();

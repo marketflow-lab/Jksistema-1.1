@@ -10,6 +10,9 @@ async function main() {
     const categoryCalls = [];
     const browserCalls = [];
     const namesCalls = [];
+    const resumeCalls = [];
+    const statusCalls = [];
+    const pauseCalls = [];
     const category = { key: 'MLB-FERRAMENTAS', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' };
     let progress;
     let unsubscribed = false;
@@ -21,6 +24,9 @@ async function main() {
         appUrl: 'http://127.0.0.1:8001/dashboard.html',
         findTabBySource: target => target === source ? { tab } : target === otherModule ? { tab: { url: 'http://127.0.0.1:8001/favoritos.html' } } : null,
         getApi: () => ({
+            resumePesquisaMercadoJob: async payload => { resumeCalls.push(payload); return { job: { id: payload.jobId } }; },
+            getPesquisaMercadoJobStatus: async payload => { statusCalls.push(payload); return { job: null }; },
+            pausePesquisaMercadoJob: async payload => { pauseCalls.push(payload); return { success: true }; },
             refreshPesquisaMercadoNames: async payload => { namesCalls.push(payload); return { updated: 1, pending: 0 }; },
             startPesquisaMercadoJob: async payload => { commands.push(payload); return { job: { id: 'job-1' } }; },
             getPesquisaMercadoCategories: async payload => { categoryCalls.push(payload); return { items: [], parentCategory: payload.parentCategory || null }; },
@@ -80,6 +86,25 @@ async function main() {
     assert.strictEqual(browserCalls.length, 1, 'login de nomes exige pesquisa explicita');
     await send('browser', { authToken: 'fixture-token', purpose: 'names', jobId: 'saved-job' });
     assert.deepStrictEqual(browserCalls.at(-1), { authToken: 'fixture-token', purpose: 'names', jobId: 'saved-job' });
+    await send('start', { authToken: 'fixture-token', category, avantLoginEmail: 'operator@example.test' });
+    assert.deepStrictEqual(commands.at(-1), { authToken: 'fixture-token', avantLoginEmail: 'operator@example.test', category });
+    await send('resume', { authToken: 'fixture-token', jobId: 'saved-job', avantLoginEmail: 'operator@example.test' });
+    assert.deepStrictEqual(resumeCalls.at(-1), { authToken: 'fixture-token', avantLoginEmail: 'operator@example.test', jobId: 'saved-job' });
+    await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job', avantLoginEmail: 'operator@example.test' });
+    assert.deepStrictEqual(namesCalls.at(-1), { authToken: 'fixture-token', avantLoginEmail: 'operator@example.test', jobId: 'saved-job' });
+    const beforeInvalidEmail = commands.length;
+    for (const avantLoginEmail of [null, 4, {}, [], '', 'invalid', 'operator@example.test\n', 'x@example.test<script>',
+        `${'a'.repeat(65)}@example.test`, `.operator@example.test`, 'two..dots@example.test', `${'a'.repeat(254)}@example.test`]) {
+        await send('start', { authToken: 'fixture-token', category, avantLoginEmail });
+    }
+    assert.strictEqual(commands.length, beforeInvalidEmail, 'email inválido ou injeção não é encaminhado');
+    const beforeForbiddenEmail = { status: statusCalls.length, pause: pauseCalls.length, browser: browserCalls.length, categories: categoryCalls.length };
+    await send('status', { authToken: 'fixture-token', avantLoginEmail: 'operator@example.test' });
+    await send('pause', { authToken: 'fixture-token', jobId: 'saved-job', avantLoginEmail: 'operator@example.test' });
+    await send('browser', { authToken: 'fixture-token', jobId: 'saved-job', avantLoginEmail: 'operator@example.test' });
+    await send('categories', { authToken: 'fixture-token', avantLoginEmail: 'operator@example.test' });
+    assert.deepStrictEqual({ status: statusCalls.length, pause: pauseCalls.length, browser: browserCalls.length, categories: categoryCalls.length }, beforeForbiddenEmail,
+        'email não amplia os schemas de status, pause, browser ou categories');
     await send('subscribe');
     progress({ job: { id: 'job-1', revision: 1 } });
     assert.strictEqual(messages.at(-1).value.channel, 'jk-pesquisa-mercado-progress');

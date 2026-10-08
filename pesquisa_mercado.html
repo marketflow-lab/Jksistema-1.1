@@ -287,7 +287,7 @@
             .filter-row input { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261007-nomes-lojas-v1">
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261008-avant-login-v1">
     <link rel="stylesheet" href="/pesquisa-mercado/history-ui.css?v=20261007-apagar-historico-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -327,6 +327,12 @@
                         <p class="pm-global-note">Escolha uma categoria ou subcategoria. A pesquisa percorre a sele&ccedil;&atilde;o e suas subcategorias, encontra vendedores e analisa os an&uacute;ncios da primeira p&aacute;gina de cada vendedor com o Avant Pro.</p>
                     </div>
                 </div>
+                <details class="pm-avant-login">
+                    <summary>Login autom&aacute;tico do Avant Pro</summary>
+                    <label for="pm-global-avant-email">E-mail do Avant Pro</label>
+                    <input id="pm-global-avant-email" type="email" maxlength="254" autocomplete="off" spellcheck="false" aria-describedby="pm-global-avant-email-note" placeholder="E-mail da sua conta do Avant Pro">
+                    <p id="pm-global-avant-email-note" class="pm-global-note">Usado quando o Avant Pro pedir login. Salvo neste computador para sua conta do JK Sistema.</p>
+                </details>
                 <section class="pm-taxonomy" aria-label="Escolher categoria da pesquisa">
                     <div class="pm-taxonomy-heading">
                         <h3>Categoria ou subcategoria</h3>
@@ -501,7 +507,7 @@
 
     <script src="/pesquisa-mercado/core.js?v=20261007-nomes-lojas-v1"></script>
     <script src="/pesquisa-mercado/runtime.js?v=20261007-nomes-lojas-v1"></script>
-    <script src="/pesquisa-mercado/global-ui.js?v=20261007-apagar-historico-v1"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261008-avant-login-v1"></script>
     <script src="/pesquisa-mercado/history-ui.js?v=20261007-apagar-historico-v1"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>

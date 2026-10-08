@@ -139,6 +139,11 @@ function currentPageRequiresLogin(page, browser) {
     return !!observed && observed === documentUrl(browser.getURL());
 }
 
+function requiresAvantLogin(result) {
+    return !!result && (result.reason === 'avant_login_required'
+        || result.avantAuthRequired === true && result.authRequired !== true);
+}
+
 function cleanSellerName(value, id = '') {
     if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value)) return '';
     const name = value.replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -403,11 +408,41 @@ class PesquisaMercadoRunner {
         finally { signal.removeEventListener('abort', abort); }
     }
 
+    async ensureAvantSession(signal, state, force = false) {
+        if (typeof this.browser.ensureAvantSession !== 'function') return true;
+        if (!force && state.checked) return true;
+        state.checked = true;
+        let result;
+        try {
+            result = await this.nameStep(() => this.browser.ensureAvantSession({ signal, force }), signal);
+        } catch (error) {
+            if (error && error.status === 404) error.avantSessionRejected = true;
+            if (error && (error.name === 'AbortError' || error.status === 401 || error.status === 403 || error.status === 404)) throw error;
+        }
+        if (signal.aborted) { const error = new Error('Pesquisa interrompida.'); error.name = 'AbortError'; throw error; }
+        state.attempted = state.attempted || !!(result && result.attempted);
+        if (result && result.authenticated === true) return true;
+        const error = new Error(result && result.reason === 'ml_login_required'
+            ? 'Conclua o login do Mercado Livre no navegador e tente novamente.'
+            : 'Nao foi possivel autenticar no Avant Pro. Conclua o login no navegador e tente novamente.');
+        error.waitingLogin = true;
+        throw error;
+    }
+
+    async recoverAvantSession(result, signal, state) {
+        if (!requiresAvantLogin(result) || state.forced || state.attempted
+            || typeof this.browser.ensureAvantSession !== 'function') return false;
+        state.forced = true;
+        await this.ensureAvantSession(signal, state, true);
+        return true;
+    }
+
     async readSellerName(seller, signal) {
         if (!sameSeller(seller, seller)) return null;
         const profile = canonicalUrl(seller.perfilUrl) || (/^\d+$/.test(String(seller.id || ''))
             ? `https://lista.mercadolivre.com.br/_CustId_${seller.id}` : '');
         if (!profile) return null;
+        const avantState = { checked: false, attempted: false, forced: false };
         await this.nameStep(() => this.browser.navigate(profile, signal), signal);
         const candidate = page => {
             const confirmed = sellerFromPage(page);
@@ -422,7 +457,10 @@ class PesquisaMercadoRunner {
             await this.nameStep(() => this.wait(450), signal);
             page = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.discoveryScript()), signal);
             if (!page) continue;
-            if (currentPageRequiresLogin(page, this.browser)) { const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            if (currentPageRequiresLogin(page, this.browser)) {
+                if (await this.recoverAvantSession(page, signal, avantState)) { poll -= 1; continue; }
+                const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error;
+            }
             if (page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading()) continue;
             // Discard a previous document still visible during navigation.
             if (page.url && canonicalUrl(page.url) !== canonicalUrl(this.browser.getURL())) continue;
@@ -431,18 +469,26 @@ class PesquisaMercadoRunner {
             if (sameSeller(seller, page) && allowedUrl(page.allAdsUrl) && canonicalUrl(page.allAdsUrl) !== target) {
                 target = canonicalUrl(page.allAdsUrl);
                 await this.nameStep(() => this.browser.navigate(target, signal), signal);
+                avantState.checked = false;
                 continue;
             }
             if (sameSeller(seller, page)) break;
         }
         if (!page || !sameSeller(seller, page) || typeof this.scripts.snapshotScript !== 'function') return null;
+        await this.ensureAvantSession(signal, avantState);
         if (typeof this.scripts.prepareScript === 'function') await this.nameStep(() => this.browser.executeJavaScript(this.scripts.prepareScript()), signal);
         for (let poll = 0; poll < 3; poll += 1) {
             const snapshot = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.snapshotScript({ seller: {
                 ...seller, nome: '', vendedor: '', sellerId: seller.id
             } })), signal);
             if (!snapshot) continue;
-            if (currentPageRequiresLogin(snapshot, this.browser)) { const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            if (currentPageRequiresLogin(snapshot, this.browser)) {
+                if (await this.recoverAvantSession(snapshot, signal, avantState)) {
+                    if (typeof this.scripts.prepareScript === 'function') await this.nameStep(() => this.browser.executeJavaScript(this.scripts.prepareScript()), signal);
+                    poll -= 1; continue;
+                }
+                const error = new Error('Conclua o login do Mercado Livre ou Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error;
+            }
             if (!sameSeller(seller, snapshot) || snapshot.url && canonicalUrl(snapshot.url) !== canonicalUrl(this.browser.getURL())) return null;
             const enriched = enrichSellerName({ ...seller, nome: '' }, snapshot.anuncios);
             if (enriched.nome) return { seller_key: seller.seller_key || seller.key, nome: enriched.nome,
@@ -451,7 +497,13 @@ class PesquisaMercadoRunner {
                 seller_name_kind: enriched.seller_name_kind, source: enriched.seller_name_source };
             if (typeof this.scripts.clickAvantScript !== 'function') break;
             const click = await this.nameStep(() => this.browser.executeJavaScript(this.scripts.clickAvantScript()), signal);
-            if (click && click.loginBlocked) { const error = new Error('Conclua o login do Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error; }
+            if (click && click.loginBlocked) {
+                if (await this.recoverAvantSession({ reason: 'avant_login_required' }, signal, avantState)) {
+                    if (typeof this.scripts.prepareScript === 'function') await this.nameStep(() => this.browser.executeJavaScript(this.scripts.prepareScript()), signal);
+                    poll -= 1; continue;
+                }
+                const error = new Error('Conclua o login do Avant e recupere os nomes novamente.'); error.waitingLogin = true; throw error;
+            }
             await this.nameStep(() => this.wait(450), signal);
         }
         return null;
@@ -561,19 +613,21 @@ class PesquisaMercadoRunner {
 
     async attempt(operation) {
         let last;
+        const avantState = { checked: false, attempted: false, forced: false };
         for (let index = 0; index < 3; index += 1) {
             this.check();
             try {
-                const result = await operation();
+                const result = await operation(avantState);
                 this.check();
-                if (result && result.authRequired) {
+                if (result && (result.authRequired || result.avantAuthRequired || result.reason === 'avant_login_required')) {
+                    if (await this.recoverAvantSession(result, this.controller.signal, avantState)) { index -= 1; continue; }
                     const err = new Error(result.reason || 'Conclua o login do Mercado Livre ou Avant e clique em Retomar.');
                     err.waitingLogin = true;
                     throw err;
                 }
                 return result;
             } catch (err) {
-                if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403) throw err;
+                if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
                 if (index < 2) await this.wait(600 * (index + 1));
             }
@@ -583,7 +637,7 @@ class PesquisaMercadoRunner {
 
     async read(url, purpose = 'category', navigationCategoryId = '') {
         if (!allowedUrl(url)) throw new Error('Link de pesquisa fora do Mercado Livre.');
-        return this.attempt(async () => {
+        return this.attempt(async avantState => {
             this.check();
             await this.browser.navigate(url, this.controller.signal);
             let page;
@@ -598,11 +652,18 @@ class PesquisaMercadoRunner {
                 this.check();
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 if (page.authRequired || page.avantAuthRequired) {
-                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true };
+                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
+                        reason: page.authRequired ? 'ml_login_required' : 'avant_login_required' };
                     if (verifyDestination) destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
                 }
                 const listings = (page.anuncios || []).length > 0;
+                if (purpose === 'first-page' && page.readyState !== 'loading' && !(typeof this.browser.isLoading === 'function' && this.browser.isLoading())
+                    && (!page.url || canonicalUrl(page.url) === canonicalUrl(this.browser.getURL()))) {
+                    const attemptedBefore = avantState.attempted;
+                    await this.ensureAvantSession(this.controller.signal, avantState);
+                    if (!attemptedBefore && avantState.attempted) { poll -= 1; continue; }
+                }
                 const ready = purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
                     : purpose === 'first-page' ? true // The collector owns settling and scrolling this page.
@@ -745,7 +806,7 @@ class PesquisaMercadoRunner {
         if (typeof this.scripts.nextCategoryPageScript !== 'function') throw new Error('Controle de paginacao indisponivel.');
         // Visiting a seller moves the browser away from discovery. Restore the
         // saved category page before using its own JavaScript pagination control.
-        return this.attempt(async () => {
+        return this.attempt(async avantState => {
             await this.read(current.url);
             const click = await this.browser.executeJavaScript(this.scripts.nextCategoryPageScript(current.url));
             if (!click || !click.clicked) {
@@ -760,7 +821,8 @@ class PesquisaMercadoRunner {
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 this.check();
                 if (page.authRequired || page.avantAuthRequired) {
-                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true };
+                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
+                        reason: page.authRequired ? 'ml_login_required' : 'avant_login_required' };
                     destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
                 }
@@ -849,19 +911,22 @@ class PesquisaMercadoRunner {
                 seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
             if (!(await this.sellerPublished(seller.key))) {
                 this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
-                const result = await this.attempt(() => this.collector.collectFirstPage({
-                    browser: this.browser, signal: this.controller.signal, seller: {
-                        ...seller, sellerId: seller.id, vendedor: seller.nome
-                    }, wait: this.wait,
-                    onProgress: progress => {
-                        if (this.stopStatus) return;
-                        const total = Number(progress.coletados || progress.total || 0);
-                        const avant = Number(progress.com_dados_avant);
-                        const detail = `Consultando ${seller.nome || seller.id || 'vendedor'}: ${total} anuncio(s) encontrado(s)`
-                            + (Number.isFinite(avant) ? `; ${avant} com dados do Avant.` : '.');
-                        this.setProgress('collecting', detail);
-                    }
-                }));
+                const result = await this.attempt(async avantState => {
+                    await this.ensureAvantSession(this.controller.signal, avantState);
+                    return this.collector.collectFirstPage({
+                        browser: this.browser, signal: this.controller.signal, seller: {
+                            ...seller, sellerId: seller.id, vendedor: seller.nome
+                        }, wait: this.wait,
+                        onProgress: progress => {
+                            if (this.stopStatus) return;
+                            const total = Number(progress.coletados || progress.total || 0);
+                            const avant = Number(progress.com_dados_avant);
+                            const detail = `Consultando ${seller.nome || seller.id || 'vendedor'}: ${total} anuncio(s) encontrado(s)`
+                                + (Number.isFinite(avant) ? `; ${avant} com dados do Avant.` : '.');
+                            this.setProgress('collecting', detail);
+                        }
+                    });
+                });
                 this.check();
                 await this.publishSeller(seller, result);
             }
@@ -929,7 +994,7 @@ class PesquisaMercadoRunner {
                         this.job.counters.pages = Number(this.job.counters.pages || 0) + 1;
                         await this.save();
                     } catch (err) {
-                        if (err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                        if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                         this.incomplete(`Categoria indisponivel: ${category.nome}.`);
                         await this.finishCategory();
                         continue;
@@ -942,7 +1007,7 @@ class PesquisaMercadoRunner {
                         const seed = current.anuncios[current.index];
                         try { await this.processSeed(seed); }
                         catch (err) {
-                            if (err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                             this.checkpoint.discoveredSeed = { key: String(seed.id || canonicalUrl(seed.url)),
                                 id: seed.id || '', url: seed.url, category_key: category.key, status: 'failed' };
@@ -965,7 +1030,7 @@ class PesquisaMercadoRunner {
                             await this.save();
                             continue;
                         } catch (err) {
-                            if (err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Nao foi possivel reabrir a categoria; os anuncios ja consultados foram preservados.');
                             break;
                         }
@@ -990,7 +1055,7 @@ class PesquisaMercadoRunner {
                         this.job.counters.pages = Number(this.job.counters.pages || 0) + 1;
                         await this.save();
                     } catch (err) {
-                        if (err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                        if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                         this.incomplete('Nao foi possivel abrir a proxima pagina da categoria.');
                         break;
                     }

@@ -674,6 +674,276 @@ async function officialDirectoryAndRescueSettles() {
     }
 }
 
+function avantFlowPages() {
+    return {
+        [`${base}/`]: { categories: [{ key: 'a', nome: 'A', url: `${base}/a` }] },
+        [`${base}/a`]: { anuncios: [{ id: 'seed-a', url: `${base}/product-a` }] },
+        [`${base}/product-a`]: seller('111'), [`${base}/perfil/111`]: seller('111'),
+        [`${base}/anuncios/111`]: {}
+    };
+}
+
+async function automaticAvantLoginAndFreshDocument() {
+    for (const modalVisible of [false, true]) {
+        let authenticated = false, loginAttempts = 0;
+        const calls = [], pages = avantFlowPages();
+        const firstPage = `${base}/anuncios/111`;
+        pages[firstPage] = () => authenticated ? { url: firstPage, ...seller('111') }
+            : modalVisible ? { url: firstPage, avantAuthRequired: true, readyState: 'complete' }
+            : { url: firstPage, ...seller('999') };
+        const h = harness(pages, async () => {
+            assert(authenticated, 'seller collection requires a confirmed Avant session');
+            return { anuncios: [{ id: 'MLB1000000001', rankable: true }] };
+        });
+        h.runner.browser.ensureAvantSession = async ({ signal, force }) => {
+            assert(signal instanceof AbortSignal);
+            calls.push({ force, url: h.runner.browser.getURL() });
+            const attempted = !authenticated;
+            if (attempted) loginAttempts += 1;
+            authenticated = true;
+            return { authenticated, attempted };
+        };
+        await h.runner.start(); await h.runner.task;
+        assert.equal(h.saved().status, 'completed');
+        assert.equal(loginAttempts, 1, 'one actual authentication, with or without a visible modal');
+        assert.equal(calls.filter(call => call.force).length, modalVisible ? 1 : 0);
+        assert(calls.every(call => call.url === firstPage), 'normal authentication belongs to the first seller page and collector');
+        assert(!h.vendors.has('id:999'), 'login reload must discard the seller document read before authentication');
+        assert.equal(h.saved().counters.pages, 1, 'authentication reload cannot duplicate the category checkpoint');
+        assert.equal(h.vendors.size, 1);
+        assert.equal(h.saved().counters.ads, 1);
+    }
+}
+
+async function discoveryDoesNotRequireAvantControls() {
+    const pages = {
+        [`${base}/`]: { categories: [{ key: 'a', nome: 'A', url: `${base}/a` }] },
+        [`${base}/a`]: { empty: true, hasNext: true, clickNext: `${base}/a2` },
+        [`${base}/a2`]: { empty: true }
+    };
+    const empty = harness(pages);
+    let discoveryChecks = 0;
+    empty.runner.browser.ensureAvantSession = async () => {
+        discoveryChecks += 1;
+        return { authenticated: false, attempted: false, reason: 'unknown' };
+    };
+    await empty.runner.start(); await empty.runner.task;
+    assert.equal(empty.saved().status, 'completed', 'index/category discovery and JavaScript pagination do not require Avant controls');
+    assert.equal(discoveryChecks, 0);
+    assert.equal(empty.saved().counters.pages, 2);
+    assert.equal(empty.vendors.size, 0);
+
+    let collectionCalls = 0, firstPageChecks = 0;
+    const blocked = harness(avantFlowPages(), async () => {
+        collectionCalls += 1;
+        return { anuncios: [] };
+    });
+    blocked.runner.browser.ensureAvantSession = async () => {
+        firstPageChecks += 1;
+        assert.equal(blocked.runner.browser.getURL(), `${base}/anuncios/111`, 'unknown is checked only when the first seller page needs Avant');
+        return { authenticated: false, attempted: false, reason: 'unknown' };
+    };
+    await blocked.runner.start(); await blocked.runner.task;
+    assert.equal(blocked.saved().status, 'waiting_login', 'unknown cannot authorize collection without an Avant session');
+    assert.deepEqual(blocked.visited, [`${base}/`, `${base}/a`, `${base}/product-a`, `${base}/perfil/111`, `${base}/anuncios/111`]);
+    assert.equal(firstPageChecks, 1);
+    assert.equal(collectionCalls, 0);
+    assert.equal(blocked.saved().checkpoint.page.index, 0);
+    assert.equal(blocked.vendors.size, 0);
+}
+
+async function automaticAvantRecoveryDuringCollection() {
+    let collections = 0, forceCalls = 0, publications = 0;
+    const h = harness(avantFlowPages(), async () => {
+        collections += 1;
+        return collections === 1
+            ? { authRequired: true, reason: 'avant_login_required', anuncios: [{ id: 'discarded-partial' }] }
+            : { anuncios: [{ id: 'MLB1000000001', rankable: true }] };
+    });
+    const api = h.runner.api;
+    h.runner.api = async (...args) => {
+        if (args[0] === 'PUT') publications += 1;
+        return api(...args);
+    };
+    h.runner.browser.ensureAvantSession = async ({ force }) => {
+        if (force) forceCalls += 1;
+        return { authenticated: true, attempted: force };
+    };
+    await h.runner.start(); await h.runner.task;
+    assert.equal(h.saved().status, 'completed');
+    assert.equal(forceCalls, 1, 'an expired session gets exactly one forced recovery for this collector operation');
+    assert.equal(collections, 2);
+    assert.equal(publications, 1, 'only the collection after authenticated reload is published');
+    assert.equal(h.vendors.get('id:111').anuncios[0].id, 'MLB1000000001');
+    assert.equal(h.saved().counters.ads, 1);
+
+    let repeatedCollections = 0, repeatedForces = 0;
+    const blocked = harness(avantFlowPages(), async () => {
+        repeatedCollections += 1;
+        return { authRequired: true, reason: 'avant_login_required', anuncios: [] };
+    });
+    blocked.runner.browser.ensureAvantSession = async ({ force }) => {
+        if (force) repeatedForces += 1;
+        return { authenticated: true, attempted: force };
+    };
+    await blocked.runner.start(); await blocked.runner.task;
+    assert.equal(blocked.saved().status, 'waiting_login');
+    assert.equal(repeatedForces, 1, 'persistent login cannot generate another authentication submission');
+    assert.equal(repeatedCollections, 2);
+    assert.equal(blocked.saved().checkpoint.page.index, 0);
+    assert.equal(blocked.vendors.size, 0);
+
+    let initialCollectionLogin = 0, extraForces = 0, collectedAfterLogin = 0;
+    const alreadyAttempted = harness(avantFlowPages(), async () => {
+        collectedAfterLogin += 1;
+        return { authRequired: true, reason: 'avant_login_required', anuncios: [] };
+    });
+    alreadyAttempted.runner.browser.ensureAvantSession = async ({ force }) => {
+        if (force) extraForces += 1;
+        const attempted = alreadyAttempted.runner.checkpoint.progress.phase === 'collecting';
+        if (attempted) initialCollectionLogin += 1;
+        return { authenticated: true, attempted };
+    };
+    await alreadyAttempted.runner.start(); await alreadyAttempted.runner.task;
+    assert.equal(alreadyAttempted.saved().status, 'waiting_login');
+    assert.equal(initialCollectionLogin, 1);
+    assert.equal(extraForces, 0, 'a preflight that already submitted login cannot submit it a second time');
+    assert.equal(collectedAfterLogin, 1);
+}
+
+async function automaticAvantFailuresPreserveProgress() {
+    for (const reason of ['timeout', 'email_missing']) {
+        const h = harness(avantFlowPages());
+        const previous = h.saved();
+        const category = { key: 'a', nome: 'A', url: `${base}/a` };
+        previous.status = 'paused';
+        previous.counters = { ...previous.counters, ads: 48, sellers: 1, pages: 1 };
+        previous.checkpoint = { categories: [category], categoryIndex: 0, discoveryInitialized: true,
+            currentCategory: category, seenSellerKeys: ['saved-seller'], seenSeedIds: ['saved-seed'],
+            page: { url: `${base}/a`, index: 0, anuncios: [{ id: 'seed-a', url: `${base}/product-a` }] },
+            progress: { phase: 'paused', warning: 'Existing collection warning', detail: 'Paused' } };
+        h.restoreCheckpoint(previous);
+        let calls = 0;
+        h.runner.browser.ensureAvantSession = async () => {
+            calls += 1;
+            return { authenticated: false, attempted: reason === 'timeout', reason };
+        };
+        await h.runner.resume('run-1'); await h.runner.task;
+        const result = h.saved();
+        assert.equal(result.status, 'waiting_login');
+        assert.equal(calls, 1, 'failed login or absent email is never retried as a transient page error');
+        assert.equal(result.counters.ads, 48);
+        assert.equal(result.counters.sellers, 1);
+        assert.equal(result.counters.pages, 1);
+        assert.equal(result.checkpoint.page.index, 0);
+        assert.deepEqual(result.checkpoint.seenSellerKeys, ['saved-seller']);
+        assert.deepEqual(result.checkpoint.seenSeedIds, ['saved-seed']);
+        assert.equal(result.checkpoint.progress.warning, 'Existing collection warning');
+        assert.match(result.message, /Avant Pro/);
+        assert(!JSON.stringify(h.events).includes(reason), 'technical failure detail is not exposed as an authentication credential or raw error');
+    }
+}
+
+async function mlChallengesNeverTriggerAvantLogin() {
+    for (const page of [
+        { authRequired: true, readyState: 'complete' },
+        { authRequired: true, avantAuthRequired: true, readyState: 'complete' }
+    ]) {
+        const h = harness({ [`${base}/`]: page });
+        let calls = 0;
+        h.runner.browser.ensureAvantSession = async () => {
+            calls += 1;
+            throw new Error('Avant authentication must not handle an ML challenge');
+        };
+        await h.runner.start(); await h.runner.task;
+        assert.equal(h.saved().status, 'waiting_login');
+        assert.equal(calls, 0);
+        assert.equal(h.saved().counters.ads, 0);
+    }
+}
+
+async function automaticAvantAbortAndOwnership() {
+    let entered;
+    const started = new Promise(resolve => { entered = resolve; });
+    const h = harness(avantFlowPages());
+    let calls = 0;
+    h.runner.browser.ensureAvantSession = async () => {
+        calls += 1; entered();
+        return new Promise(() => {});
+    };
+    await h.runner.start(); await started;
+    await h.runner.stop('paused'); await h.runner.task;
+    assert.equal(h.saved().status, 'paused');
+    assert.equal(calls, 1);
+    assert.equal(h.saved().counters.ads, 0);
+    assert.equal(h.stopped(), 1, 'cancellation stops the login browser through the coordinator');
+
+    for (const status of [403, 404]) {
+        const denied = harness(avantFlowPages());
+        let deniedCalls = 0;
+        denied.runner.browser.ensureAvantSession = async () => {
+            if (denied.runner.browser.getURL() !== `${base}/anuncios/111`) return { authenticated: true, attempted: false };
+            deniedCalls += 1;
+            const error = new Error('Job unavailable'); error.status = status; throw error;
+        };
+        await denied.runner.start(); await denied.runner.task;
+        assert.equal(denied.saved().status, status === 403 ? 'waiting_login' : 'failed');
+        assert.equal(deniedCalls, 1, 'ownership rejection is never retried as an Avant login');
+        assert.equal(denied.vendors.size, 0);
+        assert.equal(denied.saved().checkpoint.page.index, 0, 'an unavailable owned job cannot advance discovery as a failed advertisement');
+    }
+}
+
+async function automaticAvantLoginForSellerNames() {
+    for (const modalVisible of [false, true]) {
+        let authenticated = false, calls = 0;
+        const profile = `${base}/perfil/111`;
+        const h = harness({ [profile]: () => authenticated
+            ? { url: profile, ...seller('111'), vendedor: 'Confirmed Store' }
+            : modalVisible ? { url: profile, avantAuthRequired: true, readyState: 'complete' }
+            : { url: profile, ...seller('111'), vendedor: '', allAdsUrl: profile } });
+        const execute = h.runner.browser.executeJavaScript;
+        h.runner.scripts.snapshotScript = () => 'snapshot';
+        h.runner.browser.executeJavaScript = async code => code === 'snapshot'
+            ? { url: profile, ...seller('111'), anuncios: [{ seller_id: '111', seller_confirmed: true, vendedor: 'Confirmed Store',
+                seller_name_kind: 'store_brand', seller_name_source: 'avant' }] }
+            : execute(code);
+        h.runner.browser.ensureAvantSession = async ({ force }) => {
+            calls += 1;
+            assert.equal(force, modalVisible);
+            authenticated = true;
+            return { authenticated: true, attempted: true };
+        };
+        const signal = new AbortController().signal;
+        const update = await h.runner.readSellerName({ id: '111', perfilUrl: profile, seller_key: 'id:111' }, signal);
+        assert.equal(update.nome, 'Confirmed Store');
+        assert.equal(update.seller_key, 'id:111');
+        assert.equal(calls, 1);
+    }
+
+    const profile = `${base}/perfil/111`;
+    const fromML = harness({ [profile]: { ...seller('111'), vendedor: 'ML Store' } });
+    let checks = 0;
+    fromML.runner.browser.ensureAvantSession = async () => {
+        checks += 1;
+        return { authenticated: false, attempted: false, reason: 'unknown' };
+    };
+    const update = await fromML.runner.readSellerName({ id: '111', perfilUrl: profile, seller_key: 'id:111' }, new AbortController().signal);
+    assert.equal(update.nome, 'ML Store', 'a seller name confirmed directly by ML is usable without Avant');
+    assert.equal(checks, 0);
+
+    const fallback = harness({ [profile]: { ...seller('111'), vendedor: '', allAdsUrl: profile } });
+    fallback.runner.scripts.snapshotScript = () => 'snapshot';
+    let fallbackChecks = 0;
+    fallback.runner.browser.ensureAvantSession = async () => {
+        fallbackChecks += 1;
+        return { authenticated: false, attempted: false, reason: 'unknown' };
+    };
+    await assert.rejects(fallback.runner.readSellerName({ id: '111', perfilUrl: profile, seller_key: 'id:111' }, new AbortController().signal),
+        error => error.waitingLogin === true);
+    assert.equal(fallbackChecks, 1, 'Avant fallback cannot consume data with unknown authentication');
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
@@ -683,5 +953,12 @@ async function officialDirectoryAndRescueSettles() {
     await officialDirectoryAndRescueSettles();
     await progressWarningAndRestart();
     await pauseDuringPublication();
+    await automaticAvantLoginAndFreshDocument();
+    await discoveryDoesNotRequireAvantControls();
+    await automaticAvantRecoveryDuringCollection();
+    await automaticAvantFailuresPreserveProgress();
+    await mlChallengesNeverTriggerAvantLogin();
+    await automaticAvantAbortAndOwnership();
+    await automaticAvantLoginForSellerNames();
     console.log('Pesquisa de Mercado runner: official taxonomy, categories, dedup, background, pause, recovery, progress warnings and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });
