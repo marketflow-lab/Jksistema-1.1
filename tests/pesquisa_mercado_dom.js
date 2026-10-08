@@ -288,6 +288,55 @@ async function run() {
         assert.equal(discovery.allAdsUrl, '');
         assert.deepEqual(discovery.categoryTree.map(item => [item.nome, item.children.map(child => child.nome)]), [['Acessorios', ['Pecas']], ['Agro', ['Ferramentas']]], 'indice canonico mantem filhos separados e associados a sua propria raiz');
         assert.equal(discovery.categoryTree[0].children[0].url, 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas');
+        // The next three hrefs were followed from the public ML directory and
+        // its Category filters on 2026-10-08, rather than generated from names.
+        const nauticalUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
+        const navigationUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/sistemas-navegacao/';
+        const nauticalAnemometersUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/sistemas-navegacao/anemometros/';
+        // Synthetic homonym links are distractions outside the current category group.
+        const agricultureAnemometersUrl = 'https://lista.mercadolivre.com.br/agro/ferramentas-trabalho/instrumentos-medicao/anemometros/';
+        const toolsAnemometersUrl = 'https://lista.mercadolivre.com.br/ferramentas/medicoes-instrumentacao/medidores-ambientais/anemometros/';
+        await page.setContent('<main>'
+            + indexGroup('Acessórios para Veículos', 'https://www.mercadolivre.com.br/c/acessorios-para-veiculos',
+                'lista.mercadolivre.com.br', [['acessorios-veiculos/acessorios-nauticos/', 'Acessórios Náuticos'], ['acessorios-veiculos/pecas-nauticas/', 'Peças Náuticas']])
+            + indexGroup('Agro', 'https://www.mercadolivre.com.br/c/agro', 'lista.mercadolivre.com.br', [['agro/ferramentas-trabalho/', 'Ferramentas de Trabalho']])
+            + '<section class="recommendations"><div class="categories__container"><h2 class="categories__title"><a class="categories__title-link" href="' + toolsAnemometersUrl + '">Anemômetros</a></h2></div></section>'
+            + '</main>');
+        const nauticalIndex = await page.evaluate(scripts.discoveryScript());
+        assert.deepEqual(nauticalIndex.categoryTree.map(root => [root.nome, root.children.map(child => [child.nome, child.url])]), [
+            ['Acessórios para Veículos', [['Acessórios Náuticos', nauticalUrl], ['Peças Náuticas', 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas-nauticas/']]],
+            ['Agro', [['Ferramentas de Trabalho', 'https://lista.mercadolivre.com.br/agro/ferramentas-trabalho/']]],
+        ], 'índice associa os filhos observados à sua própria raiz e ignora recomendações');
+        assert.equal(normalizeCategory(nauticalIndex.categoryTree[0].children[0]).url, nauticalUrl, 'link náutico preserva barra final na passagem para o runner');
+        const nauticalFilters = (title, breadcrumbs, children) => '<main><h1>' + title + '</h1>'
+            + '<nav class="andes-breadcrumb">' + breadcrumbs.map(([name, href]) => '<a href="' + href + '">' + name + '</a>').join('') + '</nav>'
+            + '<dl class="ui-search-filter-dl"><h3 class="ui-search-filter-dt-title">Categorias</h3><ul>'
+            + '<li class="ui-search-filter-container ui-search-filter-hierarchy--parent"><a href="' + breadcrumbs[breadcrumbs.length - 1][1] + '">' + breadcrumbs[breadcrumbs.length - 1][0] + '</a></li>'
+            + '<li class="ui-search-filter-container ui-search-filter-hierarchy--selected"><a href="' + page.url() + '">' + title + '</a></li>'
+            + children.map(([name, href]) => '<li class="ui-search-filter-container"><a class="ui-search-link" href="' + href + '"><span class="ui-search-filter-name">' + name + '</span></a></li>').join('')
+            + '<li class="ui-search-filter-container" data-filter-id="brand"><h3>Marca</h3><a href="' + toolsAnemometersUrl + '">Anemômetros</a></li></ul></dl>'
+            + '<dl class="ui-search-filter-dl"><h3>Preço</h3><a href="' + navigationUrl + '_PriceRange_100-200">Anemômetros</a></dl>'
+            + '<nav><a href="' + agricultureAnemometersUrl + '">Anemômetros</a></nav>'
+            + '<section class="carousel"><dl class="ui-search-filter-dl"><h3>Categorias</h3><a href="' + toolsAnemometersUrl + '">Anemômetros</a></dl></section>'
+            + '</main>';
+        await page.goto(nauticalUrl);
+        await page.setContent(nauticalFilters('Acessórios Náuticos', [['Acessórios para Veículos', 'https://www.mercadolivre.com.br/c/acessorios-para-veiculos']],
+            [['Sistemas de Navegação', navigationUrl], ['Segurança e Salvamento', nauticalUrl + 'seguranca-salvamento/']]));
+        const nauticalChildren = await page.evaluate(scripts.discoveryScript());
+        assert.deepEqual(nauticalChildren.categories.map(child => [child.nome, child.url]),
+            [['Sistemas de Navegação', navigationUrl], ['Segurança e Salvamento', nauticalUrl + 'seguranca-salvamento/']], 'grupo Categorias náutico fornece filhos sem aproveitar filtros, pais ou homônimos externos');
+        await page.goto(navigationUrl);
+        await page.setContent(nauticalFilters('Sistemas de Navegação', [['Acessórios Náuticos', nauticalUrl]],
+            [['Anemômetros', nauticalAnemometersUrl], ['Barômetros', navigationUrl + 'barometros/']]));
+        const navigationChildren = await page.evaluate(scripts.discoveryScript());
+        assert.deepEqual(navigationChildren.categories.map(child => [child.nome, child.url]),
+            [['Anemômetros', nauticalAnemometersUrl], ['Barômetros', navigationUrl + 'barometros/']], 'Anemômetros usa somente href observado no pai correto');
+        await page.goto(nauticalAnemometersUrl);
+        await page.setContent(nauticalFilters('Sistemas de Navegação Anemômetros', [['Acessórios Náuticos', nauticalUrl], ['Sistemas de Navegação', navigationUrl]], []).replace('</main>', '<ol class="ui-search-layout">' + card(36) + '</ol></main>'));
+        const nauticalLeaf = await page.evaluate(scripts.discoveryScript());
+        assert.equal(nauticalLeaf.hasChildren, false, 'folha náutica não reabre pais nem categorias homônimas de Agro ou Ferramentas');
+        assert.equal(nauticalLeaf.anuncios.length, 1);
+        assert.equal(nauticalLeaf.categoryNotFound, false);
         await page.goto('https://www.mercadolivre.com.br/c/acessorios-para-veiculos');
         await page.setContent('<main><section class="categories"><a class="subcategory__link" href="https://lista.mercadolivre.com.br/acessorios-veiculos/rodas_ITEM*CONDITION_2230284">Rodas e Calotas</a></section><section class="carousel"><a class="subcategory__link" href="https://lista.mercadolivre.com.br/acessorios-veiculos/motos">Motos</a></section></main>');
         const marketing = await page.evaluate(scripts.discoveryScript());
@@ -396,7 +445,35 @@ async function run() {
         const conflict=await page.evaluate(scripts.discoveryScript());
         assert.equal(conflict.effectiveCategoryId,'');
         assert.equal(conflict.categoryIdentityConflict,true,'contradictory document identity cannot fall back to URL ID');
+        // Public rescue markup observed in the ML browser on 2026-10-08.
+        const searchRescue = '<div class="ui-search-rescue ui-search-rescue--zrp"><img id="not_found" alt="">'
+            + '<div class="ui-search-rescue__info"><h3 class="ui-search-rescue__title">Não encontramos resultados para a sua busca</h3>'
+            + '<a href="https://www.mercadolivre.com.br/categories.html">Navegue pelas categorias</a></div></div>';
+        await page.goto('https://lista.mercadolivre.com.br/_CatId_MLB455956');
+        await page.setContent('<main>' + searchRescue + '</main>');
+        const routeNotFound = await page.evaluate(scripts.discoveryScript());
+        assert.equal(routeNotFound.categoryNotFound, true, 'ID no alias da URL não comprova uma categoria na página de busca não reconhecida');
+        assert.equal(routeNotFound.empty, true, 'novo indicador mantém o empty legado compatível');
+        await page.setContent('<main>Nenhum anúncio</main>');
+        const plainEmpty = await page.evaluate(scripts.discoveryScript());
+        assert.equal(plainEmpty.empty, true);
+        assert.equal(plainEmpty.categoryNotFound, false, 'texto de categoria vazia sem rescue não significa rota não reconhecida');
+        await page.setContent('<main><h1>Anemômetros</h1>' + searchRescue + '</main>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'título preserva categoria legitimamente vazia');
+        await page.setContent('<main><nav class="andes-breadcrumb"><a href="https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/">Acessórios Náuticos</a></nav>' + searchRescue + '</main>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'breadcrumb oficial preserva categoria legitimamente vazia');
+        await page.setContent('<main>' + searchRescue + '</main><script id="__PRELOADED_STATE__" type="application/json">'
+            + JSON.stringify({initialState:{pageState:{filters:[{id:'category',values:[{id:'MLB455956'}]}]}}}) + '</script>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'identidade aplicada no documento preserva categoria legitimamente vazia');
+        await page.setContent(fixture(card(35) + searchRescue));
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'rescue antigo não invalida página com anúncios presentes');
+        await page.setContent('<main><section class="recommendations">' + searchRescue + '</section></main>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'rescue de recomendação não representa a página de categoria');
+        await page.setContent('<main><div hidden>' + searchRescue + '</div></main>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'rescue oculto não invalida a página em hidratação');
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
+        await page.setContent('<main>' + searchRescue + '</main>');
+        assert.equal((await page.evaluate(scripts.discoveryScript())).categoryNotFound, false, 'busca vazia do vendedor não é falha de rota de categoria');
         await page.setContent('<main><a rel="next" href="https://lista.mercadolivre.com.br/_CustId_123456_Desde_51">Seguinte</a></main>');
         assert.equal((await page.evaluate(scripts.nextCategoryPageScript(page.url()))).reason, 'not_category_page', 'script de categorias nunca avanca pagina do vendedor');
         await page.setContent('<form id="login_user_form"><input type="password"></form>');

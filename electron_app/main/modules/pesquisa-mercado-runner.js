@@ -4,6 +4,7 @@
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
 const clone = value => JSON.parse(JSON.stringify(value));
+const { OfficialCategoryNavigation, unsupportedCategoryAlias } = require('./pesquisa-mercado-category-navigation');
 
 function allowedUrl(value) {
     try {
@@ -240,8 +241,20 @@ function validateCheckpointTaxonomy(checkpoint) {
     const fail = () => { throw new Error('A arvore preservada da pesquisa esta incompleta. Inicie uma nova pesquisa.'); };
     const scope = normalizeCategory(checkpoint.scope && checkpoint.scope.category);
     if (!scope || !/^MLB\d+$/.test(scope.key) || !tree || typeof tree !== 'object' || Array.isArray(tree)
-        || Object.keys(tree).some(key => !['updatedAt','children'].includes(key))
+        || Object.keys(tree).some(key => !['updatedAt','children','ancestry'].includes(key))
         || !Number.isFinite(Date.parse(tree.updatedAt)) || !tree.children || typeof tree.children !== 'object' || Array.isArray(tree.children)) fail();
+    if (tree.ancestry !== undefined) {
+        if (!Array.isArray(tree.ancestry) || !tree.ancestry.length || tree.ancestry.length > 32) fail();
+        const seen = new Set();
+        for (const raw of tree.ancestry) {
+            const node = normalizeCategory(raw);
+            if (!node || !/^MLB\d+$/.test(node.key) || node.url !== raw.url || seen.has(node.key)
+                || node.key !== scope.key && Object.prototype.hasOwnProperty.call(tree.children, node.key)) fail();
+            seen.add(node.key);
+        }
+        const last = tree.ancestry.at(-1);
+        if (last.key !== scope.key || last.nome !== scope.nome || last.url !== scope.url) fail();
+    }
     const keys = Object.keys(tree.children);
     if (!keys.length || keys.length > 100000 || !Object.prototype.hasOwnProperty.call(tree.children,scope.key)) fail();
     const records = new Map([[scope.key,scope]]), parents = new Map();
@@ -288,6 +301,7 @@ class PesquisaMercadoRunner {
         this.namesTask = null;
         this.namesController = null;
         this.namesJobId = '';
+        this.officialNavigation = null;
         this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
     }
@@ -334,6 +348,7 @@ class PesquisaMercadoRunner {
         this.job = clone(job);
         this.job.counters = { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0, ...(job.counters || {}) };
         this.checkpoint = initialCheckpoint(job.checkpoint);
+        this.officialNavigation = null;
         validateCheckpointTaxonomy(this.checkpoint);
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
         this.seenSellers = new Set(this.checkpoint.seenSellerKeys);
@@ -558,7 +573,7 @@ class PesquisaMercadoRunner {
                 }
                 return result;
             } catch (err) {
-                if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.status === 401 || err.status === 403) throw err;
+                if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403) throw err;
                 last = err;
                 if (index < 2) await this.wait(600 * (index + 1));
             }
@@ -566,35 +581,51 @@ class PesquisaMercadoRunner {
         throw last;
     }
 
-    async read(url, purpose = 'category') {
+    async read(url, purpose = 'category', navigationCategoryId = '') {
         if (!allowedUrl(url)) throw new Error('Link de pesquisa fora do Mercado Livre.');
         return this.attempt(async () => {
             this.check();
             await this.browser.navigate(url, this.controller.signal);
             let page;
-            const destination = categoryPageWaiter(this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null,
-                purpose === 'category' ? this.officialCategoryId() : '');
+            const isCategory = purpose === 'category' || purpose === 'navigation';
+            const isOfficialIndex = purpose === 'index' && sameCategoryPage(url, 'https://www.mercadolivre.com.br/categorias');
+            const verifyDestination = isCategory || isOfficialIndex;
+            const categoryId = isOfficialIndex ? '' : purpose === 'navigation' ? navigationCategoryId : this.officialCategoryId();
+            const destination = categoryPageWaiter(isOfficialIndex || isCategory && this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null,
+                verifyDestination ? categoryId : '');
             for (let poll = 0; poll < 34; poll += 1) {
                 await this.wait(450);
                 this.check();
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 if (page.authRequired || page.avantAuthRequired) {
                     if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true };
-                    if (purpose === 'category') destination.observe(page.url || this.browser.getURL(), false, true);
+                    if (verifyDestination) destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
                 }
                 const listings = (page.anuncios || []).length > 0;
                 const ready = purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
                     : purpose === 'first-page' ? true // The collector owns settling and scrolling this page.
+                    : isOfficialIndex ? (page.categoryTree || []).length > 0 || (page.categories || []).length > 0
                     : listings || (page.categories || []).length > 0 || page.listingUrl || (purpose === 'index' && page.categoriesIndexUrl) || page.empty;
-                if (purpose === 'category') {
+                if (verifyDestination) {
                     const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
-                    if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) return page;
+                    if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) {
+                        if (page.categoryNotFound && !listings) {
+                            const error = new Error('O Mercado Livre nao reconheceu o endereco da categoria.');
+                            error.categoryUnavailable = true;
+                            throw error;
+                        }
+                        return page;
+                    }
                 } else if (ready) return page;
             }
-            if (purpose === 'category' && destination.mismatch) this.assertCategoryDestination(url, destination.actualUrl);
-            if (purpose === 'index' && !page.authRequired && !page.avantAuthRequired) return page; // The homepage can link to the full category index instead.
+            if (verifyDestination && destination.mismatch) {
+                const error = new Error('O Mercado Livre abriu outra categoria. O escopo selecionado foi preservado.');
+                error.categoryScopeMismatch = true;
+                throw error;
+            }
+            if (purpose === 'index' && !isOfficialIndex && !page.authRequired && !page.avantAuthRequired) return page; // The homepage can link to the full category index instead.
             throw new Error('A pagina ainda nao apresentou os dados para continuar a pesquisa.');
         });
     }
@@ -626,11 +657,15 @@ class PesquisaMercadoRunner {
 
     async prepareOfficialTaxonomy() {
         const scope = this.checkpoint.scope && this.checkpoint.scope.category;
-        if (!this.taxonomy || !scope || !/^MLB\d+$/.test(scope.key) || this.checkpoint.officialTaxonomy) return;
+        if (!this.taxonomy || !scope || !/^MLB\d+$/.test(scope.key)) return;
+        const previous = this.checkpoint.officialTaxonomy;
+        const needsNavigation = [scope, ...Object.values(previous && previous.children || {}).flat()]
+            .some(node => unsupportedCategoryAlias(node.url));
+        if (previous && (previous.ancestry || !needsNavigation)) return;
         const snapshot = await this.taxonomy.load();
         this.check();
         if (!snapshot.complete || !snapshot.get(scope.key)) throw new Error('A arvore oficial da categoria nao esta disponivel.');
-        const children = Object.create(null), pending = [scope.key];
+        const children = previous ? previous.children : Object.create(null), pending = previous ? [] : [scope.key];
         for (let index = 0; index < pending.length; index += 1) {
             const key = pending[index];
             if (Object.prototype.hasOwnProperty.call(children, key)) continue;
@@ -641,11 +676,34 @@ class PesquisaMercadoRunner {
             });
             pending.push(...children[key].map(item => item.key));
         }
-        // Freeze this selection's complete tree in the owner-isolated checkpoint.
-        // Resume uses the same descendants even if the public cache changes.
-        this.checkpoint.officialTaxonomy = { updatedAt: snapshot.updatedAt, children };
+        // Preserve descendants on resume; an older checkpoint needs only the
+        // missing ancestry, never a replacement tree from a refreshed cache.
+        const tree = previous || { updatedAt: snapshot.updatedAt, children };
+        if (typeof snapshot.pathFromRoot === 'function') {
+            const ancestry = snapshot.pathFromRoot(scope.key).map(normalizeCategory);
+            if (!ancestry.length || ancestry.some(node => !node) || ancestry.at(-1).key !== scope.key
+                || ancestry.at(-1).nome !== scope.nome) throw new Error('O caminho oficial da categoria nao esta disponivel.');
+            ancestry[ancestry.length - 1] = clone(scope);
+            tree.ancestry = ancestry;
+        } else if (needsNavigation || Object.values(children).flat().some(node => unsupportedCategoryAlias(node.url))) {
+            throw new Error('O caminho oficial da categoria nao esta disponivel.');
+        }
+        this.checkpoint.officialTaxonomy = tree;
         validateCheckpointTaxonomy(this.checkpoint);
         await this.save();
+    }
+
+    async officialCategoryUrl(category) {
+        if (!unsupportedCategoryAlias(category.url)) return category.url;
+        const tree = this.checkpoint.officialTaxonomy;
+        if (!tree || !tree.ancestry) throw new Error('O caminho oficial da categoria nao esta disponivel.');
+        if (!this.officialNavigation) {
+            this.officialNavigation = new OfficialCategoryNavigation({
+                ancestry: tree.ancestry, children: tree.children,
+                normalize: normalizeCategory, read: (url, purpose, key) => this.read(url, purpose, key)
+            });
+        }
+        return this.officialNavigation.resolve(category.key);
     }
 
     async readCategory(category) {
@@ -657,7 +715,7 @@ class PesquisaMercadoRunner {
                 throw new Error('A arvore preservada da pesquisa esta incompleta.');
             }
             if (children.length) return { url: category.url, categories: children, hasChildren: true };
-            const page = await this.read(category.url);
+            const page = await this.read(await this.officialCategoryUrl(category));
             return { ...page, categories: [], hasChildren: false };
         }
 
@@ -708,7 +766,14 @@ class PesquisaMercadoRunner {
                 }
                 const ready = canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty);
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
-                if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) return page;
+                if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) {
+                    if (page.categoryNotFound && !(page.anuncios || []).length) {
+                        const error = new Error('O Mercado Livre nao reconheceu a pagina da categoria.');
+                        error.categoryUnavailable = true;
+                        throw error;
+                    }
+                    return page;
+                }
             }
             if (destination.mismatch) this.assertCategoryDestination(current.url, destination.actualUrl);
             throw new Error('A proxima pagina da categoria nao terminou de carregar.');
@@ -832,6 +897,14 @@ class PesquisaMercadoRunner {
                 this.check();
                 const category = this.checkpoint.categories[this.checkpoint.categoryIndex];
                 this.checkpoint.currentCategory = category;
+                // Old aliases can contain a saved empty page. Reopen this same
+                // category without discarding completed sellers or seed IDs.
+                if (this.checkpoint.officialTaxonomy && this.checkpoint.page && unsupportedCategoryAlias(this.checkpoint.page.url)
+                    && !(this.checkpoint.page.anuncios || []).length) {
+                    this.checkpoint.page = null;
+                    this.checkpoint.categorySeenPages = [];
+                    this.job.counters.pages = Math.max(0, Number(this.job.counters.pages || 0) - 1);
+                }
                 if (!this.checkpoint.page) {
                     this.setProgress('categories', `Descobrindo vendedores em ${category.nome}...`);
                     try {
@@ -877,6 +950,25 @@ class PesquisaMercadoRunner {
                         current.index += 1;
                         this.checkpoint.phase = 'discovery';
                         await this.save();
+                    }
+                    // Consume a restored discovery queue before replacing its
+                    // obsolete route. Current links may no longer include those seeds.
+                    if (this.checkpoint.officialTaxonomy && unsupportedCategoryAlias(current.url)) {
+                        try {
+                            const page = await this.readCategory(category);
+                            const loaded = canonicalUrl(page.url || category.url);
+                            this.checkpoint.categorySeenPages = [loaded];
+                            this.checkpoint.page = { categoryKey: this.officialCategoryId(), url: loaded,
+                                nextUrl: canonicalUrl(page.nextUrl), hasNext: !!page.hasNext,
+                                anuncios: page.anuncios || [], index: 0 };
+                            this.job.counters.pages = Number(this.job.counters.pages || 0) + 1;
+                            await this.save();
+                            continue;
+                        } catch (err) {
+                            if (err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            this.incomplete('Nao foi possivel reabrir a categoria; os anuncios ja consultados foram preservados.');
+                            break;
+                        }
                     }
                     const next = canonicalUrl(current.nextUrl);
                     if (!next && !current.hasNext) break;

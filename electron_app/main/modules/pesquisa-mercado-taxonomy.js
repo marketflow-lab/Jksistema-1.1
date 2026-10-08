@@ -127,9 +127,10 @@ function makeSnapshot(records, updatedAt) {
         complete: true,
         updatedAt,
         summary,
-        // Unknown get() is deliberately null; children() and childCounts() reject unknown IDs.
+        // Unknown get() is deliberately null; traversal methods reject unknown IDs.
         get(key) { return nodes.get(key) || null; },
         children(key = null) { return (key === null ? roots : relations.get(requireKey(key))).map(id => nodes.get(id)); },
+        pathFromRoot(key) { return paths.get(requireKey(key)).map(id => ({ ...nodes.get(id) })); },
         childCounts(keys = nodes.keys()) {
             const result = {};
             for (const key of keys) result[requireKey(key)] = relations.get(key).length;

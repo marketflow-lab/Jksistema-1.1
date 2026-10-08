@@ -457,7 +457,7 @@ async function categoryNavigationSettles() {
 }
 
 async function officialTaxonomyScope() {
-    const category = id => ({key: id, nome: id, url: `https://lista.mercadolivre.com.br/_CatId_${id}`});
+    const category = id => ({key: id, nome: id, url: `https://lista.mercadolivre.com.br/pecas/${id.toLowerCase()}/`});
     const root=category('MLB100'), branch=category('MLB101'), leaf=category('MLB102'), outside=category('MLB200');
     const tree={MLB100:[branch], MLB101:[leaf], MLB102:[], MLB200:[]};
     const native='https://lista.mercadolivre.com.br/pecas/filtros/';
@@ -503,11 +503,184 @@ async function officialTaxonomyScope() {
     assert.deepEqual(resumed.visited,[leaf.url]);
 }
 
+async function nauticalOfficialNavigation() {
+    const index = `${base}/categorias`;
+    const prefix = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
+    const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({key, nome, url});
+    const vehicles = node('MLB5672','Acessórios para Veículos');
+    const scope = node('MLB6005','Acessórios Náuticos');
+    const branch = node('MLB271613','Sistemas de Navegação');
+    const leaf = node('MLB455956','Anemômetros');
+    const rootLink = node('https://www.mercadolivre.com.br/c/acessorios-para-veiculos',vehicles.nome,'https://www.mercadolivre.com.br/c/acessorios-para-veiculos');
+    const scopeLink = node(prefix,scope.nome,prefix);
+    const branchUrl=prefix+'sistemas-navegacao/', leafUrl=branchUrl+'anemometros/';
+    const branchLink=node(branchUrl,branch.nome,branchUrl), leafLink=node(leafUrl,leaf.nome,leafUrl);
+    const tree={ [scope.key]:[branch], [branch.key]:[leaf], [leaf.key]:[] };
+    const make = (leafPage={empty:true}, parentPage={categories:[leafLink]}) => harness({
+        [index]:{categoryTree:[{...rootLink,children:[scopeLink]}],categories:[rootLink]},
+        [prefix]:{categories:[branchLink]}, [branchUrl]:parentPage,
+        [leafUrl]:leafPage,
+        [leaf.url]:{empty:true,categoryNotFound:true}
+    });
+    const taxonomy = () => ({load:async()=>({complete:true,updatedAt:'2026-10-08T12:00:00Z',
+        get:key=>[vehicles,scope,branch,leaf].find(c=>c.key===key),
+        children:key=>copy(tree[key]||[]),pathFromRoot:key=>key===scope.key?copy([vehicles,scope]):[]})});
+    const h=make(); h.runner.taxonomy=taxonomy();
+    await h.runner.start(scope); await h.runner.task;
+    assert.equal(h.saved().status,'completed');
+    assert.deepEqual(h.visited,[index,prefix,branchUrl,leafUrl]);
+    assert(!h.visited.some(url=>/_CatId_/.test(url)), 'unresolved IDs must never become browser navigation');
+    assert.deepEqual(h.saved().checkpoint.officialTaxonomy.ancestry,[vehicles,scope]);
+    assert.equal(h.saved().counters.pages,1,'ancestry navigation is not counted as seller discovery');
+    assert.equal(h.saved().checkpoint.scope.category.url,scope.url,'selected scope remains immutable');
+
+    const seedUrl = `${base}/p/MLB1000000100`;
+    const full = harness({
+        [index]: { categoryTree: [{ ...rootLink, children: [scopeLink] }], categories: [rootLink] },
+        [prefix]: { categories: [branchLink] }, [branchUrl]: { categories: [leafLink] },
+        [leafUrl]: { anuncios: [{ id: 'MLB1000000100', url: seedUrl }] },
+        [seedUrl]: seller('111'), [`${base}/perfil/111`]: seller('111'),
+        [`${base}/anuncios/111`]: {},
+    });
+    full.runner.taxonomy = taxonomy();
+    await full.runner.start(scope); await full.runner.task;
+    assert.equal(full.saved().status, 'completed', 'official category navigation reaches the normal seller publication flow');
+    assert.equal(full.vendors.size, 1);
+    assert.equal(full.saved().counters.sellers, 1);
+    assert.equal(full.saved().counters.ads, 1);
+    assert.equal(full.saved().counters.pages, 1);
+    const publication = full.vendors.get('id:111');
+    assert(publication, 'the seed seller must be published');
+    assert.equal(publication.seller.id, '111');
+    assert.equal(publication.seller.categoria, leaf.nome);
+    assert.equal(publication.anuncios[0].categoria_key, leaf.key);
+    assert.equal(publication.anuncios[0].categoria, leaf.nome);
+    assert.equal(publication.anuncios.length, 1);
+    assert.equal(publication.anuncios[0].id, 'MLB1000000001');
+    assert.equal(publication.anuncios[0].rankable, true, 'the collected advertisement remains eligible for ranking');
+    assert.equal(publication.anuncios[0].seller_id, '111');
+    assert.deepEqual(full.visited, [index, prefix, branchUrl, leafUrl, seedUrl,
+        `${base}/perfil/111`, `${base}/anuncios/111`]);
+    assert(!full.visited.some(url => /_CatId_/.test(url)), 'full seller collection never visits an unresolved category alias');
+
+    const resumed=make(); resumed.runner.taxonomy={load:async()=>{throw new Error('frozen ancestry must not be refreshed');}};
+    const checkpoint={...h.saved().checkpoint,categoryIndex:2,currentCategory:leaf,
+        page:{categoryKey:leaf.key,url:leaf.url,index:0,anuncios:[]},categorySeenPages:[leaf.url],seenSellerKeys:['saved-seller']};
+    resumed.restoreCheckpoint({...h.saved(),status:'paused',checkpoint});
+    await resumed.runner.resume('run-1'); await resumed.runner.task;
+    assert.equal(resumed.saved().status,'completed');
+    assert(resumed.saved().checkpoint.seenSellerKeys.includes('saved-seller'),'resume preserves completed sellers');
+    assert(resumed.visited.includes(leafUrl));
+    assert(!resumed.visited.includes(leaf.url));
+
+    assert.equal(resumed.saved().counters.pages,1,'an obsolete empty alias is not counted twice');
+    const queued=make(); queued.runner.taxonomy={load:async()=>{throw new Error('frozen ancestry must not be refreshed');}};
+    const seedJob=copy(checkpoint);
+    seedJob.page.anuncios=[{id:'saved-seed',url:base+'/saved-product'}];
+    let consumed=0;
+    queued.runner.processSeed=async seed=>{assert.equal(seed.id,'saved-seed');consumed+=1;};
+    queued.restoreCheckpoint({...h.saved(),status:'paused',checkpoint:seedJob});
+    await queued.runner.resume('run-1'); await queued.runner.task;
+    assert.equal(consumed,1,'saved discovery seeds are consumed even if the current category no longer lists them');
+    assert.equal(queued.saved().status,'completed');
+    assert(queued.visited.includes(leafUrl));
+    assert(!queued.visited.includes(leaf.url));
+
+    const legacy=make(); legacy.runner.taxonomy=taxonomy();
+    const old=copy(checkpoint); delete old.officialTaxonomy.ancestry;
+    legacy.restoreCheckpoint({...h.saved(),status:'paused',checkpoint:old});
+    await legacy.runner.resume('run-1'); await legacy.runner.task;
+    assert.equal(legacy.saved().status,'completed');
+    assert.deepEqual(legacy.saved().checkpoint.officialTaxonomy.children,tree,'ancestry migration preserves frozen descendants');
+
+    for (const page of [
+        {categories:[{...leafLink,url:'https://lista.mercadolivre.com.br/agro/anemometros/',key:'MLB457024'}]},
+        {categories:[leafLink,{...leafLink,url:branchUrl+'anemometros-alias/',key:branchUrl+'anemometros-alias/'}]},
+        {categories:[]},
+    ]) {
+        const blocked=make({empty:true},page); blocked.runner.taxonomy=taxonomy();
+        await blocked.runner.start(scope); await blocked.runner.task;
+        assert.equal(blocked.saved().status,'completed_partial','unconfirmed category cannot be reported as an empty completed leaf');
+        assert.equal(blocked.saved().counters.pages,0);
+        assert(!blocked.visited.includes(leafUrl));
+    }
+    const notFound=make({empty:true,categoryNotFound:true}); notFound.runner.taxonomy=taxonomy();
+    await notFound.runner.start(scope); await notFound.runner.task;
+    assert.equal(notFound.saved().status,'completed_partial');
+    assert.equal(notFound.saved().counters.pages,0);
+    assert.equal(notFound.visited.filter(url=>url===leafUrl).length,1,'not-found is not retried as a loading page');
+
+    for (const mutate of [
+        c=>{c.officialTaxonomy.ancestry=[vehicles,leaf,scope];},
+        c=>{c.officialTaxonomy.ancestry=[scope,scope];},
+        c=>{c.officialTaxonomy.ancestry[0].url='https://evil.example/';},
+        c=>{c.officialTaxonomy.ancestry.at(-1).nome='Outra categoria';},
+    ]) { const invalid=copy(checkpoint);mutate(invalid);assert.throws(()=>validateCheckpointTaxonomy(invalid),/arvore preservada/); }
+}
+
+async function officialDirectoryAndRescueSettles() {
+    const index = `${base}/categorias`;
+    const native = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
+    const vehicles = { key: 'MLB5672', nome: 'Acessorios para Veiculos', url: 'https://lista.mercadolivre.com.br/_CatId_MLB5672' };
+    const scope = { key: 'MLB6005', nome: 'Acessorios Nauticos', url: 'https://lista.mercadolivre.com.br/_CatId_6005' };
+    const rootLink = { key: 'root-link', nome: vehicles.nome, url: `${base}/c/acessorios-para-veiculos` };
+    const scopeLink = { key: 'scope-link', nome: scope.nome, url: native };
+    const directory = { url: index, readyState: 'complete', categories: [rootLink],
+        categoryTree: [{ ...rootLink, children: [scopeLink] }] };
+    const taxonomy = () => ({ load: async () => ({ complete: true, updatedAt: '2026-10-08T12:00:00Z',
+        get: key => [vehicles, scope].find(node => node.key === key), children: () => [],
+        pathFromRoot: () => copy([vehicles, scope]) }) });
+
+    for (const [description, initial] of [
+        ['previous product document', { url: `${base}/p/MLB123456789`, readyState: 'complete',
+            anuncios: [{ id: 'old-product' }] }],
+        ['loading directory document', { ...directory, readyState: 'loading' }],
+    ]) {
+        let indexReads = 0;
+        const h = harness({ [index]: () => ++indexReads === 1 ? copy(initial) : copy(directory),
+            [native]: { empty: true, readyState: 'complete' } });
+        h.runner.taxonomy = taxonomy();
+        await h.runner.start(scope); await h.runner.task;
+        assert.equal(h.saved().status, 'completed', description + ' must settle to the official directory');
+        assert.equal(indexReads, 3, description + ' must precede two stable ready reads');
+        assert.deepEqual(h.visited, [index, native]);
+        assert.equal(h.saved().counters.pages, 1, 'directory settling is not a discovery page');
+        assert.deepEqual(h.saved().checkpoint.scope.category, scope);
+    }
+
+    const wrongDestination = harness({ [index]: { ...directory, url: `${base}/c/agro` },
+        [native]: { empty: true } });
+    wrongDestination.runner.taxonomy = taxonomy();
+    await wrongDestination.runner.start(scope); await wrongDestination.runner.task;
+    assert.equal(wrongDestination.saved().status, 'completed_partial', 'a directory tree from another destination is never consumed');
+    assert.deepEqual(wrongDestination.visited, [index], 'wrong document links must never become category navigation');
+    assert.equal(wrongDestination.saved().counters.pages, 0);
+    assert.deepEqual(wrongDestination.saved().checkpoint.scope.category, scope);
+
+    for (const [description, initial] of [
+        ['previous rescue document', { url: scope.url, categoryNotFound: true, empty: true, readyState: 'complete' }],
+        ['loading rescue document', { url: native, categoryNotFound: true, empty: true, readyState: 'loading' }],
+    ]) {
+        let categoryReads = 0;
+        const h = harness({ [index]: directory,
+            [native]: () => ++categoryReads === 1 ? copy(initial)
+                : { url: native, empty: true, readyState: 'complete' } });
+        h.runner.taxonomy = taxonomy();
+        await h.runner.start(scope); await h.runner.task;
+        assert.equal(h.saved().status, 'completed', description + ' is not a settled unavailable category');
+        assert.equal(categoryReads, 3, description + ' must precede two stable ready reads');
+        assert.equal(h.saved().counters.pages, 1);
+        assert.equal(h.saved().checkpoint.incompleteCategories.length, 0);
+    }
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
     await categoryNavigationSettles();
     await officialTaxonomyScope();
+    await nauticalOfficialNavigation();
+    await officialDirectoryAndRescueSettles();
     await progressWarningAndRestart();
     await pauseDuringPublication();
     console.log('Pesquisa de Mercado runner: official taxonomy, categories, dedup, background, pause, recovery, progress warnings and retries OK');

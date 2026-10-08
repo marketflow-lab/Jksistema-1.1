@@ -34,6 +34,27 @@ function fixture() {
     return dump;
 }
 
+function homonymFixture() {
+    const dump = {};
+    const chains = [
+        [['MLB5672', 'Acessórios para Veículos'], ['MLB6005', 'Acessórios Náuticos'],
+            ['MLB271613', 'Sistemas de Navegação'], ['MLB455956', 'Anemômetros']],
+        [['MLB271599', 'Agro'], ['MLB456927', 'Ferramentas de Trabalho'],
+            ['MLB457022', 'Instrumentos de Medição'], ['MLB457024', 'Anemômetros']],
+        [['MLB263532', 'Ferramentas'], ['MLB5550', 'Medições e Instrumentação'],
+            ['MLB455201', 'Medidores Ambientais'], ['MLB431215', 'Anemômetros']]
+    ];
+    for (const chain of chains) {
+        chain.forEach(([id, name], index) => {
+            const child = chain[index + 1];
+            dump[id] = { id, name,
+                path_from_root: chain.slice(0, index + 1).map(([key, label]) => ({ id: key, name: label })),
+                children_categories: child ? [{ id: child[0], name: child[1] }] : [] };
+        });
+    }
+    return dump;
+}
+
 async function withDownload(scenario, operation) {
     const original = https.get;
     let request;
@@ -77,6 +98,12 @@ async function main() {
         assert.equal(snapshot.get('MLB999999'), null);
         assert.throws(() => snapshot.children('MLB999999'), error => error.code === 'taxonomy_unknown_category');
         assert.throws(() => snapshot.childCounts(['MLB999999']), error => error.code === 'taxonomy_unknown_category');
+        assert.throws(() => snapshot.pathFromRoot('MLB999999'), error => error.code === 'taxonomy_unknown_category');
+        assert.deepEqual(snapshot.pathFromRoot('MLB100'), [snapshot.get('MLB100')]);
+        assert.deepEqual(snapshot.pathFromRoot('MLB106').map(node => node.key),
+            ['MLB100', 'MLB101', 'MLB102', 'MLB103', 'MLB104', 'MLB105', 'MLB106']);
+        assert.deepEqual(snapshot.pathFromRoot('MLB106').map(node => node.nome),
+            ['Acessórios', 'Nível 2', 'Nível 3', 'Nível 4', 'Nível 5', 'Nível 6', 'Nível 7']);
         assert.deepEqual(snapshot.childCounts(['MLB100', 'MLB1744']), { MLB100: 151, MLB1744: 0 });
         assert.deepEqual(Object.keys(snapshot.get('MLB100')).sort(), ['key', 'nome', 'url']);
         assert.equal(snapshot.get('MLB100').url, 'https://www.mercadolivre.com.br/c/acessorios/');
@@ -87,6 +114,46 @@ async function main() {
         const records = snapshot.cacheRecords();
         records.find(record => record[0] === 'MLB100')[3].length = 0;
         assert.equal(snapshot.children('MLB100').length, 151);
+    });
+    await scenario(() => {
+        const snapshot = parseTaxonomyDump(dump);
+        const original = snapshot.pathFromRoot('MLB106');
+        const changed = snapshot.pathFromRoot('MLB106');
+        const cacheBefore = snapshot.cacheRecords();
+        assert.notEqual(changed, original);
+        for (let index = 0; index < changed.length; index += 1) {
+            assert.deepEqual(Object.keys(changed[index]).sort(), ['key', 'nome', 'url']);
+            assert.notEqual(changed[index], original[index]);
+            assert.notEqual(changed[index], snapshot.get(changed[index].key));
+        }
+        changed[0].key = 'MLB1743';
+        changed[0].nome = 'Outra categoria';
+        changed[0].url = 'https://example.com/';
+        changed.reverse();
+        changed.pop();
+        const records = snapshot.cacheRecords();
+        records.find(record => record[0] === 'MLB106')[4][0] = 'MLB1743';
+        assert.deepEqual(snapshot.pathFromRoot('MLB106'), original);
+        assert.deepEqual(snapshot.cacheRecords(), cacheBefore);
+        assert.equal(snapshot.get('MLB100').nome, 'Acessórios');
+    });
+    await scenario(() => {
+        const snapshot = parseTaxonomyDump(homonymFixture());
+        const expected = [
+            ['MLB455956', ['MLB5672', 'MLB6005', 'MLB271613', 'MLB455956'],
+                ['Acessórios para Veículos', 'Acessórios Náuticos', 'Sistemas de Navegação', 'Anemômetros']],
+            ['MLB457024', ['MLB271599', 'MLB456927', 'MLB457022', 'MLB457024'],
+                ['Agro', 'Ferramentas de Trabalho', 'Instrumentos de Medição', 'Anemômetros']],
+            ['MLB431215', ['MLB263532', 'MLB5550', 'MLB455201', 'MLB431215'],
+                ['Ferramentas', 'Medições e Instrumentação', 'Medidores Ambientais', 'Anemômetros']]
+        ];
+        for (const [key, ids, names] of expected) {
+            const chain = snapshot.pathFromRoot(key);
+            assert.deepEqual(chain.map(node => node.key), ids);
+            assert.deepEqual(chain.map(node => node.nome), names);
+            assert.deepEqual(chain.map(node => node.url), ids.map(id => 'https://lista.mercadolivre.com.br/_CatId_' + id));
+            assert.deepEqual(snapshot.children(key), []);
+        }
     });
     await scenario(() => {
         for (const permalink of ['https://evil.example/c/carros', 'https://www.mercadolivre.com.br.evil.example/c/carros',
@@ -184,7 +251,9 @@ async function main() {
             assert.equal(cache.records.length, snapshot.summary.total);
             let calls = 0;
             const restored = new TaxonomyService({ cachePath, now: () => now + 1000, fetchDump: async () => { calls += 1; throw new Error('network should not run'); } });
-            assert.deepEqual((await restored.load()).summary, snapshot.summary);
+            const restoredSnapshot = await restored.load();
+            assert.deepEqual(restoredSnapshot.summary, snapshot.summary);
+            assert.deepEqual(restoredSnapshot.pathFromRoot('MLB106'), snapshot.pathFromRoot('MLB106'));
             assert.equal(calls, 0);
             const duringCache = new TaxonomyService({ cachePath, now: () => now + 1000, fetchDump: async () => { calls += 1; return dump; } });
             const cachedLoad = duringCache.load();
@@ -197,6 +266,26 @@ async function main() {
             assert.equal(await fs.readFile(cachePath, 'utf8'), saved);
             assert.deepEqual((await restored.load()).summary, snapshot.summary);
             assert.equal((await fs.readdir(temporary)).some(name => name.endsWith('.tmp')), false);
+        });
+        await scenario(async () => {
+            const cachePath = path.join(temporary, 'homonyms.json');
+            const now = Date.parse('2026-10-08T12:00:00Z');
+            const service = new TaxonomyService({ cachePath, now: () => now, fetchDump: async () => homonymFixture() });
+            const snapshot = await service.load();
+            const saved = await fs.readFile(cachePath, 'utf8');
+            assert.deepEqual(Object.keys(JSON.parse(saved)).sort(), ['fetchedAt', 'records', 'updatedAt', 'version']);
+            const restored = new TaxonomyService({ cachePath, now: () => now + 1000,
+                fetchDump: async () => { throw new Error('network should not run'); } });
+            const restoredSnapshot = await restored.load();
+            for (const key of ['MLB455956', 'MLB457024', 'MLB431215']) {
+                const expected = snapshot.pathFromRoot(key);
+                const chain = restoredSnapshot.pathFromRoot(key);
+                assert.deepEqual(chain, expected);
+                chain[0].nome = 'Alterado pelo consumidor';
+                chain.splice(0, chain.length);
+                assert.deepEqual(restoredSnapshot.pathFromRoot(key), expected);
+            }
+            assert.equal(await fs.readFile(cachePath, 'utf8'), saved);
         });
         await scenario(async () => {
             const cachePath = path.join(temporary, 'corrupt.json');
