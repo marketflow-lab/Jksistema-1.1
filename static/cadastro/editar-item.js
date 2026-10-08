@@ -224,7 +224,7 @@
     function atualizarContextoLoja() {
         const loja = state.lojas.find(item => item.store_id === state.storeIdSelecionado);
         elements.lojaAviso.textContent = loja ? `Edição limitada a ${loja.nome}.` : 'Selecione uma loja específica.';
-        elements.voltarCadastroLink.href = storeTools.urlPagina('/cadastro_editar.html', state.storeIdSelecionado);
+        elements.voltarCadastroLink.href = storeTools.urlPagina('/cadastro.html', state.storeIdSelecionado);
     }
 
     async function carregarContextoLoja() {
@@ -303,7 +303,7 @@
             state.fotoFilename = '';
             atualizarPreviewFoto();
             setStatus(`Alterações salvas com sucesso: ${state.skuOriginal}`, 'success');
-            global.location.href = storeTools.urlPagina('/cadastro_editar.html', state.storeIdSelecionado);
+            global.location.href = storeTools.urlPagina('/cadastro.html', state.storeIdSelecionado);
         } catch (error) {
             setStatus(`Erro ao salvar SKU: ${error.message}`, 'error');
         }

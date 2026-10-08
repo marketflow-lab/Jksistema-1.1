@@ -57,6 +57,7 @@ async function json(route, payload, status = 200) {
   const requests = [];
   const mutations = [];
   const pageErrors = [];
+  let editSaveFails = false;
   try {
     const page = await browser.newPage();
     page.on('pageerror', error => pageErrors.push(error.message));
@@ -81,7 +82,7 @@ async function json(route, payload, status = 200) {
         await route.fulfill({ status: 200, contentType: 'application/javascript; charset=utf-8', body: '' });
         return;
       }
-      if (url.pathname === '/cadastro_incluir.html' || url.pathname === '/cadastro_editar_item.html') {
+      if (url.pathname === '/cadastro_incluir.html' || url.pathname === '/cadastro_editar_item.html' || url.pathname === '/cadastro_editar.html') {
         const target = path.join(staticRoot, url.pathname.slice(1));
         await route.fulfill({ status: 200, contentType: contentType(target), body: fs.readFileSync(target) });
         return;
@@ -129,10 +130,14 @@ async function json(route, payload, status = 200) {
       }
       if (url.pathname === '/api/cadastro/lojas/store-a/produtos/SKU-ML' && request.method() === 'PUT') {
         mutations.push({ method: request.method(), body: request.postDataJSON() });
+        if (editSaveFails) {
+          await json(route, { detail: 'Produto alterado por outra operação. Revise antes de salvar.' }, 409);
+          return;
+        }
         await json(route, { success: true, sku: 'SKU-ML', foto: 'cadastro_fotos/lojas/store-a/MLB100.png' });
         return;
       }
-      if (url.pathname === '/cadastro.html' || url.pathname === '/cadastro_editar.html') {
+      if (url.pathname === '/cadastro.html') {
         await route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>destino</title>' });
         return;
       }
@@ -215,13 +220,36 @@ async function json(route, payload, status = 200) {
     const editLookup = requests.filter(item => new URL(item.url).pathname.endsWith('/mercado-livre/produto')).at(-1);
     assert.strictEqual(new URL(editLookup.url).searchParams.get('mlb_principal'), 'MLB200');
 
+    editSaveFails = true;
+    const editorUrl = page.url();
     await page.locator('#formEditarItem button[type="submit"]').click();
-    await page.waitForFunction(() => document.title === 'destino');
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Erro ao salvar SKU'));
+    assert.strictEqual(page.url(), editorUrl, 'falha ao salvar deve manter o usuário no editor');
+    assert.strictEqual(await page.locator('[name="nome"]').inputValue(), 'Nome interno preservado');
+    assert.deepStrictEqual(await page.locator('.mlb-id').evaluateAll(inputs => inputs.map(item => item.value)), ['MLB100', 'MLB200']);
     assert.strictEqual(mutations.length, 2);
-    assert.strictEqual(mutations[1].method, 'PUT');
-    assert.strictEqual(mutations[1].body.row_version, 7);
-    assert.strictEqual(mutations[1].body.nome, 'Nome interno preservado');
-    assert.strictEqual(mutations[1].body.__foto_data_url, lookupPayload.foto.data_url);
+
+    editSaveFails = false;
+    await page.locator('#formEditarItem button[type="submit"]').click();
+    await page.waitForURL('http://jk.local/cadastro.html?store_id=store-a');
+    assert.strictEqual(page.url(), 'http://jk.local/cadastro.html?store_id=store-a', 'salvamento deve voltar ao Cadastro principal da mesma loja');
+    assert.strictEqual(mutations.length, 3);
+    assert.strictEqual(mutations[2].method, 'PUT');
+    assert.strictEqual(mutations[2].body.row_version, 7);
+    assert.strictEqual(mutations[2].body.nome, 'Nome interno preservado');
+    assert.strictEqual(mutations[2].body.__foto_data_url, lookupPayload.foto.data_url, 'falha anterior não pode descartar imagem pendente');
+
+    await page.goto('http://jk.local/cadastro_editar_item.html?store_id=store-a&sku=SKU-ML', { waitUntil: 'load' });
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('SKU carregado'));
+    assert.strictEqual(await page.locator('#voltarCadastroLink').getAttribute('href'), '/cadastro.html?store_id=store-a');
+    await page.locator('#voltarCadastroLink').click();
+    await page.waitForURL('http://jk.local/cadastro.html?store_id=store-a');
+    assert.strictEqual(mutations.length, 3, 'Voltar não pode salvar novamente');
+
+    await page.goto('http://jk.local/cadastro_editar.html?store_id=store-b', { waitUntil: 'load' });
+    await page.waitForURL('http://jk.local/cadastro.html?store_id=store-b');
+    assert.strictEqual(await page.locator('.sku-item, #listaSkus, #buscaSku').count(), 0, 'endereço antigo não deve exibir o seletor intermediário');
+    assert.strictEqual(mutations.length, 3, 'redirecionamento legado não pode alterar produtos');
     assert.deepStrictEqual(pageErrors, []);
     console.log('cadastro mercado livre browser: OK');
   } finally {

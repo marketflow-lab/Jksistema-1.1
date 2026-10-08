@@ -128,12 +128,7 @@
       "tHead"
     ],
     "static/cadastro_editar.html": [
-      "buscaSku",
-      "cadastroLojaAviso",
-      "cadastroLojaSelect",
-      "listaPaginacao",
-      "listaSkus",
-      "status"
+      "cadastroPrincipalLink"
     ],
     "static/cadastro_editar_item.html": [
       "btnBuscarMercadoLivre",

@@ -41,7 +41,10 @@
     elements.btnAtualizar.addEventListener('click', actions.carregarProdutos);
     elements.btnSyncNcm.addEventListener('click', actions.sincronizarNcmBackground);
     elements.btnEditarCadastro.addEventListener('click', () => {
-        if (cadastro.runtime.state.storeIdSelecionado) global.location.href = global.JKCadastroStore.urlPagina('/cadastro_editar.html', cadastro.runtime.state.storeIdSelecionado);
+        if (!cadastro.runtime.state.storeIdSelecionado) return;
+        secondary.trocarAba('produtos');
+        elements.filtro.focus();
+        cadastro.core.setStatus('Clique no SKU ou na linha do produto para editar. Use o filtro para localizar o produto.', 'success');
     });
     elements.btnIncluirCadastro.addEventListener('click', () => {
         if (cadastro.runtime.state.storeIdSelecionado) global.location.href = global.JKCadastroStore.urlPagina('/cadastro_incluir.html', cadastro.runtime.state.storeIdSelecionado);

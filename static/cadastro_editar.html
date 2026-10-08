@@ -3,40 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Editar Cadastro - JK Sistema</title>
-    <link rel="stylesheet" href="/cadastro/styles/seletor-edicao.css?v=20260828-cadastro-store-scope-v1">
-    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <title>Cadastro de Produtos - JK Sistema</title>
+    <script src="/cadastro/form/00-core.js?v=20260828-cadastro-store-scope-v1"></script>
+    <script src="/cadastro/seletor-edicao.js?v=20261008-cadastro-retorno-v1"></script>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1> Editar SKU no Cadastro</h1>
-        <div class="header-actions">
-            <a class="back-btn" href="/dashboard.html">🏠 Home</a>
-            <a class="back-btn" href="/cadastro.html">Voltar</a>
-        </div>
-    </div>
-
-    <div id="status" class="status"></div>
-
-    <div class="card">
-        <div class="store-scope" aria-label="Loja do cadastro">
-            <label for="cadastroLojaSelect">Loja</label>
-            <select id="cadastroLojaSelect"></select>
-            <span id="cadastroLojaAviso" class="store-scope-hint"></span>
-        </div>
-        <div class="toolbar">
-            <input id="buscaSku" type="text" placeholder="Pesquisar SKU">
-        </div>
-        <div id="listaSkus" class="lista-skus"></div>
-        <div id="listaPaginacao" class="lista-paginacao"></div>
-
-        <div class="hint">Clique em um SKU da lista para abrir a página de edição completa.</div>
-    </div>
-</div>
-
-<script src="/cadastro/form/00-core.js?v=20260828-cadastro-store-scope-v1"></script>
-<script src="/cadastro/seletor-edicao.js?v=20260901-cadastro-catalog-imports-v1"></script>
-<script src="/ia-sidebar.js"></script>
+    <p><a id="cadastroPrincipalLink" href="/cadastro.html">Ir para o Cadastro de Produtos</a></p>
 </body>
 </html>

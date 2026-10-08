@@ -194,7 +194,7 @@ assert.match(styles, /\.loja-btn\.active\s*\{[^}]*background:#4facfe/, 'botão a
 
 assert.match(actions, /formData\.append\('modo', 'geral'\)[\s\S]*apiLoja\(storeId, 'importar-colunas'\)/, 'importação geral deve usar modo geral e rota da loja');
 assert.match(actions, /formData\.append\('modo', 'custos'\)[\s\S]*apiLoja\(storeId, 'importar-colunas'\)/, 'importação de custos deve usar modo custos e rota da loja');
-assert.match(selector, /apiLoja\(storeIdSelecionado, 'produtos'\)/);
+assert.match(selector, /urlPagina\('\/cadastro\.html', storeTools\.storeIdDaUrl\(\)\.valor\)/, 'fachada legada deve preservar a loja explícita sem consultar produtos');
 assert.match(editor, /apiLoja\(state\.storeIdSelecionado, `produtos\/\$\{encodeURIComponent\(state\.skuOriginal\)\}`\)/);
 assert.match(editor, /!state\.carregadoDaRede/);
 assert.match(inclusion, /apiLoja\(state\.storeIdSelecionado, 'produtos'\)/);

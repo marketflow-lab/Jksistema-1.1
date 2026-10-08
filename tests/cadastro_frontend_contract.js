@@ -45,17 +45,17 @@ assert.match(
   'a miniatura deve usar segmento opaco e enviar a identidade exata da loja para validacao',
 );
 
+// A rota pública permanece como fachada; o contrato de lista foi retirado conscientemente.
 const selector = pages['static/cadastro_editar.html'].combined;
-for (const snippet of [
-  '/api/cadastro/lojas/',
-  'storeIdSelecionado',
-  'cadastro_editar_sku',
-  'cadastro_editar_item',
-  'cadastro_editar_lista',
-  "urlPagina('/cadastro_editar_item.html'",
-]) {
-  assert(selector.includes(snippet), `seletor de edição perdeu o contrato: ${snippet}`);
+const legacyEditHtml = pages['static/cadastro_editar.html'].html;
+for (const retiredId of ['buscaSku', 'cadastroLojaAviso', 'cadastroLojaSelect', 'listaPaginacao', 'listaSkus', 'status']) {
+  assert(!legacyEditHtml.includes(`id="${retiredId}"`), `a página legada não deve restaurar a tela intermediária: ${retiredId}`);
 }
+assert(legacyEditHtml.includes('href="/cadastro.html"'), 'a fachada deve oferecer retorno ao Cadastro mesmo sem JavaScript');
+assert.doesNotMatch(legacyEditHtml, /Editar SKU no Cadastro/, 'a página legada não deve renderizar o seletor');
+assert(legacyEditHtml.indexOf('/cadastro/seletor-edicao.js') < legacyEditHtml.indexOf('<body>'), 'a fachada deve redirecionar antes de renderizar o corpo');
+assert.match(selector, /location\.replace\(storeTools\.urlPagina\('\/cadastro\.html', storeTools\.storeIdDaUrl\(\)\.valor\)\)/, 'a rota legada deve retornar ao Cadastro e preservar a loja explícita');
+assert.doesNotMatch(read('static/cadastro/seletor-edicao.js'), /fetch|salvarCacheEdicao/, 'a fachada não deve carregar nem alterar produtos');
 
 const editor = pages['static/cadastro_editar_item.html'].combined;
 for (const snippet of [

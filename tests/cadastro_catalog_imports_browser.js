@@ -302,6 +302,12 @@ function contentType(filePath) {
     await page.waitForFunction(() => window.JKCadastro.runtime.state.storeIdSelecionado === 'store-a'
       && !window.JKCadastro.runtime.state.carregandoProdutos);
     assert.strictEqual(await page.locator('#btnImportarBling').isEnabled(), true);
+    const principalUrl = page.url();
+    await page.locator('#btnEditarCadastro').click();
+    assert.strictEqual(page.url(), principalUrl, 'Editar deve manter o usuário na tabela principal');
+    assert.strictEqual(await page.evaluate(() => document.activeElement.id), 'filtro');
+    assert.strictEqual(await page.locator('#painelProdutos').isVisible(), true);
+    assert.match(await page.locator('#status').textContent(), /Clique no SKU ou na linha do produto/);
 
     await page.locator('#btnImportarMercadoLivre').click();
     await page.waitForFunction(() => !document.querySelector('#modalImportacaoCatalogo').hidden);
@@ -541,9 +547,12 @@ function contentType(filePath) {
       produto_bling: '<script>window.selectorInjected=true</script>',
     }];
     await page.goto('http://jk.local/cadastro_editar.html?store_id=store-a', { waitUntil: 'load' });
-    await page.waitForSelector('.sku-item');
-    assert.match(await page.locator('.sku-item').innerText(), /window\.selectorInjected=true/);
-    assert.strictEqual(await page.locator('.sku-item img, .sku-item script').count(), 0, 'SKU e título importados devem permanecer texto');
+    await page.waitForURL('http://jk.local/cadastro.html?store_id=store-a');
+    await page.waitForSelector('#tBody tr[data-sku]');
+    assert.strictEqual(await page.locator('.sku-item, #listaSkus, #buscaSku').count(), 0, 'endereço antigo deve encaminhar à tabela principal sem a tela intermediária');
+    assert.strictEqual(await page.evaluate(() => window.JKCadastro.runtime.state.storeIdSelecionado), 'store-a');
+    assert.match(await page.locator('#tBody tr[data-sku]').innerText(), /window\.selectorInjected=true/);
+    assert.strictEqual(await page.locator('#tBody tr[data-sku] img, #tBody tr[data-sku] script').count(), 0, 'SKU e título importados devem permanecer texto na tabela principal');
     assert.strictEqual(await page.evaluate(() => window.selectorInjected), undefined);
     assert.deepStrictEqual(pageErrors, []);
     console.log('cadastro catalog imports browser: OK');
