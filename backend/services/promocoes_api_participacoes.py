@@ -5,8 +5,16 @@ from __future__ import annotations
 from __future__ import annotations
 import asyncio
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
+from backend.services.promocoes_lightning import (
+    lightning_offer_key, lightning_offers, lightning_offer_window, lightning_window_valid,
+)
+from backend.services.promocoes_lightning_acao import (
+    LIGHTNING_ROW_FIELDS, lightning_integer, lightning_stock_error,
+    lightning_same_window, lightning_scoped_item_offers,
+)
 from backend.services.mercadolivre_legacy_promocoes import (
     _promo_contextualizar_entry_campanha as _validar_contexto_entry_campanha,
+    _promo_status_item_promocao as _lightning_status,
 )
 import inspect
 import json
@@ -105,6 +113,48 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
 _PROMOCOES_PLACEHOLDER_GET_TENANT_ID = get_tenant_id
 
 
+def _promo_lightning_scoped_offers(records, promotion_id, item_id):
+    offers = lightning_scoped_item_offers(records, promotion_id, item_id, _validar_contexto_entry_campanha)
+    return {lightning_offer_key(raw, campaign_id=promotion_id, item_id=item_id): raw for raw in offers}
+
+
+def _promo_confirmar_oferta_lightning(client_id, loja, cfg, promotion_id, item_id, selected):
+    """Revalidate the selected window using fresh data; never trust UI scope flags."""
+    blocked = lambda reason: {"_lightning_blocked": reason}
+    selected_key = str(selected.get("lightning_offer_key") or "").strip()
+    if not selected_key:
+        return blocked("Oferta relampago sem identidade da janela. Execute uma nova analise."), cfg
+    try:
+        records, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id, force_refresh=True)
+    except Exception:
+        return blocked("Nao foi possivel confirmar as ofertas atuais deste anuncio. Reconecte a loja ou tente novamente."), cfg
+    offers = _promo_lightning_scoped_offers(records, promotion_id, item_id)
+    selected_window = {"start_date": selected.get("lightning_start_date"),
+                       "finish_date": selected.get("lightning_finish_date")}
+    raw = offers.get(selected_key)
+    if raw is None:
+        # The reference changes from CANDIDATE to OFFER after acceptance.
+        # Reconcile only one observed offer for this same campaign, MLB and window.
+        same_window = [entry for entry in offers.values() if lightning_same_window(entry, selected_window)]
+        if len(same_window) == 1:
+            raw = same_window[0]
+    if raw is None or not lightning_window_valid(raw):
+        return blocked("A janela selecionada nao foi encontrada nos dados atuais. Execute uma nova analise."), cfg
+    if not lightning_same_window(raw, selected_window):
+        return blocked("A janela selecionada mudou. Execute uma nova analise."), cfg
+    status = _lightning_status(raw)
+    if status in {"started", "active", "approved", "pending", "programmed", "scheduled"}:
+        return {"success": True, "found": True, "already_participating": True, "status": status}, cfg
+    if status not in {"candidate", "eligible"}:
+        return blocked("Esta janela nao esta disponivel para participacao."), cfg
+    reason = lightning_stock_error(raw, selected.get("lightning_stock"))
+    if reason:
+        return blocked(reason), cfg
+    raw = dict(raw)
+    raw["_jk_lightning_confirmed_for_send"] = True
+    return {"success": True, "found": True, "_lightning_raw_confirmed": raw}, cfg
+
+
 def _promo_aplicar_item_participacao_ml(
     client_id: str,
     loja: str,
@@ -118,6 +168,8 @@ def _promo_aplicar_item_participacao_ml(
     discount_percentage: Optional[float] = None,
     allow_alternative_deal_price: bool = True,
     result_details: Optional[dict] = None,
+    stock: Optional[int] = None,
+    lightning_context: Optional[dict] = None,
 ) -> tuple[bool, str, dict]:
     # Opt-in outcome reporting keeps existing tuple callers and their defaults.
     if result_details is not None:
@@ -271,7 +323,26 @@ def _promo_aplicar_item_participacao_ml(
         payloads_vistos.add(assinatura)
         payloads.append(payload)
 
-    if promotion_type_upper in tipos_exigem_offer_id:
+    if promotion_type_upper == "LIGHTNING":
+        context = lightning_context if isinstance(lightning_context, dict) else {}
+        if not context.get("_jk_lightning_confirmed_for_send") or not lightning_window_valid(context):
+            return False, "Janela da oferta relampago nao confirmada. Execute uma nova analise.", cfg
+        stock_reason = lightning_stock_error(context, stock)
+        if stock_reason:
+            return False, stock_reason, cfg
+        if deal_price_num is None or not math.isfinite(deal_price_num) or deal_price_num <= 0:
+            return False, "Preco da oferta relampago ausente ou invalido.", cfg
+        current_price = _parse_float_flex(context.get("price") if "price" in context else context.get("deal_price"))
+        if current_price is None or not math.isfinite(current_price) or current_price <= 0:
+            return False, "Preco atual desta oferta nao confirmado. Execute uma nova analise.", cfg
+        if round(float(current_price), 2) != round(float(deal_price_num), 2):
+            return False, "O preco desta oferta mudou desde a analise. Execute uma nova analise antes de participar.", cfg
+        _adicionar_payload({
+            "promotion_type": "LIGHTNING", "deal_price": round(float(deal_price_num), 2),
+            "stock": lightning_integer(stock),
+        })
+        allow_alternative_deal_price = False
+    elif promotion_type_upper in tipos_exigem_offer_id:
         raw_item_promocao = {}
         if not offer_id_texto:
             try:
@@ -376,6 +447,63 @@ def _promo_aplicar_item_participacao_ml(
             if erro_payload:
                 ultimo_erro = f"Mercado Livre respondeu {resp.status_code}, mas recusou a promocao: {erro_payload}"
                 continue
+            if promotion_type_upper == "LIGHTNING":
+                try:
+                    confirmed = resp.json()
+                except Exception:
+                    confirmed = {}
+                confirmed_price = _parse_float_flex(confirmed.get("price") or confirmed.get("deal_price")) if isinstance(confirmed, dict) else None
+                if (confirmed_price is None or not math.isfinite(confirmed_price)
+                        or abs(float(confirmed_price) - float(deal_price_num)) > 0.01):
+                    if result_details is not None:
+                        result_details["outcome"] = "unknown"
+                    return False, "Inclusao enviada, mas o preco retornado nao confirmou a oferta selecionada. Verifique no Mercado Livre.", cfg
+                response_id = str(confirmed.get("id") or "").upper()
+                response_item = str(confirmed.get("item_id") or confirmed.get("itemId") or "").upper()
+                response_campaign = str(confirmed.get("promotion_id") or confirmed.get("campaign_id") or "").upper()
+                if ((response_id.startswith("LGH-") and response_id != promotion_id.upper())
+                        or (response_id.startswith("MLB") and response_id != item_id.upper())
+                        or (response_item and response_item != item_id.upper())
+                        or (response_campaign and response_campaign != promotion_id.upper())):
+                    if result_details is not None:
+                        result_details["outcome"] = "unknown"
+                    return False, "A resposta de inclusao possui identidade divergente. Verifique no Mercado Livre.", cfg
+                response_scope = dict(confirmed)
+                response_scope.setdefault("item_id", item_id)
+                response_scope = _validar_contexto_entry_campanha(
+                    response_scope, campaign_id=promotion_id,
+                    promotion_type_consultado="LIGHTNING", item_id=item_id,
+                )
+                if not response_scope:
+                    if result_details is not None:
+                        result_details["outcome"] = "unknown"
+                    return False, "A resposta de inclusao possui contexto divergente. Verifique no Mercado Livre.", cfg
+                if lightning_window_valid(confirmed) and not lightning_same_window(confirmed, lightning_context):
+                    if result_details is not None:
+                        result_details["outcome"] = "unknown"
+                    return False, "A resposta de inclusao confirmou outra janela. Verifique no Mercado Livre.", cfg
+                known_states = {"pending", "programmed", "scheduled", "started", "active", "approved"}
+                direct_matches = _promo_lightning_scoped_offers([confirmed], promotion_id, item_id)
+                verified = [entry for entry in direct_matches.values()
+                            if lightning_same_window(entry, lightning_context)
+                            and _lightning_status(entry) in known_states]
+                if not verified:
+                    # Public POST examples contain only price/original_price.
+                    # Confirm the selected window from a fresh item-scoped GET.
+                    try:
+                        records, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id, force_refresh=True)
+                    except Exception:
+                        records = []
+                    matches = _promo_lightning_scoped_offers(records, promotion_id, item_id)
+                    verified = [entry for entry in matches.values()
+                                if lightning_same_window(entry, lightning_context)
+                                and _lightning_status(entry) in known_states
+                                and (_parse_float_flex(entry.get("price")) is not None)
+                                and abs(float(_parse_float_flex(entry.get("price"))) - float(deal_price_num)) <= 0.01]
+                if len(verified) != 1:
+                    if result_details is not None:
+                        result_details["outcome"] = "unknown"
+                    return False, "Inclusao enviada, mas a janela selecionada ainda nao foi confirmada. Verifique no Mercado Livre.", cfg
             if result_details is not None:
                 result_details["outcome"] = "applied"
             return True, "", cfg
@@ -393,6 +521,20 @@ def _promo_aplicar_item_participacao_ml(
                 cfg,
             )
         if "already" in erro_norm or ("ja" in erro_norm and "promoc" in erro_norm):
+            if promotion_type_upper == "LIGHTNING":
+                try:
+                    records, cfg = _ml_obter_promocoes_item(client_id, loja, cfg, item_id, force_refresh=True)
+                except Exception:
+                    records = []
+                matches = _promo_lightning_scoped_offers(records, promotion_id, item_id)
+                verified = [entry for entry in matches.values()
+                            if lightning_same_window(entry, lightning_context)
+                            and _lightning_status(entry) in {"pending", "programmed", "scheduled", "started", "active", "approved"}]
+                if len(verified) == 1:
+                    if result_details is not None:
+                        result_details["outcome"] = "already_participating"
+                    return True, "Esta janela ja esta participando ou pendente.", cfg
+                return False, "Mercado Livre informou participacao existente; a janela selecionada nao foi confirmada.", cfg
             if result_details is not None:
                 try:
                     existing, cfg = _promo_consultar_item_na_campanha(
@@ -535,6 +677,10 @@ def _aplicar_participacoes_promocoes_payload(
                 "outcome": "blocked",
                 "status": "",
             }
+            if promotion_type.upper() == "LIGHTNING":
+                for field in LIGHTNING_ROW_FIELDS:
+                    if field in item:
+                        detail[field] = item[field]
             message = ""
             try:
                 action_campaign = str(item.get("action_promotion_id") or "").strip()
@@ -549,13 +695,21 @@ def _aplicar_participacoes_promocoes_payload(
                 else:
                     # An inconclusive lookup does not revoke the user's selection.
                     try:
-                        elegibilidade, cfg = _promo_consultar_item_na_campanha(
-                            client_id, loja, cfg, promotion_id, promotion_type, item_id,
-                        )
+                        if promotion_type.upper() == "LIGHTNING":
+                            elegibilidade, cfg = _promo_confirmar_oferta_lightning(
+                                client_id, loja, cfg, promotion_id, item_id, item,
+                            )
+                        else:
+                            elegibilidade, cfg = _promo_consultar_item_na_campanha(
+                                client_id, loja, cfg, promotion_id, promotion_type, item_id,
+                            )
                     except Exception:
-                        elegibilidade = {}
+                        elegibilidade = ({"_lightning_blocked": "Nao foi possivel confirmar a janela desta oferta."}
+                                         if promotion_type.upper() == "LIGHTNING" else {})
                     elegibilidade = elegibilidade if isinstance(elegibilidade, dict) else {}
-                    if (elegibilidade.get("success") and elegibilidade.get("found")
+                    if elegibilidade.get("_lightning_blocked"):
+                        message = elegibilidade["_lightning_blocked"]
+                    elif (elegibilidade.get("success") and elegibilidade.get("found")
                             and elegibilidade.get("already_participating")):
                         detail["outcome"] = "already_participating"
                         detail["status"] = elegibilidade.get("status") or "started"
@@ -578,6 +732,12 @@ def _aplicar_participacoes_promocoes_payload(
                             message = "O identificador da oferta pertence a outro anuncio."
                         else:
                             result_details = {}
+                            lightning_kwargs = {}
+                            if promotion_type.upper() == "LIGHTNING":
+                                lightning_kwargs = {
+                                    "stock": item.get("lightning_stock"),
+                                    "lightning_context": elegibilidade.get("_lightning_raw_confirmed"),
+                                }
                             ok, message, cfg = _promo_aplicar_item_participacao_ml(
                                 client_id, loja, cfg,
                                 item_id=item_id,
@@ -588,6 +748,7 @@ def _aplicar_participacoes_promocoes_payload(
                                 discount_percentage=discount_percentage,
                                 allow_alternative_deal_price=False,
                                 result_details=result_details,
+                                **lightning_kwargs,
                             )
                             detail["outcome"] = result_details.get("outcome") or ("applied" if ok else "unknown")
                             if ok and not message:

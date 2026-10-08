@@ -267,6 +267,9 @@ function renderTable(data) {
     pageData.forEach((row, index) => {
         const dataIndex = startIdx + index;
         const tr = document.createElement('tr');
+        let avisoParticipacao = null;
+        const relampago = typeof isLinhaOfertaRelampago === 'function' && isLinhaOfertaRelampago(row);
+        if (relampago) tr.setAttribute('data-lightning-offer-key', String(row.lightning_offer_key || ''));
 
         visibleColumns.forEach(col => {
             const td = document.createElement('td');
@@ -304,6 +307,7 @@ function renderTable(data) {
                 motivo.style.whiteSpace = 'normal';
 
                 const impedimento = document.createElement('small');
+                avisoParticipacao = impedimento;
                 impedimento.className = 'promo-decision-reason promo-decision-technical';
                 impedimento.textContent = obterAvisoParticipacaoPromocoes(row);
                 impedimento.style.display = impedimento.textContent ? 'block' : 'none';
@@ -332,7 +336,44 @@ function renderTable(data) {
                 td.appendChild(motivo);
                 td.appendChild(impedimento);
             } else {
-                td.textContent = cellValue;
+                td.textContent = col.key === 'Campanha ML' && relampago ? 'Oferta relâmpago' : cellValue;
+                if (col.key === 'Campanha ML' && relampago) {
+                    const janela = document.createElement('small');
+                    janela.className = 'promo-lightning-window';
+                    janela.textContent = formatarJanelaOfertaRelampago(row);
+                    td.appendChild(janela);
+                    if (row.lightning_action_blocked === false && row.action_ja_participa !== true && temLimitesEstoqueRelampago(row)) {
+                        const label = document.createElement('label');
+                        label.className = 'promo-lightning-stock';
+                        const rotulo = document.createElement('span');
+                        rotulo.textContent = 'Estoque reservado';
+                        const input = document.createElement('input');
+                        input.type = 'number';
+                        input.step = '1';
+                        input.min = Number.isSafeInteger(Number(row.lightning_stock_min)) && Number(row.lightning_stock_min) > 0 ? String(row.lightning_stock_min) : '1';
+                        if (Number.isSafeInteger(Number(row.lightning_stock_max)) && Number(row.lightning_stock_max) > 0) input.max = String(row.lightning_stock_max);
+                        input.value = row.lightning_stock === null || row.lightning_stock === undefined ? '' : String(row.lightning_stock);
+                        input.placeholder = 'Quantidade';
+                        input.setAttribute('aria-label', `Estoque reservado: ${String(getTableCellValue(row, 'MLB'))}, ${janela.textContent}`);
+                        input.addEventListener('change', function() {
+                            row.lightning_stock = this.value.trim() === '' ? null : Number(this.value);
+                            if (avisoParticipacao) {
+                                avisoParticipacao.textContent = obterAvisoParticipacaoPromocoes(row);
+                                avisoParticipacao.style.display = avisoParticipacao.textContent ? 'block' : 'none';
+                            }
+                            const analise = typeof apiAnalisesPorCampanha !== 'undefined' && Array.isArray(apiAnalisesPorCampanha)
+                                ? apiAnalisesPorCampanha.find((item) => item?.data === currentData) : null;
+                            if (analise) {
+                                analise.participacao_confirmada = false;
+                                analise.participacao_selecao_revisao = (Number(analise.participacao_selecao_revisao) || 0) + 1;
+                                if (typeof renderApiAnalysisTabs === 'function') renderApiAnalysisTabs();
+                            }
+                        });
+                        label.appendChild(rotulo);
+                        label.appendChild(input);
+                        td.appendChild(label);
+                    }
+                }
                 if (col.key === 'Valor Líquido' || col.key === 'Valor líquido ML') {
                     td.classList.add('col-highlight');
                     td.style.fontWeight = '600';
