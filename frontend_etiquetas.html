@@ -109,65 +109,92 @@
             .excel-wrap { overflow-x: auto; overflow-y: visible; }
         }
     </style>
+    <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261008-azul-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
 
-<div class="container">
-    <div class="nav-top-actions">
-        <a href="dashboard.html" class="back-btn">Home</a>
-        <a href="dashboard.html" class="back-btn">Voltar</a>
-    </div>
-    <h1>Gerador de Etiquetas</h1>
+<main class="container etiquetas-page">
+    <header class="etiquetas-header">
+        <div class="etiquetas-heading">
+            <span class="heading-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6zM18 12h.01"/></svg></span>
+            <div>
+                <div class="eyebrow">EXPEDIÇÃO</div>
+                <h1>Gerador de Etiquetas</h1>
+                <p class="page-subtitle">Prepare suas etiquetas e organize a impressão em um só lugar.</p>
+            </div>
+        </div>
+        <nav class="nav-top-actions" aria-label="Navegação">
+            <a href="dashboard.html" class="back-btn"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 10 9-7 9 7v10H3zM9 20v-7h6v7"/></svg><span>Home</span></a>
+            <a href="dashboard.html" class="back-btn back-secondary">Voltar</a>
+        </nav>
+    </header>
 
-    <div class="tabs">
-        <button class="tab-button active" type="button" id="tab-processador" onclick="selecionarAbaEtiquetas('processador')">Etiquetas de Envio</button>
-        <button class="tab-button" type="button" id="tab-avulsa" onclick="selecionarAbaEtiquetas('avulsa')">Impressão avulsa</button>
-        <button class="tab-button" type="button" id="tab-qrcode" onclick="selecionarAbaEtiquetas('qrcode')">QR Code com link</button>
+    <div class="tabs" aria-label="Tipo de etiqueta">
+        <button class="tab-button active" type="button" id="tab-processador" onclick="selecionarAbaEtiquetas('processador')"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 7 9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10M7 5l10 5"/></svg><span>Etiquetas de Envio</span></button>
+        <button class="tab-button" type="button" id="tab-avulsa" onclick="selecionarAbaEtiquetas('avulsa')"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h9l7 7-9 9-7-7z"/><circle cx="9" cy="9" r="1"/></svg><span>Impressão avulsa</span></button>
+        <button class="tab-button" type="button" id="tab-qrcode" onclick="selecionarAbaEtiquetas('qrcode')"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h6v6H3zM15 3h6v6h-6zM3 15h6v6H3zM15 15h2v2h4v4h-6zM21 12v2M12 3v4M12 12v3"/></svg><span>QR Code com link</span></button>
     </div>
 
     <div class="tab-panel active" id="panel-processador">
-        <div class="section-title">1. Selecione a Loja</div>
+      <div class="shipping-layout">
+       <section class="shipping-card" aria-label="Preparar etiquetas de envio">
+        <div class="section-heading"><span class="step-number">1</span><div><h2>Selecione a loja</h2><p class="section-hint">Escolha a origem das etiquetas que deseja processar.</p></div></div>
         <div class="radio-group">
-            <label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"> Mercado Livre</label>
-            <label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"> Shopee</label>
-            <label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"> TikTok</label>
-            <label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"> Amazon</label>
+            <label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"><span class="store-mark ml" aria-hidden="true">ML</span><span>Mercado Livre</span></label>
+            <label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"><span class="store-mark shopee" aria-hidden="true">S</span><span>Shopee</span></label>
+            <label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"><span class="store-mark tiktok" aria-hidden="true">Tk</span><span>TikTok</span></label>
+            <label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"><span class="store-mark amazon" aria-hidden="true">a</span><span>Amazon</span></label>
         </div>
 
-        <div class="section-title">2. Upload dos Arquivos</div>
+        <div class="section-heading upload-heading"><span class="step-number">2</span><div><h2>Adicione seus arquivos</h2><p class="section-hint">Selecione os documentos da loja escolhida.</p></div></div>
         <div class="file-area">
             <div class="file-input-group" id="group-file-1">
-                <label id="label-file-1">Arquivo de Etiquetas (PDF)</label>
+                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
+                <label id="label-file-1" for="file-etiquetas">Arquivo de Etiquetas (PDF)</label>
+                <p class="upload-hint">Selecione o PDF de etiquetas ou a lista de envio.</p>
                 <input type="file" id="file-etiquetas" accept=".pdf">
             </div>
             <div class="file-input-group" id="group-file-2" style="display: none;">
-                <label>Lista de Picking (Opcional se ja vier junto no PDF)</label>
+                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
+                <label for="file-lista">Lista de Picking (Opcional se ja vier junto no PDF)</label>
                 <input type="file" id="file-lista" accept=".pdf">
             </div>
             <div class="file-input-group" id="group-file-nf" style="display: none;">
-                <label>Arquivo de Nota Fiscal (Obrigatório para Amazon)</label>
+                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
+                <label for="file-nf">Arquivo de Nota Fiscal (Obrigatório para Amazon)</label>
+                <p class="upload-hint">Selecione a nota fiscal em PDF ou XML.</p>
                 <input type="file" id="file-nf" accept=".pdf,.xml">
             </div>
         </div>
 
-        <button class="primary" onclick="processarEtiquetas()" id="btn-processar">PROCESSAR ETIQUETAS</button>
+        <button class="primary" onclick="processarEtiquetas()" id="btn-processar"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m13 2-9 12h7l-1 8 10-12h-7z"/></svg><span>Processar etiquetas</span></button>
+        <p class="process-hint">Os arquivos gerados ficam disponíveis no painel de resultados.</p>
         <div class="loader" id="loader">Processando... aguarde...</div>
         <p class="error-msg" id="error-msg"></p>
 
-        <div class="result-section" id="result-section">
-            <div class="section-title">Resultados</div>
+       </section>
+       <aside class="shipping-empty" aria-label="Resultados">
+           <div class="result-heading"><h2>Resultados</h2></div>
+           <div class="empty-result-content"><span class="empty-result-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6zM18 12h.01"/></svg></span><h3>Pronto para começar</h3><p>Escolha a loja e processe seus arquivos. Suas etiquetas e a lista de envio aparecerão aqui.</p></div>
+       </aside>
+        <aside class="result-section shipping-results" id="result-section" aria-label="Resultados do processamento" aria-live="polite">
+            <div class="result-heading"><h2>Resultados</h2><span class="result-badge">Concluído</span></div>
+            <div class="result-content">
             <div class="metrics">
                 <div class="metric-box">
-                    <div class="metric-label">Etiquetas Geradas</div>
-                    <div class="metric-val" id="qtd-etiquetas">0</div>
+                    <span class="metric-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 3h10l4 4v14H5zM14 3v5h5M8 12h8M8 16h6"/></svg></span>
+                    <div class="metric-summary"><div class="metric-val" id="qtd-etiquetas">0</div><div class="metric-label">etiquetas geradas</div></div>
                 </div>
             </div>
             <div class="actions">
-                <a href="#" class="btn-download" id="btn-download-etiquetas" style="display:none" target="_blank">Baixar Etiquetas</a>
-                <a href="#" class="btn-download btn-secondary" id="btn-download-lista" style="display:none" target="_blank">Baixar Lista/Manifesto</a>
+                <a href="#" class="btn-download" id="btn-download-etiquetas" style="display:none" target="_blank"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar etiquetas</span></a>
+                <a href="#" class="btn-download btn-secondary" id="btn-download-lista" style="display:none" target="_blank"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar lista / manifesto</span></a>
             </div>
-        </div>
+            <p class="result-note">Processamento concluído. Baixe os arquivos disponíveis para continuar sua expedição.</p>
+            </div>
+        </aside>
+      </div>
     </div>
 
     <div class="tab-panel" id="panel-avulsa">
@@ -309,7 +336,7 @@
             </div>
         </div>
     </div>
-</div>
+</main>
 
 <div class="pdf-choice-backdrop" id="pdf-choice-backdrop">
     <div class="pdf-choice-modal">
