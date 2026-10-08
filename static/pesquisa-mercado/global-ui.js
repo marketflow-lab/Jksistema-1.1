@@ -87,6 +87,7 @@
         return value;
     }
 
+    const photoPreview = createPhotoPreview();
     const safeText = value => String(value == null ? '' : value);
     const sellerLabel = item => window.PesquisaMercadoCore ? window.PesquisaMercadoCore.nomeVendedorParaExibicao(item) : safeText(item.vendedor || item.nome || item.seller_key || 'Nome pendente');
     const escaped = value => safeText(value).replace(/[&<>"']/g, character => ({
@@ -110,6 +111,84 @@
     function formatPrice(value) {
         return typeof value === 'number' && Number.isFinite(value)
             ? value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : safeText(value) || '—';
+    }
+    function createPhotoPreview() {
+        let preview = null;
+        let activeButton = null;
+        const listeners = [];
+        function listen(target, type, callback, options) {
+            target.addEventListener(type, callback, options);
+            listeners.push(() => target.removeEventListener(type, callback, options));
+        }
+        function hide() {
+            if (activeButton) activeButton.removeAttribute('aria-describedby');
+            activeButton = null;
+            if (preview) { preview.hidden = true; preview.replaceChildren(); }
+        }
+        function photoButton(target) {
+            const button = target && target.closest && target.closest('.pm-global-photo-trigger');
+            return button && elements.body.contains(button) ? button : null;
+        }
+        function show(button) {
+            const thumbnail = button && button.querySelector('.pm-global-photo');
+            const source = thumbnail && safeUrl(thumbnail.currentSrc || thumbnail.src, true);
+            if (!source || !button.isConnected || (thumbnail.complete && !thumbnail.naturalWidth)) return;
+            if (activeButton === button) return;
+            hide();
+            const margin = 12;
+            const width = document.documentElement.clientWidth;
+            const height = document.documentElement.clientHeight;
+            const size = Math.min(320, width - margin * 2, height - margin * 2);
+            if (size < 64) return;
+            if (!preview) {
+                preview = document.createElement('div');
+                preview.id = 'pm-global-photo-preview';
+                preview.className = 'pm-global-photo-preview';
+                preview.setAttribute('role', 'tooltip');
+                preview.hidden = true;
+                document.body.appendChild(preview);
+            }
+            activeButton = button;
+            const image = document.createElement('img');
+            image.alt = button.getAttribute('aria-label') || 'Foto ampliada do anúncio';
+            image.referrerPolicy = 'no-referrer';
+            image.onload = () => {
+                if (activeButton !== button || preview.firstElementChild !== image) return;
+                if (!button.isConnected || !button.getClientRects().length) { hide(); return; }
+                const rect = button.getBoundingClientRect();
+                let left = rect.right + margin;
+                if (left + size > width - margin) left = rect.left - size - margin;
+                left = Math.max(margin, Math.min(left, width - size - margin));
+                const top = Math.max(margin, Math.min(rect.top + (rect.height - size) / 2, height - size - margin));
+                Object.assign(preview.style, { width: `${size}px`, height: `${size}px`, left: `${left}px`, top: `${top}px` });
+                button.setAttribute('aria-describedby', preview.id);
+                preview.hidden = false;
+            };
+            image.onerror = () => { if (activeButton === button && preview.firstElementChild === image) hide(); };
+            preview.replaceChildren(image);
+            image.src = source;
+        }
+        const enter = event => {
+            if (event.pointerType === 'touch') return;
+            const button = photoButton(event.target);
+            if (button && !button.contains(event.relatedTarget)) show(button);
+        };
+        const leave = event => {
+            const button = photoButton(event.target);
+            if (button && button === activeButton && !button.contains(event.relatedTarget)) hide();
+        };
+        listen(elements.body, 'pointerover', enter);
+        listen(elements.body, 'pointerout', leave);
+        listen(elements.body, 'focusin', event => show(photoButton(event.target)));
+        listen(elements.body, 'focusout', leave);
+        listen(elements.body, 'click', event => show(photoButton(event.target)));
+        listen(document, 'pointerdown', event => { if (activeButton && !activeButton.contains(event.target)) hide(); });
+        listen(document, 'keydown', event => { if (event.key === 'Escape') hide(); });
+        listen(document, 'visibilitychange', () => { if (document.visibilityState !== 'visible') hide(); });
+        listen(window, 'scroll', hide, true);
+        listen(window, 'resize', hide);
+        listen(window, 'blur', hide);
+        return { hide, dispose() { hide(); listeners.forEach(remove => remove()); if (preview) preview.remove(); } };
     }
     function userErrorMessage(error) {
         const message = typeof error === 'string' ? error : error && typeof error.message === 'string'
@@ -403,6 +482,7 @@
         }
     }
     function changeMode(mode) {
+        photoPreview.hide();
         if (!modes.includes(mode) || state.disposed) return;
         state.mode = mode;
         for (const value of modes) {
@@ -512,6 +592,7 @@
         elements['seller-label'].textContent = selected ? sellerLabel(selected) : 'Selecione um vendedor para ver seu ranking.';
     }
     function renderRanking() {
+        photoPreview.hide();
         const data = state.rankings[state.tab];
         const rows = data && Array.isArray(data.items) ? data.items : [];
         elements.body.innerHTML = rows.map(item => {
@@ -519,7 +600,7 @@
             const image = safeUrl(item.imagem, true);
             const url = safeUrl(item.url, false);
             return `<tr><td class="rank-cell">${ranked ? item.rank : ''}</td>` +
-                `<td>${image ? `<img class="pm-global-photo" src="${escaped(image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '—'}</td>` +
+                `<td>${image ? `<button class="pm-global-photo-trigger" type="button" aria-label="Ampliar foto de ${escaped(item.titulo || 'anúncio sem título')}"><img class="pm-global-photo" src="${escaped(image)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>` : '—'}</td>` +
                 `<td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id)}</small></td>` +
                 `<td>${escaped(sellerLabel(item))}</td><td>${escaped(formatPrice(item.preco))}</td>` +
                 `<td class="sales-cell">${number(item.vendas)}</td><td>${escaped(formatDate(item.data_criacao))}</td>` +
@@ -688,6 +769,7 @@
         renderRanking();
     }
     function filtersChanged() {
+        photoPreview.hide();
         state.query = elements.search.value.trim();
         state.category = elements.category.value;
         state.offsets = { geral: 0, vendedor: 0 };
@@ -769,6 +851,7 @@
         unsubscribe = () => window.top.postMessage({ channel: 'jk-pesquisa-mercado-command', requestId: `pm-${Date.now()}-${++state.commandSerial}`, action: 'unsubscribe', payload: {} }, '*');
     }
     function dispose() {
+        photoPreview.dispose();
         state.disposed = true;
         if (window.__jkPesquisaMercadoChangeMode === changeMode) delete window.__jkPesquisaMercadoChangeMode;
         if (window.__jkPesquisaMercadoRefreshNames === refreshNames) { delete window.__jkPesquisaMercadoRefreshNames; delete window.__jkPesquisaMercadoNamesBrowser; }
