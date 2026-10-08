@@ -5,87 +5,196 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Estoque - JK Sistema</title>
     <style>
-        body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
-        .container { max-width:1200px; margin:0 auto; }
-        .header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:20px; }
-        .back-btn { padding:8px 14px; background:#4facfe; color:#fff; text-decoration:none; border-radius:6px; font-weight:bold; }
-        .back-btn:hover { background:#0073e6; }
-        h1 { margin:0; }
-        .filters { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:15px; align-items:center; }
-        input, select { padding:8px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; }
-        .loja-group { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-        .loja-btn { padding:8px 12px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
-        .loja-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; font-weight:bold; }
-        table { width:100%; border-collapse:collapse; background:#1c1f2b; border:1px solid #222; }
-        th, td { padding:10px; border-bottom:1px solid #222; text-align:left; font-size:0.95rem; }
-        th { background:#161925; color:#9bd1ff; position:sticky; top:0; z-index:1; }
-        tr:hover { background:#1f2331; }
-        .summary { display:flex; gap:16px; margin-bottom:15px; flex-wrap:wrap; }
-        .card { background:#1c1f2b; border:1px solid #222; padding:12px 14px; border-radius:8px; min-width:140px; }
-        .card h3 { margin:0 0 6px 0; font-size:0.95rem; color:#9bd1ff; }
-        .card .val { font-size:1.2rem; font-weight:bold; }
-        .status-bar { margin:10px 0; padding:10px 12px; border-radius:8px; background:#161925; border:1px solid #222; min-height:20px; }
-        .status-bar.loading { color:#9bd1ff; border-color:#4facfe; background:#0a1428; }
-        .status-bar.error { color:#ff6b6b; border-color:#c62828; background:#28010d; }
-        .status-bar.warning { color:#ffcc80; border-color:#ef6c00; background:#2b1700; }
-        .status-bar.success { color:#66bb6a; border-color:#1b5e20; background:#0f2e0d; }
-        .status-bar.empty { color:#aaa; }
-        .sync-account-result.loading { color:#9bd1ff; }
-        .sync-account-result.warning { color:#ffcc80; }
-        .sync-account-result.error { color:#ff8a80; }
-        .sync-account-result.success { color:#81c784; }
-        .spinner { display:inline-block; width:14px; height:14px; border:2px solid #4facfe; border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:8px; vertical-align:middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .paginacao { display:flex; align-items:center; gap:10px; margin:12px 0; flex-wrap:wrap; }
-        .page-btn { padding:6px 10px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; }
-        .page-btn:disabled { opacity:0.5; cursor:not-allowed; }
-        .page-info { color:#9bd1ff; font-size:0.92rem; }
-        #btnSync:disabled { opacity:0.6; cursor:not-allowed; }
-        .tabs { display:flex; gap:8px; margin:0 0 14px 0; flex-wrap:wrap; }
-        .tab-btn { padding:9px 14px; border-radius:6px; border:1px solid #333; background:#1c1f2b; color:#e5e5e5; cursor:pointer; font-weight:700; }
-        .tab-btn.active { background:#4facfe; color:#0e1117; border-color:#4facfe; }
-        .aba-conteudo.hidden { display:none; }
-        .filters label, .history-actions label { display:flex; align-items:center; gap:6px; color:#9bd1ff; font-size:0.92rem; }
-        .history-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:15px; }
-        .history-view-options { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:-3px 0 15px; padding:10px 12px; border:1px solid #222; border-radius:8px; background:#161925; }
-        .history-view-options label { display:flex; align-items:center; gap:6px; color:#d8ecff; font-size:0.92rem; }
-        .history-view-options input[type="checkbox"] { width:17px; height:17px; accent-color:#4facfe; }
-        .history-view-options input:disabled { opacity:0.55; cursor:not-allowed; }
-        .history-help { flex-basis:100%; margin:0; color:#aab8c5; font-size:0.84rem; }
-        .history-table th, .history-table td { text-align:right; }
-        .history-table th:first-child, .history-table td:first-child { text-align:left; }
-        .history-table .history-separator { border-left:2px solid #37536b; }
-        #btnHistoricoSync:disabled, #btnHistoricoCarregar:disabled { opacity:0.6; cursor:not-allowed; }
+
+        .estoque-page { margin:0; min-height:100vh; padding:24px 28px; background:radial-gradient(ellipse at 82% 0, #0d2440 0, transparent 42%), #07111f; color:#e2ecf9; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+        .estoque-page .container { max-width:1840px; min-width:0; margin:0 auto; }
+        .estoque-page .container *, .estoque-page .container *::before, .estoque-page .container *::after { box-sizing:border-box; }
+        .estoque-page .header { display:flex; align-items:center; justify-content:space-between; gap:24px; min-height:104px; margin-bottom:12px; }
+        .estoque-heading { display:flex; align-items:center; gap:15px; min-width:0; }
+        .estoque-mark { width:42px; height:46px; flex:0 0 auto; }
+        .estoque-eyebrow { margin:0 0 3px; color:#65bcff; font-size:12px; font-weight:700; letter-spacing:.06em; }
+        .estoque-page h1 { margin:0; color:#f3f7ff; font-size:clamp(26px, 2.3vw, 34px); line-height:1.2; }
+        .estoque-subtitle { margin:7px 0 0; color:#9db7d6; font-size:14px; line-height:1.45; }
+        .estoque-header-right { display:flex; align-items:center; gap:20px; flex:0 0 auto; }
+        .estoque-illustration { width:190px; height:106px; object-fit:contain; }
+        .estoque-header-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+        .estoque-icon { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:0 0 auto; }
+        .estoque-page .back-btn, .estoque-page .page-btn { display:inline-flex; justify-content:center; align-items:center; gap:8px; min-height:34px; padding:7px 12px; border:1px solid #304a6a; border-radius:7px; background:#10243c; color:#dce8f8; font:600 13px/1.35 "Segoe UI", sans-serif; text-decoration:none; cursor:pointer; transition:background .15s, border-color .15s; }
+        .estoque-page .back-btn:hover, .estoque-page .page-btn:hover:not(:disabled) { background:#173653; border-color:#5681af; }
+        .estoque-page .sync-btn { background:#097f87; border-color:#139aa1; color:#fff; }
+        .estoque-page .sync-btn:hover:not(:disabled) { background:#08939b; border-color:#24bdc1; }
+        .estoque-page .sync-btn::before { content:""; width:16px; height:16px; flex:0 0 auto; background:currentColor; mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1'/%3E%3C/svg%3E") center/contain no-repeat; }
+        .estoque-page .back-btn:disabled, .estoque-page .page-btn:disabled { opacity:.5; cursor:not-allowed; }
+        .estoque-page .container :is(button, a, input, select, .table-wrapper):focus-visible { outline:2px solid #65bcff; outline-offset:3px; }
+        .estoque-page .tabs { display:flex; gap:18px; margin:0 0 16px; border-bottom:1px solid #263d58; }
+        .estoque-page .tab-btn { display:inline-flex; align-items:center; gap:8px; min-height:39px; padding:9px 10px 11px; border:0; border-bottom:3px solid transparent; background:transparent; color:#a6bedb; font:600 14px/1.3 "Segoe UI", sans-serif; cursor:pointer; }
+        .estoque-page .tab-btn.active { color:#67bdff; border-bottom-color:#35a6ff; }
+        .estoque-page .tab-btn:hover { color:#eaf5ff; background:#13273e; }
+        .estoque-page .aba-conteudo.hidden { display:none; }
+        .estoque-page .store-scope { margin:0 0 17px; }
+        .estoque-page .loja-group { display:flex; flex-wrap:wrap; gap:7px; min-width:0; }
+        .estoque-page .loja-btn { min-height:32px; max-width:100%; padding:6px 11px; border:1px solid #2b4260; border-radius:7px; background:#0d1e33; color:#c5d7ed; font:400 12px/1.4 "Segoe UI", sans-serif; cursor:pointer; overflow-wrap:anywhere; transition:background .15s, border-color .15s; }
+        .estoque-page .loja-btn:hover { border-color:#5681af; background:#173351; }
+        .estoque-page .loja-btn.active { background:#168bfa; border-color:#39a2ff; color:#fff; font-weight:600; }
+        .estoque-page .inventory-toolbar { display:grid; grid-template-columns:minmax(230px, 1fr) minmax(180px, 250px) auto; align-items:center; gap:10px; margin-bottom:14px; }
+        .estoque-page .search-field { display:flex; gap:10px; align-items:center; min-width:0; padding:0 12px; border:1px solid #304a6a; border-radius:8px; background:#0d1e33; color:#9db7d6; }
+        .estoque-page .search-field:focus-within { border-color:#65bcff; box-shadow:0 0 0 2px #168bfa22; }
+        .estoque-page .search-field input { min-width:0; width:100%; height:38px; padding:8px 0; border:0; outline:none; border-radius:0; background:transparent; color:#e2ecf9; font:14px "Segoe UI", sans-serif; }
+        .estoque-page .search-field input::placeholder { color:#8da7c6; }
+        .estoque-page .search-field input:focus-visible { outline:none; }
+        .estoque-page .inventory-toolbar select, .estoque-page .history-actions input, .estoque-page .history-actions select, .estoque-page #histSkuInput { min-width:0; max-width:100%; min-height:36px; padding:7px 10px; border:1px solid #304a6a; border-radius:7px; color:#dce8f8; background:#0d1e33; color-scheme:dark; font:13px "Segoe UI", sans-serif; }
+        .estoque-page .inventory-toolbar select { width:100%; height:38px; }
+        .estoque-page .inventory-toolbar .sync-btn { min-height:38px; padding-inline:16px; }
+        .estoque-page .status-bar { margin:0 0 14px; min-height:0; padding:9px 12px; border:1px solid #29415e; border-radius:8px; color:#a9c2df; background:#0d1e33; font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+        .estoque-page .status-bar:empty { display:none; }
+        .estoque-page .status-bar.loading { color:#a9d7ff; border-color:#285883; background:#0a2038 !important; }
+        .estoque-page .status-bar.error { color:#ffafaf; border-color:#803c49; background:#29131e !important; }
+        .estoque-page .status-bar.warning { color:#ffda9d; border-color:#78572d; background:#2a2117 !important; }
+        .estoque-page .status-bar.success { color:#9ee7cb; border-color:#2b6655; background:#102a27 !important; }
+        .estoque-page .status-bar.empty { color:#a9c2df; }
+        .estoque-page .sync-account-result.loading { color:#a9d7ff; }
+        .estoque-page .sync-account-result.warning { color:#ffda9d; }
+        .estoque-page .sync-account-result.error { color:#ffafaf; }
+        .estoque-page .sync-account-result.success { color:#9ee7cb; }
+        .estoque-page .spinner { display:inline-block; width:14px; height:14px; border:2px solid #65bcff; border-top-color:transparent; border-radius:50%; animation:estoque-spin .8s linear infinite; margin-right:8px; vertical-align:middle; }
+        @keyframes estoque-spin { to { transform:rotate(360deg); } }
+        .estoque-page .inventory-panel { overflow:hidden; border:1px solid #29415e; border-radius:11px; background:#0d1d31; box-shadow:0 12px 30px #00000016; }
+        .estoque-page .inventory-panel-header { display:flex; align-items:center; flex-wrap:wrap; gap:10px 18px; padding:14px 18px; border-bottom:1px solid #29415e; }
+        .estoque-page .inventory-panel-header h2 { margin:0; font-size:17px; color:#edf5ff; }
+        .estoque-page .inventory-panel-hint { margin:0; color:#94aece; font-size:12px; }
+        .estoque-page .summary { display:flex; gap:10px; flex-wrap:wrap; margin:0; }
+        .estoque-page .card { min-width:140px; padding:12px 14px; border:1px solid #2b4260; border-radius:8px; background:#10243c; }
+        .estoque-page .card h3 { margin:0 0 6px; color:#9dbfe2; font-size:12px; font-weight:500; }
+        .estoque-page .card .val { color:#eaf5ff; font-size:19px; font-weight:700; overflow-wrap:anywhere; }
+        .estoque-page #resumo .card { display:flex; flex-direction:row-reverse; gap:5px; align-items:baseline; min-width:0; padding:5px 10px; border-color:#164c86; border-radius:20px; background:#07376a; }
+        .estoque-page #resumo .card h3, .estoque-page #resumo .card .val { margin:0; color:#76c5ff; font-size:12px; font-weight:600; }
+        .estoque-page .table-wrapper { width:100%; overflow:auto; max-height:calc(100vh - 340px); min-height:160px; scrollbar-color:#446280 #102137; scrollbar-width:thin; }
+        .estoque-page .table-wrapper::-webkit-scrollbar { height:10px; width:10px; }
+        .estoque-page .table-wrapper::-webkit-scrollbar-thumb { border:2px solid #102137; border-radius:10px; background:#446280; }
+        .estoque-page .table-wrapper::-webkit-scrollbar-track { background:#102137; }
+        .estoque-page table { width:max-content; min-width:100%; border-spacing:0; border-collapse:separate; table-layout:auto; }
+        .estoque-page th, .estoque-page td { padding:11px 14px; min-width:110px; max-width:440px; border-bottom:1px solid #22364e; text-align:left; vertical-align:middle; font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+        .estoque-page th { position:sticky; top:0; z-index:2; color:#adc8eb; background:#102137; font-size:12px; font-weight:600; }
+        .estoque-page tbody tr:last-child td { border-bottom:0; }
+        .estoque-page tbody tr:nth-child(even) { background:#102137; }
+        .estoque-page tbody tr:hover { background:#15304b; }
+        .estoque-page .col-foto { width:84px; min-width:84px; max-width:84px; padding:10px 12px; }
+        .estoque-page .col-sku { min-width:90px; color:#e6f1ff; font-weight:600; }
+        .estoque-page .col-produto { width:360px; min-width:300px; max-width:440px; color:#e6f1ff; }
+        .estoque-page .col-loja { min-width:120px; }
+        .estoque-page .col-atualizacao { width:155px; min-width:155px; max-width:155px; color:#9db7d6; }
+        .estoque-page .col-saldo { min-width:105px; text-align:right; font-variant-numeric:tabular-nums; }
+        .estoque-page td.col-saldo { color:#f0f7ff; font-size:19px; font-weight:700; }
+        .estoque-page .loja-pill { display:inline-block; max-width:100%; padding:3px 9px; border:1px solid #205486; border-radius:20px; background:#0b3156; color:#b9ddff; font-size:12px; }
+        .estoque-page .estoque-foto { position:relative; display:flex; align-items:center; justify-content:center; width:60px; height:60px; overflow:hidden; border:1px solid #2b4260; border-radius:8px; background:#162b43; color:#8ea9c8; text-decoration:none; }
+        .estoque-page .foto-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; width:100%; height:100%; font-size:9px; line-height:1.2; text-align:center; }
+        .estoque-page .foto-placeholder .estoque-icon { width:22px; height:22px; }
+        .estoque-page .estoque-foto img { display:block; position:absolute; inset:0; width:100%; height:100%; object-fit:contain; background:#f4f6f9; }
+        .estoque-page .estoque-foto img:not([src]) { visibility:hidden; }
+        .estoque-page .estoque-foto img.jk-auth-image-error { display:none; }
+        .estoque-page .estoque-foto:has(img[src]:not(.jk-auth-image-error)) .foto-placeholder { visibility:hidden; }
+        .estoque-page .inventory-empty { display:none; min-height:190px; padding:30px; flex-direction:column; align-items:center; justify-content:center; text-align:center; color:#8faaca; }
+        .estoque-page .inventory-empty .estoque-icon { width:35px; height:35px; color:#65bcff; margin-bottom:12px; }
+        .estoque-page .inventory-empty h3 { margin:0 0 7px; color:#d5e5f8; font-size:15px; }
+        .estoque-page .inventory-empty p { margin:0; font-size:13px; line-height:1.5; }
+        .estoque-page .inventory-panel:has(#tBody:empty) .table-wrapper { display:none; }
+        .estoque-page .inventory-panel:has(#tBody:empty) .inventory-empty { display:flex; }
+        .estoque-page .inventory-loading { display:none; padding:22px 18px; gap:17px; }
+        .estoque-page .inventory-loading span { display:block; height:13px; width:85%; border-radius:5px; background:linear-gradient(90deg, #19314c, #254566, #19314c); background-size:200% 100%; animation:estoque-loading 1.6s ease-in-out infinite; }
+        .estoque-page .inventory-loading span:nth-child(even) { width:65%; }
+        .estoque-page .container:has(#status.loading) .inventory-panel:has(#tBody:empty) .inventory-empty { display:none; }
+        .estoque-page .container:has(#status.loading) .inventory-panel:has(#tBody:empty) .inventory-loading { display:grid; }
+        @keyframes estoque-loading { to { background-position:-200% 0; } }
+        .estoque-page .paginacao { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:14px 0 0; }
+        .estoque-page .page-info { color:#9db7d6; font-size:12px; }
+        .estoque-page .history-actions { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:flex-end; margin:0 0 14px; padding:16px; border:1px solid #29415e; border-radius:10px; background:#0d1d31; }
+        .estoque-page .history-actions label { display:flex; flex-direction:column; gap:6px; min-width:0; color:#9db7d6; font-size:12px; }
+        .estoque-page .history-actions input, .estoque-page .history-actions select { width:170px; }
+        .estoque-page .history-view-options { display:flex; flex-wrap:wrap; gap:12px 18px; align-items:center; padding:14px 16px; margin-bottom:14px; border:1px solid #29415e; border-radius:10px; background:#0d1d31; font-size:13px; }
+        .estoque-page .history-view-options strong { color:#dceafa; font-size:13px; }
+        .estoque-page .history-view-options label { display:flex; align-items:center; gap:7px; min-width:0; color:#b8cde5; font-size:12px; }
+        .estoque-page .history-view-options input[type="checkbox"] { width:16px; height:16px; margin:0; accent-color:#168bfa; }
+        .estoque-page .history-view-options input:disabled { opacity:.5; cursor:not-allowed; }
+        .estoque-page #histSkuInput { width:210px; }
+        .estoque-page .history-help { flex-basis:100%; margin:0; color:#8ea9c8; font-size:12px; line-height:1.5; }
+        .estoque-page #historicoResumo { margin:0 0 14px; }
+        .estoque-page #historicoResumo .card { flex:1 1 170px; min-width:0; }
+        .estoque-page #historicoResumo .card .val { font-size:16px; }
+        .estoque-page .history-table th, .estoque-page .history-table td { text-align:right; font-variant-numeric:tabular-nums; }
+        .estoque-page .history-table th:first-child, .estoque-page .history-table td:first-child { text-align:left; }
+        .estoque-page .history-table .history-separator { border-left:2px solid #37536b; }
+        @media (max-width:980px) {
+            .estoque-page { padding:18px; }
+            .estoque-page .estoque-header-right { gap:10px; }
+            .estoque-page .estoque-illustration { width:130px; height:86px; }
+            .estoque-page .inventory-toolbar { grid-template-columns:minmax(160px, 1fr) 220px; }
+            .estoque-page .inventory-toolbar .sync-btn { grid-column:2; }
+            .estoque-page .table-wrapper { max-height:65vh; }
+        }
+        @media (max-width:640px) {
+            .estoque-page { padding:14px 12px; }
+            .estoque-page .header { align-items:flex-start; gap:10px; min-height:0; margin-bottom:18px; }
+            .estoque-page .estoque-heading { gap:10px; }
+            .estoque-page .estoque-mark { width:30px; height:34px; }
+            .estoque-page .estoque-subtitle { font-size:12px; }
+            .estoque-page .estoque-eyebrow { font-size:10px; }
+            .estoque-page .estoque-illustration { display:none; }
+            .estoque-page .estoque-header-actions { flex-direction:column; gap:6px; }
+            .estoque-page .estoque-header-actions .back-btn { width:77px; padding:6px 8px; font-size:11px; }
+            .estoque-page .tabs { gap:5px; }
+            .estoque-page .tab-btn { font-size:12px; padding-inline:8px; }
+            .estoque-page .loja-btn { min-height:36px; }
+            .estoque-page .inventory-toolbar { grid-template-columns:minmax(0, 1fr); gap:8px; }
+            .estoque-page .inventory-toolbar .sync-btn { grid-column:auto; justify-self:start; }
+            .estoque-page .search-field input { font-size:13px; }
+            .estoque-page .inventory-panel-header { padding:12px; gap:8px 12px; }
+            .estoque-page .inventory-panel-hint { flex-basis:100%; font-size:11px; }
+            .estoque-page th, .estoque-page td { padding:10px 12px; }
+            .estoque-page .col-produto { min-width:270px; }
+            .estoque-page .history-actions { padding:12px; }
+            .estoque-page .history-actions label { flex:1 1 130px; }
+            .estoque-page .history-actions input, .estoque-page .history-actions select { width:100%; }
+            .estoque-page .history-view-options { padding:12px; }
+            .estoque-page .history-view-options label[for="histSkuInput"] { flex-basis:100%; }
+            .estoque-page #histSkuInput { flex:1; width:100%; }
+            .estoque-page .page-info { order:3; flex-basis:100%; }
+        }
+        @media (prefers-reduced-motion:reduce) {
+            .estoque-page .spinner, .estoque-page .inventory-loading span { animation:none; }
+            .estoque-page .container * { transition:none; }
+        }
     </style>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
 </head>
-<body>
+<body class="estoque-page">
 <div class="container">
     <div class="header">
-        <h1>Estoque</h1>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <a class="back-btn" href="/dashboard.html">Home</a>
-            <a class="back-btn" href="/dashboard.html">Voltar</a>
+        <div class="estoque-heading">
+            <svg class="estoque-mark" viewBox="0 0 42 46" aria-hidden="true"><path d="M21 1 41 12 21 23 1 12Z" fill="#a6dcff"/><path d="m1 14 19 10v21L1 34Z" fill="#168bfa"/><path d="m22 24 19-10v20L22 45Z" fill="#46b6ff"/></svg>
+            <div><p class="estoque-eyebrow">JK SISTEMA</p><h1>Estoque</h1><p class="estoque-subtitle">Controle dos saldos por loja.</p></div>
+        </div>
+        <div class="estoque-header-right">
+            <img class="estoque-illustration" src="/assets/estoque-stockroom.png" alt="" width="190" height="106" aria-hidden="true">
+            <div class="estoque-header-actions">
+                <a class="back-btn" href="/dashboard.html"><svg class="estoque-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-8h6v8"/></svg>Home</a>
+                <a class="back-btn" href="/dashboard.html"><svg class="estoque-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5-7 7 7 7M3 12h18"/></svg>Voltar</a>
+            </div>
         </div>
     </div>
-
-    <div id="status" class="status-bar"></div>
 
     <div class="tabs" role="tablist" aria-label="Visões de estoque">
         <button id="tabAtual" class="tab-btn active" type="button" role="tab" tabindex="0" aria-selected="true" aria-controls="abaAtual">Estoque atual</button>
         <button id="tabHistorico" class="tab-btn" type="button" role="tab" tabindex="-1" aria-selected="false" aria-controls="abaHistorico">Histórico de estoque</button>
     </div>
 
-    <div class="filters">
-        <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
-    </div>
+    <div class="store-scope"><div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div></div>
+    <div id="status" class="status-bar" role="status" aria-live="polite"></div>
 
     <section id="abaAtual" class="aba-conteudo" role="tabpanel" aria-labelledby="tabAtual">
-        <div class="filters">
-            <button id="btnSync" class="back-btn" style="background:#28a745;">Atualizar estoque</button>
-            <input type="text" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto">
+        <div class="inventory-toolbar">
+            <label class="search-field"><svg class="estoque-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="filtroTexto" placeholder="Buscar por SKU, título ou código" aria-label="Filtro de texto"></label>
             <select id="ordenarPor" aria-label="Organizar SKUs">
                 <option value="loja_az">Loja (A-Z)</option>
                 <option value="loja_za">Loja (Z-A)</option>
@@ -95,21 +204,21 @@
                 <option value="estoque_desc">Estoque maior para menor</option>
                 <option value="estoque_asc">Estoque menor para maior</option>
             </select>
+            <button id="btnSync" class="back-btn sync-btn" type="button">Atualizar estoque</button>
         </div>
 
-        <div class="summary" id="resumo"></div>
-
-        <div class="table-wrapper">
-            <table>
-                <thead id="tHead"></thead>
-                <tbody id="tBody"></tbody>
-            </table>
+        <div class="inventory-panel">
+            <div class="inventory-panel-header"><h2>Itens de estoque</h2><div class="summary" id="resumo"></div><p class="inventory-panel-hint">Saldo loja e Full exibidos separadamente.</p></div>
+            <div class="table-wrapper" tabindex="0" role="region" aria-label="Tabela de estoque, com rolagem horizontal">
+                <table aria-label="Itens de estoque"><thead id="tHead"></thead><tbody id="tBody"></tbody></table>
+            </div>
+            <div class="inventory-loading" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+            <div class="inventory-empty"><svg class="estoque-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5v9l-9 5-9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v9m-5-17 9 5"/></svg><h3>Nenhum item para exibir</h3><p>Selecione outra loja ou ajuste a busca.</p></div>
         </div>
-
         <div class="paginacao" id="paginacao" style="display:none;">
-            <button id="btnPaginaAnterior" class="page-btn">Anterior</button>
+            <button id="btnPaginaAnterior" class="page-btn" type="button">Anterior</button>
             <span id="pageInfo" class="page-info"></span>
-            <button id="btnPaginaProxima" class="page-btn">Próxima</button>
+            <button id="btnPaginaProxima" class="page-btn" type="button">Próxima</button>
         </div>
     </section>
 
@@ -117,38 +226,21 @@
         <div class="history-actions">
             <label>Início <input type="date" id="histDataInicio"></label>
             <label>Fim <input type="date" id="histDataFim"></label>
-            <label>Agrupar
-                <select id="histIntervalo" aria-label="Agrupamento do histórico">
-                    <option value="atualizacao">Por atualização</option>
-                    <option value="dia">Dia</option>
-                    <option value="semana">Semana</option>
-                    <option value="mes" selected>Mês</option>
-                </select>
-            </label>
+            <label>Agrupar <select id="histIntervalo" aria-label="Agrupamento do histórico"><option value="atualizacao">Por atualização</option><option value="dia">Dia</option><option value="semana">Semana</option><option value="mes" selected>Mês</option></select></label>
             <button id="btnHistoricoCarregar" class="back-btn" type="button">Carregar histórico</button>
-            <button id="btnHistoricoSync" class="back-btn" style="background:#28a745;" type="button">Sincronizar registros</button>
+            <button id="btnHistoricoSync" class="back-btn sync-btn" type="button">Sincronizar registros</button>
         </div>
-
         <div class="history-view-options" role="group" aria-labelledby="histVisualizacaoTitulo">
             <strong id="histVisualizacaoTitulo">Visualização</strong>
             <label><input type="checkbox" id="histIncluirGeral" checked> Total geral da loja</label>
             <label><input type="checkbox" id="histIncluirSku"> SKU individual</label>
-            <label for="histSkuInput">SKU
-                <input type="search" id="histSkuInput" list="histSkuOpcoes" placeholder="Digite ou selecione" autocomplete="off" disabled aria-describedby="histEscopoAjuda">
-            </label>
+            <label for="histSkuInput">SKU <input type="search" id="histSkuInput" list="histSkuOpcoes" placeholder="Digite ou selecione" autocomplete="off" disabled aria-describedby="histEscopoAjuda"></label>
             <datalist id="histSkuOpcoes"></datalist>
             <p id="histEscopoAjuda" class="history-help">Os valores exibidos são do saldo da loja. O estoque Full permanece separado.</p>
         </div>
-
         <div id="historicoStatus" class="status-bar" role="status" aria-live="polite"></div>
         <div class="summary" id="historicoResumo"></div>
-
-        <div class="table-wrapper">
-            <table class="history-table">
-                <thead id="historicoTHead"></thead>
-                <tbody id="historicoTBody"></tbody>
-            </table>
-        </div>
+        <div class="inventory-panel"><div class="table-wrapper" tabindex="0" role="region" aria-label="Histórico de estoque, com rolagem horizontal"><table class="history-table" aria-label="Histórico de estoque"><thead id="historicoTHead"></thead><tbody id="historicoTBody"></tbody></table></div></div>
     </section>
 </div>
 
@@ -798,7 +890,7 @@
         resumo.innerHTML = '';
         const total = lista.length;
         const cards = [
-            { label: 'Itens', value: total },
+            { label: 'Itens', value: total.toLocaleString('pt-BR') },
         ];
         cards.forEach(c => {
             const div = document.createElement('div');
@@ -1314,7 +1406,79 @@
         }
     }
 
+    function chaveColunaEstoque(coluna) {
+        return String(coluna || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+    }
+
+    function classeColunaEstoque(coluna) {
+        const chave = chaveColunaEstoque(coluna);
+        if (['sku', 'codigo'].includes(chave)) return 'col-sku';
+        if (['nome_bling', 'nome', 'titulo', 'produto', 'descricao'].includes(chave)) return 'col-produto';
+        if (['loja_sync', 'loja'].includes(chave)) return 'col-loja';
+        if (['last_update', 'atualizado_em', 'data_atualizacao'].includes(chave)) return 'col-atualizacao';
+        if (['saldo_loja', 'saldo_full', 'saldo_total', 'estoque', 'quantidade'].includes(chave)) return 'col-saldo';
+        return '';
+    }
+
+    function colunasTabelaEstoque(item) {
+        const cols = Object.keys(item).filter(col => col !== '__estoque_foto');
+        const prioridades = ['sku', 'nome_bling', 'loja_sync', 'last_update', 'saldo_loja', 'saldo_full'];
+        const prioridade = col => {
+            const indice = prioridades.indexOf(chaveColunaEstoque(col));
+            return indice === -1 ? prioridades.length : indice;
+        };
+        return cols.sort((a, b) => prioridade(a) - prioridade(b));
+    }
+
+    function tituloColunaEstoque(coluna) {
+        const titulos = { sku: 'SKU', nome_bling: 'Produto', loja_sync: 'Loja', last_update: 'Atualização', saldo_loja: 'Saldo loja', saldo_full: 'Saldo Full', situacao_bling: 'Situação Bling', ncm_bling: 'NCM Bling', cest_bling: 'CEST Bling' };
+        return titulos[chaveColunaEstoque(coluna)] || String(coluna || '').replace(/_/g, ' ').toLocaleUpperCase('pt-BR');
+    }
+
+    function urlFotoEstoque(valor) {
+        const fonte = String(valor || '').trim();
+        if (!fonte) return '';
+        try {
+            const url = new URL(fonte, window.location.href);
+            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return '';
+            if (url.origin === window.location.origin && !/^\/api\/cadastro\/(?:foto-arquivo\/|foto\/)/i.test(url.pathname)) return '';
+            return fonte;
+        } catch (_error) { return ''; }
+    }
+
+    function criarMiniaturaEstoque(item) {
+        const fonte = urlFotoEstoque(item.__estoque_foto);
+        const frame = document.createElement(fonte ? 'a' : 'div');
+        frame.className = 'estoque-foto';
+        const placeholder = document.createElement('span');
+        placeholder.className = 'foto-placeholder';
+        placeholder.innerHTML = '<svg class="estoque-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5v9l-9 5-9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v9"/></svg>';
+        const label = document.createElement('span');
+        label.textContent = fonte ? 'Foto indisponível' : 'Sem foto';
+        placeholder.appendChild(label);
+        frame.appendChild(placeholder);
+        if (!fonte) return frame;
+        frame.target = '_blank';
+        frame.rel = 'noopener noreferrer';
+        frame.setAttribute('data-jk-auth-link', '');
+        frame.setAttribute('aria-label', `Abrir foto do SKU ${obterSku(item)}`);
+        const media = window.JKAuthenticatedMedia;
+        if (media && !media.ehUrlProtegidaCadastro(fonte)) frame.href = fonte;
+        const img = document.createElement('img');
+        img.alt = `Foto do SKU ${obterSku(item)}`;
+        img.width = 60;
+        img.height = 60;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.referrerPolicy = 'no-referrer';
+        img.setAttribute('data-jk-auth-src', fonte);
+        img.addEventListener('error', () => { img.classList.add('jk-auth-image-error'); img.removeAttribute('src'); });
+        frame.appendChild(img);
+        return frame;
+    }
+
     function renderTabela(lista) {
+        if (window.JKAuthenticatedMedia) window.JKAuthenticatedMedia.liberar(tBody);
         tHead.innerHTML = '';
         tBody.innerHTML = '';
         if (!lista.length) {
@@ -1327,26 +1491,50 @@
             statusEl.className = 'status-bar';
             statusEl.textContent = '';
         }
-        const cols = Object.keys(lista[0]);
+        const cols = colunasTabelaEstoque(lista[0]);
         const trHead = document.createElement('tr');
+        const thFoto = document.createElement('th');
+        thFoto.textContent = 'Foto';
+        thFoto.scope = 'col';
+        thFoto.className = 'col-foto';
+        trHead.appendChild(thFoto);
         cols.forEach(col => {
             const th = document.createElement('th');
-            th.textContent = String(col || '').replace(/_/g, ' ').toLocaleUpperCase('pt-BR');
+            th.textContent = tituloColunaEstoque(col);
+            th.scope = 'col';
+            th.className = classeColunaEstoque(col);
             trHead.appendChild(th);
         });
         tHead.appendChild(trHead);
-
         const frag = document.createDocumentFragment();
         lista.forEach(item => {
             const tr = document.createElement('tr');
+            const tdFoto = document.createElement('td');
+            tdFoto.className = 'col-foto';
+            tdFoto.appendChild(criarMiniaturaEstoque(item));
+            tr.appendChild(tdFoto);
             cols.forEach(col => {
                 const td = document.createElement('td');
-                td.textContent = item[col];
+                td.className = classeColunaEstoque(col);
+                if (td.className === 'col-loja' && item[col] !== '') {
+                    const pill = document.createElement('span');
+                    pill.className = 'loja-pill';
+                    pill.textContent = item[col];
+                    td.appendChild(pill);
+                } else if (td.className === 'col-atualizacao') {
+                    const literal = String(item[col] ?? '');
+                    const data = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(literal) ? parseDataHoraAtualizacao(literal) : null;
+                    td.title = literal;
+                    td.textContent = data
+                        ? `${data.toLocaleDateString('pt-BR')}\n${data.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+                        : literal;
+                } else td.textContent = item[col];
                 tr.appendChild(td);
             });
             frag.appendChild(tr);
         });
         tBody.appendChild(frag);
+        if (window.JKAuthenticatedMedia) window.JKAuthenticatedMedia.hidratar(tBody);
     }
 
     function obterSku(row) {
@@ -1497,7 +1685,7 @@
         }
 
         if (termo) {
-            lista = lista.filter(row => Object.values(row).some(val => String(val).toLowerCase().includes(termo)));
+            lista = lista.filter(row => Object.entries(row).some(([col, val]) => col !== '__estoque_foto' && String(val).toLowerCase().includes(termo)));
         }
 
         lista = ordenarLista(lista);
@@ -1600,7 +1788,7 @@
                 window.location.href = '/frontend_index.html';
                 return;
             }
-            const resp = await fetch('/api/estoque', { headers: obterAuthHeaders() });
+            const resp = await fetch('/api/estoque?incluir_fotos=true', { headers: obterAuthHeaders() });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             dados = await resp.json();
             atualizarOpcoesSkuHistorico();

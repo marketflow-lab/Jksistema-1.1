@@ -115,7 +115,7 @@ def test_photo_routes_enforce_permissions_after_runtime_configuration(
 
         forbidden_module = client.get(
             "/api/cadastro/foto-arquivo/005.png",
-            headers={"Authorization": "Bearer estoque"},
+            headers={"Authorization": "Bearer favoritos"},
         )
         assert forbidden_module.status_code == 403
 
@@ -139,10 +139,19 @@ def test_photo_routes_enforce_permissions_after_runtime_configuration(
         )
         assert upload_from_medias.status_code == 403
 
+        upload_from_estoque = client.post(
+            "/api/cadastro/foto/upload",
+            headers={"Authorization": "Bearer estoque"},
+            data={"sku": "005"},
+            files={"arquivo": ("005.png", b"not-used", "image/png")},
+        )
+        assert upload_from_estoque.status_code == 403
+
 
 def test_photo_route_permissions_cover_consumers_without_opening_uploads():
     expected = (
         "cadastro",
+        "estoque",
         "medias_compras",
         "vendas",
         "importacoes",
@@ -165,7 +174,7 @@ def test_photo_route_permissions_cover_consumers_without_opening_uploads():
             expected,
         )
     assert not admin_usuarios_common._permissoes_autorizam_rota(
-        {"estoque": True},
+        {"favoritos": True},
         expected,
     )
     assert admin_usuarios_common._permissao_exigida_por_rota(

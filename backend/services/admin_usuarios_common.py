@@ -38,6 +38,7 @@ configure_admin_usuarios_common_runtime()
 
 CADASTRO_PHOTO_READ_PERMISSIONS = (
     "cadastro",
+    "estoque",
     "medias_compras",
     "vendas",
     "importacoes",

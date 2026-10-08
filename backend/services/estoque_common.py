@@ -93,18 +93,24 @@ def _cache_estoque_job_terminal(
         }
 
 
-async def listar_estoque(client_id: str = Depends(get_tenant_id)):
+async def listar_estoque(client_id: str = Depends(get_tenant_id), incluir_fotos: bool = False):
     """Retorna o estoque compilado especÃƒÆ’Ã‚Â­fico do cliente (pasta info/<client_id>/)."""
     arquivo_cliente = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
     alvo = arquivo_cliente
 
     if alvo and os.path.exists(alvo):
         try:
-            df = pd.read_csv(alvo).fillna("")
+            leitura = {"converters": {"sku": str, "store_id": str}} if incluir_fotos else {}
+            df = pd.read_csv(alvo, **leitura).fillna("")
             for col in ["titulo_turbo", "preco_turbo", "status_turbo", "id_bling"]:
                 if col in df.columns:
                     df = df.drop(columns=[col])
-            return df.to_dict(orient="records")
+            registros = df.to_dict(orient="records")
+            if incluir_fotos:
+                from backend.services.estoque_fotos import anexar_fotos_estoque
+
+                anexar_fotos_estoque(client_id, registros)
+            return registros
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erro ao ler banco de dados: {str(e)}")
     return []

@@ -1295,6 +1295,8 @@ def _cadastro_resolver_arquivo_foto(
     client_id: str,
     filename: str,
     store_id_esperado: str = "",
+    *,
+    tenant_only: bool = False,
 ) -> str:
     partes = _cadastro_partes_foto_seguras(client_id, filename, store_id_esperado)
     if _cadastro_fotos_escopo_estrito(client_id) and partes[0].casefold() != "lojas":
@@ -1329,7 +1331,7 @@ def _cadastro_resolver_arquivo_foto(
     # Uma referencia ``lojas/<segmento>/<arquivo>`` ja declara identidade de
     # loja e nunca pode ser satisfeita por outro escopo quando o arquivo do
     # tenant estiver ausente.
-    if partes[0].casefold() != "lojas":
+    if not tenant_only and partes[0].casefold() != "lojas":
         default_path = os.path.join(PASTA_INFO, "default")
         candidatos.append(
             _candidato_seguro(
@@ -1368,12 +1370,14 @@ async def servir_foto_cadastro(
     filename: str,
     client_id_sessao: str = Depends(get_tenant_id),
     store_id: str = "",
+    tenant_only: bool = False,
 ):
     tenant_sessao = _cadastro_tenant_foto_autenticado(client_id, client_id_sessao)
     caminho_arquivo = _cadastro_resolver_arquivo_foto(
         tenant_sessao,
         filename,
         store_id,
+        tenant_only=tenant_only,
     )
     return _cadastro_resposta_foto(caminho_arquivo)
 
