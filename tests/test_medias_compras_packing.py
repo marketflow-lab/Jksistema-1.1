@@ -103,8 +103,8 @@ def _lista(**overrides):
     return lista
 
 
-def _sheet(conteudo):
-    workbook = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=False)
+def _sheet(conteudo, *, data_only=False):
+    workbook = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=data_only)
     assert len(workbook.sheetnames) == 1
     return workbook.worksheets[0]
 
@@ -178,7 +178,8 @@ def test_exportacao_enriquece_lista_e_conta_grupos_uma_vez():
     antes = copy.deepcopy(lista)
     dados = packing._ler_packing_list_bytes(_modelo())
     dados_antes = copy.deepcopy(dados)
-    sheet = _sheet(packing._gerar_packing_list_bytes(lista, dados))
+    conteudo = packing._gerar_packing_list_bytes(lista, dados)
+    sheet = _sheet(conteudo)
     assert sheet.max_column == 17
     assert sheet["A2"].value == "PACKING LIST"
     assert "TEST-14072026" in sheet["A3"].value
@@ -197,6 +198,11 @@ def test_exportacao_enriquece_lista_e_conta_grupos_uma_vez():
     assert sheet["M13"].value == "=SUM(M9:M12)"
     assert sheet["O13"].value == "=SUM(O9:O12)"
     assert sheet["Q13"].value == "=SUM(Q9:Q12)"
+    calculado = _sheet(conteudo, data_only=True)
+    for endereco, esperado in {"F13": 19, "H13": 4, "M13": .033, "O13": 7.6, "Q13": 9.1}.items():
+        assert calculado[endereco].data_type == "n"
+        assert calculado[endereco].value == pytest.approx(esperado)
+    assert sheet.parent.calculation.fullCalcOnLoad is True
     assert sum(sheet[f"F{r}"].value or 0 for r in range(9, 13)) == 19
     assert sum(sheet[f"H{r}"].value or 0 for r in range(9, 13)) == 4
     assert sum(sheet[f"M{r}"].value or 0 for r in range(9, 13)) == pytest.approx(.033)
@@ -206,6 +212,65 @@ def test_exportacao_enriquece_lista_e_conta_grupos_uma_vez():
     assert "$A$1:$Q$14" in str(sheet.print_area)
     assert lista == antes
     assert dados == dados_antes
+
+
+def test_exportacao_totais_somam_cbm_arredondado_das_caixas_mistas():
+    dados = packing._ler_packing_list_bytes(_modelo(fotos=False))
+    dados["grupos"] = dados["grupos"][:2]
+    for grupo in dados["grupos"]:
+        grupo["cbm_total"] = .0006
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    sheet = _sheet(conteudo, data_only=True)
+    assert sheet["M9"].value == .001
+    assert sheet["M10"].value == .001
+    assert sheet["M11"].value is None
+    assert sheet["M12"].value == .002
+    assert sheet["F12"].value == 9
+    assert sheet["H12"].value == 3
+    assert _sheet(conteudo)["M12"].value == "=SUM(M9:M11)"
+
+
+def test_exportacao_totais_zero_aparecem_sem_recalculo():
+    dados = packing._ler_packing_list_bytes(_modelo(fotos=False))
+    for grupo in dados["grupos"]:
+        grupo.update(cbm_total=0, nw_total=0, gw_total=0)
+        for item in grupo["itens"]:
+            item["quantidade"] = 0
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    sheet = _sheet(conteudo, data_only=True)
+    assert sheet["H13"].value == 4
+    for endereco in ("F13", "M13", "O13", "Q13"):
+        assert sheet[endereco].value == 0
+        assert sheet[endereco].data_type == "n"
+
+
+def test_exportacao_cache_preserva_imagens_relacionamentos_e_xml(monkeypatch):
+    original = []
+    preencher = packing._preencher_cache_totais_packing
+
+    def capturar(conteudo, totais):
+        original.append(conteudo)
+        return preencher(conteudo, totais)
+
+    monkeypatch.setattr(packing, "_preencher_cache_totais_packing", capturar)
+    conteudo = packing._gerar_packing_list_bytes(_lista(), packing._ler_packing_list_bytes(_modelo()))
+    with zipfile.ZipFile(io.BytesIO(original[0])) as antes, zipfile.ZipFile(io.BytesIO(conteudo)) as depois:
+        assert depois.testzip() is None
+        assert antes.namelist() == depois.namelist()
+        assert antes.comment == depois.comment
+        for info in antes.infolist():
+            if info.filename == "xl/worksheets/sheet1.xml":
+                esperado = antes.read(info)
+                for endereco, valor in {"F13": "19", "H13": "4", "M13": "0.033", "O13": "7.6", "Q13": "9.1"}.items():
+                    esperado = esperado.replace(
+                        f'<f>SUM({endereco[0]}9:{endereco[0]}12)</f><v></v>'.encode(),
+                        f'<f>SUM({endereco[0]}9:{endereco[0]}12)</f><v>{valor}</v>'.encode(),
+                    )
+                assert depois.read(info.filename) == esperado
+            else:
+                assert depois.read(info.filename) == antes.read(info)
+            assert depois.getinfo(info.filename).compress_type == info.compress_type
+    assert len(_sheet(conteudo)._images) == 4
 
 
 def test_exportacao_textos_que_parecem_formula_sao_literais():
@@ -343,7 +408,11 @@ def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants
     path.write_text(json.dumps([lista]), encoding="utf-8")
     before = path.read_bytes()
     response = packing._baixar_packing_list_sync("lista-1", "cliente-a")
-    sheet = _sheet(_response_bytes(response))
+    conteudo = _response_bytes(response)
+    sheet = _sheet(conteudo)
+    calculado = _sheet(conteudo, data_only=True)
+    for endereco, esperado in {"F13": 19, "H13": 4, "M13": .033, "O13": 7.6, "Q13": 9.1}.items():
+        assert calculado[endereco].value == pytest.approx(esperado)
     assert "UPDATED-2026" in sheet["A3"].value
     assert "September 2, 2026" in sheet["I3"].value
     assert sheet["D9"].value == "Updated sensor description"

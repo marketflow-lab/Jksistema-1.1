@@ -18,6 +18,7 @@ from datetime import datetime
 import openpyxl
 from fastapi import Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from openpyxl.compat import safe_string
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
@@ -222,6 +223,38 @@ def _data_packing(lista):
     return f"{meses[parsed.month - 1]} {parsed.day}, {parsed.year}"
 
 
+def _preencher_cache_totais_packing(conteudo, totais):
+    """Keep SUM formulas editable and their results visible without recalculation."""
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(conteudo)) as source, zipfile.ZipFile(output, "w") as target:
+        target.comment = source.comment
+        for info in source.infolist():
+            content = source.read(info)
+            if info.filename == "xl/worksheets/sheet1.xml":
+                for endereco, valor in totais.items():
+                    padrao = re.compile(
+                        rb'(<c\b[^>]*\br="' + endereco.encode("ascii") + rb'"[^>]*>)(.*?)(</c>)',
+                        re.DOTALL,
+                    )
+
+                    def atualizar(match):
+                        corpo = match.group(2)
+                        if not re.search(rb"<f(?:\s[^>]*)?>[^<]+</f>", corpo):
+                            raise ValueError("Fórmula de total do Packing List ausente.")
+                        corpo, quantidade = re.subn(
+                            rb"<v>[^<]*</v>", b"<v>" + safe_string(valor).encode("ascii") + b"</v>", corpo,
+                        )
+                        if quantidade != 1:
+                            raise ValueError("Resultado de total do Packing List inválido.")
+                        return match.group(1) + corpo + match.group(3)
+
+                    content, quantidade = padrao.subn(atualizar, content)
+                    if quantidade != 1:
+                        raise ValueError("Célula de total do Packing List inválida.")
+            target.writestr(info, content)
+    return output.getvalue()
+
+
 def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
     grupos = dados["grupos"]
     wb = openpyxl.Workbook()
@@ -319,9 +352,13 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
                       f"I{total}:L{ultima}", f"N{total}:N{ultima}", f"P{total}:P{ultima}"):
         ws.merge_cells(intervalo)
     excel._atribuir_texto_excel(ws.cell(total, 1), "TOTAL:")
+    totais = {}
     for coluna, rotulo in ((6, "Units Total"), (8, "CTNS TOTAL"), (13, "CBM TOTAL"),
                           (15, "TOTAL NET WEIGHT"), (17, "TOTAL GROSS WEIGHT")):
         letra = get_column_letter(coluna)
+        valores = [ws.cell(r, coluna).value for r in range(9, total)
+                   if ws.cell(r, coluna).value is not None]
+        totais[f"{letra}{total}"] = math.fsum(valores)
         ws.cell(total, coluna).value = f"=SUM({letra}9:{letra}{total - 1})"
         excel._atribuir_texto_excel(ws.cell(ultima, coluna), rotulo)
     ws.row_dimensions[total].height = ws.row_dimensions[ultima].height = 45
@@ -363,7 +400,7 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
     output = io.BytesIO()
     wb.save(output)
     wb.close()
-    return output.getvalue()
+    return _preencher_cache_totais_packing(output.getvalue(), totais)
 
 
 def _arquivo_packing(client_id, documento_id):
