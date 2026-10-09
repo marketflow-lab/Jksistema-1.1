@@ -119,6 +119,10 @@ def tenants(tmp_path, monkeypatch):
     monkeypatch.setattr(common, "_arquivo_listas_pedidos", lambda tenant: str(raiz / tenant / "listas_pedidos.json"))
     monkeypatch.setattr(common, "get_tenant_path", lambda tenant: str(raiz / tenant))
     monkeypatch.setattr(excel, "get_tenant_path", lambda tenant: str(raiz / tenant))
+    # These synthetic tenants have no store/importer registry. Do not inherit
+    # the global store runtime configured by unrelated test modules.
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+                        lambda *_args: {"store_id": "", "scope": "unresolved"})
     return raiz
 
 
