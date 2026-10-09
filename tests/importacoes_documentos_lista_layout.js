@@ -17,8 +17,8 @@ for (const marker of [
   'lista-card-quantidade', 'meta-m3', 'meta-usd', 'meta-brl', 'lista-card-atualizacao',
   'data-commercial-invoice', 'data-menu-lista', 'aria-haspopup="menu"',
 ]) assert(markup.includes(marker), 'Controle ou informação original ausente: ' + marker);
-assert(markup.includes('<span class="documento-lista-card documento-lista-card--packing">Packing List</span>'),
-  'Packing List deve permanecer um indicador, sem simular uma ação disponível.');
+assert(markup.includes('<button type="button" class="documento-lista-card documento-lista-card--packing" data-packing-list>Packing List</button>'),
+  'Packing List deve oferecer upload ou download com semântica de botão, preservando o cartão.');
 
 for (const id of [
   'buscarListasImportacoes', 'btnDensidadeListas', 'tabelaListasImportacoes',

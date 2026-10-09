@@ -176,6 +176,19 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_importar_excel_precos",
     )
 
+    medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/packing-list",
+        medias_compras.api_medias_compras_lista_pedido_packing_list,
+        methods=["GET"],
+        name="api_medias_compras_lista_pedido_packing_list",
+    )
+    medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/packing-list/importar-excel",
+        medias_compras.api_medias_compras_lista_pedido_packing_list_importar,
+        methods=["POST"],
+        name="api_medias_compras_lista_pedido_packing_list_importar",
+    )
+
     return medias_router
 
 

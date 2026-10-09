@@ -681,6 +681,19 @@
             color: #bffbf3;
         }
 
+        .packing-list-dialog { width: min(440px, calc(100vw - 48px)); box-sizing: border-box; padding: 24px; border: 1px solid #39739b; border-radius: 14px; background: #102034; color: #e8f1ff; font: inherit; }
+        .packing-list-dialog::backdrop { background: rgba(3, 10, 20, .78); }
+        .packing-list-dialog h2 { margin: 0 0 12px; font-size: 21px; }
+        .packing-list-dialog p { color: #bed1e6; line-height: 1.5; }
+        .packing-list-dialog label { display: block; margin: 18px 0 8px; font-weight: 600; }
+        .packing-list-dialog input { width: 100%; font: inherit; }
+        .packing-list-dialog .packing-list-dialog-status { min-height: 42px; margin: 12px 0; }
+        .packing-list-dialog-acoes { display: flex; justify-content: flex-end; gap: 10px; }
+        .packing-list-dialog button { padding: 9px 14px; border: 1px solid #39739b; border-radius: 8px; background: #193650; color: #eef6ff; font: inherit; cursor: pointer; }
+        .packing-list-dialog [data-packing-list-enviar] { background: #197db0; }
+        .packing-list-dialog button:disabled { opacity: .5; cursor: default; }
+        .packing-list-dialog :focus-visible { outline: 2px solid #67caff; outline-offset: 3px; }
+
         .nome-lista {
             font-weight: 800;
             color: #f0f7ff;
@@ -2659,6 +2672,163 @@
             }
         }
 
+        const packingListEmExecucao = new Set();
+        let dialogoPackingList = null;
+
+        function atualizarEstadoPackingList(lista, pronto) {
+            const listaId = String(lista && lista.id || '');
+            [lista, ...todasListasCache.filter(item => String(item.id) === listaId)].forEach(item => {
+                if (item) item.packing_list_ready = pronto;
+            });
+            document.querySelectorAll('[data-packing-list]').forEach(botao => {
+                if (botao.dataset.packingListaId === listaId) {
+                    botao.title = pronto === true ? 'Baixar Packing List' : pronto === false ? 'Incluir Packing List' : 'Abrir Packing List';
+                }
+            });
+        }
+
+        function abrirInclusaoPackingList(lista, botaoOrigem) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (dialogoPackingList && dialogoPackingList.listaId === listaId) {
+                dialogoPackingList.elemento.querySelector('input').focus();
+                return;
+            }
+            if (dialogoPackingList) dialogoPackingList.fechar();
+            const dialogo = document.createElement('dialog');
+            dialogo.className = 'packing-list-dialog';
+            dialogo.setAttribute('aria-labelledby', 'packingListTitulo');
+            dialogo.innerHTML = '<form><h2 id="packingListTitulo">Incluir Packing List</h2>' +
+                '<p data-packing-list-contexto></p><label for="packingListArquivo">Arquivo Excel (.xlsx)</label>' +
+                '<input id="packingListArquivo" type="file" accept=".xlsx" required>' +
+                '<p class="packing-list-dialog-status" data-packing-list-status role="status" aria-live="polite"></p>' +
+                '<div class="packing-list-dialog-acoes"><button type="button" data-packing-list-cancelar>Cancelar</button>' +
+                '<button type="submit" data-packing-list-enviar disabled>Enviar</button></div></form>';
+            dialogo.querySelector('[data-packing-list-contexto]').textContent = 'Selecione o Packing List da lista ' + String(lista.nome_lista || '') + '.';
+            const formulario = dialogo.querySelector('form');
+            const arquivoInput = dialogo.querySelector('input');
+            const enviar = dialogo.querySelector('[data-packing-list-enviar]');
+            const status = dialogo.querySelector('[data-packing-list-status]');
+            let controleEnvio = null;
+            let enviando = false;
+            const fechar = () => {
+                if (controleEnvio) {
+                    atualizarEstadoPackingList(lista, undefined);
+                    controleEnvio.abort();
+                }
+                dialogo.close();
+                dialogo.remove();
+                if (dialogoPackingList && dialogoPackingList.elemento === dialogo) dialogoPackingList = null;
+                if (botaoOrigem && botaoOrigem.isConnected) botaoOrigem.focus();
+            };
+            arquivoInput.addEventListener('change', () => {
+                const arquivo = arquivoInput.files[0];
+                const valido = arquivo && /\.xlsx$/i.test(arquivo.name) && arquivo.size > 0;
+                enviar.disabled = !valido;
+                status.textContent = arquivo && !valido ? 'Selecione um arquivo .xlsx válido e não vazio.' : '';
+            });
+            dialogo.querySelector('[data-packing-list-cancelar]').addEventListener('click', fechar);
+            dialogo.addEventListener('cancel', evento => { evento.preventDefault(); fechar(); });
+            formulario.addEventListener('submit', async evento => {
+                evento.preventDefault();
+                if (enviando) return;
+                const arquivo = arquivoInput.files[0];
+                if (!arquivo || !/\.xlsx$/i.test(arquivo.name) || !arquivo.size) {
+                    status.textContent = 'Selecione um arquivo .xlsx válido e não vazio.';
+                    return;
+                }
+                enviando = true;
+                enviar.disabled = true;
+                arquivoInput.disabled = true;
+                enviar.textContent = 'Enviando...';
+                status.textContent = 'Importando Packing List...';
+                const controle = new AbortController();
+                controleEnvio = controle;
+                try {
+                    const dados = new FormData();
+                    dados.append('file', arquivo);
+                    const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/packing-list/importar-excel', {
+                        method: 'POST', headers: { ...obterAuthHeaders() }, body: dados, signal: controle.signal
+                    });
+                    const resultado = await resposta.json().catch(() => ({}));
+                    if (!resposta.ok) {
+                        if (resposta.status === 409) atualizarEstadoPackingList(lista, undefined);
+                        throw new Error(resultado.detail || 'Não foi possível importar o Packing List.');
+                    }
+                    if (resultado.success !== true || resultado.packing_list_ready !== true) throw new Error('O servidor não confirmou a inclusão do Packing List.');
+                    if (controle.signal.aborted || !dialogo.isConnected) return;
+                    controleEnvio = null;
+                    atualizarEstadoPackingList(lista, true);
+                    setStatus('Packing List incluído. Clique em Packing List para baixar.');
+                    fechar();
+                } catch (erro) {
+                    if (!controle.signal.aborted && dialogo.isConnected) status.textContent = erro.message || 'Erro ao importar o Packing List.';
+                } finally {
+                    if (controleEnvio === controle) controleEnvio = null;
+                    enviando = false;
+                    enviar.textContent = 'Enviar';
+                    arquivoInput.disabled = false;
+                    enviar.disabled = false;
+                }
+            });
+            document.body.appendChild(dialogo);
+            dialogoPackingList = { elemento: dialogo, listaId, fechar };
+            dialogo.showModal();
+            arquivoInput.focus();
+        }
+
+        async function baixarPackingList(lista, btn) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (!listaId) { setStatus('Não foi possível identificar a lista para gerar o Packing List.'); return; }
+            if (packingListEmExecucao.has(listaId)) return;
+            if (lista.packing_list_ready === false || (dialogoPackingList && dialogoPackingList.listaId === listaId)) {
+                abrirInclusaoPackingList(lista, btn);
+                return;
+            }
+            packingListEmExecucao.add(listaId);
+            const textoOriginal = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'Verificando...'; btn.setAttribute('aria-busy', 'true'); }
+            try {
+                const salvamento = invoicesPendentes.get(listaId);
+                if (salvamento && !(await salvamento)) throw new Error('Salve o número da Invoice antes de gerar o Packing List.');
+                if (!(await window.JKDataPedidoLista.aguardarSalvamento(listaId))) throw new Error('Salve a data do pedido antes de gerar o Packing List.');
+                const listaAtualizada = { ...(lista || {}), ...(await carregarListaCommercialInvoice(listaId)) };
+                const invoice = await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId) || obterInvoiceLista(listaAtualizada, listaId);
+                if (btn) btn.textContent = 'Gerando...';
+                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/packing-list', {
+                    method: 'GET', headers: { ...obterAuthHeaders() }
+                });
+                if (resposta.status === 404) {
+                    atualizarEstadoPackingList(lista, false);
+                    abrirInclusaoPackingList(lista, btn);
+                    return;
+                }
+                if (!resposta.ok) {
+                    const erro = await resposta.json().catch(() => ({}));
+                    throw new Error(erro.detail || 'Não foi possível gerar o Packing List.');
+                }
+                const blob = await resposta.blob();
+                if (!blob || !blob.size) throw new Error('O Packing List foi gerado vazio.');
+                const nomeSeguro = String(invoice || listaAtualizada.nome_lista || listaId).trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'lista';
+                const objectUrl = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = nomeArquivoCommercialInvoice(resposta, 'packing_list_' + nomeSeguro + '.xlsx');
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+                atualizarEstadoPackingList(lista, true);
+                setStatus('Packing List gerado com sucesso.');
+            } catch (erro) {
+                const mensagem = erro.message || 'Erro ao gerar o Packing List.';
+                setStatus(mensagem);
+                window.alert(mensagem);
+            } finally {
+                packingListEmExecucao.delete(listaId);
+                if (btn) { btn.disabled = false; btn.textContent = textoOriginal || 'Packing List'; btn.removeAttribute('aria-busy'); }
+            }
+        }
+
         function setFx(valorTexto, horaTexto) {
             const elValor = document.getElementById('fxValue');
             const elHora = document.getElementById('fxTime');
@@ -3204,7 +3374,7 @@
                         '<div class="lista-card-acoes">' +
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
-                                '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
+                                '<button type="button" class="documento-lista-card documento-lista-card--packing" data-packing-list>Packing List</button>' +
                             '</div>' +
                             '<button type="button" class="btn-cancelar lista-card-excluir" tabindex="-1">Excluir</button>' +
                         '</div>' +
@@ -3239,6 +3409,16 @@
                         ev.preventDefault();
                         ev.stopPropagation();
                         excluirListaDefinitiva(listaId, String((todasListasCache.find(item => String(item.id) === listaId) || l).nome_lista || nomeLista), btnCancelar);
+                    });
+                }
+                const btnPackingList = el.querySelector('[data-packing-list]');
+                if (btnPackingList) {
+                    btnPackingList.dataset.packingListaId = listaId;
+                    btnPackingList.title = l.packing_list_ready === true ? 'Baixar Packing List' : 'Incluir Packing List';
+                    btnPackingList.addEventListener('click', evento => {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        baixarPackingList(todasListasCache.find(item => String(item.id) === listaId) || l, btnPackingList);
                     });
                 }
                 const btnCommercialInvoice = el.querySelector('[data-commercial-invoice]');

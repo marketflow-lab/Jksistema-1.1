@@ -1445,6 +1445,8 @@ def _api_medias_compras_lista_pedido_excluir_sync(
 
     removida = listas.pop(idx)
     _salvar_listas_pedidos(client_id, listas)
+    from backend.services.medias_compras_packing import limpar_documento_packing_lista
+    limpar_documento_packing_lista(client_id, removida)
     _limpar_cache_lista_pedido(client_id, str(removida.get("id", "") or ""))
     return {
         "success": True,

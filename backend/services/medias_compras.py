@@ -25,6 +25,7 @@ from backend.services.medias_compras_visao import configure_medias_compras_visao
 from backend.services.medias_compras_sugestoes import *
 from backend.services.medias_compras_sugestoes import configure_medias_compras_sugestoes_runtime
 from backend.services.medias_compras_listas import *
+from backend.services.medias_compras_packing import *
 from backend.services.medias_compras_listas import configure_medias_compras_listas_runtime
 from backend.services.medias_compras_importacao import *
 from backend.services.medias_compras_importacao import configure_medias_compras_importacao_runtime
@@ -87,6 +88,8 @@ __all__ = [
     "api_medias_compras_lista_pedido_excluir",
     "api_medias_compras_lista_pedido_download",
     "api_medias_compras_lista_pedido_commercial_invoice",
+    "api_medias_compras_lista_pedido_packing_list",
+    "api_medias_compras_lista_pedido_packing_list_importar",
     "api_medias_compras_lista_pedido_gerar_download",
     "api_medias_compras_lista_pedido_importar_excel_precos",
     "api_medias_compras_lista_pedido_importar_excel_nova_lista",

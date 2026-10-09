@@ -948,6 +948,11 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
             for i in itens
             if str(i.get("SKU", "") or "").strip()
         ],
+        "packing_list_ready": bool(
+            isinstance(lista.get("packing_list"), dict)
+            and lista["packing_list"].get("schema") == "jk.packing-list.v1"
+            and re.fullmatch(r"[0-9a-f]{32}", str(lista["packing_list"].get("documento_id") or ""))
+        ),
         "numero_invoice": str(lista.get("numero_invoice") or lista.get("invoice") or "").strip(),
         "fornecedor_id": str(lista.get("fornecedor_id") or "").strip(),
         "supplier": str(lista.get("supplier") or lista.get("fornecedor") or "").strip(),
