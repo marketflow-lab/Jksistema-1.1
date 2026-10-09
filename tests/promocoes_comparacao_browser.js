@@ -12,6 +12,13 @@ const root = path.resolve(__dirname, '..');
     const page = await browser.newPage({ viewport: { width: 1306, height: 850 } });
     const errors = [];
     const unexpectedRequests = [];
+    const marginPalette = {
+      low: ['rgba(255, 59, 77, 0.38)', 'rgb(255, 238, 241)'],
+      mid: ['rgba(253, 126, 20, 0.28)', 'rgb(255, 232, 210)'],
+      high: ['rgba(255, 214, 10, 0.42)', 'rgb(255, 251, 224)'],
+      top: ['rgba(34, 197, 94, 0.34)', 'rgb(234, 255, 242)'],
+      neutral: ['rgba(0, 0, 0, 0)', 'rgb(240, 244, 252)'],
+    };
     page.on('pageerror', error => errors.push(error.message));
     await page.route('http://promo.test/**', route => {
       const pathname = new URL(route.request().url()).pathname;
@@ -113,6 +120,41 @@ const root = path.resolve(__dirname, '..');
     assert.strictEqual(await page.locator('#promoComparison img:not(.promo-ad-image)').count(), 0, 'server strings must remain text outside the dedicated photo field');
     assert.strictEqual(await rows.nth(1).locator('.promo-lightning-window').textContent(), 'Data e horário serão informados pelo Mercado Livre após a inclusão.');
     assert.strictEqual(await page.evaluate(() => promoNumericValue('Não informado') === null && promoNumericValue('R$ 0,00') === 0 && promoNumericValue('R$ 1.234,56') === 1234.56), true);
+    const liveMarginColors = await rows.nth(1).locator('[data-promo-display-key="Margem"], [data-promo-display-key="Margem ML"]').evaluateAll(items => items.map(item => {
+      const style = getComputedStyle(item);
+      return [style.backgroundColor, style.color];
+    }));
+    assert.deepStrictEqual(liveMarginColors, [marginPalette.top, marginPalette.top], 'both campaign margins retain the original filled green color, including estimates');
+    assert.strictEqual(await rows.nth(0).locator('[data-promo-display-key="Preço Final"], [data-promo-display-key="Valor Líquido"], [data-promo-display-key="Preço Final ML"], [data-promo-display-key="Valor líquido ML"]').evaluateAll(items => items.every(item => getComputedStyle(item).backgroundColor === 'rgba(0, 0, 0, 0)')), true, 'margin highlighting does not spread to prices or net values');
+    const marginCases = [
+      ['-1,00%', 'low'], ['9,99%', 'low'], ['10,00%', 'mid'], ['12,99%', 'mid'],
+      ['13,00%', 'high'], ['14,99%', 'high'], ['15,00%', 'top'], ['23,78%', 'top'],
+      ['', 'neutral'], ['A calcular', 'neutral'], ['Não informado', 'neutral'], ['NaN', 'neutral'],
+    ];
+    const marginSnapshots = await page.evaluate(cases => {
+      const canonicalBefore = JSON.stringify(currentData);
+      const host = document.createElement('div');
+      host.hidden = true;
+      document.body.appendChild(host);
+      try {
+        const values = cases.map(([value]) => {
+          const fixture = { ...currentData[0], Margem: value, 'Margem ML': value };
+          const fixtureBefore = JSON.stringify(fixture);
+          host.replaceChildren(promoCampaignMetrics(fixture, false), promoCampaignMetrics(fixture, true));
+          const colors = [...host.querySelectorAll('[data-promo-display-key="Margem"], [data-promo-display-key="Margem ML"]')].map(item => {
+            const style = getComputedStyle(item);
+            return [style.backgroundColor, style.color];
+          });
+          return { colors, preserved: JSON.stringify(fixture) === fixtureBefore };
+        });
+        return { values, canonicalPreserved: JSON.stringify(currentData) === canonicalBefore };
+      } finally { host.remove(); }
+    }, marginCases);
+    marginCases.forEach(([value, band], index) => {
+      assert.deepStrictEqual(marginSnapshots.values[index].colors, [marginPalette[band], marginPalette[band]], 'original margin colors apply to both campaigns at ' + JSON.stringify(value));
+      assert(marginSnapshots.values[index].preserved, 'margin presentation preserves fixture values');
+    });
+    assert(marginSnapshots.canonicalPreserved, 'boundary rendering preserves canonical analysis values and decisions');
     const aligned = await rows.nth(0).evaluate(row => {
       const p1 = [...row.querySelectorAll('.promo-one .promo-value-number')].map(el => el.getBoundingClientRect().top);
       const p2 = [...row.querySelectorAll('.promo-two .promo-value-number')].map(el => el.getBoundingClientRect().top);
@@ -134,10 +176,16 @@ const root = path.resolve(__dirname, '..');
       window.originalSelect = document.querySelectorAll('.promo-comparison-row')[1].querySelector('select');
       window.originalStock = document.querySelectorAll('.promo-comparison-row')[1].querySelector('input');
       currentData[1]['Preço Final ML'] = 'R$ 82,00';
-      currentData[1]['Margem ML'] = '22,00%';
+      currentData[1]['Margem ML'] = '12,55%';
       atualizarLinhaFinanceiraParticipacaoPromocoes(currentData[1]);
     });
     assert.strictEqual(await rows.nth(1).locator('[data-promo-display-key="Preço Final ML"]').textContent(), 'R$ 82,00');
+    const refreshedMargin = rows.nth(1).locator('[data-promo-display-key="Margem ML"]');
+    assert.deepStrictEqual(await refreshedMargin.evaluate(item => {
+      const style = getComputedStyle(item);
+      return [style.backgroundColor, style.color];
+    }), marginPalette.mid, 'financial refresh replaces the previous green margin band with orange');
+    assert.strictEqual(await refreshedMargin.textContent(), '≈12,55%', 'financial refresh preserves the estimate marker and canonical percentage');
     assert.strictEqual(await page.evaluate(() => originalSelect === document.querySelectorAll('.promo-comparison-row')[1].querySelector('select') && originalStock === document.querySelectorAll('.promo-comparison-row')[1].querySelector('input')), true, 'financial refresh preserves active controls');
     assert.strictEqual(await page.locator('#promoSearch').inputValue(), 'EXEMPLO-002');
     await page.evaluate(() => {
@@ -202,6 +250,6 @@ const root = path.resolve(__dirname, '..');
     }
     assert.deepStrictEqual(errors, []);
     assert.deepStrictEqual(unexpectedRequests, [], 'browser validation must not call live APIs');
-    console.log('Comparação: fotos, fallback seguro, cores de decisão, dados preservados, controles por oferta, filtros, exportação e responsividade aprovados.');
+    console.log('Comparação: fotos, fallback seguro, cores de decisão e margem, limites e atualização financeira, dados preservados, controles por oferta, filtros, exportação e responsividade aprovados.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

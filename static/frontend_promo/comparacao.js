@@ -79,6 +79,13 @@ function promoNumericValue(raw) {
 
 function preencherValorComparacaoPromocoes(element, row, key) {
     const value = promoDisplayValue(row, key);
+    if (key === 'Margem' || key === 'Margem ML') {
+        element.classList.remove('margin-low', 'margin-mid', 'margin-high', 'margin-top');
+        const percent = promoNumericValue(value);
+        if (percent !== null) {
+            element.classList.add(percent < 10 ? 'margin-low' : percent < 13 ? 'margin-mid' : percent < 15 ? 'margin-high' : 'margin-top');
+        }
+    }
     const reason = obterEstimativaCelulaPromocoes(row, key);
     element.replaceChildren();
     element.appendChild(document.createTextNode(value));
