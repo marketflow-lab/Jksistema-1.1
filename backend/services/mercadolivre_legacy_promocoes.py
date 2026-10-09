@@ -26,7 +26,7 @@ import uuid
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
@@ -510,6 +510,14 @@ def _promo_contextualizar_entry_campanha(
     elif not offer_id and status_resolvido in {"candidate", "eligible"}:
         # A API SMART pode omitir offer_id no candidate. A proveniencia da
         # precificacao continua valida; o gate da acao exige CANDIDATE-{MLB}-.
+        offer_coerente = True
+    elif (
+        not offer_id
+        and promotion_type_consultado.upper() == "SELLER_CAMPAIGN"
+        and status_entry in {"started", "active"}
+    ):
+        # Campanhas do vendedor ativas podem retornar apenas anuncio e preco.
+        # O resolver cruza esse registro com a campanha confirmada por item.
         offer_coerente = True
     elif (
         not offer_id
@@ -1201,6 +1209,36 @@ def _ml_obter_item_promocao_raw(client_id: str, loja: str, cfg: dict, campaign_i
                         offer_id_entry = _ml_promocao_raw_offer_id(entry_contextualizado).strip().lower()
                         if offer_id_esperado and offer_id_entry != offer_id_esperado:
                             continue
+                        if (
+                            promotion_type.upper() == "SELLER_CAMPAIGN"
+                            and not offer_id_entry
+                            and _promo_status_item_promocao(entry_contextualizado) in {"started", "active"}
+                        ):
+                            # Sem offer/ref, a consulta por item precisa confirmar
+                            # a mesma campanha ativa e o mesmo preco em centavos.
+                            referencia_por_item = dict(raw_referencia)
+                            referencia_por_item.setdefault("item_id", item_id)
+                            referencia_confirmada = _promo_contextualizar_entry_campanha(
+                                referencia_por_item, campaign_id=campaign_id,
+                                promotion_type_consultado=promotion_type, item_id=item_id,
+                            )
+                            preco_referencia = _parse_float_flex(raw_referencia.get("price"))
+                            preco_entry = _parse_float_flex(entry_contextualizado.get("price"))
+                            if (
+                                referencia_confirmada.get("_jk_contexto_promocao_confirmado") is not True
+                                or str(raw_referencia.get("id") or "").strip().lower() != campaign_id.lower()
+                                or _ml_promocao_raw_tipo(raw_referencia).upper() != "SELLER_CAMPAIGN"
+                                or _promo_status_item_promocao(raw_referencia) not in {"started", "active"}
+                                or isinstance(raw_referencia.get("price"), bool)
+                                or isinstance(entry_contextualizado.get("price"), bool)
+                                or any(valor is None or not math.isfinite(valor) or valor <= 0
+                                       for valor in (preco_referencia, preco_entry))
+                            ):
+                                continue
+                            centavo = Decimal("0.01")
+                            if (Decimal(str(preco_referencia)).quantize(centavo, rounding=ROUND_HALF_UP)
+                                    != Decimal(str(preco_entry)).quantize(centavo, rounding=ROUND_HALF_UP)):
+                                continue
                         entry_selecionado = _promo_mesclar_raw_multistatus(
                             entry_selecionado,
                             entry_contextualizado,
