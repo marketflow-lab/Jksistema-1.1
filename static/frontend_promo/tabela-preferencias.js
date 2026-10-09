@@ -413,6 +413,8 @@ function _calcAutoWidthForColumn(table, th, idx) {
 }
 
 function saveColumnWidthPrefsFromDom() {
+    // A comparação não mede nem sobrescreve as larguras da planilha oculta.
+    if (document.getElementById('promoLegacyTableWrap')?.hidden) return;
     const table = document.getElementById('tabelaAnalise');
     if (!table) return;
     const ths = Array.from(table.querySelectorAll('thead tr th[data-col-key]'));
@@ -607,6 +609,7 @@ function fitWidthsToContainer(baseWidths, minWidth, availableWidth) {
 }
 
 function applyColumnWidthPrefsToDom() {
+    if (document.getElementById('promoLegacyTableWrap')?.hidden) return;
     const table = document.getElementById('tabelaAnalise');
     if (!table) return;
     const prefs = loadColumnWidthPrefs();

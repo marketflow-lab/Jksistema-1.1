@@ -206,6 +206,7 @@ function obterEstimativaCelulaPromocoes(row, coluna) {
 
 function atualizarLinhaFinanceiraParticipacaoPromocoes(row) {
     if (!(Array.isArray(currentData) && currentData.includes(row)) || !row.analysis_client_ref) return;
+    if (typeof atualizarComparacaoFinanceiraPromocoes === 'function') atualizarComparacaoFinanceiraPromocoes(row);
     const trs = Array.from(document.querySelectorAll('#tabelaAnalise tbody tr'))
         .filter(tr => tr.getAttribute('data-analysis-client-ref') === String(row.analysis_client_ref));
     if (trs.length !== 1) return;
@@ -258,7 +259,11 @@ function renderTable(data) {
     const startIdx = 0;
     const pageData = (data || []);
 
-    const visibleColumns = getVisibleColumns();
+    const compact = typeof comparacaoPromocoesAtiva === 'function' && comparacaoPromocoesAtiva();
+    // A tabela oculta prepara os controles reais; preferências continuam exclusivas da planilha.
+    const visibleColumns = compact
+        ? TABLE_COLUMNS_MODERN.filter(col => col.key === 'Ação' || col.key === 'Campanha ML')
+        : getVisibleColumns();
     let draggingKey = null;
     visibleColumns.forEach(col => {
         const th = document.createElement('th');
@@ -445,6 +450,11 @@ function renderTable(data) {
     });
 
     updateMetrics();
+
+    if (compact) {
+        renderComparacaoPromocoes(data);
+        return;
+    }
 
     // Aplica larguras antes do plugin para evitar reset visual no reprocessamento.
     if (pendingWidthPrefs) {

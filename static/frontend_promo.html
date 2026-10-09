@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Análise de Promoção - JK Sistema</title>
     <link rel="stylesheet" href="/frontend_promo/styles.css?v=20261008-relampago-janelas">
+    <link rel="stylesheet" href="/frontend_promo/comparacao.css?v=20261009-layout-compacto">
 </head>
-<body>
+<body class="promo-compact-page">
 
 <div id="apiStatusBar" class="api-status-bar is-hidden" role="status" aria-live="polite" aria-hidden="true">
     <div class="api-status-bar__inner">
@@ -24,8 +25,8 @@
 </div>
 
 <div class="container">
-    <div style="display: flex; justify-content: space-between; align-items: center; gap:8px; flex-wrap:wrap;">
-        <h1>Análise de Promoção</h1>
+    <div class="promo-page-header">
+        <div><p class="promo-page-subtitle">Vendas · Mercado Livre</p><h1>Análise de Promoção</h1></div>
         <div class="nav-actions">
             <a class="back-main-btn" href="/dashboard.html">Home</a>
             <a class="back-main-btn" href="/dashboard.html">Voltar</a>
@@ -55,7 +56,7 @@
                 <select id="apiLojaSelect" onchange="carregarPromocoesApi()"></select>
             </div>
             <div class="api-field">
-                <label for="apiPromoASelect">Promoção 1</label>
+                <label for="apiPromoASelect">Promoção 1 · referência</label>
                 <select id="apiPromoASelect"></select>
             </div>
             <div class="api-field api-field--tolerancia">
@@ -63,8 +64,11 @@
                 <input id="apiMargemTolerancia" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal" title="Permite que a margem da Promoção 2 fique até este percentual abaixo da margem da Promoção 1.">
             </div>
             <div class="api-field api-field--promos">
-                <label for="apiPromoBSelect">Promoções 2</label>
-                <div id="apiPromoBSelect" class="api-promo-summary"></div>
+                <label>Promoções 2 · comparação</label>
+                <details class="promo-campaign-picker">
+                    <summary><span id="promoCampaignSelectionLabel">Selecionar campanhas</span><span class="promo-picker-edit">Editar seleção</span></summary>
+                    <div id="apiPromoBSelect" class="api-promo-summary"></div>
+                </details>
             </div>
         </div>
         <div class="api-file-action-row">
@@ -129,31 +133,30 @@
     <!-- Results Area -->
     <div id="resultsArea" style="display: none;">
         <div id="apiAnalysisTabs" class="api-analysis-tabs" style="display:none;"></div>
-        <div style="display: flex; gap: 20px; margin-bottom: 20px; align-items: flex-start;">
-            <!-- Metrics Section (Left) -->
-            <div class="metrics" style="flex: 3; display: flex; gap: 10px; margin-bottom: 0;">
-                <div class="metric-card">
-                    <div class="metric-value" id="totalAnuncios">0</div>
-                    <div class="metric-label">Anúncios</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value" id="totalParticipar" style="color: green;">0</div>
-                    <div class="metric-label">Participar</div>
-                </div>
-                <div class="metric-card">
-                    <div class="metric-value" id="totalNaoParticipar" style="color: red;">0</div>
-                    <div class="metric-label">Não Participar</div>
-                </div>
+        <div class="promo-results-heading">
+            <div class="metrics" aria-label="Resumo da análise">
+                <div class="metric-card"><strong class="metric-value" id="totalAnuncios">0</strong><span class="metric-label">Anúncios</span></div>
+                <div class="metric-card"><strong class="metric-value" id="totalParticipar">0</strong><span class="metric-label">Participar</span></div>
+                <div class="metric-card"><strong class="metric-value" id="totalNaoParticipar">0</strong><span class="metric-label">Não participar</span></div>
             </div>
-
-            <!-- Actions Section (Right) -->
-            <div style="flex: 2; background: rgba(13, 27, 45, 0.86); padding: 15px; border-radius: 8px; border: 1px solid rgba(126, 181, 231, 0.28); box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                <strong style="display: block; margin-bottom: 10px; color: #eaf3ff;">Ações</strong>
-                <div style="display: flex; flex-direction: column; gap: 5px;">
-                    <button onclick="toggleColumnsPanel()" style="width:100%; padding:8px; background:#324a68; color:#eaf3ff; border:none; border-radius:5px; font-weight:bold; cursor:pointer; transition: 0.3s;"> Configurar Colunas</button>
-                    <button onclick="copiarDecisoes()" style="width:100%; padding:8px; background:#1ca2ff; color:#ffffff; border:none; border-radius:5px; font-weight:bold; cursor:pointer; transition: 0.3s;"> Copiar</button>
-                    <button onclick="exportarPlanilha()" style="width:100%; padding:8px; background:#1f8f5b; color:#ffffff; border:none; border-radius:5px; font-weight:bold; cursor:pointer; transition: 0.3s;"> Baixar Planilha com Alterações</button>
-                </div>
+            <div class="promo-actions" aria-label="Ações da análise">
+                <button class="col-btn-mini" type="button" onclick="configurarColunasComparacaoPromocoes()">Configurar colunas</button>
+                <button class="col-btn-mini" type="button" onclick="copiarDecisoes()">Copiar</button>
+                <button class="col-btn-mini" type="button" onclick="exportarPlanilha()">Baixar planilha</button>
+            </div>
+        </div>
+        <div class="promo-view-toolbar">
+            <div class="promo-view-switch" aria-label="Visualização dos anúncios">
+                <button type="button" class="col-btn-mini" data-promo-view="comparacao" aria-pressed="true">Comparar campanhas</button>
+                <button type="button" class="col-btn-mini" data-promo-view="planilha" aria-pressed="false">Planilha</button>
+            </div>
+            <div id="promoComparisonFilters" class="promo-comparison-filters">
+                <input id="promoSearch" type="search" placeholder="Buscar título, SKU ou MLB" aria-label="Buscar anúncio na tela">
+                <select id="promoDecisionFilter" aria-label="Filtrar ação na tela">
+                    <option value="todos">Todas as ações</option><option value="participar">Participar</option><option value="nao">Não participar</option>
+                </select>
+                <select id="promoDensity" aria-label="Detalhamento na tela"><option value="completo">Completo</option><option value="resumido">Resumido</option></select>
+                <label class="promo-differences-toggle"><input type="checkbox" id="promoDifferences" checked> Diferenças</label>
             </div>
         </div>
 
@@ -184,7 +187,18 @@
 
         <div id="analysisEmptyState" role="status" aria-live="polite" style="display:none; margin:0 0 14px; padding:14px; border:1px solid rgba(126, 181, 231, 0.35); border-radius:6px; background:#122840; color:#eaf3ff;"></div>
 
-        <div class="table-container">
+        <div id="promoComparison" class="completo" aria-label="Comparação de campanhas por anúncio">
+            <div class="promo-comparison-head">
+                <div class="promo-ad"><strong>ANÚNCIO</strong><small>Identificação, status e custo</small></div>
+                <div class="promo-campaign promo-one"><small>PROMOÇÃO 1 · REFERÊNCIA</small><strong id="promoReferenceName" class="promo-campaign-title">Referência</strong><div class="promo-field-heads"><span>Preço final</span><span>Valor líquido</span><span>Margem</span></div></div>
+                <div class="promo-campaign promo-two"><small>PROMOÇÃO 2 · COMPARAÇÃO</small><strong id="promoComparisonName" class="promo-campaign-title">Campanha selecionada</strong><div class="promo-field-heads"><span>Preço final</span><span>Valor líquido</span><span>Margem</span></div></div>
+                <div class="promo-decision"><strong>DECISÃO</strong><small>Ação e condições da oferta</small></div>
+            </div>
+            <div id="promoComparisonRows"></div>
+            <p id="promoFilterEmpty" hidden>Nenhum anúncio corresponde aos filtros. Ajuste a busca ou a ação.</p>
+            <p class="promo-comparison-note"><span id="promoVisibleCount" aria-live="polite"></span><span>≈ Estimado · Diferenças em relação à P1 · Líquido já desconta custo, tarifa, frete e imposto. Filtros alteram apenas a exibição.</span></p>
+        </div>
+        <div id="promoLegacyTableWrap" class="table-container" hidden>
             <table id="tabelaAnalise">
                 <thead>
                     <tr></tr>
@@ -197,15 +211,20 @@
     </div>
 </div>
 
+<dialog id="promoDetailsDialog" aria-labelledby="promoDetailsTitle">
+    <div class="promo-details-heading"><h2 id="promoDetailsTitle" class="promo-details-title">Ficha do anúncio</h2><button id="promoDetailsClose" class="promo-details-close col-btn-mini" type="button">Fechar</button></div>
+    <dl id="promoDetailsFields" class="promo-details-grid"></dl>
+</dialog>
 <script src="/table_columns.js"></script>
 <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 <script src="/frontend_promo/runtime.js?v=20260916-margem-campanha"></script>
 <script src="/frontend_promo/automacao-api.js?v=20261008-relampago-preco-margem"></script>
 <script src="/frontend_promo/participacao.js?v=20261008-relampago-preco-margem"></script>
-<script src="/frontend_promo/tabela-preferencias.js?v=20261008-relampago-preco-margem"></script>
+<script src="/frontend_promo/tabela-preferencias.js?v=20261009-layout-compacto"></script>
 <script src="/frontend_promo/api-mercadolivre.js?v=20261008-relampago-preco-margem"></script>
-<script src="/frontend_promo/arquivos-render.js?v=20261008-relampago-preco-margem"></script>
+<script src="/frontend_promo/arquivos-render.js?v=20261009-layout-compacto"></script>
 <script src="/frontend_promo/exportacao.js?v=20260908-resultado-vazio"></script>
+<script src="/frontend_promo/comparacao.js?v=20261009-layout-compacto"></script>
 <script src="/frontend_promo/init.js?v=20260623-isolamento-promo"></script>
 
 <div id="processingOverlay" class="processing-overlay" aria-live="polite" aria-busy="true">
