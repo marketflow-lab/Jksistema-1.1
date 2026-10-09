@@ -1,24 +1,32 @@
 /* Presentation for the compact promotion comparison. */
 body.promo-compact-page {
     color-scheme: dark;
-    --promo-bg: #17191f;
-    --promo-panel: #20232b;
-    --promo-line: #3a404e;
-    --promo-text: #f0f3f9;
-    --promo-muted: #b1bbcc;
-    --promo-accent: #b9c3ff;
-    --promo-green: #91d9be;
-    --promo-red: #eea8af;
+    --promo-bg: #0c1824;
+    --promo-panel: #142738;
+    --promo-line: #3e596f;
+    --promo-text: #f1f6fc;
+    --promo-muted: #b9ccdc;
+    --promo-accent: #88d2f0;
+    --promo-green: #8ddfbd;
+    --promo-red: #ffadb6;
+    --promo-control: #1e3549;
+    --promo-control-active: #2b4a63;
+    --promo-row: #142a3b;
+    --promo-row-alt: #263f54;
+    --promo-comparison: #1b3544;
+    --promo-comparison-alt: #304d61;
+    --promo-head: #203d52;
+    --promo-head-comparison: #24525b;
     --bg-a: var(--promo-bg);
     --bg-b: var(--promo-bg);
     --bg-c: var(--promo-bg);
     --panel: var(--promo-panel);
-    --panel-soft: #232630;
+    --panel-soft: var(--promo-panel);
     --border: var(--promo-line);
     --text: var(--promo-text);
     --muted: var(--promo-muted);
     --accent: var(--promo-accent);
-    --accent-strong: #777fbd;
+    --accent-strong: #389dd0;
     background: var(--promo-bg);
     color: var(--promo-text);
     font-size: 14px;
@@ -68,7 +76,7 @@ body.promo-compact-page .promo-page-header .back-main-btn {
     padding: 5px 10px;
     font-size: 12px;
     font-weight: 550;
-    border: 1px solid #454b5c;
+    border: 1px solid var(--promo-line);
     border-radius: 6px;
     background: transparent;
     color: #d4dcf0;
@@ -78,9 +86,9 @@ body.promo-compact-page .promo-page-header .back-main-btn {
 body.promo-compact-page #painelApi.upload-section {
     padding: 10px 14px;
     margin-bottom: 15px;
-    border: 1px solid #343946;
+    border: 1px solid var(--promo-line);
     border-radius: 8px;
-    background: #232630;
+    background: var(--promo-panel);
     text-align: left;
 }
 body.promo-compact-page #painelApi .api-grid {
@@ -102,8 +110,8 @@ body.promo-compact-page #painelApi .api-field input {
     min-height: 35px;
     padding: 7px 9px;
     font-size: 12px;
-    border: 1px solid #454c5c;
-    background: #272b35;
+    border: 1px solid var(--promo-line);
+    background: var(--promo-control);
     color: var(--promo-text);
 }
 body.promo-compact-page details.promo-campaign-picker {
@@ -117,10 +125,10 @@ body.promo-compact-page .promo-campaign-picker summary {
     gap: 8px;
     min-height: 35px;
     padding: 7px 10px;
-    border: 1px solid #525b80;
+    border: 1px solid var(--promo-line);
     border-radius: 6px;
-    background: #30354a;
-    color: #dce2ff;
+    background: var(--promo-control-active);
+    color: var(--promo-text);
     font-size: 12px;
     line-height: 1.4;
     cursor: pointer;
@@ -149,14 +157,14 @@ body.promo-compact-page .promo-campaign-picker #apiPromoBSelect {
     width: min(880px, calc(100vw - 76px));
     max-height: min(430px, 58vh);
     box-sizing: border-box;
-    border-color: #525c75;
-    background: #222733;
+    border-color: var(--promo-line);
+    background: var(--promo-panel);
     box-shadow: 0 12px 34px #080b135c;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-toolbar {
     padding: 9px 10px;
-    background: #2a303d;
-    border-color: #444d60;
+    background: var(--promo-head);
+    border-color: var(--promo-line);
     box-shadow: none;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-selection-summary { font-size: 12px; }
@@ -165,11 +173,11 @@ body.promo-compact-page .promo-campaign-picker .api-promo-card-grid {
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-card {
     min-height: 72px;
-    background: #272e3a;
-    border-color: #414c60;
+    background: var(--promo-control);
+    border-color: var(--promo-line);
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-card.is-selected {
-    background: #303c44;
+    background: #21443f;
     border-color: #7ab89f;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-card-meta { font-size: 11px; }
@@ -190,15 +198,15 @@ body.promo-compact-page .container .btn {
 }
 body.promo-compact-page .container .btn-primary {
     background: var(--promo-accent);
-    color: #1b2239;
+    color: #102637;
 }
-body.promo-compact-page .container .btn-primary:hover { background: #d0d6ff; }
-body.promo-compact-page .container .btn-secondary { background: #353d51; }
+body.promo-compact-page .container .btn-primary:hover { background: #b7e7fa; }
+body.promo-compact-page .container .btn-secondary { background: var(--promo-control-active); }
 body.promo-compact-page #painelApi .api-auto-row {
     gap: 7px 15px;
     margin: 0;
     padding-top: 7px;
-    border-top: 1px solid #373d4b;
+    border-top: 1px solid var(--promo-line);
     align-items: center;
 }
 body.promo-compact-page #painelApi .api-auto-option {
@@ -211,8 +219,8 @@ body.promo-compact-page #painelApi .api-auto-interval input,
 body.promo-compact-page #painelApi .api-auto-interval select {
     min-height: 27px;
     padding: 3px 6px;
-    background: #272d39;
-    border-color: #475064;
+    background: var(--promo-control);
+    border-color: var(--promo-line);
     font-size: 11px;
 }
 body.promo-compact-page #painelApi .api-auto-interval input { width: 58px; }
@@ -258,7 +266,7 @@ body.promo-compact-page .promo-results-heading .metric-card {
     text-align: left;
 }
 body.promo-compact-page .promo-results-heading .metric-card:first-child { padding-left: 0; }
-body.promo-compact-page .promo-results-heading .metric-card + .metric-card { border-left: 1px solid #414857; }
+body.promo-compact-page .promo-results-heading .metric-card + .metric-card { border-left: 1px solid var(--promo-line); }
 body.promo-compact-page .promo-results-heading .metric-value {
     font-size: 20px;
     font-variant-numeric: tabular-nums;
@@ -282,9 +290,9 @@ body.promo-compact-page .promo-view-toolbar select {
     box-sizing: border-box;
     min-height: 31px;
     padding: 5px 8px;
-    border: 1px solid #434b5f;
+    border: 1px solid var(--promo-line);
     border-radius: 5px;
-    background: #252b37;
+    background: var(--promo-control);
     color: #d7deef;
     font-size: 11px;
 }
@@ -296,7 +304,7 @@ body.promo-compact-page .promo-view-toolbar {
     gap: 8px;
     margin: 0 0 9px;
     padding-top: 9px;
-    border-top: 1px solid #363e4e;
+    border-top: 1px solid var(--promo-line);
     color: #c3cde0;
     font-size: 11px;
 }
@@ -304,12 +312,12 @@ body.promo-compact-page .promo-view-switch {
     display: inline-flex;
     gap: 2px;
     padding: 2px;
-    border: 1px solid #424b60;
+    border: 1px solid var(--promo-line);
     border-radius: 5px;
-    background: #1d212a;
+    background: var(--promo-panel);
 }
 body.promo-compact-page .promo-view-switch button { border: 0; min-height: 26px; background: transparent; }
-body.promo-compact-page .promo-view-switch button[aria-pressed='true'] { background: #3a435a; color: #f1f3ff; }
+body.promo-compact-page .promo-view-switch button[aria-pressed='true'] { background: var(--promo-control-active); color: var(--promo-text); }
 body.promo-compact-page #promoSearch { flex: 1 1 200px; max-width: 310px; min-width: 140px; }
 body.promo-compact-page #promoDecisionFilter,
 body.promo-compact-page #promoDensity { max-width: 180px; }
@@ -317,9 +325,9 @@ body.promo-compact-page .promo-view-toolbar label { display: inline-flex; align-
 body.promo-compact-page #promoDifferences { min-height: 0; margin: 0; accent-color: var(--promo-accent); }
 body.promo-compact-page #promoComparison {
     overflow: visible;
-    border: 1px solid #434b5c;
+    border: 1px solid var(--promo-line);
     border-radius: 7px;
-    background: #20242e;
+    background: var(--promo-panel);
 }
 body.promo-compact-page .promo-comparison-head,
 body.promo-compact-page .promo-comparison-row {
@@ -329,10 +337,10 @@ body.promo-compact-page .promo-comparison-row {
     min-width: 0;
 }
 body.promo-compact-page .promo-comparison-head {
-    border-bottom: 1px solid #485267;
+    border-bottom: 1px solid var(--promo-line);
     border-radius: 6px 6px 0 0;
     overflow: hidden;
-    background: #2a303d;
+    background: var(--promo-head);
     color: #d8e1f2;
     font-size: 11px;
 }
@@ -341,11 +349,11 @@ body.promo-compact-page .promo-comparison-row > * {
     min-width: 0;
     box-sizing: border-box;
     padding: 8px 11px;
-    border-right: 1px solid #3e485c;
+    border-right: 1px solid var(--promo-line);
 }
 body.promo-compact-page .promo-comparison-head > :last-child,
 body.promo-compact-page .promo-comparison-row > :last-child { border-right: 0; }
-body.promo-compact-page .promo-comparison-head .promo-two { background: #303a4f; }
+body.promo-compact-page .promo-comparison-head .promo-two { background: var(--promo-head-comparison); }
 body.promo-compact-page .promo-campaign-title {
     margin: 0;
     color: #edf2fc;
@@ -364,16 +372,65 @@ body.promo-compact-page .promo-expenses {
 }
 body.promo-compact-page .promo-field-heads { margin-top: 5px; color: #c3cee3; font-size: 11px; line-height: 1.3; }
 body.promo-compact-page .promo-comparison-row {
-    border-bottom: 1px solid #3e485b;
-    background: #222733;
+    border-bottom: 1px solid var(--promo-line);
+    background: var(--promo-row);
 }
 body.promo-compact-page .promo-comparison-row:last-child { border-bottom: 0; }
-body.promo-compact-page .promo-comparison-row:nth-child(even) { background: #252b38; }
-body.promo-compact-page .promo-comparison-row .promo-two { background: #28344a; }
-body.promo-compact-page .promo-comparison-row:nth-child(even) .promo-two { background: #2c3950; }
-body.promo-compact-page .promo-comparison-row:hover { background: #2c3444; }
-body.promo-compact-page .promo-comparison-row:hover .promo-two { background: #32415c; }
+/* Count only visible ads so filtering preserves alternating row colors. */
+body.promo-compact-page .promo-comparison-row:nth-child(even of .promo-comparison-row:not([hidden])) { background: var(--promo-row-alt); }
+body.promo-compact-page .promo-comparison-row .promo-two { background: var(--promo-comparison); }
+body.promo-compact-page .promo-comparison-row:nth-child(even of .promo-comparison-row:not([hidden])) .promo-two { background: var(--promo-comparison-alt); }
+body.promo-compact-page .promo-comparison-row:hover,
+body.promo-compact-page .promo-comparison-row:focus-within,
+body.promo-compact-page #tabelaAnalise tbody tr:hover,
+body.promo-compact-page #tabelaAnalise tbody tr:focus-within {
+    outline: 1px solid #79b8d0;
+    outline-offset: -1px;
+}
+body.promo-compact-page .promo-comparison-head .promo-one { box-shadow: inset 0 3px 0 #88c7ee; }
+body.promo-compact-page .promo-comparison-head .promo-two { box-shadow: inset 0 3px 0 #81d8cb; }
+body.promo-compact-page #tabelaAnalise thead th { background: var(--promo-head); }
+body.promo-compact-page #tabelaAnalise tbody tr { background: var(--promo-row); }
+body.promo-compact-page #tabelaAnalise tbody tr:nth-child(even) { background: var(--promo-row-alt); }
 body.promo-compact-page .promo-comparison-row .promo-campaign-title { display: none; }
+body.promo-compact-page .promo-ad-main {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 9px;
+    align-items: start;
+}
+body.promo-compact-page .promo-ad-identity { min-width: 0; }
+body.promo-compact-page .promo-ad-photo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    height: 64px;
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 1px solid #668397;
+    border-radius: 6px;
+    background: #fff;
+}
+body.promo-compact-page .promo-ad-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    padding: 3px;
+    box-sizing: border-box;
+}
+body.promo-compact-page .promo-ad-photo.is-missing {
+    border-style: dashed;
+    background: var(--promo-control);
+}
+body.promo-compact-page .promo-photo-placeholder {
+    padding: 5px;
+    color: var(--promo-muted);
+    font-size: 10px;
+    line-height: 1.3;
+    text-align: center;
+}
 body.promo-compact-page .promo-ad-title {
     margin: 0 0 4px;
     color: #f3f5fb;
@@ -443,7 +500,7 @@ body.promo-compact-page .promo-delta.is-estimated { color: #e9c48d; }
 body.promo-compact-page .promo-expenses {
     margin-top: 5px;
     padding-top: 5px;
-    border-top: 1px solid #46526a;
+    border-top: 1px solid var(--promo-line);
     gap: 5px;
 }
 body.promo-compact-page .promo-expense {
@@ -492,21 +549,35 @@ body.promo-compact-page .promo-action-control { min-width: 0; flex: 1 1 auto; }
 body.promo-compact-page .promo-action-control select.decision-select {
     width: 100%;
     max-width: 150px;
-    min-height: 27px;
-    padding: 3px 5px;
-    border: 1px solid #475167;
-    background: #282f3e;
+    min-height: 32px;
+    padding: 5px 7px;
+    border-radius: 6px;
+    font-weight: 700;
+    border: 1px solid var(--promo-line);
+    background: var(--promo-control);
     font-size: 12px;
     line-height: 1.3;
 }
-body.promo-compact-page .promo-action-control select.decision-select.participar { color: var(--promo-green); }
-body.promo-compact-page .promo-action-control select.decision-select.nao-participar { color: var(--promo-red); }
-body.promo-compact-page .promo-action-control select.decision-select option { color: #f0f3fa; background: #282f3e; }
+body.promo-compact-page select.decision-select.participar {
+    background: #146c49;
+    color: #f0fff6;
+    border-color: #65e2a1;
+    font-weight: 700;
+}
+body.promo-compact-page select.decision-select.nao-participar {
+    background: #a63745;
+    color: #fff4f6;
+    border-color: #ff9ca7;
+    font-weight: 700;
+}
+body.promo-compact-page select.decision-select.participar:hover { background: #188052; }
+body.promo-compact-page select.decision-select.nao-participar:hover { background: #bd4353; }
+body.promo-compact-page .promo-action-control select.decision-select option { color: #f0f3fa; background: var(--promo-control); }
 body.promo-compact-page button.promo-ficha {
     flex: 0 0 auto;
     min-height: 26px;
     padding: 3px 6px;
-    border: 1px solid #49556c;
+    border: 1px solid var(--promo-line);
     border-radius: 5px;
     background: transparent;
     color: #c5d0e5;
@@ -526,7 +597,7 @@ body.promo-compact-page .promo-decision .promo-decision-technical { color: #e5c4
 body.promo-compact-page .promo-offer-info {
     margin-top: 5px;
     padding-top: 5px;
-    border-top: 1px solid #47546b;
+    border-top: 1px solid var(--promo-line);
     color: #c3d0e6;
     font-size: 11px;
     line-height: 1.35;
@@ -555,9 +626,9 @@ body.promo-compact-page .promo-decision .promo-lightning-stock input {
     min-height: 27px;
     box-sizing: border-box;
     padding: 3px 5px;
-    border: 1px solid #536079;
+    border: 1px solid var(--promo-line);
     border-radius: 5px;
-    background: #293247;
+    background: var(--promo-control);
     font-size: 11px;
     color: #eff3fc;
 }
@@ -574,9 +645,9 @@ body.promo-compact-page #promoDetailsDialog {
     max-height: 85vh;
     box-sizing: border-box;
     padding: 20px;
-    border: 1px solid #53617a;
+    border: 1px solid var(--promo-line);
     border-radius: 9px;
-    background: #222733;
+    background: var(--promo-panel);
     color: var(--promo-text);
     overflow: auto;
     box-shadow: 0 20px 70px #05081080;
@@ -601,7 +672,7 @@ body.promo-compact-page .promo-details-grid dd {
     min-width: 0;
     margin: 0;
     padding: 7px 0;
-    border-bottom: 1px solid #3f4a5e;
+    border-bottom: 1px solid var(--promo-line);
     overflow-wrap: anywhere;
 }
 body.promo-compact-page .promo-details-grid dt { color: #b6c4dc; }
@@ -609,9 +680,9 @@ body.promo-compact-page .promo-details-grid dd { color: #eff3fa; font-variant-nu
 body.promo-compact-page button.promo-details-close {
     min-height: 30px;
     padding: 4px 9px;
-    border: 1px solid #536079;
+    border: 1px solid var(--promo-line);
     border-radius: 5px;
-    background: #30394d;
+    background: var(--promo-control-active);
     color: #e7edfc;
     font-size: 12px;
     cursor: pointer;
@@ -664,11 +735,11 @@ body.promo-compact-page #promoDetailsDialog :focus-visible {
     body.promo-compact-page .promo-comparison-head { display: none; }
     body.promo-compact-page .promo-comparison-row {
         grid-template-columns: minmax(0, 1fr);
-        border-bottom: 4px solid #47556e;
+        border-bottom: 4px solid var(--promo-line);
     }
     body.promo-compact-page .promo-comparison-row > * {
         border-right: 0;
-        border-bottom: 1px solid #45516a;
+        border-bottom: 1px solid var(--promo-line);
         padding: 11px 13px;
     }
     body.promo-compact-page .promo-comparison-row > :last-child { border-bottom: 0; }
@@ -758,9 +829,9 @@ body.promo-compact-page .promo-listing-type,
 body.promo-compact-page .promo-p1-status { font-size: inherit; font-weight: 500; }
 body.promo-compact-page .promo-listing-type {
     padding: 1px 4px;
-    border: 1px solid #53617a;
+    border: 1px solid var(--promo-line);
     border-radius: 3px;
-    background: #303a4c;
+    background: var(--promo-control);
 }
 body.promo-compact-page .promo-ad-cost { justify-content: flex-start; }
 body.promo-compact-page .promo-tax-rate {
@@ -772,9 +843,9 @@ body.promo-compact-page .promo-tax-rate {
 body.promo-compact-page .promo-tax-rate .promo-condition-value { font-size: inherit; font-weight: 500; }
 body.promo-compact-page .promo-action-control { background-color: transparent !important; }
 body.promo-compact-page .promo-action-control[style*='background-color'] {
-    background-color: #313a50 !important;
+    background-color: var(--promo-control-active) !important;
     border-radius: 5px;
-    box-shadow: inset 2px 0 0 #b9c3ff;
+    box-shadow: inset 2px 0 0 var(--promo-accent);
 }
 body.promo-compact-page .promo-p2-status {
     display: block;

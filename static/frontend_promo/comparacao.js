@@ -22,6 +22,45 @@ function promoDisplayValue(row, key) {
     return text || 'Não informado';
 }
 
+function promoProductPhotoUrl(row) {
+    const value = row?.thumbnail || row?.secure_thumbnail;
+    if (typeof value !== 'string' || !value.trim() || value.length > 2048) return '';
+    try {
+        const url = new URL(value.trim());
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.port) return '';
+        if (!/(^|\.)mlstatic\.com$/i.test(url.hostname)) return '';
+        url.protocol = 'https:';
+        return url.href;
+    } catch (_error) { return ''; }
+}
+
+function criarFotoComparacaoPromocoes(row) {
+    const photo = promoElement('div', 'promo-ad-photo');
+    const placeholder = promoElement('span', 'promo-photo-placeholder', 'Sem foto');
+    const url = promoProductPhotoUrl(row);
+    if (!url) {
+        photo.classList.add('is-missing');
+        photo.appendChild(placeholder);
+        return photo;
+    }
+    const image = promoElement('img', 'promo-ad-image');
+    image.alt = 'Foto de ' + promoDisplayValue(row, 'Título');
+    image.width = 64;
+    image.height = 64;
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    image.referrerPolicy = 'no-referrer';
+    placeholder.hidden = true;
+    image.addEventListener('error', () => {
+        image.remove();
+        placeholder.hidden = false;
+        photo.classList.add('is-missing');
+    }, { once: true });
+    image.src = url;
+    photo.append(image, placeholder);
+    return photo;
+}
+
 function promoNumericValue(raw) {
     if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
     const original = String(raw ?? '').trim();
@@ -136,7 +175,10 @@ function promoCampaignMetrics(row, second) {
 
 function criarIdentificacaoComparacaoPromocoes(row) {
     const ad = promoElement('div', 'promo-ad');
-    ad.appendChild(promoElement('h3', 'promo-ad-title', promoDisplayValue(row, 'Título')));
+    const main = promoElement('div', 'promo-ad-main');
+    const identity = promoElement('div', 'promo-ad-identity');
+    main.appendChild(criarFotoComparacaoPromocoes(row));
+    identity.appendChild(promoElement('h3', 'promo-ad-title', promoDisplayValue(row, 'Título')));
     const ids = promoElement('div', 'promo-ad-ids');
     [['SKU', 'SKU'], ['MLB', 'MLB']].forEach(([key, label]) => {
         const part = promoElement('span');
@@ -144,7 +186,9 @@ function criarIdentificacaoComparacaoPromocoes(row) {
         part.appendChild(promoBoundValue(row, key, 'promo-id-value'));
         ids.appendChild(part);
     });
-    ad.appendChild(ids);
+    identity.appendChild(ids);
+    main.appendChild(identity);
+    ad.appendChild(main);
     const full = promoElement('div', 'promo-full');
     const meta = promoElement('div', 'promo-ad-meta');
     meta.appendChild(promoBoundValue(row, 'Tipo', 'promo-listing-type'));

@@ -289,6 +289,91 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             return resultado
         return capturadas[0], resultado["analises"][0]["data"][0]
 
+    def test_thumbnail_prioriza_metadados_validos_sem_mutar_item(self):
+        secure = "https://http2.mlstatic.com/D-secure.jpg"
+        thumbnail = "https://http2.mlstatic.com/D-thumbnail.jpg"
+        picture = "https://http2.mlstatic.com/D-picture.jpg"
+        cases = [
+            ({"secure_thumbnail": f"  {secure}  ", "thumbnail": thumbnail,
+              "pictures": [{"secure_url": picture}]}, secure),
+            ({"secure_thumbnail": "  ", "thumbnail": thumbnail,
+              "pictures": [{"secure_url": picture}]}, thumbnail),
+            ({"secure_thumbnail": {"url": secure}, "thumbnail": [thumbnail],
+              "pictures": [None, "malformed", {"secure_url": ""},
+                           {"secure_url": f" {picture} ", "url": thumbnail}]}, picture),
+            ({"pictures": [{"secure_url": False, "url": thumbnail},
+                           {"secure_url": picture}]}, thumbnail),
+            ({"pictures": [{"url": "  "}, {"secure_url": picture}]}, picture),
+            ({}, ""),
+            ({"secure_thumbnail": False, "thumbnail": 42, "pictures": {}}, ""),
+            ({"pictures": [None, {}, {"secure_url": 42, "url": []}]}, ""),
+            (None, ""),
+            ([], ""),
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                before = copy.deepcopy(item)
+                self.assertEqual(analysis._promo_thumbnail_item(item), expected)
+                self.assertEqual(item, before)
+
+    def test_thumbnail_atravessa_tres_fluxos_sem_mudar_financeiro_decisao_ou_planilha(self):
+        raw = {"id": "P-DEAL-TESTE", "type": "DEAL", "status": "candidate",
+               "price": 91.74, "original_price": 126.46}
+        cases = [
+            ({"secure_thumbnail": "https://http2.mlstatic.com/D-secure.jpg",
+              "thumbnail": "https://http2.mlstatic.com/D-other.jpg"},
+             "https://http2.mlstatic.com/D-secure.jpg"),
+            ({"thumbnail": "https://http2.mlstatic.com/D-thumbnail.jpg"},
+             "https://http2.mlstatic.com/D-thumbnail.jpg"),
+            ({"pictures": [None, {"url": "https://http2.mlstatic.com/D-picture.jpg"}]},
+             "https://http2.mlstatic.com/D-picture.jpg"),
+            ({"secure_thumbnail": {}, "thumbnail": False, "pictures": [None, {}]}, ""),
+        ]
+        def stable(row):
+            return {key: value for key, value in row.items()
+                    if key not in {"thumbnail", "analysis_client_ref"}}
+        for mode in ({}, {"com_arquivos": True}, {"via_api_direta": True}):
+            base_internal, base_payload = self._executar_fluxo(
+                raw, promo_b_id="P-DEAL-TESTE", promo_b_type="DEAL", **mode)
+            self.assertEqual(base_internal["thumbnail"], "")
+            self.assertEqual(base_payload["thumbnail"], "")
+            for item, expected in cases:
+                with self.subTest(mode=mode, image=item):
+                    internal, payload = self._executar_fluxo(
+                        raw, promo_b_id="P-DEAL-TESTE", promo_b_type="DEAL",
+                        item_overrides=item, **mode)
+                    self.assertEqual(internal["thumbnail"], expected)
+                    self.assertEqual(payload["thumbnail"], expected)
+                    self.assertEqual(stable(internal), stable(base_internal))
+                    self.assertEqual(stable(payload), stable(base_payload))
+                    before = analysis._build_df_planilha_analise_promo([base_internal])
+                    after = analysis._build_df_planilha_analise_promo([internal])
+                    self.assertNotIn("thumbnail", after.columns)
+                    analysis.pd.testing.assert_frame_equal(before, after)
+
+    def test_analise_automatica_reutiliza_thumbnail_sem_mudar_decisao(self):
+        announcement = {"id": ITEM_ID, "sku": "SKU-TESTE", "title": "Produto",
+                        "price": 100, "original_price": 120, "has_promotion": True}
+        with (
+            patch.object(analysis, "listar_anuncios_mercado_livre", create=True) as listing,
+            patch.object(analysis, "_salvar_planilha_analise_promo", return_value=None),
+            patch.object(analysis, "_carregar_custos_impostos_cadastro_por_sku_loja",
+                         return_value=({"SKU-TESTE": 40}, {})),
+        ):
+            listing.return_value = {"results": [announcement]}
+            baseline = asyncio.run(analysis.analisar_promo_automatico(
+                loja="Loja Teste", margem_minima=70, client_id="000002"))
+            image = "https://http2.mlstatic.com/D-thumbnail.jpg"
+            listing.return_value = {"results": [dict(announcement, thumbnail=image)]}
+            pictured = asyncio.run(analysis.analisar_promo_automatico(
+                loja="Loja Teste", margem_minima=70, client_id="000002"))
+            self.assertEqual(listing.call_count, 2)
+        before, after = baseline["data"][0], pictured["data"][0]
+        self.assertEqual(before["thumbnail"], "")
+        self.assertEqual(after["thumbnail"], image)
+        self.assertEqual({key: value for key, value in before.items() if key != "thumbnail"},
+                         {key: value for key, value in after.items() if key != "thumbnail"})
+
     def test_proposta_flexivel_b_usa_mesmo_preco_no_financeiro_e_na_exibicao(self):
         raw = {
             "id": "P-DEAL-TESTE", "type": "DEAL", "status": "candidate",

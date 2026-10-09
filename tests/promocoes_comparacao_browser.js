@@ -24,6 +24,15 @@ const root = path.resolve(__dirname, '..');
       unexpectedRequests.push(pathname);
       return route.abort();
     });
+    await page.route('https://http2.mlstatic.com/**', route => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/promo-fixture-failed.png') return route.abort();
+      if (!/^\/promo-fixture-[12]\.png$/.test(pathname)) {
+        unexpectedRequests.push(route.request().url());
+        return route.abort();
+      }
+      return route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="white"/><path d="M18 51h44l-4-20H25z" fill="#7a8898"/><circle cx="28" cy="54" r="6" fill="#27384a"/><circle cx="54" cy="54" r="6" fill="#27384a"/></svg>' });
+    });
     await page.goto('http://promo.test/frontend_promo.html');
     await page.evaluate(() => {
       document.getElementById('apiLojaSelect').innerHTML = '<option>Loja de teste</option>';
@@ -38,15 +47,15 @@ const root = path.resolve(__dirname, '..');
         'Ação': 'Participar', 'Participar ou não': 'Participar', action_financeiro_exato: true,
         action_promotion_type: 'LIGHTNING', lightning_action_blocked: false, lightning_stock_min: 1, lightning_stock_max: 10, lightning_stock: 2 };
       currentData = [
-        { ...base, analysis_client_ref: 'teste:0', lightning_offer_key: 'oferta-1', lightning_start_date: '2026-10-10T12:00:00Z', lightning_finish_date: '2026-10-10T20:00:00Z' },
-        { ...base, analysis_client_ref: 'teste:1', lightning_offer_key: 'oferta-2', SKU: 'EXEMPLO-002', 'Título': 'Jogo de juntas completo — exemplo',
+        { ...base, thumbnail: 'https://http2.mlstatic.com/promo-fixture-1.png', analysis_client_ref: 'teste:0', lightning_offer_key: 'oferta-1', lightning_start_date: '2026-10-10T12:00:00Z', lightning_finish_date: '2026-10-10T20:00:00Z' },
+        { ...base, thumbnail: 'http://http2.mlstatic.com/promo-fixture-2.png', analysis_client_ref: 'teste:1', lightning_offer_key: 'oferta-2', SKU: 'EXEMPLO-002', 'Título': 'Jogo de juntas completo — exemplo',
           'Ação': 'Não participar', 'Participar ou não': 'Não participar', lightning_stock: 3, lightning_schedule_pending: true,
           _jk_tarifa_ml_estimada: true, action_financeiro_estimado: true, action_financeiro_estimativa_motivo: 'Tarifa aproximada. <img src=x onerror=alert(1)>',
           action_financeiro_motivo: 'Margem estimada para revisão.' },
-        { ...base, MLB: 'MLB-EXEMPLO-003', SKU: 'EXEMPLO-003', 'Título': 'Filtro de combustível — exemplo', analysis_client_ref: 'teste:2', lightning_offer_key: 'oferta-3',
+        { ...base, thumbnail: 'https://http2.mlstatic.com/promo-fixture-failed.png', MLB: 'MLB-EXEMPLO-003', SKU: 'EXEMPLO-003', 'Título': 'Filtro de combustível — exemplo', analysis_client_ref: 'teste:2', lightning_offer_key: 'oferta-3',
           'Tarifa ML': 'R$ 0,00', 'Desconto ML': 'Não informado pela API', action_desconto_ml: null,
           'Valor líquido ML': '', 'Margem ML': 'A calcular', action_ja_participa: true },
-        { ...base, MLB: 'MLB-EXEMPLO-004', SKU: 'EXEMPLO-004', 'Título': '<img src=x onerror=alert(1)>', analysis_client_ref: 'teste:3', lightning_offer_key: 'oferta-4',
+        { ...base, thumbnail: 'javascript:alert(1)', MLB: 'MLB-EXEMPLO-004', SKU: 'EXEMPLO-004', 'Título': '<img src=x onerror=alert(1)>', analysis_client_ref: 'teste:3', lightning_offer_key: 'oferta-4',
           lightning_action_blocked: true, lightning_action_reason: 'Oferta pendente de dados.', 'Ação': 'Não participar', 'Participar ou não': 'Não participar' },
       ];
       apiAnalisesPorCampanha = [{ promo_b_id: 'P2', promo_b_type: 'LIGHTNING', promo_b_nome: 'Ofertas relâmpago', data: currentData, participacao_confirmada: true, participacao_contexto: JSON.stringify({ promoA: 'P1' }) }];
@@ -68,6 +77,21 @@ const root = path.resolve(__dirname, '..');
     await page.evaluate(() => { document.getElementById('apiPromoASelect').value = 'P1'; });
     const rows = page.locator('.promo-comparison-row');
     assert.strictEqual(await rows.count(), 4);
+    await page.waitForFunction(() => [...document.querySelectorAll('.promo-comparison-row')].slice(0, 2).every(row => row.querySelector('.promo-ad-image')?.naturalWidth > 0));
+    await rows.nth(2).locator('.promo-photo-placeholder').waitFor({ state: 'visible' });
+    assert.strictEqual(await rows.nth(0).locator('.promo-ad-image').getAttribute('alt'), 'Foto de Kit de reparo — exemplo de validação');
+    assert.strictEqual(await rows.nth(0).locator('.promo-ad-image').getAttribute('loading'), 'lazy');
+    assert.strictEqual(await rows.nth(1).locator('.promo-ad-image').getAttribute('src'), 'https://http2.mlstatic.com/promo-fixture-2.png');
+    assert.strictEqual(await rows.nth(2).locator('.promo-ad-image').count(), 0, 'broken image has a stable placeholder');
+    assert.strictEqual(await rows.nth(3).locator('.promo-ad-image').count(), 0, 'unsafe URL must never create an image request');
+    assert.strictEqual(await rows.nth(3).locator('.promo-photo-placeholder').textContent(), 'Sem foto');
+    assert(await page.evaluate(() => [undefined, '', 'javascript:alert(1)', 'data:image/svg+xml,<svg/>', 'https://http2.mlstatic.com.evil.test/a.png', 'https://http2.mlstatic.com@evil.test/a.png', 'https://user:pass@http2.mlstatic.com/a.png', 'https://http2.mlstatic.com:8443/a.png', '/info/another-client/a.png', {}, 123].every(thumbnail => promoProductPhotoUrl({ thumbnail }) === '')), 'malformed, foreign and executable URLs are rejected');
+    const decisionColors = await rows.locator('.decision-select').evaluateAll(items => items.map(select => getComputedStyle(select).backgroundColor));
+    const rgb = color => color.match(/\d+/g).slice(0, 3).map(Number);
+    assert(rgb(decisionColors[0])[1] > rgb(decisionColors[0])[0] + 30, 'Participar has a filled green background');
+    assert(rgb(decisionColors[1])[0] > rgb(decisionColors[1])[1] + 30, 'Não participar has a filled red background');
+    const photoSize = await rows.nth(0).locator('.promo-ad-photo').boundingBox();
+    assert(photoSize.width === 64 && photoSize.height === 64, 'photo dimensions stay fixed and compact');
     assert.strictEqual(await page.locator('#tabelaAnalise thead th').count(), 2, 'hidden staging prepares only the original action and stock controls');
     assert.strictEqual(await page.evaluate(() => JSON.stringify(currentData) === initialRows), true, 'rendering must preserve canonical values and decisions');
     assert.strictEqual(await page.evaluate(() => JSON.stringify(columnState) === initialColumnState), true);
@@ -86,7 +110,7 @@ const root = path.resolve(__dirname, '..');
     assert.strictEqual(await rows.nth(0).locator('.promo-lightning-stock input').count(), 1);
     assert.strictEqual(await rows.nth(2).locator('.promo-lightning-stock input').count(), 0);
     assert.strictEqual(await rows.nth(3).locator('.promo-lightning-stock input').count(), 0);
-    assert.strictEqual(await page.locator('#promoComparison img').count(), 0, 'all server strings must remain text');
+    assert.strictEqual(await page.locator('#promoComparison img:not(.promo-ad-image)').count(), 0, 'server strings must remain text outside the dedicated photo field');
     assert.strictEqual(await rows.nth(1).locator('.promo-lightning-window').textContent(), 'Data e horário serão informados pelo Mercado Livre após a inclusão.');
     assert.strictEqual(await page.evaluate(() => promoNumericValue('Não informado') === null && promoNumericValue('R$ 0,00') === 0 && promoNumericValue('R$ 1.234,56') === 1234.56), true);
     const aligned = await rows.nth(0).evaluate(row => {
@@ -99,6 +123,7 @@ const root = path.resolve(__dirname, '..');
     await page.locator('#promoSearch').fill('EXEMPLO-002');
     assert.strictEqual(await page.locator('.promo-comparison-row:visible').count(), 1);
     await rows.nth(1).locator('.decision-select').selectOption('Participar');
+    assert.strictEqual(await rows.nth(1).locator('.decision-select').evaluate(select => getComputedStyle(select).backgroundColor), decisionColors[0], 'decision color updates immediately with the canonical control');
     await rows.nth(1).locator('.promo-lightning-stock input').fill('7');
     await rows.nth(1).locator('.promo-lightning-stock input').dispatchEvent('change');
     assert.deepStrictEqual(await page.evaluate(() => [currentData[0].lightning_stock, currentData[1].lightning_stock, currentData[1]['Ação'], currentData[1]['Participar ou não']]), [2, 7, 'Participar', 'Participar']);
@@ -177,6 +202,6 @@ const root = path.resolve(__dirname, '..');
     }
     assert.deepStrictEqual(errors, []);
     assert.deepStrictEqual(unexpectedRequests, [], 'browser validation must not call live APIs');
-    console.log('Comparação: dados preservados, controles por oferta, filtros, diferenças, exportação, preferências e responsividade aprovados.');
+    console.log('Comparação: fotos, fallback seguro, cores de decisão, dados preservados, controles por oferta, filtros, exportação e responsividade aprovados.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

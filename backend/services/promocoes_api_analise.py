@@ -127,6 +127,27 @@ PROMO_DESCONTO_ML_FONTES_CALCULADAS = {
 }
 
 
+def _promo_thumbnail_item(item: Any) -> str:
+    """Reuse item image metadata without fetching or changing analysis data."""
+    if not isinstance(item, dict):
+        return ""
+    for field in ("secure_thumbnail", "thumbnail"):
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    pictures = item.get("pictures")
+    if not isinstance(pictures, list):
+        return ""
+    for picture in pictures:
+        if not isinstance(picture, dict):
+            continue
+        for field in ("secure_url", "url"):
+            value = picture.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _promo_desconto_ml_parametros_calculo(raw_promocao: dict) -> tuple[Any, Any, Any]:
     """Libera o fallback apenas quando o estado de boost nao e contraditorio."""
     if not isinstance(raw_promocao, dict):
@@ -2028,6 +2049,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             ),
             "SKU": sku_display or sku,
             "TÃ­tulo": str(item.get("title") or ""),
+            "thumbnail": _promo_thumbnail_item(item),
             "Frete": formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular",
             "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
             "frete_exato": frete_a_exato,
@@ -2135,6 +2157,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
     dados_payload = df_payload.to_dict(orient="records")
     for payload_row, source_row in zip(dados_payload, dados_analise):
         payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
+        payload_row["thumbnail"] = source_row.get("thumbnail", "")
     meta_por_linha = {}
     for item in dados_analise:
         chave = (str(item.get("MLB") or "").strip(), str(item.get("Campanha ML") or "").strip(), str(item.get("lightning_offer_key") or ""))
@@ -2712,6 +2735,7 @@ async def analisar_promo_via_api_sem_arquivos(
             ),
             "SKU": sku_display or sku,
             "TÃ­tulo": str(item.get("title") or raw_b_item.get("title") or ""),
+            "thumbnail": _promo_thumbnail_item(item),
             "Frete": (formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular") if preco_a is not None else "",
             "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
             "frete_exato": frete_a_exato,
@@ -2937,6 +2961,7 @@ async def analisar_promo_via_api_sem_arquivos(
         dados_payload = df_payload.to_dict(orient="records")
         for payload_row, source_row in zip(dados_payload, linhas):
             payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
+            payload_row["thumbnail"] = source_row.get("thumbnail", "")
             payload_row["analysis_client_ref"] = source_row["analysis_client_ref"]
         meta_por_linha = {
             (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
@@ -3553,6 +3578,7 @@ async def analisar_promo_via_api_com_arquivos(
             ),
             "SKU": sku_display or sku_base,
             "TÃ­tulo": str(item.get("title") or entrada_b.get("TÃ­tulo") or ""),
+            "thumbnail": _promo_thumbnail_item(item),
             "Frete": (formatar_moeda_br(frete_a_val) if frete_a_exato else "A calcular") if preco_a is not None else "",
             "Frete ML": formatar_moeda_br(frete_b_val) if frete_b_exato else "A calcular",
             "frete_exato": frete_a_exato,
@@ -3679,6 +3705,7 @@ async def analisar_promo_via_api_com_arquivos(
         dados_payload = df_payload.to_dict(orient="records")
         for payload_row, source_row in zip(dados_payload, linhas):
             payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
+            payload_row["thumbnail"] = source_row.get("thumbnail", "")
             payload_row["analysis_client_ref"] = source_row["analysis_client_ref"]
         meta_por_linha = {
             (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
@@ -3846,6 +3873,7 @@ async def analisar_promo_automatico(
             "MLB": str(item.get("id") or ""),
             "SKU": sku,
             "TÃ­tulo": str(item.get("title") or ""),
+            "thumbnail": _promo_thumbnail_item(item),
             "SituaÃƒÂ§ÃƒÂ£o": situacao,
             "Desconto": _format_pct_br(desconto_pct),
             "Custo": formatar_moeda_br(custo) if custo is not None else "",
