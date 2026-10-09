@@ -1,104 +1,51 @@
 'use strict';
 
+const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-
-const htmlPath = path.join(__dirname, '..', 'static', 'importacoes.html');
-const html = fs.readFileSync(htmlPath, 'utf8');
+const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'importacoes.html'), 'utf8');
 
 const renderStart = html.indexOf('function renderListas(listas)');
 const markupStart = html.indexOf('el.innerHTML =', renderStart);
-const markupEnd = html.indexOf('const btnCancelar', markupStart);
-if (renderStart < 0 || markupStart < 0 || markupEnd < 0) {
-    throw new Error('Markup dos cards de listas nao foi encontrado');
-}
-
+const markupEnd = html.indexOf('const btnAbrir', markupStart);
+assert(renderStart >= 0 && markupStart > renderStart && markupEnd > markupStart,
+  'A renderização das listas deve permanecer identificável.');
 const markup = html.slice(markupStart, markupEnd);
-const topStart = markup.indexOf('<div class="lista-card-topo">');
-const baseStart = markup.indexOf('<div class="lista-card-base">');
-if (!(topStart >= 0 && baseStart > topStart)) {
-    throw new Error('O card deve ter uma linha superior e outra linha inferior');
-}
+for (const marker of [
+  'class="nome-lista"', 'data-abrir-lista', 'data-invoice-pill', 'lojaPill',
+  'metaFornecedorListaHtml(l)', 'metaNacionalizadorListaHtml(l)', 'window.JKDataPedidoLista.html(l)',
+  'lista-card-quantidade', 'meta-m3', 'meta-usd', 'meta-brl', 'lista-card-atualizacao',
+  'data-commercial-invoice', 'data-menu-lista', 'aria-haspopup="menu"',
+]) assert(markup.includes(marker), 'Controle ou informação original ausente: ' + marker);
+assert(markup.includes('<span class="documento-lista-card documento-lista-card--packing">Packing List</span>'),
+  'Packing List deve permanecer um indicador, sem simular uma ação disponível.');
 
-const topHtml = markup.slice(topStart, baseStart);
-const baseHtml = markup.slice(baseStart);
-const topOrder = [
-    'class="nome-lista"',
-    'class="meta-pill meta-invoice"',
-    'lojaPill',
-    'class="documentos-lista-cards"',
-    'Commercial Invoice',
-    'Packing List',
-    'class="btn-cancelar lista-card-excluir">Excluir',
-];
-let lastPosition = -1;
-for (const marker of topOrder) {
-    const position = topHtml.indexOf(marker);
-    if (position <= lastPosition) {
-        throw new Error(`Ordem invalida na linha superior: ${marker}`);
-    }
-    lastPosition = position;
+for (const id of [
+  'buscarListasImportacoes', 'btnDensidadeListas', 'tabelaListasImportacoes',
+  'contagemListasImportacoes', 'listaWrap', 'menuListaImportacoes',
+]) {
+  assert.strictEqual(html.split('id="' + id + '"').length - 1, 1, 'ID deve ser único: ' + id);
 }
-
-const baseOrder = [
-    'class="status"',
-    'lista-card-quantidade',
-    'meta-m3',
-    'meta-usd',
-    'meta-brl',
-    'lista-card-atualizacao',
-];
-lastPosition = -1;
-for (const marker of baseOrder) {
-    const position = baseHtml.indexOf(marker);
-    if (position <= lastPosition) {
-        throw new Error(`Ordem invalida na linha inferior: ${marker}`);
-    }
-    lastPosition = position;
+assert(html.includes('class="listas-colunas-cabecalho"'), 'A lista deve ter cabeçalhos para comparar os pedidos.');
+assert(html.includes('Dois cliques para editar os campos'), 'A tela deve explicar a edição existente.');
+const menuStart = html.indexOf('<div id="menuListaImportacoes"');
+const menuEnd = html.indexOf('</div>', menuStart);
+const menu = html.slice(menuStart, menuEnd);
+for (const marker of ['role="menu"', 'hidden', 'data-menu-abrir', 'data-menu-editar', 'data-menu-excluir']) {
+  assert(menu.includes(marker), 'Ação acessível ausente no menu compartilhado: ' + marker);
 }
-
-for (const forbidden of ['meta-invoice', 'lojaPill', 'Commercial Invoice', 'Packing List', 'lista-card-excluir']) {
-    if (baseHtml.includes(forbidden)) {
-        throw new Error(`Elemento da linha superior apareceu na linha inferior: ${forbidden}`);
-    }
-}
-
-const requiredSnippets = [
-    '.lista-item--compacta {',
-    '.lista-card-topo {',
-    '.lista-card-acoes {',
-    '.lista-card-base {',
-    '.lista-card-excluir {',
-    '.lista-card-atualizacao {',
-    '.documentos-lista-cards {',
-    'grid-template-columns: repeat(2, max-content);',
-    'justify-content: end;',
-    'width: auto;',
-    'min-height: 22px;',
-    'padding: 3px 6px;',
-    'font-size: 0.62rem;',
-    'function formatarDataHoraCompacta(isoTexto)',
-    '.documento-lista-card--commercial {',
-    '.documento-lista-card--packing {',
-    'aria-label="Documentos da lista"',
-    '.meta-loja-input, .documentos-lista-cards',
-];
-
-for (const snippet of requiredSnippets) {
-    if (!html.includes(snippet)) {
-        throw new Error(`Trecho obrigatorio ausente: ${snippet}`);
-    }
-}
-
-if (!/@media \(max-width: 760px\)[\s\S]*\.lista-card-topo,[\s\S]*\.lista-card-base\s*\{[\s\S]*flex-wrap:\s*wrap;[\s\S]*\.lista-card-acoes\s*\{[\s\S]*width:\s*100%;/.test(html)) {
-    throw new Error('As duas linhas do card devem se reorganizar em telas pequenas');
-}
+assert(menuStart > html.indexOf('id="tabelaListasImportacoes"'),
+  'Menu compartilhado deve permanecer fora da renderização individual dos cartões.');
+assert(/#menuListaImportacoes\s*\{[^}]*position:\s*fixed;/.test(html),
+  'Menu deve escapar do recorte da área de listas.');
+assert(/#listaWrap\s+\.lista-item--compacta\s*\{[^}]*display:\s*grid;/.test(html),
+  'Listas devem alinhar as informações em colunas.');
+assert(/#listaWrap\s+\.meta-pill\s+strong\s*\{[^}]*text-overflow:\s*ellipsis;/.test(html),
+  'Textos longos devem preservar o recorte visual sem alterar o valor.');
+assert(/@media[^}]*\{[\s\S]*#listaWrap\s+\.lista-item--compacta\s*\{[^}]*grid-template-areas:/.test(html),
+  'A lista deve reorganizar os grupos em telas menores.');
 
 const inlineScripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/gi)]
-    .map((match) => match[1])
-    .filter((source) => source.trim());
-for (const source of inlineScripts) {
-    new Function(source);
-}
-
-console.log('OK: nome, Invoice, loja e acoes no topo; demais dados na linha inferior.');
+  .map(match => match[1]).filter(source => source.trim());
+for (const source of inlineScripts) new Function(source);
+console.log('OK: lista em colunas com seis campos editáveis, informações preservadas e menu de ações acessível.');

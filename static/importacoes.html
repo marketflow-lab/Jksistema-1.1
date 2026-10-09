@@ -9,7 +9,7 @@
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
     <script src="/medias_compras/data-pedido-lista.js?v=20261006-data-pedido-v2"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
 
         :root {
             --bg-a: #04070f;
@@ -1717,6 +1717,199 @@
             .rastreamento-carga-acoes { justify-content: stretch; }
             .rastreamento-carga-acao { flex: 1 1 auto; }
         }
+
+        /* Vista principal: listas em colunas, com os controles reais de edição. */
+        :root { color-scheme: dark; --lista-colunas: minmax(205px, 1.45fr) minmax(172px, 1.18fr) minmax(205px, 1.25fr) minmax(128px, .85fr) 150px 26px; }
+        body { background: radial-gradient(ellipse at 70% -20%, #17365388, transparent 58%), #0b1320; }
+        body::before, .card::before { display: none; }
+        .container { padding: 24px clamp(12px, 2vw, 28px) 28px; }
+        .topbar { grid-template-columns: minmax(180px, 1fr) minmax(205px, 1.05fr) repeat(2, minmax(175px, .9fr)); gap: 0; margin-bottom: 23px; }
+        h1 { color: #e8f0fb; font-size: 32px; font-weight: 600; letter-spacing: -.8px; text-shadow: none; margin-right: 24px; }
+        .fx-box, .clock-box, .clock-box.brasilia { min-height: 66px; padding: 11px 14px; gap: 10px; border-color: #2a3c52; background: #111e2f; box-shadow: none; border-radius: 0; }
+        .fx-box { border-radius: 10px 0 0 10px; }
+        .clock-box { border-left: 0; }
+        .clock-box:last-of-type { border-radius: 0 10px 10px 0; }
+        .fx-box::before, .clock-box::before { display: none; }
+        .importacao-pais-icon { flex-basis: 31px; width: 31px; height: 30px; border-radius: 7px; background: #1b2a3e; border: 0; }
+        .importacao-bandeira { width: 23px; height: 16px; }
+        .cotacao-bandeiras .importacao-bandeira:first-child { width: 20px; height: 14px; top: 3px; left: 3px; }
+        .cotacao-bandeiras .importacao-bandeira:last-child { width: 19px; height: 13px; right: 1px; bottom: 2px; }
+        .fx-label, .clock-label, .clock-box.brasilia .clock-label { color: #8fa9c4; font-size: 10px; margin-bottom: 3px; font-weight: 400; }
+        .fx-value, .clock-value, .clock-box.brasilia .clock-value { color: #d7e5f5; font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
+        .fx-update-label, .clock-country { font-size: 8px; color: #7f96b0; }
+        .fx-time { color: #aec6df; font-size: 9px; font-weight: 400; }
+        .fx-currency { padding: 2px 3px; color: #8fa9c4; font-size: 7px; }
+        .card { background: #101b2b; border-color: #27384e; border-radius: 13px; padding: 18px 20px; box-shadow: none; }
+        .toolbar { gap: 8px; margin-bottom: 17px; }
+        .toolbar .importacao-monitor { order: -1; margin-right: auto; border: 0; background: transparent; padding: 0; color: #b4c5d9; font-size: 12px; font-weight: 400; }
+        .toolbar .importacao-monitor::before { width: 6px; height: 6px; background: #e1b977; }
+        .toolbar .importacao-acao { min-height: 35px; padding: 8px 11px; background: #16263b; border-color: #30445f; border-radius: 7px; font-size: 11px; font-weight: 500; box-shadow: none; }
+        .toolbar .importacao-acao--medias { order: 1; background: transparent; border-color: transparent; color: #9eb6d1; }
+        .toolbar .importacao-acao--atualizar { order: 2; }
+        .toolbar .importacao-acao--importar { order: 3; background: #7dc1ff; color: #08243f; border-color: #7dc1ff; font-weight: 600; box-shadow: none; }
+        .loja-filtro-area { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; }
+        .loja-filtro-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+        .loja-filtro-grid { gap: 5px; }
+        .loja-filtro-card { min-height: 35px; padding: 8px 10px; border: 1px solid transparent; border-radius: 7px; background: transparent; box-shadow: none; color: #9fb3cb; gap: 8px; }
+        .loja-filtro-card:hover { transform: none; background: #192c44; border-color: transparent; box-shadow: none; }
+        .loja-filtro-card.active { color: #bddfff; background: #1c3d5e; border-color: #355e83; box-shadow: none; }
+        .loja-filtro-nome { font-size: 12px; font-weight: 500; }
+        .loja-filtro-contagem { font-size: 10px; font-weight: 500; color: #8eacc9; background: #1e3047; border-radius: 4px; padding: 1px 5px; }
+        .loja-filtro-card.active .loja-filtro-contagem { color: #abdafd; background: #28567a; }
+        .busca-listas { flex: 0 0 277px; position: relative; }
+        .busca-listas::before { content: ''; position: absolute; left: 12px; top: 11px; width: 11px; height: 11px; border: 1.5px solid #7d9bbd; border-radius: 50%; pointer-events: none; }
+        .busca-listas::after { content: ''; position: absolute; left: 22px; top: 22px; width: 5px; height: 1.5px; background: #7d9bbd; transform: rotate(45deg); pointer-events: none; }
+        .busca-listas input { width: 100%; min-height: 36px; padding: 8px 11px 8px 36px; border: 1px solid #2c425e; border-radius: 7px; background: #0e1c2f; color: #e3eef9; font: inherit; font-size: 11px; }
+        .busca-listas input::placeholder { color: #7892af; }
+        #status { font-size: 11px; line-height: 1.4; color: #8ba7c0; min-height: 16px; }
+        #vistaMain .embarques-principal { border: 1px solid #283d55; border-radius: 9px; background: #122137; padding: 8px 12px; margin-top: 16px; }
+        #vistaMain .embarques-principal > .secao-header { border: 0; padding: 0; margin: 0; min-height: 31px; gap: 9px; }
+        #vistaMain .embarques-principal .secao-titulo { font-size: 12px; color: #c4d7ea; text-transform: none; letter-spacing: 0; font-weight: 600; }
+        #vistaMain #badgeEmbarques { width: auto; flex: 0 0 auto; font-size: 10px !important; border: 0; padding: 2px 6px !important; color: #85a5c7; background: #20344e; border-radius: 4px; }
+        #vistaMain .embarques-principal .btn-embarque-org { order: 2; margin-left: auto; min-height: 31px; padding: 6px 10px; font: inherit; font-size: 10px; background: #1d3048; border-color: #344d6b; color: #b9d2eb; box-shadow: none; }
+        #embarquesWrap { margin-top: 10px; gap: 9px; }
+        #embarquesWrap:has(> .empty) { margin: 0; }
+        #embarquesWrap > .empty { padding: 4px 0 0; margin: 0; text-align: left; border: 0; background: transparent; color: #819bb7; font-size: 11px; }
+        #embarquesWrap .embarque-item { padding: 12px; border-color: #34475c; background: #162539; box-shadow: none; }
+        #embarquesWrap .embarque-item::before { width: 2px; background: #8da6bf; box-shadow: none; }
+        #embarquesWrap .embarque-item:hover { transform: none; border-color: #567b9e; box-shadow: none; }
+        .listas-principal-cabecalho { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 23px 0 13px; }
+        .listas-principal-cabecalho h2 { display: flex; align-items: center; gap: 9px; font-size: 17px; letter-spacing: -.3px; font-weight: 600; margin: 0; }
+        #contagemListasImportacoes { padding: 3px 7px; background: #223a54; color: #9ec8ee; border-radius: 5px; font-size: 11px; font-weight: 500; }
+        #resumoListasImportacoes { margin-top: 4px; color: #7d98b6; font-size: 11px; }
+        .listas-principal-ferramentas { display: flex; gap: 10px; align-items: center; }
+        .listas-principal-ajuda { color: #8faac5; font-size: 11px; }
+        #btnDensidadeListas { min-height: 30px; padding: 7px 10px; border: 1px solid #31465f; background: #16273b; color: #a4c1de; font: inherit; font-size: 10px; border-radius: 6px; cursor: pointer; }
+        #tabelaListasImportacoes { border: 1px solid #2b3f58; border-radius: 10px; overflow: hidden; background: #101d30; }
+        .listas-colunas-cabecalho { display: grid; grid-template-columns: var(--lista-colunas); gap: 14px; padding: 11px 17px; background: #14253a; border-bottom: 1px solid #2b415d; color: #91abc9; font-size: 10px; font-weight: 500; letter-spacing: .3px; }
+        #listaWrap { gap: 0; margin: 0; }
+        #listaWrap .lista-item--compacta { display: grid; grid-template-columns: var(--lista-colunas); grid-template-areas: 'pedido parceiros quantidade valores documentos acoes'; gap: 14px; align-items: center; min-height: 122px; padding: 17px; border: 0; border-radius: 0; background: #101e31; overflow: visible; cursor: default; }
+        #listaWrap .lista-item + .lista-item { border-top: 1px solid #243850; }
+        #listaWrap .lista-item::before { display: none; }
+        #listaWrap .lista-item:hover { transform: none; background: #152942; box-shadow: none; }
+        #listaWrap .lista-card-topo, #listaWrap .lista-card-base { display: contents; }
+        #listaWrap .lista-coluna { min-width: 0; }
+        #listaWrap .lista-coluna-pedido { grid-area: pedido; }
+        #listaWrap .lista-coluna-parceiros { grid-area: parceiros; }
+        #listaWrap .lista-coluna-quantidade { grid-area: quantidade; }
+        #listaWrap .lista-coluna-valores { grid-area: valores; }
+        #listaWrap .lista-card-acoes { grid-area: documentos; display: block; margin: 0; min-width: 0; }
+        #listaWrap .lista-coluna-acoes { grid-area: acoes; }
+        #listaWrap .lista-titulo-linha { display: flex; align-items: center; gap: 5px; min-width: 0; margin-bottom: 6px; }
+        #listaWrap .nome-lista { flex: 1; min-width: 0; max-width: 100%; padding: 0; font-size: 17px; font-weight: 600; line-height: 1.25; letter-spacing: -.2px; color: #e6f0fe; cursor: text; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+        #listaWrap .nome-lista:hover { color: #92cdff; }
+        #listaWrap .nome-lista-input { width: 100%; min-width: 0; flex: 1; font-size: 15px; }
+        #listaWrap .lista-abrir, #listaWrap .lista-menu-botao { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 26px; width: 26px; min-height: 29px; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #7492b3; cursor: pointer; font: inherit; font-size: 19px; }
+        #listaWrap .lista-abrir:hover, #listaWrap .lista-menu-botao:hover { background: #203a55; border-color: #365576; color: #c9e0f4; }
+        #listaWrap .meta-pill { max-width: 100%; min-width: 0; padding: 4px 6px; border-radius: 5px; line-height: 1.3; font-size: 0; background: #152a40; border-color: #304963; overflow: hidden; cursor: text; }
+        #listaWrap .meta-pill strong { font-size: 11px; color: #c8daec; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #listaWrap .meta-pill:hover { border-color: #6dafe0; background: #1d3a56; box-shadow: none; }
+        #listaWrap .meta-invoice { display: inline-flex; width: auto; border-color: #665537; background: #302b22; }
+        #listaWrap .meta-invoice strong { color: #d5bf96; font-variant-numeric: tabular-nums; }
+        #listaWrap .meta-invoice::before { content: 'Invoice'; font-size: 9px; color: #9b8c71; }
+        #listaWrap .lista-metadados { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+        #listaWrap .meta-loja[data-loja-pill] { background: #1b3651; border-color: #355f83; max-width: 100%; }
+        #listaWrap .meta-loja[data-loja-pill] strong { color: #a3d0f5; font-size: 10px; }
+        #listaWrap .meta-data-pedido { background: #14283c; border-color: #344c66; }
+        #listaWrap .meta-data-pedido strong { font-size: 10px; color: #aec7e0; font-variant-numeric: tabular-nums; }
+        #listaWrap .lista-campo-rotulo { display: block; font-size: 10px; color: #7996b6; line-height: 1.2; margin-bottom: 3px; }
+        #listaWrap .lista-campo-comercial + .lista-campo-comercial { margin-top: 6px; }
+        #listaWrap .meta-cadastro-lista { display: flex; width: 100%; max-width: 100%; }
+        #listaWrap .meta-cadastro-lista strong { font-size: 12px; }
+        #listaWrap input.meta-loja-input { flex: 1; width: 100%; min-width: 0; max-width: 100%; border: 1px solid #84caff; border-radius: 4px; background: #0a1b2e; color: #eaf5ff; font: inherit; font-size: 12px; font-weight: 400; padding: 4px; }
+        #listaWrap .meta-data-pedido:has(input) { width: 154px; }
+        #listaWrap input.meta-data-pedido-input { font-size: 10px; }
+        #listaWrap .meta-invoice:has(input) { width: 100%; min-width: 0; }
+        #listaWrap .lista-quantidades-grid { display: grid; grid-template-columns: minmax(35px,.65fr) minmax(58px,1fr) minmax(79px,1.25fr); gap: 9px; font-variant-numeric: tabular-nums; }
+        #listaWrap .lista-quantidade-valor { display: block; font-size: 17px; font-weight: 500; line-height: 1.2; color: #d8e6f6; white-space: nowrap; }
+        #listaWrap .lista-quantidade-rotulo { display: block; color: #7d9bb9; font-size: 10px; margin-top: 5px; }
+        #listaWrap .meta-m3, #listaWrap .meta-usd, #listaWrap .meta-brl { padding: 0; background: transparent; border: 0; cursor: default; }
+        #listaWrap .meta-m3 strong { color: #a2d7c5; font-size: 13px; font-weight: 500; white-space: nowrap; }
+        #listaWrap .meta-usd strong { color: #a3d2ff; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+        #listaWrap .lista-valor-brl { margin-top: 8px; }
+        #listaWrap .meta-brl strong { color: #8fabc8; font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
+        #listaWrap .documentos-lista-cards { grid-template-columns: minmax(0, 1fr); gap: 7px; width: 100%; }
+        #listaWrap .documento-lista-card--commercial { min-height: 32px; padding: 7px 8px; border-color: #355879; background: #1d3a57; color: #c9e5ff; font-size: 10px; font-weight: 500; box-shadow: none; }
+        #listaWrap .documento-lista-card--packing { min-height: 16px; padding: 2px; border: 0; background: transparent; color: #788fa8; font-size: 10px; font-weight: 400; box-shadow: none; }
+        #listaWrap .lista-card-excluir { display: none; }
+        #listaWrap .lista-card-atualizacao { margin-top: 7px; margin-left: 0; font-size: 9px; color: #7894b2; white-space: normal; }
+        #listaWrap .status { margin-top: 8px; padding: 0; background: transparent; border: 0; color: #a99576; box-shadow: none; font-size: 9px; font-weight: 400; }
+        #listaWrap .empty { border: 0; background: transparent; padding: 32px 16px; font-size: 12px; }
+        #tabelaListasImportacoes.is-compacta .lista-item--compacta { min-height: 110px; padding-top: 12px; padding-bottom: 12px; }
+        .listas-rodape { color: #718ca9; font-size: 10px; margin-top: 12px; }
+        #menuListaImportacoes { position: fixed; z-index: 1800; width: 190px; background: #192b41; border: 1px solid #3b5571; border-radius: 8px; box-shadow: 0 12px 35px #0008; padding: 5px; }
+        #menuListaImportacoes[hidden] { display: none; }
+        #menuListaImportacoes button { display: block; border: 0; background: transparent; padding: 10px; border-radius: 5px; width: 100%; font: inherit; font-size: 11px; text-align: left; color: #c1d4e9; cursor: pointer; }
+        #menuListaImportacoes button:hover, #menuListaImportacoes button:focus-visible { background: #264462; }
+        #menuListaImportacoes [data-menu-excluir] { color: #dba2a9; }
+        #vistaMain button:focus-visible, #listaWrap [tabindex]:focus-visible, .busca-listas input:focus-visible { outline: 2px solid #76baff; outline-offset: 3px; }
+        @media (min-width: 1430px) {
+            :root { --lista-colunas: minmax(250px,1.5fr) minmax(205px,1.2fr) minmax(230px,1.3fr) minmax(145px,.85fr) 162px 26px; }
+            #listaWrap .lista-item--compacta, .listas-colunas-cabecalho { padding-left: 24px; padding-right: 24px; gap: 20px; }
+        }
+        @media (max-width: 1160px) {
+            :root { --lista-colunas: minmax(190px,1.3fr) minmax(150px,1fr) minmax(185px,1.1fr) minmax(112px,.8fr) 137px 23px; }
+            .fx-update, .clock-country { display: none; }
+            .card { padding: 17px; }
+            #listaWrap .lista-item--compacta, .listas-colunas-cabecalho { gap: 11px; padding-left: 14px; padding-right: 14px; }
+            #listaWrap .nome-lista { font-size: 16px; }
+            #listaWrap .meta-cadastro-lista strong { font-size: 11px; }
+            #listaWrap .meta-usd strong { font-size: 13px; }
+            #listaWrap .lista-quantidade-valor { font-size: 16px; }
+            #listaWrap .documento-lista-card--commercial { font-size: 9px; }
+            .busca-listas { flex-basis: 250px; }
+            .listas-principal-ajuda { font-size: 10px; }
+        }
+        @media (max-width: 1040px) {
+            .topbar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+            .topbar h1 { grid-column: 1 / -1; margin: 0 0 17px; }
+            .topbar .fx-box, .topbar .clock-box { grid-column: auto; }
+            .loja-filtro-area { flex-wrap: wrap; gap: 12px; }
+            .busca-listas { flex-basis: 100%; }
+            .listas-colunas-cabecalho { display: none; }
+            #listaWrap .lista-item--compacta { grid-template-columns: minmax(190px, 1.4fr) minmax(170px, 1fr) 150px; grid-template-areas: 'pedido parceiros documentos' 'quantidade valores acoes'; gap: 15px 20px; min-height: 0; }
+            #tabelaListasImportacoes.is-compacta .lista-item--compacta { min-height: 0; }
+            #listaWrap .lista-coluna-acoes { justify-self: end; }
+            .toolbar .importacao-monitor { flex-basis: 100%; margin-bottom: 3px; }
+            .toolbar .importacao-acao--medias { margin-left: auto; }
+        }
+        @media (max-width: 680px) {
+            .container { padding: 17px 12px; }
+            .topbar { margin-bottom: 17px; }
+            h1 { font-size: 28px; }
+            .fx-box, .clock-box, .clock-box.brasilia { min-height: 62px; padding: 10px 9px; gap: 5px; }
+            .topbar .importacao-pais-icon { display: none; }
+            .fx-value, .clock-value, .clock-box.brasilia .clock-value { font-size: 16px; }
+            .fx-label, .clock-label, .clock-box.brasilia .clock-label { font-size: 9px; }
+            .fx-currency { display: none; }
+            .card { padding: 14px 12px; }
+            .toolbar .importacao-monitor { font-size: 11px; }
+            .toolbar .importacao-acao { font-size: 10px; padding: 7px 8px; }
+            .toolbar .importacao-acao--medias { margin-left: 0; }
+            .loja-filtro-card { padding: 7px 6px; gap: 5px; }
+            .loja-filtro-nome { font-size: 11px; }
+            .loja-filtro-contagem { font-size: 9px; }
+            #vistaMain .embarques-principal { padding: 8px; }
+            .listas-principal-cabecalho { margin-top: 19px; gap: 9px; }
+            .listas-principal-cabecalho h2 { font-size: 16px; }
+            .listas-principal-ajuda { display: none; }
+            #resumoListasImportacoes { font-size: 10px; }
+            #btnDensidadeListas { font-size: 9px; padding: 7px 8px; }
+            #listaWrap .lista-item--compacta { grid-template-columns: minmax(0, 1fr) 125px; grid-template-areas: 'pedido pedido' 'parceiros documentos' 'quantidade quantidade' 'valores valores'; gap: 13px; padding: 15px; }
+            #listaWrap .lista-coluna-pedido { padding-right: 22px; }
+            #listaWrap .lista-coluna-acoes { position: absolute; top: 14px; right: 10px; }
+            #listaWrap .nome-lista { font-size: 18px; }
+            #listaWrap .meta-cadastro-lista strong { font-size: 11px; }
+            #listaWrap .lista-coluna-quantidade { border-top: 1px solid #273e57; padding-top: 13px; }
+            #listaWrap .lista-quantidades-grid { grid-template-columns: 1fr 1fr 1.25fr; }
+            #listaWrap .lista-quantidade-valor { font-size: 18px; }
+            #listaWrap .meta-m3 strong { font-size: 15px; }
+            #listaWrap .lista-coluna-valores { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+            #listaWrap .lista-coluna-valores > .lista-campo-rotulo { margin-bottom: 0; }
+            #listaWrap .lista-valor-brl { margin-top: 0; }
+            #listaWrap .meta-usd strong { font-size: 15px; }
+            #listaWrap .lista-card-atualizacao { flex-basis: 100%; margin-top: 0; }
+        }
     </style>
 </head>
 <body>
@@ -1860,6 +2053,7 @@
             <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
                 <div class="loja-filtro-label">Filtrar listas por loja</div>
                 <div id="lojaFiltroListas" class="loja-filtro-grid"></div>
+                <label class="busca-listas"><input type="search" id="buscarListasImportacoes" aria-label="Buscar listas por nome, Invoice, loja, fornecedor ou nacionalizador" placeholder="Buscar lista, Invoice ou fornecedor…" autocomplete="off"></label>
             </div>
             <div id="status" class="muted">Carregando listas...</div>
 
@@ -1878,6 +2072,7 @@
 
             <!-- Vista principal -->
             <div id="vistaMain">
+                <section class="embarques-principal" aria-label="Embarques">
                 <div class="secao-header">
                     <span class="secao-titulo">Embarques</span>
                     <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
@@ -1886,10 +2081,16 @@
                 <div id="embarquesWrap" class="lista-wrap">
                     <div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>
                 </div>
-                <div class="secao-header" style="margin-top:22px;">
-                    <span class="secao-titulo">Listas de Pedidos</span>
+                </section>
+                <div class="listas-principal-cabecalho">
+                    <div><h2>Listas de pedidos <span id="contagemListasImportacoes">0</span></h2><div id="resumoListasImportacoes" aria-live="polite"></div></div>
+                    <div class="listas-principal-ferramentas"><span class="listas-principal-ajuda">Dois cliques para editar os campos</span><button type="button" id="btnDensidadeListas" aria-pressed="true">Visualização confortável</button></div>
                 </div>
-                <div id="listaWrap" class="lista-wrap"></div>
+                <div id="tabelaListasImportacoes" class="is-compacta">
+                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidades</span><span>Valores</span><span>Documentos</span><span></span></div>
+                    <div id="listaWrap" class="lista-wrap"></div>
+                </div>
+                <div class="listas-rodape">Enter salva · Esc cancela a edição</div>
             </div>
 
             <!-- Modal Organizar Embarque -->
@@ -1968,6 +2169,12 @@
         </div>
     </div>
 
+    <div id="menuListaImportacoes" role="menu" aria-label="Ações da lista" hidden>
+        <button type="button" role="menuitem" data-menu-abrir>Abrir lista</button>
+        <button type="button" role="menuitem" data-menu-editar>Editar nome</button>
+        <button type="button" role="menuitem" data-menu-excluir>Excluir lista</button>
+    </div>
+
     <script>
         if (!verificarSessao()) {
             // verificarSessao já redireciona quando não há token.
@@ -1980,6 +2187,9 @@
         let lojasImportacoesPromise = null;
         let lojaFiltroImportacoes = '__todas';
         let _embarqueEditandoId = null;
+        let filtroListasPendente = null;
+        let filtroListasTimer = null;
+        let menuListaAtual = null;
 
         function formatarDataHoraLocal(isoTexto) {
             const d = new Date(isoTexto || '');
@@ -2098,8 +2308,13 @@
 
         function listasFiltradasPorLoja() {
             const listas = Array.isArray(todasListasCache) ? todasListasCache : [];
-            if (lojaFiltroImportacoes === '__todas') return listas;
-            return listas.filter((l) => chaveLojaFiltroLista(l) === lojaFiltroImportacoes);
+            const busca = normalizarBuscaListasImportacoes(document.getElementById('buscarListasImportacoes')?.value);
+            return listas.filter((l) =>
+                (lojaFiltroImportacoes === '__todas' || chaveLojaFiltroLista(l) === lojaFiltroImportacoes) &&
+                (!busca || normalizarBuscaListasImportacoes([
+                    l.nome_lista, obterInvoiceLista(l, l.id), obterLojaLista(l), l.supplier, l.nacionalizador
+                ].join(' ')).includes(busca))
+            );
         }
 
         function renderFiltroLojasImportacoes(listas) {
@@ -2144,13 +2359,41 @@
             });
         }
 
-        function aplicarFiltroListasImportacoes() {
+        function normalizarBuscaListasImportacoes(valor) {
+            return String(valor || '').trim().toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        }
+
+        function atualizarResumoListasImportacoes(total) {
+            const contagem = document.getElementById('contagemListasImportacoes');
+            const resumo = document.getElementById('resumoListasImportacoes');
+            if (contagem) contagem.textContent = numero(total);
+            if (resumo) resumo.textContent = numero(total) + ' lista(s) exibida(s) · ' + numero(todasListasCache.length) + ' no total' +
+                (lojaFiltroImportacoes === '__todas' ? '' : ' · ' + nomeLojaFiltro(lojaFiltroImportacoes));
+        }
+
+        function aplicarFiltroListasImportacoes(somenteBusca = false) {
+            // Uma busca não desmonta os editores nem as requisições de salvamento em andamento.
+            if (somenteBusca && (document.querySelector('#listaWrap input, #listaWrap [aria-busy="true"]') || invoicesSalvando.size)) {
+                filtroListasPendente = filtroListasPendente === false ? false : somenteBusca;
+                if (!filtroListasTimer) filtroListasTimer = setTimeout(() => {
+                    const pendente = filtroListasPendente;
+                    filtroListasTimer = null;
+                    filtroListasPendente = null;
+                    aplicarFiltroListasImportacoes(pendente);
+                }, 120);
+                return;
+            }
+            if (filtroListasTimer) clearTimeout(filtroListasTimer);
+            filtroListasTimer = null;
+            filtroListasPendente = null;
             const filtradas = listasFiltradasPorLoja();
             renderListas(filtradas);
-            renderEmbarques(todasListasCache);
-            const nomeFiltro = nomeLojaFiltro(lojaFiltroImportacoes);
-            const sufixo = lojaFiltroImportacoes === '__todas' ? '' : ' | Loja: ' + nomeFiltro;
-            setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s)' + sufixo + '.');
+            if (!somenteBusca) {
+                renderEmbarques(todasListasCache);
+                const nomeFiltro = nomeLojaFiltro(lojaFiltroImportacoes);
+                const sufixo = lojaFiltroImportacoes === '__todas' ? '' : ' | Loja: ' + nomeFiltro;
+                setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s)' + sufixo + '.');
+            }
         }
 
         function carregarInvoiceLocal(listaId) {
@@ -2929,10 +3172,13 @@
         function renderListas(listas) {
             const box = document.getElementById('listaWrap');
             if (!box) return;
+            fecharMenuListaImportacoes();
             box.innerHTML = '';
+            atualizarResumoListasImportacoes(listas.length);
 
             if (!listas.length) {
-                box.innerHTML = '<div class="empty">Nenhuma lista com status Analisando orçamento.</div>';
+                const buscando = Boolean(document.getElementById('buscarListasImportacoes')?.value.trim());
+                box.innerHTML = '<div class="empty">' + (buscando ? 'Nenhuma lista encontrada para esta busca.' : 'Nenhuma lista com status Analisando orçamento.') + '</div>';
                 return;
             }
 
@@ -2946,34 +3192,53 @@
                 el.setAttribute('tabindex', '0');
                 el.innerHTML =
                     '<div class="lista-card-topo">' +
-                        '<div class="nome-lista">' + nomeLista + '</div>' +
-                        '<span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
-                        lojaPill +
-                        metaFornecedorListaHtml(l) +
-                        metaNacionalizadorListaHtml(l) +
-                        window.JKDataPedidoLista.html(l) +
+                        '<div class="lista-coluna lista-coluna-pedido">' +
+                            '<div class="lista-titulo-linha"><div class="nome-lista" role="button" tabindex="0">' + escaparHtml(nomeLista) + '</div><button type="button" class="lista-abrir" data-abrir-lista title="Abrir lista" aria-label="Abrir lista ' + escaparHtml(nomeLista) + '">→</button></div>' +
+                            '<span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
+                            '<div class="lista-metadados">' + lojaPill + window.JKDataPedidoLista.html(l) + '</div>' +
+                        '</div>' +
+                        '<div class="lista-coluna lista-coluna-parceiros">' +
+                            '<div class="lista-campo-comercial"><span class="lista-campo-rotulo">Fornecedor</span>' + metaFornecedorListaHtml(l) + '</div>' +
+                            '<div class="lista-campo-comercial"><span class="lista-campo-rotulo">Nacionalizador</span>' + metaNacionalizadorListaHtml(l) + '</div>' +
+                        '</div>' +
                         '<div class="lista-card-acoes">' +
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
                                 '<span class="documento-lista-card documento-lista-card--packing">Packing List</span>' +
                             '</div>' +
-                            '<button type="button" class="btn-cancelar lista-card-excluir">Excluir</button>' +
+                            '<button type="button" class="btn-cancelar lista-card-excluir" tabindex="-1">Excluir</button>' +
                         '</div>' +
+                        '<div class="lista-coluna lista-coluna-acoes"><button type="button" class="lista-menu-botao" data-menu-lista aria-haspopup="menu" aria-expanded="false" aria-controls="menuListaImportacoes" aria-label="Mais ações de ' + escaparHtml(nomeLista) + '" title="Ações da lista">⋯</button></div>' +
                     '</div>' +
                     '<div class="lista-card-base">' +
-                        '<span class="status">Analisando orçamento</span>' +
-                        '<div class="meta lista-card-quantidade"><strong>' + numero(l.total_itens || 0) + '</strong> itens<span class="lista-card-separador">•</span><strong>' + numero(l.total_quantidade || 0) + '</strong> unidades</div>' +
-                        '<span class="meta-pill meta-m3"><strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
-                        '<span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
-                        '<span class="meta-pill meta-brl"><strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
-                        '<div class="meta lista-card-atualizacao">Atualizada: ' + formatarDataHoraCompacta(l.updated_at || l.created_at || '') + '</div>' +
+                        '<div class="lista-coluna lista-coluna-quantidade">' +
+                            '<div class="meta lista-card-quantidade lista-quantidades-grid">' +
+                                '<div><strong class="lista-quantidade-valor">' + numero(l.total_itens || 0) + '</strong><span class="lista-quantidade-rotulo">itens</span></div>' +
+                                '<div><strong class="lista-quantidade-valor">' + numero(l.total_quantidade || 0) + '</strong><span class="lista-quantidade-rotulo">unidades</span></div>' +
+                                '<div><span class="meta-pill meta-m3"><strong>' + formatarM3(l.total_m3 || 0) + '</strong></span><span class="lista-quantidade-rotulo">volume</span></div>' +
+                            '</div><span class="status">Analisando orçamento</span>' +
+                        '</div>' +
+                        '<div class="lista-coluna lista-coluna-valores">' +
+                            '<span class="lista-campo-rotulo">Total USD</span><span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
+                            '<div class="lista-valor-brl"><span class="lista-campo-rotulo">Estimado em BRL</span><span class="meta-pill meta-brl"><strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span></div>' +
+                            '<div class="meta lista-card-atualizacao">Atualizada: ' + escaparHtml(formatarDataHoraCompacta(l.updated_at || l.created_at || '')) + '</div>' +
+                        '</div>' +
                     '</div>';
+                const btnAbrir = el.querySelector('[data-abrir-lista]');
+                btnAbrir.addEventListener('click', (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    if (listaId) window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
+                });
+                el.querySelector('[data-menu-lista]').addEventListener('click', (ev) => {
+                    ev.preventDefault(); ev.stopPropagation();
+                    abrirMenuListaImportacoes(el, ev.currentTarget);
+                });
                 const btnCancelar = el.querySelector('.btn-cancelar');
                 if (btnCancelar) {
                     btnCancelar.addEventListener('click', (ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
-                        excluirListaDefinitiva(listaId, nomeLista, btnCancelar);
+                        excluirListaDefinitiva(listaId, String((todasListasCache.find(item => String(item.id) === listaId) || l).nome_lista || nomeLista), btnCancelar);
                     });
                 }
                 const btnCommercialInvoice = el.querySelector('[data-commercial-invoice]');
@@ -2987,13 +3252,14 @@
                 if (listaId) {
                     const abrirDetalhe = (ev) => {
                         if (el.dataset.editandoNome === '1') return;
-                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill], [data-order-date-pill]')) {
+                        if (ev && ev.target && ev.target.closest && ev.target.closest('.nome-lista, .nome-lista-input, [data-loja-pill], .meta-loja-input, .documentos-lista-cards, [data-fornecedor-pill], [data-nacionalizador-pill], [data-invoice-pill], [data-order-date-pill], button, a')) {
                             return;
                         }
                         window.location.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
                     };
                     el.addEventListener('click', abrirDetalhe);
                     el.addEventListener('keydown', (ev) => {
+                        if (ev.target !== el) return;
                         if (ev.key === 'Enter' || ev.key === ' ') {
                             ev.preventDefault();
                             abrirDetalhe();
@@ -3009,10 +3275,26 @@
                 prepararCadastroListaCartao(el.querySelector('[data-fornecedor-pill]'), listaId, l, 'fornecedor');
                 prepararCadastroListaCartao(el.querySelector('[data-nacionalizador-pill]'), listaId, l, 'nacionalizador');
                 prepararDataPedidoListaCartao(el.querySelector('[data-order-date-pill]'), listaId, l);
+                el.querySelectorAll('[data-invoice-pill], [data-loja-pill], [data-fornecedor-pill], [data-nacionalizador-pill]').forEach(pill => {
+                    pill.setAttribute('role', 'button');
+                    pill.setAttribute('tabindex', '0');
+                });
+                el.querySelectorAll('[data-loja-pill], [data-fornecedor-pill], [data-nacionalizador-pill]').forEach(pill => {
+                    pill.addEventListener('keydown', ev => {
+                        if (ev.target !== pill || !['Enter', ' '].includes(ev.key)) return;
+                        ev.preventDefault(); ev.stopPropagation();
+                        pill.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+                    });
+                });
 
                 const nomeEl = el.querySelector('.nome-lista');
                 if (nomeEl && listaId) {
                     nomeEl.title = 'Dê dois cliques para editar o nome da lista';
+                    nomeEl.addEventListener('keydown', ev => {
+                        if (!['Enter', ' '].includes(ev.key)) return;
+                        ev.preventDefault(); ev.stopPropagation();
+                        nomeEl.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+                    });
                     nomeEl.addEventListener('click', (ev) => {
                         ev.preventDefault();
                         ev.stopPropagation();
@@ -3027,6 +3309,7 @@
                         input.type = 'text';
                         input.className = 'nome-lista-input';
                         input.maxLength = 120;
+                        input.setAttribute('aria-label', 'Nome da lista ' + nomeAtual);
                         input.value = nomeAtual;
 
                         el.dataset.editandoNome = '1';
@@ -3042,6 +3325,7 @@
 
                         const salvar = async () => {
                             const novoNome = String(input.value || '').trim();
+                            if (el.dataset.editandoNome !== '1' || input.disabled) return;
                             if (!novoNome) {
                                 setStatus('O nome da lista não pode ficar vazio.');
                                 input.focus();
@@ -3056,7 +3340,12 @@
                             input.disabled = true;
                             try {
                                 await atualizarNomeLista(listaId, novoNome);
+                                const atual = todasListasCache.find(item => String(item.id) === listaId) || l;
+                                const final = atualizarListaCacheImportacoes(listaId, { nome_lista: novoNome }, atual.loja);
+                                Object.assign(l, final);
                                 nomeEl.textContent = novoNome;
+                                btnAbrir.setAttribute('aria-label', 'Abrir lista ' + novoNome);
+                                el.querySelector('[data-menu-lista]').setAttribute('aria-label', 'Mais ações de ' + novoNome);
                                 setStatus('Nome da lista atualizado com sucesso.');
                                 encerrarEdicao();
                             } catch (e) {
@@ -3082,7 +3371,7 @@
                         });
 
                         input.addEventListener('blur', () => {
-                            if (!input.disabled) {
+                            if (el.dataset.editandoNome === '1' && !input.disabled) {
                                 salvar();
                             }
                         });
@@ -4283,6 +4572,70 @@
             renderEmbarques(todasListasCache);
             setStatus('Embarque "' + nome + '" salvo com sucesso.');
         }
+
+        function fecharMenuListaImportacoes(recuperarFoco = false) {
+            const menu = document.getElementById('menuListaImportacoes');
+            if (!menu) return;
+            menu.hidden = true;
+            const anterior = menuListaAtual;
+            menuListaAtual = null;
+            if (anterior) {
+                anterior.botao.setAttribute('aria-expanded', 'false');
+                if (recuperarFoco && anterior.botao.isConnected) anterior.botao.focus();
+            }
+        }
+
+        function abrirMenuListaImportacoes(linha, botao) {
+            const menu = document.getElementById('menuListaImportacoes');
+            const jaAberto = menuListaAtual?.botao === botao;
+            fecharMenuListaImportacoes();
+            if (!menu || jaAberto) return;
+            menuListaAtual = { linha, botao };
+            botao.setAttribute('aria-expanded', 'true');
+            const posicao = botao.getBoundingClientRect();
+            menu.hidden = false;
+            menu.style.left = Math.max(8, Math.min(posicao.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+            menu.style.top = Math.max(8, Math.min(posicao.bottom + 5, window.innerHeight - menu.offsetHeight - 8)) + 'px';
+            menu.querySelector('button').focus();
+        }
+
+        const buscaListas = document.getElementById('buscarListasImportacoes');
+        buscaListas?.addEventListener('input', () => aplicarFiltroListasImportacoes(true));
+        const densidadeListas = document.getElementById('btnDensidadeListas');
+        densidadeListas?.addEventListener('click', () => {
+            const compacta = document.getElementById('tabelaListasImportacoes').classList.toggle('is-compacta');
+            densidadeListas.textContent = compacta ? 'Visualização confortável' : 'Visualização compacta';
+            densidadeListas.setAttribute('aria-pressed', String(compacta));
+        });
+        const menuLista = document.getElementById('menuListaImportacoes');
+        menuLista.addEventListener('click', ev => {
+            const botao = ev.target.closest('button');
+            if (!botao || !menuListaAtual) return;
+            const linha = menuListaAtual.linha;
+            fecharMenuListaImportacoes();
+            if (botao.hasAttribute('data-menu-abrir')) linha.querySelector('[data-abrir-lista]').click();
+            if (botao.hasAttribute('data-menu-editar')) linha.querySelector('.nome-lista')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+            if (botao.hasAttribute('data-menu-excluir')) linha.querySelector('.btn-cancelar').click();
+        });
+        menuLista.addEventListener('keydown', ev => {
+            const botoes = [...menuLista.querySelectorAll('button')];
+            const atual = botoes.indexOf(document.activeElement);
+            if (ev.key === 'Escape') {
+                ev.preventDefault(); ev.stopPropagation(); fecharMenuListaImportacoes(true);
+            } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
+                ev.preventDefault();
+                const proximo = ev.key === 'Home' ? 0 : ev.key === 'End' ? botoes.length - 1 : (atual + (ev.key === 'ArrowDown' ? 1 : -1) + botoes.length) % botoes.length;
+                botoes[proximo].focus();
+            } else if (ev.key === 'Tab') fecharMenuListaImportacoes(true);
+        });
+        document.addEventListener('click', ev => {
+            if (!ev.target.closest('#menuListaImportacoes, [data-menu-lista]')) fecharMenuListaImportacoes();
+        });
+        document.addEventListener('keydown', ev => {
+            if (ev.key === 'Escape' && menuListaAtual) fecharMenuListaImportacoes(true);
+        });
+        window.addEventListener('resize', () => fecharMenuListaImportacoes());
+        document.addEventListener('scroll', () => fecharMenuListaImportacoes(), true);
 
         // ─── Button wiring ─────────────────────────────────────────────────────────
 

@@ -1,53 +1,38 @@
 'use strict';
 
+const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-
-const htmlPath = path.join(__dirname, '..', 'static', 'importacoes.html');
-const html = fs.readFileSync(htmlPath, 'utf8');
+const html = fs.readFileSync(path.join(__dirname, '..', 'static', 'importacoes.html'), 'utf8');
 
 const buttonId = 'id="btnOrganizarEmbarque"';
-const buttonCount = html.split(buttonId).length - 1;
-if (buttonCount !== 1) {
-    throw new Error(`Organizar Embarque deve existir uma unica vez; encontrado: ${buttonCount}`);
-}
-
+assert.strictEqual(html.split(buttonId).length - 1, 1,
+  'Organizar Embarque deve existir uma única vez.');
 const toolbarStart = html.indexOf('<div class="toolbar">');
 const toolbarEnd = html.indexOf('</div>', toolbarStart);
-const toolbarHtml = html.slice(toolbarStart, toolbarEnd);
-if (toolbarHtml.includes(buttonId)) {
-    throw new Error('Organizar Embarque nao deve ficar na barra geral da pagina');
+assert(!html.slice(toolbarStart, toolbarEnd).includes(buttonId),
+  'Organizar Embarque deve permanecer associado à sua seção.');
+const sectionStart = html.indexOf('<section class="embarques-principal"');
+const sectionEnd = html.indexOf('</section>', sectionStart);
+assert(sectionStart >= 0 && sectionEnd > sectionStart, 'Embarques devem ter uma seção própria.');
+const section = html.slice(sectionStart, sectionEnd);
+for (const marker of ['aria-label="Embarques"', '<span class="secao-titulo">Embarques</span>',
+  buttonId, 'id="badgeEmbarques"', 'id="embarquesWrap"', 'Nenhum embarque criado.']) {
+  assert(section.includes(marker), 'Elemento original ausente na seção Embarques: ' + marker);
 }
-
-const titleIndex = html.indexOf('<span class="secao-titulo">Embarques</span>');
+const titleIndex = html.indexOf('<span class="secao-titulo">Embarques</span>', sectionStart);
 const headerStart = html.lastIndexOf('<div class="secao-header">', titleIndex);
 const headerEnd = html.indexOf('</div>', titleIndex);
-const headerHtml = html.slice(headerStart, headerEnd);
-if (headerStart < 0 || headerEnd < 0 || !headerHtml.includes(buttonId)) {
-    throw new Error('Organizar Embarque deve ficar no cabecalho da secao Embarques');
-}
-const titlePosition = headerHtml.indexOf('<span class="secao-titulo">Embarques</span>');
-const buttonPosition = headerHtml.indexOf(buttonId);
-const badgePosition = headerHtml.indexOf('id="badgeEmbarques"');
-if (!(titlePosition < buttonPosition && buttonPosition < badgePosition)) {
-    throw new Error('Organizar Embarque deve ficar imediatamente depois do titulo');
-}
-
-if (!/\.secao-header\s*\{[^}]*flex-wrap:\s*wrap;/.test(html)) {
-    throw new Error('Cabecalho de Embarques deve permitir quebra responsiva');
-}
-if (!/\.btn-embarque-org\s*\{[^}]*padding:\s*6px 9px;[^}]*font-size:\s*0\.82rem;/.test(html)) {
-    throw new Error('Organizar Embarque deve permanecer compacto');
-}
-if (/\.secao-header \.btn-embarque-org\s*\{[^}]*margin-left:\s*auto;/.test(html)) {
-    throw new Error('Organizar Embarque nao deve ser empurrado para a direita');
-}
+assert(headerStart >= sectionStart && html.slice(headerStart, headerEnd).includes(buttonId),
+  'Organizar Embarque deve estar junto ao título e à contagem.');
+assert(/\.secao-header\s*\{[^}]*flex-wrap:\s*wrap;/.test(html),
+  'Cabeçalho deve permitir reorganização em telas menores.');
+assert(html.includes('#embarquesWrap:has(> .empty)'),
+  'A seção deve compactar o espaço quando não há embarques.');
+assert(html.includes('function renderEmbarques(todasListas)'),
+  'Renderização dos embarques deve preservar sua fonte de dados própria.');
 
 const inlineScripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/gi)]
-    .map((match) => match[1])
-    .filter((source) => source.trim());
-for (const source of inlineScripts) {
-    new Function(source);
-}
-
-console.log('OK: Organizar Embarque compacto e logo depois do titulo da secao.');
+  .map(match => match[1]).filter(source => source.trim());
+for (const source of inlineScripts) new Function(source);
+console.log('OK: Embarques mantém ação, contagem e conteúdo em uma seção compacta e responsiva.');

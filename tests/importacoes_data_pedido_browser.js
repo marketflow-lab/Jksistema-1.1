@@ -254,7 +254,7 @@ async function assertLayout(page, container) {
     const card = pill.closest('.lista-item');
     const r = pill.getBoundingClientRect();
     const cardRect = card.getBoundingClientRect();
-    const actions = [...card.querySelectorAll('button')].map(button => {
+    const actions = [...card.querySelectorAll('button')].filter(button => button.getClientRects().length > 0).map(button => {
       const b = button.getBoundingClientRect();
       return {
         text: button.textContent.trim(), visible: b.width > 0 && b.height > 0,
@@ -273,7 +273,7 @@ async function assertLayout(page, container) {
   assert.strictEqual(geometry.cardFits, true, 'Cartão não pode ter overflow horizontal: ' + JSON.stringify(geometry));
   assert.strictEqual(geometry.pageFits, true, 'Página não pode ter overflow horizontal');
   assert.strictEqual(geometry.pillFits, true, 'Pill/editor deve caber dentro do cartão');
-  if (container === mainContainer) assert(geometry.actions.length >= 2, 'Ações originais devem permanecer presentes');
+  if (container === mainContainer) assert(geometry.actions.length >= 2, 'Ações diretas devem permanecer presentes; o menu é verificado pela suíte de interface');
   for (const action of geometry.actions) {
     assert(action.text && action.visible && action.contained && !action.overlapsDate && !action.disabled && action.tabIndex >= 0,
       'Ação deve estar visível, acessível e sem sobrepor a data: ' + JSON.stringify(action));
