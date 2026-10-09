@@ -39,7 +39,7 @@ def ml_error_code(response):
         if depth > 5:
             return
         if isinstance(value, dict):
-            for key in ("error", "code", "message", "detail", "errors", "cause"):
+            for key in ("error", "code", "error_code", "message", "error_message", "detail", "errors", "cause"):
                 if key in value:
                     collect(value[key], depth + 1)
         elif isinstance(value, list):
@@ -130,15 +130,41 @@ def _bounds(raw):
     return result
 
 
-def _price_reason(raw, prices, *, adjust_candidate=False):
-    price = price_number(raw.get("price") if "price" in raw else raw.get("deal_price"))
+def lightning_price_signature(raw):
+    """Comparable monetary terms for duplicate records of one invitation."""
+    try:
+        bounds = tuple(money_cents(value) for value in _bounds(raw))
+    except ValueError:
+        names = ("min_discounted_price", "minimum_discounted_price", "min_deal_price",
+                 "max_discounted_price", "maximum_discounted_price", "max_deal_price")
+        bounds = ("invalid", tuple((name, repr(raw[name])) for name in names if name in raw))
+    suggested = raw.get("suggested_discounted_price")
+    signature = (("absent",) if suggested is None else
+                 ("money", money_cents(suggested)) if price_number(suggested) is not None else
+                 ("invalid", type(suggested).__name__, repr(suggested)))
+    return bounds, signature
+
+
+def _price_reason(raw, prices, *, adjust_candidate=False, price_source="candidate_price"):
+    if price_source not in {"candidate_price", "suggested_discounted_price"}:
+        return "Fonte da proposta oficial invalida.", None, None, None
+    suggested = price_source == "suggested_discounted_price"
+    price = price_number(raw.get("suggested_discounted_price") if suggested else
+                         raw.get("price") if "price" in raw else raw.get("deal_price"))
     try:
         minimum, maximum = _bounds(raw)
     except ValueError as exc:
         return str(exc), None, None, price
     standard_cents = money_cents(prices["standard_price"])
+    if suggested and (
+        not adjust_candidate
+        or str(raw.get("status") or raw.get("state") or "").strip().lower() != "candidate"
+        or price is None or minimum is None or maximum is None
+    ):
+        return "Sugestao alternativa oficial ou limites do candidato nao confirmados.", minimum, maximum, price
     if (
         adjust_candidate
+        and not suggested
         and str(raw.get("status") or raw.get("state") or "").strip().lower() == "candidate"
         and price is not None
         and standard_cents is not None
@@ -259,31 +285,12 @@ def _fresh_financial(service, analysis, client_id, loja, cfg, item_id, raw, row_
 
 
 def _reconcile(service, client_id, loja, cfg, campaign, item, raw, price):
+    from .promocoes_lightning_confirmacao import select_confirmed_lightning
     try:
         records, cfg = service._ml_obter_promocoes_item(client_id, loja, cfg, item, force_refresh=True)
     except Exception:
         return None, cfg
-    entries = service._promo_lightning_scoped_offers(records, campaign, item, cfg)
-    conflicts = service._promo_lightning_conflicting_keys(records, campaign, item, cfg)
-    previous = raw.get("_jk_lightning_preexisting_participations", [])
-    matches = []
-    for key, entry in entries.items():
-        if key in conflicts or service._lightning_status(entry) not in service._LIGHTNING_PARTICIPATING_STATES:
-            continue
-        if price_number(entry.get("price") if "price" in entry else entry.get("deal_price")) != price:
-            continue
-        if service._promo_lightning_preexisting(entry, previous):
-            continue
-        if lightning_window_valid(raw):
-            if not lightning_same_window(entry, raw):
-                continue
-        elif (lightning_has_schedule_data(entry) and not lightning_window_valid(entry)):
-            continue
-        elif (service._promo_lightning_preexisting(entry, previous)
-              or (not lightning_window_valid(entry) and not re.fullmatch(rf"OFFER-{re.escape(item)}-.+", lightning_reference(entry)))):
-            continue
-        matches.append(entry)
-    return matches[0] if len(matches) == 1 else None, cfg
+    return select_confirmed_lightning(service, records, cfg, campaign, item, raw, price), cfg
 
 
 def validate_exact_lightning(service, client_id, loja, cfg, campaign, item_id, raw, selected_price, stock, diagnostics, prices=None):
@@ -294,7 +301,9 @@ def validate_exact_lightning(service, client_id, loja, cfg, campaign, item_id, r
         try:
             official, cfg = _official_prices(service, client_id, loja, cfg, item_id) if prices is None else (prices, cfg)
             reason, minimum, maximum, price = _price_reason(
-                current, official, adjust_candidate=prices is not None)
+                current, official, adjust_candidate=prices is not None,
+                price_source=(prices.get("_jk_lightning_price_source", "candidate_price")
+                              if prices is not None else "candidate_price"))
         except Exception:
             diagnostics["decision_code"] = "OFFICIAL_PRICE_UNCONFIRMED"
             return None, "Preco standard oficial nao confirmado. Execute uma nova analise.", cfg
@@ -328,6 +337,7 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
         "decision_code": "CONTEXT_VALIDATED", "ml_error_code": "", "http_status": None}
     result_details.update(outcome="blocked", price_diagnostics=diagnostic)
     rejected_prices = set()
+    rejected_invitation_key = None
     coherent_refresh_used = False
     while diagnostic["attempt_count"] < 2:
         # The canonical selection preserves the exact candidate/reference/window.
@@ -349,8 +359,10 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
         except Exception:
             diagnostic["decision_code"] = "OFFICIAL_PRICE_UNCONFIRMED"
             return False, "Nao foi possivel confirmar os precos oficiais atuais deste anuncio.", cfg
+        price_source = "candidate_price"
         diagnostic.update(prices, min_price=minimum, max_price=maximum, official_price=price,
-            invitation_price=price_number(raw.get("price") if "price" in raw else raw.get("deal_price")))
+            invitation_price=price_number(raw.get("price") if "price" in raw else raw.get("deal_price")),
+            suggested_price=price_number(raw.get("suggested_discounted_price")), price_source=price_source)
         if reason:
             if not coherent_refresh_used and diagnostic["attempt_count"] == 0:
                 coherent_refresh_used = True
@@ -358,9 +370,21 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
             diagnostic["decision_code"] = "OFFICIAL_PRICE_INCONSISTENT"
             return False, reason + " Os dados oficiais continuaram incoerentes apos nova consulta.", cfg
         if money_cents(price) in rejected_prices:
-            diagnostic["decision_code"] = "OFFICIAL_PRICE_UNCHANGED_AFTER_REJECTION"
-            result_details["outcome"] = "rejected"
-            return False, "Mercado Livre recusou este preco por credibilidade e o convite atualizado continua com o mesmo valor. Nenhuma nova tentativa foi enviada.", cfg
+            # Only the same freshly confirmed candidate may provide an explicit
+            # alternative. Never derive another discount or use another offer.
+            current_key = lightning_offer_key(raw, campaign_id=campaign, item_id=item_id)
+            if current_key != rejected_invitation_key:
+                diagnostic["decision_code"] = "OFFICIAL_INVITATION_CHANGED_AFTER_REJECTION"
+                result_details["outcome"] = "rejected"
+                return False, "O convite mudou apos a recusa. Execute uma nova analise.", cfg
+            alternate_reason, _, _, alternate = _price_reason(
+                raw, prices, adjust_candidate=True, price_source="suggested_discounted_price")
+            if alternate_reason or money_cents(alternate) in rejected_prices:
+                diagnostic["decision_code"] = "OFFICIAL_PRICE_UNCHANGED_AFTER_REJECTION"
+                result_details["outcome"] = "rejected"
+                return False, "Mercado Livre recusou o preco por credibilidade. O mesmo convite nao trouxe outra sugestao oficial valida; nenhum preco recusado foi reenviado.", cfg
+            price, price_source = alternate, "suggested_discounted_price"
+            diagnostic.update(official_price=price, price_source=price_source)
         try:
             financial, updates, approved, cfg = _fresh_financial(service, analysis, client_id, loja, cfg,
                 item_id, raw, row_context, price, prices["standard_price"])
@@ -376,7 +400,8 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
         ok, message, cfg = service._promo_aplicar_item_participacao_ml(client_id, loja, cfg,
             item_id=item_id, promotion_id=campaign, promotion_type="LIGHTNING", deal_price=price,
             allow_alternative_deal_price=False, result_details=attempt,
-            stock=selected.get("lightning_stock"), lightning_context=raw, official_price_context=prices)
+            stock=selected.get("lightning_stock"), lightning_context=raw,
+            official_price_context={**prices, "_jk_lightning_price_source": price_source})
         if attempt.get("submission_attempted"):
             diagnostic["attempt_count"] += 1
             diagnostic["sent_price"] = price
@@ -398,10 +423,11 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
         if diagnostic["http_status"] == 401:
             diagnostic["decision_code"] = "ML_AUTHENTICATION_REQUIRED"
             return False, message, cfg
-        if diagnostic["ml_error_code"] != "ERROR_CREDIBILITY_DISCOUNTED_PRICE":
+        if diagnostic["http_status"] != 400 or diagnostic["ml_error_code"] != "ERROR_CREDIBILITY_DISCOUNTED_PRICE":
             diagnostic["decision_code"] = "ML_PARTICIPATION_REJECTED"
             return False, message, cfg
         rejected_prices.add(money_cents(price))
+        rejected_invitation_key = lightning_offer_key(raw, campaign_id=campaign, item_id=item_id)
         if diagnostic["attempt_count"] >= 2:
             diagnostic["decision_code"] = "ML_PRICE_CREDIBILITY_REJECTED"
             return False, message, cfg

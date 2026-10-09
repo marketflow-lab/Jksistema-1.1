@@ -19,6 +19,7 @@ def create_promocoes_router() -> APIRouter:
     router.add_api_route("/api/promo/automacao", promocoes_api.promo_automacao_salvar, methods=["PUT"], name="promo_automacao_salvar")
     router.add_api_route("/api/promo/aplicar-participacoes", promocoes_api.aplicar_participacoes_promocoes, methods=["POST"], name="aplicar_participacoes_promocoes")
     router.add_api_route("/api/promo/aplicar-participacoes/start", promocoes_api.aplicar_participacoes_promocoes_start, methods=["POST"], name="aplicar_participacoes_promocoes_start")
+    router.add_api_route("/api/promo/confirmar-participacoes/{confirmation_id}", promocoes_api.confirmar_participacoes_promocoes, methods=["GET"], name="confirmar_participacoes_promocoes")
     router.add_api_route("/api/promo/aplicar-participacoes/jobs/{job_id}", promocoes_api.aplicar_participacoes_promocoes_job, methods=["GET"], name="aplicar_participacoes_promocoes_job")
     router.add_api_route("/api/promo/analise", promocoes_api.analisar_promo_automatico, methods=["GET"], name="analisar_promo_automatico")
     return router

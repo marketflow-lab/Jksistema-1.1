@@ -57,6 +57,7 @@ function capturarParametrosParticipacaoPromocoes() {
 }
 
 function invalidarContextoParticipacaoPromocoes() {
+    mostrarResumoParticipacaoPromocoes.sessaoAtiva?.cancelar();
     (Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha : []).forEach(analise => {
         analise.participacao_contexto_invalidado = true;
         analise.participacao_confirmada = false;
@@ -77,6 +78,7 @@ function formatarDiagnosticoPrecoParticipacao(diagnostico) {
     const money = value => Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     const campos = [
         ['initial_price', 'Preço inicial'], ['official_price', 'Proposta atualizada'],
+        ['suggested_price', 'Outra sugestão do Mercado Livre'],
         ['sent_price', 'Preço enviado'], ['standard_price', 'Preço-base'],
         ['sale_price', 'Preço atual de venda'], ['min_price', 'Limite mínimo'], ['max_price', 'Limite máximo'],
     ];
@@ -84,9 +86,11 @@ function formatarDiagnosticoPrecoParticipacao(diagnostico) {
         const valor = diagnostico[campo];
         if (valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor))) linhas.push(`${rotulo}: ${money(valor)}`);
     });
+    if (diagnostico.price_source === 'suggested_discounted_price') linhas.push('Preço alternativo sugerido pelo Mercado Livre.');
     const margem = diagnostico.recalculated_margin;
     if (margem !== null && margem !== undefined && margem !== '' && Number.isFinite(Number(margem))) linhas.push(`Margem recalculada: ${Number(margem).toFixed(2).replace('.', ',')}%`);
     if (Number.isSafeInteger(diagnostico.attempt_count) && diagnostico.attempt_count >= 0) linhas.push(`Tentativas de envio: ${diagnostico.attempt_count}`);
+    if (Number.isSafeInteger(diagnostico.confirmation_check_count) && diagnostico.confirmation_check_count > 0) linhas.push(`Consultas de confirmação: ${diagnostico.confirmation_check_count}`);
     if (diagnostico.decision_code) linhas.push(`Resultado da validação: ${String(diagnostico.decision_code)}`);
     if (diagnostico.ml_error_code) linhas.push(`Código Mercado Livre: ${String(diagnostico.ml_error_code)}`);
     if (Number.isSafeInteger(diagnostico.http_status)) linhas.push(`Resposta Mercado Livre: ${diagnostico.http_status}`);
@@ -151,7 +155,9 @@ function montarLinhasResultadoParticipacao(payload, result) {
                 lightning_finish_date: detalhe.lightning_finish_date,
                 lightning_schedule_pending: false,
             } : item);
-            const mensagem = detalhe?.message || detalhe?.error || '';
+            const statusConfirmado = participacaoIndividualConfirmada(detalhe)
+                ? ({ pending: 'Oferta programada no Mercado Livre.', started: 'Oferta em andamento no Mercado Livre.' })[String(detalhe.status || '').toLowerCase()] : '';
+            const mensagem = [detalhe?.message || detalhe?.error || '', statusConfirmado].filter(Boolean).join(' · ');
             const entrada = { ...base, nota: [base.nota, mensagem].filter(Boolean).join(' · '),
                 diagnostico: formatarDiagnosticoPrecoParticipacao(detalhe?.price_diagnostics) };
             const outcome = detalhe?.outcome || (
@@ -179,13 +185,15 @@ function resumirResultadoParticipacao(payload, result) {
     const contar = chave => linhas.reduce((total, linha) => total + linha[chave].length, 0);
     const totalSucesso = contar('confirmados');
     const totalIgnorados = contar('ignorados');
-    const totalFalha = contar('falhas') + contar('impedidos') + contar('indeterminados');
+    const totalPendentes = contar('indeterminados');
+    const totalFalha = contar('falhas') + contar('impedidos') + totalPendentes;
     return {
         ...result,
         total_itens: totalSucesso + totalIgnorados + totalFalha,
         total_sucesso: totalSucesso,
         total_ignorados: totalIgnorados,
         total_falha: totalFalha,
+        total_pendentes: totalPendentes,
         success: totalFalha === 0 && totalSucesso + totalIgnorados > 0,
     };
 }
@@ -217,72 +225,218 @@ function renderListaResultadoParticipacao(titulo, itens, pagina = 0, chaveLista 
     `;
 }
 
+function participacaoIndividualConfirmada(detalhe) {
+    return detalhe?.success === true && !detalhe.error && ['applied', 'already_participating'].includes(detalhe.outcome);
+}
+
+function mesclarResultadoConfirmacaoParticipacao(payload, anterior, recebido) {
+    const chave = (promo, ref, item) => JSON.stringify([String(promo || '').trim().toLowerCase(),
+        String(ref || '').trim(), String(item || '').trim().toUpperCase()]);
+    const permitidos = new Set();
+    const referencias = new Map();
+    for (const promo of payload.promocoes || []) for (const item of promo.items || []) {
+        if (!promo.promotion_id || !item.client_ref || !item.item_id) continue;
+        const ref = chave(promo.promotion_id, item.client_ref, '');
+        const identidade = chave(promo.promotion_id, item.client_ref, item.item_id);
+        referencias.set(ref, new Set([...(referencias.get(ref) || []), identidade]));
+        permitidos.add(identidade);
+    }
+    const validar = detalhes => {
+        const validos = new Map();
+        for (const detalhe of Array.isArray(detalhes) ? detalhes : []) {
+            if (!detalhe?.promotion_id || !detalhe.client_ref || !detalhe.item_id) continue;
+            const identidade = chave(detalhe.promotion_id, detalhe.client_ref, detalhe.item_id);
+            if (!permitidos.has(identidade) || referencias.get(chave(detalhe.promotion_id, detalhe.client_ref, ''))?.size !== 1) continue;
+            validos.set(identidade, [...(validos.get(identidade) || []), detalhe]);
+        }
+        return new Map(Array.from(validos).filter(([, detalhes]) => detalhes.length === 1).map(([id, detalhes]) => [id, detalhes[0]]));
+    };
+    const detalhes = validar(anterior?.detalhes);
+    for (const [id, detalhe] of validar(recebido?.detalhes)) {
+        if (!participacaoIndividualConfirmada(detalhes.get(id))) detalhes.set(id, detalhe);
+    }
+    const resumo = resumirResultadoParticipacao(payload, { ...anterior, detalhes: Array.from(detalhes.values()) });
+    resumo.confirmation_pending = resumo.total_pendentes > 0;
+    return resumo;
+}
+
+function capturarContextoConsultaConfirmacao(payload, analisesOriginais) {
+    const originais = (analisesOriginais || []).filter(analise => payload.promocoes?.some(promo => promo.promotion_id === analise.promo_b_id));
+    return {
+        clientId: getPromoClientId(), parametros: capturarParametrosParticipacaoPromocoes(),
+        geracao: typeof apiAnaliseGeracao !== 'undefined' ? apiAnaliseGeracao : null,
+        analiseAtiva: typeof apiAnaliseAtiva !== 'undefined' ? apiAnaliseAtiva : null,
+        snapshots: originais.map(analise => ({ analise, job: analise.job_id, dados: analise.data,
+            revisao: Number(analise.participacao_selecao_revisao || 0) })),
+    };
+}
+
+function iniciarConsultaConfirmacaoParticipacao(payload, inicial, opcoes, atualizar) {
+    const confirmationId = String(inicial?.confirmation_id || '').trim();
+    if (!confirmationId || inicial.confirmation_pending !== true) return null;
+    const { clientId, parametros, geracao, analiseAtiva, snapshots } = opcoes.contextoConfirmacao
+        || capturarContextoConsultaConfirmacao(payload, opcoes.analisesOriginais);
+    const originais = snapshots.map(snapshot => snapshot.analise);
+    let resultado = inicial;
+    let timer = null;
+    let controlador = null;
+    let cancelada = false;
+    let consultando = false;
+    let tentativas = 0;
+    let sequencia = 0;
+    const inicio = Date.now();
+    const contextoAtual = () => !cancelada && originais.length > 0 && clientId === getPromoClientId()
+        && payload.loja === (document.getElementById('apiLojaSelect')?.value || '')
+        && parametros === capturarParametrosParticipacaoPromocoes()
+        && (geracao === null || geracao === apiAnaliseGeracao)
+        && (analiseAtiva === null || analiseAtiva === apiAnaliseAtiva)
+        && snapshots.every(({ analise, job, dados }) => apiAnalisesPorCampanha.includes(analise)
+            && analise.origem_client_id === clientId && analise.origem_loja === payload.loja
+            && analise.job_id === job && analise.data === dados && analise.participacao_contexto_invalidado !== true
+            && (!payload.analysis_job_id || analise.job_id === payload.analysis_job_id));
+    const cancelar = () => {
+        cancelada = true;
+        sequencia++;
+        if (timer !== null) clearTimeout(timer);
+        controlador?.abort();
+        document.removeEventListener('change', verificarContexto, true);
+        document.removeEventListener('input', verificarContexto, true);
+    };
+    const verificarContexto = () => { if (!contextoAtual()) cancelar(); };
+    const exibir = mensagem => atualizar(resultado, { consultando, mensagem, verificar: () => consultar(true) });
+    const agendar = () => {
+        if (!contextoAtual()) { cancelar(); return; }
+        if (!resultado.confirmation_pending) return;
+        const restante = 60000 - (Date.now() - inicio);
+        const espera = [2000, 5000, 10000][Math.min(tentativas, 2)];
+        if (restante < espera) { exibir('O Mercado Livre ainda não confirmou todos os anúncios. Você pode consultar novamente.'); return; }
+        timer = setTimeout(() => consultar(false), espera);
+    };
+    const consultar = async manual => {
+        if (!contextoAtual()) { cancelar(); return; }
+        if (consultando || !resultado.confirmation_pending) return;
+        if (timer !== null) clearTimeout(timer);
+        consultando = true;
+        controlador = new AbortController();
+        const numero = ++sequencia;
+        const prazo = setTimeout(() => controlador?.abort(), manual ? 15000 : Math.min(15000, Math.max(1, 60000 - (Date.now() - inicio))));
+        exibir('Consultando a confirmação no Mercado Livre...');
+        let mensagem = '';
+        try {
+            const resposta = await fetch(`/api/promo/confirmar-participacoes/${encodeURIComponent(confirmationId)}?loja=${encodeURIComponent(payload.loja)}`, {
+                method: 'GET', headers: getAuthHeadersWithClient(), signal: controlador.signal,
+            });
+            const recebido = await resposta.json();
+            if (!contextoAtual() || numero !== sequencia) { cancelar(); return; }
+            if (!resposta.ok || recebido.confirmation_id !== confirmationId) throw new Error('Confirmação indisponível');
+            resultado = mesclarResultadoConfirmacaoParticipacao(payload, resultado, recebido);
+            aplicarAtualizacoesParticipacaoPromocoes(payload, resultado, originais);
+            for (const { analise, revisao } of snapshots) {
+                const campanhaPayload = { ...payload, promocoes: payload.promocoes.filter(promo => promo.promotion_id === analise.promo_b_id) };
+                analise.participacao_resultado = resumirResultadoParticipacao(campanhaPayload, resultado);
+                analise.participacao_confirmada = analise.participacao_resultado.success
+                    && Number(analise.participacao_selecao_revisao || 0) === revisao;
+            }
+            if (typeof renderApiAnalysisTabs === 'function') renderApiAnalysisTabs();
+            if (typeof atualizarStatusAutomacaoPromo === 'function') atualizarStatusAutomacaoPromo(
+                `Confirmação atualizada: ${resultado.total_sucesso} confirmado(s), ${resultado.total_ignorados} já participa(m), ${resultado.total_pendentes} aguardando confirmação.`);
+            mensagem = resultado.confirmation_pending ? 'Aguardando confirmação do Mercado Livre.' : 'Consulta de confirmação concluída.';
+        } catch (_) {
+            if (!contextoAtual() || numero !== sequencia) return;
+            mensagem = 'Não foi possível consultar agora. A inclusão não será reenviada; você pode verificar a confirmação novamente.';
+        } finally {
+            clearTimeout(prazo);
+            if (numero === sequencia) { consultando = false; controlador = null; }
+        }
+        if (!contextoAtual()) { cancelar(); return; }
+        tentativas++;
+        exibir(mensagem);
+        agendar();
+    };
+    if (!contextoAtual()) return null;
+    document.addEventListener('change', verificarContexto, true);
+    document.addEventListener('input', verificarContexto, true);
+    exibir('Aguardando confirmação do Mercado Livre. A consulta será atualizada automaticamente.');
+    agendar();
+    return { cancelar, verificar: () => consultar(true) };
+}
+
 function mostrarResumoParticipacaoPromocoes(payload, result, opcoes = {}) {
+    mostrarResumoParticipacaoPromocoes.sessaoAtiva?.cancelar();
     const anterior = document.querySelector('.promo-result-modal-backdrop');
     if (anterior) anterior.remove();
-
-    const resumo = resumirResultadoParticipacao(payload, result);
-    const totalSucesso = resumo.total_sucesso;
-    const totalIgnorados = resumo.total_ignorados;
-    const totalFalha = resumo.total_falha;
     const titulo = opcoes.titulo || 'Confirmação de participação';
-    const linhas = montarLinhasResultadoParticipacao(payload, result);
-    const listas = new Map();
-    const categorias = [['confirmados', 'Inclusão confirmada'], ['ignorados', 'Já participa'], ['impedidos', 'Impedimento técnico'], ['falhas', 'Recusados'], ['indeterminados', 'Resultado não confirmado']];
-    const campanhasHtml = linhas.map((linha, idx) => `
-        <section class="promo-result-campaign">
-            <div class="promo-result-campaign-title">${escapeHtml(linha.nome)}</div>
-            <div class="promo-result-columns">
-                ${categorias.map(([campo, rotulo]) => {
-                    const chave = `${idx}-${campo}`;
-                    listas.set(chave, { titulo: rotulo, itens: linha[campo] });
-                    return renderListaResultadoParticipacao(rotulo, linha[campo], 0, chave);
-                }).join('')}
-            </div>
-        </section>
-    `).join('') || '<div class="promo-result-empty">Nenhuma campanha retornada.</div>';
-
     const modal = document.createElement('div');
     modal.className = 'promo-result-modal-backdrop';
-    modal.innerHTML = `
-        <div class="promo-result-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(titulo)}">
-            <div class="promo-result-modal-header">
-                <div>
-                    <span class="promo-result-eyebrow">Mercado Livre</span>
-                    <h3 class="promo-result-title">${escapeHtml(titulo)}</h3>
+    const listas = new Map();
+    const paginas = new Map();
+    let sessao = null;
+    let fechada = false;
+    let consultar = null;
+    const renderizar = (resultado, estado = {}) => {
+        if (fechada) return;
+        const scroll = modal.querySelector('.promo-result-body')?.scrollTop || 0;
+        const resumo = resumirResultadoParticipacao(payload, resultado);
+        const categorias = [['confirmados', 'Inclusão confirmada'], ['ignorados', 'Já participa'], ['impedidos', 'Impedimento técnico'], ['falhas', 'Recusados'], ['indeterminados', 'Aguardando confirmação']];
+        listas.clear();
+        const campanhasHtml = montarLinhasResultadoParticipacao(payload, resultado).map((linha, idx) => `
+            <section class="promo-result-campaign">
+                <div class="promo-result-campaign-title">${escapeHtml(linha.nome)}</div>
+                <div class="promo-result-columns">${categorias.map(([campo, rotulo]) => {
+                    const chave = `${idx}-${campo}`;
+                    listas.set(chave, { titulo: rotulo, itens: linha[campo] });
+                    return renderListaResultadoParticipacao(rotulo, linha[campo], paginas.get(chave) || 0, chave);
+                }).join('')}</div>
+            </section>`).join('') || '<div class="promo-result-empty">Nenhuma campanha retornada.</div>';
+        consultar = estado.verificar || null;
+        modal.innerHTML = `
+            <div class="promo-result-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(titulo)}">
+                <div class="promo-result-modal-header">
+                    <div><span class="promo-result-eyebrow">Mercado Livre</span><h3 class="promo-result-title">${escapeHtml(titulo)}</h3></div>
+                    <button type="button" class="promo-result-close" data-close-promo-result aria-label="Fechar">×</button>
                 </div>
-                <button type="button" class="promo-result-close" data-close-promo-result aria-label="Fechar">×</button>
-            </div>
-            <div class="promo-result-summary">
-                <div class="promo-result-metric success"><strong>${totalSucesso}</strong><span>confirmado(s)</span></div>
-                <div class="promo-result-metric ignored"><strong>${totalIgnorados}</strong><span>já participa(m)</span></div>
-                <div class="promo-result-metric failed"><strong>${totalFalha}</strong><span>não concluído(s)</span></div>
-            </div>
-            <div class="promo-result-body">${campanhasHtml}</div>
-            <div class="promo-result-footer">
-                <button type="button" class="btn btn-primary" data-close-promo-result>OK</button>
-            </div>
-        </div>
-    `;
-
+                <div class="promo-result-summary">
+                    <div class="promo-result-metric success"><strong>${resumo.total_sucesso}</strong><span>confirmado(s)</span></div>
+                    <div class="promo-result-metric ignored"><strong>${resumo.total_ignorados}</strong><span>já participa(m)</span></div>
+                    <div class="promo-result-metric failed"><strong>${resumo.total_falha - resumo.total_pendentes}</strong><span>não concluído(s)</span></div>
+                    ${resumo.total_pendentes ? `<div class="promo-result-metric ignored"><strong>${resumo.total_pendentes}</strong><span>aguardando confirmação</span></div>` : ''}
+                </div>
+                <div class="promo-result-body">${campanhasHtml}</div>
+                <div class="promo-result-footer">
+                    ${estado.mensagem ? `<span role="status">${escapeHtml(estado.mensagem)}</span>` : ''}
+                    ${resultado.confirmation_pending && consultar ? `<button type="button" class="btn btn-secondary" data-check-promo-confirmation ${estado.consultando ? 'disabled' : ''}>Verificar confirmação</button>` : ''}
+                    <button type="button" class="btn btn-primary" data-close-promo-result>OK</button>
+                </div>
+            </div>`;
+        const corpo = modal.querySelector('.promo-result-body');
+        if (corpo) corpo.scrollTop = scroll;
+    };
     const fechar = () => {
+        fechada = true;
+        sessao?.cancelar();
         document.removeEventListener('keydown', onKeydown);
         modal.remove();
     };
-    const onKeydown = (event) => {
-        if (event.key === 'Escape') fechar();
-    };
-    modal.addEventListener('click', (event) => {
-        if (event.target === modal || event.target.closest('[data-close-promo-result]')) fechar();
+    const onKeydown = event => { if (event.key === 'Escape') fechar(); };
+    modal.addEventListener('click', event => {
+        if (event.target === modal || event.target.closest('[data-close-promo-result]')) { fechar(); return; }
+        const verificar = event.target.closest('[data-check-promo-confirmation]');
+        if (verificar && !verificar.disabled && consultar) consultar();
         const botao = event.target.closest('[data-result-page]');
         if (botao && !botao.disabled) {
             const chave = botao.dataset.resultKey;
             const lista = listas.get(chave);
-            if (lista) botao.closest('[data-result-list]').outerHTML = renderListaResultadoParticipacao(lista.titulo, lista.itens, Number(botao.dataset.resultPage), chave);
+            if (lista) {
+                paginas.set(chave, Number(botao.dataset.resultPage));
+                botao.closest('[data-result-list]').outerHTML = renderListaResultadoParticipacao(lista.titulo, lista.itens, Number(botao.dataset.resultPage), chave);
+            }
         }
     });
+    renderizar(result);
     document.addEventListener('keydown', onKeydown);
     document.body.appendChild(modal);
+    sessao = iniciarConsultaConfirmacaoParticipacao(payload, result, opcoes, renderizar);
+    mostrarResumoParticipacaoPromocoes.sessaoAtiva = { cancelar: fechar };
 }
 
 function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, analise, campanha }) {
@@ -534,7 +688,8 @@ function aplicarAtualizacoesParticipacaoPromocoes(payload, result, analisesOrigi
     detalhes.forEach(detalhe => {
         const ref = String(detalhe?.client_ref || '').trim();
         const promoId = String(detalhe?.promotion_id || '').trim();
-        if (!ref || !promoId || !detalhe.analysis_row_updates || typeof detalhe.analysis_row_updates !== 'object') return;
+        if (!ref || !promoId || (!participacaoIndividualConfirmada(detalhe)
+            && (!detalhe.analysis_row_updates || typeof detalhe.analysis_row_updates !== 'object'))) return;
         const chave = chaveResultadoParticipacao(promoId, ref);
         if (vistos.has(chave) || contagens.get(chave) !== 1) return;
         vistos.add(chave);
@@ -552,13 +707,14 @@ function aplicarAtualizacoesParticipacaoPromocoes(payload, result, analisesOrigi
         const itemId = getValorLinhaPromoAuto(row, ['MLB', 'item_id', 'mlb']);
         if (String(enviado.item_id || '').trim().toUpperCase() !== String(itemId || '').trim().toUpperCase()
             || (detalhe.item_id && String(detalhe.item_id).trim().toUpperCase() !== String(itemId || '').trim().toUpperCase())) return;
-        Object.entries(detalhe.analysis_row_updates).forEach(([campo, valor]) => {
+        Object.entries(detalhe.analysis_row_updates || {}).forEach(([campo, valor]) => {
             const canonico = campos.has(campo) ? campo
                 : (typeof _keysAreEquivalent === 'function' ? Array.from(campos).find(nome => _keysAreEquivalent(campo, nome)) : null);
             if (canonico && (valor === null || ['string', 'boolean'].includes(typeof valor) || (typeof valor === 'number' && Number.isFinite(valor)))) row[canonico] = valor;
         });
+        if (participacaoIndividualConfirmada(detalhe)) row.action_ja_participa = true;
         row.participacao_price_diagnostics = detalhe.price_diagnostics || null;
-        if (typeof atualizarLinhaFinanceiraParticipacaoPromocoes === 'function') atualizarLinhaFinanceiraParticipacaoPromocoes(row);
+        if (typeof atualizarLinhaFinanceiraParticipacaoPromocoes === 'function' && typeof document.querySelectorAll === 'function') atualizarLinhaFinanceiraParticipacaoPromocoes(row);
     });
 }
 
@@ -584,6 +740,7 @@ async function executarParticipacaoAutomaticaPromocoes() {
     }
     atualizarStatusAutomacaoPromo(`Entrando em ${total} anuncio(s) nas promocoes...`);
     const analisesOriginais = [...apiAnalisesPorCampanha];
+    const contextoConfirmacao = capturarContextoConsultaConfirmacao(payload, analisesOriginais);
     iniciarStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', total, loja: payload.loja });
     const resp = await fetch('/api/promo/aplicar-participacoes', {
         method: 'POST',
@@ -597,10 +754,10 @@ async function executarParticipacaoAutomaticaPromocoes() {
         falharStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', erro });
         throw new Error(erro);
     }
-    const msg = `Entrada concluida: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).${avisoRelampago}`;
+    const msg = `Entrada processada: ${result.total_sucesso || 0} confirmado(s), ${result.total_falha - result.total_pendentes} não concluído(s), ${result.total_pendentes} aguardando confirmação.${avisoRelampago}`;
     atualizarStatusAutomacaoPromo(msg);
-    concluirStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', result });
-    mostrarResumoParticipacaoPromocoes(payload, result, { titulo: 'Entrada concluída nas promoções' });
+    concluirStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', result: { ...result, total_falha: result.total_falha - result.total_pendentes } });
+    mostrarResumoParticipacaoPromocoes(payload, result, { titulo: 'Entrada concluída nas promoções', analisesOriginais, contextoConfirmacao });
     return result;
 }
 
@@ -649,6 +806,7 @@ async function confirmarParticipacaoCampanhaApi(index) {
     analise.participacao_em_andamento = true;
     analise.participacao_confirmada = false;
     iniciarStatusParticipacaoPromocoes({ nome, total, loja: payload.loja });
+    const contextoConfirmacao = capturarContextoConsultaConfirmacao(payload, [analise]);
     let resultadoRecebido = null;
     try {
         const resp = await fetch('/api/promo/aplicar-participacoes', {
@@ -662,22 +820,22 @@ async function confirmarParticipacaoCampanhaApi(index) {
         if (!resp.ok) {
             throw new Error(buildApiErrorMessage(resp, result, 'Erro ao confirmar participação'));
         }
-        const msg = `Campanha ${nome}: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
+        const msg = `Campanha ${nome}: ${result.total_sucesso || 0} confirmado(s), ${result.total_falha - result.total_pendentes} não concluído(s), ${result.total_pendentes} aguardando confirmação.`;
         analise.participacao_confirmada = result.success && analise.participacao_contexto_invalidado !== true
             && (!analise.participacao_contexto || analise.participacao_contexto === capturarParametrosParticipacaoPromocoes())
             && Number(analise.participacao_selecao_revisao || 0) === revisaoSelecao;
         analise.participacao_resultado = result;
         renderApiAnalysisTabs();
         atualizarStatusAutomacaoPromo(msg);
-        concluirStatusParticipacaoPromocoes({ nome, result });
-        mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}` });
+        concluirStatusParticipacaoPromocoes({ nome, result: { ...result, total_falha: result.total_falha - result.total_pendentes } });
+        mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}`, analisesOriginais: [analise], contextoConfirmacao });
     } catch (err) {
         const result = resultadoRecebido || resumirResultadoParticipacao(payload, { detalhes: [] });
         analise.participacao_resultado = result;
         renderApiAnalysisTabs();
         falharStatusParticipacaoPromocoes({ nome, erro: err && err.message ? err.message : err });
         atualizarStatusAutomacaoPromo(`Erro ao confirmar participação: ${err && err.message ? err.message : err}`);
-        mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}: resultado não confirmado` });
+        mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}: resultado não confirmado`, analisesOriginais: [analise], contextoConfirmacao });
     } finally {
         analise.participacao_em_andamento = false;
     }

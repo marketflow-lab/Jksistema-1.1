@@ -20,7 +20,7 @@ from backend.services.mercadolivre_legacy_promocoes import (
 import inspect
 import sys
 from backend.services.promocoes_lightning_reanalise import (
-    apply_reanalysed_lightning, ml_error_code, participation_error_detail, money_cents, price_number, validate_exact_lightning,
+    apply_reanalysed_lightning, ml_error_code, participation_error_detail, money_cents, price_number, validate_exact_lightning, lightning_price_signature,
 )
 from backend.services.promocoes_reanalise_contexto import carregar_contexto_reanalise, resolver_linha_reanalise
 import json
@@ -150,7 +150,7 @@ def _promo_lightning_conflicting_keys(records, promotion_id, item_id, cfg):
     for raw in records if isinstance(records, list) else []:
         for key, entry in _promo_lightning_scoped_offers([raw], promotion_id, item_id, cfg).items():
             status = _lightning_status(entry)
-            signature = (_promo_lightning_price(entry), lightning_stock_bounds(entry),
+            signature = (_promo_lightning_price(entry), lightning_price_signature(entry), lightning_stock_bounds(entry),
                          "candidate" if status in {"candidate", "eligible"} else status)
             if key in seen and seen[key] != signature:
                 conflicts.add(key)
@@ -522,6 +522,10 @@ def _promo_aplicar_item_participacao_ml(
                 result_details["price_diagnostics"]["decision_code"] = "PARTICIPATION_UNCONFIRMED"
             if promotion_type_upper == "LIGHTNING":
                 result_details["submission_attempted"] = True
+                result_details["_lightning_confirmation_context"] = {
+                    "campaign": promotion_id, "item_id": item_id,
+                    "raw": copy.deepcopy(lightning_context), "price": money_cents(deal_price_num) / 100,
+                }
                 result_details["price_diagnostics"].update(attempt_count=1, sent_price=money_cents(deal_price_num) / 100)
         try:
             resp, cfg = _ml_api_request(
@@ -799,6 +803,7 @@ def _aplicar_participacoes_promocoes_payload(
     resumo = []
     detalhes = []
     attempted_lightning = {}
+    pending_confirmations = []
     total_sucesso = 0
     total_falha = 0
     total_ignorados = 0
@@ -1000,6 +1005,10 @@ def _aplicar_participacoes_promocoes_payload(
 
             if promotion_type.upper() == "LIGHTNING" and result_details.get("submission_attempted"):
                 attempted_lightning[lightning_identity] = (dict(detail), lightning_selection)
+            if (detail["outcome"] == "unknown" and result_details.get("submission_attempted")
+                    and result_details.get("_lightning_confirmation_context")):
+                pending_confirmations.append({**result_details["_lightning_confirmation_context"],
+                                              "client_ref": detail["client_ref"]})
             outcome = detail["outcome"]
             detail["success"] = outcome in {"applied", "already_participating"}
             detail["ignored"] = outcome == "already_participating"
@@ -1021,7 +1030,7 @@ def _aplicar_participacoes_promocoes_payload(
             _notificar(f"Entrando nas promocoes: {processados}/{total_itens} anuncio(s).")
         resumo.append(promo_resumo)
 
-    return {
+    result = {
         "success": total_falha == 0,
         "loja": loja,
         "total_itens": total_itens,
@@ -1031,6 +1040,11 @@ def _aplicar_participacoes_promocoes_payload(
         "detalhes": detalhes,
         "promocoes": resumo,
     }
+    if pending_confirmations:
+        from .promocoes_lightning_resultados import register_confirmation
+        result = register_confirmation(sys.modules[__name__], client_id, loja, cfg,
+            req.analysis_job_id, result, pending_confirmations)
+    return result
 
 
 def aplicar_participacoes_promocoes(req: PromoAplicarParticipacaoRequest, client_id: str = Depends(get_tenant_id)):
@@ -1076,6 +1090,12 @@ def aplicar_participacoes_promocoes_start(req: PromoAplicarParticipacaoRequest, 
     }
 
 
+def confirmar_participacoes_promocoes(confirmation_id: str, loja: Optional[str] = None,
+                                      client_id: str = Depends(get_tenant_id)):
+    from .promocoes_lightning_resultados import refresh_confirmation
+    return refresh_confirmation(sys.modules[__name__], confirmation_id, client_id, loja=loja)
+
+
 def aplicar_participacoes_promocoes_job(job_id: str, client_id: str = Depends(get_tenant_id)):
     job = _promo_job_get(job_id)
     if not job or job.get("client_id") != client_id:
@@ -1086,7 +1106,7 @@ def aplicar_participacoes_promocoes_job(job_id: str, client_id: str = Depends(ge
     payload["job_id"] = job_id
     return payload
 
-PEER_EXPORTS = ['_promo_aplicar_item_participacao_ml', '_aplicar_participacoes_promocoes_payload', 'aplicar_participacoes_promocoes', 'aplicar_participacoes_promocoes_start', 'aplicar_participacoes_promocoes_job']
+PEER_EXPORTS = ['_promo_aplicar_item_participacao_ml', '_aplicar_participacoes_promocoes_payload', 'aplicar_participacoes_promocoes', 'aplicar_participacoes_promocoes_start', 'aplicar_participacoes_promocoes_job', 'confirmar_participacoes_promocoes']
 __all__ = PEER_EXPORTS + ["configure_promocoes_api_participacoes_runtime"]
 
 configure_promocoes_api_participacoes_runtime()
