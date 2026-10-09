@@ -266,6 +266,7 @@ function promptToleranciaAcao() {
         return;
     }
     actionTolerancePct = n;
+    if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     const input = document.getElementById('apiMargemTolerancia');
     if (input) input.value = String(actionTolerancePct);
     saveActionTolerance();

@@ -13,7 +13,7 @@ from backend.services.mercadolivre_legacy_promocoes import _promo_erro_candidate
 
 @pytest.fixture
 def ml(monkeypatch):
-    state = SimpleNamespace(calls=[], lookups=[], response=None, eligibility=None)
+    state = SimpleNamespace(calls=[], lookups=[], price_lookups=[], standard_price=1000000.0, sale_price=90.0, response=None, eligibility=None)
     monkeypatch.setattr(participacoes, "_obter_cfg_ml", lambda client, store: {"scope": (client, store)}, raising=False)
 
     def lookup(client, store, cfg, campaign, kind, item):
@@ -25,6 +25,12 @@ def ml(monkeypatch):
 
     def request(client, store, cfg, method, url, **kwargs):
         assert cfg["scope"] == (client, store)
+        if method == "GET" and (url.endswith("/prices") or url.endswith("/sale_price")):
+            state.price_lookups.append((client, store, url, kwargs))
+            item_id = url.split("/")[-2]
+            data = {"id": item_id, "prices": [{"type": "standard", "amount": state.standard_price,
+                "currency_id": "BRL", "conditions": {"context_restrictions": ["channel_marketplace"]}}]} if url.endswith("/prices") else {"amount": state.sale_price, "currency_id": "BRL"}
+            return SimpleNamespace(status_code=200, json=lambda: data), cfg
         state.calls.append((client, store, method, url, kwargs))
         response = state.response
         if isinstance(response, list):

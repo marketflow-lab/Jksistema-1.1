@@ -389,10 +389,12 @@ function inicializarAutomacaoPromoApi() {
         salvarServidor();
     });
     document.getElementById('apiPromoASelect')?.addEventListener('change', () => {
+        if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
         getApiPromoACompatibilityError();
         if (enabledEl.checked) salvarServidor();
     });
     toleranciaEl?.addEventListener('change', () => {
+        if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
         getActionTolerancePct();
         saveActionTolerance();
         if (Array.isArray(currentData) && currentData.length) {
@@ -400,6 +402,9 @@ function inicializarAutomacaoPromoApi() {
         }
         if (enabledEl.checked) salvarServidor();
         else saveApiAutoPrefs();
+    });
+    document.getElementById('apiMargemMinima')?.addEventListener('input', () => {
+        if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     });
 
     atualizarStatusAutomacaoPromo('Sincronizando automacao com o servidor...');

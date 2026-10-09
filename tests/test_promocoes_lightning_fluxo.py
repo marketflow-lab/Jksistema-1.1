@@ -427,6 +427,8 @@ def test_three_equal_price_windows_are_sent_sequentially_and_confirmed_independe
         events.append("GET")
         return copy.deepcopy(observed), cfg
     def send(client, store, cfg, method, url, **kwargs):
+        if method != "POST":
+            return original_request(client, store, cfg, method, url, **kwargs)
         index = len(ml.calls)
         events.append(f"POST-{(9, 10, 12)[index]}")
         response, cfg = original_request(client, store, cfg, method, url, **kwargs)
@@ -577,7 +579,8 @@ def test_undated_invite_posts_then_confirms_new_dated_participation(ml, monkeypa
     events = changing_reads(monkeypatch, [raw], [pending])
     original_request = participation._ml_api_request
     def request(*args, **kwargs):
-        events.append("POST")
+        if args[3] == "POST":
+            events.append("POST")
         return original_request(*args, **kwargs)
     monkeypatch.setattr(participation, "_ml_api_request", request)
     ml.response = (201, {"price": 66.32, "original_price": 92.28})

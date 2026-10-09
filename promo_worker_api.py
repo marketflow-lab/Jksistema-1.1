@@ -14,6 +14,7 @@ from backend_api import (
     logger,
 )
 from backend.services.promocoes_common import PROMO_WORKER_PROTOCOL_VERSION
+from backend.services.promocoes_reanalise_contexto import capturar_contexto_reanalise
 
 
 app = FastAPI(title="JK Sistema Promo Worker")
@@ -77,9 +78,16 @@ def _job_set(job_id: str, **kwargs):
         job = dict(JOBS_CACHE.get(job_id) or {})
         job.update(kwargs)
         job["updated_at"] = time.time()
+        path = _job_path(job_id)
+        temporary = f"{path}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(temporary, "w", encoding="utf-8") as fh:
+                json.dump(job, fh, ensure_ascii=False)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
         JOBS_CACHE[job_id] = job
-    with open(_job_path(job_id), "w", encoding="utf-8") as fh:
-        json.dump(job, fh, ensure_ascii=False)
     return job
 
 
@@ -172,6 +180,11 @@ def _run_job(
                 progress=int(heartbeat_state.get("progress") or 15),
             )
 
+    reanalysis_context = {}
+
+    def _capture_context(context):
+        reanalysis_context.update(context)
+
     try:
         _raise_if_job_cancelled(job_id)
         _job_set(job_id, status="running", progress=15, message="Processando análise de promoções...", result=None, error=None)
@@ -193,40 +206,45 @@ def _run_job(
                 pass
             _job_push_log(job_id, str(message), progress=progress, details=details)
 
-        if files_payload:
-            uploads = [
-                UploadFile(file=io.BytesIO(item["content"]), filename=item["filename"])
-                for item in files_payload
-            ]
-            resultado = asyncio.run(
-                analisar_promo_via_api_com_arquivos(
-                    loja=loja,
-                    promocao_a_id=promocao_a_id,
-                    promocao_a_type=promocao_a_type,
-                    margem_minima=margem_minima,
-                    margem_tolerancia=margem_tolerancia,
-                    promocoes_b_meta=promocoes_b_meta,
-                    files=uploads,
-                    client_id=client_id,
-                    progress_hook=_on_progress,
+        with capturar_contexto_reanalise(_capture_context):
+            if files_payload:
+                uploads = [
+                    UploadFile(file=io.BytesIO(item["content"]), filename=item["filename"])
+                    for item in files_payload
+                ]
+                resultado = asyncio.run(
+                    analisar_promo_via_api_com_arquivos(
+                        loja=loja,
+                        promocao_a_id=promocao_a_id,
+                        promocao_a_type=promocao_a_type,
+                        margem_minima=margem_minima,
+                        margem_tolerancia=margem_tolerancia,
+                        promocoes_b_meta=promocoes_b_meta,
+                        files=uploads,
+                        client_id=client_id,
+                        progress_hook=_on_progress,
+                    )
                 )
-            )
-        else:
-            resultado = asyncio.run(
-                analisar_promo_via_api_sem_arquivos(
-                    loja=loja,
-                    promocao_a_id=promocao_a_id,
-                    promocao_a_type=promocao_a_type,
-                    margem_minima=margem_minima,
-                    margem_tolerancia=margem_tolerancia,
-                    promocoes_b_meta=promocoes_b_meta,
-                    client_id=client_id,
-                    progress_hook=_on_progress,
+            else:
+                resultado = asyncio.run(
+                    analisar_promo_via_api_sem_arquivos(
+                        loja=loja,
+                        promocao_a_id=promocao_a_id,
+                        promocao_a_type=promocao_a_type,
+                        margem_minima=margem_minima,
+                        margem_tolerancia=margem_tolerancia,
+                        promocoes_b_meta=promocoes_b_meta,
+                        client_id=client_id,
+                        progress_hook=_on_progress,
+                    )
                 )
-            )
         _raise_if_job_cancelled(job_id)
         _job_push_log(job_id, "Análise concluída com sucesso.", progress=100)
-        _job_set(job_id, status="completed", progress=100, message="Análise concluída.", result=resultado, error=None)
+        resultado["analysis_job_id"] = job_id
+        _job_set(
+            job_id, status="completed", progress=100, message="Análise concluída.",
+            result=resultado, error=None, reanalysis_context=reanalysis_context,
+        )
     except PromoJobCancelled as e:
         _job_push_log(job_id, str(e), progress=100)
         _job_set(

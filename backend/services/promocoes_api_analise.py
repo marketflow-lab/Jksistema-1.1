@@ -65,6 +65,9 @@ from backend.services.promocoes_core import *
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 from backend.services.promocoes_tarifa_estimada import estimar_tarifa_promocao
 from backend.services.promocoes_lightning import merge_lightning_raw
+from backend.services.promocoes_reanalise_contexto import (
+    novo_contexto_reanalise, registrar_linha_reanalise, finalizar_contexto_reanalise,
+)
 from backend.services.mercadolivre_legacy_promocoes import (
     _promo_contextualizar_entry_campanha as _lightning_contextualize,
     _promo_mesclar_raw_multistatus as _lightning_merge_same,
@@ -2331,6 +2334,9 @@ async def analisar_promo_via_api_sem_arquivos(
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
     custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, loja)
+    contexto_reanalise = novo_contexto_reanalise(
+        client_id, loja, cfg, promo_a, promo_a_type, margem_minima, margem_tolerancia,
+    )
 
     def _erro_legivel(exc: Exception) -> str:
         if isinstance(exc, HTTPException):
@@ -2679,7 +2685,7 @@ async def analisar_promo_via_api_sem_arquivos(
             status = "Programada"
         else:
             status = status_exibicao_promo_a
-        return {
+        linha = {
             "Tipo": tipo_anuncio,
             "%": _format_pct_br(
                 fee_b.get("sale_fee_pct")
@@ -2747,6 +2753,14 @@ async def analisar_promo_via_api_sem_arquivos(
             **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
             **lightning_row_fields(raw_b_participacao, promo_meta.get("promo_b_type"), promo_meta["promo_b"], item_id),
         }
+        registrar_linha_reanalise(
+            contexto_reanalise, linha, item=item, raw_acao=raw_b_participacao,
+            custo=custo, imposto_rate=imposto_rate, status_promo_a=status_promo_a,
+            margem_base=margem_a, preco_base=_promo_base_atual_anuncio(price_info, item),
+            skus_custo=skus_variacoes or [sku, sku_display], sku_imposto=sku or sku_display,
+            sku=sku or sku_display, raw_a=raw_a_item, preco_a=preco_a,
+        )
+        return linha
 
     analises = []
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
@@ -2905,6 +2919,7 @@ async def analisar_promo_via_api_sem_arquivos(
         dados_payload = df_payload.to_dict(orient="records")
         for payload_row, source_row in zip(dados_payload, linhas):
             payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
+            payload_row["analysis_client_ref"] = source_row["analysis_client_ref"]
         meta_por_linha = {
             (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
                 "offer_id": str(item.get("offer_id") or "").strip(),
@@ -3005,7 +3020,7 @@ async def analisar_promo_via_api_sem_arquivos(
         })
 
     _emit_progress(98, "Finalizando resultado da analise via API...")
-    return {
+    resultado = {
         "success": True,
         "mode": "api_comparacao_promocoes_sem_arquivos",
         "loja": loja,
@@ -3016,6 +3031,8 @@ async def analisar_promo_via_api_sem_arquivos(
         "data": analises[0]["data"] if analises else [],
         "planilha_gerada": analises[0]["planilha_gerada"] if analises else None,
     }
+    finalizar_contexto_reanalise(contexto_reanalise, resultado)
+    return resultado
 
 
 async def analisar_promo_via_api_com_arquivos(
@@ -3122,6 +3139,9 @@ async def analisar_promo_via_api_com_arquivos(
     _emit_progress(32, f"Promocao 1 carregada com {len(ids_a)} anuncio(s).")
 
     custos_por_sku, impostos_por_sku = _carregar_custos_impostos_cadastro_por_sku_loja(client_id, loja)
+    contexto_reanalise = novo_contexto_reanalise(
+        client_id, loja, cfg, promo_a, promo_a_type, margem_minima, margem_tolerancia,
+    )
 
     analises = []
     ids_globais = set()
@@ -3506,7 +3526,7 @@ async def analisar_promo_via_api_com_arquivos(
         else:
             decisao = "Participar"
 
-        return {
+        linha = {
             "Tipo": tipo_anuncio,
             "%": _format_pct_br(
                 fee_b.get("sale_fee_pct")
@@ -3574,6 +3594,14 @@ async def analisar_promo_via_api_com_arquivos(
             **_promo_campos_financeiros_acao(financeiro_acao, raw_b_participacao, desconto_b_acao, margem_a),
             **lightning_row_fields(raw_b_participacao, promo_b_type, promo_b_id, item_id),
         }
+        registrar_linha_reanalise(
+            contexto_reanalise, linha, item=item, raw_acao=raw_b_participacao,
+            custo=custo, imposto_rate=imposto_rate, status_promo_a=status_promo_a,
+            margem_base=margem_a, preco_base=_promo_base_atual_anuncio(price_info, item),
+            skus_custo=skus_variacoes or [sku, sku_display], sku_imposto=sku or sku_display,
+            sku=sku or sku_display, raw_a=raw_a_item, preco_a=preco_a,
+        )
+        return linha
 
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
         mapa_promo2 = promo_meta["mapa_promo2"]
@@ -3633,6 +3661,7 @@ async def analisar_promo_via_api_com_arquivos(
         dados_payload = df_payload.to_dict(orient="records")
         for payload_row, source_row in zip(dados_payload, linhas):
             payload_row.update({field: source_row[field] for field in LIGHTNING_ROW_FIELDS if field in source_row})
+            payload_row["analysis_client_ref"] = source_row["analysis_client_ref"]
         meta_por_linha = {
             (str(item.get("MLB") or "").strip(), str(item.get("lightning_offer_key") or "")): {
                 "offer_id": str(item.get("offer_id") or "").strip(),
@@ -3732,7 +3761,7 @@ async def analisar_promo_via_api_com_arquivos(
 
     _emit_progress(98, "Finalizando resultado da analise...")
 
-    return {
+    resultado = {
         "success": True,
         "mode": "api_comparacao_promocoes_arquivos",
         "loja": loja,
@@ -3743,6 +3772,8 @@ async def analisar_promo_via_api_com_arquivos(
         "data": analises[0]["data"] if analises else [],
         "planilha_gerada": analises[0]["planilha_gerada"] if analises else None,
     }
+    finalizar_contexto_reanalise(contexto_reanalise, resultado)
+    return resultado
 
 
 async def analisar_promo_automatico(

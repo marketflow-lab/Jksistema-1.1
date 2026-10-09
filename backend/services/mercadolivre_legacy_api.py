@@ -287,6 +287,7 @@ def _ml_api_request(
     headers=None,
     timeout: int = 15,
     verify_ssl: bool | None = None,
+    retry_unauthorized: bool = True,
 ):
     """Executa chamada autenticada na API do Mercado Livre com refresh automÃƒÂ¡tico do token."""
     if verify_ssl is False:
@@ -314,7 +315,7 @@ def _ml_api_request(
         timeout=timeout,
         verify_ssl=verify,
     )
-    if resp.status_code == 401:
+    if resp.status_code == 401 and retry_unauthorized:
         _ml_http_invalidar_session(client_id, loja, access_token, verify)
         cfg = _ml_refresh_token(client_id, loja, cfg)
         if str(method).upper() not in {"GET", "HEAD", "OPTIONS"}:

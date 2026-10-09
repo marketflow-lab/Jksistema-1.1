@@ -204,6 +204,43 @@ function obterEstimativaCelulaPromocoes(row, coluna) {
     return '';
 }
 
+function atualizarLinhaFinanceiraParticipacaoPromocoes(row) {
+    if (!(Array.isArray(currentData) && currentData.includes(row)) || !row.analysis_client_ref) return;
+    const trs = Array.from(document.querySelectorAll('#tabelaAnalise tbody tr'))
+        .filter(tr => tr.getAttribute('data-analysis-client-ref') === String(row.analysis_client_ref));
+    if (trs.length !== 1) return;
+    const colunasFinanceiras = new Set(['%', 'Preço Final', 'Frete', 'Tarifa', 'Imposto', 'Valor Líquido', 'Margem', 'Custo',
+        'Preço Final ML', 'ML % Campanha', 'Tarifa ML', 'Frete ML', 'Frete Gratis ML', 'Imposto ML', 'Desconto ML', 'Valor líquido ML', 'Margem ML']);
+    Array.from(trs[0].children).forEach(td => {
+        const key = td.getAttribute('data-promo-column-key');
+        if (!colunasFinanceiras.has(key)) return;
+        const cellValue = String(getTableCellValue(row, key) ?? '').trim();
+        td.textContent = cellValue;
+        td.title = '';
+        if (key === 'Margem' || key === 'Margem ML') {
+            td.classList.remove('margin-low', 'margin-mid', 'margin-high', 'margin-top');
+            const pct = parsePercentValue(cellValue);
+            if (pct !== null) td.classList.add(pct < 10 ? 'margin-low' : pct < 13 ? 'margin-mid' : pct < 15 ? 'margin-high' : 'margin-top');
+        }
+        const estimativa = obterEstimativaCelulaPromocoes(row, key);
+        if (cellValue && estimativa) {
+            const badge = document.createElement('small');
+            badge.className = 'promo-estimate-badge';
+            badge.textContent = 'Estimado';
+            badge.title = estimativa;
+            badge.tabIndex = 0;
+            badge.setAttribute('aria-label', `${key}: ${cellValue}. Estimado. ${estimativa}`);
+            td.title = estimativa;
+            td.appendChild(badge);
+        }
+    });
+    const aviso = trs[0].querySelector('.promo-decision-technical');
+    if (aviso) {
+        aviso.textContent = obterAvisoParticipacaoPromocoes(row);
+        aviso.style.display = aviso.textContent ? 'block' : 'none';
+    }
+}
+
 function renderTable(data) {
     const table = document.getElementById('tabelaAnalise');
     table.setAttribute('data-table-key', `tabelaAnalise__${getCurrentUserPrefScope()}`);
@@ -267,12 +304,14 @@ function renderTable(data) {
     pageData.forEach((row, index) => {
         const dataIndex = startIdx + index;
         const tr = document.createElement('tr');
+        if (row.analysis_client_ref) tr.setAttribute('data-analysis-client-ref', String(row.analysis_client_ref));
         let avisoParticipacao = null;
         const relampago = typeof isLinhaOfertaRelampago === 'function' && isLinhaOfertaRelampago(row);
         if (relampago) tr.setAttribute('data-lightning-offer-key', String(row.lightning_offer_key || ''));
 
         visibleColumns.forEach(col => {
             const td = document.createElement('td');
+            td.setAttribute('data-promo-column-key', col.key);
             let rawCellValue = getTableCellValue(row, col.key);
             if ((rawCellValue === null || rawCellValue === undefined || String(rawCellValue).trim() === '') && col.key === '%') {
                 rawCellValue = resolvePromoPercentDisplay(row);

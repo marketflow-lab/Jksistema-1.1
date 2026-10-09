@@ -1,6 +1,6 @@
 """Pydantic schemas for promocoes."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -21,6 +21,8 @@ class PromoAnaliseApiRequest(BaseModel):
 class PromoAplicarParticipacaoRequest(BaseModel):
     loja: str
     promocoes: list[dict]
+    analysis_job_id: str | None = None
+    price_policy: Literal["exact", "refresh_and_reanalyse"] = "exact"
 
 
 class PromoAutomacaoConfigRequest(BaseModel):

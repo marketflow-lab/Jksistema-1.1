@@ -62,6 +62,9 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_lightning_acao import LIGHTNING_ROW_FIELDS
+from backend.services.promocoes_reanalise_contexto import (
+    capturar_contexto_reanalise, carregar_contexto_reanalise, configuracao_automacao_reanalise_confere,
+)
 from backend.services.promocoes_common import *
 from backend.services.promocoes_core import *
 
@@ -127,24 +130,32 @@ def _promo_analise_background_worker(
             UploadFile(file=io.BytesIO(item["content"]), filename=item["filename"])
             for item in files_payload
         ]
-        resultado = asyncio.run(
-            analisar_promo_via_api_com_arquivos(
-                loja=loja,
-                promocao_a_id=promocao_a_id,
-                promocao_a_type=promocao_a_type,
-                margem_minima=margem_minima,
-                margem_tolerancia=margem_tolerancia,
-                promocoes_b_meta=promocoes_b_meta,
-                files=uploads,
-                client_id=client_id,
+        reanalysis_context = {}
+
+        def _capture_context(context):
+            reanalysis_context.update(context)
+
+        with capturar_contexto_reanalise(_capture_context):
+            resultado = asyncio.run(
+                analisar_promo_via_api_com_arquivos(
+                    loja=loja,
+                    promocao_a_id=promocao_a_id,
+                    promocao_a_type=promocao_a_type,
+                    margem_minima=margem_minima,
+                    margem_tolerancia=margem_tolerancia,
+                    promocoes_b_meta=promocoes_b_meta,
+                    files=uploads,
+                    client_id=client_id,
+                )
             )
-        )
+        resultado["analysis_job_id"] = job_id
         _promo_job_set(
             job_id,
             status="completed",
             progress=100,
             message="Analise concluida.",
             result=resultado,
+            reanalysis_context=reanalysis_context,
         )
     except Exception as e:
         logger.exception("[PROMO API BG] Falha no job %s", job_id)
@@ -341,7 +352,7 @@ def _promo_automacao_linha_valor(row: dict, aliases: list[str]) -> Any:
     return ""
 
 
-def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
+def _promo_automacao_montar_participacoes(resultado: dict, loja: str, analysis_job_id: str = "") -> dict:
     analises = resultado.get("analises") if isinstance(resultado, dict) else []
     if not isinstance(analises, list) or not analises:
         analises = [{
@@ -387,6 +398,7 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
             if not item_id:
                 continue
             item_payload = {
+                "client_ref": str(row.get("analysis_client_ref") or "").strip(),
                 "item_id": item_id,
                 "offer_id": str(_promo_automacao_linha_valor(row, ["action_offer_id", "offer_id", "offerId", "ref_id", "refId"]) or "").strip(),
                 "deal_price": _parse_float_flex(_promo_automacao_linha_valor(row, ["action_deal_price", "deal_price", "preco_promocional_ml", "PreÃ§o Promocional ML", "Preco Promocional ML", "PreÃ§o Final ML", "Preco Final ML", "PreÃ§o Final PromoÃ§Ã£o 2", "Preco Final Promocao 2"])),
@@ -418,7 +430,11 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str) -> dict:
                 "nome": nome,
                 "items": items,
             })
-    return {"loja": loja, "promocoes": promocoes}
+    payload = {"loja": loja, "promocoes": promocoes}
+    job_id = str(analysis_job_id or (resultado or {}).get("analysis_job_id") or "").strip()
+    if job_id:
+        payload.update(analysis_job_id=job_id, price_policy="refresh_and_reanalyse")
+    return payload
 
 
 def _promo_automacao_refresh_job_state(client_id: str, cfg: dict, *, aplicar: bool = False) -> tuple[dict, bool]:
@@ -438,12 +454,25 @@ def _promo_automacao_refresh_job_state(client_id: str, cfg: dict, *, aplicar: bo
     if status == "completed":
         cfg["last_completed_at"] = float(payload.get("updated_at") or time.time())
         cfg["last_error"] = ""
-        if aplicar and not bool(cfg.get("approval_required")) and cfg.get("last_applied_job_id") != job_id:
+        if aplicar and cfg.get("enabled") is True and not bool(cfg.get("approval_required")) and cfg.get("last_applied_job_id") != job_id:
             try:
                 result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-                participacoes = _promo_automacao_montar_participacoes(result, str(cfg.get("loja") or ""))
+                participacoes = _promo_automacao_montar_participacoes(result, str(cfg.get("loja") or ""), analysis_job_id=job_id)
                 total = sum(len(p.get("items") or []) for p in participacoes.get("promocoes", []))
                 if total > 0:
+                    if any(str(group.get("promotion_type") or "").upper() == "LIGHTNING" for group in participacoes.get("promocoes", [])):
+                        try:
+                            ml_cfg = _obter_cfg_ml(client_id, str(cfg.get("loja") or ""))
+                            canonical = carregar_contexto_reanalise(job_id, client_id, str(cfg.get("loja") or ""), ml_cfg)
+                            matches = configuracao_automacao_reanalise_confere(canonical, cfg)
+                        except Exception:
+                            matches = False
+                        if not matches:
+                            message = "Configuracao da automacao mudou ou a analise nao confirmou o contexto atual. Uma nova analise e necessaria."
+                            cfg.update(last_error=message, next_run_at=time.time(), last_applied_job_id=job_id,
+                                       last_apply_result={"success": False, "message": message,
+                                                          "decision_code": "AUTOMATION_CONTEXT_CHANGED"})
+                            return cfg, True
                     apply_result = aplicar_participacoes_promocoes(
                         PromoAplicarParticipacaoRequest(**participacoes),
                         client_id=client_id,

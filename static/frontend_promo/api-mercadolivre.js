@@ -778,6 +778,7 @@ function salvarApiPromoBSelectionPrefs() {
 function toggleApiPromoBSelection(input) {
     const id = String(input?.value || '').trim();
     if (!id) return;
+    if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     apiPromoBSelectionReady = true;
     if (!(apiPromoBSelectedIds instanceof Set)) apiPromoBSelectedIds = new Set();
     if (input.checked) {
@@ -793,6 +794,7 @@ function toggleApiPromoBSelection(input) {
 }
 
 function selecionarTodasApiPromoB() {
+    if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     apiPromoBSelectedIds = new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [])
         .map((campanha) => String(campanha?.id || '').trim())
         .filter(Boolean));
@@ -802,6 +804,7 @@ function selecionarTodasApiPromoB() {
 }
 
 function limparSelecaoApiPromoB() {
+    if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     apiPromoBSelectedIds = new Set();
     apiPromoBSelectionReady = true;
     renderApiPromoBButtons(apiPromoBCampaigns);
@@ -1177,6 +1180,7 @@ function capturarContextoAnaliseApi() {
         loja: String(document.getElementById('apiLojaSelect')?.value || '').trim(),
         clientId: getPromoClientId(),
         headers: getAuthHeadersWithClient(),
+        participacao: typeof capturarParametrosParticipacaoPromocoes === 'function' ? capturarParametrosParticipacaoPromocoes() : '',
     };
 }
 
@@ -1247,6 +1251,8 @@ async function acompanharJobAnaliseApi(jobId, contexto = capturarContextoAnalise
                     if (analise) {
                         analise.origem_loja = contexto.loja;
                         analise.origem_client_id = contexto.clientId;
+                        analise.participacao_contexto = contexto.participacao;
+                        analise.participacao_contexto_invalidado = false;
                     }
                     if (analise && jobIdAtual) {
                         analise.job_id = jobIdAtual;

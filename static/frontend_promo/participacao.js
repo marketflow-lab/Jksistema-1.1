@@ -42,6 +42,57 @@ function chaveResultadoParticipacao(promotionId, itemId) {
     return `${String(promotionId || '').trim().toLowerCase()}::${String(itemId || '').trim().toUpperCase()}`;
 }
 
+function capturarParametrosParticipacaoPromocoes() {
+    const campanhas = typeof getApiPromoBSelections === 'function' ? getApiPromoBSelections() : [];
+    const minima = Number(String(document.getElementById('apiMargemMinima')?.value || 15).replace(',', '.'));
+    return JSON.stringify({
+        loja: String(document.getElementById('apiLojaSelect')?.value || '').trim(),
+        clientId: getPromoClientId(),
+        promoA: String(document.getElementById('apiPromoASelect')?.value || '').trim(),
+        promoAType: String(document.getElementById('apiPromoASelect')?.selectedOptions?.[0]?.dataset?.promoType || ''),
+        campanhas: campanhas.map(promo => [String(promo.value || ''), String(promo.promoType || '')]).sort((a, b) => a[0].localeCompare(b[0])),
+        minima: Number.isFinite(minima) ? minima : 15,
+        tolerancia: typeof getActionTolerancePct === 'function' ? getActionTolerancePct() : 0,
+    });
+}
+
+function invalidarContextoParticipacaoPromocoes() {
+    (Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha : []).forEach(analise => {
+        analise.participacao_contexto_invalidado = true;
+        analise.participacao_confirmada = false;
+    });
+}
+
+function validarContextoReanaliseParticipacao(analise, rows) {
+    if (!String(analise?.job_id || '').trim() || analise.participacao_contexto_invalidado === true
+        || !analise.participacao_contexto || analise.participacao_contexto !== capturarParametrosParticipacaoPromocoes()
+        || rows.some(row => !String(row?.analysis_client_ref || '').trim())) {
+        throw new Error('Execute uma nova análise para atualizar os preços das ofertas relâmpago com as regras de margem atuais.');
+    }
+}
+
+function formatarDiagnosticoPrecoParticipacao(diagnostico) {
+    if (!diagnostico || typeof diagnostico !== 'object') return [];
+    const linhas = [];
+    const money = value => Number(value).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const campos = [
+        ['initial_price', 'Preço inicial'], ['official_price', 'Proposta atualizada'],
+        ['sent_price', 'Preço enviado'], ['standard_price', 'Preço-base'],
+        ['sale_price', 'Preço atual de venda'], ['min_price', 'Limite mínimo'], ['max_price', 'Limite máximo'],
+    ];
+    campos.forEach(([campo, rotulo]) => {
+        const valor = diagnostico[campo];
+        if (valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor))) linhas.push(`${rotulo}: ${money(valor)}`);
+    });
+    const margem = diagnostico.recalculated_margin;
+    if (margem !== null && margem !== undefined && margem !== '' && Number.isFinite(Number(margem))) linhas.push(`Margem recalculada: ${Number(margem).toFixed(2).replace('.', ',')}%`);
+    if (Number.isSafeInteger(diagnostico.attempt_count) && diagnostico.attempt_count >= 0) linhas.push(`Tentativas de envio: ${diagnostico.attempt_count}`);
+    if (diagnostico.decision_code) linhas.push(`Resultado da validação: ${String(diagnostico.decision_code)}`);
+    if (diagnostico.ml_error_code) linhas.push(`Código Mercado Livre: ${String(diagnostico.ml_error_code)}`);
+    if (Number.isSafeInteger(diagnostico.http_status)) linhas.push(`Resposta Mercado Livre: ${diagnostico.http_status}`);
+    return linhas;
+}
+
 function textoItemParticipacao(item) {
     const itemId = String(item?.item_id || item?.MLB || item?.mlb || '').trim();
     const sku = String(item?.sku || item?.SKU || '').trim();
@@ -68,6 +119,7 @@ function montarLinhasResultadoParticipacao(payload, result) {
     });
 
     const promocoes = Array.isArray(payload?.promocoes) ? payload.promocoes : [];
+    const referenciasVistas = new Set();
     return promocoes.map((promo, idx) => {
         const promotionId = promo?.promotion_id || promo?.promo_b_id || promo?.id || '';
         const nome = String(promo?.nome || promo?.name || promo?.promo_b_nome || promotionId || `Campanha ${idx + 1}`).trim();
@@ -80,6 +132,10 @@ function montarLinhasResultadoParticipacao(payload, result) {
         (Array.isArray(promo?.items) ? promo.items : []).forEach((item) => {
             const itemId = item?.item_id || item?.MLB || item?.mlb;
             const chave = chaveResultadoParticipacao(promotionId, itemId);
+            const referencia = item.client_ref ? chaveResultadoParticipacao(promotionId, item.client_ref)
+                : `${chave}::${String(item.lightning_offer_key || item.offer_id || '')}`;
+            if (referenciasVistas.has(referencia)) return;
+            referenciasVistas.add(referencia);
             const candidatos = item.client_ref
                 ? detalhePorReferencia.get(chaveResultadoParticipacao(promotionId, item.client_ref))
                 : detalhePorItem.get(chave);
@@ -96,7 +152,8 @@ function montarLinhasResultadoParticipacao(payload, result) {
                 lightning_schedule_pending: false,
             } : item);
             const mensagem = detalhe?.message || detalhe?.error || '';
-            const entrada = { ...base, nota: [base.nota, mensagem].filter(Boolean).join(' · ') };
+            const entrada = { ...base, nota: [base.nota, mensagem].filter(Boolean).join(' · '),
+                diagnostico: formatarDiagnosticoPrecoParticipacao(detalhe?.price_diagnostics) };
             const outcome = detalhe?.outcome || (
                 detalhe?.success === true && !detalhe.ignored && !detalhe.error ? 'applied'
                     : detalhe?.success === false && !detalhe.ignored ? 'rejected' : 'unknown'
@@ -143,6 +200,7 @@ function renderListaResultadoParticipacao(titulo, itens, pagina = 0, chaveLista 
             <div class="promo-result-item">
                 <span class="promo-result-item-id">${escapeHtml(item.itemId || '-')}</span>
                 ${item.nota ? `<span class="promo-result-item-note">${escapeHtml(item.nota)}</span>` : ''}
+                ${(Array.isArray(item.diagnostico) ? item.diagnostico : []).map(linha => `<span class="promo-result-item-note">${escapeHtml(linha)}</span>`).join('')}
             </div>
         `).join('')
         : '<div class="promo-result-empty">Nenhum anúncio.</div>';
@@ -254,6 +312,10 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
         const items = Array.isArray(promo?.items) ? promo.items : [];
         const selecionadasAnalise = typeof obterLinhasSelecionadasPromocoes === 'function' ? obterLinhasSelecionadasPromocoes(analise?.data) : [];
         const linhaDaOferta = item => {
+            if (item.client_ref) {
+                const canonica = selecionadasAnalise.find(row => row.analysis_client_ref === item.client_ref);
+                if (canonica) return canonica;
+            }
             const indice = String(item?.client_ref || '').match(/^\d+:(\d+)$/)?.[1];
             return indice !== undefined ? (selecionadasAnalise[Number(indice)] || item) : item;
         };
@@ -310,6 +372,12 @@ function pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja, promo, ana
                         Confira o resumo antes de continuar.
                     </p>
                     <div class="promo-confirm-grid">${cardsHtml}</div>
+                    ${promotionType.toUpperCase() === 'LIGHTNING' ? `
+                        <div class="promo-confirm-alert">
+                            <strong>Atualização da proposta</strong>
+                            <span>Antes da entrada, o preço oficial será conferido. Se a proposta mudar, a margem será recalculada com o mínimo e a tolerância desta análise. A oferta só será enviada se continuar aprovada.</span>
+                        </div>
+                    ` : ''}
                     ${agendasPendentes ? `
                         <div class="promo-confirm-alert">
                             <strong>Agenda das ofertas relâmpago</strong>
@@ -368,6 +436,7 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         ? apiAnalisesPorCampanha
         : [{ promo_b_id: '', promo_b_type: '', promo_b_nome: 'Promocao analisada', data: currentData || [] }];
     const promocoes = [];
+    const jobsRelampago = new Set();
 
     analises.forEach((analise, idx) => {
         if (indiceCampanha !== null && Number(indiceCampanha) !== idx) return;
@@ -399,7 +468,7 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
             const dealPrice = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, temContextoAcao ? ['action_deal_price'] : ['action_deal_price', 'deal_price', 'preco_promocional_ml', 'Preço Promocional ML', 'Preco Promocional ML', 'Preço Final ML', 'Preco Final ML', 'Preco final ML', 'Preço Final Promoção 2', 'Preco Final Promocao 2']));
             const discountPct = parseNumeroPromoAuto(getValorLinhaPromoAuto(row, temContextoAcao ? ['action_discount_percentage'] : ['action_discount_percentage', 'ML % Campanha', '% Fixa', 'Desconto ML %', 'discount_percentage', 'percentual']));
             return {
-                client_ref: `${idx}:${indiceSelecionado}`,
+                client_ref: String(row.analysis_client_ref || `${idx}:${indiceSelecionado}`).trim(),
                 item_id: itemId,
                 action_promotion_id: String(row.action_promotion_id || '').trim(),
                 offer_id: actionOfferId,
@@ -422,6 +491,10 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         }).filter(Boolean);
 
         if (items.length) {
+            if (promotionType.toUpperCase() === 'LIGHTNING') {
+                validarContextoReanaliseParticipacao(analise, selecionadas);
+                jobsRelampago.add(String(analise.job_id).trim());
+            }
             promocoes.push({
                 promotion_id: promotionId,
                 promotion_type: promotionType,
@@ -431,7 +504,62 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         }
     });
 
-    return { loja, promocoes };
+    if (jobsRelampago.size > 1) throw new Error('Execute uma nova análise conjunta antes de confirmar essas ofertas relâmpago.');
+    return { loja, promocoes, price_policy: jobsRelampago.size ? 'refresh_and_reanalyse' : 'exact',
+        ...(jobsRelampago.size ? { analysis_job_id: Array.from(jobsRelampago)[0] } : {}) };
+}
+
+function aplicarAtualizacoesParticipacaoPromocoes(payload, result, analisesOriginais) {
+    const analisesAtuais = Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha : [];
+    const campos = new Set([
+        '%', 'Preço Final', 'Frete', 'Tarifa', 'Imposto', 'Valor Líquido', 'Margem', 'Custo', 'reference_margin', 'reference_status',
+        'Preço Final ML', 'deal_price', 'preco_promocional_ml', 'preco_final_ml_display', 'ML % Campanha',
+        'Tarifa ML', 'Frete ML', 'frete_ml_exato', 'frete_ml_fonte', 'Frete Gratis ML', 'Imposto ML',
+        'Desconto ML', 'Valor líquido ML', 'Margem ML', 'action_deal_price', 'action_discount_percentage', 'action_margem_ml',
+        'action_tarifa_ml', 'action_valor_liquido_ml', 'action_financeiro_exato', 'action_financeiro_estimado',
+        'action_financeiro_estimativa_motivo', 'action_financeiro_motivo', 'action_desconto_ml',
+        'action_impedimento_tecnico', 'action_tecnico_apto', 'action_ja_participa',
+        'pricing_promotion_id', 'pricing_offer_id', 'pricing_price', 'pricing_source',
+        '_jk_tarifa_ml_exata', '_jk_tarifa_ml_liquida', '_jk_tarifa_ml_fonte', '_jk_tarifa_ml_estimada',
+        '_jk_tarifa_ml_estimativa_motivo', '_jk_desconto_ml_confiavel', '_jk_desconto_ml_fonte',
+        '_jk_desconto_ml_estimado', '_jk_desconto_ml_estimativa_motivo',
+    ]);
+    const detalhes = Array.isArray(result?.detalhes) ? result.detalhes : [];
+    const vistos = new Set();
+    const contagens = new Map();
+    detalhes.forEach(detalhe => {
+        const chave = chaveResultadoParticipacao(detalhe?.promotion_id, detalhe?.client_ref);
+        contagens.set(chave, (contagens.get(chave) || 0) + 1);
+    });
+    detalhes.forEach(detalhe => {
+        const ref = String(detalhe?.client_ref || '').trim();
+        const promoId = String(detalhe?.promotion_id || '').trim();
+        if (!ref || !promoId || !detalhe.analysis_row_updates || typeof detalhe.analysis_row_updates !== 'object') return;
+        const chave = chaveResultadoParticipacao(promoId, ref);
+        if (vistos.has(chave) || contagens.get(chave) !== 1) return;
+        vistos.add(chave);
+        const selecionada = payload?.promocoes?.find(promo => String(promo.promotion_id || '').trim() === promoId);
+        const enviado = selecionada?.items?.find(item => item.client_ref === ref);
+        if (!enviado) return;
+        const candidatas = (Array.isArray(analisesOriginais) ? analisesOriginais : []).filter(analise =>
+            analisesAtuais.includes(analise) && String(analise.promo_b_id || '').trim() === promoId
+            && (!payload.analysis_job_id || String(analise.job_id || '').trim() === payload.analysis_job_id)
+            && analise.origem_loja === payload.loja && analise.origem_client_id === getPromoClientId());
+        if (candidatas.length !== 1 || payload.loja !== (document.getElementById('apiLojaSelect')?.value || '')) return;
+        const rows = (Array.isArray(candidatas[0].data) ? candidatas[0].data : []).filter(row => row.analysis_client_ref === ref);
+        if (rows.length !== 1) return;
+        const row = rows[0];
+        const itemId = getValorLinhaPromoAuto(row, ['MLB', 'item_id', 'mlb']);
+        if (String(enviado.item_id || '').trim().toUpperCase() !== String(itemId || '').trim().toUpperCase()
+            || (detalhe.item_id && String(detalhe.item_id).trim().toUpperCase() !== String(itemId || '').trim().toUpperCase())) return;
+        Object.entries(detalhe.analysis_row_updates).forEach(([campo, valor]) => {
+            const canonico = campos.has(campo) ? campo
+                : (typeof _keysAreEquivalent === 'function' ? Array.from(campos).find(nome => _keysAreEquivalent(campo, nome)) : null);
+            if (canonico && (valor === null || ['string', 'boolean'].includes(typeof valor) || (typeof valor === 'number' && Number.isFinite(valor)))) row[canonico] = valor;
+        });
+        row.participacao_price_diagnostics = detalhe.price_diagnostics || null;
+        if (typeof atualizarLinhaFinanceiraParticipacaoPromocoes === 'function') atualizarLinhaFinanceiraParticipacaoPromocoes(row);
+    });
 }
 
 async function executarParticipacaoAutomaticaPromocoes() {
@@ -455,6 +583,7 @@ async function executarParticipacaoAutomaticaPromocoes() {
         return null;
     }
     atualizarStatusAutomacaoPromo(`Entrando em ${total} anuncio(s) nas promocoes...`);
+    const analisesOriginais = [...apiAnalisesPorCampanha];
     iniciarStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', total, loja: payload.loja });
     const resp = await fetch('/api/promo/aplicar-participacoes', {
         method: 'POST',
@@ -462,6 +591,7 @@ async function executarParticipacaoAutomaticaPromocoes() {
         body: JSON.stringify(payload),
     });
     const result = resumirResultadoParticipacao(payload, await resp.json().catch(() => ({})));
+    aplicarAtualizacoesParticipacaoPromocoes(payload, result, analisesOriginais);
     if (!resp.ok) {
         const erro = buildApiErrorMessage(resp, result, 'Erro ao entrar nas promocoes');
         falharStatusParticipacaoPromocoes({ nome: 'promocoes selecionadas', erro });
@@ -508,11 +638,18 @@ async function confirmarParticipacaoCampanhaApi(index) {
         alert('A seleção, a loja, o cliente ou a análise mudou durante a confirmação. Abra novamente a confirmação da análise atual.');
         return;
     }
+    try {
+        if (JSON.stringify(montarPayloadParticipacoesPromocoes(index)) !== JSON.stringify(payload)) throw new Error('Os parâmetros ou a seleção mudaram. Abra novamente a confirmação da análise atual.');
+    } catch (err) {
+        alert(err.message);
+        return;
+    }
 
     atualizarStatusAutomacaoPromo(`Confirmando participação em ${total} anúncio(s) da campanha ${nome}...`);
     analise.participacao_em_andamento = true;
     analise.participacao_confirmada = false;
     iniciarStatusParticipacaoPromocoes({ nome, total, loja: payload.loja });
+    let resultadoRecebido = null;
     try {
         const resp = await fetch('/api/promo/aplicar-participacoes', {
             method: 'POST',
@@ -520,18 +657,22 @@ async function confirmarParticipacaoCampanhaApi(index) {
             body: JSON.stringify(payload),
         });
         const result = resumirResultadoParticipacao(payload, await resp.json().catch(() => ({})));
+        resultadoRecebido = result;
+        aplicarAtualizacoesParticipacaoPromocoes(payload, result, [analise]);
         if (!resp.ok) {
             throw new Error(buildApiErrorMessage(resp, result, 'Erro ao confirmar participação'));
         }
         const msg = `Campanha ${nome}: ${result.total_sucesso || 0} sucesso(s), ${result.total_falha || 0} falha(s).`;
-        analise.participacao_confirmada = result.success && Number(analise.participacao_selecao_revisao || 0) === revisaoSelecao;
+        analise.participacao_confirmada = result.success && analise.participacao_contexto_invalidado !== true
+            && (!analise.participacao_contexto || analise.participacao_contexto === capturarParametrosParticipacaoPromocoes())
+            && Number(analise.participacao_selecao_revisao || 0) === revisaoSelecao;
         analise.participacao_resultado = result;
         renderApiAnalysisTabs();
         atualizarStatusAutomacaoPromo(msg);
         concluirStatusParticipacaoPromocoes({ nome, result });
         mostrarResumoParticipacaoPromocoes(payload, result, { titulo: `Campanha ${nome}` });
     } catch (err) {
-        const result = resumirResultadoParticipacao(payload, { detalhes: [] });
+        const result = resultadoRecebido || resumirResultadoParticipacao(payload, { detalhes: [] });
         analise.participacao_resultado = result;
         renderApiAnalysisTabs();
         falharStatusParticipacaoPromocoes({ nome, erro: err && err.message ? err.message : err });

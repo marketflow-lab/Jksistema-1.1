@@ -98,10 +98,12 @@ const rows = days.map((day, index) => ({
 }));
 
 function installAnalysis(data, type = 'LIGHTNING', id = 'LGH-TESTE') {
+  data.forEach((row, index) => { row.analysis_client_ref = `canonical:${id}:${index}`; });
   context.rows = data;
   context.analysisType = type;
   context.analysisId = id;
   vm.runInContext("apiAnalisesPorCampanha = [{ promo_b_id: analysisId, promo_b_type: analysisType, data: rows, origem_loja: 'Loja Teste', origem_client_id: 'cliente-teste', participacao_confirmada: true }]; currentData = rows", context);
+  vm.runInContext("apiAnalisesPorCampanha[0].job_id = 'job-completed'; apiAnalisesPorCampanha[0].participacao_contexto = capturarParametrosParticipacaoPromocoes()", context);
   context.renderTable(data);
 }
 
@@ -141,7 +143,7 @@ tbody.children[0].children[3].children[0].change('Não participar');
 tbody.children[2].children[3].children[0].change('Não participar');
 payload = context.montarPayloadParticipacoesPromocoes(0);
 assertOfferPayload(payload.promocoes[0].items, [rows[1]]);
-assert.strictEqual(payload.promocoes[0].items[0].client_ref, '0:0');
+assert.strictEqual(payload.promocoes[0].items[0].client_ref, rows[1].analysis_client_ref);
 assert.strictEqual(rows[2]['Ação'], 'Não participar');
 assert.deepStrictEqual(rows.map(row => row['Preço Final ML']), pricesBefore, 'a apresentação não recalcula os preços canônicos');
 context.renderTable(rows);
