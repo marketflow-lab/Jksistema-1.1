@@ -45,6 +45,7 @@ def create_cadastro_router() -> APIRouter:
     router.add_api_route("/lojas/{store_id}/importacoes/{job_id}", cadastro.obter_importacao_catalogo, methods=["GET"], name="obter_importacao_catalogo")
     router.add_api_route("/lojas/{store_id}/importacoes/{job_id}/cancelar", cadastro.cancelar_importacao_catalogo, methods=["POST"], name="cancelar_importacao_catalogo")
     router.add_api_route("/lojas/{store_id}/importacoes/{job_id}/aplicar", cadastro.aplicar_importacao_catalogo, methods=["POST"], name="aplicar_importacao_catalogo")
+    router.add_api_route("/lojas/{store_id}/importacoes/{job_id}/retentar-fotos", cadastro.retentar_fotos_importacao_catalogo, methods=["POST"], name="retentar_fotos_importacao_catalogo")
     router.add_api_route("/lojas/{store_id}/importar-colunas", cadastro.importar_colunas_cadastro_loja, methods=["POST"], name="importar_colunas_cadastro_loja")
     router.add_api_route("/lojas/{store_id}/migracao/preview", cadastro.preview_migracao_produtos_loja_endpoint, methods=["GET"], name="preview_migracao_produtos_loja")
     return router

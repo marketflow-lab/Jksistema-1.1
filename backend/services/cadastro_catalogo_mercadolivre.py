@@ -19,6 +19,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Iterable
+from urllib.parse import urlparse
 
 import requests
 from fastapi import HTTPException
@@ -1293,6 +1294,59 @@ def _explicit_sku_candidates(entity: Any) -> list[dict[str, Any]]:
     return sorted(found.values(), key=lambda entry: entry["comparison_key"])
 
 
+def _taint_listing_skus(
+    taints: dict[str, list[str]], item: dict[str, Any], reason: str,
+) -> None:
+    """Keep known unsafe identities vetoed even if another listing is valid."""
+    entities = [item]
+    if isinstance(item.get("variations"), list):
+        entities.extend(variation for variation in item["variations"] if isinstance(variation, dict))
+    for entity in entities:
+        for candidate in _explicit_sku_candidates(entity):
+            reasons = taints.setdefault(candidate["comparison_key"], [])
+            if reason not in reasons:
+                reasons.append(reason)
+
+
+def _taint_skipped_skus(
+    taints: dict[str, list[str]], skipped: list[dict[str, Any]],
+) -> None:
+    for entry in skipped:
+        reason = str(entry.get("reason") or "")
+        if reason not in {
+            "sku_ambiguous", "sku_duplicate_within_listing", "user_product_sku_conflict",
+        }:
+            continue
+        values = list(entry.get("candidates") or [])
+        if entry.get("sku"):
+            values.append(entry["sku"])
+        for value in values:
+            for candidate in _explicit_sku_candidates({"sku": value}):
+                reasons = taints.setdefault(candidate["comparison_key"], [])
+                if reason not in reasons:
+                    reasons.append(reason)
+
+
+def _official_listing_link(value: Any) -> str:
+    """Accept only observed HTTPS permalinks on the Brazilian marketplace."""
+    url = str(value or "").strip()
+    if not url or any(ord(char) <= 32 for char in url) or "\\" in url:
+        return ""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme.lower() != "https"
+            or parsed.username is not None or parsed.password is not None
+            or parsed.port not in (None, 443)
+            or not (host == "mercadolivre.com.br" or host.endswith(".mercadolivre.com.br"))
+        ):
+            return ""
+    except ValueError:
+        return ""
+    return url
+
+
 def _reconcile_sku_candidates(
     entity: Any,
     user_product: Any,
@@ -1460,6 +1514,10 @@ def _occurrence(
         "sku_normalizado": sku_entry["sku_normalizado"],
         "comparison_key": sku_entry["comparison_key"],
         "sku_sources": list(sku_entry.get("sources") or []),
+        "seller_id": str(item.get("seller_id") or "").strip(),
+        "identity_reasons": list(item.get("_catalog_identity_reasons") or []) + (
+            ["user_product_details_missing"] if user_product_id and not user_product else []
+        ),
         "mlb": item_id,
         "title": str(item.get("title") or "").strip(),
         "status": str(item.get("status") or "").strip(),
@@ -1512,7 +1570,7 @@ def _occurrence(
         "inventory_id": str(
             _first_nonempty(item, variation, "inventory_id") or ""
         ).strip(),
-        "permalink": str(item.get("permalink") or "").strip(),
+        "permalink": _official_listing_link(item.get("permalink")),
         "photo_url": photo_url,
         "pictures": _normalize_picture_records(item.get("pictures")),
         "attributes": _effective_attributes(item, variation),
@@ -1781,6 +1839,11 @@ def _build_catalog_items(
     occurrences: list[dict[str, Any]],
     consulted_at: str,
     category_names: dict[str, str] | None = None,
+    *,
+    identity_store_id: str = "",
+    identity_seller_id: str = "",
+    identity_taints: dict[str, list[str]] | None = None,
+    identity_block_reasons: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, list[str]]:
     category_names = category_names or {}
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1800,6 +1863,32 @@ def _build_catalog_items(
             )
         )
         primary = entries[0]
+        identity_reasons = list(identity_block_reasons or [])
+        identity_reasons.extend((identity_taints or {}).get(comparison_key) or [])
+        if not identity_store_id or not identity_seller_id:
+            identity_reasons.append("identity_context_missing")
+        for entry in entries:
+            identity_reasons.extend(entry.get("identity_reasons") or [])
+            if str(entry.get("seller_id") or "") != identity_seller_id:
+                identity_reasons.append("seller_mismatch")
+            if entry.get("user_product_identity_conflicts"):
+                identity_reasons.append("user_product_identity_conflict")
+        identity_reasons = list(dict.fromkeys(identity_reasons))
+        identity_confirmed = not identity_reasons
+        identity_evidence = {
+            "store_id": identity_store_id,
+            "seller_id": identity_seller_id,
+            "sku_normalizado": primary["sku_normalizado"],
+            "listings": [
+                {
+                    "mlb": entry["mlb"],
+                    "variation_id": entry["variation_id"],
+                    "sku_normalizado": entry["sku_normalizado"],
+                    "sku_sources": list(entry.get("sku_sources") or []),
+                }
+                for entry in entries
+            ],
+        } if identity_confirmed else {}
         photo_entry = next(
             (
                 entry
@@ -1825,6 +1914,10 @@ def _build_catalog_items(
             photo_candidates_seen.add(candidate_key)
             photo_candidates.append({"url": photo_url, "item_id": item_id})
         listing_ids = _distinct(entry["mlb"] for entry in entries)
+        listing_links = list(dict.fromkeys(
+            link for entry in entries
+            if (link := _official_listing_link(entry.get("permalink")))
+        ))
         titles_by_id: dict[str, str] = {}
         for entry in entries:
             titles_by_id.setdefault(entry["mlb"], entry["title"])
@@ -1936,7 +2029,7 @@ def _build_catalog_items(
                 for key in (
                     "mlb", "title", "status", "variation_id", "catalog_product_id",
                     "user_product_id", "inventory_id", "price", "available_quantity",
-                    "sold_quantity",
+                    "sold_quantity", "permalink",
                 )
                 if _value_present(entry.get(key))
             }
@@ -2013,7 +2106,8 @@ def _build_catalog_items(
             "user_product_ids_ml": "|".join(str(value) for value in user_product_ids),
             "inventory_id_ml": primary["inventory_id"],
             "inventory_ids_ml": "|".join(str(value) for value in inventory_ids),
-            "link_ml": primary["permalink"],
+            "link_ml": _official_listing_link(primary["permalink"]),
+            "links_ml": _canonical_json_if_present(listing_links),
             "foto_url_ml": (photo_entry or {}).get("photo_url"),
             "imagens_ml_json": _canonical_json_if_present(
                 (photo_entry or {}).get("pictures")
@@ -2039,6 +2133,9 @@ def _build_catalog_items(
         result.append({
             "sku": primary["sku"],
             "sku_normalizado": primary["sku_normalizado"],
+            "identity_confirmed": identity_confirmed,
+            "identity_evidence": identity_evidence,
+            "identity_reasons": identity_reasons,
             "fields": fields,
             "photo_candidates": photo_candidates,
             "listings": listing_summary,
@@ -2166,6 +2263,7 @@ def coletar_catalogo_mercadolivre(
     )
 
     verified: list[dict[str, Any]] = []
+    identity_taints: dict[str, list[str]] = {}
     descriptions: dict[str, str] = {}
     for index, raw_item in enumerate(details, start=1):
         _check_catalog_limits(cancel_event, deadline)
@@ -2176,9 +2274,19 @@ def coletar_catalogo_mercadolivre(
             result["warnings"].append("Coleta do Mercado Livre cancelada durante a validacao.")
             break
         item = dict(raw_item)
+        item["_catalog_identity_reasons"] = []
         item_id = _item_id(item.get("id"))
+        observed_seller = str(item.get("seller_id") or "").strip()
+        if observed_seller and observed_seller != configured_seller:
+            _taint_listing_skus(identity_taints, item, "seller_mismatch")
+            result["coverage_complete"] = False
+            result["sku_coverage_complete"] = False
+            result["stats"]["owner_mismatch"] += 1
+            result["skipped"].append({"reason": "seller_mismatch", "mlb": item_id})
+            continue
         missing_fields = _listing_detail_missing_fields(item)
         if missing_fields:
+            _taint_listing_skus(identity_taints, item, "listing_detail_incomplete")
             result["coverage_complete"] = False
             result["sku_coverage_complete"] = False
             result["stats"]["incomplete_details"] += 1
@@ -2188,13 +2296,7 @@ def coletar_catalogo_mercadolivre(
                 "missing_fields": missing_fields,
             })
             continue
-        observed_seller = str(item.get("seller_id") or "").strip()
-        if observed_seller != configured_seller:
-            result["coverage_complete"] = False
-            result["sku_coverage_complete"] = False
-            result["stats"]["owner_mismatch"] += 1
-            result["skipped"].append({"reason": "seller_mismatch", "mlb": item_id})
-            continue
+        variation_summary_item = item
         item, cfg, variations_complete = _merge_variation_details(
             client_id,
             store,
@@ -2210,6 +2312,8 @@ def coletar_catalogo_mercadolivre(
             result["warnings"].append("Coleta do Mercado Livre cancelada durante o detalhamento de variacoes.")
             break
         if not variations_complete:
+            _taint_listing_skus(identity_taints, variation_summary_item, "variation_details_incomplete")
+            _taint_listing_skus(identity_taints, item, "variation_details_incomplete")
             result["coverage_complete"] = False
             result["sku_coverage_complete"] = False
             result["stats"]["variation_detail_failures"] += 1
@@ -2219,6 +2323,7 @@ def coletar_catalogo_mercadolivre(
             # variation from this item is eligible for a catalogue identity.
             item = dict(item)
             item["variations"] = []
+            item["_catalog_identity_reasons"] = ["variation_details_incomplete"]
 
         description_payload, cfg, status, _error = _request_json(
             client_id,
@@ -2341,6 +2446,7 @@ def coletar_catalogo_mercadolivre(
         warehouse_management=warehouse_management,
     )
     result["skipped"].extend(identity_skipped)
+    _taint_skipped_skus(identity_taints, identity_skipped)
     for key in (
         "missing_sku",
         "ambiguous_sku",
@@ -2355,13 +2461,13 @@ def coletar_catalogo_mercadolivre(
         result["coverage_complete"] = False
         result["warnings"].append(
             "Ha anuncio com identidade de SKU ambigua ou repetida entre variacoes; "
-            "a aplicacao foi bloqueada."
+            "os SKUs envolvidos foram bloqueados."
         )
     if result["stats"]["user_product_sku_conflicts"]:
         result["coverage_complete"] = False
         result["sku_coverage_complete"] = False
         result["warnings"].append(
-            "SKU divergente entre anuncio e User Product; a aplicacao foi bloqueada."
+            "SKU divergente entre anuncio e User Product; os SKUs envolvidos foram bloqueados."
         )
 
     result["stats"]["user_product_identity_conflicts"] = sum(
@@ -2371,14 +2477,25 @@ def coletar_catalogo_mercadolivre(
         result["coverage_complete"] = False
         result["sku_coverage_complete"] = False
         result["warnings"].append(
-            "Identidade divergente entre anuncio e User Product; a aplicacao foi bloqueada."
+            "Identidade divergente entre anuncio e User Product; os SKUs envolvidos foram bloqueados."
         )
 
+    identity_block_reasons = []
+    if result["stats"]["owner_mismatch"]:
+        identity_block_reasons.append("seller_mismatch")
+    if result["cancelled"]:
+        identity_block_reasons.append("collection_cancelled")
+    if row_limit_exceeded:
+        identity_block_reasons.append("catalog_row_limit_exceeded")
     consulted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     catalog_items, duplicate_groups, duplicate_warnings = _build_catalog_items(
         occurrences,
         consulted_at,
         category_names,
+        identity_store_id=store["store_id"],
+        identity_seller_id=configured_seller,
+        identity_taints=identity_taints,
+        identity_block_reasons=identity_block_reasons,
     )
     if row_limit_exceeded or len(catalog_items) > ML_CATALOG_MAX_ROWS:
         result["coverage_complete"] = False

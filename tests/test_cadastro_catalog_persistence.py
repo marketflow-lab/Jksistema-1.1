@@ -29,7 +29,10 @@ def cadastro_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(cadastro_custos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info_root), raising=False)
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info_root))
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda client_id: stores.get(client_id, []))
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda client_id: stores.get(client_id, []))
     return info_root, stores
 
 
@@ -466,3 +469,53 @@ def test_batch_usa_sku_bruto_do_provedor_quando_absent(cadastro_runtime):
     )
 
     assert result["produtos"][0]["sku"] == "abc-novo"
+
+
+def test_partial_confirmed_legacy_import_persists_metadata_despite_photo_failure(cadastro_runtime, monkeypatch):
+    info_root, _ = cadastro_runtime
+    tenant = Path(info_root) / "cliente-a"
+    tenant.mkdir(parents=True, exist_ok=True)
+    legacy = tenant / "cadastro_produtos.csv"
+    legacy.write_text("sku;loja_sync;marca;descricao;mlb_principal;link_ml;foto\n001;Loja A;Marca manual;Descricao antiga;MLB999;https://produto.mercadolivre.com.br/MLB-999;cadastro_fotos/001.jpg\n", encoding="utf-8")
+    legacy_before = legacy.read_bytes()
+    products = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_legacy_snapshot_hash=True, include_catalog_metadata=True,
+    )
+    source = {
+        "store_id": "store-a", "seller_id": "42", "coverage_complete": False, "sku_coverage_complete": False,
+        "items": [{
+            "sku": "001", "identity_confirmed": True,
+            "identity_evidence": {"store_id": "store-a", "seller_id": "42", "sku_normalizado": "001", "listings": [
+                {"mlb": "MLB123", "variation_id": "", "sku_normalizado": "001", "sku_sources": ["seller_sku"]},
+            ]},
+            "fields": {"descricao": "Descricao confirmada", "mlb_principal": "MLB123", "mlb_ids": "MLB123",
+                       "link_ml": "https://produto.mercadolivre.com.br/MLB-123", "links_ml": '["https://produto.mercadolivre.com.br/MLB-123"]'},
+            "photo_candidates": [{"item_id": "MLB123", "url": "https://http2.mlstatic.com/capa.jpg"}],
+        }],
+        "skipped": [{"reason": "sku_ambiguous", "mlb": "MLB456"}],
+    }
+    preview = cadastro_importacao_catalogos._construir_preview("mercadolivre", source, products, client_id="cliente-a")
+    assert preview["can_apply"] is True
+    assert preview["summary"]["fotos_planejadas"] == 1
+    row = preview["apply_rows"][0]
+    monkeypatch.setattr(cadastro_importacao_catalogos.cadastro_ml, "_download_photo_data_url", lambda *args: (_ for _ in ()).throw(OSError("offline")))
+    result = cadastro_importacao_catalogos._salvar_payloads_importacao_catalogo(
+        "cliente-a", "store-a", "mercadolivre", [{
+            "sku": row["sku"], "row_version": row["row_version"], "__expected_scope": row["expected_scope"],
+            "__legacy_snapshot_hash": row["legacy_snapshot_hash"], "__catalog_photo_plan": row["photo_plan"], **row["fields"],
+        }], campos_derivados_permitidos=set(), precommit_validator=lambda _: None,
+    )
+    persisted = cadastro_lojas_produtos._listar_produtos_loja_sync("cliente-a", "store-a", include_catalog_metadata=True)[0]
+    assert persisted["scope_source"] == "store_file"
+    assert persisted["marca"] == "Marca manual"
+    assert persisted["descricao"] == "Descricao confirmada"
+    assert persisted["mlb_principal"] == persisted["mlb_ids"] == "MLB123"
+    assert persisted["link_ml"].endswith("MLB-123")
+    assert "MLB999" not in persisted["links_ml"]
+    assert persisted["__catalog_photo_persisted"] is False
+    assert result["photos_failed"] == [{"sku": "001", "reason": "photo_download_failed"}]
+    assert legacy.read_bytes() == legacy_before
+    # A fresh query must still offer the missing cover, even if a legacy image
+    # can be displayed by the enrichment layer after the metadata was saved.
+    refreshed = cadastro_importacao_catalogos._construir_preview("mercadolivre", source, [persisted], client_id="cliente-a")
+    assert refreshed["summary"]["fotos_planejadas"] == 1

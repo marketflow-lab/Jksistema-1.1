@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import threading
 import time
 from typing import Any, Callable
@@ -1829,3 +1830,283 @@ def _configure_store_coordination(monkeypatch, tmp_path):
 
     monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
     monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
+
+
+
+def _collect_identity_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    details: dict[str, dict[str, Any] | None],
+    *,
+    variations: dict[str, Any] | None = None,
+    user_product_details: dict[str, Any] | None = None,
+    user_product_stocks: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    def handler(_client_id, _store_name, cfg, _method, url, *, params=None, timeout=None):
+        if url.endswith("/users/me"):
+            return _response({"id": 111, "tags": []}, cfg)
+        if url.endswith("/users/111/items/search"):
+            return _response({"results": list(details), "paging": {"total": len(details)}}, cfg)
+        if url.endswith("/items/bulk"):
+            return _response([
+                {"id": item_id, "status_code": 200, "body": item}
+                for item_id, item in details.items() if item is not None
+            ], cfg)
+        if url.endswith("/variations"):
+            item_id = url.split("/items/", 1)[1].split("/", 1)[0]
+            payload = (variations or {}).get(item_id)
+            if isinstance(payload, tuple):
+                return _response(payload[0], cfg, status=payload[1])
+            return _response(payload, cfg)
+        if url.endswith("/description"):
+            return _response({"plain_text": "Descricao comprovada"}, cfg)
+        raise AssertionError(url)
+
+    _install_transport(
+        monkeypatch, handler,
+        user_product_details=user_product_details,
+        user_product_stocks=user_product_stocks,
+    )
+    return service.coletar_catalogo_mercadolivre("tenant-a", "store-a")
+
+
+def test_confirmed_sku_survives_unrelated_missing_listing_details(monkeypatch):
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-BOM"),
+        "MLB200": None,
+    })
+
+    assert result["sku_coverage_complete"] is False
+    assert result["seller_id"] == "111"
+    assert result["store_id"] == "store-a"
+    item = result["items"][0]
+    assert item["identity_confirmed"] is True
+    assert item["identity_reasons"] == []
+    assert item["identity_evidence"] == {
+        "store_id": "store-a", "seller_id": "111", "sku_normalizado": "SKU-BOM",
+        "listings": [{
+            "mlb": "MLB100", "variation_id": "", "sku_normalizado": "SKU-BOM",
+            "sku_sources": ["attribute:SELLER_SKU"],
+        }],
+    }
+
+
+@pytest.mark.parametrize("failure", ["ambiguous", "duplicate", "user_product_sku_conflict"])
+def test_known_unsafe_sku_cannot_be_rescued_by_another_valid_listing(monkeypatch, failure):
+    good = _base_item("MLB100", sku="SKU-A")
+    independent = _base_item("MLB300", sku="SKU-BOM")
+    bad = _base_item("MLB200", sku="SKU-A")
+    variation_details = {}
+    up_details = {}
+    if failure == "ambiguous":
+        bad["attributes"].append({"id": "SKU", "value_name": "SKU-OUTRO"})
+        reason = "sku_ambiguous"
+    elif failure == "duplicate":
+        bad["variations"] = [{"id": 201}, {"id": 202}]
+        variation_details["MLB200"] = [
+            {"id": 201, "seller_sku": "SKU-A"},
+            {"id": 202, "seller_sku": "SKU-A"},
+        ]
+        reason = "sku_duplicate_within_listing"
+    else:
+        bad["user_product_id"] = "MLBU-2"
+        up_details["MLBU-2"] = {
+            "id": "MLBU-2", "user_id": 111, "attributes": [
+                {"id": "SELLER_SKU", "value_name": "SKU-OUTRO"},
+            ],
+        }
+        reason = "user_product_sku_conflict"
+    result = _collect_identity_fixture(
+        monkeypatch, {"MLB100": good, "MLB200": bad, "MLB300": independent},
+        variations=variation_details, user_product_details=up_details,
+    )
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    assert by_sku["SKU-A"]["identity_confirmed"] is False
+    assert by_sku["SKU-A"]["identity_evidence"] == {}
+    assert reason in by_sku["SKU-A"]["identity_reasons"]
+    assert by_sku["SKU-BOM"]["identity_confirmed"] is True
+    assert by_sku["SKU-BOM"]["identity_reasons"] == []
+    assert result["sku_coverage_complete"] is False
+
+
+def test_user_product_sku_conflict_vetoes_both_observed_candidate_skus(monkeypatch):
+    bad = _base_item("MLB200", sku="SKU-A")
+    bad["user_product_id"] = "MLBU-2"
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-A"),
+        "MLB200": bad,
+        "MLB300": _base_item("MLB300", sku="SKU-B"),
+    }, user_product_details={"MLBU-2": {
+        "id": "MLBU-2", "user_id": 111,
+        "attributes": [{"id": "SELLER_SKU", "value_name": "SKU-B"}],
+    }})
+
+    assert len(result["items"]) == 2
+    for item in result["items"]:
+        assert item["identity_confirmed"] is False
+        assert "user_product_sku_conflict" in item["identity_reasons"]
+
+
+@pytest.mark.parametrize("conflict_field", ["catalog_product_id", "site_id"])
+def test_user_product_identity_conflict_vetoes_group_but_not_unrelated_sku(monkeypatch, conflict_field):
+    bad = _base_item("MLB200", sku="SKU-A")
+    bad["site_id"] = "MLB"
+    bad["user_product_id"] = "MLBU-2"
+    up = {"id": "MLBU-2", "user_id": 111, "site_id": "MLB", "catalog_product_id": "MLB-CAT-1"}
+    up[conflict_field] = "DIFFERENT"
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-A"),
+        "MLB200": bad,
+        "MLB300": _base_item("MLB300", sku="SKU-BOM"),
+    }, user_product_details={"MLBU-2": up})
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    assert by_sku["SKU-A"]["identity_confirmed"] is False
+    assert "user_product_identity_conflict" in by_sku["SKU-A"]["identity_reasons"]
+    assert by_sku["SKU-A"]["identity_evidence"] == {}
+    assert by_sku["SKU-BOM"]["identity_confirmed"] is True
+
+
+def test_incomplete_variations_veto_parent_and_known_summary_skus(monkeypatch):
+    partial = _base_item("MLB200", sku="SKU-PARENT", variations=[{
+        "id": 201, "seller_sku": "SKU-VAR",
+    }])
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-PARENT"),
+        "MLB200": partial,
+        "MLB300": _base_item("MLB300", sku="SKU-VAR"),
+        "MLB400": _base_item("MLB400", sku="SKU-BOM"),
+    }, variations={"MLB200": ({"error": "unavailable"}, 403)})
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    for sku in ("SKU-PARENT", "SKU-VAR"):
+        assert by_sku[sku]["identity_confirmed"] is False
+        assert "variation_details_incomplete" in by_sku[sku]["identity_reasons"]
+    assert by_sku["SKU-BOM"]["identity_confirmed"] is True
+    assert result["stats"]["variation_detail_failures"] == 1
+
+
+def test_incomplete_listing_with_known_sku_vetoes_that_group_only(monkeypatch):
+    partial = _base_item("MLB200", sku="SKU-A")
+    partial.pop("category_id")
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-A"),
+        "MLB200": partial,
+        "MLB300": _base_item("MLB300", sku="SKU-BOM"),
+    })
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    assert by_sku["SKU-A"]["identity_confirmed"] is False
+    assert "listing_detail_incomplete" in by_sku["SKU-A"]["identity_reasons"]
+    assert by_sku["SKU-BOM"]["identity_confirmed"] is True
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_owner_mismatch_keeps_entire_collection_fail_closed(monkeypatch, incomplete):
+    foreign = _base_item("MLB200", sku="SKU-FOREIGN", seller_id="222")
+    if incomplete:
+        foreign.pop("category_id")
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-BOM"), "MLB200": foreign,
+    })
+
+    assert result["seller_id"] == "111"
+    assert result["stats"]["owner_mismatch"] == 1
+    assert [item["sku"] for item in result["items"]] == ["SKU-BOM"]
+    item = result["items"][0]
+    assert item["identity_confirmed"] is False
+    assert item["identity_evidence"] == {}
+    assert item["identity_reasons"] == ["seller_mismatch"]
+    assert "MLB200" not in json.dumps(item)
+
+
+def test_missing_user_product_details_veto_only_group_needing_it(monkeypatch):
+    bad = _base_item("MLB200", sku="SKU-A")
+    bad["user_product_id"] = "MLBU-2"
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-A"), "MLB200": bad,
+        "MLB300": _base_item("MLB300", sku="SKU-BOM"),
+    }, user_product_details={"MLBU-2": ({"error": "missing"}, 404)})
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    assert by_sku["SKU-A"]["identity_confirmed"] is False
+    assert "user_product_details_missing" in by_sku["SKU-A"]["identity_reasons"]
+    assert by_sku["SKU-BOM"]["identity_confirmed"] is True
+
+
+def test_missing_optional_user_product_stock_keeps_identity_confirmed(monkeypatch):
+    result = _collect_identity_fixture(monkeypatch, {
+        "MLB100": _base_item("MLB100", sku="SKU-BOM"),
+    }, user_product_stocks={"MLBU-1": ({"error": "missing"}, 403)})
+
+    assert result["coverage_complete"] is False
+    assert result["items"][0]["identity_confirmed"] is True
+    assert result["items"][0]["identity_reasons"] == []
+
+
+def test_group_preserves_all_observed_ml_ids_and_unique_links(monkeypatch):
+    first = _base_item("MLB100", sku="SKU-A", status="active")
+    second = _base_item("MLB200", sku="SKU-A", status="paused")
+    result = _collect_identity_fixture(monkeypatch, {"MLB200": second, "MLB100": first})
+
+    item = result["items"][0]
+    assert item["identity_confirmed"] is True
+    fields = item["fields"]
+    assert fields["mlb_principal"] == "MLB100"
+    assert fields["mlb_ids"] == "MLB100|MLB200"
+    assert fields["link_ml"] == first["permalink"]
+    assert json.loads(fields["links_ml"]) == [first["permalink"], second["permalink"]]
+    assert {entry["mlb"]: entry["permalink"] for entry in item["listings"]} == {
+        "MLB100": first["permalink"], "MLB200": second["permalink"],
+    }
+    assert [entry["mlb"] for entry in item["identity_evidence"]["listings"]] == ["MLB100", "MLB200"]
+
+
+def test_group_with_variation_evidence_deduplicates_observed_permalink(monkeypatch):
+    detail = _base_item("MLB100", sku=None, variations=[{"id": 101}, {"id": 102}])
+    second = _base_item("MLB200", sku="SKU-A")
+    second["permalink"] = detail["permalink"]
+    result = _collect_identity_fixture(monkeypatch, {"MLB100": detail, "MLB200": second}, variations={
+        "MLB100": [{"id": 101, "seller_sku": "SKU-A"}, {"id": 102, "seller_sku": "SKU-B"}],
+    })
+
+    by_sku = {item["sku"]: item for item in result["items"]}
+    assert by_sku["SKU-A"]["identity_confirmed"] is True
+    assert json.loads(by_sku["SKU-A"]["fields"]["links_ml"]) == [detail["permalink"]]
+    assert len(by_sku["SKU-A"]["identity_evidence"]["listings"]) == 2
+    assert by_sku["SKU-A"]["identity_evidence"]["listings"][0]["variation_id"] == "101"
+
+
+@pytest.mark.parametrize("url", [
+    "http://produto.mercadolivre.com.br/MLB100",
+    "https://mercadolivre.com.br.evil.test/MLB100",
+    "https://mercadolivre.com.br@evil.test/MLB100",
+    "https://user@produto.mercadolivre.com.br/MLB100",
+    "https://produto.mercadolivre.com.br:444/MLB100",
+    "https://produto.mercadolivre.com.br:bad/MLB100",
+    "javascript:alert(1)", "", "https://evil.test/MLB100",
+    "https://produto.mercadolivre.com.br/MLB100\\evil",
+    "https://produto.mercadolivre.com.br/MLB100\n.evil",
+])
+def test_untrusted_or_missing_permalinks_are_not_fabricated(monkeypatch, url):
+    detail = _base_item("MLB100")
+    detail["permalink"] = url
+    result = _collect_identity_fixture(monkeypatch, {"MLB100": detail})
+
+    item = result["items"][0]
+    assert item["identity_confirmed"] is True
+    assert "link_ml" not in item["fields"]
+    assert "links_ml" not in item["fields"]
+    assert "permalink" not in item["listings"][0]
+
+
+def test_builder_without_verified_scope_cannot_attest_identity():
+    item = _base_item("MLB100")
+    occurrences, _skipped, _counts, _limit = service._collect_occurrences(
+        [item], {}, max_rows=20,
+    )
+    groups, _duplicates, _warnings = service._build_catalog_items(occurrences, "2026-10-09T00:00:00Z")
+
+    assert groups[0]["identity_confirmed"] is False
+    assert groups[0]["identity_evidence"] == {}
+    assert "identity_context_missing" in groups[0]["identity_reasons"]

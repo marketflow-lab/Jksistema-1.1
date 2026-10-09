@@ -1540,3 +1540,319 @@ def test_compiled_store_id_separates_homonyms_and_survives_rename(monkeypatch, t
     assert (produto_b["ncm"], produto_b["id_bling"]) == ("ncm-b", "id-b")
     assert produto_a_renomeado["ncm"] == "ncm-a"
     assert produto_a_renomeado["loja_sync"] == "Loja A Renomeada"
+
+
+_IMPORT_LEGACY_ML_FIELDS = {
+    "titulo_ml", "mlb_principal", "mlb_ids", "link_ml", "links_ml",
+    "foto_url_ml", "inventory_id_ml", "anuncios_ml_json", "estoque_disponivel_ml",
+}
+
+
+def _preparar_sombra_para_importacao(info_root, **extra):
+    legado = {
+        "sku": "Imp-1",
+        "loja_sync": "Loja A",
+        "nome": "Nome local",
+        "descricao": "Descricao local",
+        "marca": "Marca local",
+        "modelo": "Modelo local",
+        "categoria": "Categoria local",
+        "observacao": "Observacao comercial",
+        "mlb_principal": "MLB-ANTIGO",
+        "mlb_ids": "MLB-ANTIGO|MLB-OUTRO",
+        "link_ml": "https://example.invalid/antigo",
+        "foto_url_ml": "https://example.invalid/foto-antiga.png",
+        "inventory_id_ml": "INVENTARIO-ANTIGO",
+        "anuncios_ml_json": '[{"id":"MLB-ANTIGO"}]',
+        "estoque_disponivel_ml": "999",
+        **extra,
+    }
+    caminho = info_root / "cliente-a" / "cadastro_produtos.csv"
+    _write_csv(caminho, [legado])
+    sombra = cadastro_lojas_produtos._contexto_legado(
+        "cliente-a", {"store_id": "store-a", "nome": "Loja A"}
+    )["sombras"]["IMP-1"]
+    payload = {
+        "sku": "imp-1",
+        "row_version": 0,
+        "__expected_scope": "legacy_shadow",
+        "__legacy_snapshot_hash": cadastro_lojas_produtos._fingerprint_sombra_legada(sombra),
+    }
+    return caminho, sombra, payload
+
+
+def test_import_batch_materializa_sombra_sem_herdar_metadados_ml(monkeypatch, tmp_path):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    legado, _sombra, payload = _preparar_sombra_para_importacao(info_root)
+    legado_antes = legado.read_bytes()
+    outro = cadastro_lojas_produtos.salvar_produto_loja(
+        "cliente-a", "store-b", {"sku": "Imp-1", "mlb_principal": "MLB-LOJA-B"}
+    )
+    cadastro_lojas_produtos.salvar_produto_loja(
+        "cliente-b", "store-a", {"sku": "Imp-1", "mlb_principal": "MLB-OUTRO-TENANT"}
+    )
+    outro_tenant = info_root / "cliente-b" / "cadastro_produtos_lojas.csv"
+    outro_tenant_antes = outro_tenant.read_bytes()
+    payload.update({"titulo_ml": "Titulo confirmado", "mlb_principal": "MLB-CONFIRMADO"})
+
+    resultado = cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+        "cliente-a", "store-a", [payload],
+        campos_legados_ignorados=_IMPORT_LEGACY_ML_FIELDS,
+    )
+
+    assert resultado["incluidos"] == 0
+    assert resultado["atualizados"] == 1
+    rows = cadastro_lojas_produtos._ler_registros_persistidos("cliente-a")[0]
+    materializado = next(row for row in rows if row["store_id"] == "store-a")
+    assert materializado["sku"] == "Imp-1"
+    assert materializado["row_version"] == "1"
+    assert materializado["titulo_ml"] == "Titulo confirmado"
+    assert materializado["mlb_principal"] == "MLB-CONFIRMADO"
+    for campo in _IMPORT_LEGACY_ML_FIELDS - {"titulo_ml", "mlb_principal"}:
+        assert not materializado.get(campo)
+    for campo in ("nome", "descricao", "marca", "modelo", "categoria", "observacao"):
+        assert materializado[campo] == _sombra[campo]
+    assert all(not key.startswith("__") for key in materializado)
+    assert next(row for row in rows if row["store_id"] == "store-b")["mlb_principal"] == outro["mlb_principal"]
+    assert legado.read_bytes() == legado_antes
+    assert outro_tenant.read_bytes() == outro_tenant_antes
+
+
+def test_import_batch_filtro_legado_nao_altera_linhas_existentes_ou_dados_novos(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    cadastro_lojas_produtos.salvar_produto_loja(
+        "cliente-a", "store-a",
+        {"sku": "EXISTENTE", "mlb_principal": "MLB-PROPRIO", "inventory_id_ml": "INV-PROPRIO"},
+    )
+
+    resultado = cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+        "cliente-a", "store-a",
+        [
+            {"sku": "EXISTENTE", "row_version": 1, "__expected_scope": "store_file", "descricao": "Atualizada"},
+            {"sku": "NOVO", "row_version": 0, "__expected_scope": "absent", "mlb_principal": "MLB-NOVO"},
+        ],
+        campos_legados_ignorados=_IMPORT_LEGACY_ML_FIELDS,
+    )
+
+    produtos = {item["sku"]: item for item in resultado["produtos"]}
+    assert produtos["EXISTENTE"]["mlb_principal"] == "MLB-PROPRIO"
+    assert produtos["EXISTENTE"]["inventory_id_ml"] == "INV-PROPRIO"
+    assert produtos["EXISTENTE"]["row_version"] == 2
+    assert produtos["NOVO"]["mlb_principal"] == "MLB-NOVO"
+    assert produtos["NOVO"]["row_version"] == 1
+
+
+@pytest.mark.parametrize("controle_no_payload", [False, True])
+def test_batch_comum_nao_ativa_limpeza_legada_por_payload(monkeypatch, tmp_path, controle_no_payload):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    _legado, _sombra, payload = _preparar_sombra_para_importacao(info_root)
+    if controle_no_payload:
+        payload["campos_legados_ignorados"] = ["mlb_principal", "inventory_id_ml"]
+
+    cadastro_lojas_produtos.salvar_produtos_loja_em_lote("cliente-a", "store-a", [payload])
+
+    row = cadastro_lojas_produtos._ler_registros_persistidos("cliente-a")[0][0]
+    assert row["mlb_principal"] == "MLB-ANTIGO"
+    assert row["inventory_id_ml"] == "INVENTARIO-ANTIGO"
+
+
+@pytest.mark.parametrize("photo_column", ["foto", "image_url"])
+@pytest.mark.parametrize(
+    "photo_kind,preservar",
+    [
+        ("own-local", True),
+        ("own-api", True),
+        ("other-store", False),
+        ("other-tenant", False),
+        ("global-local", False),
+        ("external", False),
+    ],
+)
+def test_import_batch_foto_legada_exige_loja_e_tenant_proprios(
+    monkeypatch, tmp_path, photo_column, photo_kind, preservar,
+):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    segmento_a = cadastro_fotos._cadastro_store_id_foto_segmento("store-a")
+    segmento_b = cadastro_fotos._cadastro_store_id_foto_segmento("store-b")
+    referencia = {
+        "own-local": f"cadastro_fotos/lojas/{segmento_a}/Imp-1.png",
+        "own-api": f"/api/cadastro/foto/cliente-a/lojas/{segmento_a}/Imp-1.png?store_id=store-a",
+        "other-store": f"cadastro_fotos/lojas/{segmento_b}/Imp-1.png",
+        "other-tenant": f"/api/cadastro/foto/cliente-b/lojas/{segmento_a}/Imp-1.png?store_id=store-a",
+        "global-local": "cadastro_fotos/Imp-1.png",
+        "external": "https://example.invalid/sem-proveniencia.png",
+    }[photo_kind]
+    _legado, _sombra, payload = _preparar_sombra_para_importacao(
+        info_root, **{photo_column: referencia}
+    )
+
+    cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+        "cliente-a", "store-a", [payload],
+        campos_legados_ignorados=_IMPORT_LEGACY_ML_FIELDS,
+    )
+
+    row = cadastro_lojas_produtos._ler_registros_persistidos("cliente-a")[0][0]
+    assert row.get(photo_column, "") == (referencia if preservar else "")
+
+
+def test_import_batch_nao_limpa_foto_estrangeira_recebida_no_payload(monkeypatch, tmp_path):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    _legado, _sombra, payload = _preparar_sombra_para_importacao(info_root)
+    segmento_b = cadastro_fotos._cadastro_store_id_foto_segmento("store-b")
+    payload["foto"] = f"cadastro_fotos/lojas/{segmento_b}/Imp-1.png"
+
+    with pytest.raises(HTTPException) as exc_info:
+        cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+            "cliente-a", "store-a", [payload],
+            campos_legados_ignorados=_IMPORT_LEGACY_ML_FIELDS,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert not (info_root / "cliente-a" / "cadastro_produtos_lojas.csv").exists()
+
+
+@pytest.mark.parametrize("mudanca", ["scope", "snapshot", "version", "precommit"])
+def test_import_batch_limpeza_preserva_guards_antes_da_materializacao(monkeypatch, tmp_path, mudanca):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    _legado, _sombra, payload = _preparar_sombra_para_importacao(info_root)
+    options = {"campos_legados_ignorados": _IMPORT_LEGACY_ML_FIELDS}
+    if mudanca == "scope":
+        payload["__expected_scope"] = "absent"
+    elif mudanca == "snapshot":
+        payload["__legacy_snapshot_hash"] = "snapshot-antigo"
+    elif mudanca == "version":
+        payload["row_version"] = 2
+    else:
+        def rejeitar(_loja):
+            raise HTTPException(status_code=409, detail="Integracao alterada")
+        options["precommit_validator"] = rejeitar
+
+    with pytest.raises(HTTPException) as exc_info:
+        cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+            "cliente-a", "store-a", [payload], **options,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert not (info_root / "cliente-a" / "cadastro_produtos_lojas.csv").exists()
+
+
+def test_import_batch_materializacao_reverte_csv_e_foto_apos_falha(monkeypatch, tmp_path):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    legado, _sombra, payload = _preparar_sombra_para_importacao(info_root)
+    legado_antes = legado.read_bytes()
+    payload["__foto_data_url"] = _foto_data_url(b"foto-confirmada")
+    real_save = cadastro_lojas_produtos._salvar_registros_atomico
+
+    def falhar_depois_da_gravacao(*args, **kwargs):
+        real_save(*args, **kwargs)
+        raise OSError("falha apos replace")
+
+    monkeypatch.setattr(cadastro_lojas_produtos, "_salvar_registros_atomico", falhar_depois_da_gravacao)
+    with pytest.raises(OSError, match="falha apos replace"):
+        cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+            "cliente-a", "store-a", [payload],
+            campos_legados_ignorados=_IMPORT_LEGACY_ML_FIELDS,
+        )
+
+    tenant = info_root / "cliente-a"
+    assert not (tenant / "cadastro_produtos_lojas.csv").exists()
+    assert not list((tenant / "cadastro_fotos").rglob("*.png"))
+    assert legado.read_bytes() == legado_antes
+
+
+@pytest.mark.parametrize("foto", ["https://example.invalid/propria.png", "cadastro_fotos/001.png"])
+def test_catalog_metadata_marca_foto_persistida_sem_mudar_leitura_publica(monkeypatch, tmp_path, foto):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    cadastro_lojas_produtos.salvar_produto_loja(
+        "cliente-a", "store-a", {"sku": "001", "nome": "Salvo", "foto": foto}
+    )
+    arquivo = info_root / "cliente-a" / "cadastro_produtos_lojas.csv"
+    antes = arquivo.read_bytes()
+
+    publico = cadastro_lojas_produtos._listar_produtos_loja_sync("cliente-a", "store-a")
+    privado = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_catalog_metadata=True,
+    )
+
+    assert "__catalog_photo_persisted" not in publico[0]
+    assert privado[0].pop("__catalog_photo_persisted") is True
+    assert privado == publico
+    assert arquivo.read_bytes() == antes
+
+
+@pytest.mark.parametrize("fallback", ["global", "scoped"])
+def test_catalog_metadata_nao_confunde_fallback_com_foto_persistida(monkeypatch, tmp_path, fallback):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    cadastro_lojas_produtos.salvar_produto_loja("cliente-a", "store-a", {"sku": "001"})
+    tenant = info_root / "cliente-a"
+    segmento = cadastro_fotos._cadastro_store_id_foto_segmento("store-a")
+    relativo = "cadastro_fotos/001.png" if fallback == "global" else f"cadastro_fotos/lojas/{segmento}/001.png"
+    caminho_foto = tenant / relativo
+    caminho_foto.parent.mkdir(parents=True, exist_ok=True)
+    caminho_foto.write_bytes(b"fallback")
+    arquivo = tenant / "cadastro_produtos_lojas.csv"
+    antes = arquivo.read_bytes()
+
+    privado = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_catalog_metadata=True,
+    )
+
+    assert privado[0]["foto"] == relativo
+    assert privado[0]["__catalog_photo_persisted"] is False
+    assert not cadastro_lojas_produtos._ler_registros_persistidos("cliente-a")[0][0].get("foto")
+    assert arquivo.read_bytes() == antes
+    assert caminho_foto.read_bytes() == b"fallback"
+
+
+def test_catalog_metadata_foto_substituida_pelo_enriquecimento_nao_e_a_persistida(monkeypatch, tmp_path):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    cadastro_lojas_produtos.salvar_produto_loja(
+        "cliente-a", "store-a", {"sku": "001", "foto": "https://example.invalid/foto-anterior.png"}
+    )
+    segmento = cadastro_fotos._cadastro_store_id_foto_segmento("store-a")
+    relativo = f"cadastro_fotos/lojas/{segmento}/001.png"
+    foto_atual = info_root / "cliente-a" / relativo
+    foto_atual.parent.mkdir(parents=True, exist_ok=True)
+    foto_atual.write_bytes(b"atual")
+
+    privado = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_catalog_metadata=True,
+    )
+
+    assert privado[0]["foto"] == relativo
+    assert privado[0]["__catalog_photo_persisted"] is False
+
+
+def test_catalog_metadata_sombra_sempre_false_e_snapshot_preservado(monkeypatch, tmp_path):
+    info_root, _ = _configure(monkeypatch, tmp_path)
+    segmento = cadastro_fotos._cadastro_store_id_foto_segmento("store-a")
+    legado, sombra, _payload = _preparar_sombra_para_importacao(
+        info_root, foto=f"cadastro_fotos/lojas/{segmento}/Imp-1.png",
+        __catalog_photo_persisted=True,
+    )
+    antes = legado.read_bytes()
+
+    publico = cadastro_lojas_produtos._listar_produtos_loja_sync("cliente-a", "store-a")
+    privado = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_legacy_snapshot_hash=True, include_catalog_metadata=True,
+    )
+
+    assert "__catalog_photo_persisted" not in publico[0]
+    assert privado[0]["__catalog_photo_persisted"] is False
+    assert privado[0]["__legacy_snapshot_hash"] == cadastro_lojas_produtos._fingerprint_sombra_legada(sombra)
+    assert legado.read_bytes() == antes
+    assert not (info_root / "cliente-a" / "cadastro_produtos_lojas.csv").exists()
+
+
+def test_catalog_metadata_flag_recebida_no_payload_nao_e_persistida(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    cadastro_lojas_produtos.salvar_produtos_loja_em_lote(
+        "cliente-a", "store-a", [{"sku": "001", "__catalog_photo_persisted": True}],
+    )
+
+    row = cadastro_lojas_produtos._ler_registros_persistidos("cliente-a")[0][0]
+    assert "__catalog_photo_persisted" not in row
+    privado = cadastro_lojas_produtos._listar_produtos_loja_sync(
+        "cliente-a", "store-a", include_catalog_metadata=True,
+    )
+    assert privado[0]["__catalog_photo_persisted"] is False

@@ -6,7 +6,7 @@
     const { elements, state } = cadastro.runtime, actions = cadastro.actions, storeTools = global.JKCadastroStore;
     const POLL_INTERVAL_MS = 750, MAX_PREVIEW_ROWS = 500, MAX_CONFLICTS = 50, SOURCES = Object.freeze({ bling: 'Bling', mercadolivre: 'Mercado Livre' });
     const POLLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'applying']), CANCELLABLE = new Set(['queued', 'pending', 'running', 'collecting', 'ready']), TERMINAL_ERRORS = new Set(['error', 'failed', 'stale']);
-    const flow = { applying: false, cancelling: false, jobId: '', lastFocus: null, lastPayload: null, opened: false, requestSeq: 0, source: '', storeId: '' };
+    const flow = { applying: false, cancelling: false, retrying: false, retryPhotosPreview: false, jobId: '', lastFocus: null, lastPayload: null, opened: false, requestSeq: 0, source: '', storeId: '' };
     function authHeaders(extra) { if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticação indisponível.'); return global.obterAuthHeaders(extra); }
     function apiImportacao(storeId, suffix) { return `${storeTools.apiLoja(storeId, 'importacoes')}/${suffix}`; }
     function texto(value, limit = 500) {
@@ -30,13 +30,14 @@
         return payload && typeof payload === 'object' ? payload : {};
     }
     function setStatus(message, type) { elements.importacaoCatalogoStatus.textContent = String(message || ''); elements.importacaoCatalogoStatus.className = `status-bar ${type || ''}`.trim(); elements.importacaoCatalogoStatus.title = ''; }
+    let retryPhotosButton = null;
     function dialogImportacao() { return elements.modalImportacaoCatalogo.querySelector('.catalog-import-dialog'); }
     function sincronizarEstadoFluxo(status) {
-        const applying = Boolean(flow.applying || status === 'applying'); const cancelling = Boolean(flow.cancelling);
+        const applying = Boolean(flow.applying || flow.retrying || status === 'applying'); const cancelling = Boolean(flow.cancelling);
         const terminal = status === 'applied' || status === 'cancelled' || TERMINAL_ERRORS.has(status); let changed = false;
         if (state.importacaoCatalogoAplicando !== applying) { state.importacaoCatalogoAplicando = applying; changed = true; }
         if (state.importacaoCatalogoCancelando !== cancelling) { state.importacaoCatalogoCancelando = cancelling; changed = true; }
-        if (terminal && state.importacaoCatalogoAtiva) { state.importacaoCatalogoAtiva = false; changed = true; }
+        if (terminal && !flow.retrying && state.importacaoCatalogoAtiva) { state.importacaoCatalogoAtiva = false; changed = true; }
         if (changed) actions.atualizarEstadoMutacoes();
         if ((applying || cancelling) && !elements.modalImportacaoCatalogo.hidden) dialogImportacao().focus();
         return applying || cancelling;
@@ -71,6 +72,37 @@
         const items = payload && Array.isArray(payload.items) ? payload.items : [];
         return warningsUnicos(payload && payload.warnings).length + items.reduce((total, item) => total + warningsUnicos(item && item.warnings).length, 0);
     }
+    const IGNORED_REASONS = Object.freeze({
+        missing_sku: 'SKU não informado no anúncio', sku_missing: 'SKU não informado no anúncio',
+        sku_identity_not_confirmed: 'Identificação do SKU não confirmada',
+        sku_ambiguous: 'Mais de um SKU possível para o anúncio',
+        sku_duplicate_within_listing: 'SKU repetido entre variações do mesmo anúncio',
+        user_product_sku_conflict: 'SKU do produto diverge do SKU da variação',
+        listing_details_missing: 'Não foi possível consultar os dados do anúncio',
+        listing_detail_incomplete: 'Dados do anúncio incompletos',
+        variation_details_incomplete: 'Dados das variações incompletos',
+        seller_mismatch: 'Anúncio pertence a outro vendedor',
+        partial_new_sku_not_applied: 'Novo SKU ficou de fora desta consulta parcial',
+        partial_non_store_sku_not_applied: 'SKU sem cadastro confirmado nesta loja ou no cadastro legado',
+        sku_excluido: 'SKU excluído do cadastro',
+        photo_sku_binding_changed: 'Vínculo do SKU mudou; consulte o catálogo novamente',
+        photo_already_saved: 'A foto deste SKU já foi salva',
+    });
+    function motivoIgnorado(reason) {
+        return IGNORED_REASONS[String(reason || '').trim().toLowerCase()] || 'Não foi possível importar este item com segurança';
+    }
+    function resumoMotivosIgnorados(payload) {
+        const counts = payload && payload.ignored_reason_counts;
+        if (!counts || typeof counts !== 'object' || Array.isArray(counts)) return '';
+        const reasons = Object.entries(counts).filter(([, count]) => numeroResumo(count) > 0)
+            .map(([reason, count]) => `${numeroResumo(count)}: ${motivoIgnorado(reason).toLowerCase()}`);
+        return reasons.length ? ` Motivos dos itens ignorados: ${reasons.join('; ')}.` : '';
+    }
+    function mudancaFotoAplicavel(item) {
+        return Array.isArray(item && item.changes) && item.changes.some(change =>
+            ['foto', 'foto_data_url', 'foto_principal', 'photo'].includes(String(change && (change.field || change.campo) || '').toLowerCase())
+            && !['preserve', 'preservar', 'ignored', 'ignorado', 'skip'].includes(String(change && (change.action || change.acao) || '').toLowerCase()));
+    }
     function linhasPayload(payload) {
         const raw = payload && (payload.items || payload.preview || payload.diferencas || payload.produtos);
         const rows = [];
@@ -79,7 +111,7 @@
             if (!item || typeof item !== 'object') return;
             const external = item.external_ids && typeof item.external_ids === 'object' ? item.external_ids : {};
             const identifier = item.sku || item.mlb || external.id_bling || external.mlb;
-            const details = [item.reason || item.motivo];
+            const details = [motivoIgnorado(item.reason || item.motivo)];
             if (Array.isArray(item.missing_fields)) details.push(`campos: ${item.missing_fields.join(', ')}`);
             rows.push({ sku: identifier, action: 'ignorado', field: item.variation_id || item.entity,
                 current: item.mlb && item.mlb !== identifier ? item.mlb : '', incoming: Array.isArray(item.candidates) ? item.candidates.join(', ') : '', note: details.filter(Boolean).join(' | ') });
@@ -133,10 +165,16 @@
         if (typeof item === 'string') return texto(item, 1000); if (!item || typeof item !== 'object') return '';
         return warningsUnicos([...(Array.isArray(item.conflicts) ? item.conflicts : []), item.message || item.mensagem || item.reason || item.motivo || item.campo || item.status]).join(', ');
     }
-    function rotuloConflito(item) {
+    function rotuloConflito(item, payload) {
         if (!item || typeof item !== 'object') return 'Há informações diferentes que precisam de revisão.';
         const sku = texto(item.sku, 100); const technical = detalhesTecnicosConflito(item).toLowerCase();
-        let detail = 'há informações diferentes entre os anúncios ou o cadastro; somente os dados seguros serão preenchidos.'; if (/sku_duplicado|duplicate_listing|mais de um anuncio|mais de um anúncio/.test(technical)) detail = 'há mais de um anúncio para este SKU. A capa disponível poderá ser salva e os outros dados diferentes serão preservados.';
+        const plannedItem = (Array.isArray(payload && payload.items) ? payload.items : []).find(row => row && row.sku === item.sku) || item;
+        const hasPhoto = String(payload && payload.source || flow.source) === 'mercadolivre' && mudancaFotoAplicavel(plannedItem);
+        let detail = 'há informações diferentes entre os anúncios ou o cadastro; somente as alterações previstas por SKU serão aplicadas.';
+        if (/sku_duplicado|duplicate_listing|mais de um anuncio|mais de um anúncio/.test(technical)) {
+            detail = 'há mais de um anúncio para este SKU. Os dados diferentes serão preservados.';
+            if (hasPhoto) detail += ' A foto prevista para este SKU será tentada ao aplicar.';
+        }
         else if (/valor_existente_preservado|preserv/.test(technical)) detail = 'alguns dados do cadastro são diferentes dos anúncios e serão preservados.';
         else if (/sku_excluido|excluíd|excluid/.test(technical)) detail = 'este SKU está excluído no cadastro e precisa de revisão.';
         else if (/identidade_ambigua|ambígu|ambigu/.test(technical)) detail = 'não foi possível confirmar com segurança qual cadastro corresponde ao anúncio.';
@@ -147,7 +185,7 @@
         const fragment = global.document.createDocumentFragment();
         conflicts.slice(0, MAX_CONFLICTS).forEach(item => {
             const entry = global.document.createElement('li');
-            entry.textContent = rotuloConflito(item);
+            entry.textContent = rotuloConflito(item, payload);
             const technical = detalhesTecnicosConflito(item); if (technical) entry.title = `Detalhes técnicos: ${technical}`;
             fragment.appendChild(entry);
         });
@@ -163,10 +201,19 @@
     function plural(value, singular, pluralValue) { return `${value} ${value === 1 ? singular : pluralValue}`; }
     function detalhesRevisao(payload, summary) {
         const source = String(payload && payload.source || flow.source || '').toLowerCase();
-        if (payload && payload.partial_application === true && source === 'mercadolivre') return `As fotos ainda não foram baixadas. Ao aplicar, o sistema atualizará as descrições disponíveis e tentará baixar e salvar uma foto em ${plural(summary.fotosPlanejadas, 'cadastro identificado', 'cadastros identificados')}. ${plural(summary.conflitos, 'produto tem outros dados diferentes, que serão mantidos', 'produtos têm outros dados diferentes, que serão mantidos')}. ${plural(summary.ignorados, 'anúncio ou variação ficou de fora', 'anúncios ou variações ficaram de fora')}.`;
-        const parts = [`${plural(summary.aplicaveis, 'cadastro será atualizado', 'cadastros serão atualizados')}`, `${plural(summary.conflitos, 'produto tem diferenças que serão mantidas', 'produtos têm diferenças que serão mantidas')}`, `${plural(summary.ignorados, 'anúncio ou variação foi ignorado', 'anúncios ou variações foram ignorados')}`];
-        if (source === 'mercadolivre') parts.push('as fotos ainda não foram baixadas e serão processadas ao aplicar');
-        return `${parts.join('; ')}.`;
+        const parts = [`${plural(summary.aplicaveis, 'cadastro será atualizado', 'cadastros serão atualizados')}`,
+            `${plural(summary.conflitos, 'produto tem diferenças que serão mantidas', 'produtos têm diferenças que serão mantidas')}`,
+            `${plural(summary.ignorados, 'anúncio ou variação foi ignorado', 'anúncios ou variações foram ignorados')}`];
+        if (source === 'mercadolivre' && flow.retryPhotosPreview) {
+            return `${summary.fotosPlanejadas > 0 ? `${plural(summary.fotosPlanejadas, 'SKU tem foto pendente prevista', 'SKUs têm fotos pendentes previstas')}; somente essas fotos serão tentadas ao aplicar.` : 'Nenhuma foto está prevista para esta aplicação.'}${resumoMotivosIgnorados(payload)}`;
+        }
+        if (source === 'mercadolivre') {
+            parts.push('somente as alterações previstas para cada SKU confirmado serão aplicadas, inclusive aos cadastros legados identificados');
+            parts.push(summary.fotosPlanejadas > 0
+                ? `as fotos ainda não foram baixadas; ao aplicar, serão tentadas ${plural(summary.fotosPlanejadas, 'foto prevista', 'fotos previstas')}`
+                : 'nenhuma foto está prevista para esta aplicação');
+        }
+        return `${parts.join('; ')}.${resumoMotivosIgnorados(payload)}`;
     }
     function progressoDetalhadoAplicacao(payload) {
         const progress = payload && (payload.progress || payload.progresso) || {};
@@ -184,7 +231,28 @@
         const ignoradas = numeroResumo(applyResult.fotos_ignoradas);
         const planejadas = Math.max(numeroResumo(applyResult.fotos_planejadas), salvas + ignoradas);
         if (planejadas === 0) return 'Fotos do Mercado Livre: nenhuma foto nova precisava ser baixada.';
-        return `Fotos do Mercado Livre: ${salvas} de ${planejadas} foram baixadas e salvas; ${plural(ignoradas, 'não pôde ser baixada', 'não puderam ser baixadas')}.`;
+        return `Fotos do Mercado Livre: ${salvas} de ${planejadas} foram baixadas e salvas; ${plural(ignoradas, 'não pôde ser baixada e salva', 'não puderam ser baixadas e salvas')}.`;
+    }
+    function resultadoCamposAplicados(result) {
+        if (!result || !['incluidos', 'atualizados'].some(key => Object.prototype.hasOwnProperty.call(result, key))) return '';
+        return `Cadastros: ${plural(numeroResumo(result.incluidos), 'incluído', 'incluídos')} e ${plural(numeroResumo(result.atualizados), 'atualizado', 'atualizados')}. `;
+    }
+    function detalhesFotosPendentes(result) {
+        const failed = Array.isArray(result && result.photos_failed) ? result.photos_failed : [];
+        const reasons = { photo_candidate_invalid: 'não foi possível validar a foto do anúncio',
+            photo_budget_exceeded: 'o limite de processamento das fotos foi atingido', download_failed: 'não foi possível baixar a foto', photo_download_failed: 'não foi possível baixar a foto',
+            invalid_image: 'a imagem recebida não pôde ser utilizada', photo_processing_failed: 'a imagem não pôde ser processada',
+            photo_save_failed: 'não foi possível salvar a foto', sku_identity_not_confirmed: 'a identificação do SKU precisa ser conferida',
+            photo_candidate_not_confirmed: 'não foi possível confirmar uma foto para este SKU' };
+        const labels = failed.filter(item => item && item.sku).slice(0, 50)
+            .map(item => `SKU ${texto(item.sku, 100)}: ${reasons[String(item.reason || '').toLowerCase()] || 'não foi possível baixar e salvar a foto'}`);
+        if (!labels.length) return '';
+        const remaining = Math.max(0, failed.length - labels.length);
+        return ` Fotos pendentes: ${labels.join('; ')}.${remaining ? ` Outros ${remaining} SKUs constam no resultado.` : ''}`;
+    }
+    function podeRetentarFotos(payload, status) {
+        return status === 'applied' && flow.source === 'mercadolivre' && payload && payload.apply_result
+            && payload.apply_result.can_retry_photos === true;
     }
     function podeAplicar(payload, status) { return status === 'ready' && payload && payload.can_apply === true; }
     function renderPayload(payload) {
@@ -201,13 +269,14 @@
             if (terminalLabel) { elements.importacaoCatalogoProgress.value = 0; elements.importacaoCatalogoProgressText.textContent = terminalLabel; } else { elements.importacaoCatalogoProgress.removeAttribute('value'); elements.importacaoCatalogoProgressText.textContent = 'Em andamento'; }
         } else { elements.importacaoCatalogoProgress.value = progress; elements.importacaoCatalogoProgressText.textContent = `${Math.round(progress)}%`; }
         renderTabela(payload); renderConflitos(payload);
-        elements.btnAplicarImportacaoCatalogo.disabled = !podeAplicar(payload, status) || flow.applying || flow.cancelling;
+        elements.btnAplicarImportacaoCatalogo.disabled = !podeAplicar(payload, status) || busy;
         elements.btnFecharImportacaoCatalogo.disabled = busy;
         elements.btnCancelarImportacaoCatalogo.disabled = busy || !flow.jobId || !CANCELLABLE.has(status);
         const applyResult = payload && payload.apply_result && typeof payload.apply_result === 'object' ? payload.apply_result : {};
         const fotosIgnoradas = numeroResumo(applyResult.fotos_ignoradas);
         const resultadoFotos = resultadoFotosAplicadas(applyResult);
-        if (status === 'applied' && resultadoFotos) setStatus(`Aplicação concluída. ${resultadoFotos}${payload.refresh_failed ? ' A lista não pôde ser atualizada; use Atualizar.' : ''}`, fotosIgnoradas > 0 || payload.refresh_failed ? 'warning' : 'success');
+        if (retryPhotosButton) { retryPhotosButton.hidden = !podeRetentarFotos(payload, status); retryPhotosButton.disabled = busy; }
+        if (status === 'applied' && resultadoFotos) setStatus(`Aplicação concluída. ${resultadoCamposAplicados(applyResult)}${resultadoFotos}${detalhesFotosPendentes(applyResult)}${payload.refresh_failed ? ' A lista não pôde ser atualizada; use Atualizar.' : ''}`, fotosIgnoradas > 0 || payload.refresh_failed ? 'warning' : 'success');
         else if (status === 'applied' && payload.refresh_failed) setStatus('Importação aplicada com sucesso, mas a lista não pôde ser atualizada. Use Atualizar.', 'warning');
         else if (status === 'applied') setStatus('Importação aplicada com sucesso.', 'success');
         else if (status === 'cancelled') setStatus('Consulta cancelada. Nenhuma nova alteração será aplicada por este trabalho.', 'success');
@@ -219,8 +288,8 @@
             const warnings = totalWarnings(payload);
             const needsReview = summary.conflitos > 0 || summary.ignorados > 0 || warnings > 0;
             setStatus(needsReview
-                ? `Prévia concluída para revisão. Nenhum produto pode ser preenchido automaticamente. ${reviewDetails}`
-                : `Prévia concluída. O cadastro já está atualizado com os dados disponíveis desta fonte.`, needsReview ? 'warning' : 'success');
+                ? `${flow.retryPhotosPreview ? 'Prévia de fotos concluída para revisão. Nenhuma foto pendente pôde ser confirmada para aplicação.' : 'Prévia concluída para revisão. Nenhum produto pode ser preenchido automaticamente.'} ${reviewDetails}`
+                : flow.retryPhotosPreview ? 'Prévia de fotos concluída. Nenhuma foto pendente precisa ser salva.' : 'Prévia concluída. O cadastro já está atualizado com os dados disponíveis desta fonte.', needsReview ? 'warning' : 'success');
         }
     }
     function isCurrent(seq, storeId) { return flow.opened && seq === flow.requestSeq && storeId === flow.storeId && storeId === state.storeIdSelecionado; }
@@ -256,6 +325,7 @@
         }
     }
     function resetPreview(source, storeId) {
+        if (retryPhotosButton) retryPhotosButton.hidden = true;
         const sourceLabel = SOURCES[source];
         const store = state.lojas.find(item => item.store_id === storeId);
         elements.importacaoCatalogoTitulo.textContent = source === 'mercadolivre' ? 'Trazer catálogo do Mercado Livre' : `Trazer catálogo da ${sourceLabel}`;
@@ -273,7 +343,7 @@
         setStatus(source === 'mercadolivre' ? 'Iniciando consulta somente leitura no Mercado Livre...' : `Iniciando consulta somente leitura na ${sourceLabel}...`, 'loading');
     }
     function encerrarFluxo(fecharModal) {
-        if (flow.applying || flow.cancelling || state.importacaoCatalogoAplicando || state.importacaoCatalogoCancelando) return false;
+        if (flow.applying || flow.cancelling || flow.retrying || state.importacaoCatalogoAplicando || state.importacaoCatalogoCancelando) return false;
         flow.requestSeq += 1; flow.opened = false; flow.jobId = ''; flow.lastPayload = null;
         state.importacaoCatalogoAtiva = false; state.importacaoCatalogoAplicando = false; state.importacaoCatalogoCancelando = false;
         if (fecharModal) elements.modalImportacaoCatalogo.hidden = true;
@@ -284,11 +354,11 @@
     }
     async function abrir(source) {
         const sourceKey = String(source || '').toLowerCase();
-        if (!SOURCES[sourceKey] || state.importacaoCatalogoAtiva || state.carregandoProdutos) return false;
+        if (!SOURCES[sourceKey] || state.importacaoCatalogoAtiva || state.importacaoCatalogoAplicando || state.importacaoCatalogoCancelando || state.carregandoProdutos) return false;
         const storeId = String(state.storeIdSelecionado || '').trim();
         if (!storeId || !storeTools.lojaExiste(state.lojas, storeId)) return false;
         const seq = ++flow.requestSeq;
-        Object.assign(flow, { applying: false, cancelling: false, jobId: '', lastFocus: global.document.activeElement, lastPayload: null, opened: true, source: sourceKey, storeId });
+        Object.assign(flow, { applying: false, cancelling: false, retrying: false, retryPhotosPreview: false, jobId: '', lastFocus: global.document.activeElement, lastPayload: null, opened: true, source: sourceKey, storeId });
         state.importacaoCatalogoAtiva = true;
         resetPreview(sourceKey, storeId);
         elements.modalImportacaoCatalogo.hidden = false;
@@ -332,7 +402,7 @@
     async function aplicar() {
         const payload = flow.lastPayload;
         const status = statusPayload(payload);
-        if (flow.applying || flow.cancelling || !flow.opened || !flow.jobId || !podeAplicar(payload, status)) return false;
+        if (flow.applying || flow.cancelling || flow.retrying || !flow.opened || !flow.jobId || !podeAplicar(payload, status)) return false;
         const seq = flow.requestSeq;
         const storeId = flow.storeId;
         flow.applying = true;
@@ -369,19 +439,48 @@
         } finally {
             acompanhar = false;
             await acompanhamento;
-            flow.applying = false;
-            if (isCurrent(seq, storeId)) renderPayload(flow.lastPayload || {});
-            else {
-                state.importacaoCatalogoAplicando = false;
-                actions.atualizarEstadoMutacoes();
+            if (seq === flow.requestSeq) {
+                flow.applying = false;
+                if (isCurrent(seq, storeId)) renderPayload(flow.lastPayload || {});
+                else state.importacaoCatalogoAplicando = false;
             }
+            actions.atualizarEstadoMutacoes();
+        }
+    }
+    async function retentarFotos() {
+        const previous = flow.lastPayload;
+        if (flow.applying || flow.cancelling || flow.retrying || !flow.opened || !flow.jobId
+            || !podeRetentarFotos(previous, statusPayload(previous))) return false;
+        const seq = ++flow.requestSeq, storeId = flow.storeId, source = flow.source, previousJobId = flow.jobId;
+        flow.retrying = true; state.importacaoCatalogoAtiva = true;
+        renderPayload(previous);
+        setStatus('Preparando uma nova prévia das fotos que não puderam ser salvas...', 'loading');
+        let retryError = '';
+        try {
+            const result = await requestJson(apiImportacao(storeId, `${encodeURIComponent(previousJobId)}/retentar-fotos`), {
+                method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: '{}',
+            });
+            if (!isCurrent(seq, storeId)) return false;
+            validarEscopo(result, storeId, source);
+            const nextJobId = String(result.job_id || '').trim();
+            if (!nextJobId || nextJobId === previousJobId || statusPayload(result) !== 'ready') throw new Error('Não foi possível preparar a nova prévia das fotos.');
+            flow.jobId = nextJobId; flow.lastPayload = result; flow.retryPhotosPreview = true;
+            elements.importacaoCatalogoTitulo.textContent = 'Revisar fotos pendentes do Mercado Livre';
+            return true;
+        } catch (error) {
+            if (isCurrent(seq, storeId)) retryError = `Não foi possível consultar as fotos pendentes: ${error.message}. As alterações já aplicadas ao cadastro foram mantidas.`;
+            return false;
+        } finally {
+            flow.retrying = false;
+            if (isCurrent(seq, storeId)) { renderPayload(flow.lastPayload || previous); if (retryError) setStatus(retryError, 'error'); }
+            else { state.importacaoCatalogoAplicando = false; state.importacaoCatalogoAtiva = false; }
             actions.atualizarEstadoMutacoes();
         }
     }
     async function cancelar() {
         const payload = flow.lastPayload;
         const status = statusPayload(payload);
-        if (flow.applying || flow.cancelling || !flow.opened || !flow.jobId || !CANCELLABLE.has(status)) return false;
+        if (flow.applying || flow.cancelling || flow.retrying || !flow.opened || !flow.jobId || !CANCELLABLE.has(status)) return false;
         const seq = flow.requestSeq;
         const storeId = flow.storeId;
         let cancelError = '';
@@ -415,7 +514,7 @@
     function onStoreChanged(storeId) { if (flow.opened && String(storeId || '') !== flow.storeId) encerrarFluxo(true); }
     function onKeydown(event) {
         if (!flow.opened) return;
-        const busy = flow.applying || flow.cancelling || state.importacaoCatalogoAplicando;
+        const busy = flow.applying || flow.cancelling || flow.retrying || state.importacaoCatalogoAplicando;
         if (event.key === 'Escape') {
             if (busy) { event.preventDefault(); dialogImportacao().focus(); return; }
             encerrarFluxo(true);
@@ -424,7 +523,7 @@
         if (event.key !== 'Tab') return;
         if (busy) { event.preventDefault(); dialogImportacao().focus(); return; }
         const focusable = [elements.btnFecharImportacaoCatalogo, elements.btnCancelarImportacaoCatalogo,
-            elements.btnAplicarImportacaoCatalogo].filter(item => !item.disabled);
+            retryPhotosButton, elements.btnAplicarImportacaoCatalogo].filter(item => item && !item.disabled && !item.hidden);
         if (!focusable.length) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
@@ -432,9 +531,15 @@
         else if (!event.shiftKey && global.document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
     function init() {
+        retryPhotosButton = global.document.createElement('button');
+        retryPhotosButton.id = 'btnRetentarFotosImportacaoCatalogo'; retryPhotosButton.type = 'button';
+        retryPhotosButton.className = 'btn btn-secondary'; retryPhotosButton.hidden = true;
+        retryPhotosButton.textContent = 'Tentar fotos pendentes novamente';
+        elements.btnAplicarImportacaoCatalogo.before(retryPhotosButton);
+        retryPhotosButton.addEventListener('click', retentarFotos);
         elements.btnFecharImportacaoCatalogo.addEventListener('click', () => encerrarFluxo(true)); elements.btnCancelarImportacaoCatalogo.addEventListener('click', cancelar);
         elements.btnAplicarImportacaoCatalogo.addEventListener('click', aplicar); global.document.addEventListener('keydown', onKeydown);
     }
-    cadastro.importacoesCatalogos = Object.freeze({ aplicar, abrir, cancelar, init, onStoreChanged });
+    cadastro.importacoesCatalogos = Object.freeze({ aplicar, abrir, cancelar, retentarFotos, init, onStoreChanged });
     cadastro.components.add('importacoes-catalogos');
 })(window);

@@ -46,6 +46,7 @@ from backend.services.cadastro_fotos import (
     _cadastro_fotos_bloquear_transicao,
     _cadastro_fotos_validar_preparadas_no_lock,
     _cadastro_foto_referencia_pertence_loja,
+    _cadastro_foto_referencias_candidatas,
     _cadastro_foto_referencias_invalidas_loja,
     _cadastro_foto_store_id_referencia,
     _cadastro_mapa_fotos_locais,
@@ -1114,7 +1115,7 @@ def _dados_mutacao(
         if nome == "__foto_filename":
             foto_filename = str(valor or "").strip()
             continue
-        if nome in {"__legacy_snapshot_hash", "__expected_scope"}:
+        if nome in {"__legacy_snapshot_hash", "__expected_scope", "__catalog_photo_persisted"}:
             continue
         if nome in _COLUNAS_IDENTIDADE:
             continue
@@ -1395,9 +1396,21 @@ def salvar_produtos_loja_em_lote(
     *,
     campos_derivados_permitidos: Iterable[str] | None = None,
     precommit_validator: Callable[[dict[str, str]], None] | None = None,
+    campos_legados_ignorados: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Upsert a validated batch through one lock, replace and readback cycle."""
+    """Upsert a validated batch through one lock, replace and readback cycle.
 
+    ``campos_legados_ignorados`` is an internal import policy, never a payload
+    control.  It filters only inherited shadow fields; validated incoming data
+    and existing store rows retain their usual behavior.  In that opt-in path,
+    an inherited photo also needs positive ownership by this tenant/store.
+    """
+
+    legados_ignorados = {
+        str(campo or "").strip().lower()
+        for campo in (campos_legados_ignorados or ())
+        if str(campo or "").strip()
+    }
     loja_snapshot = resolver_loja_cadastro(client_id, store_id)
     preparados: list[tuple[Any, dict[str, str], str, str, str, dict[str, str]]] = []
     skus_vistos: set[str] = set()
@@ -1468,7 +1481,17 @@ def salvar_produtos_loja_em_lote(
                         for chave, valor in sombra.items()
                         if chave not in {"scope_source", "row_version", "updated_at_utc", "deleted_at_utc"}
                         and chave not in derivados
+                        and str(chave).strip().lower() not in legados_ignorados
                     }
+                    if campos_legados_ignorados is not None:
+                        for campo, referencia in _cadastro_foto_referencias_candidatas(base):
+                            if (
+                                str(referencia or "").strip()
+                                and _cadastro_foto_store_id_referencia(
+                                    client_id, str(referencia)
+                                ) != loja["store_id"]
+                            ):
+                                base.pop(campo, None)
                     versao = 1
                     atualizados += 1
                 else:
@@ -1611,6 +1634,7 @@ def _listar_produtos_loja_sync(
     *,
     include_deleted: bool = False,
     include_legacy_snapshot_hash: bool = False,
+    include_catalog_metadata: bool = False,
 ) -> list[dict[str, Any]]:
     loja = resolver_loja_cadastro(client_id, store_id)
     caminho = _cadastro_produtos_lojas_path(client_id)
@@ -1627,7 +1651,15 @@ def _listar_produtos_loja_sync(
         apagado = bool(str(item.get("deleted_at_utc") or "").strip())
         if apagado and not include_deleted:
             continue
-        saida.append(_enriquecer_produto(item, loja, contexto))
+        enriquecido = _enriquecer_produto(item, loja, contexto)
+        enriquecido.pop("__catalog_photo_persisted", None)
+        if include_catalog_metadata:
+            foto_persistida = str(item.get("foto") or "")
+            enriquecido["__catalog_photo_persisted"] = bool(
+                foto_persistida.strip()
+                and foto_persistida == str(enriquecido.get("foto") or "")
+            )
+        saida.append(enriquecido)
     for sku, sombra in contexto["sombras"].items():
         if sku in chaves_explicitadas:
             continue
@@ -1639,6 +1671,9 @@ def _listar_produtos_loja_sync(
         )
         if include_legacy_snapshot_hash:
             enriquecido["__legacy_snapshot_hash"] = _fingerprint_sombra_legada(sombra)
+        enriquecido.pop("__catalog_photo_persisted", None)
+        if include_catalog_metadata:
+            enriquecido["__catalog_photo_persisted"] = False
         saida.append(enriquecido)
     return sorted(saida, key=lambda item: str(item.get("sku_normalizado") or ""))
 

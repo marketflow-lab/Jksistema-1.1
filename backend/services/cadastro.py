@@ -64,5 +64,6 @@ __all__ += [
     'obter_importacao_catalogo',
     'cancelar_importacao_catalogo',
     'aplicar_importacao_catalogo',
+    'retentar_fotos_importacao_catalogo',
 ]
 __all__ += ['CadastroImportadorLojaRequest', 'obter_importador_loja', 'salvar_importador_loja']
