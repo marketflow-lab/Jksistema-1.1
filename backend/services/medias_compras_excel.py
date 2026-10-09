@@ -137,19 +137,26 @@ def _formatar_data_commercial_invoice(valor) -> str:
         return texto
 
 
-def _cabecalho_fornecedor_commercial_invoice(lista: dict, client_id: str | None):
-    nome_historico = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+def _cadastro_fornecedor_commercial_invoice(lista: dict, client_id: str | None) -> dict:
     fornecedor_id = str(lista.get("fornecedor_id") or "").strip()
     if not client_id or not fornecedor_id:
-        return nome_historico, 93
+        return {}
 
     from backend.services.cadastro_fornecedores import ler_fornecedor_por_id
 
-    cadastro = ler_fornecedor_por_id(
+    return ler_fornecedor_por_id(
         client_id,
         fornecedor_id,
         pasta_tenant=get_tenant_path(client_id),
-    )
+    ) or {}
+
+
+def _cabecalho_fornecedor_commercial_invoice(
+    lista: dict, client_id: str | None, *, cadastro: dict | None = None,
+):
+    nome_historico = str(lista.get("supplier") or lista.get("fornecedor") or "").strip()
+    if cadastro is None:
+        cadastro = _cadastro_fornecedor_commercial_invoice(lista, client_id)
     if not cadastro:
         return nome_historico, 93
 
@@ -182,6 +189,37 @@ def _cabecalho_fornecedor_commercial_invoice(lista: dict, client_id: str | None)
     )
     altura = max(93, 12 + linhas_nome * 18 + linhas_dados * 14)
     return texto, min(409.5, altura)
+
+
+def _rodape_fornecedor_commercial_invoice(cadastro: dict, numero_invoice: str = "") -> str:
+    if not cadastro:
+        return ""
+    observacao = str(cadastro.get("observacao_pagamento") or "").strip()
+    if numero_invoice:
+        if observacao:
+            if not observacao.endswith((".", "!", "?")):
+                observacao += "."
+            observacao += " "
+        observacao += f"Please include the order invoice number {numero_invoice}"
+    partes = []
+    for rotulo, chave in (
+        ("Payment currency", "moeda_pagamento"),
+        ("Beneficiary account number", "conta_beneficiario"),
+        ("Swift code", "swift"),
+        ("Beneficiary country/region", "pais_regiao_beneficiario"),
+        ("Beneficiary name", "nome_beneficiario"),
+        ("Beneficiary address", "endereco_beneficiario"),
+        ("Beneficiary bank", "banco_beneficiario"),
+        ("Beneficiary bank address", "endereco_banco"),
+        ("Bank code", "codigo_banco"),
+        ("Branch code", "codigo_agencia"),
+        ("Remark", "observacao_pagamento"),
+    ):
+        valor = observacao if chave == "observacao_pagamento" else str(cadastro.get(chave) or "").strip()
+        if valor:
+            parte = f"{rotulo}: {valor}"
+            partes.append(parte if parte.endswith((".", "!", "?")) else f"{parte}.")
+    return " ".join(partes)
 
 
 def _bloco_nacionalizador_commercial_invoice(lista: dict, client_id: str | None):
@@ -370,7 +408,10 @@ def _gerar_commercial_invoice_bytes(
     ):
         ws.merge_cells(intervalo)
 
-    cabecalho_fornecedor, altura_cabecalho = _cabecalho_fornecedor_commercial_invoice(lista, client_id)
+    cadastro_fornecedor = _cadastro_fornecedor_commercial_invoice(lista, client_id)
+    cabecalho_fornecedor, altura_cabecalho = _cabecalho_fornecedor_commercial_invoice(
+        lista, client_id, cadastro=cadastro_fornecedor,
+    )
     texto_nacionalizador, altura_nacionalizador = _bloco_nacionalizador_commercial_invoice(lista, client_id)
     numero_invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
     nome_lista = str(lista.get("nome_lista") or "").strip()
@@ -594,24 +635,50 @@ def _gerar_commercial_invoice_bytes(
     _atribuir_texto_excel(ws.cell(linha_ctns, 8), "TOTAL:")
     ws.cell(linha_ctns, 9).value = subtotal
 
-    ws.merge_cells(start_row=linha_rodape, start_column=1, end_row=linha_rodape, end_column=4)
-    ws.merge_cells(start_row=linha_rodape, start_column=5, end_row=linha_rodape, end_column=8)
-    moeda = str(lista.get("currency") or "").strip()
+    rodape_fornecedor = _rodape_fornecedor_commercial_invoice(cadastro_fornecedor, numero_invoice)
+    moeda = (
+        str(cadastro_fornecedor.get("moeda_pagamento") or "").strip()
+        or str(lista.get("currency") or "").strip()
+    )
     incoterm = str(lista.get("incoterm") or "").strip()
     rodape_condicoes = "\n".join(
         texto
         for texto in (
-            f"Incoterms: {incoterm}" if incoterm else "",
-            f"Payment Currency: {moeda}" if moeda else "",
+            "Commercial Use - Formal",
+            "Within 45 days after full payment" + (f" of Incoterms: {incoterm}" if incoterm else ""),
+            "Payment terms: 100% prepaid",
+            f"Note - invoice {numero_invoice}" if numero_invoice else "",
+            " ".join(filter(None, (
+                f"Payment Currency: {moeda}" if moeda else "",
+                "Payment Method: Bank transfer",
+            ))),
         )
         if texto
     )
-    _atribuir_texto_excel(ws.cell(linha_rodape, 1), rodape_condicoes)
-    _atribuir_texto_excel(ws.cell(linha_rodape, 5), "")
-    _atribuir_texto_excel(ws.cell(linha_rodape, 9), "Company stamp and signature")
-    ws.row_dimensions[linha_rodape].height = 101.25
+    # Celulas mescladas nao ajustam altura automaticamente. Reserva espaco para
+    # as quebras de texto e distribui a altura respeitando o limite do Excel.
+    linhas_visuais = max(
+        sum(max(1, len(textwrap.wrap(linha, width=70))) for linha in rodape_fornecedor.splitlines()),
+        sum(max(1, len(textwrap.wrap(linha, width=50))) for linha in rodape_condicoes.splitlines()),
+    )
+    altura_restante_rodape = max(101.25, 12 + linhas_visuais * 12)
+    ultima_linha_rodape = linha_rodape
+    while altura_restante_rodape > 0:
+        altura_linha = min(409.5, altura_restante_rodape)
+        ws.row_dimensions[ultima_linha_rodape].height = altura_linha
+        altura_restante_rodape -= altura_linha
+        if altura_restante_rodape > 0:
+            ultima_linha_rodape += 1
 
-    for linha in range(1, linha_rodape + 1):
+    ws.merge_cells(start_row=linha_rodape, start_column=1, end_row=ultima_linha_rodape, end_column=4)
+    ws.merge_cells(start_row=linha_rodape, start_column=5, end_row=ultima_linha_rodape, end_column=8)
+    if ultima_linha_rodape > linha_rodape:
+        ws.merge_cells(start_row=linha_rodape, start_column=9, end_row=ultima_linha_rodape, end_column=9)
+    _atribuir_texto_excel(ws.cell(linha_rodape, 1), rodape_condicoes)
+    _atribuir_texto_excel(ws.cell(linha_rodape, 5), rodape_fornecedor)
+    _atribuir_texto_excel(ws.cell(linha_rodape, 9), "Company stamp and signature")
+
+    for linha in range(1, ultima_linha_rodape + 1):
         for coluna in range(1, 10):
             celula = ws.cell(linha, coluna)
             celula.border = borda
@@ -627,13 +694,14 @@ def _gerar_commercial_invoice_bytes(
     for linha in range(primeira_linha_item, primeira_linha_resumo):
         for coluna in range(1, 10):
             ws.cell(linha, coluna).font = fonte_negrito
-    for linha in range(primeira_linha_resumo, linha_rodape + 1):
+    for linha in range(primeira_linha_resumo, ultima_linha_rodape + 1):
         for coluna in range(1, 10):
             ws.cell(linha, coluna).font = fonte_negrito
     ws.cell(linha_peso_liquido, 7).number_format = "#,##0"
     ws.cell(linha_peso_liquido, 9).number_format = '"US$"#,##0.00'
     ws.cell(linha_ctns, 9).number_format = '"US$"#,##0.00'
-    ws.print_area = f"A1:I{linha_rodape}"
+    ws.cell(linha_rodape, 5).alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.print_area = f"A1:I{ultima_linha_rodape}"
 
     buffer = io.BytesIO()
     wb.save(buffer)

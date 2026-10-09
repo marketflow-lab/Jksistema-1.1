@@ -14,7 +14,14 @@ from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import ListaPedidoUpdateRequest
 from backend.services import medias_compras_excel as excel_service
 from backend.services import medias_compras_listas as listas_service
-from backend.services import cadastro_compatibilidade, cadastro_importador_loja, cadastro_nacionalizadores
+from backend.services import cadastro_compatibilidade, cadastro_fornecedores, cadastro_importador_loja, cadastro_nacionalizadores
+
+
+CONDICOES_COMERCIAIS_INVOICE = (
+    "Commercial Use - Formal",
+    "Within 45 days after full payment",
+    "Payment terms: 100% prepaid",
+)
 
 
 PNG_1X1 = base64.b64decode(
@@ -200,6 +207,8 @@ def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monk
     assert sheet["G14"].value in (None, "")
     assert sheet["H14"].value == "TOTAL:"
     assert sheet["I14"].value == 19
+    assert sheet["A15"].value.splitlines()[0] == "Commercial Use - Formal"
+    assert "Note - invoice JK48-18082026" in sheet["A15"].value.splitlines()
     assert "Incoterms: EXW" in sheet["A15"].value
     assert "Payment Currency: USD" in sheet["A15"].value
     assert sheet["E15"].value in (None, "")
@@ -400,6 +409,372 @@ def test_commercial_invoice_cabecalho_extenso_literal_sem_alterar_cadastro(forne
     assert sheet["A2"].value == "COMMERCIAL INVOICE"
     assert _formulas(sheet) == []
     assert arquivo.read_bytes() == cadastro_original
+
+
+@pytest.fixture
+def fornecedores_rodape_invoice(tmp_path, monkeypatch):
+    fornecedor = {
+        "id": "fornecedor-a",
+        "nome_empresa": "Fornecedor Atual Co., Ltd.",
+        "nome_contato": "Contato A",
+        "endereco_empresa": "Endereco da empresa",
+        "moeda_pagamento": "EUR",
+        "conta_beneficiario": "000123456000",
+        "swift": "TESTSGSG",
+        "pais_regiao_beneficiario": "Singapore",
+        "nome_beneficiario": "Beneficiario A Ltd.",
+        "endereco_beneficiario": "Room 301, Commerce Park",
+        "banco_beneficiario": "Banco de Exemplo",
+        "endereco_banco": "Business Park, Singapore",
+        "codigo_banco": "001",
+        "codigo_agencia": "0007",
+        "observacao_pagamento": "Notify the supplier after payment",
+    }
+    registros = {
+        "tenant-a": [fornecedor, {"id": "fornecedor-b", "nome_empresa": "Fornecedor B"}],
+        "tenant-b": [{**fornecedor, "nome_empresa": "Fornecedor do cliente B",
+                      "moeda_pagamento": "GBP", "conta_beneficiario": "00009999",
+                      "nome_beneficiario": "Beneficiario do cliente B"}],
+    }
+    for client_id, fornecedores in registros.items():
+        pasta = tmp_path / client_id
+        pasta.mkdir()
+        (pasta / "cadastro_fornecedores.json").write_text(
+            json.dumps({"schema": "jk.cadastro.fornecedores.v1", "fornecedores": fornecedores}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(excel_service, "get_tenant_path", lambda client_id: str(tmp_path / client_id))
+    monkeypatch.setattr(excel_service, "_resolver_caminho_foto_commercial_invoice", lambda *_args: None)
+    monkeypatch.setattr(
+        cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+        lambda *_args: {"store_id": "", "scope": "unresolved"},
+    )
+    monkeypatch.setattr(
+        cadastro_fornecedores, "get_tenant_path",
+        lambda *_args: pytest.fail("Invoice deve fornecer a pasta canonica do cliente"),
+    )
+    return tmp_path, fornecedor
+
+
+def test_commercial_invoice_rodape_exporta_dados_bancarios_do_fornecedor(fornecedores_rodape_invoice):
+    raiz, _registro = fornecedores_rodape_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    bytes_originais = arquivo.read_bytes()
+    lista = {**_lista_aprovada(), "fornecedor_id": "fornecedor-a"}
+    lista_original = copy.deepcopy(lista)
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+
+    assert sheet["E15"].value == (
+        "Payment currency: EUR. Beneficiary account number: 000123456000. "
+        "Swift code: TESTSGSG. Beneficiary country/region: Singapore. "
+        "Beneficiary name: Beneficiario A Ltd. Beneficiary address: Room 301, Commerce Park. "
+        "Beneficiary bank: Banco de Exemplo. Beneficiary bank address: Business Park, Singapore. "
+        "Bank code: 001. Branch code: 0007. Remark: Notify the supplier after payment. "
+        "Please include the order invoice number JK48-18082026."
+    )
+    assert sheet["E15"].alignment.horizontal == "left"
+    assert sheet["E15"].alignment.wrap_text is True
+    assert sheet["E15"].data_type == "s"
+    assert sheet["A15"].value.splitlines()[0] == "Commercial Use - Formal"
+    assert sheet["A15"].value.splitlines() == [
+        "Commercial Use - Formal",
+        "Within 45 days after full payment of Incoterms: EXW",
+        "Payment terms: 100% prepaid",
+        "Note - invoice JK48-18082026",
+        "Payment Currency: EUR Payment Method: Bank transfer",
+    ]
+    assert sheet["I15"].value == "Company stamp and signature"
+    assert sheet["G11"].value == 5
+    assert sheet["I11"].value == sheet["I14"].value == 19
+    assert sheet["H14"].value == "TOTAL:"
+    assert {"A15:D15", "E15:H15"} <= {str(r) for r in sheet.merged_cells.ranges}
+    for condicao in ("45 days", "100% prepaid", "Bank transfer"):
+        assert condicao in sheet["A15"].value
+    assert _formulas(sheet) == []
+    assert lista == lista_original
+    assert arquivo.read_bytes() == bytes_originais
+
+
+@pytest.mark.parametrize(
+    ("moeda_fornecedor", "moeda_lista", "esperado"),
+    [("EUR", "USD", "EUR"), ("", "USD", "USD"), ("   ", "JPY", "JPY"), ("", "", "")],
+)
+def test_commercial_invoice_rodape_moeda_fornecedor_tem_prioridade_com_fallback(
+    fornecedores_rodape_invoice, moeda_fornecedor, moeda_lista, esperado,
+):
+    raiz, registro = fornecedores_rodape_invoice
+    registro["moeda_pagamento"] = moeda_fornecedor
+    (raiz / "tenant-a" / "cadastro_fornecedores.json").write_text(
+        json.dumps({"fornecedores": [registro]}), encoding="utf-8",
+    )
+    lista = {"fornecedor_id": "fornecedor-a", "currency": moeda_lista, "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert sheet["A13"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE,
+        f"Payment Currency: {esperado} Payment Method: Bank transfer" if esperado
+        else "Payment Method: Bank transfer",
+    ]
+    assert "Note - invoice" not in sheet["A13"].value
+    if moeda_fornecedor.strip():
+        assert sheet["E13"].value.startswith(f"Payment currency: {moeda_fornecedor}. ")
+    else:
+        assert "Payment currency:" not in sheet["E13"].value
+
+
+def test_commercial_invoice_rodape_troca_fornecedor_sem_reaproveitar_dados(fornecedores_rodape_invoice):
+    lista = {"fornecedor_id": "fornecedor-a", "supplier": "Nome historico", "currency": "USD", "itens": []}
+    primeira = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert "Beneficiary account number: 000123456000" in primeira["E13"].value
+    lista["fornecedor_id"] = "fornecedor-b"
+    segunda = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert segunda["A1"].value == "Fornecedor B"
+    assert segunda["E13"].value in (None, "")
+    assert segunda["A13"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE, "Payment Currency: USD Payment Method: Bank transfer",
+    ]
+    assert segunda.row_dimensions[13].height == 101.25
+
+
+def test_commercial_invoice_rodape_omite_rotulos_vazios_e_preserva_pontuacao(fornecedores_rodape_invoice):
+    raiz, registro = fornecedores_rodape_invoice
+    registro = {"id": "fornecedor-a", "nome_empresa": registro["nome_empresa"],
+                "swift": " ", "codigo_banco": "001", "codigo_agencia": "",
+                "observacao_pagamento": "Referencia ja pontuada."}
+    (raiz / "tenant-a" / "cadastro_fornecedores.json").write_text(
+        json.dumps({"fornecedores": [registro]}), encoding="utf-8",
+    )
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"fornecedor_id": "fornecedor-a", "itens": []}, client_id="tenant-a",
+    ))
+    assert sheet["E13"].value == "Bank code: 001. Remark: Referencia ja pontuada."
+
+
+@pytest.mark.parametrize(("client_id", "nome", "conta", "moeda"), [
+    ("tenant-a", "Fornecedor Atual Co., Ltd.", "000123456000", "EUR"),
+    ("tenant-b", "Fornecedor do cliente B", "00009999", "GBP"),
+])
+def test_commercial_invoice_rodape_id_igual_isolado_por_cliente(
+    fornecedores_rodape_invoice, client_id, nome, conta, moeda,
+):
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"fornecedor_id": "fornecedor-a", "itens": []}, client_id=client_id,
+    ))
+    assert sheet["A1"].value.splitlines()[0] == nome
+    assert f"Beneficiary account number: {conta}." in sheet["E13"].value
+    assert sheet["A13"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE, f"Payment Currency: {moeda} Payment Method: Bank transfer",
+    ]
+    outra_conta = "00009999" if client_id == "tenant-a" else "000123456000"
+    assert outra_conta not in sheet["E13"].value
+
+
+@pytest.mark.parametrize(("client_id", "fornecedor_id"), [
+    ("tenant-a", None), ("tenant-a", ""), ("tenant-a", "removido"),
+    ("tenant-a", "FORNECEDOR-A"), ("tenant-sem-cadastro", "fornecedor-a"), (None, "fornecedor-a"),
+])
+def test_commercial_invoice_rodape_sem_vinculo_exato_nao_exporta_conta(
+    fornecedores_rodape_invoice, client_id, fornecedor_id,
+):
+    lista = {"fornecedor_id": fornecedor_id, "supplier": "Fornecedor Atual Co., Ltd.",
+             "conta_beneficiario": "conta-solta-na-lista", "currency": "USD",
+             "numero_invoice": "INV-SEM-VINCULO-001", "itens": []}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id=client_id))
+    assert sheet["A1"].value == lista["supplier"]
+    assert sheet["E13"].value in (None, "")
+    assert sheet["A13"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE, "Note - invoice INV-SEM-VINCULO-001",
+        "Payment Currency: USD Payment Method: Bank transfer",
+    ]
+
+
+def test_commercial_invoice_rodape_sem_id_nao_consulta_cadastro(monkeypatch):
+    monkeypatch.setattr(cadastro_fornecedores, "ler_fornecedor_por_id",
+                        lambda *_args, **_kwargs: pytest.fail("Sem vinculo nao deve ler cadastro"))
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+                        lambda *_args: {"store_id": "", "scope": "unresolved"})
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"supplier": "Fornecedor historico", "itens": []}, client_id="tenant-a",
+    ))
+    assert sheet["E13"].value in (None, "")
+
+
+def test_commercial_invoice_cabecalho_e_rodape_usam_uma_leitura_sem_mutacao(fornecedores_rodape_invoice, monkeypatch):
+    raiz, registro = fornecedores_rodape_invoice
+    registro_original = copy.deepcopy(registro)
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    bytes_originais = arquivo.read_bytes()
+    chamadas = []
+
+    def ler(client_id, fornecedor_id, *, pasta_tenant):
+        chamadas.append((client_id, fornecedor_id, pasta_tenant))
+        assert len(chamadas) == 1, "Cabeçalho e rodape precisam refletir a mesma leitura"
+        return registro
+
+    monkeypatch.setattr(cadastro_fornecedores, "ler_fornecedor_por_id", ler)
+    monkeypatch.setattr(cadastro_fornecedores, "_salvar_fornecedores",
+                        lambda *_args: pytest.fail("Exportar nao deve gravar fornecedor"))
+    lista = {"fornecedor_id": "fornecedor-a", "currency": "USD", "itens": []}
+    lista_original = copy.deepcopy(lista)
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert chamadas == [("tenant-a", "fornecedor-a", str(raiz / "tenant-a"))]
+    assert sheet["A1"].value.startswith(registro["nome_empresa"])
+    assert "Beneficiary account number: " + registro["conta_beneficiario"] in sheet["E13"].value
+    assert registro == registro_original
+    assert lista == lista_original
+    assert arquivo.read_bytes() == bytes_originais
+
+
+def test_commercial_invoice_rodape_preserva_zeros_texto_literal_e_multilinhas(fornecedores_rodape_invoice):
+    raiz, registro = fornecedores_rodape_invoice
+    registro.update(conta_beneficiario="000000123456789", codigo_banco="0001", codigo_agencia="000007",
+                    endereco_beneficiario="Room 301\nBuilding A,  2nd floor",
+                    observacao_pagamento='=HYPERLINK("https://example.invalid","unsafe")\nReferência: 001 /  002!')
+    (raiz / "tenant-a" / "cadastro_fornecedores.json").write_text(
+        json.dumps({"fornecedores": [registro]}), encoding="utf-8",
+    )
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"fornecedor_id": "fornecedor-a", "itens": []}, client_id="tenant-a",
+    ))
+    texto = sheet["E13"].value
+    for campo in ("conta_beneficiario", "codigo_banco", "codigo_agencia", "endereco_beneficiario", "observacao_pagamento"):
+        assert registro[campo] in texto
+    assert texto.endswith(registro["observacao_pagamento"])
+    assert sheet["E13"].data_type == "s"
+    assert _formulas(sheet) == []
+
+
+@pytest.mark.parametrize(("numero_oficial", "numero_legado", "esperado"), [
+    ("  INV-OFICIAL-0001  ", "INV-LEGADO-0002", "INV-OFICIAL-0001"),
+    ("", "  INV-LEGADO-0002  ", "INV-LEGADO-0002"),
+    (None, "INV-LEGADO-0003", "INV-LEGADO-0003"),
+    ("=1+1", "INV-LEGADO-0004", "=1+1"),
+    ("", "", ""),
+    (None, None, ""),
+])
+def test_commercial_invoice_numero_atual_no_cabecalho_e_ambos_rodapes(
+    fornecedores_rodape_invoice, numero_oficial, numero_legado, esperado,
+):
+    raiz, registro = fornecedores_rodape_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    bytes_originais = arquivo.read_bytes()
+    lista = {"fornecedor_id": "fornecedor-a", "numero_invoice": numero_oficial,
+             "invoice": numero_legado, "itens": []}
+    lista_original = copy.deepcopy(lista)
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+    assert sheet["C3"].value == (esperado or None)
+    assert registro["observacao_pagamento"] in sheet["E13"].value
+    if esperado:
+        assert f"Note - invoice {esperado}" in sheet["A13"].value.splitlines()
+        assert sheet["E13"].value.endswith(f"Please include the order invoice number {esperado}.")
+    else:
+        assert "Note - invoice" not in sheet["A13"].value
+        assert "Please include the order invoice number" not in sheet["E13"].value
+        assert sheet["E13"].value.endswith("Remark: Notify the supplier after payment.")
+    if numero_oficial:
+        assert numero_legado not in sheet["A13"].value
+        assert numero_legado not in sheet["E13"].value
+    assert _formulas(sheet) == []
+    assert lista == lista_original
+    assert arquivo.read_bytes() == bytes_originais
+
+
+def test_commercial_invoice_rodape_numero_sem_observacao_cadastrada(fornecedores_rodape_invoice):
+    raiz, _registro = fornecedores_rodape_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    bytes_originais = arquivo.read_bytes()
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
+        {"fornecedor_id": "fornecedor-b", "numero_invoice": "INV-SEM-OBS-0001", "itens": []}, client_id="tenant-a",
+    ))
+    assert sheet["A1"].value == "Fornecedor B"
+    assert "Note - invoice INV-SEM-OBS-0001" in sheet["A13"].value.splitlines()
+    assert sheet["E13"].value == "Remark: Please include the order invoice number INV-SEM-OBS-0001."
+    assert arquivo.read_bytes() == bytes_originais
+
+
+def test_commercial_invoice_duas_listas_usam_seu_numero_em_ambos_rodapes(fornecedores_rodape_invoice):
+    numeros = ("INV-SINTETICA-A-001", "INV-SINTETICA-B-002")
+    for indice, numero in enumerate(numeros):
+        lista = {**_lista_aprovada(), "id": f"lista-{indice}", "fornecedor_id": "fornecedor-a",
+                 "numero_invoice": numero}
+        sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+        assert sheet["C3"].value == numero
+        assert f"Note - invoice {numero}" in sheet["A15"].value.splitlines()
+        assert sheet["E15"].value.endswith(f"Please include the order invoice number {numero}.")
+        for numero_incorreto in (numeros[1 - indice], "JK55-18082026", "JK48-18082026"):
+            assert numero_incorreto not in sheet["A15"].value
+            assert numero_incorreto not in sheet["E15"].value
+
+
+@pytest.mark.parametrize("multilinhas", [False, True])
+def test_commercial_invoice_rodape_extenso_expande_linhas_sem_perder_dados_ou_totais(
+    fornecedores_rodape_invoice, multilinhas,
+):
+    raiz, registro = fornecedores_rodape_invoice
+    limites = {"moeda_pagamento": 12, "conta_beneficiario": 120, "swift": 32,
+               "pais_regiao_beneficiario": 120, "nome_beneficiario": 240, "endereco_beneficiario": 1200,
+               "banco_beneficiario": 240, "endereco_banco": 1200, "codigo_banco": 40,
+               "codigo_agencia": 40, "observacao_pagamento": 1600}
+    for campo, limite in limites.items():
+        registro[campo] = ("Linha longa de exemplo\n" * limite)[:limite] if multilinhas else "W" * limite
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    arquivo.write_text(json.dumps({"fornecedores": [registro]}), encoding="utf-8")
+    bytes_originais = arquivo.read_bytes()
+    lista = {**_lista_aprovada(), "fornecedor_id": "fornecedor-a"}
+    sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
+
+    assert sheet.max_row > 15
+    texto = sheet["E15"].value
+    for campo in limites:
+        assert registro[campo].strip() in texto
+    alturas = [sheet.row_dimensions[linha].height for linha in range(15, sheet.max_row + 1)]
+    assert sum(alturas) > 409.5
+    assert all(0 < altura <= 409.5 for altura in alturas)
+    assert {f"A15:D{sheet.max_row}", f"E15:H{sheet.max_row}", f"I15:I{sheet.max_row}"} <= {
+        str(intervalo) for intervalo in sheet.merged_cells.ranges
+    }
+    assert sheet["I15"].value == "Company stamp and signature"
+    assert f"$A$1:$I${sheet.max_row}" in str(sheet.print_area)
+    assert sheet["B9"].value == "SKU 001"
+    assert sheet["B10"].value == "SKU 002"
+    assert sheet["C11"].value == "TOTAL NET WEIGHT"
+    assert sheet["G11"].value == 5
+    assert sheet["I11"].value == sheet["I14"].value == 19
+    assert sheet["H14"].value == "TOTAL:"
+    assert _formulas(sheet) == []
+    assert arquivo.read_bytes() == bytes_originais
+
+
+@pytest.mark.parametrize("conteudo", ["{", '{"fornecedores":{}}'])
+def test_commercial_invoice_rodape_cadastro_invalido_propaga_erro(fornecedores_rodape_invoice, conteudo):
+    raiz, _registro = fornecedores_rodape_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    arquivo.write_text(conteudo, encoding="utf-8")
+    with pytest.raises(HTTPException) as erro:
+        excel_service._gerar_commercial_invoice_bytes(
+            {"fornecedor_id": "fornecedor-a", "supplier": "Nome historico", "itens": []}, client_id="tenant-a",
+        )
+    assert erro.value.status_code == 500
+    assert arquivo.read_text(encoding="utf-8") == conteudo
+
+
+def test_commercial_invoice_rodape_cadastro_ilegivel_propaga_erro(fornecedores_rodape_invoice, monkeypatch):
+    import builtins
+
+    raiz, _registro = fornecedores_rodape_invoice
+    arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
+    abrir_original = builtins.open
+
+    def abrir(caminho, *args, **kwargs):
+        if str(caminho) == str(arquivo):
+            raise PermissionError("arquivo indisponivel")
+        return abrir_original(caminho, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", abrir)
+    with pytest.raises(HTTPException) as erro:
+        excel_service._gerar_commercial_invoice_bytes(
+            {"fornecedor_id": "fornecedor-a", "supplier": "Nome historico", "itens": []}, client_id="tenant-a",
+        )
+    assert erro.value.status_code == 500
 
 
 @pytest.fixture
@@ -687,7 +1062,9 @@ def test_gerador_inclui_pendentes_e_mantem_numericos_ausentes_em_branco():
 
     for endereco in ("A1", "C3", "E3", "H3", "A4", "F4"):
         assert sheet[endereco].value in (None, "")
-    assert sheet["A15"].value in (None, "")
+    assert sheet["A15"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE, "Payment Method: Bank transfer",
+    ]
     assert sheet["E15"].value in (None, "")
     assert sheet["B9"].value == "SKU 001"
     assert sheet["D9"].value == "+nao executar"
@@ -713,6 +1090,9 @@ def test_gerador_commercial_invoice_aceita_lista_vazia():
     assert sheet["H12"].value == "TOTAL:"
     assert sheet["I12"].value == 0
     assert sheet["I13"].value == "Company stamp and signature"
+    assert sheet["A13"].value.splitlines() == [
+        *CONDICOES_COMERCIAIS_INVOICE, "Payment Method: Bank transfer",
+    ]
     assert _formulas(sheet) == []
 
 
@@ -867,6 +1247,10 @@ def test_numero_invoice_passa_a_ser_persistido_no_backend(invoice_edit_state, nu
     assert resultado["lista"]["itens"] == antes["tenant-a"][0]["itens"]
     sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(salva))
     assert sheet["C3"].value == (esperado or None), "Commercial Invoice usa o numero persistido sem alias antigo"
+    if esperado:
+        assert f"Note - invoice {esperado}" in sheet["A15"].value.splitlines()
+    else:
+        assert "Note - invoice" not in sheet["A15"].value
 
 
 @pytest.mark.parametrize("payload", [{"nome_lista": "Pedido renomeado"}, {"currency": "BRL"}])
