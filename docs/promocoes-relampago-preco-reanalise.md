@@ -1,6 +1,6 @@
 # Participação em ofertas relâmpago com reanálise
 
-A participação LIGHTNING usa o convite oficial selecionado e o contexto financeiro da análise concluída. Quando o Mercado Livre informa outro preço para esse convite, o servidor recalcula a proposta antes de decidir o envio.
+A participação LIGHTNING usa o convite oficial selecionado e o contexto financeiro da análise concluída. O campo `price` de um candidato é uma sugestão; o vendedor define `deal_price` dentro dos limites oficiais. O servidor valida a proposta e recalcula a margem antes de decidir o envio.
 
 ## Política de preço e compatibilidade
 
@@ -13,6 +13,10 @@ Clientes antigos continuam com `exact`: o preço selecionado precisa coincidir c
 
 Ambas as políticas conferem o preço-base standard do marketplace e os limites do convite. Os valores são comparados em centavos; o preço precisa ser positivo, respeitar os limites disponíveis e ser inferior ao preço-base. O preço de venda atual de `/sale_price` é mantido como informação separada. Uma promoção vigente pode alterar esse valor.
 
+Na política `refresh_and_reanalyse`, um candidato explícito com sugestão positiva e limites mínimo e máximo válidos permite ajustar a proposta ao valor mais próximo da sugestão dentro da interseção entre os limites oficiais e o preço-base menos um centavo. Se a sugestão já for válida, ela é preservada. Sem ambos os limites, com limites conflitantes ou sem intervalo viável, não há ajuste automático. O valor original do convite permanece intacto, e `invitation_price` registra essa sugestão no diagnóstico; `official_price` registra a proposta validada. O ajuste depende da recotação financeira e da aprovação da margem e tolerância.
+
+A validação imediatamente anterior ao envio recalcula a mesma proposta com o mesmo convite e os preços oficiais confirmados no servidor. A presença de dados no navegador não autoriza um preço diferente. O modo `exact` mantém a exigência de igualdade com a sugestão selecionada.
+
 ## Contexto financeiro no servidor
 
 Os jobs do worker e do processamento em segundo plano guardam um contexto privado com cliente, loja, vendedor, site, campanhas, referências das linhas e entradas financeiras. A captura interna usa `ContextVar`, preservando as assinaturas HTTP de análise. São armazenados somente campos operacionais selecionados.
@@ -23,9 +27,9 @@ Os custos e margens recebidos do navegador não aprovam a operação. Contexto a
 
 ## Tentativas e confirmação
 
-Um convite incoerente é renovado uma vez. Persistindo a incoerência, a operação termina com diagnóstico antes do envio.
+Um convite sem proposta válida é renovado uma vez. Persistindo a ausência de uma proposta dentro do intervalo permitido, a operação termina com diagnóstico antes do envio.
 
-Após `ERROR_CREDIBILITY_DISCOUNTED_PRICE`, o convite pode ser renovado uma vez. Uma segunda inscrição depende de outro preço oficial do mesmo convite, coerente e aprovado pela margem recalculada. Há no máximo dois envios por convite na operação. Valores sugeridos, mínimos, percentuais calculados arbitrariamente e propostas de outras campanhas não servem como recuperação.
+Após `ERROR_CREDIBILITY_DISCOUNTED_PRICE`, o convite pode ser renovado uma vez. Uma segunda inscrição depende de dados oficiais atualizados do mesmo convite que produzam outra proposta válida e aprovada pela margem recalculada. Há no máximo dois envios por convite na operação. O mesmo preço recusado não é reenviado; não há redução progressiva, tentativa de percentuais arbitrários nem uso de propostas de outras campanhas.
 
 Timeout, resposta de servidor ou resultado sem confirmação levam à consulta da participação. A confirmação depende de identidade, preço e status compatíveis. Convites identificados podem continuar com agenda pendente, conforme o fluxo existente.
 
@@ -43,4 +47,4 @@ Alterar loja, campanhas, mínimo ou tolerância invalida o contexto para ajuste 
 
 As regressões usam respostas simuladas e bloqueiam a rede. Cobrem os preços fornecidos na investigação, limites, recusa mantida, novo preço aprovado ou reprovado, recotação financeira, variações, isolamento do contexto, duplicidade, timeout, resposta 201 inconclusiva e confirmação manual/automática. As verificações da interface incluem atualização pontual, escape de mensagens, múltiplas datas e preservação de seleções.
 
-Referência: [API oficial de preços](https://developers.mercadolivre.com.br/devcenter/api-de-precos).
+Referências: [ofertas relâmpago](https://developers.mercadolivre.com.br/pt_br/ofertas-relampago) e [API oficial de preços](https://developers.mercadolivre.com.br/devcenter/api-de-precos).

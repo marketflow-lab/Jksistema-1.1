@@ -1374,8 +1374,26 @@ def _promo_obter_contexto_financeiro_acao(
     except Exception:
         fee_acao = {}
 
+    raw_calculo = raw_acao
+    if promotion_type.upper() == "LIGHTNING" and status == "candidate":
+        from .promocoes_lightning_reanalise import money_cents
+        sugestao = raw_acao.get("price") if "price" in raw_acao else raw_acao.get("deal_price")
+        if money_cents(sugestao) != money_cents(preco):
+            # The identity above is confirmed, but every monetary benefit in
+            # this invitation belongs to a different price, even by one cent.
+            # Quote only with the current listing fee/shipping; keep the source
+            # invitation intact for selection, diagnostics and reconciliation.
+            raw_calculo = {
+                "promotion_id": campaign_id, "promotion_type": promotion_type,
+                "item_id": item_raw, "status": status, "offer_id": offer_id,
+                "_jk_campaign_id_consultado": campaign_id,
+                "_jk_promotion_type_consultado": promotion_type,
+                "_jk_item_id_consultado": item_raw,
+                "_jk_contexto_promocao_confirmado": contexto_confirmado,
+            }
+
     financeiro = _promo_calcular_contexto_financeiro_acao(
-        raw_acao,
+        raw_calculo,
         preco_base,
         preco,
         percentual_acao,

@@ -1,4 +1,4 @@
-"""Scoped LIGHTNING refresh and financial reanalysis; no guessed price retries."""
+"""Scoped LIGHTNING proposal selection, refresh and financial reanalysis."""
 from __future__ import annotations
 
 import copy
@@ -130,14 +130,30 @@ def _bounds(raw):
     return result
 
 
-def _price_reason(raw, prices):
+def _price_reason(raw, prices, *, adjust_candidate=False):
     price = price_number(raw.get("price") if "price" in raw else raw.get("deal_price"))
     try:
         minimum, maximum = _bounds(raw)
     except ValueError as exc:
         return str(exc), None, None, price
-    standard = prices["standard_price"]
-    if price is None or standard is None or money_cents(price) >= money_cents(standard):
+    standard_cents = money_cents(prices["standard_price"])
+    if (
+        adjust_candidate
+        and str(raw.get("status") or raw.get("state") or "").strip().lower() == "candidate"
+        and price is not None
+        and standard_cents is not None
+        and minimum is not None
+        and maximum is not None
+    ):
+        # LIGHTNING candidate.price is a suggestion. Choose the nearest price
+        # in the official interval with a strictly positive marketplace discount.
+        # Keep raw intact: receipts/benefits quoted for its suggestion cannot be
+        # reused when financial reanalysis quotes a different proposal.
+        lower = money_cents(minimum)
+        upper = min(money_cents(maximum), standard_cents - 1)
+        if lower <= upper:
+            price = min(max(money_cents(price), lower), upper) / 100
+    if price is None or standard_cents is None or money_cents(price) >= standard_cents:
         return "Preco do convite deve ser menor que o standard marketplace atual.", minimum, maximum, price
     if (minimum is not None and money_cents(price) < money_cents(minimum)) or (maximum is not None and money_cents(price) > money_cents(maximum)):
         return "Preco do convite fora dos limites oficiais desta oferta.", minimum, maximum, price
@@ -271,17 +287,19 @@ def _reconcile(service, client_id, loja, cfg, campaign, item, raw, price):
 
 
 def validate_exact_lightning(service, client_id, loja, cfg, campaign, item_id, raw, selected_price, stock, diagnostics, prices=None):
-    """Legacy exact callers receive the same official coherence guard."""
+    """Validate the legacy exact price or the server-reanalysed candidate proposal."""
     from .promocoes_lightning_acao import lightning_row_fields
     current = raw
     for refresh in range(2):
         try:
             official, cfg = _official_prices(service, client_id, loja, cfg, item_id) if prices is None else (prices, cfg)
-            reason, minimum, maximum, price = _price_reason(current, official)
+            reason, minimum, maximum, price = _price_reason(
+                current, official, adjust_candidate=prices is not None)
         except Exception:
             diagnostics["decision_code"] = "OFFICIAL_PRICE_UNCONFIRMED"
             return None, "Preco standard oficial nao confirmado. Execute uma nova analise.", cfg
-        diagnostics.update(official, official_price=price, min_price=minimum, max_price=maximum)
+        diagnostics.update(official, official_price=price, min_price=minimum, max_price=maximum,
+            invitation_price=price_number(current.get("price") if "price" in current else current.get("deal_price")))
         if not reason:
             if money_cents(price) != money_cents(selected_price):
                 diagnostics["decision_code"] = "OFFICIAL_PRICE_CHANGED_REANALYSIS_REQUIRED"
@@ -327,11 +345,12 @@ def apply_reanalysed_lightning(service, analysis, client_id, loja, cfg, *, campa
         raw = confirmed.get("_lightning_raw_confirmed") or {}
         try:
             prices, cfg = _official_prices(service, client_id, loja, cfg, item_id, (row_context.get("item") or {}).get("currency_id"))
-            reason, minimum, maximum, price = _price_reason(raw, prices)
+            reason, minimum, maximum, price = _price_reason(raw, prices, adjust_candidate=True)
         except Exception:
             diagnostic["decision_code"] = "OFFICIAL_PRICE_UNCONFIRMED"
             return False, "Nao foi possivel confirmar os precos oficiais atuais deste anuncio.", cfg
-        diagnostic.update(prices, min_price=minimum, max_price=maximum, official_price=price)
+        diagnostic.update(prices, min_price=minimum, max_price=maximum, official_price=price,
+            invitation_price=price_number(raw.get("price") if "price" in raw else raw.get("deal_price")))
         if reason:
             if not coherent_refresh_used and diagnostic["attempt_count"] == 0:
                 coherent_refresh_used = True

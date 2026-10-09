@@ -428,8 +428,10 @@ def _promo_aplicar_item_participacao_ml(
         current_price = _promo_lightning_price(context)
         if current_price is None or not math.isfinite(current_price) or current_price <= 0:
             return False, "Preco atual desta oferta nao confirmado. Execute uma nova analise.", cfg
-        if money_cents(current_price) != money_cents(deal_price_num):
+        if money_cents(current_price) != money_cents(deal_price_num) and official_price_context is None:
             return False, "O preco desta oferta mudou desde a analise. Execute uma nova analise antes de participar.", cfg
+        # A server-reanalysed proposal is checked against this candidate's
+        # official interval below; legacy exact callers keep suggestion equality.
         diagnostics = {"initial_price": money_cents(deal_price_num) / 100, "official_price": None,
             "sent_price": None, "standard_price": None, "sale_price": None, "min_price": None,
             "max_price": None, "recalculated_margin": None, "attempt_count": 0,
