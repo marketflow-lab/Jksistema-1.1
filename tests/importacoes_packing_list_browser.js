@@ -29,6 +29,48 @@ async function until(predicate) {
   while (!predicate()) { assert(Date.now() < deadline, 'A operação sintética excedeu o tempo esperado'); await new Promise(resolve => setTimeout(resolve, 20)); }
 }
 
+async function assertPackingAppearance(page, id, expectedState) {
+  const appearance = await button(page, id).evaluate(element => {
+    const style = getComputedStyle(element);
+    const parseColors = value => [...value.matchAll(/rgba?\(([^)]+)\)/g)]
+      .map(match => match[1].split(',').map(Number));
+    return {
+      background: parseColors(style.backgroundImage === 'none' ? style.backgroundColor : style.backgroundImage),
+      border: parseColors(style.borderTopColor)[0],
+      borderWidth: parseFloat(style.borderTopWidth),
+      title: element.title,
+    };
+  });
+  const isExpectedColor = ([red, green, blue, alpha = 1]) => alpha > 0 && (expectedState === 'ready'
+    ? green > red && green > blue
+    : blue > red && blue > green);
+  const description = id + ': ' + (expectedState === 'ready' ? 'documento confirmado deve aparecer verde' : 'sem confirmação deve aparecer azul');
+  assert(appearance.background.length > 0 && appearance.background.every(isExpectedColor),
+    description + ' no fundo: ' + JSON.stringify(appearance.background));
+  assert(appearance.borderWidth > 0 && appearance.border && isExpectedColor(appearance.border),
+    description + ' na borda: ' + JSON.stringify(appearance.border));
+  const expectedTitle = { ready: 'Baixar Packing List', missing: 'Incluir Packing List', unknown: 'Abrir Packing List' };
+  assert.strictEqual(appearance.title, expectedTitle[expectedState], id + ': ação deve acompanhar a confirmação do documento');
+}
+
+async function assertDocumentButtonsFit(page) {
+  for (const selector of ['[data-commercial-invoice]', '[data-packing-list]']) {
+    const buttons = page.locator(selector);
+    assert(await buttons.count() > 0, 'A lista deve manter os dois tipos de documento');
+    for (const element of await buttons.all()) {
+      assert(await element.isVisible(), 'Botão de documento deve permanecer visível');
+      const dimensions = await element.evaluate(button => {
+        const bounds = button.getBoundingClientRect();
+        return { x: bounds.x, right: bounds.right, height: bounds.height,
+          contentFits: button.scrollWidth <= button.clientWidth + 1, viewport: window.innerWidth };
+      });
+      assert(dimensions.height >= 32, 'Botão de documento deve oferecer área de clique destacada');
+      assert(dimensions.x >= 0 && dimensions.right <= dimensions.viewport + 1 && dimensions.contentFits,
+        'Texto e botão de documento devem caber na tela: ' + JSON.stringify(dimensions));
+    }
+  }
+}
+
 async function routes(page) {
   await page.route('**/*', async route => {
     const request = route.request();
@@ -109,6 +151,7 @@ async function download(page, id) {
   const result = await event;
   assert.strictEqual(result.suggestedFilename(), 'packing_list_synthetic.xlsx');
   await page.waitForFunction(id => !document.querySelector('[data-packing-lista-id="' + id + '"]').disabled, id);
+  await assertPackingAppearance(page, id, 'ready');
 }
 
 (async () => {
@@ -125,6 +168,13 @@ async function download(page, id) {
     await page.goto('http://jk.test/importacoes.html');
     await button(page, 'empty').waitFor();
     const originalURL = page.url();
+    for (const id of ['ready', 'fallback', 'legacy', 'error']) await assertPackingAppearance(page, id, 'ready');
+    for (const id of ['empty', 'upload-error', 'cancel']) await assertPackingAppearance(page, id, 'missing');
+    await assertDocumentButtonsFit(page);
+    if (previewDirectory) {
+      fs.mkdirSync(previewDirectory, { recursive: true });
+      await page.screenshot({ path: path.join(previewDirectory, 'documentos-lista-desktop.png'), fullPage: true });
+    }
 
     // Empty state, accessible modal, explicit chooser, cancellation and keyboard activation.
     await button(page, 'empty').click();
@@ -155,6 +205,7 @@ async function download(page, id) {
     uploadGate.resolve(); state.uploadGate = null;
     await modal(page).waitFor({ state: 'detached' });
     assert.strictEqual(downloadEvents, 0);
+    await assertPackingAppearance(page, 'empty', 'ready');
     await download(page, 'empty');
     assert.strictEqual(state.downloads.at(-1).id, 'empty');
     assert.strictEqual(state.uploads.length, 1);
@@ -163,11 +214,13 @@ async function download(page, id) {
     // Stale ready flag/404 enters the same modal; real errors preserve download button.
     await button(page, 'fallback').click();
     await modal(page).waitFor({ state: 'visible' });
+    await assertPackingAppearance(page, 'fallback', 'missing');
     await modal(page).locator('[data-packing-list-cancelar]').click();
     await button(page, 'error').click();
     await until(() => state.alerts.includes('Erro sintético real no documento'));
     assert.strictEqual(await modal(page).count(), 0);
     assert.strictEqual(await button(page, 'error').isDisabled(), false);
+    await assertPackingAppearance(page, 'error', 'ready');
     console.log('Packing List: 404 abre inclusão; erro real permanece erro: OK');
 
     // Upload error remains reviewable and permits retry.
@@ -176,10 +229,12 @@ async function download(page, id) {
     await modal(page).locator('[data-packing-list-enviar]').click();
     await page.waitForFunction(() => document.querySelector('[data-packing-list-status]')?.textContent.includes('Planilha sintética inválida'));
     assert.strictEqual(await modal(page).locator('[data-packing-list-enviar]').isDisabled(), false);
+    await assertPackingAppearance(page, 'upload-error', 'missing');
     const eventsBeforeRetry = downloadEvents;
     await modal(page).locator('[data-packing-list-enviar]').click();
     await modal(page).waitFor({ state: 'detached' });
     assert.strictEqual(downloadEvents, eventsBeforeRetry);
+    await assertPackingAppearance(page, 'upload-error', 'ready');
     console.log('Packing List: falha de upload e retry sem download automático: OK');
 
     // A cancelled request may finish server-side; the next click checks its current state.
@@ -190,8 +245,10 @@ async function download(page, id) {
     await until(() => state.uploads.length === uploadsBeforeCancel + 1);
     await modal(page).locator('[data-packing-list-cancelar]').click();
     await modal(page).waitFor({ state: 'detached' });
+    await assertPackingAppearance(page, 'cancel', 'unknown');
     cancelGate.resolve(); state.uploadGate = null;
     await until(() => packingReady.cancel);
+    await assertPackingAppearance(page, 'cancel', 'unknown');
     await download(page, 'cancel');
     console.log('Packing List: cancelamento ativo e consulta posterior ao servidor: OK');
 
@@ -237,10 +294,15 @@ async function download(page, id) {
     failGate.resolve(); state.putGate = null;
     await until(() => state.alerts.some(message => message.includes('Salve o número da Invoice antes de gerar o Packing List')));
     assert.strictEqual(state.downloads.length, countBeforeFailure);
+    await assertPackingAppearance(page, 'ready', 'ready');
     await editor.press('Escape');
     console.log('Packing List: duplo clique e falha de salvamento protegidos: OK');
 
     await page.setViewportSize({ width: 390, height: 844 });
+    await assertPackingAppearance(page, 'empty', 'ready');
+    await assertPackingAppearance(page, 'fallback', 'missing');
+    await assertDocumentButtonsFit(page);
+    if (previewDirectory) await page.screenshot({ path: path.join(previewDirectory, 'documentos-lista-mobile.png'), fullPage: true });
     await button(page, 'fallback').click(); await modal(page).waitFor({ state: 'visible' });
     const bounds = await modal(page).boundingBox();
     assert(bounds.x >= 0 && bounds.x + bounds.width <= 390, 'Modal deve caber na tela móvel');

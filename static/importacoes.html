@@ -1842,8 +1842,10 @@
         #listaWrap .lista-valor-brl { margin-top: 8px; }
         #listaWrap .meta-brl strong { color: #8fabc8; font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
         #listaWrap .documentos-lista-cards { grid-template-columns: minmax(0, 1fr); gap: 7px; width: 100%; }
-        #listaWrap .documento-lista-card--commercial { min-height: 32px; padding: 7px 8px; border-color: #355879; background: #1d3a57; color: #c9e5ff; font-size: 10px; font-weight: 500; box-shadow: none; }
-        #listaWrap .documento-lista-card--packing { min-height: 16px; padding: 2px; border: 0; background: transparent; color: #788fa8; font-size: 10px; font-weight: 400; box-shadow: none; }
+        #listaWrap .documento-lista-card { box-sizing: border-box; min-height: 36px; padding: 9px 8px; border: 1px solid; border-radius: 8px; font-size: 11px; font-weight: 700; line-height: 1.2; box-shadow: 0 3px 8px #0003, inset 0 1px 0 #ffffff24; }
+        #listaWrap .documento-lista-card--commercial { border-color: #f5cb84; background: linear-gradient(180deg, #f3c26f, #e9aa46); color: #34250e; }
+        #listaWrap .documento-lista-card--packing { border-color: #5790bc; background: linear-gradient(180deg, #214867, #1c3b58); color: #d9efff; }
+        #listaWrap .documento-lista-card--packing.documento-lista-card--anexado { border-color: #45cb7b; background: linear-gradient(180deg, #17854c, #126d3d); color: #edfff3; }
         #listaWrap .lista-card-excluir { display: none; }
         #listaWrap .lista-card-atualizacao { margin-top: 7px; margin-left: 0; font-size: 9px; color: #7894b2; white-space: normal; }
         #listaWrap .status { margin-top: 8px; padding: 0; background: transparent; border: 0; color: #a99576; box-shadow: none; font-size: 9px; font-weight: 400; }
@@ -1869,7 +1871,7 @@
             #listaWrap .meta-cadastro-lista strong { font-size: 11px; }
             #listaWrap .meta-usd strong { font-size: 13px; }
             #listaWrap .lista-quantidade-valor { font-size: 16px; }
-            #listaWrap .documento-lista-card--commercial { font-size: 9px; }
+            #listaWrap .documento-lista-card { font-size: 11px; }
             .busca-listas { flex-basis: 250px; }
             .listas-principal-ajuda { font-size: 10px; }
         }
@@ -2682,6 +2684,7 @@
             });
             document.querySelectorAll('[data-packing-list]').forEach(botao => {
                 if (botao.dataset.packingListaId === listaId) {
+                    botao.classList.toggle('documento-lista-card--anexado', pronto === true);
                     botao.title = pronto === true ? 'Baixar Packing List' : pronto === false ? 'Incluir Packing List' : 'Abrir Packing List';
                 }
             });
@@ -3414,6 +3417,7 @@
                 const btnPackingList = el.querySelector('[data-packing-list]');
                 if (btnPackingList) {
                     btnPackingList.dataset.packingListaId = listaId;
+                    btnPackingList.classList.toggle('documento-lista-card--anexado', l.packing_list_ready === true);
                     btnPackingList.title = l.packing_list_ready === true ? 'Baixar Packing List' : 'Incluir Packing List';
                     btnPackingList.addEventListener('click', evento => {
                         evento.preventDefault();
