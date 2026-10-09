@@ -34,7 +34,7 @@ body.promo-compact-page {
 }
 body.promo-compact-page .container {
     width: 100%;
-    max-width: 1660px;
+    max-width: none;
     margin: 0 auto;
     padding: 18px 24px;
     border: 0;
@@ -92,7 +92,7 @@ body.promo-compact-page #painelApi.upload-section {
     text-align: left;
 }
 body.promo-compact-page #painelApi .api-grid {
-    grid-template-columns: minmax(130px, .85fr) minmax(200px, 1.55fr) minmax(130px, .7fr) minmax(210px, 1.65fr);
+    grid-template-columns: minmax(160px, .8fr) minmax(280px, 2fr) minmax(150px, .65fr);
     align-items: end;
     gap: 12px;
     margin: 0 0 8px;
@@ -114,65 +114,45 @@ body.promo-compact-page #painelApi .api-field input {
     background: var(--promo-control);
     color: var(--promo-text);
 }
-body.promo-compact-page details.promo-campaign-picker {
-    position: relative;
+body.promo-compact-page .promo-campaign-picker {
     min-width: 0;
     text-align: left;
+    margin: 0 0 18px;
 }
-body.promo-compact-page .promo-campaign-picker summary {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 35px;
-    padding: 7px 10px;
-    border: 1px solid var(--promo-line);
-    border-radius: 6px;
-    background: var(--promo-control-active);
-    color: var(--promo-text);
-    font-size: 12px;
-    line-height: 1.4;
-    cursor: pointer;
-    list-style: none;
-}
-body.promo-compact-page .promo-campaign-picker summary::-webkit-details-marker { display: none; }
-body.promo-compact-page .promo-campaign-picker summary::after {
-    content: '\203A';
-    margin-left: auto;
-    font-size: 19px;
-    line-height: 1;
-    transform: rotate(90deg);
-}
-body.promo-compact-page .promo-campaign-picker[open] summary::after { transform: rotate(-90deg); }
-body.promo-compact-page #promoCampaignSelectionLabel {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+body.promo-compact-page .promo-campaign-heading {
+    margin: 0 0 9px;
+    font-size: 14px;
+    font-weight: 650;
 }
 body.promo-compact-page .promo-campaign-picker #apiPromoBSelect {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 150;
-    width: min(880px, calc(100vw - 76px));
-    max-height: min(430px, 58vh);
+    position: static;
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    padding: 0 12px 12px;
     box-sizing: border-box;
     border-color: var(--promo-line);
     background: var(--promo-panel);
-    box-shadow: 0 12px 34px #080b135c;
+    box-shadow: none;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-toolbar {
-    padding: 9px 10px;
+    position: static;
+    margin: 0 -12px;
+    padding: 10px 12px;
+    border-radius: 6px 6px 0 0;
     background: var(--promo-head);
     border-color: var(--promo-line);
     box-shadow: none;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-selection-summary { font-size: 12px; }
 body.promo-compact-page .promo-campaign-picker .api-promo-card-grid {
-    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+    gap: 9px;
 }
 body.promo-compact-page .promo-campaign-picker .api-promo-card {
-    min-height: 72px;
+    min-height: 92px;
+    padding: 11px;
+    box-sizing: border-box;
     background: var(--promo-control);
     border-color: var(--promo-line);
 }
@@ -180,8 +160,10 @@ body.promo-compact-page .promo-campaign-picker .api-promo-card.is-selected {
     background: #21443f;
     border-color: #7ab89f;
 }
-body.promo-compact-page .promo-campaign-picker .api-promo-card-meta { font-size: 11px; }
-body.promo-compact-page .promo-campaign-picker .api-promo-card-counts { font-size: 11px; }
+body.promo-compact-page .promo-campaign-picker .api-promo-card--lightning { min-height: 138px; }
+body.promo-compact-page .promo-campaign-picker .api-promo-card-title { font-size: 13px; line-height: 1.35; }
+body.promo-compact-page .promo-campaign-picker .api-promo-card-meta { font-size: 10px; }
+body.promo-compact-page .promo-campaign-picker .api-promo-card-counts { font-size: 10px; padding: 2px 6px; margin-top: auto; }
 body.promo-compact-page #painelApi .api-file-action-row {
     display: flex;
     gap: 8px;
@@ -712,7 +694,7 @@ body.promo-compact-page button.promo-details-close {
 }
 body.promo-compact-page .promo-view-toolbar :focus-visible,
 body.promo-compact-page .promo-decision :focus-visible,
-body.promo-compact-page .promo-campaign-picker summary:focus-visible,
+body.promo-compact-page .promo-campaign-picker :focus-visible,
 body.promo-compact-page #promoDetailsDialog :focus-visible {
     outline: 2px solid var(--promo-accent);
     outline-offset: 2px;
@@ -744,10 +726,10 @@ body.promo-compact-page #promoDetailsDialog :focus-visible {
     body.promo-compact-page #painelApi .api-auto-row { flex-direction: row; align-items: center; }
     body.promo-compact-page #painelApi .api-file-action-row { flex-direction: row; align-items: center; }
     body.promo-compact-page #painelApi .api-file-action-row .btn { width: auto; }
-    body.promo-compact-page .promo-campaign-picker #apiPromoBSelect { width: min(650px, calc(100vw - 64px)); }
 }
 @media (max-width: 800px) {
     body.promo-compact-page .container { padding: 14px 12px; }
+    body.promo-compact-page .promo-campaign-picker .api-promo-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     body.promo-compact-page .promo-page-header { align-items: flex-start; gap: 10px; flex-wrap: wrap; }
     body.promo-compact-page .promo-page-header h1 { font-size: 23px; }
     body.promo-compact-page .promo-results-heading .metrics { flex-basis: 100%; }
@@ -789,10 +771,6 @@ body.promo-compact-page #promoDetailsDialog :focus-visible {
 @media (max-width: 480px) {
     body.promo-compact-page #painelApi.upload-section { padding: 10px; }
     body.promo-compact-page #painelApi .api-grid { grid-template-columns: minmax(0, 1fr); gap: 9px; }
-    body.promo-compact-page .promo-campaign-picker #apiPromoBSelect {
-        width: 100%;
-        max-height: 55vh;
-    }
     body.promo-compact-page .promo-campaign-picker .api-promo-card-grid { grid-template-columns: minmax(0, 1fr); }
     body.promo-compact-page .promo-results-heading .metric-card { flex-direction: column; gap: 0; padding-right: 9px; padding-left: 9px; }
     body.promo-compact-page .promo-view-toolbar { gap: 7px; }
@@ -917,10 +895,7 @@ body.promo-compact-page .promo-details-heading .promo-details-close { flex: 0 0 
 /* Keep the setup fields and action in two compact desktop rows. */
 body.promo-compact-page #painelApi input,
 body.promo-compact-page #painelApi select,
-body.promo-compact-page .promo-campaign-picker summary,
 body.promo-compact-page .promo-page-header .back-main-btn { box-sizing: border-box; }
-body.promo-compact-page .promo-campaign-picker summary { height: 35px; min-height: 35px; }
-body.promo-compact-page #painelApi .api-field--promos { grid-column: auto; }
 body.promo-compact-page .promo-value-number { font-size: 16px; }
 @media (min-width: 1100px) {
     body.promo-compact-page #painelApi.upload-section {
@@ -932,7 +907,7 @@ body.promo-compact-page .promo-value-number { font-size: 16px; }
     }
     body.promo-compact-page #painelApi .api-grid {
         grid-area: fields;
-        grid-template-columns: minmax(130px, .85fr) minmax(200px, 1.55fr) minmax(130px, .7fr) minmax(210px, 1.65fr);
+        grid-template-columns: minmax(160px, .8fr) minmax(280px, 2fr) minmax(150px, .65fr);
         margin: 0;
     }
     body.promo-compact-page #painelApi .api-auto-row {

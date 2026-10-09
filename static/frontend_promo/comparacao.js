@@ -354,13 +354,6 @@ function atualizarCabecalhoComparacaoPromocoes() {
         p1.title = label;
     }
     if (p2) p2.textContent = campaign ? getPromoCampaignDisplayName(campaign) : active?.promo_b_nome || 'Campanha selecionada';
-    const selection = document.getElementById('promoCampaignSelectionLabel');
-    if (selection) {
-        const selected = getApiPromoBSelections();
-        selection.textContent = selected.length === 1 ? (selected[0].promoType === 'LIGHTNING'
-            ? getPromoCampaignDisplayName({ type: 'LIGHTNING', lightning_window: selected[0].lightningWindow }) : selected[0].matchName) || '1 campanha selecionada'
-            : `${selected.length} campanhas selecionadas`;
-    }
 }
 
 function alternarVisualizacaoPromocoes(mode) {
@@ -422,10 +415,6 @@ function inicializarComparacaoPromocoes() {
     document.getElementById('promoComparisonRows').addEventListener('change', aplicarFiltrosComparacaoPromocoes);
     document.getElementById('apiPromoASelect').addEventListener('change', atualizarCabecalhoComparacaoPromocoes);
     const selector = document.getElementById('apiPromoBSelect');
-    const picker = selector.closest('.promo-campaign-picker');
-    document.addEventListener('click', event => {
-        if (picker?.open && !picker.contains(event.target)) picker.open = false;
-    }, true);
     new MutationObserver(atualizarCabecalhoComparacaoPromocoes).observe(selector, { childList: true, subtree: true, characterData: true });
     document.getElementById('promoDetailsClose').addEventListener('click', () => document.getElementById('promoDetailsDialog').close());
     document.getElementById('promoDetailsDialog').addEventListener('click', event => {

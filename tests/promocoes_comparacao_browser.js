@@ -20,6 +20,7 @@ const root = path.resolve(__dirname, '..');
       neutral: ['rgba(0, 0, 0, 0)', 'rgb(240, 244, 252)'],
     };
     page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/*', route => { unexpectedRequests.push(new URL(route.request().url()).origin); return route.abort(); });
     await page.route('http://promo.test/**', route => {
       const pathname = new URL(route.request().url()).pathname;
       if (['/auth.js', '/ia-sidebar.js'].includes(pathname)) return route.fulfill({ contentType: 'text/javascript', body: '' });
@@ -231,11 +232,20 @@ const root = path.resolve(__dirname, '..');
     await page.setViewportSize({ width: 390, height: 844 });
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile must have no horizontal overflow');
     assert.strictEqual(await rows.nth(0).locator('.promo-value-label').first().isVisible(), true);
-    await page.locator('.promo-campaign-picker summary').click();
     assert.strictEqual(await page.locator('#apiPromoBSelect .api-promo-card').count(), 1);
+    assert.strictEqual(await page.locator('section.promo-campaign-picker').isVisible(), true, 'Campaign panel is permanent on mobile');
     assert.strictEqual(await page.locator('#apiPromoBSelect').isVisible(), true);
-    assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'open campaign selector must fit mobile');
-    await page.locator('.promo-campaign-picker summary').click();
+    const campaignGeometry = await page.locator('section.promo-campaign-picker').evaluate(panel => {
+      const rect = panel.getBoundingClientRect(), setup = document.getElementById('painelApi').getBoundingClientRect();
+      return { top: rect.top, left: rect.left, right: rect.right, setupBottom: setup.bottom, setupLeft: setup.left, setupRight: setup.right };
+    });
+    assert(campaignGeometry.top >= campaignGeometry.setupBottom, 'Campaign panel remains below the filters with analysis results displayed');
+    assert(Math.abs(campaignGeometry.left - campaignGeometry.setupLeft) <= 1 && Math.abs(campaignGeometry.right - campaignGeometry.setupRight) <= 1);
+    const campaignSelection = await page.evaluate(() => Array.from(apiPromoBSelectedIds));
+    await page.locator('h1').click();
+    assert.strictEqual(await page.locator('#apiPromoBSelect').isVisible(), true, 'Outside click must not hide the permanent campaign panel');
+    assert.deepStrictEqual(await page.evaluate(() => Array.from(apiPromoBSelectedIds)), campaignSelection);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Permanent campaign panel must fit mobile');
     await page.setViewportSize({ width: 1306, height: 850 });
     if (process.env.JK_PROMO_PREVIEW_DIR) {
       await page.evaluate(() => {

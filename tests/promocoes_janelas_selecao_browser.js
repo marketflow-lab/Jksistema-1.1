@@ -13,7 +13,7 @@ const waitUntil = async predicate => { const until = Date.now() + 10000; while (
 
 async function createPage(browser, prefs) {
  const page = await browser.newPage({ viewport: { width: 1306, height: 850 } });
- const state = { windows: structuredClone(baseWindows), requests: [], failures: [], pageErrors: [], windowError: false, gate: null, storeGate: null, countsGate: null, formMeta: null };
+ const state = { windows: structuredClone(baseWindows), extraCampaigns: [], requests: [], failures: [], pageErrors: [], windowError: false, gate: null, storeGate: null, countsGate: null, formMeta: null };
  page.on('pageerror', error => state.pageErrors.push(error.message));
  await page.addInitScript(prefs => {
   localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-synthetic', username: 'operator-synthetic' }));
@@ -32,7 +32,7 @@ async function createPage(browser, prefs) {
    { id: 'P1-SYNTHETIC', type: 'SELLER_CAMPAIGN', name: 'Referência sintética' },
    { id: campaign, type: 'LIGHTNING', name: 'Ofertas relâmpago', active_count: 999, eligible_count: 999 },
    { id: 'DEAL-SYNTHETIC', type: 'DEAL', name: 'Campanha sintética', active_count: 1, eligible_count: 2 },
-  ] });
+  ].concat(state.extraCampaigns) });
   if (pathname === `/api/promo/campanhas/${campaign}/janelas`) {
    const snapshot = structuredClone(state.windows);
    const fail = state.windowError;
@@ -60,7 +60,7 @@ async function createPage(browser, prefs) {
  return { page, state };
 }
 const selections = page => page.evaluate(() => getApiPromoBSelections().map(value => ({ id: value.value, key: value.selectionId, window: value.lightningWindow, count: value.eligibleCount })));
-const picker = page => page.locator('.promo-campaign-picker');
+const panel = page => page.locator('section.promo-campaign-picker');
 const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"]`);
 
 (async () => {
@@ -88,7 +88,6 @@ const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"
   assert(!migration.includes(campaign)); assert(migration.includes('window-09'));
   console.log('PASS dates/partial/unknown, legacy migration and per-window counts');
 
-  await picker(page).locator('summary').click();
   for (const width of [1306, 430]) {
    await page.setViewportSize({ width, height: 850 });
    const visibility = await page.locator('.api-promo-card--lightning .api-promo-card-title').evaluateAll(titles => titles.map(title => ({
@@ -99,20 +98,21 @@ const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"
   }
   await page.setViewportSize({ width: 1306, height: 850 });
   await check(page, 'window-10').uncheck();
-  assert.strictEqual(await picker(page).evaluate(element => element.open), true);
+  assert.strictEqual(await panel(page).isVisible(), true);
   await page.getByRole('button', { name: 'Limpar', exact: true }).click();
-  assert.strictEqual(await picker(page).evaluate(element => element.open), true, 'Rerendered inner button must not close the picker');
+  assert.strictEqual(await panel(page).isVisible(), true, 'Rerendered inner button must keep the campaign panel visible');
   assert.deepStrictEqual(await selections(page), []);
   await page.getByRole('button', { name: 'Selecionar todas', exact: true }).click();
-  assert.strictEqual(await picker(page).evaluate(element => element.open), true);
+  assert.strictEqual(await panel(page).isVisible(), true);
+  const selectionBeforeOutside = await selections(page);
   await page.locator('h1').click();
-  assert.strictEqual(await picker(page).evaluate(element => element.open), false);
-  await picker(page).locator('summary').click();
+  assert.strictEqual(await panel(page).isVisible(), true, 'Outside clicks must keep campaigns permanently visible');
+  assert.deepStrictEqual(await selections(page), selectionBeforeOutside, 'Outside clicks must preserve campaign selection');
   await page.getByRole('button', { name: 'Limpar', exact: true }).click();
   await check(page, 'window-12').check();
   await page.locator('h1').click();
   assert.deepStrictEqual((await selections(page)).map(value => value.key), ['window-12']);
-  assert((await picker(page).locator('summary').textContent()).includes('12/out/2026'), 'Closed selection must show its date');
+  assert((await check(page, 'window-12').locator('..').textContent()).includes('12/out/2026'), 'Selected permanent card must show its date');
   assert.deepStrictEqual(await page.evaluate(() => getApiAutoPrefs().promoBSelectedIds), ['window-12']);
   const autoMeta = await page.evaluate(() => montarPayloadApiAutoServidor().promocoes_b_meta);
   assert.strictEqual(autoMeta[0].promo_b_id, campaign); assert.strictEqual(autoMeta[0].selection_id, 'window-12');
@@ -127,7 +127,7 @@ const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"
   await page.evaluate(() => aplicarApiAutoPrefsTela({ ...getApiAutoPrefs(), promoBSelectedIds: [], promoBSelectionDefined: true }));
   await page.evaluate(() => carregarPromocoesApi());
   assert.deepStrictEqual(await selections(page), [], 'Explicit empty preference must survive rerender and reload');
-  console.log('PASS inside/outside, explicit empty state, metadata, persistence and future dates');
+  console.log('PASS permanent panel, outside selection preservation, explicit empty state, metadata, persistence and future dates');
 
   // A response for a former store never changes the new store's cards or selection.
   const gate = deferred(); state.storeGate = gate.promise;
@@ -140,7 +140,6 @@ const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"
   await page.evaluate(() => oldLoad);
   assert.strictEqual(await page.locator('#apiLojaSelect').inputValue(), 'store-b');
   assert.strictEqual((await page.evaluate(() => apiPromoBSelectionScope)), JSON.stringify(['tenant-synthetic','store-b']));
-  await picker(page).locator('summary').click();
   await page.getByRole('button', { name: 'Limpar', exact: true }).click();
   await check(page, 'window-10').check();
   await page.locator('h1').click();
@@ -195,21 +194,52 @@ const check = (page, key) => page.locator(`#apiPromoBSelect input[value="${key}"
   await empty.page.evaluate(() => carregarPromocoesApi()); assert.deepStrictEqual(await selections(empty.page), []);
   assert.deepStrictEqual(migrated.state.pageErrors, []); assert.deepStrictEqual(empty.state.pageErrors, []);
   console.log('PASS empty initial preferences, one-time migration and unambiguous shared XLSX matching');
-  if (process.env.JK_PROMO_WINDOW_PREVIEW_DIR) {
-   const preview = await createPage(browser, { promoBSelectedIds: [] });
-   preview.state.windows.push({ selection_id: 'window-unknown', lightning_window: { undated: true }, active_count: 0, eligible_count: 2 });
-   await preview.page.evaluate(() => carregarPromocoesApi());
-   await picker(preview.page).locator('summary').click();
-   await check(preview.page, 'window-12').check();
-   await preview.page.evaluate(() => document.getElementById('apiPromoBSelect').querySelector('input[data-promotion-id="DEAL-SYNTHETIC"]').closest('.api-promo-card').remove());
-   fs.mkdirSync(process.env.JK_PROMO_WINDOW_PREVIEW_DIR, { recursive: true });
-   await preview.page.screenshot({ path: path.join(process.env.JK_PROMO_WINDOW_PREVIEW_DIR, 'promotion-window-picker-desktop.png'), fullPage: true });
-   await preview.page.setViewportSize({ width: 430, height: 930 });
-   await preview.page.screenshot({ path: path.join(process.env.JK_PROMO_WINDOW_PREVIEW_DIR, 'promotion-window-picker-mobile.png'), fullPage: true });
-   assert.strictEqual(await picker(preview.page).evaluate(element => element.open), true);
-   await preview.page.locator('h1').click(); assert.strictEqual(await picker(preview.page).evaluate(element => element.open), false);
-   assert.deepStrictEqual(preview.state.pageErrors, []); assert.deepStrictEqual(preview.state.failures, []);
-   console.log('PASS synthetic desktop/mobile preview and outside close');
+  const layout = await createPage(browser, { promoBSelectedIds: [], promoBSelectionDefined: true });
+  layout.state.windows.push({ selection_id: 'window-unknown', lightning_window: { undated: true }, active_count: 0, eligible_count: 2 });
+  layout.state.extraCampaigns = Array.from({ length: 19 }, (_, index) => ({ id: 'LAYOUT-' + index, type: 'DEAL', name: 'Campanha ilustrativa ' + (index + 1), active_count: index, eligible_count: index + 2 }));
+  await layout.page.evaluate(() => carregarPromocoesApi());
+  assert.strictEqual(await layout.page.locator('#apiPromoBSelect .api-promo-card').count(), 24);
+  for (const key of ['window-12', 'DEAL-SYNTHETIC', ...Array.from({ length: 6 }, (_, index) => 'LAYOUT-' + index)]) await check(layout.page, key).check();
+  const layoutSelection = await selections(layout.page);
+  assert.strictEqual(layoutSelection.length, 8, 'The 24-card preview must retain exactly eight selections');
+  for (const [width, columns] of [[1440, 6], [1920, 8], [390, 1], [430, 1]]) {
+   await layout.page.setViewportSize({ width, height: 930 });
+   await layout.page.locator('h1').scrollIntoViewIfNeeded();
+   const geometry = await layout.page.evaluate(() => {
+    const rect = element => { const box = element.getBoundingClientRect(); return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height }; };
+    const panel = document.querySelector('section.promo-campaign-picker');
+    const selector = document.getElementById('apiPromoBSelect'), grid = selector.querySelector('.api-promo-card-grid');
+    return { viewport: innerWidth, pageWidth: document.documentElement.scrollWidth, container: rect(document.querySelector('.container')),
+     filters: rect(document.getElementById('painelApi')), panel: rect(panel), selector: rect(selector),
+     selectorPosition: getComputedStyle(selector).position, selectorMaxHeight: getComputedStyle(selector).maxHeight,
+     selectorOverflow: selector.scrollHeight - selector.clientHeight, columns: getComputedStyle(grid).gridTemplateColumns.split(/\s+/).length,
+     cards: Array.from(selector.querySelectorAll('.api-promo-card')).map(rect),
+     titles: Array.from(selector.querySelectorAll('.api-promo-card--lightning .api-promo-card-title')).map(title => ({ height: title.clientHeight, textHeight: title.scrollHeight })) };
+   });
+   assert.strictEqual(geometry.cards.length, 24);
+   assert(geometry.panel.top >= geometry.filters.bottom, 'Campaigns must appear below the setup filters');
+   assert(Math.abs(geometry.panel.left - geometry.filters.left) <= 1 && Math.abs(geometry.panel.right - geometry.filters.right) <= 1, 'Campaign panel must occupy the full available width');
+   assert(geometry.container.width >= width - 1, 'Wide screens must not retain the old container cap');
+   assert.strictEqual(geometry.selectorPosition, 'static', 'Campaign cards must occupy normal document flow');
+   assert.strictEqual(geometry.selectorMaxHeight, 'none');
+   assert(geometry.selectorOverflow <= 1, 'All cards must expand the panel without a nested scroll viewport');
+   assert.strictEqual(geometry.columns, columns, `Campaign grid columns at ${width}px`);
+   assert(geometry.pageWidth <= geometry.viewport, 'Campaigns must not cause horizontal page overflow');
+   assert(geometry.cards.every(card => card.height > 0 && card.left >= geometry.panel.left && card.right <= geometry.panel.right + 1 && card.bottom <= geometry.panel.bottom), 'Every campaign card must stay within the expanded panel');
+   assert(geometry.titles.every(title => title.height > 0 && title.textHeight <= title.height + 1), 'Full Lightning dates must remain readable at every width');
+   await layout.page.locator('#apiPromoBSelect .api-promo-card').last().scrollIntoViewIfNeeded();
+   const last = await layout.page.locator('#apiPromoBSelect .api-promo-card').last().boundingBox();
+   assert(last.y >= 0 && last.y + last.height <= 930, 'The last of 24 cards must be reachable through page scrolling');
+   await layout.page.locator('h1').click();
+   assert.strictEqual(await panel(layout.page).isVisible(), true);
+   assert.deepStrictEqual(await selections(layout.page), layoutSelection, 'Viewport changes and outside clicks preserve selection');
+   if (process.env.JK_PROMO_WINDOW_PREVIEW_DIR) {
+    fs.mkdirSync(process.env.JK_PROMO_WINDOW_PREVIEW_DIR, { recursive: true });
+    await layout.page.screenshot({ path: path.join(process.env.JK_PROMO_WINDOW_PREVIEW_DIR, `promotion-campaign-panel-${width}.png`), fullPage: true });
+   }
   }
+  assert.deepStrictEqual(layout.state.pageErrors, []); assert.deepStrictEqual(layout.state.failures, []);
+  console.log('PASS permanent full-width panel with 24 cards, desktop/mobile geometry, complete dates and persistent selection');
+
  } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Análise de Promoção - JK Sistema</title>
     <link rel="stylesheet" href="/frontend_promo/styles.css?v=20261009-selecao-janelas">
-    <link rel="stylesheet" href="/frontend_promo/comparacao.css?v=20261009-margens-cores">
+    <link rel="stylesheet" href="/frontend_promo/comparacao.css?v=20261009-campanhas-largura-total">
 </head>
 <body class="promo-compact-page">
 
@@ -63,13 +63,6 @@
                 <label for="apiMargemTolerancia">Tolerância de margem (%)</label>
                 <input id="apiMargemTolerancia" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal" title="Permite que a margem da Promoção 2 fique até este percentual abaixo da margem da Promoção 1.">
             </div>
-            <div class="api-field api-field--promos">
-                <label>Promoções 2 · comparação</label>
-                <details class="promo-campaign-picker">
-                    <summary><span id="promoCampaignSelectionLabel">Selecionar campanhas</span><span class="promo-picker-edit">Editar seleção</span></summary>
-                    <div id="apiPromoBSelect" class="api-promo-summary"></div>
-                </details>
-            </div>
         </div>
         <div class="api-file-action-row">
             <button class="btn btn-primary" onclick="processarAnaliseApi()">ANALISAR VIA API</button>
@@ -101,6 +94,11 @@
         <div id="apiLoadingDetails" style="display:none; margin-top:8px; font-size:12px; color:#a9c9ea; line-height:1.45;"></div>
         <div id="apiErrorMsg" class="error-msg"></div>
     </div>
+
+    <section class="promo-campaign-picker" aria-labelledby="promoCampaignSelectionTitle">
+        <h2 id="promoCampaignSelectionTitle" class="promo-campaign-heading">Promoções 2 · comparação</h2>
+        <div id="apiPromoBSelect" class="api-promo-summary"></div>
+    </section>
 
     <div id="painelMlb" class="upload-section" style="display:none;">
         <h3>Consultar anúncio por MLB</h3>
@@ -224,7 +222,7 @@
 <script src="/frontend_promo/api-mercadolivre.js?v=20261009-selecao-janelas"></script>
 <script src="/frontend_promo/arquivos-render.js?v=20261009-layout-compacto"></script>
 <script src="/frontend_promo/exportacao.js?v=20260908-resultado-vazio"></script>
-<script src="/frontend_promo/comparacao.js?v=20261009-margens-cores"></script>
+<script src="/frontend_promo/comparacao.js?v=20261009-campanhas-largura-total"></script>
 <script src="/frontend_promo/init.js?v=20260623-isolamento-promo"></script>
 
 <div id="processingOverlay" class="processing-overlay" aria-live="polite" aria-busy="true">
