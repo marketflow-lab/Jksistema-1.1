@@ -62,6 +62,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.promocoes_lightning_acao import LIGHTNING_ROW_FIELDS
+from backend.services.promocoes_lightning_selecao import normalize_campaign_selection
 from backend.services.promocoes_reanalise_contexto import (
     capturar_contexto_reanalise, carregar_contexto_reanalise, configuracao_automacao_reanalise_confere,
 )
@@ -237,7 +238,12 @@ def _promo_automacao_sanitizar(payload: dict) -> dict:
             promo_type = str(meta.get("promo_b_type") or meta.get("promoType") or meta.get("promotion_type") or "").strip()
             if promo_type in {"-", "None", "null"}:
                 promo_type = ""
+            try:
+                selection = normalize_campaign_selection(promo_id, promo_type, meta)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
             promos_out.append({
+                **selection,
                 "promo_b_id": promo_id,
                 "promo_b_type": promo_type,
                 "promo_texto": str(meta.get("promo_texto") or meta.get("text") or meta.get("displayText") or promo_id).strip(),
@@ -424,7 +430,12 @@ def _promo_automacao_montar_participacoes(resultado: dict, loja: str, analysis_j
                 item_payload.update({field: row[field] for field in LIGHTNING_ROW_FIELDS if field in row})
             items.append(item_payload)
         if promotion_id and items:
+            try:
+                selection = normalize_campaign_selection(promotion_id, promotion_type, analise)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from None
             promocoes.append({
+                **selection,
                 "promotion_id": promotion_id,
                 "promotion_type": promotion_type,
                 "nome": nome,

@@ -64,6 +64,9 @@ function environment(count = 1) {
     getApiAutoPrefs: () => ({ enabled: true, approvalRequired: false }),
   };
   vm.createContext(context);
+  const apiSource = fs.readFileSync(path.join(__dirname, '..', 'static', 'frontend_promo', 'api-mercadolivre.js'), 'utf8');
+  vm.runInContext(apiSource.slice(apiSource.indexOf('function formatarJanelaSelecaoRelampago('), apiSource.indexOf('function montarMetaSelecaoPromoB('))
+    + apiSource.slice(apiSource.indexOf('function getPromoCampaignDisplayName('), apiSource.indexOf('function promoSelectionGroup(')), context);
   for (const file of ['participacao.js', 'tabela-preferencias.js', 'arquivos-render.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'static', 'frontend_promo', file), 'utf8'), context, { filename: file });
   }
@@ -164,10 +167,41 @@ function environment(count = 1) {
   merged = e.context.mesclarResultadoConfirmacaoParticipacao(duplicatePayload, e.result(), e.result([e.detail(0, 'applied')], false));
   assert.strictEqual(merged.total_sucesso, 0, 'same original ref bound to different items is ambiguous');
 
+  // Confirming one date never changes a second analysis with the same campaign and item.
+  e = environment();
+  e.analysis.selection_id = 'window-A'; e.analysis.lightning_window = { start_date: '2026-10-09T15:00:00+00:00', finish_date: '2026-10-09T23:00:00+00:00' };
+  const otherRow = { ...e.rows[0], analysis_client_ref: 'other-date-ref' };
+  const otherAnalysis = { ...e.analysis, selection_id: 'window-B', lightning_window: { start_date: '2026-10-10T15:00:00+00:00', finish_date: '2026-10-10T23:00:00+00:00' }, data: [otherRow] };
+  e.context.apiAnalisesPorCampanha.push(otherAnalysis);
+  const contextOneDate = e.context.capturarContextoConsultaConfirmacao(e.payload(), [e.analysis, otherAnalysis]);
+  assert.strictEqual(contextOneDate.snapshots.length, 1);
+  assert.strictEqual(contextOneDate.snapshots[0].analise, e.analysis);
+  await e.start(); e.queue.push(e.result([e.detail(0, 'applied', { analysis_row_updates: { action_deal_price: 17 } })], false)); await e.tick(2000);
+  assert.strictEqual(e.analysis.participacao_confirmada, true);
+  assert.strictEqual(e.rows[0].action_deal_price, 17);
+  assert.strictEqual(otherRow.action_deal_price, 147.46);
+  assert.strictEqual(otherRow.action_ja_participa, undefined);
+  assert.strictEqual(otherAnalysis.participacao_resultado, undefined);
+  assert.strictEqual(otherAnalysis.participacao_confirmada, undefined);
+
+  // Legacy index references remain tied to their original analysis and item.
+  e = environment(); e.analysis.promo_b_type = 'DEAL'; delete e.rows[0].analysis_client_ref;
+  const legacyOtherRow = { ...e.rows[0] };
+  const legacyOther = { ...e.analysis, data: [legacyOtherRow] };
+  e.context.apiAnalisesPorCampanha.push(legacyOther);
+  const legacyPayload = e.payload(); assert.strictEqual(legacyPayload.promocoes[0].items[0].client_ref, '0:0');
+  const legacyContext = e.context.capturarContextoConsultaConfirmacao(legacyPayload, [e.analysis, legacyOther]);
+  assert.strictEqual(legacyContext.snapshots.length, 1);
+  await e.start(e.result([{ ...e.detail(), client_ref: '0:0' }]));
+  e.queue.push(e.result([{ ...e.detail(0, 'applied'), client_ref: '0:0' }], false)); await e.tick(2000);
+  assert.strictEqual(e.rows[0].action_ja_participa, true); assert.strictEqual(e.analysis.participacao_confirmada, true);
+  assert.strictEqual(legacyOtherRow.action_ja_participa, undefined); assert.strictEqual(legacyOther.participacao_resultado, undefined);
+
   // Context changes cancel before GET, and late replies cannot touch replacement data.
   for (const change of [env => env.setClient('tenant-B'), env => { env.ids.apiLojaSelect.value = 'Loja B'; },
     env => { env.analysis.job_id = 'job-new'; }, env => { env.context.apiAnalisesPorCampanha = [{ ...env.analysis }]; },
-    env => { env.analysis.data = [...env.rows]; }, env => { env.context.apiAnaliseGeracao++; }, env => { env.context.apiAnaliseAtiva++; },
+    env => { env.analysis.data = [...env.rows]; }, env => { env.analysis.selection_id = 'changed-window'; },
+    env => { env.analysis.lightning_window = { undated: true }; }, env => { env.context.apiAnaliseGeracao++; }, env => { env.context.apiAnaliseAtiva++; },
     env => { env.context.invalidarContextoParticipacaoPromocoes(); }]) {
     e = environment(); await e.start(); change(e); e.emit('change'); await e.tick(60000);
     assert.strictEqual(e.requests.length, 1); assert.strictEqual(e.rows[0].action_ja_participa, undefined);

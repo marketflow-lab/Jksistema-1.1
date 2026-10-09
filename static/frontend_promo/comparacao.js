@@ -337,7 +337,7 @@ function atualizarCabecalhoComparacaoPromocoes() {
     const reference = referenceId
         ? Array.from(referenceSelect?.options || []).find(option => option.value === referenceId)
         : referenceSelect?.selectedOptions?.[0];
-    const campaign = active ? findApiPromoBCampaignById(active.promo_b_id) : null;
+    const campaign = active ? findApiPromoBCampaignById(active.promo_b_id, active.selection_id) : null;
     const p1 = document.getElementById('promoReferenceName');
     const p2 = document.getElementById('promoComparisonName');
     if (p1) {
@@ -350,7 +350,8 @@ function atualizarCabecalhoComparacaoPromocoes() {
     const selection = document.getElementById('promoCampaignSelectionLabel');
     if (selection) {
         const selected = getApiPromoBSelections();
-        selection.textContent = selected.length === 1 ? selected[0].matchName || '1 campanha selecionada'
+        selection.textContent = selected.length === 1 ? (selected[0].promoType === 'LIGHTNING'
+            ? getPromoCampaignDisplayName({ type: 'LIGHTNING', lightning_window: selected[0].lightningWindow }) : selected[0].matchName) || '1 campanha selecionada'
             : `${selected.length} campanhas selecionadas`;
     }
 }
@@ -414,6 +415,10 @@ function inicializarComparacaoPromocoes() {
     document.getElementById('promoComparisonRows').addEventListener('change', aplicarFiltrosComparacaoPromocoes);
     document.getElementById('apiPromoASelect').addEventListener('change', atualizarCabecalhoComparacaoPromocoes);
     const selector = document.getElementById('apiPromoBSelect');
+    const picker = selector.closest('.promo-campaign-picker');
+    document.addEventListener('click', event => {
+        if (picker?.open && !picker.contains(event.target)) picker.open = false;
+    }, true);
     new MutationObserver(atualizarCabecalhoComparacaoPromocoes).observe(selector, { childList: true, subtree: true, characterData: true });
     document.getElementById('promoDetailsClose').addEventListener('click', () => document.getElementById('promoDetailsDialog').close());
     document.getElementById('promoDetailsDialog').addEventListener('click', event => {

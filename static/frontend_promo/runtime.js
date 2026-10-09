@@ -14,6 +14,7 @@ let apiPromoBCampaigns = [];
 let apiPromoBSelectedIds = new Set();
 let apiPromoBSelectionReady = false;
 let apiPromoBPendingSelectedIds = null;
+let apiPromoBSelectionScope = '';
 let apiAnalisesPorCampanha = [];
 let apiAnaliseAtiva = 0;
 let apiAnaliseJobPolling = null;
@@ -179,7 +180,7 @@ function extractApiPromoBIdsFromMeta(meta) {
     if (!Array.isArray(meta)) return [];
     const ids = meta.map((item) => {
         if (item && typeof item === 'object') {
-            return String(item.promo_b_id || item.promotion_id || item.value || item.id || '').trim();
+            return String(item.selection_id || item.promo_b_id || item.promotion_id || item.value || item.id || '').trim();
         }
         return String(item || '').trim();
     }).filter(Boolean);

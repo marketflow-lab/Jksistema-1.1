@@ -50,7 +50,7 @@ function capturarParametrosParticipacaoPromocoes() {
         clientId: getPromoClientId(),
         promoA: String(document.getElementById('apiPromoASelect')?.value || '').trim(),
         promoAType: String(document.getElementById('apiPromoASelect')?.selectedOptions?.[0]?.dataset?.promoType || ''),
-        campanhas: campanhas.map(promo => [String(promo.value || ''), String(promo.promoType || '')]).sort((a, b) => a[0].localeCompare(b[0])),
+        campanhas: campanhas.map(promo => [String(promo.value || ''), String(promo.promoType || ''), String(promo.selectionId || ''), promo.lightningWindow || null]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
         minima: Number.isFinite(minima) ? minima : 15,
         tolerancia: typeof getActionTolerancePct === 'function' ? getActionTolerancePct() : 0,
     });
@@ -58,6 +58,7 @@ function capturarParametrosParticipacaoPromocoes() {
 
 function invalidarContextoParticipacaoPromocoes() {
     mostrarResumoParticipacaoPromocoes.sessaoAtiva?.cancelar();
+    if (typeof invalidarAnaliseApiAtual === 'function' && document.getElementById('apiLoading')?.style.display === 'block') invalidarAnaliseApiAtual();
     (Array.isArray(apiAnalisesPorCampanha) ? apiAnalisesPorCampanha : []).forEach(analise => {
         analise.participacao_contexto_invalidado = true;
         analise.participacao_confirmada = false;
@@ -260,13 +261,33 @@ function mesclarResultadoConfirmacaoParticipacao(payload, anterior, recebido) {
     return resumo;
 }
 
+function obterLinhasPorReferenciaParticipacao(analise, clientRef) {
+    const rows = Array.isArray(analise?.data) ? analise.data : [];
+    const canonicas = rows.filter(row => row.analysis_client_ref === clientRef);
+    if (canonicas.length) return canonicas;
+    const referenciaLegada = String(clientRef || '').match(/^(\d+):(\d+)$/);
+    if (!referenciaLegada || Number(referenciaLegada[1]) !== apiAnalisesPorCampanha.indexOf(analise)) return [];
+    const row = obterLinhasSelecionadasPromocoes(rows)[Number(referenciaLegada[2])];
+    return row && !row.analysis_client_ref ? [row] : [];
+}
+
+function filtrarPayloadParticipacaoAnalise(payload, analise) {
+    return { ...payload, promocoes: (payload.promocoes || []).filter(promo => promo.promotion_id === analise.promo_b_id)
+        .map(promo => ({ ...promo, items: (promo.items || []).filter(item => {
+            const rows = obterLinhasPorReferenciaParticipacao(analise, item.client_ref);
+            return rows.length === 1 && String(getValorLinhaPromoAuto(rows[0], ['MLB', 'item_id', 'mlb']) || '').trim().toUpperCase()
+                === String(item.item_id || '').trim().toUpperCase();
+        }) })).filter(promo => promo.items.length) };
+}
+
 function capturarContextoConsultaConfirmacao(payload, analisesOriginais) {
-    const originais = (analisesOriginais || []).filter(analise => payload.promocoes?.some(promo => promo.promotion_id === analise.promo_b_id));
+    const originais = (analisesOriginais || []).filter(analise => filtrarPayloadParticipacaoAnalise(payload, analise).promocoes.length > 0);
     return {
         clientId: getPromoClientId(), parametros: capturarParametrosParticipacaoPromocoes(),
         geracao: typeof apiAnaliseGeracao !== 'undefined' ? apiAnaliseGeracao : null,
         analiseAtiva: typeof apiAnaliseAtiva !== 'undefined' ? apiAnaliseAtiva : null,
-        snapshots: originais.map(analise => ({ analise, job: analise.job_id, dados: analise.data,
+        snapshots: originais.map(analise => ({ analise, job: analise.job_id, dados: analise.data, selectionId: analise.selection_id || '',
+            windowSignature: JSON.stringify(analise.lightning_window || null),
             revisao: Number(analise.participacao_selecao_revisao || 0) })),
     };
 }
@@ -290,8 +311,9 @@ function iniciarConsultaConfirmacaoParticipacao(payload, inicial, opcoes, atuali
         && parametros === capturarParametrosParticipacaoPromocoes()
         && (geracao === null || geracao === apiAnaliseGeracao)
         && (analiseAtiva === null || analiseAtiva === apiAnaliseAtiva)
-        && snapshots.every(({ analise, job, dados }) => apiAnalisesPorCampanha.includes(analise)
+        && snapshots.every(({ analise, job, dados, selectionId, windowSignature }) => apiAnalisesPorCampanha.includes(analise)
             && analise.origem_client_id === clientId && analise.origem_loja === payload.loja
+            && (analise.selection_id || '') === selectionId && JSON.stringify(analise.lightning_window || null) === windowSignature
             && analise.job_id === job && analise.data === dados && analise.participacao_contexto_invalidado !== true
             && (!payload.analysis_job_id || analise.job_id === payload.analysis_job_id));
     const cancelar = () => {
@@ -332,7 +354,7 @@ function iniciarConsultaConfirmacaoParticipacao(payload, inicial, opcoes, atuali
             resultado = mesclarResultadoConfirmacaoParticipacao(payload, resultado, recebido);
             aplicarAtualizacoesParticipacaoPromocoes(payload, resultado, originais);
             for (const { analise, revisao } of snapshots) {
-                const campanhaPayload = { ...payload, promocoes: payload.promocoes.filter(promo => promo.promotion_id === analise.promo_b_id) };
+                const campanhaPayload = filtrarPayloadParticipacaoAnalise(payload, analise);
                 analise.participacao_resultado = resumirResultadoParticipacao(campanhaPayload, resultado);
                 analise.participacao_confirmada = analise.participacao_resultado.success
                     && Number(analise.participacao_selecao_revisao || 0) === revisao;
@@ -599,10 +621,10 @@ function montarPayloadParticipacoesPromocoes(indiceCampanha = null, opcoes = {})
         if (selecionadas.length && (analise.origem_loja !== loja || analise.origem_client_id !== clientId)) {
             throw new Error('A análise não pertence à loja e ao cliente atuais. Execute uma nova análise antes de confirmar.');
         }
-        const campanha = findApiPromoBCampaignById(analise?.promo_b_id) || {};
+        const campanha = findApiPromoBCampaignById(analise?.promo_b_id, analise?.selection_id) || {};
         const promotionId = String(analise?.promo_b_id || campanha?.id || '').trim();
         const promotionType = String(analise?.promo_b_type || campanha?.type || campanha?.promotion_type || '').trim();
-        const nome = promotionType.toUpperCase() === 'LIGHTNING' ? 'Ofertas relâmpago'
+        const nome = promotionType.toUpperCase() === 'LIGHTNING' ? getPromoCampaignDisplayName({ ...campanha, ...analise, type: 'LIGHTNING' })
             : String(analise?.promo_b_nome || campanha?.name || campanha?.title || `Promocao ${idx + 1}`).trim();
         const items = selecionadas.map((row, indiceSelecionado) => {
             const relampago = promotionType.toUpperCase() === 'LIGHTNING';
@@ -693,15 +715,16 @@ function aplicarAtualizacoesParticipacaoPromocoes(payload, result, analisesOrigi
         const chave = chaveResultadoParticipacao(promoId, ref);
         if (vistos.has(chave) || contagens.get(chave) !== 1) return;
         vistos.add(chave);
-        const selecionada = payload?.promocoes?.find(promo => String(promo.promotion_id || '').trim() === promoId);
+        const selecionada = payload?.promocoes?.find(promo => String(promo.promotion_id || '').trim() === promoId && promo.items?.some(item => item.client_ref === ref));
         const enviado = selecionada?.items?.find(item => item.client_ref === ref);
         if (!enviado) return;
         const candidatas = (Array.isArray(analisesOriginais) ? analisesOriginais : []).filter(analise =>
             analisesAtuais.includes(analise) && String(analise.promo_b_id || '').trim() === promoId
             && (!payload.analysis_job_id || String(analise.job_id || '').trim() === payload.analysis_job_id)
-            && analise.origem_loja === payload.loja && analise.origem_client_id === getPromoClientId());
+            && analise.origem_loja === payload.loja && analise.origem_client_id === getPromoClientId()
+            && obterLinhasPorReferenciaParticipacao(analise, ref).length > 0);
         if (candidatas.length !== 1 || payload.loja !== (document.getElementById('apiLojaSelect')?.value || '')) return;
-        const rows = (Array.isArray(candidatas[0].data) ? candidatas[0].data : []).filter(row => row.analysis_client_ref === ref);
+        const rows = obterLinhasPorReferenciaParticipacao(candidatas[0], ref);
         if (rows.length !== 1) return;
         const row = rows[0];
         const itemId = getValorLinhaPromoAuto(row, ['MLB', 'item_id', 'mlb']);
@@ -785,7 +808,7 @@ async function confirmarParticipacaoCampanhaApi(index) {
     const nome = promo.nome || analise.promo_b_nome || `Campanha ${index + 1}`;
     if (analise.participacao_em_andamento) return;
     const revisaoSelecao = Number(analise.participacao_selecao_revisao || 0);
-    const campanha = findApiPromoBCampaignById(promo.promotion_id || analise.promo_b_id) || {};
+    const campanha = findApiPromoBCampaignById(promo.promotion_id || analise.promo_b_id, analise.selection_id) || {};
     const ok = await pedirConfirmacaoParticipacaoCampanhaApi({ nome, total, loja: payload.loja, promo, analise, campanha });
     if (!ok) {
         atualizarStatusAutomacaoPromo(`Confirmacao cancelada. Campanha ${nome} nao foi enviada ao Mercado Livre.`);

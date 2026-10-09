@@ -1,6 +1,7 @@
 """Regressoes de identidade, janelas e paginacao LIGHTNING sem acesso externo."""
 
 import copy
+from itertools import permutations
 from urllib.parse import parse_qs, urlparse
 
 import backend_api  # noqa: F401 - configura fachadas do runtime
@@ -200,8 +201,9 @@ def test_conflicting_campaign_item_type_and_offer_are_rejected(monkeypatch, extr
     assert raw_by_item == {}
 
 
-def test_external_internal_offer_list_cannot_inject_another_window(monkeypatch):
-    contaminated = offer(9, **{LIGHTNING_OFFERS_KEY: [offer(12, promotion_id="LGH-OTHER")]})
+@pytest.mark.parametrize("marker", [LIGHTNING_OFFERS_KEY, "_jk_lightning_observations"])
+def test_external_internal_offer_list_cannot_inject_another_window(monkeypatch, marker):
+    contaminated = offer(9, **{marker: [offer(12, promotion_id="LGH-OTHER")]})
     (_items, raw_by_item, _cfg), _calls = collect(monkeypatch, [contaminated])
     individual = lightning_offers(raw_by_item[ITEM])
     assert len(individual) == 1
@@ -318,3 +320,168 @@ def test_different_explicit_references_in_same_window_remain_separate():
     second = offer(9, offer_id=f"CANDIDATE-{ITEM}-2")
     combined = merge_lightning_raw(first, second, campaign_id=CAMPAIGN, item_id=ITEM)
     assert len(lightning_offers(combined)) == 2
+
+
+
+def merge_sequence(records, *, callback=promotions._promo_mesclar_raw_multistatus):
+    combined = {}
+    for raw in records:
+        combined = merge_lightning_raw(combined, raw, campaign_id=CAMPAIGN, item_id=ITEM,
+                                      merge_same_offer=callback)
+    return lightning_offers(combined)
+
+
+@pytest.mark.parametrize("start,finish", [
+    ("2026-10-12T12:00:00", "2026-10-12T23:59:59"),
+    ("2026-10-12T00:00:00", "2026-10-12T11:59:59"),
+])
+def test_reported_pending_reference_with_and_without_dates_is_one_offer(start, finish):
+    # Forma dos dois endpoints do caso reportado; identidades comerciais ficticias.
+    dated = {"id": ITEM, "ref_id": f"OFFER-{ITEM}-REDACTED", "status": "pending",
+             "start_date": start, "finish_date": finish, "stock": {"min": 2, "max": 8}}
+    undated = {"id": CAMPAIGN, "item_id": ITEM, "type": "LIGHTNING",
+               "ref_id": dated["ref_id"], "status": "pending", "price": 80.0}
+    original = copy.deepcopy([dated, undated])
+    for sequence in permutations([dated, undated]):
+        result = merge_sequence(sequence)
+        assert len(result) == 1
+        assert lightning_offer_window(result[0]) == (start, finish)
+        assert result[0]["status"] == "pending"
+        assert result[0]["price"] == 80.0
+        assert result[0]["stock"] == {"min": 2, "max": 8}
+        assert lightning_window_valid(result[0])
+        combined = merge_lightning_raw(*sequence, campaign_id=CAMPAIGN, item_id=ITEM,
+                                      merge_same_offer=promotions._promo_mesclar_raw_multistatus)
+        assert lightning_offer_window(combined) == (start, finish)
+        assert combined["status"] == "pending"
+    assert [dated, undated] == original
+
+
+@pytest.mark.parametrize("status", ["started", "active", "paused", "finished", "cancelled"])
+@pytest.mark.parametrize("old_status", ["pending", "candidate"])
+def test_same_reference_does_not_reactivate_from_an_undated_response(status, old_status):
+    dated = offer(12, offer_id=f"OFFER-{ITEM}-1", status=status)
+    old = {"id": ITEM, "offer_id": dated["offer_id"], "status": old_status}
+    for sequence in permutations([dated, old]):
+        # Enriquecimento tambem pode sobrepor a resposta nova ao callback legado.
+        result = merge_sequence(sequence, callback=lambda previous, fresh: {
+            **promotions._promo_mesclar_raw_multistatus(previous, fresh), **fresh,
+        })
+        assert len(result) == 1
+        assert result[0]["status"] == status
+        assert lightning_offer_window(result[0]) == lightning_offer_window(dated)
+
+
+@pytest.mark.parametrize("missing", ["start_date", "finish_date"])
+def test_compatible_partial_boundary_is_filled_without_inventing_dates(missing):
+    dated = offer(12, offer_id=f"OFFER-{ITEM}-1", status="pending")
+    partial = dict(dated)
+    partial.pop(missing)
+    for sequence in permutations([dated, partial]):
+        result = merge_sequence(sequence)
+        assert len(result) == 1
+        assert lightning_offer_window(result[0]) == lightning_offer_window(dated)
+
+
+@pytest.mark.parametrize("boundary,value", [
+    ("start_date", "2026-10-13T12:00:00-03:00"),
+    ("finish_date", "2026-10-14T00:00:00-03:00"),
+    ("start_date", "2026-10-12T12:00:00"),
+    ("start_date", "2026-10-12"),
+    ("start_date", "invalid"),
+    ("start_date", 123),
+])
+def test_conflicting_or_invalid_partial_boundary_is_not_aliased(boundary, value):
+    dated = offer(12, offer_id=f"OFFER-{ITEM}-1")
+    partial = {"id": ITEM, "offer_id": dated["offer_id"], boundary: value}
+    for sequence in permutations([dated, partial]):
+        result = merge_sequence(sequence)
+        assert len(result) == 2
+        assert sum(lightning_window_valid(raw) for raw in result) == 1
+
+
+def test_equivalent_partial_timezone_joins_the_confirmed_window():
+    dated = offer(12, offer_id=f"OFFER-{ITEM}-1")
+    partial = {"id": ITEM, "ref_id": dated["offer_id"], "startDate": "2026-10-12T15:00:00Z"}
+    for sequence in permutations([dated, partial]):
+        result = merge_sequence(sequence)
+        assert len(result) == 1
+        assert lightning_offer_window(result[0]) == lightning_offer_window(dated)
+
+
+def test_ambiguous_reference_keeps_observation_separate_regardless_of_arrival_order():
+    windows = [offer(day, offer_id=f"OFFER-{ITEM}-SAME") for day in (9, 10, 12)]
+    undated = {"id": ITEM, "offer_id": windows[0]["offer_id"], "status": "candidate"}
+    expected = {lightning_offer_key(raw, campaign_id=CAMPAIGN, item_id=ITEM) for raw in windows + [undated]}
+    for sequence in permutations(windows + [undated]):
+        result = merge_sequence(sequence)
+        assert len(result) == 4
+        assert {lightning_offer_key(raw, campaign_id=CAMPAIGN, item_id=ITEM) for raw in result} == expected
+        assert sum(lightning_window_valid(raw) for raw in result) == 3
+        assert all("_jk_lightning_observations" not in raw for raw in result)
+
+
+def test_partial_reference_can_disambiguate_one_of_three_confirmed_windows():
+    windows = [offer(day, offer_id=f"OFFER-{ITEM}-SAME") for day in (9, 10, 12)]
+    partial = {"id": ITEM, "offer_id": windows[0]["offer_id"], "start_date": windows[1]["start_date"]}
+    expected = {lightning_offer_key(raw, campaign_id=CAMPAIGN, item_id=ITEM) for raw in windows}
+    for sequence in permutations(windows + [partial]):
+        result = merge_sequence(sequence)
+        assert len(result) == 3
+        assert {lightning_offer_key(raw, campaign_id=CAMPAIGN, item_id=ITEM) for raw in result} == expected
+
+
+def test_missing_reference_does_not_alias_an_ambiguous_window_after_earlier_merge():
+    first = offer(12, offer_id=f"OFFER-{ITEM}-1")
+    second = offer(12, offer_id=f"OFFER-{ITEM}-2")
+    anonymous = offer(12)
+    for sequence in permutations([first, second, anonymous]):
+        result = merge_sequence(sequence)
+        assert len(result) == 3
+        assert len({lightning_offer_key(raw, campaign_id=CAMPAIGN, item_id=ITEM) for raw in result}) == 3
+
+
+def test_same_reference_is_isolated_by_campaign_and_item_without_explicit_scope_override():
+    first = dict(offer(12, offer_id="OFFER-SAME"), promotion_id=CAMPAIGN)
+    for other in (dict(first, id="MLB7654321"), dict(first, promotion_id="LGH-OTHER")):
+        other.pop("start_date")
+        other.pop("finish_date")
+        for sequence in permutations([first, other]):
+            result = {}
+            for raw in sequence:
+                result = merge_lightning_raw(result, raw)
+            assert len(lightning_offers(result)) == 2
+
+
+def test_collection_combines_dated_campaign_and_undated_item_shape(monkeypatch):
+    dated = offer(12, offer_id=f"OFFER-{ITEM}-1", status="pending")
+    undated = dict(dated)
+    undated.pop("start_date")
+    undated.pop("finish_date")
+    for entries in ([dated, undated], [undated, dated]):
+        (items, raw_by_item, _cfg), _calls = collect(monkeypatch, entries, status="pending")
+        assert len(items) == 1
+        assert len(items[0]["offers"]) == 1
+        assert lightning_offer_window(lightning_offers(raw_by_item[ITEM])[0]) == lightning_offer_window(dated)
+
+
+
+def test_complementary_fields_do_not_restore_provenance_rejected_by_callback():
+    dated = dict(offer(12, offer_id=f"OFFER-{ITEM}-1"), _jk_contexto_promocao_confirmado=True)
+    undated = {"id": ITEM, "offer_id": dated["offer_id"], "price": 81.0}
+    def rejected_context(previous, fresh):
+        return {name: value for name, value in previous.items() if not name.startswith("_jk_")}
+    for sequence in permutations([dated, undated]):
+        result = merge_sequence(sequence, callback=rejected_context)
+        assert len(result) == 1
+        assert "_jk_contexto_promocao_confirmado" not in result[0]
+        assert lightning_window_valid(result[0])
+
+
+def test_complementary_partial_dates_without_a_confirmed_window_stay_incomplete():
+    start = {"id": ITEM, "offer_id": f"OFFER-{ITEM}-1", "start_date": "2026-10-12T12:00:00"}
+    finish = {"id": ITEM, "offer_id": start["offer_id"], "finish_date": "2026-10-12T23:59:59"}
+    for sequence in permutations([start, finish]):
+        result = merge_sequence(sequence)
+        assert len(result) == 2
+        assert not any(lightning_window_valid(raw) for raw in result)

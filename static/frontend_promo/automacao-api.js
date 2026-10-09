@@ -1,3 +1,33 @@
+let apiAutoPrefsRevisao = 0;
+let apiAutoPrefsLeituraRevisao = 0;
+let apiAutoPrefsPutPendentes = 0;
+let apiAutoPrefsPutFila = Promise.resolve();
+
+function capturarContextoApiAutoPrefs(leitura = false) {
+    return {
+        revisao: apiAutoPrefsRevisao,
+        leituraRevisao: leitura ? ++apiAutoPrefsLeituraRevisao : 0,
+        gravacaoPendente: apiAutoPrefsPutPendentes > 0,
+        loja: String(document.getElementById('apiLojaSelect')?.value || '').trim(),
+        clientId: getPromoClientId(),
+        prefsKey: typeof getApiAutoPrefsKey === 'function' ? getApiAutoPrefsKey() : '',
+        headers: { ...getAuthHeadersWithClient() },
+    };
+}
+
+function contextoApiAutoPrefsMesmoEscopo(contexto) {
+    return !!contexto
+        && contexto.loja === String(document.getElementById('apiLojaSelect')?.value || '').trim()
+        && contexto.clientId === getPromoClientId()
+        && contexto.prefsKey === (typeof getApiAutoPrefsKey === 'function' ? getApiAutoPrefsKey() : '');
+}
+
+function contextoApiAutoPrefsAtual(contexto, leitura = false) {
+    return contextoApiAutoPrefsMesmoEscopo(contexto) && contexto.revisao === apiAutoPrefsRevisao
+        && (!leitura || (!contexto.gravacaoPendente && apiAutoPrefsPutPendentes === 0
+            && contexto.leituraRevisao === apiAutoPrefsLeituraRevisao));
+}
+
 function getApiAutoPrefs() {
     try {
         const parsed = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
@@ -13,6 +43,10 @@ function getApiAutoPrefs() {
         const intervalMinutes = Math.max(API_AUTO_MIN_INTERVAL_MIN, Math.round(intervalValue * unitConfig.factor));
         const rawNextRunAt = Number(parsed.nextRunAt || 0);
         const nextRunAt = Number.isFinite(rawNextRunAt) && rawNextRunAt > 0 ? rawNextRunAt : 0;
+        const loja = document.getElementById('apiLojaSelect')?.value || '';
+        const porLoja = parsed.promoBSelectedIdsByStore;
+        const ids = porLoja && typeof porLoja === 'object' && Object.prototype.hasOwnProperty.call(porLoja, loja)
+            ? porLoja[loja] : (!parsed.promoBSelectionLoja || parsed.promoBSelectionLoja === loja ? parsed.promoBSelectedIds : undefined);
         return {
             enabled: parsed.enabled === true,
             approvalRequired: parsed.approvalRequired !== false,
@@ -21,7 +55,8 @@ function getApiAutoPrefs() {
             intervalMinutes,
             nextRunAt,
             margemTolerancia: Math.max(0, Math.min(100, Number(parsed.margemTolerancia || 0) || 0)),
-            promoBSelectedIds: Array.isArray(parsed.promoBSelectedIds) ? parsed.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean) : [],
+            promoBSelectionDefined: Array.isArray(ids),
+            promoBSelectedIds: Array.isArray(ids) ? ids.map((id) => String(id || '').trim()).filter(Boolean) : [],
         };
     } catch (_e) {
         return {
@@ -33,6 +68,7 @@ function getApiAutoPrefs() {
             nextRunAt: 0,
             margemTolerancia: 0,
             promoBSelectedIds: [],
+            promoBSelectionDefined: false,
         };
     }
 }
@@ -81,6 +117,7 @@ function aplicarApiAutoIntervalPrefs(prefs) {
 }
 
 function saveApiAutoPrefs() {
+    apiAutoPrefsRevisao += 1;
     const enabledEl = document.getElementById('apiAutoWorkEnabled');
     const approvalEl = document.getElementById('apiAutoApprovalRequired');
     const interval = getApiAutoIntervalFromControls();
@@ -88,7 +125,10 @@ function saveApiAutoPrefs() {
         const atual = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
         const rawNextRunAt = Number(atual.nextRunAt || 0);
         const nextRunAt = enabledEl?.checked && Number.isFinite(rawNextRunAt) && rawNextRunAt > 0 ? rawNextRunAt : 0;
+        const loja = document.getElementById('apiLojaSelect')?.value || '';
+        const ids = Array.from(apiPromoBSelectedIds);
         localStorage.setItem(getApiAutoPrefsKey(), JSON.stringify({
+            ...atual,
             enabled: !!enabledEl?.checked,
             approvalRequired: approvalEl ? !!approvalEl.checked : true,
             intervalUnit: interval.intervalUnit,
@@ -96,14 +136,20 @@ function saveApiAutoPrefs() {
             intervalMinutes: interval.intervalMinutes,
             nextRunAt,
             margemTolerancia: getActionTolerancePct(),
-            promoBSelectedIds: getApiPromoBSelections().map((promo) => promo.value),
+            promoBSelectedIds: ids,
+            promoBSelectionLoja: loja,
+            promoBSelectedIdsByStore: { ...(atual.promoBSelectedIdsByStore || {}), [loja]: ids },
         }));
     } catch (_e) {}
 }
 
 function persistApiAutoPrefsObject(prefs) {
     try {
+        const atual = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
+        const loja = document.getElementById('apiLojaSelect')?.value || '';
+        const ids = Array.isArray(prefs.promoBSelectedIds) ? prefs.promoBSelectedIds : getApiPromoBSelections().map(promo => promo.selectionId || promo.value);
         localStorage.setItem(getApiAutoPrefsKey(), JSON.stringify({
+            ...atual,
             enabled: !!prefs.enabled,
             approvalRequired: prefs.approvalRequired !== false,
             intervalUnit: prefs.intervalUnit || 'minutes',
@@ -111,7 +157,8 @@ function persistApiAutoPrefsObject(prefs) {
             intervalMinutes: Number(prefs.intervalMinutes || API_AUTO_DEFAULT_INTERVAL_MIN),
             nextRunAt: Number(prefs.nextRunAt || 0),
             margemTolerancia: Math.max(0, Math.min(100, Number(prefs.margemTolerancia || 0) || 0)),
-            promoBSelectedIds: Array.isArray(prefs.promoBSelectedIds) ? prefs.promoBSelectedIds : getApiPromoBSelections().map((promo) => promo.value),
+            ...(prefs.promoBSelectionDefined !== false ? { promoBSelectedIds: ids, promoBSelectionLoja: loja,
+                promoBSelectedIdsByStore: { ...(atual.promoBSelectedIdsByStore || {}), [loja]: ids } } : {}),
         }));
     } catch (_e) {}
 }
@@ -148,6 +195,7 @@ function apiAutoPrefsFromServerConfig(config) {
         updatedAt: Number(cfg.updated_at || 0),
         due: cfg.due === true,
         promoBSelectedIds: extractApiPromoBIdsFromMeta(cfg.promocoes_b_meta),
+        promoBSelectionDefined: Array.isArray(cfg.promocoes_b_meta) && (!cfg.loja || cfg.loja === (document.getElementById('apiLojaSelect')?.value || '')),
     };
 }
 
@@ -170,13 +218,7 @@ function montarPayloadApiAutoServidor() {
         promocao_a_type: selectPromoA?.selectedOptions?.[0]?.dataset?.promoType || '',
         margem_minima: Number(document.getElementById('apiMargemMinima')?.value || 15),
         margem_tolerancia: getActionTolerancePct(),
-        promocoes_b_meta: getApiPromoBSelections().map((promo) => ({
-            promo_b_id: promo.value,
-            promo_b_type: promo.promoType || '',
-            promo_texto: promo.text || promo.matchName || promo.value,
-            active_count: promo.activeCount,
-            eligible_count: promo.eligibleCount,
-        })),
+        promocoes_b_meta: getApiPromoBSelections().map(montarMetaSelecaoPromoB),
     };
 }
 
@@ -195,14 +237,14 @@ function aplicarApiAutoPrefsTela(prefs) {
     const toleranciaEl = document.getElementById('apiMargemTolerancia');
     if (toleranciaEl) toleranciaEl.value = String(actionTolerancePct);
     aplicarApiAutoIntervalPrefs(prefs);
-    if (Array.isArray(prefs.promoBSelectedIds) && prefs.promoBSelectedIds.length) {
+    if (Array.isArray(prefs.promoBSelectedIds) && prefs.promoBSelectionDefined !== false) {
         apiPromoBPendingSelectedIds = new Set(prefs.promoBSelectedIds.map((id) => String(id || '').trim()).filter(Boolean));
         if (Array.isArray(apiPromoBCampaigns) && apiPromoBCampaigns.length) {
             apiPromoBSelectionReady = false;
             renderApiPromoBButtons(apiPromoBCampaigns);
         }
     }
-    persistApiAutoPrefsObject(prefs);
+    persistApiAutoPrefsObject(apiPromoBSelectionReady ? { ...prefs, promoBSelectedIds: Array.from(apiPromoBSelectedIds) } : prefs);
     if (prefs.enabled) {
         apiAutoNextRunAt = Number(prefs.nextRunAt || 0);
         salvarApiAutoNextRunAt(apiAutoNextRunAt);
@@ -220,8 +262,8 @@ function aplicarApiAutoPrefsTela(prefs) {
     }
 }
 
-async function carregarApiAutoPrefsServidor() {
-    const resp = await fetch('/api/promo/automacao', { headers: getAuthHeadersWithClient() });
+async function carregarApiAutoPrefsServidor(contexto = capturarContextoApiAutoPrefs(true)) {
+    const resp = await fetch('/api/promo/automacao', { headers: contexto.headers });
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(buildApiErrorMessage(resp, payload, 'Erro ao carregar automacao'));
     return payload;
@@ -229,24 +271,35 @@ async function carregarApiAutoPrefsServidor() {
 
 async function salvarApiAutoPrefsServidor() {
     const config = montarPayloadApiAutoServidor();
+    apiAutoPrefsRevisao += 1;
+    const contexto = capturarContextoApiAutoPrefs();
     const incompatibilidade = config.enabled ? getApiPromoACompatibilityError() : '';
     if (incompatibilidade) {
         mostrarApiPromoCompatibilityError(incompatibilidade);
         atualizarStatusAutomacaoPromo(incompatibilidade);
         throw new Error(incompatibilidade);
     }
-    const resp = await fetch('/api/promo/automacao', {
-        method: 'PUT',
-        headers: getAuthHeadersWithClient({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(config),
+    const body = JSON.stringify(config);
+    const headers = { ...contexto.headers, 'Content-Type': 'application/json' };
+    apiAutoPrefsPutPendentes += 1;
+    const operacao = apiAutoPrefsPutFila.then(async () => {
+        try {
+            const resp = await fetch('/api/promo/automacao', { method: 'PUT', headers, body });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(buildApiErrorMessage(resp, payload, 'Erro ao salvar automacao'));
+            const prefs = apiAutoPrefsFromServerConfig(payload.config || {});
+            if (contextoApiAutoPrefsAtual(contexto)) {
+                aplicarApiAutoPrefsTela(prefs);
+                atualizarStatusAutomacaoPromoPorPrefs(prefs);
+                iniciarPollingAutomacaoPromoServidor();
+            }
+            return prefs;
+        } finally {
+            apiAutoPrefsPutPendentes -= 1;
+        }
     });
-    const payload = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(buildApiErrorMessage(resp, payload, 'Erro ao salvar automacao'));
-    const prefs = apiAutoPrefsFromServerConfig(payload.config || {});
-    aplicarApiAutoPrefsTela(prefs);
-    atualizarStatusAutomacaoPromoPorPrefs(prefs);
-    iniciarPollingAutomacaoPromoServidor();
-    return prefs;
+    apiAutoPrefsPutFila = operacao.catch(() => {});
+    return operacao;
 }
 
 function atualizarStatusAutomacaoPromoPorPrefs(prefs) {
@@ -286,14 +339,16 @@ function iniciarPollingAutomacaoPromoServidor() {
 }
 
 async function sincronizarAutomacaoPromoServidor(silencioso = false) {
+    const contexto = capturarContextoApiAutoPrefs(true);
     try {
-        const payload = await carregarApiAutoPrefsServidor();
+        const payload = await carregarApiAutoPrefsServidor(contexto);
+        if (!contextoApiAutoPrefsAtual(contexto, true)) return null;
         const prefs = apiAutoPrefsFromServerConfig(payload.config || {});
         aplicarApiAutoPrefsTela(prefs);
         atualizarStatusAutomacaoPromoPorPrefs(prefs);
         return prefs;
     } catch (e) {
-        if (!silencioso) atualizarStatusAutomacaoPromo(e.message || 'Erro ao sincronizar automacao.');
+        if (!silencioso && contextoApiAutoPrefsAtual(contexto, true)) atualizarStatusAutomacaoPromo(e.message || 'Erro ao sincronizar automacao.');
         return null;
     }
 }
@@ -408,7 +463,14 @@ function inicializarAutomacaoPromoApi() {
     });
 
     atualizarStatusAutomacaoPromo('Sincronizando automacao com o servidor...');
-    carregarApiAutoPrefsServidor().then(async (payload) => {
+    const contextoInicial = capturarContextoApiAutoPrefs(true);
+    carregarApiAutoPrefsServidor(contextoInicial).then(async (payload) => {
+        if (!contextoApiAutoPrefsAtual(contextoInicial, true)) {
+            apiAutoInicializada = true;
+            if (contextoApiAutoPrefsMesmoEscopo(contextoInicial) && contextoInicial.revisao !== apiAutoPrefsRevisao
+                && apiAutoPrefsPutPendentes === 0) await salvarApiAutoPrefsServidor();
+            return;
+        }
         const prefsServidor = apiAutoPrefsFromServerConfig(payload.config || {});
         if (!prefsServidor.updatedAt && prefsLocal.enabled) {
             aplicarApiAutoPrefsTela(prefsLocal);
@@ -421,6 +483,10 @@ function inicializarAutomacaoPromoApi() {
         iniciarPollingAutomacaoPromoServidor();
         apiAutoInicializada = true;
     }).catch(() => {
+        if (!contextoApiAutoPrefsAtual(contextoInicial, true)) {
+            apiAutoInicializada = true;
+            return;
+        }
         aplicarApiAutoPrefsTela(prefsLocal);
         atualizarStatusAutomacaoPromoPorPrefs(prefsLocal);
         iniciarPollingAutomacaoPromoServidor();

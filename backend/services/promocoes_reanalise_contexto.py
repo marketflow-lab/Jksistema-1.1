@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from backend.services import promocoes_common
 from backend.services.promocoes_lightning_acao import LIGHTNING_ROW_FIELDS, lightning_stock_error, lightning_integer
+from backend.services.promocoes_lightning_selecao import normalize_campaign_selection, selection_identity
 
 CONTEXT_VERSION = 1
 _ITEM_FIELDS = frozenset((
@@ -166,17 +167,21 @@ def finalizar_contexto_reanalise(contexto, resultado, context_sink=None):
     sites = {_text(row.get("site_id")) for row in private["rows"].values() if row.get("site_id")}
     if not private["site_id"] and len(sites) == 1:
         private["site_id"] = next(iter(sites))
-    campaigns = set()
+    campaigns = {}
     for analysis in analyses:
         if not isinstance(analysis, dict):
             continue
         promotion_id = _text(analysis.get("promo_b_id") or analysis.get("promotion_id") or analysis.get("promocao_b_id"))
         promotion_type = _text(analysis.get("promo_b_type") or analysis.get("promotion_type") or analysis.get("promocao_b_type")).upper()
         if promotion_id:
-            campaigns.add((promotion_id, promotion_type))
+            selection = normalize_campaign_selection(promotion_id, promotion_type, analysis)
+            identity = selection_identity(promotion_id, promotion_type, selection)
+            campaigns[identity] = {"promotion_id": promotion_id, "promotion_type": promotion_type, **selection}
     if not campaigns:
-        campaigns = {(row["promotion_id"], row["promotion_type"]) for row in private["rows"].values()}
-    private["promocoes_b"] = [{"promotion_id": campaign, "promotion_type": kind} for campaign, kind in sorted(campaigns)]
+        for row in private["rows"].values():
+            campaign, kind = row["promotion_id"], row["promotion_type"]
+            campaigns[selection_identity(campaign, kind, {})] = {"promotion_id": campaign, "promotion_type": kind}
+    private["promocoes_b"] = [campaigns[key] for key in sorted(campaigns)]
     context_sink(private)
 
 
@@ -283,13 +288,19 @@ def configuracao_automacao_reanalise_confere(contexto, cfg):
     canonical = contexto.get("promocoes_b")
     if not isinstance(selected, list) or not isinstance(canonical, list):
         return False
-    current_campaigns = {
-        (_text(meta.get("promo_b_id") or meta.get("promotion_id") or meta.get("value")),
-         _text(meta.get("promo_b_type") or meta.get("promotion_type") or meta.get("promoType")).upper())
-        for meta in selected if isinstance(meta, dict)
-    }
-    canonical_campaigns = {
-        (_text(meta.get("promotion_id")), _text(meta.get("promotion_type")).upper())
-        for meta in canonical if isinstance(meta, dict)
-    }
+    if any(not isinstance(meta, dict) for meta in selected + canonical):
+        return False
+    try:
+        current_campaigns = {
+            selection_identity(
+                _text(meta.get("promo_b_id") or meta.get("promotion_id") or meta.get("value")),
+                _text(meta.get("promo_b_type") or meta.get("promotion_type") or meta.get("promoType")).upper(), meta)
+            for meta in selected
+        }
+        canonical_campaigns = {
+            selection_identity(_text(meta.get("promotion_id")), _text(meta.get("promotion_type")).upper(), meta)
+            for meta in canonical
+        }
+    except (ValueError, TypeError):
+        return False
     return bool(canonical_campaigns) and current_campaigns == canonical_campaigns

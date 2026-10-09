@@ -135,6 +135,47 @@ async function startJob(id) {
   assert.strictEqual(requests.find(req => req.url.endsWith('/old-tenant')).options.headers['X-Client-ID'], 'tenant-1');
   assert.strictEqual(requests.find(req => req.url.endsWith('/new-tenant')).options.headers['X-Client-ID'], 'tenant-2');
 
+  // A date switch invalidates preparation, submission and polling within the same store.
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'static', 'frontend_promo', 'participacao.js'), 'utf8'), context, { filename: 'participacao.js' });
+  let selectedDate = '09';
+  context.getApiPromoBSelections = () => [{ value: 'LIGHTNING-A', promoType: 'LIGHTNING', selectionId: 'window-' + selectedDate,
+    lightningWindow: { start_date: `2026-10-${selectedDate}T15:00:00+00:00`, finish_date: `2026-10-${selectedDate}T23:00:00+00:00` }, activeCount: 1, eligibleCount: 1 }];
+  const changeDate = day => { selectedDate = day; context.invalidarContextoParticipacaoPromocoes(); };
+  const initialWindowContext = context.capturarContextoAnaliseApi();
+  selectedDate = '10';
+  assert.strictEqual(context.contextoAnaliseApiAtual(initialWindowContext), false, 'signature alone rejects a different date even without a generation change');
+  selectedDate = '09';
+  const widths = deferred(); context.carregarColumnWidthPrefsServidor = () => widths.promise;
+  const beforeWindowStarts = starts.length;
+  const preparingWindowA = context.processarAnaliseApi(); await flush();
+  changeDate('10'); widths.resolve();
+  assert.strictEqual((await preparingWindowA).status, 'superseded');
+  assert.strictEqual(starts.length, beforeWindowStarts, 'obsolete preparation must not submit a new job');
+  assert.strictEqual(ids.apiLoading.style.display, 'none', 'changing dates clears the loading UI');
+  context.carregarColumnWidthPrefsServidor = async () => {};
+  selectedDate = '09';
+  const submittingWindowA = context.processarAnaliseApi(); await flush();
+  const pendingWindowStart = starts.at(-1);
+  assert.strictEqual(JSON.parse(requests.filter(req => req.url.endsWith('/start')).at(-1).options.body.get('promocoes_b_meta'))[0].selection_id, 'window-09');
+  changeDate('10');
+  pendingWindowStart.resolve(response({ success: true, job_id: 'obsolete-window-start' }));
+  assert.strictEqual((await submittingWindowA).status, 'superseded');
+  assert.strictEqual(progress.has('obsolete-window-start'), false);
+  const newWindowB = await startJob('new-window-B');
+  assert.strictEqual(JSON.parse(requests.filter(req => req.url.endsWith('/start')).at(-1).options.body.get('promocoes_b_meta'))[0].selection_id, 'window-10');
+  newWindowB.pending.resolve(completed('window-B')); await newWindowB.run;
+  assert.strictEqual(state('apiAnalisesPorCampanha[0].participacao_contexto'), context.capturarParametrosParticipacaoPromocoes());
+  selectedDate = '09';
+  const pollingWindowA = await startJob('polling-window-A');
+  changeDate('10');
+  assert.strictEqual((await pollingWindowA.run).status, 'superseded', 'date switch releases the previous poll immediately');
+  const pollingWindowB = await startJob('polling-window-B');
+  pollingWindowA.pending.resolve(completed('stale-window-A')); await flush();
+  assert.strictEqual(state('currentData.length'), 0, 'late date A cannot publish into date B');
+  pollingWindowB.pending.resolve(completed('current-window-B')); await pollingWindowB.run;
+  assert.strictEqual(state('currentData[0].MLB'), 'current-window-B');
+  assert.strictEqual(state('apiAnalisesPorCampanha[0].participacao_contexto'), context.capturarParametrosParticipacaoPromocoes());
+
   listQueue = [];
   const listA1 = context.carregarPromocoesApi();
   ids.apiLojaSelect.value = 'B';

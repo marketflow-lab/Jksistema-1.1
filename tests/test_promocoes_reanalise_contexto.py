@@ -422,3 +422,80 @@ def test_duplicate_same_window_foreign_ref_is_blocked(real_participation_boundar
     result = state.participation._aplicar_participacoes_promocoes_payload(state.request_schema(**payload), "tenant-a")
     assert [detail["outcome"] for detail in result["detalhes"]] == ["applied", "blocked"]
     assert len(state.sent) == 1
+
+
+
+def _window_analysis(row, day):
+    return {"promo_b_id": CAMPAIGN, "promo_b_type": "LIGHTNING", "data": [row],
+            "lightning_window": {"start_date": f"2026-10-{day:02}T12:00:00-03:00",
+                                 "finish_date": f"2026-10-{day:02}T18:00:00-03:00"}}
+
+
+def _config_for_context(context):
+    return {"enabled": True, "loja": context["loja"], "promocao_a_id": context["promocao_a_id"],
+            "promocao_a_type": context["promocao_a_type"], "margem_minima": context["margem_minima"],
+            "margem_tolerancia": context["margem_tolerancia"], "promocoes_b_meta": [
+                {**meta, "promo_b_id": meta["promotion_id"], "promo_b_type": meta["promotion_type"]}
+                for meta in context["promocoes_b"]]}
+
+
+def test_context_preserves_three_selected_windows_without_collapsing_same_campaign():
+    context, row = fixture_context()
+    captured = []
+    analyses = [_window_analysis(row, day) for day in (9, 10, 12)]
+    original = copy.deepcopy(analyses)
+    contexts.finalizar_contexto_reanalise(context, {"analises": analyses}, captured.append)
+    canonical = captured[0]
+    assert len(canonical["promocoes_b"]) == 3
+    assert len({meta["selection_id"] for meta in canonical["promocoes_b"]}) == 3
+    assert analyses == original
+    assert contexts.configuracao_automacao_reanalise_confere(canonical, _config_for_context(canonical))
+
+
+@pytest.mark.parametrize("change", ["different-date", "undated", "legacy", "empty", "invalid", "forged-key"])
+def test_automation_guard_rejects_changed_window_of_same_campaign(change):
+    context, row = fixture_context()
+    captured = []
+    contexts.finalizar_contexto_reanalise(context, {"analises": [_window_analysis(row, 9)]}, captured.append)
+    canonical = captured[0]
+    config = _config_for_context(canonical)
+    if change == "different-date":
+        config["promocoes_b_meta"] = [_window_analysis(row, 10)]
+    elif change == "undated":
+        config["promocoes_b_meta"] = [{"promo_b_id": CAMPAIGN, "promo_b_type": "LIGHTNING", "lightning_window": {"undated": True}}]
+    elif change == "legacy":
+        config["promocoes_b_meta"] = [{"promo_b_id": CAMPAIGN, "promo_b_type": "LIGHTNING"}]
+    elif change == "empty":
+        config["promocoes_b_meta"] = []
+    elif change == "invalid":
+        config["promocoes_b_meta"][0]["lightning_window"] = {"start_date": "invalid"}
+    else:
+        config["promocoes_b_meta"][0]["selection_id"] = "client-forged-key"
+    assert not contexts.configuracao_automacao_reanalise_confere(canonical, config)
+
+
+def test_automation_guard_accepts_equivalent_timezone_but_not_legacy_to_date_upgrade():
+    context, row = fixture_context()
+    captured = []
+    contexts.finalizar_contexto_reanalise(context, {"analises": [_window_analysis(row, 9)]}, captured.append)
+    canonical = captured[0]
+    config = _config_for_context(canonical)
+    config["promocoes_b_meta"][0]["lightning_window"] = {
+        "start_date": "2026-10-09T15:00:00Z", "finish_date": "2026-10-09T21:00:00Z"}
+    assert contexts.configuracao_automacao_reanalise_confere(canonical, config)
+    assert contexts.configuracao_automacao_reanalise_confere(context, _config_for_context(context))
+    assert not contexts.configuracao_automacao_reanalise_confere(context, config)
+
+
+def test_real_automatic_job_cannot_apply_when_only_selected_date_changes(real_participation_boundary, tmp_path):
+    state = real_participation_boundary
+    captured = []
+    contexts.finalizar_contexto_reanalise(state.context,
+        {"analises": [_window_analysis(state.row, 9)]}, captured.append)
+    write_job(tmp_path, captured[0], result=state.public)
+    cfg = state.automatic_config()
+    cfg["promocoes_b_meta"] = [_window_analysis(state.row, 10)]
+    updated, changed = jobs._promo_automacao_refresh_job_state("tenant-a", cfg, aplicar=True)
+    assert changed
+    assert updated["last_apply_result"]["decision_code"] == "AUTOMATION_CONTEXT_CHANGED"
+    assert not state.sent and not state.finances

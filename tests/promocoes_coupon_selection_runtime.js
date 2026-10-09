@@ -27,7 +27,7 @@ const context = {
   apiAutoInicializada: false,
   apiAnaliseGeracao: 0, apiPromocoesCarregamentoGeracao: 0,
   apiAnaliseJobPolling: null, apiAnaliseResolveAtual: null,
-  apiPromoBCampaigns: [], apiPromoBSelectedIds: new Set(), apiPromoBPendingSelectedIds: null, apiPromoBSelectionReady: false,
+  apiPromoBCampaigns: [], apiPromoBSelectedIds: new Set(), apiPromoBPendingSelectedIds: null, apiPromoBSelectionReady: false, apiPromoBSelectionScope: '',
   document: { getElementById: id => ids[id] || null, createElement: () => new Element() },
   fetch: async (url, options) => {
     requests.push({ url, options });
@@ -38,7 +38,7 @@ const context = {
   escapeHtml: value => String(value),
   extractApiPromoBIdsFromMeta: () => [],
   API_AUTO_INTERVAL_UNITS: { minutes: { max: 100, factor: 1 } },
-  API_AUTO_MIN_INTERVAL_MIN: 1,
+  API_AUTO_MIN_INTERVAL_MIN: 1, API_AUTO_DEFAULT_INTERVAL_MIN: 60,
 };
 vm.createContext(context);
 for (const file of ['api-mercadolivre.js', 'automacao-api.js']) {

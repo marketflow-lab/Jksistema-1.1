@@ -375,9 +375,77 @@ function formatPromoOption(campanha) {
     return `${nome}${status}${periodo} (${id})`;
 }
 
+function apiPromoBSelectionKey(campanha) {
+    const tipo = String(campanha?.type || campanha?.promotion_type || campanha?.promo_b_type || '').toUpperCase();
+    return String(tipo === 'LIGHTNING' ? campanha?.selection_id || '' : campanha?.id || campanha?.promo_b_id || '').trim();
+}
+
+function formatarJanelaSelecaoRelampago(janela) {
+    if (!janela || janela.undated === true) return 'Data não informada';
+    const inicio = typeof formatarDataHoraRelampago === 'function' ? formatarDataHoraRelampago(janela.start_date) : String(janela.start_date || '');
+    const fim = typeof formatarDataHoraRelampago === 'function' ? formatarDataHoraRelampago(janela.finish_date) : String(janela.finish_date || '');
+    const datas = [janela.start_date, janela.finish_date].filter(Boolean);
+    const fuso = datas.every(data => /(?:Z|[+-]\d{2}:?\d{2})$/i.test(String(data))) ? 'Brasília' : 'fuso não informado';
+    if (inicio && fim) return `${inicio} até ${fim} (${fuso})`;
+    if (inicio) return `A partir de ${inicio} (${fuso}) · término não informado`;
+    if (fim) return `Até ${fim} (${fuso}) · início não informado`;
+    return 'Data não informada';
+}
+
+function montarMetaSelecaoPromoB(promo) {
+    return { promo_b_id: promo.value, promo_b_type: promo.promoType || '',
+        promo_texto: promo.text || promo.matchName || promo.value,
+        active_count: promo.activeCount, eligible_count: promo.eligibleCount,
+        ...(promo.selectionId ? { selection_id: promo.selectionId, lightning_window: promo.lightningWindow } : {}) };
+}
+
+function persistirSelecaoJanelasPromoB() {
+    try {
+        const prefs = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
+        prefs.promoBSelectedIds = Array.from(apiPromoBSelectedIds);
+        prefs.promoBSelectionLoja = document.getElementById('apiLojaSelect')?.value || '';
+        prefs.promoBSelectedIdsByStore = { ...(prefs.promoBSelectedIdsByStore || {}), [prefs.promoBSelectionLoja]: prefs.promoBSelectedIds };
+        localStorage.setItem(getApiAutoPrefsKey(), JSON.stringify(prefs));
+    } catch (_) {}
+}
+
+async function expandirCampanhasRelampago(campanhas, loja) {
+    const resultados = await Promise.all(campanhas.map(async campanha => {
+        if (String(campanha.type || campanha.promotion_type || '').toUpperCase() !== 'LIGHTNING') return [campanha];
+        try {
+            const query = new URLSearchParams({ loja });
+            const contagens = [resolvePromoActiveCount(campanha), resolvePromoEligibleCount(campanha)];
+            const conhecidas = contagens.filter(contagem => contagem !== null);
+            if (conhecidas.length) query.set('expected_min_items', String(Math.min(5000, conhecidas.reduce((total, contagem) => total + contagem, 0))));
+            const response = await fetch(`/api/promo/campanhas/${encodeURIComponent(campanha.id)}/janelas?${query}`, { headers: getAuthHeadersWithClient() });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok || payload.promotion_id !== campanha.id || payload.promotion_type !== 'LIGHTNING' || !Array.isArray(payload.windows)) {
+                throw new Error(payload.detail || 'Não foi possível carregar as datas das ofertas relâmpago.');
+            }
+            const vistos = new Set();
+            return payload.windows.map(janela => {
+                const selectionId = String(janela?.selection_id || '').trim();
+                const window = janela?.lightning_window;
+                if (!selectionId || vistos.has(selectionId) || !window || typeof window !== 'object'
+                    || (window.undated !== true && !(typeof window.start_date === 'string' && typeof window.finish_date === 'string' && (window.start_date.trim() || window.finish_date.trim())))
+                    || (window.undated === true && (window.start_date || window.finish_date))) {
+                    throw new Error('O servidor retornou uma seleção de data inválida. Recarregue as campanhas.');
+                }
+                vistos.add(selectionId);
+                return { ...campanha, selection_id: selectionId, lightning_window: { ...window },
+                    active_count: parsePromoCount(janela.active_count), eligible_count: parsePromoCount(janela.eligible_count) };
+            });
+        } catch (erro) {
+            return [{ ...campanha, selection_id: '', lightning_window: null,
+                lightning_selection_error: erro.message || 'Falha ao carregar as datas. Recarregue as campanhas.' }];
+        }
+    }));
+    return resultados.flat();
+}
+
 function getPromoCampaignDisplayName(campanha) {
     const tipo = String(campanha?.type || campanha?.promotion_type || campanha?.promo_b_type || '').trim().toUpperCase();
-    if (tipo === 'LIGHTNING') return 'Ofertas relâmpago';
+    if (tipo === 'LIGHTNING') return 'Ofertas relâmpago' + (campanha?.lightning_window ? ' · ' + formatarJanelaSelecaoRelampago(campanha.lightning_window) : '');
     return String(campanha?.name || campanha?.title || campanha?.id || '').trim();
 }
 
@@ -517,16 +585,17 @@ function formatPromoOptionWithCounts(campanha) {
     return hasPromoCounts(campanha) ? `${formatPromoOption(campanha)} · ${formatPromoCountsLabel(campanha)}` : formatPromoOption(campanha);
 }
 
-function findApiPromoBCampaignById(id) {
+function findApiPromoBCampaignById(id, selectionId = '') {
     const target = String(id || '').trim();
     if (!target || !Array.isArray(apiPromoBCampaigns)) return null;
-    return apiPromoBCampaigns.find((campanha) => String(campanha?.id || '').trim() === target) || null;
+    const matches = apiPromoBCampaigns.filter(campanha => String(campanha?.id || '').trim() === target);
+    return selectionId ? matches.find(campanha => apiPromoBSelectionKey(campanha) === selectionId) || null : matches[0] || null;
 }
 
 function buildApiAnalysisTabLabel(analise, idx) {
-    const campanhaBase = findApiPromoBCampaignById(analise?.promo_b_id) || {};
+    const campanhaBase = findApiPromoBCampaignById(analise?.promo_b_id, analise?.selection_id) || {};
     const tipo = String(analise?.promo_b_type || campanhaBase?.type || campanhaBase?.promotion_type || '').trim().toUpperCase();
-    const base = tipo === 'LIGHTNING' ? 'Ofertas relâmpago'
+    const base = tipo === 'LIGHTNING' ? getPromoCampaignDisplayName({ ...campanhaBase, ...analise, type: tipo })
         : (analise?.tab_label || analise?.promo_b_nome || analise?.arquivo_nome || `Campanha ${idx + 1}`);
     const campanha = {
         ...(analise || {}),
@@ -565,6 +634,8 @@ async function carregarContagensCampanhasApi(loja) {
 function buildApiPromoBSelectionInfo(campanha) {
     return {
         value: String(campanha?.id || '').trim(),
+        selectionId: String(campanha?.selection_id || '').trim(),
+        lightningWindow: campanha?.lightning_window ? { ...campanha.lightning_window } : null,
         promoType: String(campanha?.type || campanha?.promotion_type || '').trim(),
         text: formatPromoOption(campanha),
         displayText: formatPromoOptionWithCounts(campanha),
@@ -578,11 +649,11 @@ function getApiPromoBSelectedIdSet() {
     if (apiPromoBSelectionReady && apiPromoBSelectedIds instanceof Set) {
         return apiPromoBSelectedIds;
     }
-    if (apiPromoBPendingSelectedIds instanceof Set && apiPromoBPendingSelectedIds.size) {
+    if (apiPromoBPendingSelectedIds instanceof Set) {
         return apiPromoBPendingSelectedIds;
     }
     return new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [])
-        .map((campanha) => String(campanha?.id || '').trim())
+        .map(campanha => apiPromoBSelectionKey(campanha))
         .filter(Boolean));
 }
 
@@ -611,7 +682,7 @@ function getApiPromoBSelections() {
     return Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns
         .filter((campanha) => !isApiPurchaseCoupon(campanha?.type || campanha?.promotion_type))
         .map((campanha) => buildApiPromoBSelectionInfo(campanha))
-        .filter((item) => item.value && selectedIds.has(item.value)) : [];
+        .filter(item => item.value && selectedIds.has(item.selectionId || item.value) && (item.promoType.toUpperCase() !== 'LIGHTNING' || item.selectionId)) : [];
 }
 
 function normalizePromoMatchText(raw) {
@@ -700,14 +771,17 @@ function scorePromoFileMatch(fileName, promoName, promoId) {
 
 function matchApiPromoFilesToSelections(selecionadas, files) {
     const arquivos = Array.from(files || []);
-    const usados = new Set();
+    const usados = new Map();
     return selecionadas.map((promo) => {
         let best = null;
         let bestScore = 0;
         let empate = false;
         arquivos.forEach((file, idx) => {
-            if (!file || usados.has(idx)) return;
+            if (!file || (usados.has(idx) && usados.get(idx) !== promo.value)) return;
             const score = scorePromoFileMatch(file.name, promo.matchName || promo.text || '', promo.value || '');
+            if (score === 5000 && selecionadas.some(other => other.value !== promo.value
+                && scorePromoFileMatch(file.name, other.matchName || other.text || '', other.value || '') === 5000)) return;
+            if (promo.selectionId && selecionadas.filter(item => item.value === promo.value).length > 1 && score !== 5000) return;
             if (score > bestScore) {
                 best = { file, idx };
                 bestScore = score;
@@ -717,7 +791,7 @@ function matchApiPromoFilesToSelections(selecionadas, files) {
             }
         });
         if (best && !empate && bestScore >= 200) {
-            usados.add(best.idx);
+            usados.set(best.idx, promo.value);
             return { promo, file: best.file, matched: true, score: bestScore };
         }
         return { promo, file: null, matched: false, score: bestScore };
@@ -725,19 +799,33 @@ function matchApiPromoFilesToSelections(selecionadas, files) {
 }
 
 function hydrateApiPromoBSelections(lista) {
-    const validIds = new Set(lista.map((campanha) => String(campanha?.id || '').trim()).filter(Boolean));
-    if (apiPromoBPendingSelectedIds instanceof Set && apiPromoBPendingSelectedIds.size) {
-        apiPromoBSelectedIds = new Set(Array.from(apiPromoBPendingSelectedIds).filter((id) => validIds.has(id)));
+    const keys = lista.map(apiPromoBSelectionKey).filter(Boolean);
+    if (apiPromoBPendingSelectedIds instanceof Set) {
+        const migrated = new Set();
+        for (const id of apiPromoBPendingSelectedIds) {
+            const matching = lista.filter(campanha => apiPromoBSelectionKey(campanha) === id || String(campanha.id || '') === id);
+            let resolved = matching.map(apiPromoBSelectionKey).filter(Boolean);
+            if (resolved.length && matching.some(campanha => campanha.id === id && campanha.selection_id)) {
+                try {
+                    const prefs = JSON.parse(localStorage.getItem(getApiAutoPrefsKey()) || '{}');
+                    const migrationKey = JSON.stringify([document.getElementById('apiLojaSelect')?.value || '', id]);
+                    prefs.promoBLegacyWindowSelections = prefs.promoBLegacyWindowSelections || {};
+                    if (Array.isArray(prefs.promoBLegacyWindowSelections[migrationKey])) resolved = prefs.promoBLegacyWindowSelections[migrationKey];
+                    else prefs.promoBLegacyWindowSelections[migrationKey] = resolved;
+                    localStorage.setItem(getApiAutoPrefsKey(), JSON.stringify(prefs));
+                } catch (_) {}
+            }
+            if (resolved.length) resolved.forEach(key => migrated.add(key));
+            else migrated.add(id);
+        }
+        apiPromoBSelectedIds = migrated;
         apiPromoBPendingSelectedIds = null;
         apiPromoBSelectionReady = true;
-        return;
-    }
-    if (!apiPromoBSelectionReady) {
-        apiPromoBSelectedIds = new Set(validIds);
+    } else if (!apiPromoBSelectionReady) {
+        apiPromoBSelectedIds = new Set(keys);
         apiPromoBSelectionReady = true;
-        return;
     }
-    apiPromoBSelectedIds = new Set(Array.from(apiPromoBSelectedIds || []).filter((id) => validIds.has(id)));
+    persistirSelecaoJanelasPromoB();
 }
 
 function formatApiPromoBCardMeta(campanha) {
@@ -787,6 +875,7 @@ function toggleApiPromoBSelection(input) {
         apiPromoBSelectedIds.delete(id);
     }
     const card = input.closest('.api-promo-card');
+    persistirSelecaoJanelasPromoB();
     if (card) card.classList.toggle('is-selected', input.checked);
     atualizarApiPromoBSelectionSummary();
     renderApiPromoBFiles();
@@ -796,7 +885,7 @@ function toggleApiPromoBSelection(input) {
 function selecionarTodasApiPromoB() {
     if (typeof invalidarContextoParticipacaoPromocoes === 'function') invalidarContextoParticipacaoPromocoes();
     apiPromoBSelectedIds = new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [])
-        .map((campanha) => String(campanha?.id || '').trim())
+        .map(campanha => apiPromoBSelectionKey(campanha))
         .filter(Boolean));
     apiPromoBSelectionReady = true;
     renderApiPromoBButtons(apiPromoBCampaigns);
@@ -820,7 +909,7 @@ function renderApiPromoBButtons(campanhas) {
     if (!lista.length) {
         apiPromoBCampaigns = [];
         apiPromoBSelectedIds = new Set();
-        apiPromoBSelectionReady = false;
+        apiPromoBSelectionReady = true;
         wrap.innerHTML = '<div class="api-promo-empty">Nenhuma campanha criada pelo Mercado Livre.</div>';
         renderApiPromoBFiles();
         return;
@@ -840,18 +929,22 @@ function renderApiPromoBButtons(campanhas) {
             ${lista.map((campanha) => {
                 const id = String(campanha?.id || '').trim();
                 const nome = getPromoCampaignDisplayName(campanha) || 'Campanha sem nome';
-                const selecionada = selectedIds.has(id);
+                const selectionKey = apiPromoBSelectionKey(campanha);
+                const selecionada = !!selectionKey && selectedIds.has(selectionKey);
+                const indisponivel = !selectionKey;
                 return `
-                    <label class="api-promo-card ${selecionada ? 'is-selected' : ''}">
+                    <label class="api-promo-card ${String(campanha.type || campanha.promotion_type || '').toUpperCase() === 'LIGHTNING' ? 'api-promo-card--lightning' : ''} ${selecionada ? 'is-selected' : ''}">
                         <input
                             type="checkbox"
-                            value="${escapeHtml(id)}"
+                            value="${escapeHtml(selectionKey)}"
+                            data-promotion-id="${escapeHtml(id)}"
+                            ${indisponivel ? 'disabled' : ''}
                             ${selecionada ? 'checked' : ''}
                             onchange="toggleApiPromoBSelection(this)"
                         >
                         <span class="api-promo-card-body">
                             <span class="api-promo-card-title">${escapeHtml(nome)}</span>
-                            <span class="api-promo-card-meta">${escapeHtml(formatApiPromoBCardMeta(campanha))}</span>
+                            <span class="api-promo-card-meta">${escapeHtml(campanha.lightning_selection_error || (indisponivel ? 'Datas indisponíveis. Recarregue as campanhas.' : formatApiPromoBCardMeta(campanha)))}</span>
                             <span class="api-promo-card-counts">${escapeHtml(formatPromoCountsLabel(campanha))}</span>
                         </span>
                     </label>
@@ -1187,7 +1280,9 @@ function capturarContextoAnaliseApi() {
 function contextoAnaliseApiAtual(contexto) {
     return !!contexto && contexto.geracao === apiAnaliseGeracao
         && contexto.loja === String(document.getElementById('apiLojaSelect')?.value || '').trim()
-        && contexto.clientId === getPromoClientId();
+        && contexto.clientId === getPromoClientId()
+        && (!contexto.participacao || typeof capturarParametrosParticipacaoPromocoes !== 'function'
+            || contexto.participacao === capturarParametrosParticipacaoPromocoes());
 }
 
 function invalidarAnaliseApiAtual() {
@@ -1381,6 +1476,15 @@ async function carregarPromocoesApi() {
     invalidarAnaliseApiAtual();
     const selectA = document.getElementById('apiPromoASelect');
     const selectB = document.getElementById('apiPromoBSelect');
+    const scope = JSON.stringify([clientId, loja]);
+    const pending = apiPromoBSelectionScope === scope && apiPromoBSelectionReady
+        ? new Set(apiPromoBSelectedIds)
+        : (() => {
+            const prefs = typeof getApiAutoPrefs === 'function' ? getApiAutoPrefs() : {};
+            return prefs.promoBSelectionDefined ? new Set(prefs.promoBSelectedIds) : null;
+        })();
+    apiPromoBSelectionScope = scope;
+    apiPromoBPendingSelectedIds = pending;
     if (!selectA || !selectB) return;
     const selecaoAnteriorEraCupom = isApiPurchaseCoupon(selectA.selectedOptions?.[0]?.dataset?.promoType)
         || (selectA.dataset.couponBlocked === '1' && !selectA.value);
@@ -1427,14 +1531,16 @@ async function carregarPromocoesApi() {
             selectA.dataset.couponBlocked = '1';
             mostrarApiPromoCompatibilityError(getApiPromoACompatibilityError());
         }
-        renderApiPromoBButtons(campanhasB);
+        const campanhasPorJanela = await expandirCampanhasRelampago(campanhasB, loja);
+        if (!carregamentoAtual()) return;
+        renderApiPromoBButtons(campanhasPorJanela);
         if (apiAutoInicializada && getApiAutoPrefs().enabled) {
             salvarApiAutoPrefsServidor().catch(() => {});
         }
         carregarContagensCampanhasApi(loja).then((countsByCampaignId) => {
             if (!countsByCampaignId || !Object.keys(countsByCampaignId).length) return;
             if (!carregamentoAtual()) return;
-            const campanhasComContagem = campanhasB.map((campanha) => applyPromoCounts(campanha, countsByCampaignId));
+            const campanhasComContagem = apiPromoBCampaigns.map(campanha => campanha.selection_id ? campanha : applyPromoCounts(campanha, countsByCampaignId));
             renderApiPromoBButtons(campanhasComContagem);
             if (apiAutoInicializada && getApiAutoPrefs().enabled) {
                 salvarApiAutoPrefsServidor().catch(() => {});
@@ -1529,7 +1635,7 @@ async function processarAnaliseApi(opcoes = {}) {
             const countsByCampaignId = await carregarContagensCampanhasApi(loja);
             if (!contextoAnaliseApiAtual(contexto)) return { status: 'superseded' };
             if (countsByCampaignId && Object.keys(countsByCampaignId).length) {
-                apiPromoBCampaigns = apiPromoBCampaigns.map((campanha) => applyPromoCounts(campanha, countsByCampaignId));
+                apiPromoBCampaigns = apiPromoBCampaigns.map(campanha => campanha.selection_id ? campanha : applyPromoCounts(campanha, countsByCampaignId));
                 renderApiPromoBButtons(apiPromoBCampaigns);
                 promoBOptions = getApiPromoBSelections();
             }
@@ -1540,13 +1646,7 @@ async function processarAnaliseApi(opcoes = {}) {
         formData.append('promocao_a_type', promocaoAType || '');
         formData.append('margem_minima', String(Number.isFinite(margemMinima) ? margemMinima : 15));
         formData.append('margem_tolerancia', String(margemTolerancia));
-        formData.append('promocoes_b_meta', JSON.stringify(promoBOptions.map((promo) => ({
-            promo_b_id: promo.value,
-            promo_b_type: promo.promoType || '',
-            promo_texto: promo.text || promo.matchName || promo.value,
-            active_count: promo.activeCount,
-            eligible_count: promo.eligibleCount,
-        }))));
+        formData.append('promocoes_b_meta', JSON.stringify(promoBOptions.map(montarMetaSelecaoPromoB)));
 
         const resp = await fetch('/api/promo/analise-via-api/start', {
             method: 'POST',

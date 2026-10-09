@@ -65,6 +65,9 @@ from backend.services.promocoes_core import *
 from backend.services.promocoes_validacao import validar_promocoes_por_anuncio
 from backend.services.promocoes_tarifa_estimada import estimar_tarifa_promocao
 from backend.services.promocoes_lightning import merge_lightning_raw
+from backend.services.promocoes_lightning_selecao import (
+    normalize_campaign_selection, filter_lightning_selection, lightning_selection_options,
+)
 from backend.services.promocoes_reanalise_contexto import (
     novo_contexto_reanalise, registrar_linha_reanalise, finalizar_contexto_reanalise,
 )
@@ -1195,7 +1198,7 @@ async def get_tenant_id(request: Request, authorization: Optional[str] = Header(
 _PROMOCOES_PLACEHOLDER_GET_TENANT_ID = get_tenant_id
 
 
-PROMOCOES_ENDPOINTS = ('analisar_promo_via_api', 'analisar_promo_via_api_com_arquivos', 'iniciar_analise_promo_via_api', 'iniciar_analise_promo_via_api_com_arquivos', 'progresso_analise_promo_via_api_com_arquivos', 'cancelar_analise_promo_via_api_com_arquivos', 'promo_automacao_obter', 'promo_automacao_salvar', 'aplicar_participacoes_promocoes', 'aplicar_participacoes_promocoes_start', 'aplicar_participacoes_promocoes_job', 'analisar_promo_automatico')
+PROMOCOES_ENDPOINTS = ('listar_janelas_campanha_lightning', 'analisar_promo_via_api', 'analisar_promo_via_api_com_arquivos', 'iniciar_analise_promo_via_api', 'iniciar_analise_promo_via_api_com_arquivos', 'progresso_analise_promo_via_api_com_arquivos', 'cancelar_analise_promo_via_api_com_arquivos', 'promo_automacao_obter', 'promo_automacao_salvar', 'aplicar_participacoes_promocoes', 'aplicar_participacoes_promocoes_start', 'aplicar_participacoes_promocoes_job', 'analisar_promo_automatico')
 
 
 def _promo_sanitizar_tolerancia_margem(valor: Any) -> float:
@@ -1648,6 +1651,32 @@ def _promo_enriquecer_janelas_lightning(client_id, loja, cfg, campaign_id, item_
     return enriched, snapshots
 
 
+def _promo_normalizar_selecao(campaign_id, promotion_type, meta):
+    try:
+        return normalize_campaign_selection(campaign_id, promotion_type, meta)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def listar_janelas_campanha_lightning(
+    campaign_id: str, loja: str, client_id: str = Depends(get_tenant_id), expected_min_items: Optional[int] = None,
+):
+    """Read a store-scoped snapshot; group invitations without assigning dates."""
+    if not loja.strip() or not re.fullmatch(r"LGH-[A-Za-z0-9_-]{1,96}", campaign_id):
+        raise HTTPException(status_code=400, detail="Informe a loja e uma campanha de ofertas relâmpago válida.")
+    cfg = _obter_cfg_ml(client_id, loja)
+    refs, raw, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
+        client_id, loja, cfg, campaign_id, promotion_type="LIGHTNING",
+        max_items=5000, buscar_detalhes=False,
+        expected_min_items=max(0, min(5000, expected_min_items)) if expected_min_items is not None else None,
+    )
+    ids = list(dict.fromkeys(str(item.get("id") or "").strip() for item in (refs or []) if item.get("id")))
+    raw, _snapshots = _promo_enriquecer_janelas_lightning(client_id, loja, cfg, campaign_id, ids, raw)
+    pairs = expand_lightning_offers(ids, raw, "LIGHTNING", campaign_id)
+    return {"promotion_id": campaign_id, "promotion_type": "LIGHTNING",
+            "windows": lightning_selection_options(campaign_id, pairs)}
+
+
 def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends(get_tenant_id)):
     """
     Compara duas promocoes/campanhas existentes do Mercado Livre
@@ -1677,6 +1706,20 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         promo_b_types = ["" if v in {"-", "None", "null"} else v]
 
     promo_b_files = list(req.promocao_b_files or [])
+    # Optional scoped selections retain the legacy JSON route and flat result.
+    selections = [{} for _ in promo_b_ids]
+    if req.promocoes_b_meta is not None:
+        promo_b_ids, promo_b_types, selections = [], [], []
+        for meta in req.promocoes_b_meta:
+            campaign = str(meta.get("promo_b_id") or "").strip()
+            kind = str(meta.get("promo_b_type") or "").strip()
+            if not campaign:
+                raise HTTPException(status_code=400, detail="Informe a campanha de cada seleção por data.")
+            selection = _promo_normalizar_selecao(campaign, kind, meta)
+            promo_b_ids.append(campaign)
+            promo_b_types.append(kind)
+            selections.append(selection)
+        validar_promocoes_por_anuncio(promo_a_type, [{"type": kind} for kind in promo_b_types])
 
     if not req.loja or not promo_a or not promo_b_ids:
         raise HTTPException(status_code=400, detail="Informe loja, Promocao 1 e ao menos uma Promocao 2 para comparar.")
@@ -1728,6 +1771,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
             "ids_intersecao": ids_intersecao,
             "raw_b": raw_b,
             "arquivo_nome": (promo_b_files[idx_b] if idx_b < len(promo_b_files) else ""),
+            **selections[idx_b],
         })
 
     itens_filtrados, cfg = _ml_buscar_itens_batch(client_id, req.loja, cfg, sorted(ids_intersecao_global))
@@ -2125,6 +2169,7 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
                 client_id, req.loja, cfg, promo_b, available_ids, raw_b,
             )
         offer_pairs = expand_lightning_offers(available_ids, raw_b, promo_b_type, promo_b)
+        offer_pairs = filter_lightning_selection(offer_pairs, promo_b_info.get("lightning_window"))
         item_pairs = [(item_id, itens_por_id[item_id], offer_key, offer_raw)
                       for item_id, offer_key, offer_raw in offer_pairs]
         logger.info(f"[PROMO API] Comparando promocoes {promo_a} x {promo_b}: {len(item_pairs)} anuncios encontrados")
@@ -2249,6 +2294,9 @@ def analisar_promo_via_api(req: PromoAnaliseApiRequest, client_id: str = Depends
         "promocao_b_type": promo_b_types[0] if promo_b_types else "",
         "promocao_b_ids": promo_b_ids,
         "promocao_b_types": promo_b_types,
+        **({"promocoes_b_meta": [{"promo_b_id": campaign, "promo_b_type": kind, **selection}
+                                  for campaign, kind, selection in zip(promo_b_ids, promo_b_types, selections)]}
+           if req.promocoes_b_meta is not None else {}),
         "total": len(dados_analise),
         "tempo_segundos": round(time.time() - inicio, 1),
         "data": dados_payload,
@@ -2345,6 +2393,7 @@ async def analisar_promo_via_api_sem_arquivos(
         promocoes_processar.append({
             "promo_b": promo_b,
             "promo_b_type": promo_b_type,
+            **_promo_normalizar_selecao(promo_b, promo_b_type, meta),
             "promo_texto": promo_texto or promo_b,
             "active_count": active_count,
             "eligible_count": eligible_count,
@@ -2805,31 +2854,45 @@ async def analisar_promo_via_api_sem_arquivos(
         return linha
 
     analises = []
+    # Each date contributes to collection completeness before snapshot reuse.
+    expected_by_campaign = {}
+    for meta in promocoes_processar:
+        key = (meta["promo_b"], str(meta.get("promo_b_type") or "").upper())
+        demands = expected_by_campaign.setdefault(key, {})
+        selection_key = meta.get("selection_id", "")
+        expected = _promo_total_esperado_por_contagens(meta.get("active_count"), meta.get("eligible_count")) or 0
+        demands[selection_key] = max(demands.get(selection_key, 0), expected)
+    expected_by_campaign = {key: max(demands.get("", 0), sum(value for selection, value in demands.items() if selection)) or None
+                            for key, demands in expected_by_campaign.items()}
+    collections_cache = {}
+    items_cache = {}
+    windows_cache = {}
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
+        campaign_key = (promo_meta["promo_b"], str(promo_meta.get("promo_b_type") or "").upper())
         _emit_progress(
             36 + int((idx / max(1, total_solicitacoes)) * 18),
             f"Consultando Promocao 2 {idx}/{total_solicitacoes}: {promo_meta['promo_texto']}",
             details={"solicitacao_atual": idx, "solicitacoes_total": total_solicitacoes, "promo_b": promo_meta["promo_b"]},
         )
         try:
-            itens_b_refs, raw_b, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
-                client_id,
-                loja,
-                cfg,
-                promo_meta["promo_b"],
-                promotion_type=promo_meta.get("promo_b_type") or "",
-                max_items=5000,
-                buscar_detalhes=False,
-                expected_min_items=_promo_total_esperado_por_contagens(
-                    promo_meta.get("active_count"),
-                    promo_meta.get("eligible_count"),
-                ),
-                progress_callback=lambda msg, i=idx, meta=promo_meta: _emit_progress(
-                    40 + int((i / max(1, total_solicitacoes)) * 12),
-                    msg,
-                    details={"solicitacao_atual": i, "solicitacoes_total": total_solicitacoes, "promo_b": meta["promo_b"]},
-                ),
-            )
+            if campaign_key not in collections_cache:
+                itens_b_refs, raw_b, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
+                    client_id,
+                    loja,
+                    cfg,
+                    promo_meta["promo_b"],
+                    promotion_type=promo_meta.get("promo_b_type") or "",
+                    max_items=5000,
+                    buscar_detalhes=False,
+                    expected_min_items=expected_by_campaign[campaign_key],
+                    progress_callback=lambda msg, i=idx, meta=promo_meta: _emit_progress(
+                        40 + int((i / max(1, total_solicitacoes)) * 12),
+                        msg,
+                        details={"solicitacao_atual": i, "solicitacoes_total": total_solicitacoes, "promo_b": meta["promo_b"]},
+                    ),
+                )
+                collections_cache[campaign_key] = (itens_b_refs, raw_b, cfg)
+            itens_b_refs, raw_b, cfg = collections_cache[campaign_key]
         except Exception as exc:
             erro_txt = _erro_legivel(exc)
             logger.warning("[PROMO API SEM ARQUIVOS] Promocao %s falhou ao consultar itens: %s", promo_meta["promo_b"], erro_txt)
@@ -2840,6 +2903,7 @@ async def analisar_promo_via_api_sem_arquivos(
             )
             analises.append({
                 "promo_b_id": promo_meta["promo_b"],
+                **_promo_normalizar_selecao(promo_meta["promo_b"], promo_meta.get("promo_b_type"), promo_meta),
                 "promo_b_type": promo_meta.get("promo_b_type") or "",
                 "promo_b_nome": promo_meta["promo_texto"],
                 "active_count": promo_meta.get("active_count"),
@@ -2867,17 +2931,20 @@ async def analisar_promo_via_api_sem_arquivos(
         )
 
         try:
-            itens_filtrados, cfg = _ml_buscar_itens_batch(
-                client_id,
-                loja,
-                cfg,
-                ids_b,
-                progress_callback=lambda msg: _emit_progress(
-                    60 + int((idx / max(1, total_solicitacoes)) * 8),
-                    msg,
-                    details={"solicitacao_atual": idx, "solicitacoes_total": total_solicitacoes, "promo_b": promo_meta["promo_b"]},
-                ),
-            )
+            if campaign_key not in items_cache:
+                itens_filtrados, cfg = _ml_buscar_itens_batch(
+                    client_id,
+                    loja,
+                    cfg,
+                    ids_b,
+                    progress_callback=lambda msg: _emit_progress(
+                        60 + int((idx / max(1, total_solicitacoes)) * 8),
+                        msg,
+                        details={"solicitacao_atual": idx, "solicitacoes_total": total_solicitacoes, "promo_b": promo_meta["promo_b"]},
+                    ),
+                )
+                items_cache[campaign_key] = (itens_filtrados, cfg)
+            itens_filtrados, cfg = items_cache[campaign_key]
         except Exception as exc:
             erro_txt = _erro_legivel(exc)
             logger.warning("[PROMO API SEM ARQUIVOS] Promocao %s falhou ao buscar detalhes: %s", promo_meta["promo_b"], erro_txt)
@@ -2888,6 +2955,7 @@ async def analisar_promo_via_api_sem_arquivos(
             )
             analises.append({
                 "promo_b_id": promo_meta["promo_b"],
+                **_promo_normalizar_selecao(promo_meta["promo_b"], promo_meta.get("promo_b_type"), promo_meta),
                 "promo_b_type": promo_meta.get("promo_b_type") or "",
                 "promo_b_nome": promo_meta["promo_texto"],
                 "active_count": promo_meta.get("active_count"),
@@ -2908,10 +2976,13 @@ async def analisar_promo_via_api_sem_arquivos(
         }
         promotions_snapshots = {}
         if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
-            raw_b, promotions_snapshots = _promo_enriquecer_janelas_lightning(
-                client_id, loja, cfg, promo_meta["promo_b"], ids_b, raw_b,
-            )
+            if campaign_key not in windows_cache:
+                windows_cache[campaign_key] = _promo_enriquecer_janelas_lightning(
+                    client_id, loja, cfg, promo_meta["promo_b"], ids_b, raw_b,
+                )
+            raw_b, promotions_snapshots = windows_cache[campaign_key]
         offer_pairs = expand_lightning_offers(ids_b, raw_b, promo_meta.get("promo_b_type"), promo_meta["promo_b"])
+        offer_pairs = filter_lightning_selection(offer_pairs, promo_meta.get("lightning_window"))
         item_pairs = [(item_id, itens_por_id.get(item_id), offer_key, offer_raw)
                       for item_id, offer_key, offer_raw in offer_pairs]
         _emit_progress(
@@ -2955,7 +3026,8 @@ async def analisar_promo_via_api_sem_arquivos(
         planilha_nome = _salvar_planilha_analise_promo(
             client_id,
             linhas,
-            prefixo=f"analise_promo_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])[:40]}",
+            prefixo=(f"analise_promo_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])[:40]}"
+                     + (f"_{promo_meta['selection_id'][-12:]}" if promo_meta.get("selection_id") else "")),
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
@@ -3048,6 +3120,7 @@ async def analisar_promo_via_api_sem_arquivos(
         arquivo_nome = f"analise_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])}.xlsx"
         analises.append({
             "promo_b_id": promo_meta["promo_b"],
+            **_promo_normalizar_selecao(promo_meta["promo_b"], promo_meta.get("promo_b_type"), promo_meta),
             "promo_b_type": promo_meta.get("promo_b_type") or "",
             "promo_b_nome": promo_meta["promo_texto"],
             "active_count": promo_meta.get("active_count"),
@@ -3146,6 +3219,7 @@ async def analisar_promo_via_api_com_arquivos(
         promocoes_processar.append({
             "promo_b": promo_b,
             "promo_b_type": str(meta.get("promo_b_type") or "").strip(),
+            **_promo_normalizar_selecao(promo_b, meta.get("promo_b_type"), meta),
             "promo_texto": str(meta.get("promo_texto") or promo_b).strip(),
             "active_count": _promo_meta_contagem(meta, "active_count", "activeCount", "active", "ativos"),
             "eligible_count": _promo_meta_contagem(meta, "eligible_count", "eligibleCount", "eligible", "elegiveis"),
@@ -3188,6 +3262,7 @@ async def analisar_promo_via_api_com_arquivos(
 
     analises = []
     ids_globais = set()
+    arquivos_cache = {}
     for idx, promo in enumerate(promocoes_processar, start=1):
         progress_leitura = 34 + int((idx / max(1, total_solicitacoes)) * 16)
         _emit_progress(
@@ -3199,9 +3274,12 @@ async def analisar_promo_via_api_com_arquivos(
                 "arquivo": promo["arquivo_nome"],
             },
         )
-        content = await promo["upload"].read()
-        df = await asyncio.to_thread(ler_e_tratar_arquivo, content, promo["arquivo_nome"], "Promocoes")
-        mapa_promo2, ordem_ids = _extrair_mapa_promocao2_arquivo(df)
+        arquivo_key = promo["arquivo_nome"].lower()
+        if arquivo_key not in arquivos_cache:
+            content = await promo["upload"].read()
+            df = await asyncio.to_thread(ler_e_tratar_arquivo, content, promo["arquivo_nome"], "Promocoes")
+            arquivos_cache[arquivo_key] = _extrair_mapa_promocao2_arquivo(df)
+        mapa_promo2, ordem_ids = arquivos_cache[arquivo_key]
         if not mapa_promo2:
             raise HTTPException(status_code=400, detail=f"Nao foi possivel localizar os MLBs no arquivo {promo['arquivo_nome']}.")
         promo["mapa_promo2"] = mapa_promo2
@@ -3647,21 +3725,26 @@ async def analisar_promo_via_api_com_arquivos(
         )
         return linha
 
+    windows_cache = {}
     for idx, promo_meta in enumerate(promocoes_processar, start=1):
         mapa_promo2 = promo_meta["mapa_promo2"]
         ordem_ids = promo_meta["ordem_ids"]
-        raw_windows = {}
+        raw_windows, promotions_snapshots = {}, {}
         if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
-            _refs, raw_windows, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
-                client_id, loja, cfg, promo_meta["promo_b"], promotion_type="LIGHTNING",
-                max_items=5000, buscar_detalhes=False,
-            )
-        promotions_snapshots = {}
-        if str(promo_meta.get("promo_b_type") or "").upper() == "LIGHTNING":
-            raw_windows, promotions_snapshots = _promo_enriquecer_janelas_lightning(
-                client_id, loja, cfg, promo_meta["promo_b"], ordem_ids, raw_windows,
-            )
+            campaign = promo_meta["promo_b"]
+            if campaign not in windows_cache:
+                _refs, raw_windows, cfg = _ml_listar_itens_promocao_multistatus_com_raw(
+                    client_id, loja, cfg, campaign, promotion_type="LIGHTNING",
+                    max_items=5000, buscar_detalhes=False,
+                )
+                campaign_ids = list(dict.fromkeys(item_id for meta in promocoes_processar
+                    if meta["promo_b"] == campaign for item_id in meta["ordem_ids"]))
+                windows_cache[campaign] = _promo_enriquecer_janelas_lightning(
+                    client_id, loja, cfg, campaign, campaign_ids, raw_windows,
+                )
+            raw_windows, promotions_snapshots = windows_cache[campaign]
         offer_pairs = expand_lightning_offers(ordem_ids, raw_windows, promo_meta.get("promo_b_type"), promo_meta["promo_b"])
+        offer_pairs = filter_lightning_selection(offer_pairs, promo_meta.get("lightning_window"))
         item_pairs = [(item_id, itens_por_id.get(item_id), offer_key, offer_raw)
                       for item_id, offer_key, offer_raw in offer_pairs]
         progress_comp = 68 + int((idx / max(1, total_solicitacoes)) * 25)
@@ -3699,7 +3782,8 @@ async def analisar_promo_via_api_com_arquivos(
         planilha_nome = _salvar_planilha_analise_promo(
             client_id,
             linhas,
-            prefixo=f"analise_promo_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])[:40]}",
+            prefixo=(f"analise_promo_api_{re.sub(r'[^A-Za-z0-9]+', '_', promo_meta['promo_b'])[:40]}"
+                     + (f"_{promo_meta['selection_id'][-12:]}" if promo_meta.get("selection_id") else "")),
         )
         df_payload = _build_df_planilha_analise_promo(linhas).fillna("")
         dados_payload = df_payload.to_dict(orient="records")
@@ -3791,6 +3875,7 @@ async def analisar_promo_via_api_com_arquivos(
 
         analises.append({
             "promo_b_id": promo_meta["promo_b"],
+            **_promo_normalizar_selecao(promo_meta["promo_b"], promo_meta.get("promo_b_type"), promo_meta),
             "promo_b_type": promo_meta["promo_b_type"],
             "promo_b_nome": promo_meta["promo_texto"],
             "active_count": promo_meta.get("active_count"),
@@ -3895,7 +3980,7 @@ async def analisar_promo_automatico(
         "planilha_gerada": planilha_nome,
     }
 
-PEER_EXPORTS = ['logger', 'get_tenant_id', 'PROMOCOES_ENDPOINTS', 'analisar_promo_via_api', 'analisar_promo_via_api_sem_arquivos', 'analisar_promo_via_api_com_arquivos', 'analisar_promo_automatico']
+PEER_EXPORTS = ['listar_janelas_campanha_lightning', 'logger', 'get_tenant_id', 'PROMOCOES_ENDPOINTS', 'analisar_promo_via_api', 'analisar_promo_via_api_sem_arquivos', 'analisar_promo_via_api_com_arquivos', 'analisar_promo_automatico']
 __all__ = PEER_EXPORTS + ["configure_promocoes_api_analise_runtime"]
 
 configure_promocoes_api_analise_runtime()

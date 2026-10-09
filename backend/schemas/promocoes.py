@@ -14,6 +14,7 @@ class PromoAnaliseApiRequest(BaseModel):
     promocao_b_type: str | None = None
     promocao_b_types: list[str] | None = None
     promocao_b_files: list[str] | None = None
+    promocoes_b_meta: list[dict] | None = None
     margem_minima: float = 15.0
     margem_tolerancia: float = 0.0
 

@@ -70,6 +70,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
         margem_minima: float = -100,
         margem_tolerancia: float = 0,
         preco_arquivo: float = 148.46,
+        selecoes: list[dict] | None = None,
     ):
         # Os adaptadores reais vinculam o raw a campanha/item consultados.
         raw_b = self._confirmar_contexto_candidate(raw_b, promo_b_id, promo_b_type)
@@ -208,7 +209,8 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
             ),
             patch.object(analysis, "_promo_obter_fretes_por_preco", side_effect=obter_fretes),
             patch.object(analysis, "_ml_obter_taxas_anuncio", side_effect=obter_taxas),
-            patch.object(analysis, "_salvar_planilha_analise_promo", return_value=None),
+            patch.object(analysis, "_salvar_planilha_analise_promo",
+                side_effect=lambda *args, **kwargs: kwargs.get("prefixo", "analise") + "_20261009_120000.xlsx"),
             patch.object(analysis, "_build_df_planilha_analise_promo", side_effect=capturar_build),
             patch.object(
                 analysis,
@@ -250,7 +252,8 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     loja="Loja Teste", promocao_a_id=PROMO_A_ID,
                     promocao_a_type="SELLER_CAMPAIGN", promocao_b_id=promo_b_id,
                     promocao_b_type=promo_b_type, margem_minima=margem_minima,
-                    promocao_b_files=["promocao.xlsx"],
+                    promocao_b_files=["promocao.xlsx"] * (len(selecoes) if selecoes is not None else 1),
+                    promocoes_b_meta=selecoes,
                     margem_tolerancia=margem_tolerancia,
                 ), client_id="000002")
                 resultado = {"analises": [resultado_direto]}
@@ -258,7 +261,12 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                 class UploadTeste:
                     filename = "promocao.xlsx"
 
+                    consumed = False
+
                     async def read(self):
+                        if self.consumed:
+                            raise AssertionError("Uploaded stream must only be consumed once")
+                        self.consumed = True
                         return b"conteudo substituido pelo mock"
 
                 meta["arquivo_nome"] = UploadTeste.filename
@@ -268,7 +276,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     promocao_a_type="SELLER_CAMPAIGN",
                     margem_minima=margem_minima,
                     margem_tolerancia=margem_tolerancia,
-                    promocoes_b_meta=json.dumps([meta]),
+                    promocoes_b_meta=json.dumps([{**meta, **selection} for selection in selecoes] if selecoes is not None else [meta]),
                     files=[UploadTeste()],
                     client_id="000002",
                 ))
@@ -279,7 +287,7 @@ class PromocoesDescontoMlFluxoTests(unittest.TestCase):
                     promocao_a_type="SELLER_CAMPAIGN",
                     margem_minima=margem_minima,
                     margem_tolerancia=margem_tolerancia,
-                    promocoes_b_meta=json.dumps([meta]),
+                    promocoes_b_meta=json.dumps([{**meta, **selection} for selection in selecoes] if selecoes is not None else [meta]),
                     client_id="000002",
                 ))
         finally:

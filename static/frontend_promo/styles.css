@@ -654,6 +654,13 @@
             -webkit-line-clamp:2;
             -webkit-box-orient:vertical;
         }
+        .api-promo-card--lightning .api-promo-card-title {
+            display:block;
+            overflow:visible;
+            text-overflow:clip;
+            -webkit-line-clamp:unset;
+            overflow-wrap:anywhere;
+        }
         .api-promo-card-meta {
             color:#9cb7d7;
             font-size:0.76rem;

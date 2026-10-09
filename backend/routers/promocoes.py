@@ -9,6 +9,7 @@ def create_promocoes_router() -> APIRouter:
     from backend.services import promocoes_api
 
     router = APIRouter(tags=["promocoes"])
+    router.add_api_route("/api/promo/campanhas/{campaign_id}/janelas", promocoes_api.listar_janelas_campanha_lightning, methods=["GET"], name="listar_janelas_campanha_lightning")
     router.add_api_route("/api/promo/analise-via-api", promocoes_api.analisar_promo_via_api, methods=["POST"], name="analisar_promo_via_api")
     router.add_api_route("/api/promo/analise-via-api-arquivos", promocoes_api.analisar_promo_via_api_com_arquivos, methods=["POST"], name="analisar_promo_via_api_com_arquivos")
     router.add_api_route("/api/promo/analise-via-api/start", promocoes_api.iniciar_analise_promo_via_api, methods=["POST"], name="iniciar_analise_promo_via_api")
