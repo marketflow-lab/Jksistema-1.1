@@ -659,3 +659,192 @@ def test_http_fluxo_sem_documento_upload_resumo_e_download_atual(tenants, monkey
         assert sheet["D9"].value == "Sensor description"
         assert sheet["E9"].value == "Unit"
         assert _salvo(tenants)["itens"] == itens
+
+
+def _modelo_caixas_trays(*, primeira=57, segunda="3 Trays", terceira=1, separar_carton=False):
+    def alterar(sheet):
+        sheet["F3"] = primeira
+        sheet["F4"] = segunda
+        sheet["F6"] = terceira
+        if separar_carton:
+            sheet.unmerge_cells("A4:A5")
+
+    return _modelo(fotos=False, alterar=alterar)
+
+
+def test_packing_caixas_trays_parser_preserva_tipo_e_total_misto_recalculavel():
+    dados = packing._ler_packing_list_bytes(_modelo_caixas_trays())
+    assert [grupo["ctns"] for grupo in dados["grupos"]] == [57, 3, 1]
+    assert [grupo["tipo_embalagem"] for grupo in dados["grupos"]] == ["ctns", "trays", "ctns"]
+    original = copy.deepcopy(dados)
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    formulas = _sheet(conteudo)
+    calculado = _sheet(conteudo, data_only=True)
+
+    assert formulas["H9"].value == 57
+    assert formulas["H10"].value == "3 Trays"
+    assert formulas["H11"].value is None
+    assert formulas["H12"].value == 1
+    assert formulas["H13"].data_type == "f"
+    assert formulas["H13"].value.ref == "H13"
+    assert "H9" in formulas["H13"].value.text
+    assert "H12" in formulas["H13"].value.text
+    assert calculado["H13"].value == "58 CTNS + 3 Trays"
+    assert calculado["H13"].data_type == "s"
+    assert formulas.parent.calculation.fullCalcOnLoad is True
+    assert calculado["F13"].value == 19
+    assert dados == original
+
+
+@pytest.mark.parametrize("texto", ["3 Tray", "3 trays", "  3   TRAYS  ", "3 TrAyS"])
+def test_packing_caixas_trays_aceita_variacoes_de_tipo(texto):
+    dados = packing._ler_packing_list_bytes(_modelo_caixas_trays(segunda=texto))
+    grupo = dados["grupos"][1]
+    assert grupo["ctns"] == 3
+    assert grupo["tipo_embalagem"] == "trays"
+    calculado = _sheet(packing._gerar_packing_list_bytes(_lista(), dados), data_only=True)
+    assert calculado["H10"].value == "3 Trays"
+    assert calculado["H13"].value == "58 CTNS + 3 Trays"
+
+
+@pytest.mark.parametrize("texto", [
+    "0 Trays", "-3 Trays", "1.5 Trays", "1,5 Trays", "Trays",
+    "3 pallets", "abc3", "3 Trays extra", "=3 Trays", "2+1 Trays",
+    "2+1", "=3", "3箱",
+])
+def test_packing_caixas_trays_rejeita_quantidade_ou_tipo_invalido(texto):
+    with pytest.raises(HTTPException) as erro:
+        packing._ler_packing_list_bytes(_modelo_caixas_trays(segunda=texto))
+    assert erro.value.status_code == 400
+
+
+@pytest.mark.parametrize("valor", [3, "3", "3.0", "3,0", "+3"])
+def test_packing_caixas_trays_preserva_formatos_numericos_de_caixas(valor):
+    dados = packing._ler_packing_list_bytes(_modelo_caixas_trays(segunda=valor))
+    assert dados["grupos"][1]["ctns"] == 3
+    assert dados["grupos"][1]["tipo_embalagem"] == "ctns"
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    assert _sheet(conteudo)["H13"].value == "=SUM(H9:H12)"
+    assert _sheet(conteudo, data_only=True)["H13"].value == 61
+
+
+def test_packing_caixas_trays_duas_celulas_distintas_contam_ambas():
+    dados = packing._ler_packing_list_bytes(_modelo_caixas_trays(primeira=58, terceira="3 Trays"))
+    trays = [grupo for grupo in dados["grupos"] if grupo["tipo_embalagem"] == "trays"]
+    assert len(trays) == 2
+    assert trays[0]["ctns_origem"] != trays[1]["ctns_origem"]
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    calculado = _sheet(conteudo, data_only=True)
+    assert calculado["H10"].value == calculado["H12"].value == "3 Trays"
+    assert calculado["H13"].value == "58 CTNS + 6 Trays"
+
+
+def test_packing_caixas_trays_apenas_trays_preserva_total_textual():
+    def alterar(sheet):
+        sheet["F3"] = "3 Trays"
+        for linha in (4, 5, 6):
+            sheet.cell(linha, 2).value = None
+
+    dados = packing._ler_packing_list_bytes(_modelo(fotos=False, alterar=alterar))
+    assert len(dados["grupos"]) == 1
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    calculado = _sheet(conteudo, data_only=True)
+    assert calculado["H9"].value == "3 Trays"
+    assert calculado["H10"].value == "3 Trays"
+    assert calculado["H10"].data_type == "s"
+    assert "CTNS" not in calculado["H10"].value
+
+
+@pytest.mark.parametrize("quantidade,total", [(1, 59), ("3 Trays", "58 CTNS + 3 Trays")])
+def test_packing_caixas_trays_mesma_ancora_ctns_nao_conta_duas_vezes(quantidade, total):
+    dados = packing._ler_packing_list_bytes(_modelo_caixas_trays(segunda=quantidade, separar_carton=True))
+    assert len(dados["grupos"]) == 4
+    assert dados["grupos"][1]["ctns_origem"] == dados["grupos"][2]["ctns_origem"]
+    conteudo = packing._gerar_packing_list_bytes(_lista(), dados)
+    calculado = _sheet(conteudo, data_only=True)
+    assert calculado["H13"].value == total
+    valores = [calculado[f"H{linha}"].value for linha in range(9, 13)]
+    assert valores[1] == quantidade
+    assert valores[2] is None
+    assert calculado["F13"].value == 19
+
+
+@pytest.mark.parametrize("segunda,total", [(1, "59 CTNS + 3 Trays"), ("3 Trays", "58 CTNS + 6 Trays")])
+def test_packing_caixas_trays_mesmo_carton_ctns_distintos_contam_separadamente(segunda, total):
+    def alterar(sheet):
+        sheet["F3"] = 57
+        sheet.unmerge_cells("F4:F5")
+        sheet["F4"] = segunda
+        sheet["F5"] = "3 Trays"
+
+    dados = packing._ler_packing_list_bytes(_modelo(fotos=False, alterar=alterar))
+    assert len(dados["grupos"]) == 4
+    assert dados["grupos"][1]["caixas"] == dados["grupos"][2]["caixas"] == "3"
+    assert dados["grupos"][1]["ctns_origem"] != dados["grupos"][2]["ctns_origem"]
+    calculado = _sheet(packing._gerar_packing_list_bytes(_lista(), dados), data_only=True)
+    assert calculado["H10"].value == segunda
+    assert calculado["H11"].value == "3 Trays"
+    assert calculado["H13"].value == total
+    assert calculado["F13"].value == 19
+
+
+def test_packing_caixas_trays_importacao_guarda_totais_separados_e_original(tenants):
+    original = _modelo_caixas_trays(separar_carton=True)
+    antes = _salvo(tenants)
+    packing._importar_packing_list_sync("lista-1", original, "packing-trays.xlsx", "cliente-a")
+    depois = _salvo(tenants)
+    assert depois["packing_list"]["total_ctns"] == 58
+    assert depois["packing_list"]["total_trays"] == 3
+    for chave, valor in antes.items():
+        assert depois[chave] == valor
+    documento = next((tenants / "cliente-a" / "packing_lists").glob("*.xlsx"))
+    assert documento.read_bytes() == original
+    assert depois["packing_list"]["sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_packing_caixas_trays_download_historico_recalcula_sem_mudar_lista_ou_original(tenants):
+    original = _modelo_caixas_trays()
+    packing._importar_packing_list_sync("lista-1", original, "packing-antigo.xlsx", "cliente-a")
+    path = tenants / "cliente-a" / "listas_pedidos.json"
+    lista = _salvo(tenants)
+    lista["packing_list"]["total_ctns"] = 61
+    lista["packing_list"].pop("total_trays", None)
+    path.write_text(json.dumps([lista]), encoding="utf-8")
+    lista_antes = path.read_bytes()
+    documento = next((path.parent / "packing_lists").glob("*.xlsx"))
+    bytes_antes = documento.read_bytes()
+
+    resposta = packing._baixar_packing_list_sync("lista-1", "cliente-a")
+    calculado = _sheet(_response_bytes(resposta), data_only=True)
+
+    assert calculado["H13"].value == "58 CTNS + 3 Trays"
+    assert calculado["H10"].value == "3 Trays"
+    assert path.read_bytes() == lista_antes
+    assert documento.read_bytes() == bytes_antes == original
+
+
+def test_packing_caixas_trays_totais_mesclados_com_ctns_distintos_contam_uma_vez(tenants):
+    def alterar(sheet):
+        sheet.unmerge_cells("F4:F5")
+        sheet["F4"] = 1
+        sheet["F5"] = "3 Trays"
+        sheet["K4"] = .06
+        sheet["N4"] = 3.2
+        sheet["O4"] = 3.6
+
+    original = _modelo(fotos=False, alterar=alterar)
+    packing._importar_packing_list_sync("lista-1", original, "packing-totais-mesclados.xlsx", "cliente-a")
+    path = tenants / "cliente-a" / "listas_pedidos.json"
+    lista_antes = path.read_bytes()
+    documento = next((path.parent / "packing_lists").glob("*.xlsx"))
+    conteudo = _response_bytes(packing._baixar_packing_list_sync("lista-1", "cliente-a"))
+    calculado = _sheet(conteudo, data_only=True)
+
+    assert calculado["F13"].value == 19
+    assert calculado["H13"].value == "4 CTNS + 3 Trays"
+    assert calculado["M13"].value == pytest.approx(.073)
+    assert calculado["O13"].value == pytest.approx(7.6)
+    assert calculado["Q13"].value == pytest.approx(9.1)
+    assert {"M10:M11", "O10:O11", "Q10:Q11"}.issubset(set(map(str, calculado.merged_cells.ranges)))
+    assert path.read_bytes() == lista_antes
+    assert documento.read_bytes() == original

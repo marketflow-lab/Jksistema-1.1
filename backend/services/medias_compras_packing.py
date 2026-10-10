@@ -14,6 +14,7 @@ import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from xml.sax.saxutils import escape
 
 import openpyxl
 from fastapi import Depends, File, HTTPException, UploadFile
@@ -26,6 +27,7 @@ from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from openpyxl.worksheet.formula import ArrayFormula
 from backend.services.medias_compras_documentos_cadastro import (
     _contexto_cadastro_documentos, _dados_produto_documento,
 )
@@ -47,6 +49,33 @@ def _numero_packing(valor, *, obrigatorio=False):
     if isinstance(valor, bool) or numero is None or not math.isfinite(numero) or numero < 0:
         raise ValueError("O Packing List contém um valor numérico inválido.")
     return int(numero) if numero.is_integer() else numero
+
+
+def _embalagem_packing(valor):
+    """Keep trays distinct from cartons instead of dropping the unit label."""
+    tipo = "ctns"
+    if isinstance(valor, str):
+        texto = valor.strip()
+        trays = re.fullmatch(r"(?i)([0-9]+)\s+trays?", texto)
+        if trays:
+            valor, tipo = trays.group(1), "trays"
+        elif not re.fullmatch(r"\+?[0-9]+(?:[.,][0-9]+)?", texto):
+            raise ValueError("Informe uma quantidade inteira e positiva de caixas ou Trays, como 3 Trays.")
+    quantidade = _numero_packing(valor, obrigatorio=True)
+    if quantidade <= 0 or quantidade != int(quantidade):
+        raise ValueError("Informe uma quantidade inteira e positiva de caixas ou Trays.")
+    return int(quantidade), tipo
+
+
+def _totais_embalagens_packing(grupos):
+    totais = {"ctns": 0, "trays": 0}
+    origens = set()
+    for indice, grupo in enumerate(grupos):
+        origem = grupo.get("ctns_origem") or f"grupo-{indice}"
+        if origem not in origens:
+            origens.add(origem)
+            totais[grupo.get("tipo_embalagem", "ctns")] += grupo["ctns"]
+    return totais
 
 
 def _ler_packing_list_bytes(conteudo: bytes) -> dict:
@@ -134,10 +163,10 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
             if "itemno" in excel._normalizar_cabecalho_excel(sku):
                 continue
             inicio, _fim = grupos_linhas.get(linha, (linha, linha))
-            if inicio not in por_inicio:
-                ctns = _numero_packing(valor(linha, 6), obrigatorio=True)
-                if ctns <= 0 or ctns != int(ctns):
-                    raise ValueError("Informe uma quantidade inteira e positiva de caixas.")
+            origem_ctns = merged.get((linha, 6), (linha, 6))
+            chave_grupo = (inicio, origem_ctns)
+            if chave_grupo not in por_inicio:
+                ctns, tipo_embalagem = _embalagem_packing(valor(linha, 6))
                 dimensoes = [_numero_packing(valor(linha, coluna), obrigatorio=True) for coluna in (7, 8, 9)]
                 if any(numero <= 0 for numero in dimensoes):
                     raise ValueError("Informe as três medidas positivas da caixa em centímetros.")
@@ -149,16 +178,24 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
                 gw_ctn = _numero_packing(valor(linha, 13), obrigatorio=True)
                 nw_total = _numero_packing(valor(linha, 14))
                 gw_total = _numero_packing(valor(linha, 15))
+                origens_totais = {}
+                for campo, coluna, informado in (("cbm_total", 11, cbm_total),
+                                                 ("nw_total", 14, nw_total), ("gw_total", 15, gw_total)):
+                    if informado is not None:
+                        origem = merged.get((linha, coluna), (linha, coluna))
+                        origens_totais[campo] = f"{get_column_letter(origem[1])}{origem[0]}"
                 grupo = {
                     "caixas": str(caixa or "").strip(), "ctns": int(ctns), "dimensoes": dimensoes,
+                    "tipo_embalagem": tipo_embalagem, "ctns_origem": f"{get_column_letter(origem_ctns[1])}{origem_ctns[0]}",
+                    "totais_origem": origens_totais,
                     "cbm_ctn": cbm_ctn, "cbm_total": cbm_total if cbm_total is not None else cbm_ctn * ctns,
                     "nw_ctn": nw_ctn, "nw_total": nw_total if nw_total is not None else nw_ctn * ctns,
                     "gw_ctn": gw_ctn, "gw_total": gw_total if gw_total is not None else gw_ctn * ctns,
                     "itens": [],
                 }
                 grupos.append(grupo)
-                por_inicio[inicio] = grupo
-            grupo = por_inicio[inicio]
+                por_inicio[chave_grupo] = grupo
+            grupo = por_inicio[chave_grupo]
             quantidade = _numero_packing(ws.cell(linha, 4).value, obrigatorio=True)
             qty_ctn = _numero_packing(valor(linha, 5))
             grupo["itens"].append({
@@ -241,15 +278,22 @@ def _preencher_cache_totais_packing(conteudo, totais):
                     )
 
                     def atualizar(match):
+                        abertura = match.group(1)
                         corpo = match.group(2)
                         if not re.search(rb"<f(?:\s[^>]*)?>[^<]+</f>", corpo):
                             raise ValueError("Fórmula de total do Packing List ausente.")
+                        if isinstance(valor, str):
+                            abertura = re.sub(rb'\s+t="[^"]*"', b"", abertura)
+                            abertura = abertura[:-1] + b' t="str">'
+                            resultado = escape(valor).encode("utf-8")
+                        else:
+                            resultado = safe_string(valor).encode("ascii")
                         corpo, quantidade = re.subn(
-                            rb"<v>[^<]*</v>", b"<v>" + safe_string(valor).encode("ascii") + b"</v>", corpo,
+                            rb"<v>[^<]*</v>", b"<v>" + resultado + b"</v>", corpo,
                         )
                         if quantidade != 1:
                             raise ValueError("Resultado de total do Packing List inválido.")
-                        return match.group(1) + corpo + match.group(3)
+                        return abertura + corpo + match.group(3)
 
                     content, quantidade = padrao.subn(atualizar, content)
                     if quantidade != 1:
@@ -310,6 +354,8 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
         if isinstance(item, dict):
             por_sku.setdefault(_chave_sku_packing(item.get("SKU") or item.get("sku")), item)
     linha = 9
+    intervalos_ctns = {}
+    intervalos_totais = {13: {}, 15: {}, 17: {}}
     for grupo in grupos:
         inicio = linha
         fim = inicio + len(grupo["itens"]) - 1
@@ -359,15 +405,38 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
                 )
                 ws.add_image(foto)
             linha += 1
-        for coluna in (1, 6, *range(8, 18)):
+        for coluna in (1, 6, 9, 10, 11, 12, 14, 16):
             if fim > inicio:
                 ws.merge_cells(start_row=inicio, start_column=coluna, end_row=fim, end_column=coluna)
         excel._atribuir_texto_excel(ws.cell(inicio, 1), grupo["caixas"])
-        valores = {6: sum(item["quantidade"] for item in grupo["itens"]), 8: grupo["ctns"],
+        origem_ctns = grupo.get("ctns_origem") or f"grupo-{inicio}"
+        if origem_ctns in intervalos_ctns:
+            intervalos_ctns[origem_ctns][1] = fim
+        else:
+            valor_ctns = f'{grupo["ctns"]} Trays' if grupo.get("tipo_embalagem") == "trays" else grupo["ctns"]
+            intervalos_ctns[origem_ctns] = [inicio, fim, valor_ctns]
+        valores = {6: sum(item["quantidade"] for item in grupo["itens"]),
                    9: grupo["dimensoes"][0], 10: grupo["dimensoes"][1], 11: grupo["dimensoes"][2],
-                   12: round(grupo["cbm_ctn"], 3), 13: round(grupo["cbm_total"], 3),
-                   14: grupo["nw_ctn"], 15: grupo["nw_total"], 16: grupo["gw_ctn"], 17: grupo["gw_total"]}
+                   12: round(grupo["cbm_ctn"], 3), 14: grupo["nw_ctn"], 16: grupo["gw_ctn"]}
         for coluna, valor in valores.items():
+            ws.cell(inicio, coluna).value = valor
+        for coluna, campo in ((13, "cbm_total"), (15, "nw_total"), (17, "gw_total")):
+            origem = grupo.get("totais_origem", {}).get(campo) or f"grupo-{inicio}"
+            intervalos = intervalos_totais[coluna]
+            if origem in intervalos:
+                intervalos[origem][1] = fim
+            else:
+                valor = round(grupo[campo], 3) if coluna == 13 else grupo[campo]
+                intervalos[origem] = [inicio, fim, valor]
+
+    for inicio, fim, valor_ctns in intervalos_ctns.values():
+        if fim > inicio:
+            ws.merge_cells(start_row=inicio, start_column=8, end_row=fim, end_column=8)
+        ws.cell(inicio, 8).value = valor_ctns
+    for coluna, intervalos in intervalos_totais.items():
+        for inicio, fim, valor in intervalos.values():
+            if fim > inicio:
+                ws.merge_cells(start_row=inicio, start_column=coluna, end_row=fim, end_column=coluna)
             ws.cell(inicio, coluna).value = valor
 
     total = linha
@@ -377,13 +446,24 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
         ws.merge_cells(intervalo)
     excel._atribuir_texto_excel(ws.cell(total, 1), "TOTAL:")
     totais = {}
+    embalagens = _totais_embalagens_packing(grupos)
     for coluna, rotulo in ((6, "Units Total"), (8, "CTNS TOTAL"), (13, "CBM TOTAL"),
                           (15, "TOTAL NET WEIGHT"), (17, "TOTAL GROSS WEIGHT")):
         letra = get_column_letter(coluna)
-        valores = [ws.cell(r, coluna).value for r in range(9, total)
-                   if ws.cell(r, coluna).value is not None]
-        totais[f"{letra}{total}"] = math.fsum(valores)
-        ws.cell(total, coluna).value = f"=SUM({letra}9:{letra}{total - 1})"
+        if coluna == 8 and embalagens["trays"]:
+            caixas = f"SUM(H9:H{total - 1})"
+            trays = f'(SUMPRODUCT(IFERROR(1*SUBSTITUTE(H9:H{total - 1}," Trays",""),0))-{caixas})'
+            formula = (
+                f'=IF({trays}>0,IF({caixas}>0,{caixas}&" CTNS + ","")&{trays}&" Trays",{caixas})'
+            )
+            ws.cell(total, coluna).value = ArrayFormula(ref=f"H{total}", text=formula)
+            prefixo = f'{embalagens["ctns"]} CTNS + ' if embalagens["ctns"] else ""
+            totais[f"H{total}"] = f'{prefixo}{embalagens["trays"]} Trays'
+        else:
+            valores = [ws.cell(r, coluna).value for r in range(9, total)
+                       if ws.cell(r, coluna).value is not None]
+            totais[f"{letra}{total}"] = math.fsum(valores)
+            ws.cell(total, coluna).value = f"=SUM({letra}9:{letra}{total - 1})"
         excel._atribuir_texto_excel(ws.cell(ultima, coluna), rotulo)
     ws.row_dimensions[total].height = ws.row_dimensions[ultima].height = 45
     centro = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -454,11 +534,13 @@ def _importar_packing_list_sync(lista_id, conteudo, filename, client_id):
         raise HTTPException(400, "Envie um Packing List Excel .xlsx.")
     dados = _ler_packing_list_bytes(conteudo)
     grupos = dados["grupos"]
+    embalagens = _totais_embalagens_packing(grupos)
     metadata = {"schema": PACKING_SCHEMA, "documento_id": uuid.uuid4().hex,
                 "sha256": hashlib.sha256(conteudo).hexdigest(),
                 "nome_arquivo": str(filename).replace("\\", "/").rsplit("/", 1)[-1][:255],
                 "uploaded_at": datetime.now().isoformat(timespec="seconds"),
-                "total_linhas": sum(len(g["itens"]) for g in grupos), "total_ctns": sum(g["ctns"] for g in grupos)}
+                "total_linhas": sum(len(g["itens"]) for g in grupos),
+                "total_ctns": embalagens["ctns"], "total_trays": embalagens["trays"]}
     caminho = _arquivo_packing(client_id, metadata["documento_id"])
 
     @common._retry_listas_pedidos
