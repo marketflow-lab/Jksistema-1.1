@@ -26,6 +26,9 @@ from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
+from backend.services.medias_compras_documentos_cadastro import (
+    _contexto_cadastro_documentos, _dados_produto_documento,
+)
 
 from backend.services import medias_compras_common as common
 from backend.services import medias_compras_excel as excel
@@ -184,7 +187,7 @@ def _chave_sku_packing(valor):
     return re.sub(r"(?i)^sku[\s:]+", "", str(valor or "").strip()).strip().casefold()
 
 
-def _texto_comprador_packing(lista, client_id):
+def _texto_comprador_packing(lista, client_id, *, contexto_cadastro=None):
     loja = str(lista.get("loja") or "").strip()
     texto = f"STORE: {loja}" if loja and loja != "__todas" else ""
     if not client_id:
@@ -192,7 +195,7 @@ def _texto_comprador_packing(lista, client_id):
     from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
     from backend.services.cadastro_importador_loja import ler_importador_loja_por_store_id
     try:
-        contexto = visao_produtos_cadastro_contexto_loja(client_id, lista.get("store_id") or loja)
+        contexto = contexto_cadastro if contexto_cadastro is not None else visao_produtos_cadastro_contexto_loja(client_id, lista.get("store_id") or loja)
     except RuntimeError:
         return texto
     store_id = str(contexto.get("store_id") or "").strip()
@@ -257,6 +260,9 @@ def _preencher_cache_totais_packing(conteudo, totais):
 
 def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
     grupos = dados["grupos"]
+    contexto_cadastro = _contexto_cadastro_documentos(
+        lista, client_id, skus=[item["sku"] for grupo in grupos for item in grupo["itens"]],
+    )
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Packing List"
@@ -286,7 +292,7 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
     data = _data_packing(lista)
     excel._atribuir_texto_excel(ws["I3"], f"Date:  {data}" if data else "Date:")
     excel._atribuir_texto_excel(ws["A4"], importer or (f"LIST: {lista.get('nome_lista')}" if lista.get("nome_lista") else ""))
-    excel._atribuir_texto_excel(ws["I4"], _texto_comprador_packing(lista, client_id))
+    excel._atribuir_texto_excel(ws["I4"], _texto_comprador_packing(lista, client_id, contexto_cadastro=contexto_cadastro))
     headers = {
         "A7": "箱号\nCARTON NO.", "B7": "款号\nITEM NO.", "C7": "图片\nPICTURE",
         "D7": "描述\nDESC.", "E7": "数量\nQTY（PCS）", "G7": "每件数量\nQTY/CTN",
@@ -316,14 +322,32 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
                 cadastro = por_sku.get(_chave_sku_packing(rotulado.group(1)), {}) if rotulado else {}
             descricao = common._primeiro_texto_item(cadastro, [common.TITULO_PRODUTO_INGLES_KEY, "Título em inglês", "Description", "Descrição", "Descricao"])
             unidade = common._primeiro_texto_item(cadastro, ["Unit/Pair", "Unit Pair", common.COR_LADO_LISTA_PEDIDO_KEY, "Color / Side", "Cor/Lado", "Lado"])
+            produto_documento = _dados_produto_documento(contexto_cadastro, item["sku"])
+            if client_id:
+                descricao = produto_documento["descricao"]
+                unidade = produto_documento["unidade"]
             excel._atribuir_texto_excel(ws.cell(linha, 2), item["sku"])
             excel._atribuir_texto_excel(ws.cell(linha, 4), descricao)
             excel._atribuir_texto_excel(ws.cell(linha, 5), unidade)
             ws.cell(linha, 7).value = item["qty_ctn"]
             linhas_desc = sum(max(1, len(textwrap.wrap(parte, width=42))) for parte in descricao.splitlines())
             ws.row_dimensions[linha].height = max(50.25 if linha < 33 else 45, 8 + linhas_desc * 12)
-            if item.get("foto"):
-                foto = XLImage(io.BytesIO(item["foto"]))
+            caminho_foto = None
+            if client_id and produto_documento["foto"]:
+                caminho_foto = excel._resolver_caminho_foto_cadastro_seguro(
+                    client_id, produto_documento["foto"], produto_documento["sku"],
+                    contexto_cadastro.get("store_id") or None,
+                    permitir_default=False,
+                )
+            fonte_foto = caminho_foto if client_id else (io.BytesIO(item["foto"]) if item.get("foto") else None)
+            if fonte_foto:
+                try:
+                    foto = XLImage(fonte_foto)
+                except (OSError, ValueError):
+                    foto = None
+            else:
+                foto = None
+            if foto is not None:
                 width, height = larguras[2] * 7, points_to_pixels(ws.row_dimensions[linha].height)
                 escala = min((width - 8) / foto.width, (height - 8) / foto.height)
                 foto.width, foto.height = foto.width * escala, foto.height * escala

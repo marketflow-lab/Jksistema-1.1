@@ -14,6 +14,7 @@ from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import ListaPedidoUpdateRequest
 from backend.services import medias_compras_excel as excel_service
 from backend.services import medias_compras_listas as listas_service
+from backend.services import medias_compras_documentos_cadastro as cadastro_documentos
 from backend.services import cadastro_compatibilidade, cadastro_fornecedores, cadastro_importador_loja, cadastro_nacionalizadores
 
 
@@ -68,6 +69,28 @@ def _carregar_commercial_invoice(conteudo: bytes):
     workbook = load_workbook(io.BytesIO(conteudo), data_only=False)
     assert workbook.sheetnames == ["Commercial"]
     return workbook["Commercial"]
+
+
+def _cadastro_produtos_invoice(monkeypatch):
+    produtos = {
+        "001": {
+            "sku": "001", "descricao": "Temperature sensor switch",
+            "foto": "001.png", "unidade": "Unit",
+        },
+        "SKU 002": {
+            "sku": "002",
+            "descricao": '=HYPERLINK("https://example.invalid","unsafe")',
+            "foto": "", "unidade": "Unit",
+        },
+    }
+    monkeypatch.setattr(
+        cadastro_documentos, "_contexto_cadastro_documentos",
+        lambda *_args: {"store_id": "", "scope": "global_safe"},
+    )
+    monkeypatch.setattr(
+        cadastro_documentos, "_dados_produto_documento",
+        lambda _contexto, sku: produtos.get(sku, {}),
+    )
 
 
 def _formulas(sheet):
@@ -136,6 +159,7 @@ def test_commercial_invoice_foto_cabe_na_celula_sem_deformar(tmp_path, monkeypat
 
 
 def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monkeypatch):
+    _cadastro_produtos_invoice(monkeypatch)
     raiz_tenant = tmp_path / "tenant-a"
     foto = raiz_tenant / "cadastro_fotos" / "001.png"
     foto.parent.mkdir(parents=True)
@@ -814,6 +838,7 @@ def nacionalizadores_invoice(tmp_path, monkeypatch):
 
 
 def test_commercial_invoice_nacionalizador_preserva_layout_totais_foto_e_fontes(nacionalizadores_invoice, monkeypatch):
+    _cadastro_produtos_invoice(monkeypatch)
     raiz, _registro = nacionalizadores_invoice
     arquivo = raiz / "tenant-a" / "cadastro_nacionalizadores.json"
     cadastro_original = arquivo.read_bytes()

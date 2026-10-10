@@ -263,11 +263,13 @@ def _resolver_caminho_foto_cadastro_seguro(
     foto_ref: str,
     sku: str,
     store_id: str | None = None,
+    *,
+    permitir_default: bool = True,
 ) -> str | None:
     diretorios: list[tuple[str, bool]] = []
     if client_id:
         diretorios.append((os.path.realpath(os.path.join(get_tenant_path(client_id), "cadastro_fotos")), False))
-    if PASTA_INFO:
+    if PASTA_INFO and permitir_default:
         diretorios.append((os.path.realpath(os.path.join(PASTA_INFO, "default", "cadastro_fotos")), True))
 
     foto_txt = (
@@ -344,6 +346,7 @@ def _resolver_caminho_foto_commercial_invoice(
         foto_ref,
         sku,
         store_id,
+        permitir_default=not bool(client_id),
     )
 
 
@@ -354,20 +357,16 @@ def _gerar_commercial_invoice_bytes(
     data_aprovacao: str = "",
 ) -> bytes:
     lista = lista if isinstance(lista, dict) else {}
+    contexto_documentos = None
     store_id_cadastro = ""
     if client_id:
-        from backend.services.cadastro_compatibilidade import (
-            visao_produtos_cadastro_contexto_loja,
+        from backend.services.medias_compras_documentos_cadastro import (
+            _contexto_cadastro_documentos,
+            _dados_produto_documento,
         )
 
-        try:
-            contexto_cadastro = visao_produtos_cadastro_contexto_loja(
-                client_id,
-                lista.get("store_id") or lista.get("loja") or "",
-            )
-        except RuntimeError:
-            contexto_cadastro = {"store_id": "", "scope": "unavailable"}
-        store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
+        contexto_documentos = _contexto_cadastro_documentos(lista, client_id)
+        store_id_cadastro = str(contexto_documentos.get("store_id") or "").strip()
     itens = [
         (item, _normalizar_item_lista_pedido(item))
         for item in (lista.get("itens") or [])
@@ -529,18 +528,30 @@ def _gerar_commercial_invoice_bytes(
         elif valor_total is not None:
             montante = valor_total
 
-        descricao = str(item.get(TITULO_PRODUTO_INGLES_KEY) or "").strip() or _primeiro_texto_item(
-            item,
-            [
-                "Título em português",
-                "Titulo em portugues",
-                "Título do produto em português",
-                "Titulo do produto em portugues",
-                "Descrição",
-                "Descricao",
-                "Descricao do NCM",
-            ],
+        dados_cadastro = (
+            _dados_produto_documento(contexto_documentos, item.get("SKU", "")) or {}
+            if contexto_documentos is not None
+            else None
         )
+        if dados_cadastro is not None:
+            descricao = str(dados_cadastro.get("descricao") or "").strip()
+            foto_ref = str(dados_cadastro.get("foto") or "").strip()
+            sku_foto = str(dados_cadastro.get("sku") or item.get("SKU") or "").strip()
+        else:
+            descricao = str(item.get(TITULO_PRODUTO_INGLES_KEY) or "").strip() or _primeiro_texto_item(
+                item,
+                [
+                    "Título em português",
+                    "Titulo em portugues",
+                    "Título do produto em português",
+                    "Titulo do produto em portugues",
+                    "Descrição",
+                    "Descricao",
+                    "Descricao do NCM",
+                ],
+            )
+            foto_ref = item.get("Foto", "")
+            sku_foto = item.get("SKU", "")
         ncm = _primeiro_texto_item(item, ["NCM", "Código NCM", "Codigo NCM", "HS Code", "HSCODE"])
         sku = str(item.get("SKU") or "").strip()
         oe_no = sku if re.match(r"(?i)^sku(?:\s|$)", sku) else (f"SKU {sku}" if sku else "")
@@ -563,11 +574,15 @@ def _gerar_commercial_invoice_bytes(
         ws.cell(linha, 9).number_format = '"US$"#,##0.00'
         ws.row_dimensions[linha].height = 60
 
-        caminho_foto = _resolver_caminho_foto_commercial_invoice(
-            client_id,
-            item.get("Foto", ""),
-            item.get("SKU", ""),
-            store_id_cadastro or None,
+        caminho_foto = (
+            _resolver_caminho_foto_commercial_invoice(
+                client_id,
+                foto_ref,
+                sku_foto,
+                store_id_cadastro or None,
+            )
+            if contexto_documentos is None or foto_ref
+            else None
         )
         if caminho_foto:
             try:

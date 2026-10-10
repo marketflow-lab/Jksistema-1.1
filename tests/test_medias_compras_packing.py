@@ -122,7 +122,12 @@ def tenants(tmp_path, monkeypatch):
     # These synthetic tenants have no store/importer registry. Do not inherit
     # the global store runtime configured by unrelated test modules.
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"store_id": "", "scope": "unresolved"})
+                        lambda *_args: {"store_id": "store-a", "scope": "store", "produtos": [
+                            {"sku": "001", "cg_product description": "Sensor description", "Unit/Pair": "Unit"},
+                            {"sku": "002", "cg_product description": "Cable description", "Unit/Pair": "Pair"},
+                        ]})
+    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", lambda *_args: "")
+    monkeypatch.setattr(cadastro_importador_loja, "ler_importador_loja_por_store_id", lambda *_args: {})
     return raiz
 
 
@@ -390,13 +395,57 @@ def test_documento_invalido_nao_altera_lista_nem_persiste(tenants):
     assert not list(tenants.rglob("*.xlsx"))
 
 
+def test_exportacao_busca_foto_atual_por_sku_e_ignora_imagens_do_fornecedor(tenants, monkeypatch):
+    pasta = tenants / "cliente-a" / "cadastro_fotos"
+    pasta.mkdir()
+    (pasta / "001.png").write_bytes(_foto("purple", (100, 40)))
+    (pasta / "002.png").write_bytes(_foto("black", (40, 100)))
+    produtos = [
+        {"sku": "001", "cg_product description": "Current sensor, material and dimensions", "foto": "001.png"},
+        {"sku": "002", "cg_product description": "Current cable, cardboard box", "foto": "002.png"},
+    ]
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+                        lambda *_args: {"scope": "store", "store_id": "store-a", "produtos": produtos})
+    resolver = lambda _client, _sku, foto="", *_args: foto
+    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", resolver)
+    monkeypatch.setattr(excel, "_resolver_foto_cadastro_sku", resolver)
+    dados = packing._ler_packing_list_bytes(_modelo())
+    antes = copy.deepcopy(dados)
+    sheet = _sheet(packing._gerar_packing_list_bytes(_lista(), dados, client_id="cliente-a"))
+    assert [sheet[f"D{row}"].value for row in range(9, 13)] == [
+        "Current sensor, material and dimensions", "Current sensor, material and dimensions",
+        "Current cable, cardboard box", None,
+    ]
+    assert len(sheet._images) == 3
+    assert [image.anchor._from.row + 1 for image in sheet._images] == [9, 10, 11]
+    for image, cor in zip(sheet._images, ("purple", "purple", "black")):
+        assert Image.open(io.BytesIO(image._data())).getpixel((0, 0)) == Image.new("RGB", (1, 1), cor).getpixel((0, 0))
+    assert dados == antes
+    assert sheet["F13"].value == "=SUM(F9:F12)"
+    assert _sheet(packing._gerar_packing_list_bytes(_lista(), dados, client_id="cliente-a"), data_only=True)["F13"].value == 19
+    produtos[0]["cg_product description"] = "New registered technical description"
+    (pasta / "001.png").write_bytes(_foto("orange"))
+    atualizado = _sheet(packing._gerar_packing_list_bytes(_lista(), dados, client_id="cliente-a"))
+    assert atualizado["D9"].value == "New registered technical description"
+    assert Image.open(io.BytesIO(atualizado._images[0]._data())).getpixel((0, 0)) == Image.new("RGB", (1, 1), "orange").getpixel((0, 0))
+
+
+def test_exportacao_sem_cadastro_nao_usa_descricao_ou_foto_externas(tenants, monkeypatch):
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+                        lambda *_args: {"scope": "unresolved", "store_id": "", "produtos": []})
+    sheet = _sheet(packing._gerar_packing_list_bytes(_lista(), packing._ler_packing_list_bytes(_modelo()), client_id="cliente-a"))
+    assert all(sheet[f"D{row}"].value is None for row in range(9, 13))
+    assert len(sheet._images) == 0
+    assert sheet["F9"].value == 4
+
+
 def _response_bytes(response):
     async def ler():
         return b"".join([chunk async for chunk in response.body_iterator])
     return asyncio.run(ler())
 
 
-def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants):
+def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants, monkeypatch):
     original = _modelo()
     packing._importar_packing_list_sync("lista-1", original, "packing.xlsx", "cliente-a")
     path = tenants / "cliente-a" / "listas_pedidos.json"
@@ -406,6 +455,11 @@ def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants
     lista["itens"][0]["Título do produto em inglês"] = "Updated sensor description"
     lista["itens"][0]["Color/side"] = "Left"
     path.write_text(json.dumps([lista]), encoding="utf-8")
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
+                        lambda *_args: {"store_id": "store-a", "scope": "store", "produtos": [
+                            {"sku": "001", "cg_product description": "Current registered sensor", "Unit/Pair": "Unit"},
+                            {"sku": "002", "cg_product description": "Cable description", "Unit/Pair": "Pair"},
+                        ]})
     before = path.read_bytes()
     response = packing._baixar_packing_list_sync("lista-1", "cliente-a")
     conteudo = _response_bytes(response)
@@ -415,8 +469,8 @@ def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants
         assert calculado[endereco].value == pytest.approx(esperado)
     assert "UPDATED-2026" in sheet["A3"].value
     assert "September 2, 2026" in sheet["I3"].value
-    assert sheet["D9"].value == "Updated sensor description"
-    assert sheet["E9"].value == "Left"
+    assert sheet["D9"].value == "Current registered sensor"
+    assert sheet["E9"].value == "Unit"
     assert "UPDATED-2026" in response.headers["content-disposition"]
     assert path.read_bytes() == before
     assert next((path.parent / "packing_lists").glob("*.xlsx")).read_bytes() == original
