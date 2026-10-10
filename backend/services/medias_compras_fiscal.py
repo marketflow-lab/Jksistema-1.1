@@ -406,6 +406,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             contexto_preparado = visao_produtos_cadastro_contexto_loja(
                 client_id,
                 loja,
+                skus=[item.get("SKU", "") for item in lista_itens if isinstance(item, dict)],
             )
         except RuntimeError:
             contexto_preparado = {
@@ -426,6 +427,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
                 skus_controlados_contexto.add(chave_sku)
     foto_contextual_por_sku: dict[str, str] = {}
     fotos_resolvidas: dict[tuple, str] = {}
+    mapas_fotos: dict[tuple[str, str], dict[str, str]] = {}
 
     def _resolver_foto(client_id_foto, sku, foto_ref="", store_id=None):
         # A referencia e o SKU exatos fazem parte da chave: aliases e fotos
@@ -433,7 +435,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         chave = (client_id_foto, store_id, sku, foto_ref)
         if chave not in fotos_resolvidas:
             fotos_resolvidas[chave] = _resolver_foto_cadastro_sku(
-                client_id_foto, sku, foto_ref, store_id,
+                client_id_foto, sku, foto_ref, store_id, mapas_fotos=mapas_fotos,
             )
         return fotos_resolvidas[chave]
 

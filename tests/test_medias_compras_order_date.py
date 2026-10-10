@@ -73,7 +73,7 @@ def order_date_api(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-        lambda _tenant, store: {
+        lambda _tenant, store, **_kwargs: {
             "produtos": [], "store_id": store, "scope": "store", "loja_resolvida": True,
         },
     )

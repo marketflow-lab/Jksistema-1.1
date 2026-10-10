@@ -74,6 +74,17 @@ def _normalizar_sku_mes(sku: str) -> str:
     return sku_txt
 
 
+def _sku_lookup_keys_cadastro(sku_val: str) -> tuple[str, str, str]:
+    sku_norm = _normalizar_sku_mes(str(sku_val or "").strip())
+    if re.match(r"^\d+\.0+$", sku_norm):
+        sku_norm = str(int(float(sku_norm)))
+    sku_compacto = re.sub(r"[^A-Z0-9]", "", sku_norm.upper())
+    partes = re.split(r"([0-9]+)", sku_norm.upper())
+    sku_numsoft = "".join(str(int(p)) if p.isdigit() else p for p in partes)
+    sku_numsoft_compacto = re.sub(r"[^A-Z0-9]", "", sku_numsoft)
+    return sku_norm, sku_compacto, sku_numsoft_compacto
+
+
 def _chave_loja_favoritos(nome_loja: str | None) -> str:
     texto = unicodedata.normalize("NFKD", str(nome_loja or "").strip().lower())
     texto = "".join(ch for ch in texto if not unicodedata.combining(ch))

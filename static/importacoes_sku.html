@@ -941,6 +941,7 @@
         }
 
         let cotacaoDolarHoje = 0;
+        let promessaCotacaoTopo = null;
         let ultimoValorTotalDolarIi = null;
         let ultimoFreteInternacionalUsdIi = null;
         let ultimoPercentualIi = null;
@@ -954,7 +955,43 @@
         let ultimaAnaliseConcorrentes = null;
         let ultimosAnunciosLojaConcorrentes = {};
         let cacheImpostosProdutos = null;
-        let promessaImpostosProdutos = null;
+        let geracaoDetalheSku = 0;
+        let contextoDetalheSku = null;
+        let custoComplementosPendente = true;
+        let analiseComplementosPronta = false;
+        const COMPLEMENTO_SKU_TIMEOUT_MS = 5000;
+        const controladoresDetalheSku = new Set();
+
+        function detalheSkuVigente(contexto) {
+            const params = getParams();
+            return contexto && contexto.geracao === geracaoDetalheSku
+                && contexto.listaId === params.listaId && contexto.sku === normSku(params.sku);
+        }
+
+        async function consultarJsonDetalheSku(url, contexto, opcoes = {}) {
+            if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
+            const controller = new AbortController();
+            controladoresDetalheSku.add(controller);
+            const timeout = setTimeout(() => controller.abort(), opcoes.timeoutMs || COMPLEMENTO_SKU_TIMEOUT_MS);
+            try {
+                const resp = await fetch(url, {
+                    ...opcoes, headers: { ...obterAuthHeaders(), ...opcoes.headers },
+                    cache: 'no-store', signal: controller.signal,
+                });
+                const dados = await resp.json();
+                if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
+                if (!resp.ok) throw new Error(typeof dados.detail === 'string' ? dados.detail : 'Consulta indisponível.');
+                return dados;
+            } catch (erro) {
+                if (controller.signal.aborted && detalheSkuVigente(contexto)) {
+                    throw new Error('Tempo limite ao carregar informações complementares.');
+                }
+                throw erro;
+            } finally {
+                clearTimeout(timeout);
+                controladoresDetalheSku.delete(controller);
+            }
+        }
         let cardArrastado = null;
         const LS_CARD_ORDER_KEY = 'importacoes_sku_card_order_v1';
         const LS_CARD_ORDER_CONTEXT = 'global';
@@ -1037,9 +1074,13 @@
                         valFinal,
                         ultimoQtdSku
                     );
-                    void salvarAnaliseConcorrentes(listaId, normSku(sku))
-                        .then((resultado) => aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes))
+                    const contextoPersistencia = contextoDetalheSku;
+                    if (analiseComplementosPronta) void salvarAnaliseConcorrentes(listaId, normSku(sku))
+                        .then((resultado) => {
+                            if (detalheSkuVigente(contextoPersistencia)) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);
+                        })
                         .catch((erroPersistencia) => {
+                            if (!detalheSkuVigente(contextoPersistencia)) return;
                             setErro(
                                 erroPersistencia.message
                                 || 'As margens foram recalculadas, mas não foi possível atualizar a lista.'
@@ -1055,11 +1096,11 @@
                 input.addEventListener('blur', () => { if (card.dataset.editando === '1') salvar(); });
             };
 
-            elValor.addEventListener('dblclick', iniciarEdicao);
-            card.addEventListener('dblclick', (ev) => {
+            elValor.ondblclick = iniciarEdicao;
+            card.ondblclick = (ev) => {
                 if (ev.target === elValor) return;
                 iniciarEdicao(ev);
-            });
+            };
         }
 
         function normTxt(v) {
@@ -1583,32 +1624,28 @@
         }
 
         function obterM3TotalItemCadastro(item, mapaM3Cadastro) {
-            const qtd = getNumber(item && (item.Quantidade || item.Qtd)) || 0;
+            const qtd = getNumber(item && (item.Quantidade ?? item.Qtd));
+            if (qtd === 0) return 0;
             const m3Individual = obterM3IndividualCadastroPorSku(mapaM3Cadastro, item && item.SKU)
                 || obterM3IndividualItemLista(item);
             if (m3Individual > 0 && qtd > 0) {
                 const totalCalc = m3Individual * qtd;
                 return Number.isFinite(totalCalc) ? totalCalc : 0;
             }
-            return 0;
+            const total = getNumber(getField(item, ['M3', 'Estimated CBM', 'Estimed CBM'], ''));
+            return total !== null && total > 0 ? total : null;
         }
 
-        async function carregarMapaM3Cadastro() {
+        async function carregarMapaM3Cadastro(storeId, itens, contexto) {
             const mapa = new Map();
-            try {
-                const resp = await fetch('/api/cadastro/produtos', {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store'
-                });
-                if (!resp.ok) return mapa;
-                const produtos = await resp.json().catch(() => ([]));
-                (Array.isArray(produtos) ? produtos : []).forEach((p) => {
-                    registrarM3CadastroPorSku(mapa, p && p.sku, obterM3IndividualProdutoCadastro(p));
-                });
-            } catch (_e) {
-                // Sem cadastro carregado, a tela mantém M3 zerado.
-            }
+            if ((itens || []).every(item => obterM3TotalItemCadastro(item, mapa) !== null)) return mapa;
+            if (!storeId) throw new Error('Loja da lista não identificada para consultar a metragem.');
+            const produtos = await consultarJsonDetalheSku('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto);
+            if (!Array.isArray(produtos)) throw new Error('Cadastro de metragem indisponível.');
+            produtos.forEach(produto => {
+                if (!produto || String(produto.store_id || '') !== storeId) return;
+                registrarM3CadastroPorSku(mapa, produto.sku, obterM3IndividualProdutoCadastro(produto));
+            });
             return mapa;
         }
 
@@ -1617,13 +1654,17 @@
             if (!dados.length) return null;
 
             const totalUsd = dados.reduce((acc, row) => {
-                const qtd = getNumber(row && (row.Quantidade || row.Qtd));
-                const total = getNumber(row && (row['Valor total'] || row['Valor total em dólar']));
-                const unit = getNumber(row && (row['Valor unidade'] || row['Valor em dólar']));
-                return acc + (total !== null && total > 0 ? total : ((qtd || 0) * (unit || 0)));
+                const qtd = getNumber(row && (row.Quantidade ?? row.Qtd));
+                const total = getNumber(row && (row['Valor total'] ?? row['Valor total em dólar']));
+                const unit = getNumber(row && (row['Valor unidade'] ?? row['Valor em dólar']));
+                if (acc === null) return null;
+                const valor = total !== null ? total : (qtd === 0 ? 0 : (qtd !== null && unit !== null ? qtd * unit : null));
+                return valor !== null ? acc + valor : null;
             }, 0);
 
-            const totalM3 = dados.reduce((acc, row) => acc + obterM3TotalItemCadastro(row, mapaM3Cadastro), 0);
+            const metragens = dados.map(row => obterM3TotalItemCadastro(row, mapaM3Cadastro));
+            if (metragens.some(valor => valor === null)) return null;
+            const totalM3 = metragens.reduce((acc, valor) => acc + valor, 0);
             if (totalUsd > 0 && totalM3 > 0) {
                 return totalUsd / totalM3;
             }
@@ -1787,20 +1828,20 @@
         }
 
         async function salvarAnaliseConcorrentes(listaId, sku) {
-            const resp = await fetch(
+            const contexto = contextoDetalheSku;
+            if (!analiseComplementosPronta || custoComplementosPendente || !detalheSkuVigente(contexto)
+                || contexto.listaId !== String(listaId) || contexto.sku !== normSku(sku)) {
+                throw new Error('A análise aguarda o carregamento completo dos custos e concorrentes.');
+            }
+            return consultarJsonDetalheSku(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
-                    + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
+                    + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes', contexto,
                 {
                     method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(coletarAnaliseConcorrentes()),
                 }
             );
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Não foi possível salvar as margens dos concorrentes.');
-            }
-            return resp.json();
         }
 
         function atualizarCustoTotalProduto(icmsValor) {
@@ -1808,7 +1849,7 @@
             const elCustoTotal = document.getElementById('vCustoTotalProduto');
             const elValUnit = document.getElementById('vValorUnitarioProduto');
             const elDespesasNacionais = document.getElementById('vDespesasNacionais');
-            if (!c || !(c.prodBrl > 0)) {
+            if (custoComplementosPendente || !c || !(c.prodBrl > 0) || getNumber(icmsValor) === null) {
                 ultimoValorUnitarioProduto = null;
                 if (elCustoTotal) elCustoTotal.textContent = '-';
                 if (elValUnit) elValUnit.textContent = '-';
@@ -1838,10 +1879,12 @@
         }
 
         async function carregarFxTopo() {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), COMPLEMENTO_SKU_TIMEOUT_MS);
             try {
                 const resp = await fetch('https://economia.awesomeapi.com.br/json/last/USD-BRL', {
                     method: 'GET',
-                    cache: 'no-store'
+                    cache: 'no-store', signal: controller.signal
                 });
                 if (!resp.ok) throw new Error('falha cotação');
                 const data = await resp.json();
@@ -1873,6 +1916,8 @@
                     ultimaProporcao,
                     ultimoQtdSku
                 );
+            } finally {
+                clearTimeout(timeout);
             }
         }
 
@@ -1919,7 +1964,7 @@
             const valorProdutoReais = (valorProdutoUsd > 0 && cotacaoBase > 0)
                 ? (valorProdutoUsd * cotacaoBase)
                 : null;
-            const baseTributosReais = (baseTributosUsd > 0 && cotacaoBase > 0)
+            const baseTributosReais = (baseTributosUsd > 0 && cotacaoBase > 0 && totalUsd !== null && freteUsd !== null)
                 ? (baseTributosUsd * cotacaoBase)
                 : null;
             const baseTributosReaisProp = baseTributosReais !== null ? baseTributosReais * propFactor : null;
@@ -2164,6 +2209,8 @@
         }
 
         async function enriquecerPrecosAnalise(comparacoes) {
+            const contexto = comparacoes.contextoCarregamento;
+            const vigente = () => !contexto || detalheSkuVigente(contexto);
             const tarefas = [];
             [1, 2, 3, 4, 5].forEach((numero) => {
                 const chave = 'concorrente_' + numero;
@@ -2176,19 +2223,23 @@
 
                 if (itemMlb) {
                     tarefas.push(async () => {
+                        if (!vigente()) return;
                         const detalhe = await buscarDetalhePrecoOferta(itemMlb, linkMlb, precoMlb);
+                        if (!vigente()) return;
                         aplicarDetalhePrecoOferta('mlb', numero, detalhe);
                     });
                 }
                 if (itemConcorrente) {
                     tarefas.push(async () => {
+                        if (!vigente()) return;
                         const detalhe = await buscarDetalhePrecoOferta(itemConcorrente, linkConcorrente, precoConcorrente);
+                        if (!vigente()) return;
                         aplicarDetalhePrecoOferta('concorrente', numero, detalhe);
                     });
                 }
             });
             await executarConsultasPrecosLimitadas(tarefas, 2);
-            atualizarTodasMargensConcorrentes();
+            if (vigente()) atualizarTodasMargensConcorrentes();
         }
 
         function setText(id, value) {
@@ -2358,7 +2409,7 @@
                 : 'src="' + foto + '"';
         }
 
-        function preencherCampos(item, lista, cad, itensLista, mapaM3Cadastro) {
+        function preencherCampos(item, lista, cad, itensLista, mapaM3Cadastro, opcoes = {}) {
             const sku = getField(item, ['SKU']);
             const proporcao = getField(item, ['Proporção', 'Proporcao', 'Propor??o']);
             const foto = getField(item, ['Foto', 'Imagem', 'Image'], '');
@@ -2424,7 +2475,7 @@
                 : (obterM3IndividualCadastroPorSku(mapaM3Cadastro, sku) || obterM3IndividualItemLista(item));
             const m3Num = (m3IndividualCadastro > 0 && qtdNum > 0)
                 ? (m3IndividualCadastro * qtdNum)
-                : 0;
+                : obterM3TotalItemCadastro(item, mapaM3Cadastro);
 
             // --- Proporção: carrega do localStorage ou usa 100% como padrão ---
             const { listaId: listaIdParam } = getParams();
@@ -2463,14 +2514,20 @@
                 : '';
 
             setText('vSku', sku);
-            setText('vProp', propLocal.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + '%');
+            if (document.querySelector('.kv.prop')?.dataset.editando !== '1') {
+                setText('vProp', propLocal.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + '%');
+            }
             setText('vTituloPt', tituloPt);
             setText('vNcm', ncm);
             setNcmDescricao(ncmDescricao || '-');
             setText('vCest', cest);
             setText('vDolar', fmtUsd(valorDolar));
-            setText('vValorTotalDolar', fmtUsd(valorTotalDolar !== '-' ? valorTotalDolar : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0))));
-            const valorTotalDolarNum = getNumber(valorTotalDolar !== '-' ? valorTotalDolar : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0)));
+            const valorUnitarioDolarNum = getNumber(valorDolar);
+            const quantidadeNum = getNumber(quantidade);
+            const totalDolarInformado = getNumber(valorTotalDolar);
+            const valorTotalDolarNum = totalDolarInformado !== null ? totalDolarInformado
+                : (valorUnitarioDolarNum !== null && quantidadeNum !== null ? valorUnitarioDolarNum * quantidadeNum : null);
+            setText('vValorTotalDolar', fmtUsd(valorTotalDolarNum));
             const valorTotalBrlCalc = (valorTotalDolarNum !== null && dolarBase !== null && dolarBase > 0)
                 ? (valorTotalDolarNum * dolarBase)
                 : null;
@@ -2487,9 +2544,17 @@
             setText('vValorPorM3', valorPorM3Display !== null ? fmtUsd(valorPorM3Display) : '-');
             setText('vDolarCompra', dolarBase !== null && dolarBase > 0 ? fmtBRL(dolarBase) : '-');
             setText('vPeso', fmtQty(peso));
-            const valorTotalDolarCalc = valorTotalDolar !== '-'
-                ? valorTotalDolar
-                : ((getNumber(valorDolar) || 0) * (getNumber(quantidade) || 0));
+            if (opcoes.somenteDadosLista) {
+                [['lblIi', 'II', ii], ['lblIpi', 'IPI', ipi], ['lblPis', 'PIS', pis], ['lblCofins', 'COFINS', cofins]].forEach(([id, nome, valor]) => {
+                    const aliquota = getNumber(valor);
+                    setText(id, aliquota !== null ? nome + ' ' + fmtPct(aliquota) : nome);
+                });
+                setLink('vLink', link);
+                renderFoto(obterUrlFoto(foto), sku);
+                inicializarEdicaoProporcao(listaIdParam, sku);
+                return Promise.resolve();
+            }
+            const valorTotalDolarCalc = valorTotalDolarNum;
             const freteBrlBase = (freteInternacionalBrlCalc !== null)
                 ? freteInternacionalBrlCalc
                 : getNumber(freteInternacionalBruto);
@@ -2693,38 +2758,23 @@
             return icmsFinal;
         }
 
-        async function carregarMapaProdutosImpostos() {
+        async function carregarMapaProdutosImpostos(contexto = contextoDetalheSku) {
             if (cacheImpostosProdutos instanceof Map) return cacheImpostosProdutos;
-            if (!promessaImpostosProdutos) {
-                promessaImpostosProdutos = (async () => {
-                    const mapa = new Map();
-                    try {
-                        const resp = await fetch('/api/impostos/produtos', {
-                            method: 'GET',
-                            headers: { ...obterAuthHeaders() },
-                            cache: 'no-store'
-                        });
-                        if (!resp.ok) return mapa;
-
-                        const data = await resp.json().catch(() => ({}));
-                        const produtos = Array.isArray(data && data.produtos) ? data.produtos : [];
-                        produtos.forEach((produto) => {
-                            const k1 = normSku(produto && produto.sku);
-                            const k2 = normalizarSkuComparacao(produto && produto.sku);
-                            if (k1 && !mapa.has(k1)) mapa.set(k1, produto);
-                            if (k2 && !mapa.has(k2)) mapa.set(k2, produto);
-                        });
-                    } catch (_e) {
-                        // ignora falha e mantém fallback local
-                    }
-                    cacheImpostosProdutos = mapa;
-                    return mapa;
-                })();
-            }
-            return promessaImpostosProdutos;
+            const data = await consultarJsonDetalheSku('/api/impostos/produtos', contexto);
+            const mapa = new Map();
+            const produtos = Array.isArray(data && data.produtos) ? data.produtos : [];
+            produtos.forEach(produto => {
+                const k1 = normSku(produto && produto.sku);
+                const k2 = normalizarSkuComparacao(produto && produto.sku);
+                if (k1 && !mapa.has(k1)) mapa.set(k1, produto);
+                if (k2 && !mapa.has(k2)) mapa.set(k2, produto);
+            });
+            if (detalheSkuVigente(contexto)) cacheImpostosProdutos = mapa;
+            return mapa;
         }
 
         async function aplicarDadosImpostoNosCards(sku, baseIcmsAtual, stMinasAtual, stParaibaAtual, mvaMinasAtual, ipiPercentualAtual, freteImpFederalAtual, baseCstMgAtual, baseCstPbAtual) {
+            const contexto = contextoDetalheSku;
             const stMgFallback = String(stMinasAtual || '').trim();
             const stPbFallback = String(stParaibaAtual || '').trim();
             const baseCstMgTexto = String(baseCstMgAtual || '').trim();
@@ -2736,7 +2786,8 @@
             const fatorIpi = ipiNumBase !== null ? (1 + (ipiNumBase / 100)) : null;
 
             try {
-                const mapa = await carregarMapaProdutosImpostos();
+                const mapa = await carregarMapaProdutosImpostos(contexto);
+                if (!detalheSkuVigente(contexto)) return;
                 const dados = mapa.get(normSku(sku)) || mapa.get(normalizarSkuComparacao(sku)) || null;
 
                 const stMg = String((dados && dados.convenio_mg_st_minas) || stMgFallback || '').trim();
@@ -2769,6 +2820,7 @@
                     document.getElementById('vIcms')?.textContent || '-'
                 );
             } catch (_e) {
+                if (!detalheSkuVigente(contexto)) return;
                 const usaStMg = possuiRespostaSim(stMgFallback);
                 const usaStPb = possuiRespostaSim(stPbFallback);
                 const mvaMgNum = extrairPrimeiroNumero(mvaMinasAtual);
@@ -2836,76 +2888,18 @@
             };
         }
 
-        async function buscarDadosNoCadastro(sku) {
-            const skuNorm = normSku(sku);
-            const skuCmp = normalizarSkuComparacao(sku);
-            const dadosVazios = { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
-            if (!skuNorm) return dadosVazios;
-            let dadosDiretos = dadosVazios;
-
-            try {
-                const respSku = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuNorm), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store'
-                });
-                if (respSku.ok) {
-                    const dataSku = await respSku.json().catch(() => ({}));
-                    const produtoDireto = dataSku && dataSku.produto ? dataSku.produto : null;
-                    if (produtoDireto) {
-                        dadosDiretos = montarDadosCadastroSku(produtoDireto);
-                        if (dadosDiretos.tituloPt && dadosDiretos.ncm) {
-                            return dadosDiretos;
-                        }
-                    }
-                }
-            } catch (_e) {
-                // fallback para a lista completa abaixo
+        async function buscarDadosNoCadastro(sku, storeId, contexto) {
+            if (!storeId) throw new Error('Loja da lista não identificada para consultar o cadastro.');
+            const data = await consultarJsonDetalheSku('/api/cadastro/lojas/' + encodeURIComponent(storeId)
+                + '/produtos/' + encodeURIComponent(normSku(sku)), contexto);
+            const produto = data && data.produto;
+            if (!produto || String(produto.store_id || '') !== storeId) {
+                throw new Error('O cadastro retornado não pertence à loja desta lista.');
             }
-
-            try {
-                const resp = await fetch('/api/cadastro/produtos', {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) return dadosDiretos;
-
-                const produtos = await resp.json();
-                const lista = Array.isArray(produtos) ? produtos : [];
-                let produto = lista.find((p) => normSku(p && p.sku) === skuNorm);
-                if (!produto && skuCmp) {
-                    produto = lista.find((p) => normalizarSkuComparacao(p && p.sku) === skuCmp);
-                }
-                if (!produto) return dadosDiretos;
-
-                const tituloPt = pickCadastro(produto, [
-                    'produto_bling',
-                    'nome_bling',
-                    'produtos blig',
-                    'produto blig',
-                    'produtos bling',
-                    'produto bling',
-                    'nome',
-                    'produto'
-                ]);
-
-                const ncm = pickCadastro(produto, ['ncm', 'NCM']);
-                const cest = pickCadastro(produto, ['cest', 'CEST']);
-                const ncmDescricao = pickCadastro(produto, [
-                    'descricao ncm',
-                    'descrição ncm',
-                    'ncm descricao',
-                    'ncm descrição',
-                    'desc ncm',
-                    'ncm desc'
-                ]);
-                return mesclarDadosCadastroSku(dadosDiretos, montarDadosCadastroSku(produto));
-            } catch (_e) {
-                return dadosDiretos;
-            }
+            return montarDadosCadastroSku(produto);
         }
 
-        async function buscarLinksConcorrentes(sku) {
+        async function buscarLinksConcorrentes(sku, contexto) {
             const skuNorm = normSku(sku);
             const vazio = {
                 links: { concorrente_1: '', concorrente_2: '', concorrente_3: '', concorrente_4: '', concorrente_5: '' },
@@ -2916,19 +2910,24 @@
             if (!skuNorm) return vazio;
 
             try {
-                const resp = await fetch('/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store'
-                });
-                if (!resp.ok) {
-                    const erro = await resp.json().catch(() => ({}));
-                    throw new Error(
-                        String(erro.detail || '').trim()
-                        || 'Não foi possível carregar os anúncios e preços dos concorrentes.'
-                    );
+                const url = '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm);
+                let data;
+                if (contexto) data = await consultarJsonDetalheSku(url, contexto);
+                else {
+                    const resp = await fetch(url, {
+                        method: 'GET',
+                        headers: { ...obterAuthHeaders() },
+                        cache: 'no-store'
+                    });
+                    if (!resp.ok) {
+                        const erro = await resp.json().catch(() => ({}));
+                        throw new Error(
+                            String(erro.detail || '').trim()
+                            || 'Não foi possível carregar os anúncios e preços dos concorrentes.'
+                        );
+                    }
+                    data = await resp.json();
                 }
-                const data = await resp.json();
                 const c = data && data.concorrentes ? data.concorrentes : {};
                 const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
                 const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
@@ -2973,50 +2972,67 @@
 
         async function carregarDetalheSku() {
             const { listaId, sku } = getParams();
+            const contexto = { geracao: ++geracaoDetalheSku, listaId, sku: normSku(sku) };
+            contextoDetalheSku = contexto;
+            controladoresDetalheSku.forEach(controller => controller.abort());
+            cacheImpostosProdutos = null;
+            custoComplementosPendente = true;
+            analiseComplementosPronta = false;
+            ultimoValorUnitarioProduto = null;
+            ultimaAnaliseConcorrentes = null;
+            setText('vCustoTotalProduto', '-');
+            setText('vValorUnitarioProduto', '-');
+            setText('vDespesasNacionais', '-');
             const btnVoltar = document.getElementById('btnVoltar');
-            if (btnVoltar && listaId) {
-                btnVoltar.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
-            }
-
+            if (btnVoltar && listaId) btnVoltar.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
             if (!listaId || !sku) {
                 setErro('Parâmetros inválidos. Informe lista_id e sku na URL.');
                 return;
             }
-
             try {
                 setErro('');
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Não foi possível carregar a lista.');
-                }
-
-                const data = await resp.json();
+                const data = await consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), contexto, { timeoutMs: 15000 });
+                if (!detalheSkuVigente(contexto)) return;
                 const lista = data && data.lista ? data.lista : {};
                 atualizarFxCompraTopo(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
                 const itens = Array.isArray(lista.itens) ? lista.itens : [];
                 const skuNorm = normSku(sku);
-                const item = itens.find((i) => normSku(i && i.SKU) === skuNorm);
-
+                const item = itens.find(i => normSku(i && i.SKU) === skuNorm);
                 montarMeta(String(lista.nome_lista || '-'), skuNorm);
-
-                if (!item) {
-                    throw new Error('SKU não encontrado nesta lista.');
-                }
-
-                const cad = await buscarDadosNoCadastro(skuNorm);
-                const mapaM3Cadastro = await carregarMapaM3Cadastro();
-                if (cad && Number(cad.m3Individual || 0) > 0) {
-                    registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
-                }
-                const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
+                if (!item) throw new Error('SKU não encontrado nesta lista.');
+                preencherCampos(item, lista, null, itens, new Map(), { somenteDadosLista: true });
                 configurarAprovacaoCompra(lista, item);
-
-                const linksConc = await buscarLinksConcorrentes(skuNorm);
+                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                const storeId = String(lista.store_id || '').trim();
+                const promessaConcorrentes = buscarLinksConcorrentes(skuNorm, contexto).then(
+                    value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })
+                );
+                const resultados = await Promise.allSettled([
+                    buscarDadosNoCadastro(skuNorm, storeId, contexto),
+                    carregarMapaM3Cadastro(storeId, itens, contexto),
+                    carregarMapaProdutosImpostos(contexto),
+                    (getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
+                ]);
+                if (!detalheSkuVigente(contexto)) return;
+                const cad = resultados[0].status === 'fulfilled' ? resultados[0].value : null;
+                const mapaM3Cadastro = resultados[1].status === 'fulfilled' ? resultados[1].value : new Map();
+                if (cad && Number(cad.m3Individual || 0) > 0) registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
+                // Falha fiscal mantém os dados locais, sem repetir a consulta nem publicar análise parcial.
+                if (resultados[2].status !== 'fulfilled') cacheImpostosProdutos = new Map();
+                const m3 = cad && cad.m3Individual > 0 ? cad.m3Individual * (getNumber(item.Quantidade) || 0) : obterM3TotalItemCadastro(item, mapaM3Cadastro);
+                const frete = obterValorPorM3Usd(lista, item, itens, mapaM3Cadastro);
+                const aliquotas = ['II', 'IPI', 'PIS', 'COFINS'].map(chave => getNumber(getField(item, [chave], '')));
+                custoComplementosPendente = !(resultados[2].status === 'fulfilled' && m3 !== null && frete !== null
+                    && aliquotas.every(valor => valor !== null) && getNumber(item.Quantidade) > 0
+                    && ((getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
+                const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
+                const resultadoConcorrentes = await promessaConcorrentes;
+                if (!detalheSkuVigente(contexto)) return;
+                const falhas = [...resultados, resultadoConcorrentes].filter(resultado => resultado.status === 'rejected');
+                if (falhas.length) setErro('Algumas informações complementares estão indisponíveis. Os dados da lista continuam disponíveis. Atualize a página para tentar novamente.');
+                if (resultadoConcorrentes.status !== 'fulfilled') { await promessaDadosImposto; return; }
+                const linksConc = resultadoConcorrentes.value;
+                linksConc.contextoCarregamento = contexto;
                 ultimosAnunciosLojaConcorrentes = {};
                 [1, 2, 3, 4, 5].forEach(function(n) {
                     const chave = 'concorrente_' + n;
@@ -3035,21 +3051,21 @@
                     promessaDadosImposto,
                     enriquecerPrecosAnalise(linksConc),
                 ]);
+                if (!detalheSkuVigente(contexto)) return;
+                analiseComplementosPronta = !!storeId && !custoComplementosPendente && ultimoValorUnitarioProduto !== null;
+                if (!analiseComplementosPronta) return;
                 try {
                     const resultadoAnalise = await salvarAnaliseConcorrentes(listaId, skuNorm);
-                    aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);
+                    if (detalheSkuVigente(contexto)) aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);
                 } catch (erroPersistencia) {
-                    setErro(
-                        erroPersistencia.message
-                        || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.'
-                    );
+                    if (detalheSkuVigente(contexto)) setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
                 }
             } catch (e) {
-                setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+                if (detalheSkuVigente(contexto)) setErro(e.message || 'Erro ao carregar detalhe do SKU.');
             }
         }
 
-        carregarFxTopo();
+        promessaCotacaoTopo = carregarFxTopo();
         atualizarHorarioBrasilia();
         setInterval(atualizarHorarioBrasilia, 1000);
         atualizarHorarioPequim();

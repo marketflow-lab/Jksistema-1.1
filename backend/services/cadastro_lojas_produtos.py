@@ -31,6 +31,7 @@ from backend.schemas import (
 )
 from backend.services import integracoes
 from backend.services.cadastro_common import (
+    _sku_lookup_keys_cadastro,
     CADASTRO_COLS_BASE,
     _normalizar_sku_mes,
     configure_cadastro_common_runtime,
@@ -1635,11 +1636,27 @@ def _listar_produtos_loja_sync(
     include_deleted: bool = False,
     include_legacy_snapshot_hash: bool = False,
     include_catalog_metadata: bool = False,
+    skus: Iterable[Any] | None = None,
+    _registros_persistidos: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
+    chaves_skus = None if skus is None else {
+        chave for sku in skus for chave in _sku_lookup_keys_cadastro(sku) if chave
+    }
+
+    def sku_interessa(registro: dict[str, Any]) -> bool:
+        return chaves_skus is None or any(
+            chave in chaves_skus
+            for chave in _sku_lookup_keys_cadastro(registro.get("sku") or registro.get("sku_normalizado") or "")
+            if chave
+        )
+
     loja = resolver_loja_cadastro(client_id, store_id)
     caminho = _cadastro_produtos_lojas_path(client_id)
-    with _lock_arquivo(caminho):
-        registros, _ = _ler_registros_persistidos(client_id)
+    if _registros_persistidos is None:
+        with _lock_arquivo(caminho):
+            registros, _ = _ler_registros_persistidos(client_id)
+    else:
+        registros = _registros_persistidos
     contexto = _contexto_legado(client_id, loja)
     saida: list[dict[str, Any]] = []
     chaves_explicitadas: set[str] = set()
@@ -1648,6 +1665,8 @@ def _listar_produtos_loja_sync(
             continue
         sku = item.get("sku_normalizado", "")
         chaves_explicitadas.add(sku)
+        if not sku_interessa(item):
+            continue
         apagado = bool(str(item.get("deleted_at_utc") or "").strip())
         if apagado and not include_deleted:
             continue
@@ -1661,7 +1680,7 @@ def _listar_produtos_loja_sync(
             )
         saida.append(enriquecido)
     for sku, sombra in contexto["sombras"].items():
-        if sku in chaves_explicitadas:
+        if sku in chaves_explicitadas or not sku_interessa(sombra):
             continue
         enriquecido = _enriquecer_produto(
             sombra,

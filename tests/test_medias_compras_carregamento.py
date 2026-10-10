@@ -105,13 +105,13 @@ def ambiente(monkeypatch, tmp_path):
     original_context = cadastro.visao_produtos_cadastro_contexto_loja
     original_photo = fiscal._resolver_foto_cadastro_sku
 
-    def context(client_id, loja):
+    def context(client_id, loja, **kwargs):
         state["counts"]["contexto_catalogo"] += 1
-        return original_context(client_id, loja)
+        return original_context(client_id, loja, **kwargs)
 
-    def photo(client_id, sku, ref="", store_id=None):
+    def photo(client_id, sku, ref="", store_id=None, **kwargs):
         state["photo_calls"].append((client_id, store_id, sku, ref))
-        return original_photo(client_id, sku, ref, store_id)
+        return original_photo(client_id, sku, ref, store_id, **kwargs)
 
     monkeypatch.setattr(fiscal, "_carregar_cadastro_para_impostos", load_catalog)
     monkeypatch.setattr(fiscal, "_indice_ncm_referencia_aliquotas", index("indice_aliquotas"))
@@ -211,7 +211,7 @@ def test_contexto_indisponivel_falha_fechado_e_e_recarregado_no_proximo_get(ambi
     context = cadastro.visao_produtos_cadastro_contexto_loja
     calls = []
 
-    def unavailable(*args):
+    def unavailable(*args, **_kwargs):
         calls.append(args)
         raise RuntimeError("synthetic unavailable context")
 
@@ -249,12 +249,12 @@ def test_sem_loja_preserva_projecao_global_sem_cruzar_fotos(ambiente):
 
 def test_memo_foto_distingue_referencia_e_sku_exatos(ambiente, monkeypatch):
     ambiente["catalog"] = [{"sku": "001"}]
-    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", lambda *_args: {
+    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", lambda *_args, **_kwargs: {
         "scope": "store", "store_id": "store-a", "produtos": [], "skus_controlados": set(),
     })
     calls = []
 
-    def photo(client_id, sku, ref="", store_id=None):
+    def photo(client_id, sku, ref="", store_id=None, **kwargs):
         calls.append((client_id, store_id, sku, ref))
         return ref or f"https://example.test/{sku}.png"
 
@@ -275,12 +275,12 @@ def test_memo_preserva_precedencia_de_metadados_fiscais_e_foto_de_cadastro_auxil
     ref = "https://example.test/foto-backup.png"
     _csv(backup, [{"sku": "001", "titulo": "Titulo do cadastro auxiliar", "foto": ref, "m3 individual": "0.1"}])
     monkeypatch.setattr(fiscal, "_caminhos_cadastros_meta", lambda _client: [str(backup)])
-    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", lambda *_args: {
+    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", lambda *_args, **_kwargs: {
         "scope": "store", "store_id": "store-a", "produtos": [], "skus_controlados": set(),
     })
     calls = []
 
-    def photo(client_id, sku, foto_ref="", store_id=None):
+    def photo(client_id, sku, foto_ref="", store_id=None, **_kwargs):
         calls.append((client_id, store_id, sku, foto_ref))
         return foto_ref
 
@@ -299,11 +299,11 @@ def test_tres_itens_sinteticos_resolvem_foto_negativa_uma_vez_por_get(ambiente, 
     ambiente["catalog"] = [{"sku": sku} for sku in skus]
     ambiente["lists"]["cliente-a"][0]["itens"] = [{"SKU": sku} for sku in skus]
 
-    def context(_client, loja):
+    def context(_client, loja, **_kwargs):
         ambiente["counts"]["contexto_catalogo"] += 1
         return {"scope": "store", "store_id": loja, "produtos": [{"sku": sku} for sku in skus], "skus_controlados": set()}
 
-    def photo(client_id, sku, ref="", store_id=None):
+    def photo(client_id, sku, ref="", store_id=None, **kwargs):
         ambiente["photo_calls"].append((client_id, store_id, sku, ref))
         return ""
 
@@ -349,3 +349,110 @@ def test_retry_no_worker_recarrega_contexto_apos_troca_concorrente_da_loja(ambie
     assert len(worker_threads) == 2
     assert all(thread != caller_thread for thread in worker_threads)
     assert {call[:2] for call in ambiente["photo_calls"]} == {("cliente-a", "store-a"), ("cliente-a", "store-b")}
+
+
+def test_visao_filtra_antes_de_enriquecer_e_reutiliza_registros(ambiente, monkeypatch):
+    tenant = ambiente["root"] / "cliente-a"
+    _csv(tenant / "cadastro_produtos_lojas.csv", [
+        {"store_id": store_id, "sku": sku, "sku_normalizado": sku, "nome": f"Produto {sku}"}
+        for store_id, sku in (("store-a", "001"), ("store-a", "1.0"),
+                              ("store-a", "002"), ("store-a", "001-A"),
+                              ("store-a", "SKU:001"), ("store-b", "001"))
+    ])
+    full = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a")
+    reads, enriched = [], []
+    original_read = produtos._ler_registros_persistidos
+    original_enrich = produtos._enriquecer_produto
+
+    def read(client_id):
+        reads.append(client_id)
+        return original_read(client_id)
+
+    def enrich(record, store, context, **kwargs):
+        enriched.append((store["store_id"], record["sku"]))
+        return original_enrich(record, store, context, **kwargs)
+
+    monkeypatch.setattr(cadastro, "_ler_registros_persistidos", read)
+    monkeypatch.setattr(produtos, "_ler_registros_persistidos", read)
+    monkeypatch.setattr(produtos, "_enriquecer_produto", enrich)
+    filtered = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a", skus=["1"])
+    assert filtered["produtos"] == [row for row in full["produtos"] if row["sku"] in {"001", "1.0"}]
+    assert filtered["skus_controlados"] == full["skus_controlados"]
+    assert reads == ["cliente-a"]
+    assert enriched == [("store-a", "001"), ("store-a", "1.0")]
+    assert cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a", skus=[])["produtos"] == []
+
+
+def test_mapa_de_fotos_carregado_uma_vez_sem_cruzar_escopos(ambiente, monkeypatch):
+    maps = {}
+    calls = []
+
+    def load(client_id, store_id):
+        calls.append((client_id, store_id))
+        return {"exact:001": ambiente["refs"][client_id, store_id], "soft:1": ambiente["refs"][client_id, store_id]}
+
+    monkeypatch.setattr(fotos, "_cadastro_mapa_fotos_locais", load)
+    for client_id, store_id in (("cliente-a", "store-a"), ("cliente-a", "store-b"), ("cliente-b", "store-a")):
+        expected = ambiente["refs"][client_id, store_id]
+        assert common._resolver_foto_cadastro_sku(client_id, "001", store_id=store_id, mapas_fotos=maps) == expected
+        assert common._resolver_foto_cadastro_sku(client_id, "1", store_id=store_id, mapas_fotos=maps) == expected
+    assert calls == [("cliente-a", "store-a"), ("cliente-a", "store-b"), ("cliente-b", "store-a")]
+    # Uma referencia explicita de outra loja continua sendo validada, mesmo com cache.
+    assert common._resolver_foto_cadastro_sku(
+        "cliente-a", "001", ambiente["refs"]["cliente-a", "store-b"], "store-a", mapas_fotos=maps,
+    ) == ""
+    common._resolver_foto_cadastro_sku("cliente-a", "001", store_id="store-a", mapas_fotos={})
+    assert calls[-1] == ("cliente-a", "store-a") and len(calls) == 4
+
+
+def test_lista_reutiliza_mapa_negativo_entre_skus_no_mesmo_get(ambiente, monkeypatch):
+    ambiente["catalog"] = [{"sku": "001"}, {"sku": "002"}, {"sku": "003"}]
+    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", lambda *_args, **_kwargs: {
+        "scope": "store", "store_id": "store-a", "produtos": [], "skus_controlados": set(),
+    })
+    calls = []
+    monkeypatch.setattr(fotos, "_cadastro_mapa_fotos_locais", lambda *scope: calls.append(scope) or {})
+    items = [{"SKU": sku} for sku in ("001", "002", "003", "1")]
+    first = fiscal._enriquecer_itens_lista_pedido_com_impostos("cliente-a", items, loja="store-a")
+    second = fiscal._enriquecer_itens_lista_pedido_com_impostos("cliente-a", items, loja="store-a")
+    assert first == second
+    assert all(row["Foto"] == "" for row in first)
+    assert calls == [("cliente-a", "store-a"), ("cliente-a", "store-a")]
+
+
+def test_filtro_preserva_saida_fiscal_frete_e_fotos_completa(ambiente):
+    tenant = ambiente["root"] / "cliente-a"
+    own_ref = ambiente["refs"]["cliente-a", "store-a"]
+    other_ref = ambiente["refs"]["cliente-a", "store-b"]
+    _csv(tenant / "cadastro_produtos_lojas.csv", [
+        {"store_id": "store-a", "sku": sku, "sku_normalizado": sku, "foto": own_ref}
+        for sku in ("001", "002", "003", "001-A", "SKU:001")
+    ] + [{"store_id": "store-b", "sku": "001", "sku_normalizado": "001", "foto": other_ref}])
+    ambiente["catalog"].append({"sku": "002", "ncm": "87089990", "m3 individual": "0.25"})
+    items = [{"SKU": "1", "Quantidade": 2, "Valor unidade": 10, "Foto": other_ref},
+             {"SKU": "002", "Quantidade": 3, "Valor unidade": 20}]
+    full = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a")
+    filtered = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a", skus=[item["SKU"] for item in items])
+    assert len(full["produtos"]) == 5 and len(filtered["produtos"]) == 2
+    baseline = fiscal._recalcular_frete_internacional_itens_lista(
+        "cliente-a", items, loja="store-a", contexto_cadastro=fiscal._ContextoCadastroLista("cliente-a", "store-a", full),
+    )
+    optimized = fiscal._recalcular_frete_internacional_itens_lista(
+        "cliente-a", items, loja="store-a", contexto_cadastro=fiscal._ContextoCadastroLista("cliente-a", "store-a", filtered),
+    )
+    assert optimized == baseline
+    assert all(item["Foto"] == own_ref for item in optimized)
+    assert optimized[0]["M3"] == 0.25 and optimized[1]["M3"] == 0.75
+    assert [item["Frete Internacional"] for item in optimized] == [20, 60]
+
+
+def test_projecao_global_filtrada_preserva_conflitos_com_iterador(ambiente):
+    full = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "__todas")
+    filtered = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "__todas", skus=iter(["1"]))
+    assert filtered == full
+    assert filtered["produtos"][0]["foto"] == ""
+
+
+def test_detalhe_filtra_sku_legado_minusculo(ambiente):
+    ambiente["lists"]["cliente-a"][0]["itens"] = [{"sku": "001", "Quantidade": 2, "Valor unidade": 10}]
+    assert _detail()["itens"][0]["Foto"] == ambiente["refs"]["cliente-a", "store-a"]

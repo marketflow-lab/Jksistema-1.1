@@ -695,6 +695,7 @@ def _api_medias_compras_lista_pedido_detalhe_sync(lista_id: str, client_id: str 
             contexto_cadastro = visao_produtos_cadastro_contexto_loja(
                 client_id,
                 referencia_loja_cadastro,
+                skus=[_primeiro_texto_item(item, ("SKU", "sku")) for item in alvo.get("itens") or [] if isinstance(item, dict)],
             )
             escopo_cadastro_nao_resolvido = (
                 contexto_cadastro.get("scope") == "unresolved"

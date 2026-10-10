@@ -72,7 +72,7 @@ const trechosSku = [
     'await salvarAnaliseConcorrentes(listaId, skuNorm);',
     'aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);',
     'void salvarAnaliseConcorrentes(listaId, normSku(sku))',
-    '.then((resultado) => aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes))',
+    'if (detalheSkuVigente(contextoPersistencia)) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);',
 ];
 
 for (const trecho of trechosSku) {

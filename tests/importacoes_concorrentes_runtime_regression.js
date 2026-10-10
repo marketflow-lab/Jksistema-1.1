@@ -5,7 +5,7 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'static', 'importacoes_sku.html'), 'utf8');
-const functionStart = html.indexOf('async function buscarLinksConcorrentes(sku)');
+const functionStart = html.indexOf('async function buscarLinksConcorrentes(');
 const functionEnd = html.indexOf('async function carregarDetalheSku()', functionStart);
 if (functionStart < 0 || functionEnd <= functionStart) {
     throw new Error('Funcao buscarLinksConcorrentes nao encontrada.');

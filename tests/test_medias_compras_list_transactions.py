@@ -141,7 +141,7 @@ def test_detail_recalculates_on_approval_race(store, monkeypatch):
     monkeypatch.setattr(service, "_resumo_lista_pedido", lambda row: {"id": row["id"]})
     from backend.services import cadastro_compatibilidade
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"scope": "resolved", "store_id": "store-a"})
+                        lambda *_args, **_kwargs: {"scope": "resolved", "store_id": "store-a"})
     calls = []
     def recalculate(client, items, **_kwargs):
         calls.append(copy.deepcopy(items))
@@ -227,7 +227,7 @@ def test_backfill_preserves_concurrent_public_mutations(store, monkeypatch, muta
         monkeypatch.setattr(module, "_limpar_cache_lista_pedido", lambda *_args, **_kw: None)
         monkeypatch.setattr(module, "_resumo_lista_pedido", lambda row: {"id": row["id"]})
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"scope": "resolved", "store_id": "store-a"})
+                        lambda *_args, **_kwargs: {"scope": "resolved", "store_id": "store-a"})
     entered, release = threading.Event(), threading.Event()
     calls, errors = [], []
 

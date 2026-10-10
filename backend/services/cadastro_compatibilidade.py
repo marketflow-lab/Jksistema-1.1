@@ -298,9 +298,12 @@ def _consolidar_sku_seguro(
     return resultado
 
 
-def visao_compatibilidade_produtos_lojas(client_id: str) -> dict[str, Any]:
+def visao_compatibilidade_produtos_lojas(
+    client_id: str, *, skus: Iterable[Any] | None = None,
+) -> dict[str, Any]:
     """Return safe global rows plus every SKU owned by the new store file."""
 
+    skus = tuple(skus) if skus is not None else None
     caminho = _cadastro_produtos_lojas_path(client_id)
     with _bloquear_config_e_arquivo_cadastro(client_id, caminho):
         registros, _ = _ler_registros_persistidos(client_id)
@@ -318,7 +321,14 @@ def visao_compatibilidade_produtos_lojas(client_id: str) -> dict[str, Any]:
             store_id = str(loja.get("store_id") or "").strip()
             if not store_id:
                 continue
-            for produto in _listar_produtos_loja_sync(client_id, store_id):
+            produtos_loja = (
+                _listar_produtos_loja_sync(client_id, store_id)
+                if skus is None
+                else _listar_produtos_loja_sync(
+                    client_id, store_id, skus=skus, _registros_persistidos=registros,
+                )
+            )
+            for produto in produtos_loja:
                 sku = _normalizar_sku_chave(
                     produto.get("sku_normalizado") or produto.get("sku") or ""
                 )
@@ -340,6 +350,8 @@ def visao_compatibilidade_produtos_lojas(client_id: str) -> dict[str, Any]:
 def visao_produtos_cadastro_contexto_loja(
     client_id: str,
     loja_referencia: Any = "",
+    *,
+    skus: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve uma loja somente para leitura e falha fechado se for ambigua.
 
@@ -352,7 +364,7 @@ def visao_produtos_cadastro_contexto_loja(
     referencia = str(loja_referencia or "").strip()
     referencia_norm = _normalizar_loja_leitura(referencia)
     if referencia_norm in {"", "todas", "todas as lojas"} or referencia == "__todas":
-        visao = visao_compatibilidade_produtos_lojas(client_id)
+        visao = visao_compatibilidade_produtos_lojas(client_id, skus=skus)
         return {
             **visao,
             "store_id": "",
@@ -394,7 +406,13 @@ def visao_produtos_cadastro_contexto_loja(
                 "loja_resolvida": False,
                 "scope": "unresolved",
             }
-        produtos = _listar_produtos_loja_sync(client_id, store_id)
+        produtos = (
+            _listar_produtos_loja_sync(client_id, store_id)
+            if skus is None
+            else _listar_produtos_loja_sync(
+                client_id, store_id, skus=skus, _registros_persistidos=registros,
+            )
+        )
 
     return {
         "produtos": [dict(item) for item in produtos],

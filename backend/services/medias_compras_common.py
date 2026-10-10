@@ -25,7 +25,7 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-from backend.services.cadastro_common import _normalizar_sku_mes
+from backend.services.cadastro_common import _normalizar_sku_mes, _sku_lookup_keys_cadastro
 from backend.services.runtime_bridge import bind_runtime_globals, current_backend_runtime
 from backend.services.path_coordination import canonical_path_key, path_lock_for
 
@@ -113,14 +113,7 @@ def _resolver_escopo_loja_medias(
 
 
 def _sku_lookup_keys_sync_ncm(sku_val: str) -> tuple[str, str, str]:
-    sku_norm = _normalizar_sku_mes(str(sku_val or "").strip())
-    if re.match(r"^\d+\.0+$", sku_norm):
-        sku_norm = str(int(float(sku_norm)))
-    sku_compacto = re.sub(r"[^A-Z0-9]", "", sku_norm.upper())
-    partes = re.split(r"([0-9]+)", sku_norm.upper())
-    sku_numsoft = "".join(str(int(p)) if p.isdigit() else p for p in partes)
-    sku_numsoft_compacto = re.sub(r"[^A-Z0-9]", "", sku_numsoft)
-    return sku_norm, sku_compacto, sku_numsoft_compacto
+    return _sku_lookup_keys_cadastro(sku_val)
 
 
 def configure_medias_compras_common_runtime(runtime_module=None):
@@ -769,6 +762,8 @@ def _resolver_foto_cadastro_sku(
     sku: str,
     foto_ref: str = "",
     store_id: str | None = None,
+    *,
+    mapas_fotos: dict[tuple[str, str], dict[str, str]] | None = None,
 ) -> str:
     from backend.services.cadastro_fotos import (
         _cadastro_foto_referencia_local_cadastro,
@@ -799,10 +794,14 @@ def _resolver_foto_cadastro_sku(
     if not sku_txt:
         return ""
     if client_id and store_id:
-        return _cadastro_resolver_foto_local(
-            _cadastro_mapa_fotos_locais(client_id, store_id),
-            sku_txt,
-        )
+        chave_mapa = (client_id, store_id)
+        if mapas_fotos is None:
+            mapa = _cadastro_mapa_fotos_locais(client_id, store_id)
+        else:
+            if chave_mapa not in mapas_fotos:
+                mapas_fotos[chave_mapa] = _cadastro_mapa_fotos_locais(client_id, store_id)
+            mapa = mapas_fotos[chave_mapa]
+        return _cadastro_resolver_foto_local(mapa, sku_txt)
     if client_id and _cadastro_fotos_escopo_estrito(client_id):
         return ""
 
