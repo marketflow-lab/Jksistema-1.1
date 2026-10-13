@@ -49,7 +49,9 @@
                     lojaSelecionada = valor;
                     storeIdSelecionado = valor === '__todas' ? '' : storeId;
                     if (lojaAnterior !== lojaSelecionada || storeIdAnterior !== storeIdSelecionado) {
+                        cancelarAberturaListaPedido();
                         listaPedidoAtual = null;
+                        renderEditorListaPedido();
                     }
                     renderBotoesLojas(lojasDisponiveis || []);
                     carregarVisao(periodoAtual);

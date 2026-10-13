@@ -465,3 +465,329 @@ def test_projecao_global_filtrada_preserva_conflitos_com_iterador(ambiente):
 def test_detalhe_filtra_sku_legado_minusculo(ambiente):
     ambiente["lists"]["cliente-a"][0]["itens"] = [{"sku": "001", "Quantidade": 2, "Valor unidade": 10}]
     assert _detail()["itens"][0]["Foto"] == ambiente["refs"]["cliente-a", "store-a"]
+
+
+def test_detalhe_salvo_preserva_snapshot_zeros_sem_cadastro_ou_gravacao(ambiente, monkeypatch):
+    from backend.services import blocking_workers
+
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["updated_at"] = "2026-10-02T12:00:00"
+    lista["itens"] = [{
+        "SKU": "001", "Quantidade": 0, "Valor unidade": 0, "Valor total": 0,
+        "M3": 0, "M3 individual": 0, "Frete Internacional": 0, "II": 0,
+        "Foto": ambiente["refs"]["cliente-a", "store-a"],
+        "OEM": "000", "Link": "https://example.test/salvo", "aprovado": False,
+        "extra": {"valor": 0, "texto": " texto literal "},
+    }, {"SKU": "002", "Quantidade": 2, "Valor unidade": 3.5, "Valor total": 7}]
+    original = copy.deepcopy(lista)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("A abertura do snapshot executou trabalho de complemento ou gravacao")
+
+    for module, name in (
+        (blocking_workers, "run_heavy"),
+        (cadastro, "visao_produtos_cadastro_contexto_loja"),
+        (fiscal, "_carregar_cadastro_para_impostos"),
+        (fiscal, "_caminhos_cadastros_meta"),
+        (fiscal, "_resolver_foto_cadastro_sku"),
+        (fiscal, "_indice_ncm_referencia_aliquotas"),
+        (fiscal, "_indice_ncm_referencia_por_ncm"),
+        (listas, "_recalcular_frete_internacional_itens_lista"),
+        (listas, "_salvar_listas_pedidos"),
+        (listas, "_limpar_cache_lista_pedido"),
+    ):
+        monkeypatch.setattr(module, name, forbidden)
+
+    response = asyncio.run(listas.api_medias_compras_lista_pedido_detalhe(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    ))["lista"]
+    expected_items = copy.deepcopy(original["itens"])
+    expected_items[0][common.CBM_LISTA_PEDIDO_KEY] = "0"
+    assert response["itens"] == expected_items
+    assert response["updated_at"] == original["updated_at"]
+    assert response["total_quantidade"] == 2
+    assert response["total_usd"] == 7
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter()
+    assert ambiente["photo_calls"] == []
+
+
+@pytest.mark.parametrize("client_id,store_id", [
+    ("cliente-a", "store-a"), ("cliente-a", "store-b"), ("cliente-b", "store-a"),
+])
+def test_snapshot_salvo_valida_foto_por_tenant_e_loja(ambiente, client_id, store_id):
+    lista = ambiente["lists"][client_id][0]
+    lista["store_id"] = store_id
+    ref = ambiente["refs"][client_id, store_id]
+    lista["itens"][0]["Foto"] = ref
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id=client_id, somente_salvos=True,
+    )["lista"]
+    assert response["itens"][0]["Foto"] == ref
+    assert response["store_id"] == store_id
+    assert ambiente["counts"] == Counter()
+
+
+@pytest.mark.parametrize("reference", [
+    "cadastro_fotos/lojas/{other_segment}/001.png",
+    "/api/cadastro/foto/cliente-b/lojas/{own_segment}/001.png",
+    "https://example.test/api/cadastro/foto/cliente-b/lojas/{own_segment}/001.png",
+    "%2Fapi%2Fcadastro%2Ffoto%2Fcliente-b%2Flojas%2F{own_segment}%2F001.png",
+    "cadastro_fotos/001.png",
+    "cadastro_fotos/lojas/{own_segment}/../001.png",
+])
+def test_snapshot_salvo_limpa_fotos_locais_fora_do_escopo_sem_persistir(ambiente, reference):
+    lista = ambiente["lists"]["cliente-a"][0]
+    ref = reference.format(
+        own_segment=fotos._cadastro_store_id_foto_segmento("store-a"),
+        other_segment=fotos._cadastro_store_id_foto_segmento("store-b"),
+    )
+    lista["itens"][0].update({"Foto": ref, "cg Foto": ref, "Quantidade": 0, "II": 0})
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    assert response["itens"][0]["Foto"] == response["itens"][0]["cg Foto"] == ""
+    assert response["itens"][0]["Quantidade"] == response["itens"][0]["II"] == 0
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter()
+
+
+def test_snapshot_sem_store_id_nao_resolve_nome_ambiguo_nem_foto_local(ambiente):
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista.pop("store_id")
+    ambiente["stores"]["cliente-a"][1]["nome"] = "Loja A"
+    ambiente["write_stores"]("cliente-a")
+    lista["itens"][0]["Foto"] = ambiente["refs"]["cliente-a", "store-a"]
+    lista["itens"].append({"SKU": "002", "Quantidade": 1, "Foto": "https://example.test/photo.png"})
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    assert response["store_id"] == ""
+    assert response["itens"][0]["Foto"] == ""
+    assert response["itens"][1]["Foto"] == "https://example.test/photo.png"
+    assert "store_id" not in lista
+    assert ambiente["counts"] == Counter()
+
+
+def test_query_snapshot_e_opt_in_e_default_continua_enriquecendo(ambiente):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.dependency_overrides[common.get_tenant_id] = lambda: "cliente-a"
+    app.add_api_route("/listas/{lista_id}", listas.api_medias_compras_lista_pedido_detalhe)
+    with TestClient(app) as client:
+        saved = client.get("/listas/lista?somente_salvos=true")
+        assert saved.status_code == 200
+        assert saved.json()["lista"]["itens"] == ambiente["lists"]["cliente-a"][0]["itens"]
+        assert ambiente["counts"] == Counter()
+        full = client.get("/listas/lista")
+        assert full.status_code == 200
+        assert full.json()["lista"]["itens"][0]["Foto"] == ambiente["refs"]["cliente-a", "store-a"]
+        assert ambiente["counts"]["cadastro_principal"] == 1
+        assert ambiente["counts"]["persistencias"] == 1
+
+
+def test_snapshot_inexistente_mantem_404(ambiente):
+    with pytest.raises(listas.HTTPException) as error:
+        listas._api_medias_compras_lista_pedido_detalhe_sync(
+            "inexistente", client_id="cliente-a", somente_salvos=True,
+        )
+    assert error.value.status_code == 404
+    assert ambiente["counts"] == Counter()
+
+
+@pytest.mark.parametrize("field", ["Picture", "image"])
+def test_snapshot_legado_materializa_aliases_do_editor_sem_gravar(ambiente, field):
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["itens"] = [{
+        "sku": "001", "quantity": 2, "Cost": "10.00", "Sub-total(USD)": "20.00",
+        field: ambiente["refs"]["cliente-a", "store-a"],
+        "Description": " Legacy product ", "OEM/ Model": "OEM-001",
+        "Color side": "Left", "Link Aliexpress": "https://example.test/salvo",
+        "Estimated CBM": "0.25", "Estimated Weight": "2.50", "Packaging": "Box",
+        "CBM individual": "0.125", "extra": {"literal": " unchanged "},
+    }]
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    item = response["itens"][0]
+    assert {key: item[key] for key in original["itens"][0]} == original["itens"][0]
+    assert {key: item[key] for key in (
+        "SKU", "Quantidade", "Valor unidade", "Valor total", "Foto", "OEM", "Link",
+        common.TITULO_PRODUTO_INGLES_KEY, common.COR_LADO_LISTA_PEDIDO_KEY,
+        common.CBM_LISTA_PEDIDO_KEY, common.PESO_LISTA_PEDIDO_KEY,
+        common.EMBALAGEM_LISTA_PEDIDO_KEY, "M3 individual",
+    )} == {
+        "SKU": "001", "Quantidade": 2, "Valor unidade": 10, "Valor total": 20,
+        "Foto": ambiente["refs"]["cliente-a", "store-a"], "OEM": "OEM-001",
+        "Link": "https://example.test/salvo", common.TITULO_PRODUTO_INGLES_KEY: "Legacy product",
+        common.COR_LADO_LISTA_PEDIDO_KEY: "Left", common.CBM_LISTA_PEDIDO_KEY: "0.25",
+        common.PESO_LISTA_PEDIDO_KEY: "2.50", common.EMBALAGEM_LISTA_PEDIDO_KEY: "Box",
+        "M3 individual": "0.125",
+    }
+    assert response["total_quantidade"] == 2 and response["total_usd"] == 20
+    assert "Frete Internacional" not in item and "MOQ" not in item
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter()
+    assert ambiente["photo_calls"] == []
+
+
+def test_snapshot_legado_materializa_zeros_e_campos_vazios_sem_sobrescrever_canonicos(ambiente):
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["itens"] = [{
+        "SKU": " 001 ", "sku": "999", "Quantidade": 0, "quantity": 99,
+        "Valor unidade": 0, "Cost": 88, "Valor total": 0, "Sub-total(USD)": 77,
+        "OEM": " texto literal ", "OEM/ Model": "outro",
+        common.CBM_LISTA_PEDIDO_KEY: 0, "Estimated CBM": 55,
+        common.PESO_LISTA_PEDIDO_KEY: " 0.00 ", "Estimated Weight": 44,
+    }, {
+        "SKU": " ", "sku": "002", "Quantidade": None, "quantity": 0,
+        "Valor unidade": "", "Cost": 0, "Valor total": " ", "Sub-total(USD)": 0,
+    }]
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    assert response["itens"][0] == original["itens"][0]
+    assert response["itens"][1] == {
+        **original["itens"][1], "SKU": "002", "Quantidade": 0,
+        "Valor unidade": 0, "Valor total": 0,
+    }
+    assert response["total_quantidade"] == 0 and response["total_usd"] == 0
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter()
+
+
+@pytest.mark.parametrize("field", ["Picture", "image"])
+def test_snapshot_valida_foto_apos_materializar_alias_legado(ambiente, field):
+    lista = ambiente["lists"]["cliente-a"][0]
+    ref = ambiente["refs"]["cliente-a", "store-b"]
+    lista["itens"] = [{"sku": "001", "quantity": 2, "Cost": 10, field: ref}]
+    original = copy.deepcopy(lista)
+    item = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]["itens"][0]
+    assert item["Foto"] == item[field] == ""
+    assert item["SKU"] == "001" and item["Quantidade"] == 2 and item["Valor unidade"] == 10
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter()
+
+
+def _bloquear_complementos_cubagem_snapshot(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("O snapshot rapido consultou cubagem atual ou gravou dados")
+
+    for module, name in (
+        (cadastro, "visao_produtos_cadastro_contexto_loja"),
+        (fiscal, "resolver_cubagem_produtos"),
+        (fiscal, "_carregar_cadastro_para_impostos"),
+        (fiscal, "_caminhos_cadastros_meta"),
+        (listas, "_recalcular_frete_internacional_itens_lista"),
+        (listas, "_salvar_listas_pedidos"),
+    ):
+        monkeypatch.setattr(module, name, forbidden)
+
+
+def test_snapshot_rapido_cubagem_historica_preserva_total_e_metadados(ambiente, monkeypatch):
+    _bloquear_complementos_cubagem_snapshot(monkeypatch)
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["status"] = "Recebido"
+    lista["itens"] = [{
+        "SKU": "001", "Quantidade": 10, "Valor unidade": 2,
+        "M3": "0.00347", "M3 individual": "0.00009",
+        "Cubagem status": "historico", "Cubagem fonte": " Packing List gravada ",
+        "Cubagem unidade": "par", "Cubagem data": "2026-10-02T12:00:00Z",
+        "Cubagem loja": "store-a",
+    }]
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    item = response["itens"][0]
+    assert {key: item[key] for key in original["itens"][0]} == original["itens"][0]
+    assert item[common.CBM_LISTA_PEDIDO_KEY] == "0.00347"
+    assert response["total_m3"] == 0.00347
+    assert response["m3_completo"] is True and response["m3_pendente_itens"] == 0
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter() and ambiente["photo_calls"] == []
+
+
+def test_snapshot_rapido_cubagem_pendente_nao_reanima_aliases_residuais(ambiente, monkeypatch):
+    _bloquear_complementos_cubagem_snapshot(monkeypatch)
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["status"] = "Lista gerada"
+    lista["itens"] = [{
+        "SKU": "001", "Quantidade": 2, "Valor unidade": 10,
+        "M3": "", "M3 individual": "", common.CBM_LISTA_PEDIDO_KEY: "",
+        "Cubagem status": "pendente", "Cubagem fonte": "", "Cubagem loja": "store-a",
+        "CBM individual": "99", "Estimated CBM": "198",
+    }]
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    assert response["itens"] == original["itens"]
+    assert response["total_m3"] == 0
+    assert response["m3_completo"] is False and response["m3_pendente_itens"] == 1
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter() and ambiente["photo_calls"] == []
+
+
+def test_snapshot_rapido_cubagem_aliases_preserva_precisao_sem_cadastro(ambiente, monkeypatch):
+    _bloquear_complementos_cubagem_snapshot(monkeypatch)
+    lista = ambiente["lists"]["cliente-a"][0]
+    lista["status"] = "Lista gerada"
+    lista["itens"] = [{
+        "sku": "001", "quantity": 80, "Cost": 2,
+        "CBM individual": "3.125e-5", "Estimated CBM": "0.0025",
+    }]
+    original = copy.deepcopy(lista)
+    response = listas._api_medias_compras_lista_pedido_detalhe_sync(
+        "lista", client_id="cliente-a", somente_salvos=True,
+    )["lista"]
+    item = response["itens"][0]
+    assert {key: item[key] for key in original["itens"][0]} == original["itens"][0]
+    assert item["M3 individual"] == "3.125e-5"
+    assert item[common.CBM_LISTA_PEDIDO_KEY] == "0.0025"
+    assert response["total_m3"] == 0.0025
+    assert response["total_quantidade"] == 80 and response["total_usd"] == 160
+    assert response["m3_completo"] is True and response["m3_pendente_itens"] == 0
+    assert ambiente["lists"]["cliente-a"][0] == original
+    assert ambiente["counts"] == Counter() and ambiente["photo_calls"] == []
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({"link": "https://example.test/generic", "Link Aliexpress": "https://example.test/preferred"},
+     "https://example.test/preferred"),
+    ({"link aliexpress": "MLB123", "cg Link Aliexpress": "https://example.test/cg", "url aliexpress": "https://example.test/url"},
+     "https://example.test/cg"),
+    ({"LINK ALIEXPRESS": " ", "Link_Aliexpress": "https://example.test/later"}, "https://example.test/later"),
+    ({"LINK ALIEXPRESS": "MLB123", "Link_Aliexpress": "https://example.test/duplicate", "Link": "https://example.test/generic"},
+     "https://example.test/generic"),
+    ({"foto": "https://example.test/photo.png", "monofasico_verificado_em": "2026-09-04", "link": "MLB123"}, ""),
+    ({"link aliexpress": "https://user:pass@example.test/product", "url": "https://example.test/valid"},
+     "https://example.test/valid"),
+    ({"link": "javascript:alert(1)", "url": "https://example.test/with space"}, ""),
+    ({"link": "https://[", "url": "HTTPS://example.test/product?value=0"}, "HTTPS://example.test/product?value=0"),
+])
+def test_link_cadastro_preserva_prioridade_e_validacao(fields, expected):
+    assert fiscal._pick_cadastro_link(fields) == expected
+
+
+def test_link_cadastro_normaliza_linha_uma_vez_por_busca(monkeypatch):
+    row = {f"campo extra {index}": "valor" for index in range(100)}
+    row.update({"Link": "MLB123", "cg Link": "https://example.test/product"})
+    counts = Counter()
+    original = fiscal._normalizar_coluna_cadastro_meta
+
+    def normalize(value):
+        counts[value] += 1
+        return original(value)
+
+    monkeypatch.setattr(fiscal, "_normalizar_coluna_cadastro_meta", normalize)
+    assert fiscal._pick_cadastro_link(row) == "https://example.test/product"
+    assert all(counts[f"campo extra {index}"] == 1 for index in range(100))
+    assert sum(counts.values()) <= len(row) + 2 * len(fiscal._META_LINK_CANDIDATOS)

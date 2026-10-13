@@ -66,7 +66,7 @@ def order_date_api(monkeypatch, tmp_path):
     monkeypatch.setattr(listas, "get_tenant_path", tenant_path)
     # Product/fiscal enrichment is independent of an order-date-only mutation.
     # Keep real HTTP handlers, summaries, snapshots, atomic writes and caches.
-    monkeypatch.setattr(listas, "_construir_mapa_m3_sku", lambda _tenant: {})
+    monkeypatch.setattr(listas, "_construir_mapa_m3_sku", lambda _tenant, **_kwargs: {})
     monkeypatch.setattr(
         listas, "_recalcular_frete_internacional_itens_lista",
         lambda _tenant, items, **_kwargs: copy.deepcopy(items),

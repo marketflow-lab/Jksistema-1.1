@@ -666,19 +666,105 @@ def _api_medias_compras_lista_pedido_concorrentes_links_lote_sync(
         raise HTTPException(status_code=500, detail="Erro ao buscar links de concorrentes da lista")
 
 
-async def api_medias_compras_lista_pedido_detalhe(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
-    from backend.services.blocking_workers import run_heavy
+async def api_medias_compras_lista_pedido_detalhe(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+    somente_salvos: bool = False,
+):
+    from backend.services.blocking_workers import run_blocking, run_heavy
 
+    if somente_salvos:
+        return await run_blocking(
+            _api_medias_compras_lista_pedido_detalhe_sync,
+            lista_id=lista_id,
+            client_id=client_id,
+            somente_salvos=True,
+        )
     return await run_heavy(_api_medias_compras_lista_pedido_detalhe_sync, lista_id=lista_id, client_id=client_id)
 
 
+def _itens_salvos_lista_pedido_no_escopo(client_id: str, lista: dict) -> list[dict]:
+    from backend.services import cadastro_fotos
+
+    itens = copy.deepcopy(lista.get("itens") or [])
+    store_id = str(lista.get("store_id") or "").strip()
+    campos_editor = (
+        "SKU", "Foto", TITULO_PRODUTO_INGLES_KEY, "OEM", COR_LADO_LISTA_PEDIDO_KEY,
+        "Link", "Quantidade", "Valor unidade", "Valor total", CBM_LISTA_PEDIDO_KEY,
+        PESO_LISTA_PEDIDO_KEY, EMBALAGEM_LISTA_PEDIDO_KEY, "M3 individual",
+    )
+    aliases_numericos = {
+        "Quantidade": ("Quantidade", "quantity", "Qtd", "Qtde", "Qty"),
+        "Valor unidade": ("Valor unidade", "Valor unitario", "Valor unitário", "Cost", "Custo", "Preco", "Preço"),
+        "Valor total": ("Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"),
+    }
+    referencias_permitidas: dict[str, bool] = {}
+    for item in itens:
+        if not isinstance(item, dict):
+            continue
+        campos_ausentes = [
+            campo for campo in campos_editor
+            if item.get(campo) is None
+            or (isinstance(item.get(campo), str) and not item[campo].strip())
+        ]
+        if campos_ausentes:
+            normalizado = _normalizar_item_lista_pedido(item)
+            for campo in campos_ausentes:
+                if item.get("Cubagem status") == "pendente" and campo in {CBM_LISTA_PEDIDO_KEY, "M3 individual"}:
+                    # Uma cubagem explicitamente pendente ja descartou estes
+                    # aliases; a abertura rapida nao pode reanima-los.
+                    continue
+                valor = normalizado.get(campo)
+                if valor is None or (isinstance(valor, str) and not valor.strip()):
+                    continue
+                # Defaults numericos do normalizador nao substituem aliases
+                # inexistentes; zeros explicitamente salvos sao preservados.
+                if campo in aliases_numericos and not _primeiro_texto_item(item, aliases_numericos[campo]):
+                    continue
+                item[campo] = valor
+        for campo, referencia in cadastro_fotos._cadastro_foto_referencias_candidatas(item):
+            if not cadastro_fotos._cadastro_foto_referencia_local_cadastro(referencia):
+                continue
+            texto = str(referencia or "")
+            if texto not in referencias_permitidas:
+                # O snapshot nao resolve aliases de lojas nem procura fotos.
+                # Uma foto local exige identidade explicita da loja e tenant.
+                partes = cadastro_fotos._cadastro_foto_partes_loja_referencia_local(texto, client_id)
+                permitida = False
+                if store_id and partes is not None and len(partes) == 3:
+                    try:
+                        permitida = cadastro_fotos._cadastro_foto_referencia_pertence_loja(
+                            client_id, store_id, texto,
+                        )
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                referencias_permitidas[texto] = permitida
+            if not referencias_permitidas[texto]:
+                item[campo] = ""
+    return itens
+
+
 @_retry_listas_pedidos
-def _api_medias_compras_lista_pedido_detalhe_sync(lista_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
+def _api_medias_compras_lista_pedido_detalhe_sync(
+    lista_id: str,
+    client_id: str = Depends(medias_common.get_tenant_id),
+    somente_salvos: bool = False,
+):
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     alvo = listas[idx] if idx >= 0 else None
     if not alvo:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
+
+    if somente_salvos:
+        itens_salvos = _itens_salvos_lista_pedido_no_escopo(client_id, alvo)
+        return {
+            "success": True,
+            "lista": {
+                **_resumo_lista_pedido({**alvo, "itens": itens_salvos}),
+                "itens": itens_salvos,
+            },
+        }
 
     # Backfill: garante coluna persistida de frete internacional para listas antigas.
     # Listas novas guardam o store_id imutavel. As antigas ainda podem trazer o

@@ -131,9 +131,22 @@ def _pick_cadastro_oem(row_dict: dict) -> str:
 def _pick_cadastro_link(row_dict: dict) -> str:
     # Listing IDs and image URLs are not product links. Keep only an explicit
     # HTTP(S) URL from a recognized link field, preserving its original text.
+    if not isinstance(row_dict, dict):
+        return ""
+    # Cada alias consulta o mesmo indice: nao renormaliza a linha inteira.
+    norm_map: dict[str, str] = {}
+    for chave, valor in (row_dict or {}).items():
+        if valor is None:
+            continue
+        texto = str(valor).strip()
+        if not texto:
+            continue
+        chave_norm = _normalizar_coluna_cadastro_meta(chave)
+        if chave_norm and chave_norm not in norm_map:
+            norm_map[chave_norm] = texto
     for alias in _META_LINK_CANDIDATOS:
         for name in (alias, f"cg {alias}"):
-            value = medias_common._primeiro_texto_item(row_dict, (name,))
+            value = norm_map.get(_normalizar_coluna_cadastro_meta(name), "")
             if not value or any(char.isspace() for char in value):
                 continue
             try:

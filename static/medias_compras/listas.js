@@ -6,6 +6,8 @@
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
         let cargaListaPedido = 0;
+        let aberturaListaPedido = null;
+        let listaPedidoEmAbertura = '';
 
         function setStatusListaPedido(msg) {
             const el = document.getElementById('statusListaPedido');
@@ -102,7 +104,7 @@
             }
 
             listasFiltradas.forEach(l => {
-                const ativo = listaPedidoAtual && String(listaPedidoAtual.id) === String(l.id);
+                const ativo = String(listaPedidoEmAbertura || (listaPedidoAtual && listaPedidoAtual.id) || '') === String(l.id);
                 const statusOriginal = normalizarStatusListaPedido(l.status);
                 const status = forcarStatusCanceladoLocal(l.id) ? 'Pedido cancelado' : statusOriginal;
                 if (statusOriginal === 'Pedido cancelado') {
@@ -315,30 +317,97 @@
             }
         }
 
-        async function abrirListaPedidoPorId(listaId) {
-            if (!listaId) return;
-            const carga = ++cargaListaPedido;
+        async function lerListaPedido(listaId, abertura, somenteSalvos) {
+            const controller = new global.AbortController();
+            abertura.controller = controller;
+            let timer;
+            const limite = new Promise((_resolve, reject) => {
+                timer = global.setTimeout(() => {
+                    controller.abort();
+                    reject(new Error('A lista demorou para responder. Clique nela para tentar novamente.'));
+                }, 5000);
+            });
             try {
-                setStatusListaPedido('Abrindo lista...');
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Falha ao abrir lista de pedidos.');
-                }
-                const data = await resp.json();
-                if (carga !== cargaListaPedido) return;
-                listaPedidoAtual = data.lista || null;
-                if (listaPedidoAtual && forcarStatusCanceladoLocal(listaId)) {
-                    listaPedidoAtual.status = 'Pedido cancelado';
-                }
+                return await Promise.race([limite, (async () => {
+                    const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + (somenteSalvos ? '?somente_salvos=true' : ''), {
+                        method: 'GET', headers: { ...obterAuthHeaders() }, signal: controller.signal,
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.detail || 'Falha ao abrir lista de pedidos.');
+                    if (!data.lista || String(data.lista.id) !== String(listaId)) throw new Error('A resposta não contém a lista solicitada.');
+                    return data.lista;
+                })()]);
+            } finally {
+                global.clearTimeout(timer);
+                if (abertura.controller === controller) abertura.controller = null;
+            }
+        }
+
+        async function atualizarComplementosListaPedido(listaId, abertura, listaSalva) {
+            if (abertura !== aberturaListaPedido || abertura.editada || listaPedidoAtual !== listaSalva || JSON.stringify(listaSalva) !== abertura.assinatura) return;
+            try {
+                const atualizada = await lerListaPedido(listaId, abertura, false);
+                if (abertura !== aberturaListaPedido || abertura.editada || listaPedidoAtual !== listaSalva || JSON.stringify(listaPedidoAtual) !== abertura.assinatura) return;
+                listaPedidoAtual = atualizada;
+                if (forcarStatusCanceladoLocal(listaId)) listaPedidoAtual.status = 'Pedido cancelado';
                 renderListaPedidosResumo();
                 renderEditorListaPedido();
                 setStatusListaPedido('Lista carregada.');
+            } catch (_e) {
+                if (abertura === aberturaListaPedido && !abertura.editada && listaPedidoAtual === listaSalva && JSON.stringify(listaPedidoAtual) === abertura.assinatura) {
+                    setStatusListaPedido('Lista carregada. A atualização dos dados não terminou; clique na lista para tentar novamente.');
+                }
+            }
+        }
+
+        function cancelarAberturaListaPedido() {
+            if (aberturaListaPedido) {
+                aberturaListaPedido.controller?.abort();
+                global.clearTimeout(aberturaListaPedido.timer);
+                aberturaListaPedido.removerEscuta?.();
+            }
+            aberturaListaPedido = null;
+            listaPedidoEmAbertura = '';
+            const painel = document.getElementById('editorListaPedido');
+            if (painel) painel.inert = false;
+        }
+
+        async function abrirListaPedidoPorId(listaId) {
+            if (!listaId) return;
+            cancelarAberturaListaPedido();
+            const abertura = { carga: ++cargaListaPedido, controller: null, editada: false };
+            aberturaListaPedido = abertura;
+            listaPedidoEmAbertura = String(listaId);
+            listaPedidoAtual = null;
+            renderListaPedidosResumo();
+            renderEditorListaPedido();
+            const painel = document.getElementById('editorListaPedido');
+            if (painel) { painel.classList.remove('hidden'); painel.inert = true; }
+            setStatusListaPedido('Abrindo lista...');
+            try {
+                const lista = await lerListaPedido(listaId, abertura, true);
+                if (abertura !== aberturaListaPedido) return;
+                listaPedidoAtual = lista;
+                listaPedidoEmAbertura = '';
+                if (forcarStatusCanceladoLocal(listaId)) listaPedidoAtual.status = 'Pedido cancelado';
+                renderListaPedidosResumo();
+                renderEditorListaPedido();
+                setStatusListaPedido('Lista carregada.');
+                abertura.assinatura = JSON.stringify(lista);
+                if (painel) {
+                    const marcarEdicao = () => {
+                        abertura.editada = true;
+                        global.clearTimeout(abertura.timer);
+                        abertura.controller?.abort();
+                    };
+                    for (const evento of ['input', 'change', 'dragstart']) painel.addEventListener(evento, marcarEdicao, true);
+                    abertura.removerEscuta = () => { for (const evento of ['input', 'change', 'dragstart']) painel.removeEventListener(evento, marcarEdicao, true); };
+                }
+                abertura.timer = global.setTimeout(() => atualizarComplementosListaPedido(listaId, abertura, lista), 300);
             } catch (e) {
-                if (carga === cargaListaPedido) setStatusListaPedido(e.message || 'Erro ao abrir lista.');
+                if (abertura === aberturaListaPedido) setStatusListaPedido(e.message || 'Erro ao abrir lista.');
+            } finally {
+                if (abertura === aberturaListaPedido && painel) painel.inert = false;
             }
         }
 
@@ -404,6 +473,7 @@
             baixarListaPedidoExcel,
             atualizarStatusListaPedido,
             excluirListaPedido,
+            cancelarAberturaListaPedido,
             abrirListaPedidoPorId,
             preencherSelectLojaListaPedido,
             obterLojaListaPedidoSelecionada,
