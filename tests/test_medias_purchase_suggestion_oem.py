@@ -206,3 +206,60 @@ def test_sugestao_exporta_somente_url_cadastrada_de_produto(ambiente, source, fi
         assert sheet["F2"].hyperlink.target == expected
     assert sheet["G2"].value == 7
     assert sheet["I2"].value == "=G2*H2"
+
+
+@pytest.mark.parametrize("source", ["principal", "backup"])
+@pytest.mark.parametrize("client, store", [
+    ("cliente-a", "store-a"), ("cliente-a", "store-b"),
+    ("cliente-b", "store-a"), ("cliente-b", "store-b"),
+])
+def test_sugestao_prioriza_link_atual_da_loja_sobre_link_legado(ambiente, source, client, store):
+    old_link = "https://pt.aliexpress.com/item/link-antigo.html"
+    for tenant in ambiente["stores"]:
+        ambiente["configure"](tenant, {"Link Aliexpress": old_link}, source)
+        path = ambiente["root"] / tenant / "cadastro_produtos_lojas.csv"
+        rows = pd.read_csv(path, dtype=str).fillna("").to_dict("records")
+        for row in rows:
+            row["link"] = f"https://www.alibaba.com/product-detail/{tenant}-{row['store_id']}-atual.html"
+        _csv(path, rows)
+
+    _, sheet = _gerar(client, store)
+    expected = f"https://www.alibaba.com/product-detail/{client}-{store}-atual.html"
+    assert sheet["F2"].value == expected
+    assert sheet["F2"].hyperlink.target == expected
+    assert sheet["G2"].value == 7
+    assert sheet["I2"].value == "=G2*H2"
+    assert ambiente["view_calls"] == [(client, store)]
+    assert set(ambiente["load_calls"]) == {client}
+
+
+@pytest.mark.parametrize("value", ["", "MLB1234567890", "javascript:alert(1)"])
+def test_sugestao_preserva_fallback_quando_link_da_loja_nao_e_url(ambiente, value):
+    expected = "https://pt.aliexpress.com/item/link-legado-valido.html"
+    ambiente["configure"]("cliente-a", {"Link Aliexpress": expected}, "backup")
+    path = ambiente["root"] / "cliente-a" / "cadastro_produtos_lojas.csv"
+    rows = pd.read_csv(path, dtype=str).fillna("").to_dict("records")
+    for row in rows:
+        row["link"] = value
+    _csv(path, rows)
+
+    _, sheet = _gerar()
+    assert sheet["F2"].value == expected
+    assert sheet["F2"].hyperlink.target == expected
+
+
+def test_enriquecimento_preserva_link_preenchido_na_lista(ambiente):
+    ambiente["configure"]("cliente-a", {"Link Aliexpress": "https://pt.aliexpress.com/item/antigo.html"})
+    path = ambiente["root"] / "cliente-a" / "cadastro_produtos_lojas.csv"
+    rows = pd.read_csv(path, dtype=str).fillna("").to_dict("records")
+    for row in rows:
+        row["link"] = "https://www.alibaba.com/product-detail/cadastro-atual.html"
+    _csv(path, rows)
+    informed = "https://fornecedor.example.test/produto-escolhido.html"
+    item = {"SKU": "001", "Link": informed, "Quantidade": 7}
+    result = fiscal._enriquecer_itens_lista_pedido_com_impostos(
+        "cliente-a", [item], incluir_impostos=False, loja="store-a",
+    )
+    assert result[0]["Link"] == informed
+    assert result[0]["Quantidade"] == 7
+    assert item == {"SKU": "001", "Link": informed, "Quantidade": 7}

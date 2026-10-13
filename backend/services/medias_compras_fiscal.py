@@ -608,6 +608,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
         if not _sku_interessa(k1, k2, k3):
             continue
+        link_contextual = _pick_cadastro_link(row_dict)
         foto_contextual = _resolver_foto(
             client_id,
             sku,
@@ -619,6 +620,9 @@ def _enriquecer_itens_lista_pedido_com_impostos(
                 continue
             foto_contextual_por_sku[k] = foto_contextual
             meta_atual = sku_para_meta.setdefault(k, {})
+            # O cadastro atual da loja precede os links recuperados de backups.
+            if link_contextual:
+                meta_atual["Link"] = link_contextual
             if foto_contextual:
                 meta_atual["Foto"] = foto_contextual
             else:
