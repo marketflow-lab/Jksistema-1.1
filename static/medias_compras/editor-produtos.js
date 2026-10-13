@@ -73,10 +73,10 @@
 
             const lista = await respLista.json();
             const produtos = Array.isArray(lista) ? lista : [];
-            const skuCmp = normalizarSkuComparacaoLocal(skuTxt);
+            const skuCmp = normalizarSku(skuTxt);
             const encontrado = produtos.find((p) => {
-                const skuProd = (p && (p.sku || p.SKU)) || '';
-                return normalizarSkuComparacaoLocal(skuProd) === skuCmp;
+                const skuProd = (p && (p.cubagem_sku || p.sku || p.SKU)) || '';
+                return normalizarSku(skuProd) === skuCmp;
             });
 
             if (!encontrado) {
@@ -86,7 +86,7 @@
         }
 
         function criarItemListaPedidoComProdutoCadastro(produto, skuFallback, preservados = {}) {
-            const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['sku']) || skuFallback);
+            const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['cubagem sku', 'sku']) || skuFallback);
             const quantidade = toNumeroDecimal(preservados.Quantidade || 0);
             const valorUnidade = toNumeroDecimal(preservados['Valor unidade'] || 0);
             const valorTotal = Math.round(((quantidade * valorUnidade) + Number.EPSILON) * 100) / 100;
@@ -131,12 +131,12 @@
                 return true;
             }
 
-            const skuCmpNovo = normalizarSkuComparacaoLocal(skuNovo);
+            const skuCmpNovo = normalizarSku(skuNovo);
             const rows = Array.from(row.parentNode ? row.parentNode.querySelectorAll('tr[data-lista-pedido-row="1"]') : []);
             const duplicado = rows.some((linha) => {
                 if (linha === row) return false;
                 const skuLinha = normalizarSku(linha.querySelector('input[data-kind="sku"]')?.value || '');
-                return normalizarSkuComparacaoLocal(skuLinha) === skuCmpNovo;
+                return normalizarSku(skuLinha) === skuCmpNovo;
             });
             if (duplicado) {
                 input.value = skuAnterior;
@@ -218,11 +218,12 @@
             if (resp.ok) {
                 data = await resp.json();
             } else {
-                falhaRotaDedicada = true;
                 const err = await resp.json().catch(() => ({}));
-                if (resp.status === 401 || resp.status === 403) {
+                const rotaIndisponivel = resp.status === 405 || (resp.status === 404 && err.detail === 'Not Found');
+                if (!rotaIndisponivel) {
                     throw new Error(err.detail || 'Falha ao salvar item na lista.');
                 }
+                falhaRotaDedicada = true;
             }
 
             if (falhaRotaDedicada) {
@@ -240,18 +241,18 @@
 
             listaPedidoAtual = data.lista || listaPedidoAtual;
             const skuSalvo = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
                 : false;
             if (!skuSalvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
 
             await carregarListasPedidos();
             if (listaPedidoAtual && listaPedidoAtual.id) await abrirListaPedidoPorId(listaPedidoAtual.id);
             const skuAposReabrir = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
                 : false;
             if (!skuAposReabrir) {
                 const itensForcados = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
-                const idxForcado = itensForcados.findIndex((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro));
+                const idxForcado = itensForcados.findIndex((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro));
                 if (idxForcado >= 0) itensForcados[idxForcado] = { ...itensForcados[idxForcado], ...novoItem };
                 else itensForcados.push({ ...novoItem });
 
@@ -269,7 +270,7 @@
                 listaPedidoAtual = dataForcado.lista || listaPedidoAtual;
                 await abrirListaPedidoPorId(listaPedidoAtual.id);
                 const skuAposForcar = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                    ? listaPedidoAtual.itens.some((i) => normalizarSkuComparacaoLocal(i && i.SKU) === normalizarSkuComparacaoLocal(skuCadastro))
+                    ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
                     : false;
                 if (!skuAposForcar) throw new Error('SKU não apareceu na lista após tentativas de salvamento.');
             }
@@ -301,11 +302,6 @@
                 inputSku.focus();
                 return;
             }
-            if (!/^\d+$/.test(skuDigitado)) {
-                setStatusModalAdicionarSku('Somente SKU numérico é permitido.');
-                inputSku.focus();
-                return;
-            }
             if (!Number.isFinite(qtdNumero) || quantidade <= 0) {
                 setStatusModalAdicionarSku('Informe uma quantidade válida (maior que zero).');
                 inputQtd.focus();
@@ -328,7 +324,7 @@
                 setStatusModalAdicionarSku('Buscando dados do SKU no cadastro...');
                 const produto = await buscarProdutoCadastroPorSku(skuDigitado);
 
-                const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['sku']) || skuDigitado);
+                const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['cubagem sku', 'sku']) || skuDigitado);
                 const titulo = obterCampoProdutoCadastro(produto, [
                     'produtos blig', 'produto blig', 'produtos bling', 'produto bling',
                     'titulo do produto em ingles', 'título do produto em inglês', 'titulo', 'produto',

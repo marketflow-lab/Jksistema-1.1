@@ -1236,11 +1236,6 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
     if not sku_in:
         raise HTTPException(status_code=400, detail="SKU invalido")
 
-    # Regra solicitada: aceitar apenas SKU numÃƒÂ©rico existente no cadastro.
-    sku_input_compacto = re.sub(r"\s+", "", sku_input)
-    if not re.fullmatch(r"\d+", sku_input_compacto or ""):
-        raise HTTPException(status_code=400, detail="Somente SKU numÃƒÂ©rico ÃƒÂ© permitido nesta inclusÃƒÂ£o")
-
     qtd = max(0, int(round(float(req.quantidade or 0))))
     if qtd <= 0:
         raise HTTPException(status_code=400, detail="Quantidade deve ser maior que zero")
@@ -1327,8 +1322,6 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         return ""
 
     sku_final = normalizar_sku_cubagem(produto.get("cubagem_sku") or _pick_prod(["sku"]) or sku_in)
-    if not re.fullmatch(r"\d+", str(sku_final or "")):
-        raise HTTPException(status_code=400, detail="SKU do cadastro nÃ£o ÃƒÂ© numÃƒÂ©rico")
     titulo = _pick_prod([
         "produto bling", "produtos bling", "produto blig", "produtos blig",
         "titulo do produto em ingles", "titulo do produto em ingles",

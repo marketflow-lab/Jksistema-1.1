@@ -324,10 +324,10 @@
         }
 
         function destacarSkuNaTabelaPedido(sku) {
-            const skuCmp = normalizarSkuComparacaoLocal(sku);
+            const skuCmp = normalizarSku(sku);
             if (!skuCmp) return false;
             const rows = Array.from(document.querySelectorAll('#tblListaPedidoItens tbody tr'));
-            const alvo = rows.find((r) => String(r.dataset.skuCmp || '') === skuCmp);
+            const alvo = rows.find((r) => normalizarSku(r.querySelector('input[data-kind="sku"]')?.value) === skuCmp);
             if (!alvo) return false;
 
             rows.forEach((r) => {

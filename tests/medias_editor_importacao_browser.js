@@ -33,8 +33,12 @@ const json = (route, body, status = 200) => route.fulfill({
     }],
   }];
   const salvamentos = [];
+  const skusConsultados = [];
+  const inclusoesSku = [];
   const statusAplicados = [];
   let importacoes = 0;
+  let produtosFallback = [];
+  let respostaAdicionarSku = null;
 
   try {
     const page = await browser.newPage();
@@ -84,13 +88,28 @@ const json = (route, body, status = 200) => route.fulfill({
         return;
       }
       if (url.pathname === '/api/cadastro/produto') {
+        const sku = url.searchParams.get('sku');
+        skusConsultados.push(sku);
+        produtosFallback = [];
+        if (sku === 'FALLBACK-OK') produtosFallback = [{ sku }];
+        if (sku === 'ZX-9') produtosFallback = [{ sku: 'ZX9' }];
+        if (sku === 'QX9') produtosFallback = [{ sku: 'QX-9' }];
+        if (sku === 'SEM-CADASTRO' || produtosFallback.length) {
+          await json(route, { detail: 'SKU não encontrado no cadastro.' }, 404);
+          return;
+        }
         await json(route, {
           produto: {
-            sku: url.searchParams.get('sku'),
+            sku: sku === '1' ? '001' : (sku === '001-JAN' ? '1-1' : sku.toUpperCase()),
+            ...(['1', '001-JAN'].includes(sku) ? { cubagem_sku: sku } : {}),
             titulo: 'Produto adicionado',
             OEM: 'OEM-2',
           },
         });
+        return;
+      }
+      if (url.pathname === '/api/cadastro/produtos') {
+        await json(route, produtosFallback);
         return;
       }
       if (url.pathname === '/api/medias-compras/listas-pedidos/importar-excel' && method === 'POST') {
@@ -137,14 +156,22 @@ const json = (route, body, status = 200) => route.fulfill({
         const id = url.pathname.split('/').slice(-2, -1)[0];
         const payload = request.postDataJSON();
         const lista = listas.find(item => item.id === id);
-        lista.itens.push({
+        if (respostaAdicionarSku) {
+          await json(route, { detail: respostaAdicionarSku.detail }, respostaAdicionarSku.status);
+          return;
+        }
+        inclusoesSku.push(payload);
+        const item = {
           SKU: payload.sku,
           'Título do produto em inglês': 'Produto adicionado',
           Quantidade: payload.quantidade,
           'Valor unidade': payload.valor_unitario,
           'Valor total': payload.quantidade * payload.valor_unitario,
-        });
-        await json(route, { lista, acao: 'adicionado' });
+        };
+        const index = lista.itens.findIndex(item => item.SKU === payload.sku);
+        if (index >= 0) lista.itens[index] = item;
+        else lista.itens.push(item);
+        await json(route, { lista, acao: index >= 0 ? 'atualizado' : 'adicionado' });
         return;
       }
       if (url.pathname === '/api/medias-compras/listas-pedidos' && method === 'GET') {
@@ -217,13 +244,94 @@ const json = (route, body, status = 200) => route.fulfill({
     assert.strictEqual(importacoes, 1);
     assert.strictEqual(await page.evaluate(() => listaPedidoAtual.id), 'lista-2');
 
-    await page.locator('#btnAdicionarSkuPedido').click();
-    await page.locator('#addSkuInput').fill('002');
-    await page.locator('#addSkuQtdInput').fill('2');
-    await page.locator('#addSkuValorInput').fill('5');
-    await page.locator('#btnConfirmarAdicionarSku').click();
-    await page.locator('#statusListaPedido', { hasText: 'Salvo com sucesso.' }).waitFor();
-    assert.strictEqual(await page.locator('#tblListaPedidoItens input[data-kind="sku"]').inputValue(), '002');
+    const casosSku = [
+      ['002', 2, 5],
+      ['1', 2, 3],
+      ['001-JAN', 2, 4],
+      ['493-1', 30, 6],
+      ['4931', 4, 3],
+      ['FALLBACK-OK', 2, 4],
+      ['ABC', 3, 2.5],
+      ['A1B2', 4, 3],
+      ['001-A', 1, 10],
+      ['297-K', 2, 3.5],
+      ['mIx9', 2, 7],
+    ];
+    async function adicionarSku(sku, qtd, valor) {
+      await page.locator('#btnAdicionarSkuPedido').click();
+      await page.waitForFunction(() => document.activeElement === document.getElementById('addSkuInput'));
+      await page.locator('#addSkuInput').fill(sku);
+      await page.locator('#addSkuQtdInput').fill(String(qtd));
+      await page.locator('#addSkuValorInput').fill(String(valor));
+      await page.locator('#btnConfirmarAdicionarSku').click();
+    }
+    for (const [sku, qtd, valor] of casosSku) {
+      await adicionarSku(sku, qtd, valor);
+      await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
+      const skuCadastro = sku.toUpperCase();
+      assert.strictEqual(skusConsultados.at(-1), sku);
+      assert.deepStrictEqual(inclusoesSku.at(-1), { sku: skuCadastro, quantidade: qtd, valor_unitario: valor });
+      const item = listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === skuCadastro);
+      assert.strictEqual(item['Valor total'], qtd * valor);
+      const destacado = page.locator('#tblListaPedidoItens tbody tr').filter({
+        has: page.locator(`input[data-kind="sku"][value="${skuCadastro}"]`),
+      });
+      assert.notStrictEqual(await destacado.evaluate(row => row.style.outline), '');
+    }
+
+    await adicionarSku('493-1', 4, 8);
+    await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
+    assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.length, casosSku.length);
+    assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === '493-1').Quantidade, 4);
+
+    await page.reload();
+    await page.locator('#lojaBotoes button').filter({ hasText: 'JK Pecas' }).click();
+    await page.locator('#btnAbaListasPedidos').click();
+    await page.locator('.lista-item').filter({ hasText: 'Pedido importado' }).click();
+    await page.locator('#editorListaPedido:not(.hidden)').waitFor();
+    const skusReabertos = await page.locator('#tblListaPedidoItens input[data-kind="sku"]').evaluateAll(inputs => inputs.map(input => input.value));
+    assert.deepStrictEqual(skusReabertos.sort(), casosSku.map(([sku]) => sku.toUpperCase()).sort());
+
+    const consultasAntes = skusConsultados.length;
+    const inclusoesAntes = inclusoesSku.length;
+    for (const [sku, qtd, valor, mensagem] of [
+      ['', 1, 5, 'Informe o SKU.'],
+      ['ABC', 0, 5, 'Informe uma quantidade válida (maior que zero).'],
+      ['ABC', 1, 0, 'Informe um valor unitário válido (maior que zero).'],
+    ]) {
+      await adicionarSku(sku, qtd, valor);
+      assert.strictEqual(await page.locator('#modalAdicionarSkuStatus').textContent(), mensagem);
+      await page.locator('#modalAdicionarSkuPedido [data-jk-action="fechar-adicionar-sku"]').click();
+    }
+    assert.strictEqual(skusConsultados.length, consultasAntes);
+    assert.strictEqual(inclusoesSku.length, inclusoesAntes);
+
+    for (const sku of ['SEM-CADASTRO', 'ZX-9', 'QX9']) {
+      await adicionarSku(sku, 1, 5);
+      await page.locator('#modalAdicionarSkuStatus', { hasText: 'SKU não encontrado no cadastro.' }).waitFor();
+      assert.strictEqual(inclusoesSku.length, inclusoesAntes);
+      assert.strictEqual(await page.locator('#btnConfirmarAdicionarSku').isEnabled(), true);
+      await page.locator('#modalAvisoSkuCentral [data-jk-action="fechar-aviso"]').click();
+      await page.locator('#modalAdicionarSkuPedido [data-jk-action="fechar-adicionar-sku"]').click();
+    }
+
+    const salvamentosAntes = salvamentos.length;
+    for (const status of [400, 404, 409, 422, 500]) {
+      respostaAdicionarSku = { status, detail: 'SKU recusado pelo servidor.' };
+      await adicionarSku('RECUSADO-01', 1, 5);
+      await page.locator('#modalAdicionarSkuStatus', { hasText: respostaAdicionarSku.detail }).waitFor();
+      assert.strictEqual(salvamentos.length, salvamentosAntes);
+      assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.length, casosSku.length);
+      await page.locator('#modalAvisoSkuCentral [data-jk-action="fechar-aviso"]').click();
+      await page.locator('#modalAdicionarSkuPedido [data-jk-action="fechar-adicionar-sku"]').click();
+    }
+
+    respostaAdicionarSku = { status: 404, detail: 'Not Found' };
+    await adicionarSku('ROTA-LEGADA', 2, 5);
+    await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
+    assert.strictEqual(salvamentos.length, salvamentosAntes + 1);
+    assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === 'ROTA-LEGADA').Quantidade, 2);
+    respostaAdicionarSku = null;
     assert.deepStrictEqual(errosPagina, []);
 
     console.log('medias editor and import browser: OK');
