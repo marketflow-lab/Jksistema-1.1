@@ -6,6 +6,7 @@ import copy
 import os
 import re
 import unicodedata
+from urllib.parse import urlsplit
 
 import pandas as pd
 
@@ -66,7 +67,7 @@ _META_COR_LADO_CANDIDATOS = [
 ]
 _META_LINK_CANDIDATOS = [
     "link aliexpress", "url aliexpress", "aliexpress", "product link",
-    "link produto", "url produto", "link", "url", "mlb principal", "url ml",
+    "link produto", "url produto", "link", "url", "link ml", "url ml", "mlb url", "permalink",
 ]
 _META_FOTO_CANDIDATOS = ["foto", "imagem", "image", "url foto", "link foto", "foto produto"]
 
@@ -111,6 +112,37 @@ def _pick_cadastro_meta(row_dict: dict, cands: list[str]) -> str:
             if mk == c_norm or c_norm in mk or mk in c_norm:
                 if mv:
                     return mv
+    return ""
+
+
+def _pick_cadastro_oem(row_dict: dict) -> str:
+    # Match field names exactly: fiscal timestamps can contain "oem" once
+    # separators are removed, but are not product codes or models.
+    aliases = tuple(
+        name for alias in _META_OEM_CANDIDATOS for name in (alias, f"cg {alias}")
+    )
+    return medias_common._primeiro_texto_item(row_dict, aliases)
+
+
+def _pick_cadastro_link(row_dict: dict) -> str:
+    # Listing IDs and image URLs are not product links. Keep only an explicit
+    # HTTP(S) URL from a recognized link field, preserving its original text.
+    for alias in _META_LINK_CANDIDATOS:
+        for name in (alias, f"cg {alias}"):
+            value = medias_common._primeiro_texto_item(row_dict, (name,))
+            if not value or any(char.isspace() for char in value):
+                continue
+            try:
+                url = urlsplit(value)
+                if (
+                    url.scheme.lower() in {"http", "https"}
+                    and url.hostname
+                    and not url.username
+                    and not url.password
+                ):
+                    return value
+            except ValueError:
+                continue
     return ""
 
 
@@ -189,9 +221,9 @@ def _meta_payload_cadastro(
             store_id,
         ),
         TITULO_PRODUTO_INGLES_KEY: _pick_cadastro_meta(row_dict, titulo_cands),
-        "OEM": _pick_cadastro_meta(row_dict, _META_OEM_CANDIDATOS),
+        "OEM": _pick_cadastro_oem(row_dict),
         COR_LADO_LISTA_PEDIDO_KEY: _pick_cadastro_meta(row_dict, _META_COR_LADO_CANDIDATOS),
-        "Link": _pick_cadastro_meta(row_dict, _META_LINK_CANDIDATOS),
+        "Link": _pick_cadastro_link(row_dict),
     }
 
 
@@ -495,9 +527,9 @@ def _enriquecer_itens_lista_pedido_com_impostos(
                     _pick_cadastro(row_dict, _META_FOTO_CANDIDATOS),
                     store_id_cadastro or None,
                 )
-            oem_cad = _pick_cadastro(row_dict, _META_OEM_CANDIDATOS)
+            oem_cad = _pick_cadastro_oem(row_dict)
             cor_lado_cad = _pick_cadastro(row_dict, _META_COR_LADO_CANDIDATOS)
-            link_cad = _pick_cadastro(row_dict, _META_LINK_CANDIDATOS)
+            link_cad = _pick_cadastro_link(row_dict)
 
             meta_payload = {
                 "Foto": foto_cad,
