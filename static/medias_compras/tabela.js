@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas'], (context) => {
+    app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas'], (context) => {
         const fetch = context.modules.api.request;
         const fetchLatest = context.modules.api.requestLatest;
         const obterAuthHeaders = context.modules.api.authHeaders;
@@ -95,6 +95,7 @@
         }
 
         function renderAbaAtual() {
+            limparDetalhesListaPedido();
             ocultarBalaoEstoqueEmTransito();
             const titulo = document.getElementById('tituloTabela');
             const statusOcultados = document.getElementById('statusOcultados');

@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('editor', ['core', 'state', 'api', 'listas', 'editor-produtos', 'tabela-colunas'], (context) => {
+    app.defineModule('editor', ['core', 'state', 'api', 'listas', 'pedido-hover', 'editor-produtos', 'tabela-colunas'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
         let cargaFornecedorEditor = 0;
@@ -80,6 +80,7 @@
         }
 
         function renderEditorListaPedido() {
+            limparDetalhesListaPedido();
             const inputNome = document.getElementById('nomeListaPedidoEdit');
             const selectLoja = document.getElementById('lojaListaPedidoEdit');
             const inputStatus = document.getElementById('statusListaPedidoEdit');
@@ -168,6 +169,7 @@
                         '</svg>' +
                     '</button></td>';
                 tbody.appendChild(tr);
+                configurarDetalhesLinhaListaPedido(tr);
             });
 
             if (termoSku && totalItensPesquisa === 0) {

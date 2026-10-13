@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'editor', 'editor-produtos', 'importacao', 'tabela'], () => {
+    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'importacao', 'tabela'], () => {
         function executarAcao(elemento) {
             const action = elemento.dataset.jkAction;
             if (action === 'periodo') return carregarVisao(Number(elemento.dataset.periodo));

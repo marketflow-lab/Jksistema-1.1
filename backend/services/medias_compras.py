@@ -20,6 +20,7 @@ from backend.services.medias_compras_fiscal import *
 from backend.services.medias_compras_fiscal import configure_medias_compras_fiscal_runtime
 from backend.services.medias_compras_excel import *
 from backend.services.medias_compras_excel import configure_medias_compras_excel_runtime
+from backend.services.medias_compras_estoque import *
 from backend.services.medias_compras_visao import *
 from backend.services.medias_compras_visao import configure_medias_compras_visao_runtime
 from backend.services.medias_compras_sugestoes import *
@@ -67,6 +68,7 @@ __all__ = [
     "_gerar_excel_lista_pedido_bytes",
     "api_medias_compras_calcular",
     "api_medias_compras_visao",
+    "api_medias_compras_posicao_estoque",
     "api_medias_compras_gerar_lista_compra",
     "api_medias_compras_gerar_lista_compra_get",
     "api_medias_compras_gerar_lista_sugestao",

@@ -1440,3 +1440,82 @@
                 padding-inline: 6px;
             }
         }
+
+        #tblListaPedidoItens .foto-sku {
+            cursor: zoom-in;
+        }
+        #tblListaPedidoItens .foto-sku:focus-visible {
+            outline: 2px solid #57b1ff;
+            outline-offset: 3px;
+        }
+        .pedido-hover-balao {
+            position: fixed;
+            z-index: 10000;
+            display: none;
+            box-sizing: border-box;
+            max-width: calc(100vw - 24px);
+            max-height: calc(100vh - 24px);
+            overflow: hidden;
+            border: 1px solid #46678b;
+            border-radius: 10px;
+            background: #101b2c;
+            color: #e7f2ff;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+            pointer-events: none;
+            font-size: 13px;
+        }
+        .pedido-hover-balao.visivel {
+            display: block;
+        }
+        .pedido-hover-foto {
+            width: min(320px, calc(100vw - 24px));
+            padding: 8px;
+        }
+        .pedido-hover-foto img {
+            display: block;
+            width: 100%;
+            height: min(300px, calc(100vh - 44px));
+            border-radius: 6px;
+            object-fit: contain;
+            background: #fff;
+        }
+        .pedido-hover-quantidade {
+            width: 320px;
+            padding: 14px;
+            line-height: 1.45;
+        }
+        .pedido-hover-cabecalho {
+            font-weight: 700;
+            color: #8bc7ff;
+        }
+        .pedido-hover-loja {
+            margin: 2px 0 10px;
+            color: #a8bad0;
+        }
+        .pedido-hover-saldo,
+        .pedido-hover-lista li {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 14px;
+            padding: 5px 0;
+        }
+        .pedido-hover-saldo strong,
+        .pedido-hover-lista strong {
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+        .pedido-hover-lista {
+            list-style: none;
+            padding: 8px 0 0;
+            margin: 8px 0 0;
+            border-top: 1px solid #304765;
+        }
+        .pedido-hover-lista span {
+            overflow-wrap: anywhere;
+        }
+        .pedido-hover-nota {
+            margin-top: 8px;
+            color: #a8bad0;
+            font-size: 11px;
+        }
