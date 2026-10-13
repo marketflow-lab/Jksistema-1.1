@@ -179,10 +179,14 @@ def test_listas_medias_filtram_por_store_id_e_omitem_legado_ambiguo(
         "_carregar_listas_pedidos",
         lambda _client_id: listas,
     )
+    def construir_mapa_m3(_client_id, *, loja=""):
+        assert loja == "store-a"
+        return {}
+
     monkeypatch.setattr(
         medias_compras_listas,
         "_construir_mapa_m3_sku",
-        lambda _client_id: {},
+        construir_mapa_m3,
     )
 
     resposta = asyncio.run(
@@ -307,8 +311,9 @@ def test_detalhe_de_lista_legada_fixa_store_id_apos_renomear_loja(
         lambda *_args, **_kwargs: None,
     )
 
-    def recalcular(_client_id, itens, *, loja="", contexto_cadastro=None):
+    def recalcular(_client_id, itens, *, loja="", contexto_cadastro=None, preservar_cubagem=False):
         assert loja == "store-a"
+        assert preservar_cubagem is False
         return [dict(item) for item in itens]
 
     monkeypatch.setattr(
@@ -584,8 +589,9 @@ def test_troca_de_loja_reidrata_foto_no_mesmo_commit(monkeypatch, tmp_path):
         lambda *_args, **_kwargs: None,
     )
 
-    def recalcular(_client_id, itens, *, loja=""):
+    def recalcular(_client_id, itens, *, loja="", preservar_cubagem=False):
         assert loja == "store-b"
+        assert preservar_cubagem is False
         return [{**dict(item), "Foto": refs["store-b"]} for item in itens]
 
     monkeypatch.setattr(
