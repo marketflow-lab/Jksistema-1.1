@@ -121,6 +121,45 @@
         return parseNumeroFlex(valor, 0);
     }
 
+    function numeroCubagemListaPedido(valor) {
+        const texto = String(valor ?? '').trim();
+        if (!texto) return NaN;
+        // Preserve scientific notation for small product volumes.
+        if (/^[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:[eE][+-]?\d+)?$/.test(texto)) {
+            return Number(texto.replace(',', '.'));
+        }
+        return toNumeroPrompt(texto);
+    }
+
+    function somarCubagensListaPedido(linhas) {
+        let total = 0, pendentes = 0;
+        for (const linha of linhas) {
+            if (toNumeroDecimal(linha.quantidade) <= 0) continue;
+            const volume = numeroCubagemListaPedido(linha.cubagem);
+            // Cubagem is already the total of the row, not a unit volume.
+            if (Number.isFinite(volume) && volume > 0 && Number.isFinite(total + volume)) {
+                total += volume;
+            } else {
+                pendentes += 1;
+            }
+        }
+        return { total, pendentes };
+    }
+
+    function formatarResumoCubagemListaPedido(total, pendentes) {
+        const parcial = pendentes > 0;
+        const valor = total.toLocaleString('pt-BR', { maximumFractionDigits: 12 });
+        return {
+            texto: valor + ' m³' + (parcial ? ' (parcial)' : ''),
+            dados: { totalM3: String(total), partial: String(parcial), pendingCount: String(pendentes) },
+            titulo: parcial
+                ? 'Soma das cubagens preenchidas; ' + pendentes + ' SKU(s) com quantidade positiva e cubagem pendente.'
+                : 'Soma das cubagens de todos os SKUs da lista.',
+            rotulo: 'Cubagem total: ' + valor + ' metros cúbicos' +
+                (parcial ? ', parcial; ' + pendentes + ' SKUs pendentes' : ', completa'),
+        };
+    }
+
     function formatarNumeroListaPedido(valor, casas = 6) {
         const n = Number(valor || 0);
         if (!Number.isFinite(n) || n <= 0) return '';
@@ -288,6 +327,9 @@
         formatarMoedaUSD,
         parseNumeroFlex,
         toNumeroDecimal,
+        numeroCubagemListaPedido,
+        somarCubagensListaPedido,
+        formatarResumoCubagemListaPedido,
         formatarNumeroListaPedido,
         toNumeroPrompt,
         normalizarSkuComparacaoLocal,

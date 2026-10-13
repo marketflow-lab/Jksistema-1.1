@@ -31,7 +31,7 @@ const moduleFiles = [
 assert.strictEqual(mirror, canonical, 'o HTML da raiz deve espelhar a fonte oficial em static');
 assert(!/<style(?:\s|>)/i.test(canonical), 'o HTML não pode conter CSS embutido');
 assert(
-  canonical.includes('/medias_compras/styles.css?v=20261013-pedido-hover-v1'),
+  canonical.includes('/medias_compras/styles.css?v=20261013-soma-cubagem-v1'),
   'o stylesheet responsivo deve ser carregado com cache-bust atualizado',
 );
 assert(!/\son(?:click|input|change|mouseover|mouseout)=/i.test(canonical), 'o HTML não pode conter handlers inline');

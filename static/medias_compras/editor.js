@@ -193,6 +193,10 @@
             tbody.querySelectorAll('input[data-kind="qtd"], input[data-kind="vun"]').forEach(inp => {
                 inp.addEventListener('input', recalcularLinhaListaPedido);
             });
+            tbody.querySelectorAll('input[data-kind="cbm"]').forEach(inp => {
+                inp.addEventListener('input', atualizarTotaisListaPedido);
+                inp.addEventListener('change', atualizarTotaisListaPedido);
+            });
             tbody.querySelectorAll('input[data-kind="vun"]').forEach(inp => {
                 inp.addEventListener('blur', () => {
                     const vu = toNumeroDecimal(inp.value || 0);
@@ -355,6 +359,19 @@
             const elVtot = document.getElementById('tfootVtot');
             if (elQtd) elQtd.textContent = somaQtd.toLocaleString('pt-BR');
             if (elVtot) elVtot.textContent = formatarMoedaUSD(somaVtot);
+            const { total: somaCbm, pendentes: pendentesCbm } = somarCubagensListaPedido(
+                Array.from(tbody.querySelectorAll('tr[data-lista-pedido-row="1"]'), row => ({
+                    quantidade: row.querySelector('input[data-kind="qtd"]')?.value || 0,
+                    cubagem: row.querySelector('input[data-kind="cbm"]')?.value,
+                })));
+            const elCbm = document.getElementById('tfootCbm');
+            if (elCbm) {
+                const resumo = formatarResumoCubagemListaPedido(somaCbm, pendentesCbm);
+                elCbm.textContent = resumo.texto;
+                Object.assign(elCbm.dataset, resumo.dados);
+                elCbm.title = resumo.titulo;
+                elCbm.setAttribute('aria-label', resumo.rotulo);
+            }
         }
 
         function recalcularLinhaListaPedido(ev) {
@@ -373,9 +390,14 @@
             if (vtotFmtEl) vtotFmtEl.textContent = formatarMoedaUSD(total);
             const cbmEl = document.querySelector('input[data-kind="cbm"][data-idx="' + idx + '"]');
             if (cbmEl && el.dataset.kind === 'qtd') {
-                const cbmIndividual = toNumeroDecimal(cbmEl.dataset.cbmIndividual || 0);
-                if (cbmIndividual > 0 && q > 0) {
-                    cbmEl.value = formatarNumeroListaPedido(cbmIndividual * q, 6);
+                const cbmIndividual = numeroCubagemListaPedido(cbmEl.dataset.cbmIndividual);
+                if (q <= 0) {
+                    cbmEl.value = '0';
+                } else if (Number.isFinite(cbmIndividual) && cbmIndividual > 0) {
+                    cbmEl.value = formatarNumeroListaPedido(cbmIndividual * q, 12);
+                } else {
+                    // A saved total alone cannot determine a new quantity's volume.
+                    cbmEl.value = '';
                 }
             }
             atualizarTotaisListaPedido();

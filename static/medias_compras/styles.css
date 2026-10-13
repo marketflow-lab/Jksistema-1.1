@@ -1327,6 +1327,7 @@
         .mini-table tfoot td { background: #1b2a3e; color: #4facfe; font-weight: 700; border-top: 2px solid #4facfe; font-size: 0.9rem; }
         .tfoot-label { text-align: right; padding-right: 12px; }
         .tfoot-val { text-align: center; }
+        .tfoot-cbm { text-align: left; white-space: nowrap; font-variant-numeric: tabular-nums; line-height: 1.35; }
         .mini-table input {
             width: 100%;
             box-sizing: border-box;
