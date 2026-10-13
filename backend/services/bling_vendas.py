@@ -1069,7 +1069,7 @@ def _sql_filtro_unidade_devolucao(unidade_negocio: str):
 
 
 def _sql_filtro_loja_notas_entrada(cur, loja: str):
-    """Retorna condição SQL + parâmetros para filtrar notas de entrada por loja selecionada."""
+    """Filtra pela conta; prefixo e unidade atendem somente registros legados."""
     loja_norm = str(loja or "").strip().lower()
     if not loja_norm or loja_norm == "__todas":
         return "", []
@@ -1078,20 +1078,111 @@ def _sql_filtro_loja_notas_entrada(cur, loja: str):
     if not aliases:
         return "", []
 
-    expr_loja = "lower(coalesce(nullif(trim(loja_conta), ''), ''))"
-    expr_unidade = "lower(coalesce(nullif(trim(unidade_negocio_virtual), ''), nullif(trim(unidade_negocio), ''), ''))"
-    # Filtro estrito por loja para identificar corretamente em qual loja houve devolução.
-    # Fallback legado: quando loja_conta estiver vazio, tenta extrair prefixo do id_unico.
-    expr_prefixo_id = "lower(case when instr(coalesce(id_unico, ''), '_') > 1 then substr(id_unico, 1, instr(id_unico, '_') - 1) else '' end)"
-    placeholders = ", ".join(["?"] * len(aliases))
-    sql = (
-        f" AND ("
-        f"{expr_loja} IN ({placeholders}) "
-        f"OR ({expr_loja} = '' AND {expr_prefixo_id} IN ({placeholders})) "
-        f"OR {expr_unidade} IN ({placeholders})"
-        f")"
+    def normalizar_expr(expr):
+        # O lower/NOCASE nativo do SQLite converte somente letras ASCII.
+        for maiuscula, minuscula in zip("ÁÀÂÃÉÊÍÓÔÕÚÜÇ", "áàâãéêíóôõúüç"):
+            expr = f"replace({expr}, '{maiuscula}', '{minuscula}')"
+        return f"lower({expr})"
+
+    expr_loja_raw = "trim(coalesce(loja_conta, ''))"
+    expr_id_raw = "trim(coalesce(id_unico, ''))"
+    expr_loja = normalizar_expr(expr_loja_raw)
+    expr_unidade = normalizar_expr(
+        "coalesce(nullif(trim(unidade_negocio_virtual), ''), nullif(trim(unidade_negocio), ''), '')"
     )
-    return sql, (aliases + aliases + aliases)
+    placeholders = ", ".join(["?"] * len(aliases))
+
+    # A identidade legado vem da composição persistida pelo writer: cabeçalho
+    # '{loja}_{id_bling}' e item '{loja}_{id_nota}_{sku}'. Remover esse sufixo
+    # exato evita interpretar partes do nome da loja como número da nota.
+    schemas = {}
+    if cur is not None:
+        for tabela in ("notas_entrada", "notas_entrada_itens"):
+            schemas[tabela] = {row[1] for row in cur.execute(f"PRAGMA table_info({tabela})").fetchall()}
+    prefixos = []
+    params_prefixo = []
+    for tabela, cols in schemas.items():
+        if not {"loja_conta", "id_unico"}.issubset(cols):
+            continue
+        campo_id = "id_bling" if tabela == "notas_entrada" else "id_nota"
+        campos_sufixo = {campo_id} if tabela == "notas_entrada" else {campo_id, "sku"}
+        expr_valido = "0"
+        if campos_sufixo.issubset(cols):
+            expr_id_nota = f"trim(coalesce({campo_id}, ''))"
+            expr_sufixo = f"'_' || {expr_id_nota}"
+            metadados_validos = f"{expr_id_nota} != ''"
+            if tabela == "notas_entrada_itens":
+                expr_sku = "trim(coalesce(sku, ''))"
+                expr_sufixo += f" || '_' || {expr_sku}"
+                metadados_validos += f" AND {expr_sku} != ''"
+            expr_sufixo = "(" + expr_sufixo + ")"
+            expr_prefixo = normalizar_expr(
+                f"substr({expr_id_raw}, 1, length({expr_id_raw}) - length({expr_sufixo}))"
+            )
+            expr_valido = (
+                f"{metadados_validos} AND length({expr_id_raw}) > length({expr_sufixo}) "
+                f"AND substr({expr_id_raw}, -length({expr_sufixo})) = {expr_sufixo} "
+                f"AND {expr_prefixo} IN ({placeholders})"
+            )
+            params_prefixo.extend(aliases)
+        prefixos.append(
+            f"SELECT {expr_id_raw} AS scope_id, CASE WHEN {expr_valido} THEN 1 ELSE 0 END AS scope_match "
+            f"FROM {tabela} WHERE {expr_loja_raw} = ''"
+        )
+    sql_prefixo = "0"
+    if prefixos:
+        # Um ID compartilhado com metadata conflitante não comprova a loja.
+        sql_prefixo = (
+            f"{expr_id_raw} IN (SELECT scope_id FROM ("
+            + " UNION ALL ".join(prefixos)
+            + ") GROUP BY scope_id HAVING MIN(scope_match) = 1)"
+        )
+    sql_sem_prefixo = f"instr({expr_id_raw}, '_') <= 1"
+
+    # Primeiro procura somente candidatos anônimos. Bases atuais, com conta ou
+    # prefixo preenchido, dispensam a leitura cara dos vínculos de unidade.
+    tabelas = [
+        tabela for tabela, cols in schemas.items()
+        if {"loja_conta", "id_unico", "unidade_negocio", "unidade_negocio_virtual"}.issubset(cols)
+    ]
+    unidade_sem_conflito = False
+    for tabela in tabelas:
+        candidato = cur.execute(
+            f"SELECT 1 FROM {tabela} WHERE {expr_loja_raw} = '' AND {sql_sem_prefixo} "
+            f"AND {expr_unidade} IN ({placeholders}) LIMIT 1",
+            aliases,
+        ).fetchone()
+        if candidato:
+            unidade_sem_conflito = True
+            break
+
+    # Uma unidade compartilhada por outra conta não prova a origem de uma nota
+    # sem identidade. Verifica o vínculo uma vez, inclusive fora do período.
+    if unidade_sem_conflito:
+        for tabela in tabelas:
+            conflito = cur.execute(
+                f"SELECT 1 FROM {tabela} WHERE {expr_unidade} IN ({placeholders}) "
+                f"AND (({expr_loja_raw} != '' AND {expr_loja} NOT IN ({placeholders})) "
+                f"OR ({expr_loja_raw} = '' AND NOT ({sql_sem_prefixo}) "
+                f"AND NOT {sql_prefixo})) LIMIT 1",
+                aliases + aliases + params_prefixo,
+            ).fetchone()
+            if conflito:
+                unidade_sem_conflito = False
+                break
+
+    sql = (
+        f" AND ({expr_loja} IN ({placeholders}) "
+        f"OR ({expr_loja_raw} = '' AND {sql_prefixo})"
+    )
+    params = aliases + params_prefixo
+    if unidade_sem_conflito:
+        sql += (
+            f" OR ({expr_loja_raw} = '' AND {sql_sem_prefixo} "
+            f"AND {expr_unidade} IN ({placeholders}))"
+        )
+        params += aliases
+    return sql + ")", params
 
 
 def _bling_obter_numero_nf(access_token: str, nota_fiscal_id: str):

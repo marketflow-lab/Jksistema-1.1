@@ -316,6 +316,7 @@ def _api_medias_compras_visao_sync(
 
         # Dados do cadastro por SKU (foto e tÃƒÂ­tulo do anuncio).
         cadastro_por_sku = {}
+        skus_cadastro_visiveis = set()
         cadastro_fallback_por_sku = {}
         arquivo_cadastro = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
         caminhos_cadastro = []
@@ -372,6 +373,17 @@ def _api_medias_compras_visao_sync(
             if not sku_norm:
                 continue
 
+            # Um cadastro excluido no Bling nao cria uma linha vazia. Os dados
+            # continuam disponiveis para SKUs com vendas, estoque ou importacao.
+            situacao_bling = str(row.get("situacao_bling") or "").strip().upper()
+            tem_anuncio_ml = (
+                bool(str(row.get("mlb_ids") or "").strip())
+                or bool(str(row.get("mlb_principal") or "").strip())
+                or _safe_float(row.get("qtd_anuncios_mlb"), 0.0) > 0
+            )
+            if situacao_bling != "E" or tem_anuncio_ml:
+                skus_cadastro_visiveis.add(sku_norm)
+
             foto = str(row.get("foto", "") or "").strip()
             if not foto:
                 foto = _cadastro_resolver_foto_local(mapa_fotos_cadastro, sku_norm)
@@ -398,7 +410,13 @@ def _api_medias_compras_visao_sync(
             if not atual.get("titulo_cadastro") and titulo_cadastro:
                 atual["titulo_cadastro"] = titulo_cadastro
 
-        todos_skus = set(vendas_por_sku.keys()) | set(saldo_por_sku.keys()) | set(cadastro_por_sku.keys()) | set(transito_por_sku.keys()) | set(ultima_venda_por_sku.keys())
+        todos_skus = (
+            set(vendas_por_sku)
+            | set(saldo_por_sku)
+            | skus_cadastro_visiveis
+            | set(transito_por_sku)
+            | set(ultima_venda_por_sku)
+        )
         itens = []
 
         for sku in sorted(todos_skus, key=_sku_sort_key):

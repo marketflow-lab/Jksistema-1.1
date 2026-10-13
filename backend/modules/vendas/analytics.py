@@ -23,6 +23,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
+
 from .dependencies import get_tenant_path, get_vendas_dependencies, logger
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
@@ -43,6 +45,7 @@ from .performance import (
     cached_file_value,
     open_vendas_readonly,
     vendas_source_paths,
+    vendas_file_signature,
 )
 
 def _grafico_cache_paths(arguments: dict) -> list[str]:
@@ -557,11 +560,37 @@ def grafico_vendas(
 def _skus_sem_venda_cache_paths(arguments: dict) -> list[str]:
     client_id = arguments["client_id"]
     db_paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    return vendas_source_paths(client_id, db_paths, include_products=True)
+    paths = vendas_source_paths(client_id, db_paths, include_products=True)
+    paths.append(os.path.join(get_tenant_path(client_id), "lojas_config.json"))
+    return paths
 
 
-def _carregar_estoque_compilado_skus(path: str) -> dict[str, dict]:
-    df_estoque = pd.read_csv(path).fillna("")
+def _carregar_lojas_estoque_skus(client_id: str) -> list[dict]:
+    """Read the store identity snapshot without changing its legacy metadata."""
+    try:
+        path = os.path.join(get_tenant_path(client_id), "lojas_config.json")
+        with open(path, encoding="utf-8-sig") as handle:
+            lojas = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    return [loja for loja in lojas if isinstance(loja, dict)] if isinstance(lojas, list) else []
+
+
+def _carregar_estoque_compilado_skus(
+    path: str,
+    *,
+    client_id: str = "",
+    loja: str | None = None,
+    lojas: list[dict] | None = None,
+) -> dict[str, dict]:
+    lojas = lojas if lojas is not None else []
+    loja_especifica = bool(str(loja or "").strip() and str(loja).strip() != "__todas")
+    identidade = resolver_loja_ativa_para_leitura(client_id, loja, lojas=lojas) if loja_especifica else {}
+    if loja_especifica and not identidade.get("loja_resolvida"):
+        return {}
+
+    # Preserve opaque store ids and SKUs, including any leading zeroes.
+    df_estoque = pd.read_csv(path, dtype=str).fillna("")
     colunas_estoque = [
         "saldo_loja", "saldo_full", "quantidade_estoque", "saldo_estoque",
         "estoque", "quantidade", "saldo",
@@ -570,19 +599,42 @@ def _carregar_estoque_compilado_skus(path: str) -> dict[str, dict]:
     if not coluna_estoque_usada:
         return {}
 
-    estoque_data: dict[str, dict] = {}
+    por_loja_sku: dict[tuple[str, str], dict] = {}
     for _idx, row in df_estoque.iterrows():
         sku = str(row.get("sku", "")).strip().upper()
         if not sku:
             continue
+        store_id = str(row.get("store_id", "")).strip()
+        nome_loja = str(row.get("loja_sync", "") or row.get("loja", "")).strip()
+        identidade_linha = resolver_loja_ativa_para_leitura(
+            client_id, nome_loja, store_id, lojas=lojas,
+        )
+        if loja_especifica:
+            # An explicit foreign id never falls back to a matching store name.
+            if store_id:
+                if store_id != identidade["store_id"]:
+                    continue
+            elif not identidade_linha.get("loja_resolvida") or identidade_linha["store_id"] != identidade["store_id"]:
+                continue
         try:
             qtd = float(row.get(coluna_estoque_usada, 0) or 0)
         except (TypeError, ValueError):
             continue
-        estoque_data[sku] = {
+        if not math.isfinite(qtd):
+            continue
+        chave_loja = store_id or identidade_linha.get("store_id") or nome_loja.casefold()
+        por_loja_sku[(chave_loja, sku)] = {
             "quantidade": qtd,
             "produto": str(row.get("nome_bling", row.get("produto", row.get("nome", "-")))).strip(),
         }
+
+    # Compiled balances are snapshots: deduplicate within a store, add across stores.
+    estoque_data: dict[str, dict] = {}
+    for (_chave_loja, sku), item in por_loja_sku.items():
+        if sku not in estoque_data:
+            estoque_data[sku] = dict(item)
+        else:
+            estoque_data[sku]["quantidade"] += item["quantidade"]
     return estoque_data
 
 
@@ -607,10 +659,19 @@ def skus_sem_venda(
 
         if arquivo_cliente and os.path.exists(arquivo_cliente):
             try:
+                lojas_estoque = _carregar_lojas_estoque_skus(client_id)
+                identidade_estoque = resolver_loja_ativa_para_leitura(client_id, loja, lojas=lojas_estoque)
+                config_path = os.path.join(get_tenant_path(client_id), "lojas_config.json")
+                namespace_estoque = json.dumps([
+                    "produtos_compilado_skus", client_id, loja,
+                    identidade_estoque.get("store_id", ""), vendas_file_signature(config_path),
+                ])
                 estoque_data = cached_file_value(
-                    "produtos_compilado",
+                    namespace_estoque,
                     arquivo_cliente,
-                    _carregar_estoque_compilado_skus,
+                    lambda path: _carregar_estoque_compilado_skus(
+                        path, client_id=client_id, loja=loja, lojas=lojas_estoque,
+                    ),
                 )
             except Exception as e:
                 logger.warning(f"Erro ao ler estoque compilado: {e}")
