@@ -11,6 +11,10 @@ from urllib.parse import urlsplit
 import pandas as pd
 
 from backend.services import medias_compras_common as medias_common
+from backend.services.cadastro_cubagem import (
+    decimal_cubagem, normalizar_sku_cubagem, resolver_cubagem_produtos,
+)
+from decimal import Decimal
 from backend.services.impostos import configure_impostos_runtime
 from backend.services.impostos_ncm import (
     _conexao_db_ncm_impostos,
@@ -286,6 +290,7 @@ def _recalcular_frete_internacional_itens_lista(
     *,
     loja: str = "",
     contexto_cadastro: _ContextoCadastroLista | None = None,
+    preservar_cubagem: bool = False,
 ) -> list[dict]:
     itens_norm = [_normalizar_item_lista_pedido(i) for i in (itens or [])]
     if not itens_norm:
@@ -297,6 +302,7 @@ def _recalcular_frete_internacional_itens_lista(
         itens_norm,
         incluir_impostos=True,
         loja=loja,
+        preservar_cubagem=preservar_cubagem,
         **opcoes_contexto,
     )
 
@@ -313,13 +319,18 @@ def _recalcular_frete_internacional_itens_lista(
         m3_item = max(
             0.0,
             _to_float(
-                enr.get("MÃ‚Â³", enr.get("M3", enr.get("m3", 0))),
+                enr.get("M3", enr.get("m3", 0)),
                 0.0,
             ),
         )
         total_m3 += m3_item
 
-    valor_por_m3 = (total_usd / total_m3) if (total_usd > 0 and total_m3 > 0) else 0.0
+    cubagem_completa = all(
+        _to_float(item.get("Quantidade", 0), 0.0) <= 0
+        or item.get("Cubagem status") in {"cadastro", "historico"}
+        for item in itens_enriquecidos
+    )
+    valor_por_m3 = (total_usd / total_m3) if (total_usd > 0 and total_m3 > 0 and cubagem_completa) else 0.0
 
     for idx, item in enumerate(itens_norm):
         enr = itens_enriquecidos[idx] if idx < len(itens_enriquecidos) else {}
@@ -341,7 +352,7 @@ def _recalcular_frete_internacional_itens_lista(
         m3_item = max(
             0.0,
             _to_float(
-                enr.get("MÃ‚Â³", enr.get("M3", enr.get("m3", 0))),
+                enr.get("M3", enr.get("m3", 0)),
                 0.0,
             ),
         )
@@ -354,16 +365,24 @@ def _recalcular_frete_internacional_itens_lista(
             ),
         )
 
+        _limpar_campos_cubagem(item)
+        for chave_cubagem in ("Cubagem status", "Cubagem fonte", "Cubagem unidade", "Cubagem data", "Cubagem loja"):
+            item[chave_cubagem] = enr.get(chave_cubagem, "")
+        for chave_volume in ("M3", "m3", CBM_LISTA_PEDIDO_KEY, "M3 individual"):
+            item[chave_volume] = enr.get(chave_volume, "")
+
         if m3_item > 0:
-            m3_total_fmt = round(m3_item, 6)
+            m3_total_fmt = m3_item
             item[CBM_LISTA_PEDIDO_KEY] = m3_total_fmt
             item["M3"] = m3_total_fmt
             item["m3"] = m3_total_fmt
         if m3_individual > 0:
-            item["M3 individual"] = round(m3_individual, 6)
+            item["M3 individual"] = m3_individual
 
         if valor_por_m3 > 0 and m3_item > 0:
             item["Frete Internacional"] = round(valor_por_m3 * m3_item, 2)
+        elif not cubagem_completa and not preservar_cubagem:
+            item["Frete Internacional"] = ""
         else:
             item["Frete Internacional"] = max(0.0, _to_float(item.get("Frete Internacional", 0), 0.0))
 
@@ -396,6 +415,80 @@ def _indice_ncm_referencia_aliquotas(client_id: str) -> dict[str, dict]:
         conn.close()
 
 
+def _chave_campo_cubagem(campo):
+    corrigido = medias_common._corrigir_mojibake_texto(campo).replace("Â³", "³")
+    return _normalizar_coluna_cadastro_meta(corrigido)
+
+
+def _campo_cubagem_historica(item, *, individual=False):
+    # Modern canonical fields precede malformed legacy aliases.
+    nomes = ("M3 individual", "M³ individual", "m3_individual") if individual else ("M3", "m3", "M³", CBM_LISTA_PEDIDO_KEY, "Estimated CBM")
+    for nome in nomes:
+        numero = decimal_cubagem(item.get(nome))
+        if numero is not None:
+            return numero
+    aliases = {"m3individual", "cgm3individual", "cbmindividual"} if individual else {"m3", "cbm", "estimatedcbm", "estimedcbm"}
+    for nome, valor in item.items():
+        if _chave_campo_cubagem(nome) in aliases:
+            numero = decimal_cubagem(valor)
+            if numero is not None:
+                return numero
+    return None
+
+
+def _limpar_campos_cubagem(item):
+    aliases = {"m3individual", "cgm3individual", "cbmindividual", "m3", "cbm", "estimatedcbm", "estimedcbm"}
+    for campo in list(item):
+        if _chave_campo_cubagem(campo) in aliases:
+            item.pop(campo, None)
+
+
+def _aplicar_cubagem_item_lista(item: dict, cubagem: dict | None, store_id: str, *, preservar_historico=False) -> dict:
+    """Materializa uma estimativa da loja ou conserva o snapshot do pedido."""
+    novo = dict(item)
+    qtd = Decimal(str(max(0.0, _to_float(novo.get("Quantidade", 0), 0.0))))
+    unit = None
+    total = None
+    fonte = ""
+    unidade = "unidade_comercial"
+    data = ""
+    status = "pendente"
+    if preservar_historico:
+        unit = _campo_cubagem_historica(novo, individual=True)
+        total = _campo_cubagem_historica(novo)
+        if total is None and unit is not None:
+            total = unit * qtd
+        if unit is not None or total is not None:
+            status = "historico"
+            fonte = str(novo.get("Cubagem fonte") or "Pedido gravado (histórico)")
+            unidade = str(novo.get("Cubagem unidade") or unidade)
+            data = str(novo.get("Cubagem data") or "")
+    elif cubagem and cubagem.get("status") == "confirmado":
+        unit = cubagem["m3_individual"]
+        total = unit * qtd
+        status = "cadastro"
+        fonte = str(cubagem.get("origem") or "Cadastro da loja")
+        unidade = str(cubagem.get("unidade") or unidade)
+        data = str(cubagem.get("data") or "")
+
+    # Elimina valores residuais da leitura global. Ausência não equivale a zero.
+    _limpar_campos_cubagem(novo)
+    import math
+    if total is not None and (not math.isfinite(float(total)) or (total > 0 and float(total) <= 0)):
+        unit = total = None
+        status = "pendente"
+        fonte = ""
+    if qtd == 0:
+        total = Decimal(0)
+    novo["M3 individual"] = float(unit) if unit is not None else ""
+    for campo in ("M3", "m3", CBM_LISTA_PEDIDO_KEY):
+        novo[campo] = float(total) if total is not None else ""
+    novo.update({"Cubagem status": status, "Cubagem fonte": fonte,
+                 "Cubagem unidade": unidade, "Cubagem data": data,
+                 "Cubagem loja": str(item.get("Cubagem loja") or store_id) if preservar_historico else store_id})
+    return novo
+
+
 def _enriquecer_itens_lista_pedido_com_impostos(
     client_id: str,
     itens: list[dict],
@@ -403,6 +496,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     *,
     loja: str = "",
     contexto_cadastro: _ContextoCadastroLista | None = None,
+    preservar_cubagem: bool = False,
 ) -> list[dict]:
     lista_itens = itens if isinstance(itens, list) else []
     if not lista_itens:
@@ -449,6 +543,9 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             }
     contexto_cadastro = contexto_preparado
     store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
+    cubagem_por_sku = resolver_cubagem_produtos(
+        contexto_cadastro.get("produtos") or [], store_id_cadastro,
+    ) if contexto_cadastro.get("scope") == "store" else {}
     contexto_fotos_indisponivel = (
         str(contexto_cadastro.get("scope") or "").strip() == "unavailable"
     )
@@ -710,17 +807,10 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             novo["PIS"] = pis
             novo["COFINS"] = cofins
 
-        qtd_item = max(0.0, _to_float(novo.get("Quantidade", 0), 0.0))
-        m3_individual = max(0.0, _to_float(fiscal_cad.get("m3_individual", 0), 0.0))
-        m3_total = round(m3_individual * qtd_item, 6)
-        if m3_total > 0:
-            novo["MÃ‚Â³"] = m3_total
-            novo["M3"] = m3_total
-            novo["m3"] = m3_total
-            novo[CBM_LISTA_PEDIDO_KEY] = m3_total
-        if m3_individual > 0:
-            novo["MÃ‚Â³ individual"] = m3_individual
-            novo["M3 individual"] = m3_individual
+        novo = _aplicar_cubagem_item_lista(
+            novo, cubagem_por_sku.get(normalizar_sku_cubagem(sku_item)),
+            store_id_cadastro, preservar_historico=preservar_cubagem,
+        )
 
         if incluir_impostos and ncm_item:
             novo["Imposto"] = f"II {ii:.2f}% | IPI {ipi:.2f}% | PIS {pis:.2f}% | COFINS {cofins:.2f}%"
@@ -730,47 +820,20 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     return saida
 
 
-def _construir_mapa_m3_sku(client_id: str) -> dict[str, float]:
-    """LÃƒÂª o catÃƒÂ¡logo de produtos uma vez e retorna {chave_sku: m3_individual}."""
-    caminhos = _caminhos_cadastros_meta(client_id)
-    if not caminhos:
+def _construir_mapa_m3_sku(client_id: str, loja: str = "", store_id: str = "") -> dict[str, float]:
+    """Cubagem do Cadastro da loja exata, sem aliases ou arquivos de backup."""
+    from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
+
+    referencia = str(store_id or loja or "").strip()
+    if not referencia or referencia == "__todas":
         return {}
-
-    def _nc(v: str) -> str:
-        base = unicodedata.normalize("NFKD", str(v or ""))
-        base = "".join(ch for ch in base if not unicodedata.combining(ch))
-        return re.sub(r"[^a-z0-9]+", "", base.lower())
-
-    mapa: dict[str, float] = {}
-    for arquivo in caminhos:
-        try:
-            df = pd.read_csv(arquivo, dtype=str).fillna("")
-            df.columns = [str(c or "").strip().lower() for c in df.columns]
-            if "sku" not in df.columns:
-                continue
-        except Exception:
-            continue
-
-        for _, row in df.iterrows():
-            sku = str(row.get("sku", "") or "").strip()
-            if not sku:
-                continue
-            row_dict = row.to_dict() if hasattr(row, "to_dict") else {}
-            row_norm_map = {_nc(k): k for k in row_dict.keys()}
-            m3_individual = 0.0
-            for chave_norm in ["cgm3individual", "m3individual", "m3", "cbm"]:
-                chave_real = row_norm_map.get(chave_norm)
-                if not chave_real:
-                    continue
-                m3_individual = max(0.0, _to_float_cadastro_m3(row_dict.get(chave_real, 0), 0.0))
-                if m3_individual > 0:
-                    break
-            if m3_individual > 0:
-                k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
-                for k in (k1, k2, k3):
-                    if k and k not in mapa:
-                        mapa[k] = m3_individual
-    return mapa
+    contexto = visao_produtos_cadastro_contexto_loja(client_id, referencia)
+    identidade = str(contexto.get("store_id") or "").strip()
+    if contexto.get("scope") != "store" or not identidade:
+        return {}
+    mapa = resolver_cubagem_produtos(contexto.get("produtos") or [], identidade)
+    return {sku: float(volume["m3_individual"]) for sku, volume in mapa.items()
+            if volume["status"] == "confirmado" and volume["m3_individual"] is not None}
 
 
 

@@ -26,13 +26,13 @@
     };
     let fotoPreviewSeq = 0;
     const camposControleLoja = new Set([
-        'store_id', 'loja_sync', 'sku_normalizado', 'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source',
+        'store_id', 'loja_sync', 'sku_normalizado', 'cubagem_sku', 'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source',
     ]);
     let carregamentoColunasSeq = 0;
     let consultaMercadoLivreSeq = 0;
     const prioridadeCampos = [
         'sku', 'nome', 'titulo_ml', 'categoria', 'categoria_id_mlb', 'marca', 'modelo', 'gtins_mlb',
-        formTools.campoM3Individual, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'
+        ...formTools.camposCubagem, 'ncm', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'
     ];
 
     function setStatus(message, className) {
@@ -45,7 +45,7 @@
     }
 
     function habilitarFormulario(habilitado) {
-        elements.form.querySelectorAll('input, textarea, button').forEach(element => { element.disabled = !habilitado; });
+        elements.form.querySelectorAll('input, textarea, select, button').forEach(element => { element.disabled = !habilitado; });
         elements.lojaSelect.disabled = false;
     }
 
@@ -129,7 +129,7 @@
         const label = document.createElement('label');
         label.setAttribute('for', `f_${chave}`);
         label.textContent = formTools.formatarNomeCampo(chave);
-        const input = String(chave).includes('descricao') ? document.createElement('textarea') : document.createElement('input');
+        const input = formTools.criarControleCubagem(chave, '') || (String(chave).includes('descricao') ? document.createElement('textarea') : document.createElement('input'));
         if (input.tagName === 'INPUT') input.type = 'text';
         input.id = `f_${chave}`;
         input.name = chave;
@@ -137,7 +137,7 @@
         if (String(chave || '').trim().toLowerCase() === formTools.campoM3Individual) {
             input.inputMode = 'decimal';
             input.placeholder = 'Ex.: 0,000054';
-            input.title = 'Informe o M³ de uma unidade. A importação multiplica pela quantidade.';
+            input.title = 'Volume de transporte com embalagem por unidade comercial. A importação multiplica pela quantidade de peças, pares ou kits.';
         }
         if (chave === 'sku') {
             input.required = true;
@@ -154,7 +154,7 @@
 
     function montarFormulario() {
         elements.formGrid.innerHTML = '';
-        formTools.ordemCampos(state.colunas, prioridadeCampos).forEach(campo => {
+        formTools.ordemCampos(state.colunas.filter(campo => !formTools.ehCampoCubagemLegado(campo)), prioridadeCampos).forEach(campo => {
             if (campo === 'custos_frete_mlb') return;
             elements.formGrid.appendChild(campo === 'mlb_ids' ? formTools.criarEditorMlb() : criarCampo(campo));
         });
@@ -213,7 +213,7 @@
             const colunas = Array.isArray(payload.colunas) ? payload.colunas.filter(campo => !camposControleLoja.has(campo)) : [];
             state.colunas = formTools.garantirCamposProduto(colunas);
             if (!state.colunas.includes('sku')) state.colunas.unshift('sku');
-            if (!state.colunas.includes(formTools.campoM3Individual)) state.colunas.push(formTools.campoM3Individual);
+            formTools.camposCubagem.forEach(campo => { if (!state.colunas.includes(campo)) state.colunas.push(campo); });
             montarFormulario();
             state.lojaValidada = true;
             habilitarFormulario(true);
@@ -227,7 +227,8 @@
 
     function montarPayload() {
         const data = {};
-        elements.formGrid.querySelectorAll('input[name], textarea[name]').forEach(input => {
+        elements.formGrid.querySelectorAll('input[name], textarea[name], select[name]').forEach(input => {
+            if (['m3_status', 'm3_atualizado_em'].includes(input.name)) return;
             if (input.name === 'updated_at') return;
             data[input.name] = input.dataset.tipo === 'moeda' ? formTools.brlParaNumeric(input.value) : input.value || '';
         });

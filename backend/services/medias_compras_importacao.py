@@ -390,6 +390,7 @@ def _api_medias_compras_lista_pedido_importar_excel_precos_sync(
         client_id,
         itens,
         loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        preservar_cubagem=_cubagem_lista_historica(lista),
     )
     lista["status"] = _normalizar_status_lista_pedido("Analisando orçamento")
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")

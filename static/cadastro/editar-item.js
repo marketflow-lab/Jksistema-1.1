@@ -27,10 +27,10 @@
     let fotoPreviewSeq = 0;
     let consultaMercadoLivreSeq = 0;
     const camposControleLoja = new Set([
-        'store_id', 'loja_sync', 'sku_normalizado', 'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source',
+        'store_id', 'loja_sync', 'sku_normalizado', 'cubagem_sku', 'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source',
     ]);
     const prioridadeCampos = [
-        'sku', 'nome', 'titulo_ml', 'categoria', 'categoria_id_mlb', 'marca', 'modelo', 'gtins_mlb', formTools.campoM3Individual, 'ncm', 'ncm_validade',
+        'sku', 'nome', 'titulo_ml', 'categoria', 'categoria_id_mlb', 'marca', 'modelo', 'gtins_mlb', ...formTools.camposCubagem, 'ncm', 'ncm_validade',
         'ncm_descricao_oficial', 'ncm_fonte_auditoria', 'monofasico', 'monofasico_status',
         'monofasico_confianca', 'monofasico_motivo', 'monofasico_fundamento', 'monofasico_fonte',
         'monofasico_verificado_em', 'cest', 'custo', 'imposto', 'preco', 'descricao', 'updated_at'
@@ -53,11 +53,12 @@
         elements.formGrid.innerHTML = '';
         if (!produto) return;
         const campos = state.colunas.length ? [...state.colunas] : [];
-        if (!campos.includes(formTools.campoM3Individual)) campos.push(formTools.campoM3Individual);
+        formTools.camposCubagem.forEach(campo => { if (!campos.includes(campo)) campos.push(campo); });
         Object.keys(produto).forEach(campo => { if (!campos.includes(campo) && !camposControleLoja.has(campo)) campos.push(campo); });
         const grupos = {
             identificacao: layoutTools.criarGrupoCampos('Dados do Produto'),
             fabricante: layoutTools.criarGrupoCampos('Informações do fabricante'),
+            cubagem: layoutTools.criarGrupoCampos('Cubagem de transporte'),
             fiscal: layoutTools.criarGrupoCampos('Dados fiscais'),
             precos: layoutTools.criarGrupoCampos('Custos e preços'),
             anuncios: layoutTools.criarGrupoCampos('Anúncios e marketplaces'),
@@ -65,7 +66,7 @@
             outros: layoutTools.criarGrupoCampos('Outras características'),
         };
         let temEditorMlb = false;
-        const ordenados = formTools.ordemCampos(campos.filter(campo => !camposControleLoja.has(campo)), prioridadeCampos);
+        const ordenados = formTools.ordemCampos(campos.filter(campo => !camposControleLoja.has(campo) && !formTools.ehCampoCubagemLegado(campo)), prioridadeCampos);
         ordenados.forEach(campo => {
             if (campo === 'custos_frete_mlb' && ordenados.includes('mlb_ids')) return;
             const grupo = grupos[layoutTools.obterGrupoCampo(formTools, campo)] || grupos.outros;
@@ -74,7 +75,7 @@
                 temEditorMlb = true;
             } else grupo.grid.appendChild(layoutTools.criarCampo(formTools, campo, produto[campo] || ''));
         });
-        ['identificacao', 'fabricante', 'fiscal', 'precos', 'anuncios', 'datas', 'outros'].forEach(nome => {
+        ['identificacao', 'fabricante', 'cubagem', 'fiscal', 'precos', 'anuncios', 'datas', 'outros'].forEach(nome => {
             const grupo = grupos[nome];
             if (grupo.grid.children.length > 0 || nome === 'anuncios' && temEditorMlb) elements.formGrid.appendChild(grupo.section);
         });
@@ -215,7 +216,7 @@
     }
 
     function habilitarEdicao(habilitada) {
-        elements.form.querySelectorAll('input, textarea, button').forEach(element => { element.disabled = !habilitada; });
+        elements.form.querySelectorAll('input, textarea, select, button').forEach(element => { element.disabled = !habilitada; });
         elements.fotoFile.disabled = !habilitada;
         elements.btnEnviarFoto.disabled = !habilitada;
         elements.fotoPaste.tabIndex = habilitada ? 0 : -1;
@@ -265,7 +266,8 @@
             return;
         }
         const data = {};
-        elements.formGrid.querySelectorAll('input[name], textarea[name]').forEach(input => {
+        elements.formGrid.querySelectorAll('input[name], textarea[name], select[name]').forEach(input => {
+            if (['m3_status', 'm3_atualizado_em'].includes(input.name)) return;
             data[input.name] = input.dataset.tipo === 'moeda' ? formTools.brlParaNumeric(input.value) : input.value || '';
         });
         Object.assign(data, formTools.extrairMlbFreteEditor(elements.formGrid));

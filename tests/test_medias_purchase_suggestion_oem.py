@@ -61,7 +61,7 @@ def ambiente(monkeypatch, tmp_path):
                 Image.new("RGB", (12, 8), color).save(photo)
                 state["photo_bytes"][client, store_id, sku] = photo.read_bytes()
                 rows.append({"store_id": store_id, "sku": sku, "sku_normalizado": sku,
-                             "nome": f"Produto {sku}", "foto": ref, "row_version": "1",
+                             "nome": f"Produto {sku}", "foto": ref, "row_version": "1", "m3 individual": "0.125",
                              "updated_at_utc": TIMESTAMP, "deleted_at_utc": ""})
         _csv(tenant / "cadastro_produtos_lojas.csv", rows)
 

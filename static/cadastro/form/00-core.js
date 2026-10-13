@@ -3,13 +3,14 @@
 
     if (global.JKCadastroForm && global.JKCadastroStore) return;
     const campoM3Individual = 'm3 individual';
+    const camposCubagem = [campoM3Individual, 'm3_unidade', 'm3_origem', 'm3_atualizado_em', 'm3_status'];
     const STORE_CACHE_SCHEMA = 'jk.cadastro.edit-cache.v2';
     const STORE_PREFERENCE_PREFIX = 'cadastro_store_id_por_cliente:';
     const EDIT_ITEM_KEY = 'cadastro_editar_item';
     const EDIT_SKU_KEY = 'cadastro_editar_sku';
     const camposProdutoPadrao = [
         'sku', 'nome', 'produto', 'produto_bling', 'titulo_ml', 'categoria', 'categoria_id_mlb',
-        'marca', 'modelo', 'gtins_mlb', campoM3Individual, 'ncm', 'cest', 'custo', 'imposto',
+        'marca', 'modelo', 'gtins_mlb', ...camposCubagem, 'ncm', 'cest', 'custo', 'imposto',
         'preco', 'descricao', 'foto', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb',
         'titulos_anuncios_mlb', 'custos_frete_mlb',
     ];
@@ -288,7 +289,7 @@
     }
 
     function garantirCamposProduto(campos) {
-        const resultado = Array.isArray(campos) ? [...campos] : [];
+        const resultado = Array.isArray(campos) ? campos.filter(campo => campo !== 'cubagem_sku') : [];
         camposProdutoPadrao.forEach(campo => { if (!resultado.includes(campo)) resultado.push(campo); });
         return resultado;
     }
@@ -334,9 +335,41 @@
     function formatarNomeCampo(chave) {
         const normalizada = String(chave || '').trim().toLowerCase();
         if ([campoM3Individual, 'm3', 'cg_m3 individual', 'cg_m³ individual'].includes(normalizada)) {
-            return 'M3 individual (m³ por unidade)';
+            return 'M³ de transporte por unidade comercial';
         }
+        const rotulosCubagem = { m3_unidade: 'Unidade comercial da cubagem', m3_origem: 'Origem da cubagem', m3_atualizado_em: 'Data da cubagem', m3_status: 'Situação da cubagem' };
+        if (rotulosCubagem[normalizada]) return rotulosCubagem[normalizada];
         return String(chave || '').replace(/^cg_/i, '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function ehCampoCubagemLegado(chave) {
+        const normalizada = String(chave || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        return ['cgm3individual', 'm3', 'cbm'].includes(normalizada);
+    }
+
+    function criarControleCubagem(chave, valor) {
+        if (!camposCubagem.includes(chave)) return null;
+        const input = document.createElement(chave === 'm3_unidade' ? 'select' : 'input');
+        if (chave === 'm3_unidade') {
+            [['', 'Selecione a unidade'], ['peca', 'Peça'], ['par', 'Par'], ['kit', 'Kit'], ['unidade_comercial', 'Unidade comercial']].forEach(([codigo, rotulo]) => {
+                const option = document.createElement('option');
+                option.value = codigo;
+                option.textContent = rotulo;
+                input.appendChild(option);
+            });
+        } else input.type = 'text';
+        input.value = String(valor ?? '');
+        if (chave === campoM3Individual) {
+            input.inputMode = 'decimal';
+            input.placeholder = 'Ex.: 0,000054';
+            input.title = 'Volume de transporte com embalagem por peça, par ou kit vendido. Caixas de um único SKU: m³ da caixa ÷ unidades comerciais.';
+        }
+        if (chave === 'm3_origem') input.placeholder = 'Ex.: Packing List JK55, caixa 12';
+        if (['m3_atualizado_em', 'm3_status'].includes(chave)) {
+            input.readOnly = true;
+            input.title = 'Informação gerada pelo cadastro ao salvar a cubagem.';
+        }
+        return input;
     }
 
     function lerArquivoComoDataUrl(file) {
@@ -376,6 +409,9 @@
         aplicarMascaraMoeda,
         brlParaNumeric,
         campoM3Individual,
+        camposCubagem,
+        criarControleCubagem,
+        ehCampoCubagemLegado,
         formatarNomeCampo,
         garantirCamposProduto,
         lerArquivoComoDataUrl,

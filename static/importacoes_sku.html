@@ -844,7 +844,7 @@
                         <div class="kv cost" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
                         <div class="kv cost" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
-                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div><div id="vM3Fonte" class="label"></div></div>
                         <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_peso"><div class="label">Peso</div><div id="vPeso" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_ncm"><div class="label">NCM</div><div id="vNcm" class="value">-</div></div>
@@ -1580,71 +1580,51 @@
             }
         }
 
+        function statusCubagemItem(item) {
+            return String(item && item['Cubagem status'] || '').trim().toLowerCase();
+        }
+
         function registrarM3CadastroPorSku(mapa, skuRaw, m3Val) {
-            if (!mapa || typeof mapa.set !== 'function') return;
             const m3 = getNumber(m3Val);
-            if (m3 === null || m3 <= 0) return;
-
-            const skuNorm = normalizarSkuComparacao(skuRaw);
-            if (!skuNorm) return;
-
-            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
-            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
-
-            if (!mapa.has(skuNorm)) mapa.set(skuNorm, m3);
-            if (chaveCompacta && !mapa.has(chaveCompacta)) mapa.set(chaveCompacta, m3);
-            if (chaveNumSoft && !mapa.has(chaveNumSoft)) mapa.set(chaveNumSoft, m3);
+            const sku = normSku(skuRaw);
+            if (mapa && sku && m3 !== null && m3 > 0 && !mapa.has(sku)) mapa.set(sku, m3);
         }
 
         function obterM3IndividualCadastroPorSku(mapa, skuRaw) {
-            if (!mapa || typeof mapa.get !== 'function') return 0;
-
-            const skuNorm = normalizarSkuComparacao(skuRaw);
-            if (!skuNorm) return 0;
-
-            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
-            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
-
-            return (
-                mapa.get(skuNorm)
-                || mapa.get(chaveCompacta)
-                || mapa.get(chaveNumSoft)
-                || 0
-            );
+            return mapa && mapa.get(normSku(skuRaw)) || 0;
         }
 
         function obterM3IndividualItemLista(item) {
-            const m3 = getNumber(getField(item, [
-                'cg m3 individual',
-                'cg_m3 individual',
-                'M3 individual',
-                'm3 individual'
-            ], ''));
-            return (m3 !== null && m3 > 0) ? m3 : 0;
+            if (statusCubagemItem(item) === 'pendente') return 0;
+            const m3 = getNumber(getField(item, ['M3 individual'], ''));
+            return m3 !== null && m3 > 0 ? m3 : 0;
         }
 
         function obterM3TotalItemCadastro(item, mapaM3Cadastro) {
             const qtd = getNumber(item && (item.Quantidade ?? item.Qtd));
             if (qtd === 0) return 0;
-            const m3Individual = obterM3IndividualCadastroPorSku(mapaM3Cadastro, item && item.SKU)
-                || obterM3IndividualItemLista(item);
-            if (m3Individual > 0 && qtd > 0) {
-                const totalCalc = m3Individual * qtd;
-                return Number.isFinite(totalCalc) ? totalCalc : 0;
+            if (qtd === null || qtd < 0) return null;
+            const status = statusCubagemItem(item);
+            if (status === 'pendente') return null;
+            if (status === 'historico') {
+                const total = getNumber(getField(item, ['M3', 'Estimated CBM', 'Estimed CBM'], ''));
+                if (total !== null && total >= 0) return total;
             }
-            const total = getNumber(getField(item, ['M3', 'Estimated CBM', 'Estimed CBM'], ''));
-            return total !== null && total > 0 ? total : null;
+            const individual = obterM3IndividualItemLista(item)
+                || (!status ? obterM3IndividualCadastroPorSku(mapaM3Cadastro, item && item.SKU) : 0);
+            const total = individual > 0 ? individual * qtd : null;
+            return Number.isFinite(total) ? total : null;
         }
 
         async function carregarMapaM3Cadastro(storeId, itens, contexto) {
             const mapa = new Map();
-            if ((itens || []).every(item => obterM3TotalItemCadastro(item, mapa) !== null)) return mapa;
+            if (!(itens || []).some(item => !statusCubagemItem(item) && obterM3TotalItemCadastro(item, mapa) === null)) return mapa;
             if (!storeId) throw new Error('Loja da lista não identificada para consultar a metragem.');
             const produtos = await consultarJsonDetalheSku('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto);
             if (!Array.isArray(produtos)) throw new Error('Cadastro de metragem indisponível.');
             produtos.forEach(produto => {
                 if (!produto || String(produto.store_id || '') !== storeId) return;
-                registrarM3CadastroPorSku(mapa, produto.sku, obterM3IndividualProdutoCadastro(produto));
+                registrarM3CadastroPorSku(mapa, produto.cubagem_sku || produto.sku, obterM3IndividualProdutoCadastro(produto));
             });
             return mapa;
         }
@@ -2041,7 +2021,7 @@
         function fmtM3(val) {
             const n = getNumber(val);
             if (n === null) return String(val || '-');
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 10 });
         }
 
         function fmtPct(val) {
@@ -2470,12 +2450,7 @@
             const link = getField(item, ['Link', 'URL', 'Url']);
 
             const qtdNum = getNumber(quantidade) || 0;
-            const m3IndividualCadastro = (cad && Number(cad.m3Individual || 0) > 0)
-                ? Number(cad.m3Individual)
-                : (obterM3IndividualCadastroPorSku(mapaM3Cadastro, sku) || obterM3IndividualItemLista(item));
-            const m3Num = (m3IndividualCadastro > 0 && qtdNum > 0)
-                ? (m3IndividualCadastro * qtdNum)
-                : obterM3TotalItemCadastro(item, mapaM3Cadastro);
+            const m3Num = obterM3TotalItemCadastro(item, mapaM3Cadastro);
 
             // --- Proporção: carrega do localStorage ou usa 100% como padrão ---
             const { listaId: listaIdParam } = getParams();
@@ -2533,7 +2508,10 @@
                 : null;
             setText('vValorTotalBrl', valorTotalBrlCalc !== null ? fmtBRL(valorTotalBrlCalc) : '-');
             setText('vQtd', fmtQty(quantidade));
-            setText('vM3', fmtM3(m3Num));
+            setText('vM3', m3Num === null ? 'Cubagem pendente' : fmtM3(m3Num));
+            const statusCubagem = statusCubagemItem(item);
+            const unidadeCubagem = ({ peca: 'Peça', par: 'Par', kit: 'Kit', unidade_comercial: 'Unidade comercial' })[item['Cubagem unidade']] || item['Cubagem unidade'];
+            setText('vM3Fonte', [statusCubagem === 'historico' ? 'Cubagem histórica preservada' : (m3Num === null ? 'Preencha a cubagem no cadastro desta loja' : 'Cubagem do cadastro desta loja'), item['Cubagem fonte'], unidadeCubagem, item['Cubagem data']].filter(Boolean).join(' · '));
             // Exibe o mesmo valor que aparece no cabeçalho da lista: editável → cálculo total (não usa campo do item)
             const { listaId: listaIdParamDisplay } = getParams();
             const resumoEditavelDisplay = carregarResumoEditavelLista(listaIdParamDisplay);
@@ -2849,10 +2827,7 @@
 
         function obterM3IndividualProdutoCadastro(produto) {
             const m3 = getNumber(pickCadastro(produto, [
-                'cg m3 individual',
-                'cg_m3 individual',
-                'm3 individual',
-                'm3'
+                'm3 individual'
             ]));
             return (m3 !== null && m3 > 0) ? m3 : 0;
         }
@@ -2893,8 +2868,8 @@
             const data = await consultarJsonDetalheSku('/api/cadastro/lojas/' + encodeURIComponent(storeId)
                 + '/produtos/' + encodeURIComponent(normSku(sku)), contexto);
             const produto = data && data.produto;
-            if (!produto || String(produto.store_id || '') !== storeId) {
-                throw new Error('O cadastro retornado não pertence à loja desta lista.');
+            if (!produto || String(produto.store_id || '') !== storeId || normSku(produto.cubagem_sku || produto.sku) !== normSku(sku)) {
+                throw new Error('O cadastro retornado não pertence à loja e ao SKU desta lista.');
             }
             return montarDadosCadastroSku(produto);
         }
@@ -3019,7 +2994,7 @@
                 if (cad && Number(cad.m3Individual || 0) > 0) registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
                 // Falha fiscal mantém os dados locais, sem repetir a consulta nem publicar análise parcial.
                 if (resultados[2].status !== 'fulfilled') cacheImpostosProdutos = new Map();
-                const m3 = cad && cad.m3Individual > 0 ? cad.m3Individual * (getNumber(item.Quantidade) || 0) : obterM3TotalItemCadastro(item, mapaM3Cadastro);
+                const m3 = obterM3TotalItemCadastro(item, mapaM3Cadastro);
                 const frete = obterValorPorM3Usd(lista, item, itens, mapaM3Cadastro);
                 const aliquotas = ['II', 'IPI', 'PIS', 'COFINS'].map(chave => getNumber(getField(item, [chave], '')));
                 custoComplementosPendente = !(resultados[2].status === 'fulfilled' && m3 !== null && frete !== null

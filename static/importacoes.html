@@ -2281,8 +2281,16 @@
 
         function formatarM3(v) {
             const n = Number(v || 0);
-            if (!n) return '-';
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' m³';
+            if (!Number.isFinite(n)) return 'Cubagem pendente';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 10 }) + ' m³';
+        }
+
+        function cubagemResumoPendente(lista) {
+            return !!lista && (lista.m3_completo === false || Number(lista.m3_pendente_itens || 0) > 0);
+        }
+
+        function formatarM3Resumo(lista) {
+            return formatarM3(lista && lista.total_m3 || 0) + (cubagemResumoPendente(lista) ? ' (parcial)' : '');
         }
 
         function escaparHtml(valor) {
@@ -3388,7 +3396,7 @@
                             '<div class="meta lista-card-quantidade lista-quantidades-grid">' +
                                 '<div><strong class="lista-quantidade-valor">' + numero(l.total_itens || 0) + '</strong><span class="lista-quantidade-rotulo">itens</span></div>' +
                                 '<div><strong class="lista-quantidade-valor">' + numero(l.total_quantidade || 0) + '</strong><span class="lista-quantidade-rotulo">unidades</span></div>' +
-                                '<div><span class="meta-pill meta-m3"><strong>' + formatarM3(l.total_m3 || 0) + '</strong></span><span class="lista-quantidade-rotulo">volume</span></div>' +
+                                '<div><span class="meta-pill meta-m3"><strong>' + formatarM3Resumo(l) + '</strong></span><span class="lista-quantidade-rotulo">volume</span></div>' +
                             '</div><span class="status">Analisando orçamento</span>' +
                         '</div>' +
                         '<div class="lista-coluna lista-coluna-valores">' +
@@ -3624,11 +3632,22 @@
             return pad;
         }
         function embObterM3TotalItem(item) {
-            const direto = embObterCampo(item, ['M³ individual','M3 individual','m3 individual'], '');
-            const m3ind = embValorNumerico(direto);
-            const qtd = embValorNumerico(item && item.Quantidade);
-            if (m3ind > 0 && qtd > 0) return m3ind * qtd;
-            return embValorNumerico(embObterCampo(item, ['M³','M3','m3'], 0));
+            const quantidade = item && item.Quantidade;
+            if (quantidade === null || quantidade === undefined || String(quantidade).trim() === '') return null;
+            const qtd = embValorNumerico(quantidade);
+            if (qtd === 0) return 0;
+            if (qtd < 0) return null;
+            const status = String(item && item['Cubagem status'] || '').trim().toLowerCase();
+            if (status === 'pendente') return null;
+            if (status === 'historico') {
+                const bruto = embObterCampo(item, ['M³', 'M3', 'm3'], '');
+                if (String(bruto).trim()) {
+                    const total = embValorNumerico(bruto);
+                    if (total >= 0) return total;
+                }
+            }
+            const individual = embValorNumerico(embObterCampo(item, ['M3 individual', 'm3 individual'], ''));
+            return individual > 0 ? individual * qtd : null;
         }
         function embSomarFrete(itens) {
             return (itens || []).reduce((s, it) => s + Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0), 0);
@@ -3713,8 +3732,10 @@
                 var vu = embValorNumerico(it && it['Valor unidade']);
                 return s + (vt > 0 ? vt : qtd * vu);
             }, 0);
-            var totalM3 = dados.reduce(function(s, it) { return s + embObterM3TotalItem(it); }, 0);
-            var valorPorM3 = totalM3 > 0 ? (totalUsd / totalM3) : 0;
+            var volumes = dados.map(embObterM3TotalItem);
+            var m3Completo = volumes.every(function(v) { return Number.isFinite(v); });
+            var totalM3 = volumes.reduce(function(s, v) { return s + (Number.isFinite(v) ? v : 0); }, 0);
+            var valorPorM3 = m3Completo && totalM3 > 0 ? (totalUsd / totalM3) : 0;
             var totalNcm = embContarNcmsDiferentes(dados);
 
             var vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
@@ -3794,7 +3815,7 @@
                 { label: 'Nº Invoice', value: invoiceStr || '-' },
                 { label: 'Faturamento', value: '-' },
                 { label: 'Faixa de Imposto', value: '-' },
-                { label: 'M³ Total', value: formatarM3(totalM3) },
+                { label: m3Completo ? 'M³ Total' : 'M³ Total parcial', value: formatarM3(totalM3) },
                 { label: 'Valor por M³', value: valorPorM3 > 0 ? formatarUSD(valorPorM3) : '-' },
                 { label: 'VMLE', value: vmleUsd, sub: vmleBrl },
                 { label: 'Frete Internacional', value: frete, sub: freteUsd },
@@ -3807,14 +3828,14 @@
                 { label: 'COFINS', value: embFormatarPct(mCof), sub: totTrib.cofins > 0 ? formatarMoedaBRL(totTrib.cofins) : '-' },
                 { label: 'ICMS', value: embFormatarPct(mIcms), sub: totTrib.icms > 0 ? formatarMoedaBRL(totTrib.icms) : '-' },
                 { label: 'Armazenagem', value: armazenagem },
-                { label: 'Pick-up Origem', value: pickupOrigem },
-                { label: 'Taxas de Origem', value: taxasOrigem },
-                { label: 'Capatazia', value: capatazia },
+                { label: 'Pick-up Origem', value: m3Completo ? pickupOrigem : 'Cubagem pendente' },
+                { label: 'Taxas de Origem', value: m3Completo ? taxasOrigem : 'Cubagem pendente' },
+                { label: 'Capatazia', value: m3Completo ? capatazia : 'Cubagem pendente' },
                 { label: 'BL Fee', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.blFee) },
                 { label: 'Desconsolidação', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao) },
                 { label: 'Handling', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.handling) },
                 { label: 'Honorários Trading', value: honorariosTrading },
-                { label: 'Transporte Rodoviário', value: transporteRodoviario },
+                { label: 'Transporte Rodoviário', value: m3Completo ? transporteRodoviario : 'Cubagem pendente' },
                 { label: 'Desembaraço', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco) },
                 { label: 'Expediente', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.expediente) },
                 { label: 'Taxa Siscomex', value: taxaSis },
@@ -3849,6 +3870,7 @@
             var listas = todasListas.filter(function(l) { return ids.has(String(l.id || '')); });
             return {
                 totalM3: listas.reduce(function(s, l) { return s + (Number(l.total_m3) || 0); }, 0),
+                m3Completo: listas.every(function(l) { return !cubagemResumoPendente(l); }),
                 totalUsd: listas.reduce(function(s, l) { return s + (Number(l.total_usd) || 0); }, 0),
                 totalQtd: listas.reduce(function(s, l) { return s + (Number(l.total_quantidade) || 0); }, 0),
                 qtdListas: listas.length,
@@ -4417,7 +4439,7 @@
                         })() +
                     montarMetaRastreamentoEmbarqueHtml(emb, false, false) +
                     '<div class="meta-resumo">' +
-                        '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(totais.totalM3) + '</strong></span>' +
+                        '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(totais.totalM3) + (totais.m3Completo ? '' : ' (parcial)') + '</strong></span>' +
                         '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
                         '<span class="meta-pill meta-brl">Total R$: <strong>' + (totais.totalUsd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(totais.totalUsd * cotacaoDolarAtual) : '-') + '</strong></span>' +
                     '</div>';
@@ -4564,7 +4586,7 @@
                             metaFornecedorListaHtml(l) +
                             metaNacionalizadorListaHtml(l) +
                             window.JKDataPedidoLista.html(l) +
-                            '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(l.total_m3 || 0) + '</strong></span>' +
+                            '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3Resumo(l) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
                             '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
                         '</div>';

@@ -124,6 +124,7 @@ CADASTRO_PRODUTOS_LOJAS_COLUNAS = [
 ]
 
 _COLUNAS_IDENTIDADE = {
+    "cubagem_sku",
     "store_id",
     "sku_normalizado",
     "loja_sync",
@@ -299,7 +300,11 @@ def _normalizar_registro_persistido(linha: dict[str, Any]) -> dict[str, str]:
         if str(chave or "").strip()
     }
     item["store_id"] = str(item.get("store_id") or "").strip()
-    sku = _normalizar_sku_mes(item.get("sku") or item.get("sku_normalizado") or "")
+    sku_bruto = str(item.get("sku") or item.get("sku_normalizado") or "").strip()
+    sku = _normalizar_sku_mes(sku_bruto)
+    if sku_bruto != sku and not item.get("cubagem_sku"):
+        # Preserve source identity for cubagem without changing the public key.
+        item["cubagem_sku"] = sku_bruto
     item["sku"] = sku
     item["sku_normalizado"] = _normalizar_sku_chave(
         item.get("sku_normalizado") or sku
@@ -980,7 +985,10 @@ def _contexto_legado_de_tenant(
             campos_explicitos_loja=campos_explicitos_loja,
         )
         produto["store_id"] = store_id
-        produto["sku"] = _normalizar_sku_mes(produto.get("sku") or sku)
+        sku_bruto = str(produto.get("sku") or sku).strip()
+        produto["sku"] = _normalizar_sku_mes(sku_bruto)
+        if sku_bruto != produto["sku"] and not produto.get("cubagem_sku"):
+            produto["cubagem_sku"] = sku_bruto
         produto["sku_normalizado"] = sku
         produto["loja_sync"] = nome_loja
         produto["row_version"] = "0"
@@ -1123,6 +1131,14 @@ def _dados_mutacao(
         if nome in _COLUNAS_DERIVADAS_COMPILADO and nome not in derivados_permitidos:
             continue
         data[nome] = _texto_csv(valor)
+    from backend.services.cadastro_cubagem import validar_dados_cubagem
+    try:
+        unidade_informada = "m3_unidade" in data
+        data = validar_dados_cubagem(data)
+        if not unidade_informada:
+            data.pop("m3_unidade", None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return data, foto_data_url, foto_filename
 
 

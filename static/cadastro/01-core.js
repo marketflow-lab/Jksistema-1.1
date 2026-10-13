@@ -16,7 +16,7 @@
         'marca', 'mlb_principal', 'mlb_ids', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb',
         'custos_frete_mlb', 'modalidades_mlb', 'gtins_mlb', 'monofasico_status',
         'monofasico_fundamento', 'monofasico_fonte', 'monofasico_motivo', 'monofasico_verificado_em',
-        'ncm_fonte_auditoria', 'ncm_descricao_oficial', 'ncm_verificado_em', 'store_id', 'sku_normalizado',
+        'ncm_fonte_auditoria', 'ncm_descricao_oficial', 'ncm_verificado_em', 'store_id', 'sku_normalizado', 'cubagem_sku',
         'row_version', 'updated_at_utc', 'deleted_at_utc', 'scope_source'
     ]);
     const colunasDetalheProvedor = new Set([

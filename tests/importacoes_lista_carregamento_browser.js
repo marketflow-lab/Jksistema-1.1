@@ -202,7 +202,7 @@ async function waitUntil(predicate) {
     await timeout.page.locator('#tbodyLista tr[data-sku="001"]').waitFor();
     await timeout.page.waitForFunction(() => !mapaM3IndividualCarregando);
     assert.strictEqual(timeout.state.calls.catalog, 2, 'Dependência expirada faz uma nova tentativa limitada');
-    assert.strictEqual(await timeout.page.locator('tr[data-sku="002"] [data-col-key="m3"]').textContent(), 'Indisponível');
+    assert.strictEqual(await timeout.page.locator('tr[data-sku="002"] [data-col-key="m3"]').textContent(), 'Cubagem pendente');
     assert.strictEqual(await timeout.page.locator('#btnRecarregarM3').isVisible(), true);
     timeout.state.catalog.resolve();
     await timeout.page.locator('#btnRecarregarM3').click();

@@ -125,6 +125,17 @@ def _configurar(monkeypatch, tmp_path, stores_by_client=None):
         "carregar_lojas",
         lambda client_id: stores_by_client.get(str(client_id), []),
     )
+    # Operational reads no longer route through carregar_lojas. Keep both
+    # adapters and their locking paths scoped to this test's tenant directory.
+    monkeypatch.setattr(
+        integracoes,
+        "ler_lojas",
+        lambda client_id: stores_by_client.get(str(client_id), []),
+    )
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info_root))
+    monkeypatch.setattr(integracoes, "ARQUIVO_LOJAS", str(info_root / "lojas_config.json"))
+    monkeypatch.setattr(integracoes, "ARQUIVO_TEMP_AUTH", str(info_root / "temp_integracao.json"))
 
     def migrar(client_id, filename, _legacy_path):
         return str(Path(tenant_path(client_id)) / filename)

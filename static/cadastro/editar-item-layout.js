@@ -8,9 +8,9 @@
         label.setAttribute('for', `f_${chave}`);
         label.textContent = formTools.formatarNomeCampo(chave);
         const texto = String(valor || '');
-        const input = texto.length > 120 || String(chave).includes('descricao')
+        const input = formTools.criarControleCubagem(chave, valor) || (texto.length > 120 || String(chave).includes('descricao')
             ? document.createElement('textarea')
-            : document.createElement('input');
+            : document.createElement('input'));
         if (input.tagName === 'INPUT') input.type = 'text';
         input.id = `f_${chave}`;
         input.name = chave;
@@ -26,7 +26,7 @@
         if (normalizada === formTools.campoM3Individual) {
             input.inputMode = 'decimal';
             input.placeholder = 'Ex.: 0,000054';
-            input.title = 'Informe o M³ de uma unidade. A importação multiplica pela quantidade.';
+            input.title = 'Volume de transporte com embalagem por unidade comercial. A importação multiplica pela quantidade de peças, pares ou kits.';
         }
         if (chave === 'custo') {
             input.value = formTools.numericParaBRL(texto);
@@ -42,7 +42,8 @@
         if (!c) return 'outros';
         if (['sku', 'nome', 'produto', 'produto_bling', 'categoria', 'marca'].includes(c)) return 'identificacao';
         if (['fabricante', 'fornecedor', 'modelo', 'linha'].includes(c) || c.includes('fabricante') || c.includes('fornecedor')) return 'fabricante';
-        if (['ncm', 'cest', 'imposto', formTools.campoM3Individual, 'm3'].includes(c) || c.startsWith('monofasico') || c.startsWith('ncm_')) return 'fiscal';
+        if (formTools.camposCubagem.includes(c)) return 'cubagem';
+        if (['ncm', 'cest', 'imposto', 'm3'].includes(c) || c.startsWith('monofasico') || c.startsWith('ncm_')) return 'fiscal';
         if (['custo', 'preco'].includes(c)) return 'precos';
         if (['titulo_ml', 'categoria_id_mlb', 'mlb_ids', 'custos_frete_mlb', 'mlb_principal', 'qtd_anuncios_mlb', 'titulos_anuncios_mlb', 'modalidades_mlb', 'gtins_mlb'].includes(c)) return 'anuncios';
         if (['descricao', 'foto', 'link', 'url'].includes(c) || c.includes('descricao') || c.includes('link') || c.includes('url')) return 'identificacao';

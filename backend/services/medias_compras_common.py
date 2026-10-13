@@ -916,20 +916,46 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
 
 
 
+def _cubagem_lista_historica(lista: dict) -> bool:
+    return _normalizar_status_lista_pedido(lista.get("status")) not in {
+        "Lista gerada", "Em Orçamento", "Analisando orçamento",
+    }
+
+
 def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
+    from backend.services.cadastro_cubagem import decimal_cubagem, normalizar_sku_cubagem
+    from backend.services.medias_compras_fiscal import _campo_cubagem_historica
+    import math
     itens = lista.get("itens") or []
     total_usd = 0.0
     total_m3 = 0.0
+    pendentes_m3 = 0
+    historica = _cubagem_lista_historica(lista)
     for i in itens:
         qtd = max(0.0, float(i.get("Quantidade", 0) or 0))
         vt = max(0.0, float(i.get("Valor total", 0) or 0))
         vu = max(0.0, float(i.get("Valor unidade", 0) or 0))
         total_usd += vt if vt > 0 else (qtd * vu)
-        if m3_lookup is not None:
-            sku = str(i.get("SKU", "") or "").strip()
-            k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
-            m3_ind = m3_lookup.get(k1) or m3_lookup.get(k2) or m3_lookup.get(k3) or 0.0
-            total_m3 += m3_ind * qtd
+        volume = None
+        if m3_lookup is not None and not historica:
+            individual = decimal_cubagem(m3_lookup.get(normalizar_sku_cubagem(i.get("SKU", ""))))
+            if individual is not None:
+                volume = float(individual) * qtd
+        elif i.get("Cubagem status") != "pendente":
+            individual = _campo_cubagem_historica(i, individual=True)
+            total_salvo = _campo_cubagem_historica(i)
+            if historica and total_salvo is not None:
+                volume = float(total_salvo)
+            elif individual is not None:
+                volume = float(individual) * qtd
+        if qtd <= 0:
+            volume = 0.0
+        if volume is not None and (not math.isfinite(volume) or not math.isfinite(total_m3 + volume)):
+            volume = None
+        if volume is None:
+            pendentes_m3 += 1
+        else:
+            total_m3 += volume
     return {
         "id": str(lista.get("id", "") or ""),
         "nome_lista": str(lista.get("nome_lista", "") or ""),
@@ -941,7 +967,9 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
         "total_itens": len(itens),
         "total_quantidade": int(sum(float(i.get("Quantidade", 0) or 0) for i in itens)),
         "total_usd": round(total_usd, 2),
-        "total_m3": round(total_m3, 4),
+        "total_m3": total_m3,
+        "m3_pendente_itens": pendentes_m3,
+        "m3_completo": pendentes_m3 == 0,
         "skus": [
             str(i.get("SKU", "") or "").strip()
             for i in itens
@@ -1027,6 +1055,7 @@ COMMON_EXPORTS = [
     "_resolver_foto_cadastro_sku",
     "_normalizar_item_lista_pedido",
     "_resumo_lista_pedido",
+    "_cubagem_lista_historica",
 ]
 
 __all__ = COMMON_EXPORTS

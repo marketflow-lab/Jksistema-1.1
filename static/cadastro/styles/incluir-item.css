@@ -80,7 +80,7 @@
         .mlb-add { margin-top:10px; border:1px solid #2d5a3d; background:#123024; color:#8ef0b0; border-radius:8px; padding:8px 12px; cursor:pointer; font-weight:700; }
         .mlb-add:hover { background:#17402f; }
         .field label { color:#c8d7ea; font-size:0.85rem; text-transform:uppercase; letter-spacing:0.4px; }
-        input, textarea {
+        input, textarea, .field select {
             padding:10px;
             border-radius:8px;
             border:1px solid #33415f;
@@ -88,7 +88,7 @@
             color:#e5e5e5;
             transition: border-color .15s ease, box-shadow .15s ease;
         }
-        input:focus, textarea:focus {
+        input:focus, textarea:focus, .field select:focus {
             outline:none;
             border-color:#5bb5ff;
             box-shadow: 0 0 0 3px rgba(91, 181, 255, 0.16);

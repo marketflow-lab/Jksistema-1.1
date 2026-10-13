@@ -68,7 +68,7 @@ def ambiente(monkeypatch, tmp_path):
             photo.write_bytes(b"synthetic-photo")
             state["refs"][client_id, store_id] = ref
             rows.append({"store_id": store_id, "sku": "001", "sku_normalizado": "001",
-                         "nome": "Produto de teste", "foto": ref, "row_version": "1",
+                         "nome": "Produto de teste", "foto": ref, "m3 individual": {("cliente-a", "store-a"): "0,125", ("cliente-a", "store-b"): "0,900", ("cliente-b", "store-a"): "0,250"}[client_id, store_id], "row_version": "1",
                          "updated_at_utc": "2026-10-02T12:00:00Z", "deleted_at_utc": ""})
         _csv(tenant / "cadastro_produtos_lojas.csv", rows)
         state["lists"][client_id] = [{"id": "lista", "nome_lista": "Pedido de teste", "loja": "Loja A",
@@ -83,7 +83,7 @@ def ambiente(monkeypatch, tmp_path):
     monkeypatch.setattr(fotos, "PASTA_INFO", str(root), raising=False)
     monkeypatch.setattr(fiscal, "_caminhos_cadastros_meta", lambda _client: [])
 
-    state["catalog"] = [{"sku": "001", "ncm": "8708.99.90", "cest": "01.001.00", "m3 individual": "0,125",
+    state["catalog"] = [{"sku": "001", "ncm": "8708.99.90", "cest": "01.001.00",
                          "titulo": "English product", "oem": "OEM-001", "color side": "Left", "link": "https://example.test/product"}]
     state["rates"] = {"87089990": {"ii": 12.5, "ipi": 5, "pis": 2.1, "cofins": 9.65}}
     state["ncm"] = {"87089990": {"descricao_completa": "Descricao fiscal de teste"}}
@@ -159,6 +159,10 @@ def test_detalhes_nao_compartilham_contexto_ou_foto_entre_clientes_e_lojas(ambie
         result = _detail(client_id)
         assert result["itens"][0]["Foto"] == ambiente["refs"][client_id, store_id]
         assert result["store_id"] == store_id
+        expected_m3 = {("cliente-a", "store-a"): 0.125, ("cliente-a", "store-b"): 0.9, ("cliente-b", "store-a"): 0.25}[client_id, store_id]
+        assert result["itens"][0]["M3 individual"] == expected_m3
+        assert result["itens"][0]["M3"] == expected_m3 * 2
+        assert result["itens"][0]["Cubagem loja"] == store_id
     assert ambiente["counts"]["contexto_catalogo"] == 3
     assert {call[:2] for call in ambiente["photo_calls"]} == {
         ("cliente-a", "store-a"), ("cliente-a", "store-b"), ("cliente-b", "store-a"),
@@ -170,8 +174,7 @@ def test_novo_get_le_cadastro_foto_e_aliquota_atualizados(ambiente):
     tenant = ambiente["root"] / "cliente-a"
     ref = ambiente["refs"]["cliente-a", "store-a"].replace(".png", "-nova.png")
     (tenant / ref).write_bytes(b"updated-synthetic-photo")
-    _csv(tenant / "cadastro_produtos_lojas.csv", [{"store_id": "store-a", "sku": "001", "sku_normalizado": "001", "foto": ref}])
-    ambiente["catalog"][0]["m3 individual"] = "0,250"
+    _csv(tenant / "cadastro_produtos_lojas.csv", [{"store_id": "store-a", "sku": "001", "sku_normalizado": "001", "foto": ref, "m3 individual": "0,250"}])
     ambiente["rates"]["87089990"]["ii"] = 15.0
     new = _detail()["itens"][0]
     assert old["Foto"] != new["Foto"] == ref
@@ -285,11 +288,14 @@ def test_memo_preserva_precedencia_de_metadados_fiscais_e_foto_de_cadastro_auxil
         return foto_ref
 
     monkeypatch.setattr(fiscal, "_resolver_foto_cadastro_sku", photo)
-    result = fiscal._enriquecer_itens_lista_pedido_com_impostos("cliente-a", [{"SKU": "001", "Quantidade": 2}], loja="store-a")[0]
+    result = fiscal._enriquecer_itens_lista_pedido_com_impostos("cliente-a", [{"SKU": "001", "Quantidade": 2, "OEM": "OEM-ITEM"}], loja="store-a")[0]
     assert result["Foto"] == ref
     assert result[common.TITULO_PRODUTO_INGLES_KEY] == "Titulo do cadastro auxiliar"
-    assert result["M3 individual"] == 0.05
-    assert result["M3"] == 0.1
+    assert result["Cubagem status"] == "pendente"
+    assert result["M3 individual"] == ""
+    assert result["M3"] == ""
+    assert result["NCM"] == "87089990"
+    assert result["OEM"] == "OEM-ITEM"
     assert result["II"] == 12.5
     assert calls == [("cliente-a", "store-a", "001", ""), ("cliente-a", "store-a", "001", ref)]
 
@@ -343,7 +349,9 @@ def test_retry_no_worker_recarrega_contexto_apos_troca_concorrente_da_loja(ambie
     assert result["itens"][0]["Foto"] == ambiente["refs"]["cliente-a", "store-b"]
     assert result["itens"][0]["Quantidade"] == 3
     assert result["itens"][0]["compra_aprovada"] is True
-    assert result["itens"][0]["M3"] == 0.375
+    assert result["itens"][0]["M3 individual"] == 0.9
+    assert result["itens"][0]["M3"] == 2.7
+    assert result["itens"][0]["Cubagem loja"] == "store-b"
     assert result["itens"][0]["Frete Internacional"] == 30.0
     assert ambiente["counts"]["contexto_catalogo"] == 2
     assert len(worker_threads) == 2
@@ -425,10 +433,11 @@ def test_filtro_preserva_saida_fiscal_frete_e_fotos_completa(ambiente):
     own_ref = ambiente["refs"]["cliente-a", "store-a"]
     other_ref = ambiente["refs"]["cliente-a", "store-b"]
     _csv(tenant / "cadastro_produtos_lojas.csv", [
-        {"store_id": "store-a", "sku": sku, "sku_normalizado": sku, "foto": own_ref}
-        for sku in ("001", "002", "003", "001-A", "SKU:001")
+        {"store_id": "store-a", "sku": sku, "sku_normalizado": sku, "foto": own_ref,
+         "m3 individual": {"1": "0.125", "002": "0.25"}.get(sku, "")}
+        for sku in ("1", "002", "003", "001-A", "SKU:001")
     ] + [{"store_id": "store-b", "sku": "001", "sku_normalizado": "001", "foto": other_ref}])
-    ambiente["catalog"].append({"sku": "002", "ncm": "87089990", "m3 individual": "0.25"})
+    ambiente["catalog"].append({"sku": "002", "ncm": "87089990"})
     items = [{"SKU": "1", "Quantidade": 2, "Valor unidade": 10, "Foto": other_ref},
              {"SKU": "002", "Quantidade": 3, "Valor unidade": 20}]
     full = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a")

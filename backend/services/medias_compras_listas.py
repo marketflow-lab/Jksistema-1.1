@@ -418,11 +418,14 @@ def _api_medias_compras_listas_pedidos_sync(
             if legado["store_id"] == store_id_alvo:
                 filtradas.append(lista)
         listas = filtradas
-    m3_lookup = _construir_mapa_m3_sku(client_id)
-    return {
-        "success": True,
-        "listas": [_resumo_lista_pedido(l, m3_lookup) for l in listas],
-    }
+    mapas_m3 = {}
+    resumos = []
+    for lista in listas:
+        referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
+        if not _cubagem_lista_historica(lista) and referencia not in mapas_m3:
+            mapas_m3[referencia] = _construir_mapa_m3_sku(client_id, loja=referencia)
+        resumos.append(_resumo_lista_pedido(lista, mapas_m3.get(referencia, {})))
+    return {"success": True, "listas": resumos}
 
 
 async def api_medias_compras_skus_ocultos_get(
@@ -723,6 +726,7 @@ def _api_medias_compras_lista_pedido_detalhe_sync(lista_id: str, client_id: str 
         client_id,
         alvo.get("itens") or [],
         loja=referencia_loja_cadastro,
+        preservar_cubagem=_cubagem_lista_historica(alvo),
         **opcoes_contexto,
     )
     itens_persistidos = itens_recalculados
@@ -772,8 +776,15 @@ def _api_medias_compras_lista_pedido_custo_posto_sync(
     lista_id: str,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    """Return the backend-authoritative landed-cost calculation for one import list."""
+    """Return landed cost only after the order cubagem has been resolved."""
     from backend.services import codex_reports_advanced
+
+    detalhe = _api_medias_compras_lista_pedido_detalhe_sync(lista_id, client_id=client_id)
+    if not (detalhe.get("lista") or {}).get("m3_completo", False):
+        raise HTTPException(
+            status_code=409,
+            detail="Cubagem pendente: complete os m³ dos produtos antes de calcular o custo posto.",
+        )
 
     context = codex_reports_advanced.build_profile_context(
         info_base=str(medias_common.PASTA_INFO or ""),
@@ -872,6 +883,7 @@ def _api_medias_compras_lista_pedido_editar_sync(
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
     lista = dict(listas[idx])
+    cubagem_historica_antes = _cubagem_lista_historica(lista)
     campos_informados = (
         getattr(req, "model_fields_set", None)
         or getattr(req, "__fields_set__", set())
@@ -948,6 +960,7 @@ def _api_medias_compras_lista_pedido_editar_sync(
             client_id,
             itens_protegidos,
             loja=str(lista.get("store_id") or lista.get("loja") or ""),
+            preservar_cubagem=cubagem_historica_antes and not alterou_loja,
         )
         lista["itens"] = itens_norm
         alterou = True
@@ -959,6 +972,7 @@ def _api_medias_compras_lista_pedido_editar_sync(
             client_id,
             lista.get("itens") or [],
             loja=str(lista.get("store_id") or lista.get("loja") or ""),
+            preservar_cubagem=cubagem_historica_antes and not alterou_loja,
         )
 
     if alterou:
@@ -1217,7 +1231,8 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
     lista = listas[idx]
 
     sku_input = str(req.sku or "").strip()
-    sku_in = _normalizar_sku_mes(sku_input)
+    from backend.services.cadastro_cubagem import normalizar_sku_cubagem
+    sku_in = normalizar_sku_cubagem(sku_input)
     if not sku_in:
         raise HTTPException(status_code=400, detail="SKU invalido")
 
@@ -1265,7 +1280,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         (
             dict(item)
             for item in contexto_cadastro.get("produtos") or []
-            if _normalizar_sku_mes(str(item.get("sku") or "")) == sku_in
+            if normalizar_sku_cubagem(item.get("cubagem_sku") or item.get("sku")) == sku_in
         ),
         None,
     )
@@ -1311,7 +1326,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
                         return mv
         return ""
 
-    sku_final = _normalizar_sku_mes(_pick_prod(["sku"]) or sku_in)
+    sku_final = normalizar_sku_cubagem(produto.get("cubagem_sku") or _pick_prod(["sku"]) or sku_in)
     if not re.fullmatch(r"\d+", str(sku_final or "")):
         raise HTTPException(status_code=400, detail="SKU do cadastro nÃ£o ÃƒÂ© numÃƒÂ©rico")
     titulo = _pick_prod([
@@ -1331,7 +1346,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
     link = _pick_prod(["link", "url", "link aliexpress", "url aliexpress", "mlb principal", "url ml"])
 
     itens = [_normalizar_item_lista_pedido(i) for i in (lista.get("itens") or [])]
-    idx_existente = next((i for i, it in enumerate(itens) if _normalizar_sku_mes(it.get("SKU", "")) == sku_final), -1)
+    idx_existente = next((i for i, it in enumerate(itens) if normalizar_sku_cubagem(it.get("SKU", "")) == sku_final), -1)
 
     item_novo = {
         "SKU": sku_final,
@@ -1356,6 +1371,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         client_id,
         itens,
         loja=str(lista.get("store_id") or lista.get("loja") or ""),
+        preservar_cubagem=_cubagem_lista_historica(lista),
     )
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
     listas[idx] = lista

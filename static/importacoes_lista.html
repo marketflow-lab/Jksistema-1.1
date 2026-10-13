@@ -904,7 +904,7 @@
         }
 
         function formatarM3(v) {
-            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 10 });
         }
 
         function formatarUSD(v) {
@@ -1403,57 +1403,67 @@
         let mapaM3IndividualCarregando = false;
         let requisicaoM3 = 0;
 
+        function statusCubagemItem(item) {
+            return String(item && item['Cubagem status'] || '').trim().toLowerCase();
+        }
+
+        function chaveSkuCubagem(sku) {
+            return String(sku || '').trim().toUpperCase();
+        }
+
         function registrarM3IndividualPorSku(skuRaw, m3Val) {
             const m3 = valorNumerico(m3Val);
-            if (m3 <= 0) return;
-
-            const skuNorm = normalizarSkuComparacao(skuRaw);
-            if (!skuNorm) return;
-
-            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
-            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
-
-            if (!mapaM3IndividualSku.has(skuNorm)) mapaM3IndividualSku.set(skuNorm, m3);
-            if (chaveCompacta && !mapaM3IndividualSku.has(chaveCompacta)) mapaM3IndividualSku.set(chaveCompacta, m3);
-            if (chaveNumSoft && !mapaM3IndividualSku.has(chaveNumSoft)) mapaM3IndividualSku.set(chaveNumSoft, m3);
+            const sku = chaveSkuCubagem(skuRaw);
+            if (sku && Number.isFinite(m3) && m3 > 0 && !mapaM3IndividualSku.has(sku)) {
+                mapaM3IndividualSku.set(sku, m3);
+            }
         }
 
         function obterM3IndividualDoItem(item) {
-            const m3IndividualItem = valorNumerico(obterCampoNormalizado(item, [
-                'cg m3 individual', 'cg_m3 individual', 'm3 individual', 'm3_individual', 'cgM3individual'
-            ], 0));
-            if (m3IndividualItem > 0) return m3IndividualItem;
-            const sku = String((item && item.SKU) || '').trim();
-            const skuNorm = normalizarSkuComparacao(sku);
-            const chaveCompacta = skuNorm.replace(/[^A-Z0-9]/g, '');
-            const chaveNumSoft = skuNorm.replace(/([0-9]+)/g, (m) => String(parseInt(m, 10))).replace(/[^A-Z0-9]/g, '');
-
-            const m3Cadastro = (
-                mapaM3IndividualSku.get(skuNorm)
-                || mapaM3IndividualSku.get(chaveCompacta)
-                || mapaM3IndividualSku.get(chaveNumSoft)
-                || 0
-            );
-            if (m3Cadastro > 0) return m3Cadastro;
-
-            return null;
+            const status = statusCubagemItem(item);
+            if (status === 'pendente') return null;
+            const m3 = valorNumerico(obterCampoNormalizado(item, ['M3 individual'], 0));
+            if (m3 > 0) return m3;
+            // A resposta do backend já fixa a fonte da cubagem; complementos só atendem payloads antigos.
+            if (status) return null;
+            return mapaM3IndividualSku.get(chaveSkuCubagem(item && item.SKU)) || null;
         }
 
         function obterM3TotalItem(item) {
             const qtd = valorNumerico(item && item.Quantidade);
-            const m3Individual = obterM3IndividualDoItem(item);
-            if (m3Individual > 0 && qtd >= 0) {
-                const totalCalc = m3Individual * qtd;
-                return Number.isFinite(totalCalc) ? totalCalc : null;
+            if (qtd === 0) return 0;
+            if (qtd < 0 || !Number.isFinite(qtd)) return null;
+            const status = statusCubagemItem(item);
+            if (status === 'pendente') return null;
+            if (status === 'historico') {
+                const bruto = obterCampoNormalizado(item, ['M3', 'Estimated CBM', 'Estimed CBM'], '');
+                const total = String(bruto).trim() ? valorNumerico(bruto) : null;
+                if (total !== null && total >= 0 && Number.isFinite(total)) return total;
             }
-            const totalInformado = valorNumerico(obterCampoNormalizado(item, ['M3', 'm3', 'Estimated CBM', 'Estimed CBM'], 0));
-            return totalInformado > 0 ? totalInformado : null;
+            const individual = obterM3IndividualDoItem(item);
+            const total = individual > 0 ? individual * qtd : null;
+            return Number.isFinite(total) ? total : null;
+        }
+
+        function textoTotalM3(itens) {
+            const valores = (itens || []).map(obterM3TotalItem);
+            const total = valores.reduce((soma, valor) => soma + (Number.isFinite(valor) ? valor : 0), 0);
+            return formatarM3(total) + (valores.some(valor => !Number.isFinite(valor)) ? ' (parcial)' : '');
+        }
+
+        function descricaoCubagemItem(item) {
+            const status = statusCubagemItem(item);
+            const origem = String(item && item['Cubagem fonte'] || '').trim();
+            const unidadeRaw = String(item && item['Cubagem unidade'] || '').trim();
+            const unidade = ({ peca: 'Peça', par: 'Par', kit: 'Kit', unidade_comercial: 'Unidade comercial' })[unidadeRaw] || unidadeRaw;
+            const data = String(item && item['Cubagem data'] || '').trim();
+            return [status === 'historico' ? 'Cubagem histórica preservada' : 'Cubagem do cadastro desta loja', origem, unidade, data].filter(Boolean).join(' · ');
         }
 
         async function carregarMapaM3Individual(contexto) {
             const ordem = ++requisicaoM3;
             const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
-            const faltantes = ultimosItensCarregados.some(item => !Number.isFinite(obterM3TotalItem(item)));
+            const faltantes = ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item)));
             if (!storeId || !faltantes || (mapaM3IndividualCarregado && mapaM3StoreId === storeId)) {
                 mapaM3IndividualCarregando = false;
                 atualizarM3Visivel(faltantes);
@@ -1465,9 +1475,9 @@
                 if (!carregamentoVigente(contexto) || ordem !== requisicaoM3) return;
                 if (!Array.isArray(lista)) throw new Error('Cadastro de metragem indisponível.');
                 (Array.isArray(lista) ? lista : []).forEach((p) => {
-                    if (p && p.store_id && String(p.store_id) !== storeId) return;
-                    const sku = p && p.sku;
-                    const m3 = p && obterCampoNormalizado(p, ['cg m3 individual', 'cg_m3 individual', 'm3 individual', 'm3'], 0);
+                    if (!p || String(p.store_id || '') !== storeId) return;
+                    const sku = p && (p.cubagem_sku || p.sku);
+                    const m3 = p && obterCampoNormalizado(p, ['m3 individual'], 0);
                     registrarM3IndividualPorSku(sku, m3);
                 });
                 mapaM3IndividualCarregado = true;
@@ -1483,7 +1493,7 @@
         }
 
         function textoM3Ausente() {
-            return mapaM3IndividualCarregando ? 'Carregando...' : 'Indisponível';
+            return mapaM3IndividualCarregando ? 'Carregando...' : 'Cubagem pendente';
         }
 
         function atualizarM3Visivel(atualizarResumo = true) {
@@ -1494,21 +1504,21 @@
                 const celula = linha.querySelector('[data-col-key="m3"]');
                 if (!item || !celula) return;
                 const m3 = obterM3TotalItem(item);
-                celula.textContent = Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente();
+                celula.textContent = Number.isFinite(m3) ? formatarM3(m3) + (statusCubagemItem(item) === 'historico' ? ' · histórico' : '') : textoM3Ausente();
                 celula.classList.toggle('m3-alerta', !Number.isFinite(m3) && !mapaM3IndividualCarregando);
-                celula.title = Number.isFinite(m3) ? '' : 'Metragem M3 indisponível';
+                celula.title = Number.isFinite(m3) ? descricaoCubagemItem(item) : 'Cubagem pendente no cadastro desta loja.';
             });
             const totais = document.querySelector('#tbodyLista .totais-row [data-col-key="m3"]');
             const conhecido = ultimosItensCarregados.every(item => Number.isFinite(obterM3TotalItem(item)));
             if (totais) {
-                totais.textContent = conhecido ? formatarM3(ultimosItensCarregados.reduce((soma, item) => soma + obterM3TotalItem(item), 0)) : textoM3Ausente();
+                totais.textContent = textoTotalM3(ultimosItensCarregados);
             }
             const status = document.getElementById('statusM3Complementar');
-            if (status) status.textContent = conhecido ? '' : (mapaM3IndividualCarregando
+            if (status) status.textContent = conhecido ? (ultimosItensCarregados.some(item => statusCubagemItem(item) === 'historico') ? 'Cubagem histórica preservada.' : '') : (mapaM3IndividualCarregando
                 ? 'Carregando a metragem complementar. Os itens já estão disponíveis.'
-                : 'Há itens com metragem indisponível.');
+                : 'Cubagem pendente em ' + ultimosItensCarregados.filter(item => !Number.isFinite(obterM3TotalItem(item))).length + ' item(ns). O total de m³ é parcial.');
             const retry = document.getElementById('btnRecarregarM3');
-            if (retry) retry.hidden = conhecido || mapaM3IndividualCarregando || !String(ultimaListaCarregada.store_id || '').trim();
+            if (retry) retry.hidden = conhecido || mapaM3IndividualCarregando || !ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) || !String(ultimaListaCarregada.store_id || '').trim();
             if (atualizarResumo) renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
         }
 
@@ -2271,7 +2281,7 @@
                 { label: 'Incoterm', value: String(lista && lista.incoterm || '-'), editable: true },
                 { label: 'Faturamento Loja', value: textoFaturamentoLoja },
                 { label: 'Faixa de Imposto', value: faixaImposto },
-                { label: 'M³ Total', value: totalM3Disponivel ? formatarM3(totalM3) : textoM3Ausente(), alertaM3: !totalM3Disponivel && !mapaM3IndividualCarregando },
+                { label: totalM3Disponivel ? 'M³ Total' : 'M³ Total parcial', value: formatarM3(totalM3), alertaM3: !totalM3Disponivel && !mapaM3IndividualCarregando },
                 { label: 'Valor por M³', value: totalM3Disponivel || valorPorM3Editado > 0 ? formatarUSD(valorPorM3) : '-', editable: true },
                 { label: 'VMLE', value: vmleUsd, valueExtra: vmleBrl },
                 { label: 'Frete Internacional', value: freteInternacional, valueExtra: freteInternacionalUsd },
@@ -2348,8 +2358,8 @@
             // Atualiza os outros cartões sem desconectar o editor ativo: remover
             // seu nó dispara blur e pode salvar uma edição ainda incompleta.
             Array.from(novosCards.children).forEach((novo, indice) => {
-                const label = novo.querySelector('.label')?.textContent;
-                const existente = Array.from(el.children).find(card => card.querySelector('.label')?.textContent === label);
+                const label = novo.querySelector('.label')?.textContent.replace(/^M³ Total parcial$/, 'M³ Total');
+                const existente = Array.from(el.children).find(card => card.querySelector('.label')?.textContent.replace(/^M³ Total parcial$/, 'M³ Total') === label);
                 const card = existente && preservados.includes(existente) ? existente : novo;
                 if (existente && card !== existente) existente.replaceWith(card);
                 else if (!existente) el.appendChild(card);
@@ -3144,7 +3154,7 @@
                 const fotoUrl = obterUrlFoto(item.Foto || '');
                 const qtd = Number(item.Quantidade || 0);
                 const m3 = obterM3TotalItem(item);
-                const m3SemMetragem = !Number.isFinite(m3) || m3 <= 0;
+                const m3SemMetragem = !Number.isFinite(m3);
                 const ii = Number(obterCampo(item, ['II', 'ii'], 0) || 0);
                 const ipi = Number(obterCampo(item, ['IPI', 'ipi'], 0) || 0);
                 const pis = Number(obterCampo(item, ['PIS', 'pis'], 0) || 0);
@@ -3169,7 +3179,7 @@
                 const cofinsBrl = (baseTributosBrl > 0 && cofins > 0) ? (baseTributosBrl * (cofins / 100)) : 0;
                 totalGeral += valorTotal;
                 totalQuantidade += qtd;
-                totalM3 += m3;
+                totalM3 += Number.isFinite(m3) ? m3 : 0;
 
                 const tr = document.createElement('tr');
                 tr.classList.add('sku-reorder-row');
@@ -3212,7 +3222,7 @@
                         ? '<img class="foto" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
                         : '<span class="foto-empty">Sem foto</span>'),
                     quantidade: formatarNumero(qtd),
-                    m3: Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente(),
+                    m3: Number.isFinite(m3) ? formatarM3(m3) + (statusCubagemItem(item) === 'historico' ? ' · histórico' : '') : textoM3Ausente(),
                     ii: formatarPct(ii) + '<span class="cell-sub-money">' + formatarBRL(iiBrl) + '</span>',
                     ipi: formatarPct(ipi) + '<span class="cell-sub-money">' + formatarBRL(ipiBrl) + '</span>',
                     pis: formatarPct(pis) + '<span class="cell-sub-money">' + formatarBRL(pisBrl) + '</span>',
@@ -3254,7 +3264,7 @@
 
                 tr.innerHTML = colunasTabela.map((col) => {
                     const klass = classes[col.key] ? (' class="' + classes[col.key] + '"') : '';
-                    const title = col.key === 'm3' && m3SemMetragem ? ' title="Sem metragem M3 ou valor igual a zero"' : '';
+                    const title = col.key === 'm3' ? ' title="' + escaparHtml(m3SemMetragem ? 'Cubagem pendente no cadastro desta loja.' : descricaoCubagemItem(item)) + '"' : '';
                     const dataColuna = col.key === 'margens_concorrentes'
                         ? ' data-coluna="margens_concorrentes"'
                         : '';
@@ -3351,7 +3361,7 @@
                     conteudo = formatarNumero(totalQuantidade);
                     klass = 'num-center';
                 } else if (col.key === 'm3') {
-                    conteudo = dados.every(item => Number.isFinite(obterM3TotalItem(item))) ? formatarM3(totalM3) : textoM3Ausente();
+                    conteudo = textoTotalM3(dados);
                     klass = 'num-center';
                 } else if (col.key === 'valor_total_usd') {
                     conteudo = formatarUSD(totalGeral);
@@ -3422,7 +3432,7 @@
                 mapaM3IndividualSku.clear();
                 mapaM3IndividualCarregado = false;
                 mapaM3StoreId = storeId;
-                mapaM3IndividualCarregando = !!storeId && ultimosItensCarregados.some(item => !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
+                mapaM3IndividualCarregando = !!storeId && ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
                 renderCabecalho();
                 renderMeta(lista);
                 renderResumoTopo(lista, itens);
