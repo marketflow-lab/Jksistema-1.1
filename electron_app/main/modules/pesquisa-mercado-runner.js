@@ -3,6 +3,8 @@
 // A page only observes this coordinator. Its lifetime belongs to Electron main.
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
+const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
+    'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
 const { OfficialCategoryNavigation, unsupportedCategoryAlias } = require('./pesquisa-mercado-category-navigation');
 
@@ -309,6 +311,8 @@ class PesquisaMercadoRunner {
         this.namesController = null;
         this.namesJobId = '';
         this.officialNavigation = null;
+        this.salesRecoveryFinished = false;
+        this.salesRecoveryDeferred = false;
         this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
         this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 18000);
@@ -361,6 +365,8 @@ class PesquisaMercadoRunner {
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
         this.seenSellers = new Set(this.checkpoint.seenSellerKeys);
         this.stopStatus = '';
+        this.salesRecoveryFinished = false;
+        this.salesRecoveryDeferred = false;
         this.controller = new AbortController();
         this.job.status = 'running';
         this.setProgress('preparing', ['paused', 'waiting_login', 'failed'].includes(job.status)
@@ -847,8 +853,12 @@ class PesquisaMercadoRunner {
 
     incomplete(message) {
         const category = this.checkpoint.currentCategory;
-        if (category && !this.checkpoint.incompleteCategories.some(item => item.key === category.key)) {
-            this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.') });
+        if (category) {
+            const previous = this.checkpoint.incompleteCategories.find(item => item.key === category.key);
+            if (!previous) this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.') });
+            else if (SALES_PENDING_WARNINGS.has(previous.motivo) && !SALES_PENDING_WARNINGS.has(message)) {
+                previous.motivo = String(message || 'Coleta incompleta.');
+            }
         }
         this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
@@ -973,11 +983,30 @@ class PesquisaMercadoRunner {
     }
 
     async recoverPublishedSales() {
-        if (this.checkpoint.salesCollectionVersion === 2 || typeof this.collector.collectDetail !== 'function'
+        if (this.salesRecoveryFinished || typeof this.collector.collectDetail !== 'function'
             || typeof this.collector.isComplete !== 'function') return;
         const root = `${ROOT}/${encodeURIComponent(this.job.id)}`;
         const response = await this.nameStep(() => this.api('GET', `${root}/vendedores`), this.controller.signal);
-        const done = new Set(this.checkpoint.salesRecoverySellerKeys || []);
+        const saved = this.checkpoint.sellerCollection;
+        const published = new Set((response.items || []).map(seller => seller.seller_key || seller.key));
+        if (saved && !published.has(saved.sellerKey)) {
+            // Finish an interrupted, unpublished seller before using its single
+            // detail checkpoint for a round of already published pending cards.
+            this.salesRecoveryDeferred = true;
+            return;
+        }
+        this.salesRecoveryDeferred = false;
+        if (!Array.isArray(this.checkpoint.salesRecoverySellerKeys)) {
+            this.checkpoint.salesRecoverySellerKeys = [];
+            this.checkpoint.salesRecoveryPending = false;
+            if (saved && Array.isArray(saved.result && saved.result.anuncios)) {
+                const pendingIndex = saved.result.anuncios.findIndex(item => !this.collector.isComplete(item));
+                saved.index = pendingIndex < 0 ? saved.result.anuncios.length : pendingIndex;
+            }
+            await this.save();
+        }
+        // These keys mean visited in this interrupted round, never resolved.
+        const done = new Set(this.checkpoint.salesRecoverySellerKeys);
         for (const previous of response.items || []) {
             this.check();
             const key = previous.seller_key || previous.key;
@@ -1032,9 +1061,16 @@ class PesquisaMercadoRunner {
             this.checkpoint.salesRecoverySellerKeys = [...done];
             await this.save();
         }
+        if (!this.checkpoint.salesRecoveryPending) {
+            this.checkpoint.incompleteCategories = this.checkpoint.incompleteCategories.filter(item => !SALES_PENDING_WARNINGS.has(item.motivo));
+            if (SALES_PENDING_WARNINGS.has(this.checkpoint.progress.warning)) {
+                this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: '' });
+            }
+        }
         this.checkpoint.salesCollectionVersion = 2;
         delete this.checkpoint.salesRecoverySellerKeys;
         await this.save();
+        this.salesRecoveryFinished = true;
     }
 
     async publishSeller(seller, result, preserveCategories = false) {
@@ -1200,7 +1236,7 @@ class PesquisaMercadoRunner {
                         const seed = current.anuncios[current.index];
                         try { await this.processSeed(seed); }
                         catch (err) {
-                            if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (this.salesRecoveryDeferred || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                             this.checkpoint.discoveredSeed = { key: String(seed.id || canonicalUrl(seed.url)),
                                 id: seed.id || '', url: seed.url, category_key: category.key, status: 'failed' };
@@ -1208,6 +1244,7 @@ class PesquisaMercadoRunner {
                         current.index += 1;
                         this.checkpoint.phase = 'discovery';
                         await this.save();
+                        if (this.salesRecoveryDeferred) await this.recoverPublishedSales();
                     }
                     // Consume a restored discovery queue before replacing its
                     // obsolete route. Current links may no longer include those seeds.

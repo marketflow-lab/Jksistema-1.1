@@ -204,7 +204,102 @@
         const cards = [];
         const seenElements = new Set();
         const cardSelector = '.ui-search-layout__item, .poly-card, .ui-search-result, [data-testid="search-result"], .ui-search-result__wrapper';
-        const metricRows = scope => nodes('.avantpro-product-info-row', scope);
+        // Avant uses structured rows in search results and stat cards in the PDP.
+        // The PDP templates in bundled 7.0.3 and Chrome 7.32.3 mount this exact root.
+        const avantDetailRoot = '#productInfo.avantpro-in-product-content';
+        const excludedMetricArea = '[class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]';
+        const currentItemId = productId(url);
+        const expectedSellerId = clean(options && options.seller && (options.seller.id || options.seller.sellerId || options.seller.seller_id));
+        const scopedSellerId = sellerId || expectedSellerId;
+        const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
+        const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja)\//i.test(value || '');
+        const currentUpId = (url.match(/\/up\/(MLBU\d+)/i) || [])[1] || '';
+        const currentCatalogId = (url.match(/\/p\/(MLB\d+)/i) || [])[1] || '';
+        const rootMatchesDocument = root => {
+            const declaredItems = ['data-item-id', 'data-mlb'].map(field => clean(root.getAttribute(field)).replace('-', '').toUpperCase()).filter(Boolean);
+            const declaredUp = clean(root.getAttribute('data-user-product-id')).toUpperCase();
+            const declaredProduct = clean(root.getAttribute('data-product-id')).toUpperCase();
+            const declaredCatalog = clean(root.getAttribute('data-catalog-product-id')).toUpperCase();
+            for (const declaredItem of declaredItems) {
+                if (/^MLB\d+$/.test(declaredItem) && declaredItem !== currentItemId) return false;
+                if (/^MLBU\d+$/.test(declaredItem) && declaredItem !== currentUpId.toUpperCase()) return false;
+            }
+            if (/^MLBU\d+$/.test(declaredUp) && declaredUp !== currentUpId.toUpperCase()) return false;
+            if (/^MLBU\d+$/.test(declaredProduct) && declaredProduct !== currentUpId.toUpperCase()) return false;
+            if (/^MLB\d+$/.test(declaredProduct) && ![currentCatalogId.toUpperCase(), currentItemId].includes(declaredProduct)) return false;
+            if (/^MLB\d+$/.test(declaredCatalog) && declaredCatalog !== currentCatalogId.toUpperCase()) return false;
+            const declaredSeller = clean(root.getAttribute('data-seller-id'));
+            if (declaredSeller && scopedSellerId && declaredSeller !== scopedSellerId) return false;
+            const declaredProfileUrl = clean(root.getAttribute('data-seller-profile-url'));
+            const declaredProfile = identity(declaredProfileUrl);
+            if (declaredProfileUrl && !absolute(declaredProfileUrl) || declaredProfile.conflict
+                || declaredSeller && declaredProfile.id && declaredSeller !== declaredProfile.id
+                || declaredProfile.id && scopedSellerId && declaredProfile.id !== scopedSellerId) return false;
+            if (namedProfile(declaredProfile.perfilUrl)
+                && [perfilUrl, expectedSellerProfile.perfilUrl].filter(namedProfile)
+                    .some(profile => profile.toLowerCase() !== declaredProfile.perfilUrl.toLowerCase())) return false;
+            const namedSellerProfiles = new Set([declaredProfile.perfilUrl].filter(namedProfile).map(profile => profile.toLowerCase()));
+            for (const anchor of nodes('a[href]', root)) {
+                if (anchor.closest(excludedMetricArea + ', [role="dialog"], aside')) continue;
+                const target = absolute(anchor.getAttribute('href'));
+                if (!target) continue;
+                const linkedItem = productId(target), linkedUp = (target.match(/\/up\/(MLBU\d+)/i) || [])[1] || '';
+                const linkedCatalog = (target.match(/\/p\/(MLB\d+)/i) || [])[1] || '';
+                if (linkedItem && currentItemId && linkedItem !== currentItemId) return false;
+                if (linkedUp && linkedUp.toUpperCase() !== currentUpId.toUpperCase()) return false;
+                if (linkedCatalog && linkedCatalog.toUpperCase() !== currentCatalogId.toUpperCase()) return false;
+                const linkedSeller = identity(target);
+                if (linkedSeller.conflict || linkedSeller.id && scopedSellerId && linkedSeller.id !== scopedSellerId) return false;
+                if (namedProfile(linkedSeller.perfilUrl)) {
+                    if ([perfilUrl, expectedSellerProfile.perfilUrl].filter(namedProfile)
+                        .some(profile => profile.toLowerCase() !== linkedSeller.perfilUrl.toLowerCase())) return false;
+                    namedSellerProfiles.add(linkedSeller.perfilUrl.toLowerCase());
+                    if (namedSellerProfiles.size > 1) return false;
+                }
+            }
+            return true;
+        };
+        const modernRootState = (() => {
+            if (!isProduct(url)) return { root: null, conflict: false };
+            if (sellerId && expectedSellerId && sellerId !== expectedSellerId) return { root: null, conflict: true };
+            const candidates = nodes(avantDetailRoot, content).filter(root => {
+                if (root.closest(cardSelector + ', ' + excludedMetricArea)) return false;
+                const rect = root.getBoundingClientRect(), style = window.getComputedStyle(root);
+                if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') return false;
+                const panel = root.closest('[role="dialog"], aside, [class*="avantpro"][class*="panel"]');
+                return !panel || nodes('a[href]', panel).some(anchor => {
+                    const target = absolute(anchor.getAttribute('href'));
+                    return currentItemId ? productId(target) === currentItemId : target === url;
+                });
+            });
+            const matching = candidates.filter(rootMatchesDocument);
+            return { root: matching.length === 1 ? matching[0] : null,
+                conflict: matching.length > 1 || candidates.length > 0 && matching.length === 0 };
+        })();
+        const metricRows = scope => nodes('.avantpro-product-info-row', scope).concat(
+            nodes('.avt-rounded-lg.avt-p-3.avt-text-center, .avt-rounded-full.avt-font-semibold', scope)
+                .filter(node => !!modernRootState.root && node.closest(avantDetailRoot) === modernRootState.root)
+        );
+        const metricLabelValue = row => {
+            const modernRoot = row.closest(avantDetailRoot);
+            if (modernRoot && modernRoot !== modernRootState.root) return null;
+            if (row.matches('.avantpro-product-info-row')) {
+                const label = row.querySelector('.avantpro-product-info-row-label');
+                const value = row.querySelector('.avantpro-product-info-row-value');
+                return label && value ? { label: norm(label.textContent), value: clean(value.getAttribute('title') || value.textContent) } : null;
+            }
+            if (!modernRoot) return null;
+            if (row.matches('.avt-rounded-full')) {
+                const value = row.querySelector(':scope > span.avt-min-w-0.avt-flex-1');
+                const text = clean(value && value.textContent);
+                const sold = text.match(/^(\+?\d[\d.,]*(?:\s*(?:mil|k|mi|milh[aoõ]+es?))?)\s+vendidos?$/i);
+                return sold ? { label: 'vendidos', value: sold[1] }
+                    : (norm(text) === 'catalogo' ? { label: 'catalogo', value: 'catalogo' } : null);
+            }
+            const label = row.querySelector(':scope > .avt-mb-1 > span');
+            const value = row.querySelector(':scope > .avt-text-base.avt-font-semibold');
+            return label && value ? { label: norm(label.textContent), value: clean(value.textContent) } : null;
+        };
         const metricNumber = value => {
             let text = clean(value).toLowerCase().replace(/^\+\s*/, '');
             const matched = text.match(/^(\d[\d.,]*)(?:\s*(mil|k|mi|milh[aoõ]+es?))?$/i);
@@ -228,16 +323,18 @@
             return String(day).padStart(2, '0') + '/' + String(month).padStart(2, '0') + '/' + year;
         };
         const readMetrics = rows => {
-            const metrics = { total: null, totalLabel: '', totalPriority: 0, estimated: null, monthly: null, monthlyLabel: '', created: '', sellerName: '', sellerId: '', perfilUrl: '', rows: 0 };
+            const modernRoot = modernRootState.root;
+            const metrics = { total: null, totalLabel: '', totalPriority: 0, estimated: null, monthly: null, monthlyLabel: '', monthlyHistorical: null, catalog: false,
+                identityConflict: modernRootState.conflict, created: '', sellerName: '',
+                sellerId: clean(modernRoot && modernRoot.getAttribute('data-seller-id')),
+                perfilUrl: absolute(modernRoot && modernRoot.getAttribute('data-seller-profile-url')), rows: 0 };
             for (const row of rows) {
-                const labelNode = row.querySelector('.avantpro-product-info-row-label');
-                const valueNode = row.querySelector('.avantpro-product-info-row-value');
-                if (!labelNode || !valueNode) continue;
-                const label = norm(labelNode.textContent);
-                const value = clean(valueNode.getAttribute('title') || valueNode.textContent);
+                const pair = metricLabelValue(row);
+                if (!pair) continue;
+                const { label, value } = pair;
                 if (!label || !value) continue;
                 metrics.rows += 1;
-                if (/^(?:vendas? (?:do|deste) (?:produto|anuncio|item|catalogo)|quantidade vendida|vendas? do vendedor neste anuncio)$/.test(label)) {
+                if (/^(?:vendas? (?:do|deste) (?:produto|anuncio|item|catalogo)|quantidade vendida|vendas? do vendedor neste anuncio|vendidos?)$/.test(label)) {
                     const total = metricNumber(value);
                     const priority = /(?:anuncio|item)/.test(label) ? 2 : 1;
                     if (Number.isSafeInteger(total) && priority >= metrics.totalPriority) {
@@ -245,7 +342,9 @@
                         metrics.totalLabel = label;
                         metrics.totalPriority = priority;
                     }
-                } else if (/^vendas? estimadas?$/.test(label)) metrics.estimated = metricNumber(value);
+                } else if (label === 'catalogo') metrics.catalog = true;
+                else if (/^vendas? estimadas?$/.test(label)) metrics.estimated = metricNumber(value);
+                else if (/^vendas? mensais$/.test(label)) metrics.monthlyHistorical = metricNumber(value.replace(/\s*\/\s*m[eê]s\s*$/i, ''));
                 else if (/^ritmo atual(?:\s|\(|$)/.test(label)) {
                     metrics.monthly = metricNumber(value);
                     metrics.monthlyLabel = label;
@@ -254,9 +353,12 @@
                     metrics.sellerName = value;
                     const anchor = row.querySelector('a[href]');
                     const evidence = identity(anchor && anchor.getAttribute('href'));
-                    metrics.sellerId = evidence.id;
-                    metrics.perfilUrl = evidence.perfilUrl;
-                    metrics.identityConflict = !!evidence.conflict;
+                    const conflictingProfile = namedProfile(metrics.perfilUrl) && namedProfile(evidence.perfilUrl)
+                        && metrics.perfilUrl.toLowerCase() !== evidence.perfilUrl.toLowerCase();
+                    metrics.identityConflict = metrics.identityConflict || !!evidence.conflict || conflictingProfile
+                        || !!(metrics.sellerId && evidence.id && metrics.sellerId !== evidence.id);
+                    metrics.sellerId = metrics.sellerId || evidence.id;
+                    metrics.perfilUrl = metrics.perfilUrl || evidence.perfilUrl;
                 }
             }
             return metrics;
@@ -271,9 +373,10 @@
             if (Number.isFinite(current.total)) {
                 combined.total = current.total; combined.totalLabel = current.totalLabel; combined.totalPriority = current.totalPriority;
             }
-            for (const field of ['estimated', 'monthly']) if (Number.isFinite(current[field])) combined[field] = current[field];
+            for (const field of ['estimated', 'monthly', 'monthlyHistorical']) if (Number.isFinite(current[field])) combined[field] = current[field];
             for (const field of ['monthlyLabel', 'created', 'sellerName', 'sellerId', 'perfilUrl']) if (current[field]) combined[field] = current[field];
             if (current.sellerId || current.perfilUrl) combined.identityConflict = !!current.identityConflict;
+            combined.catalog = !!(previous.catalog || current.catalog);
             return combined;
         };
         const floatingRows = metricRows(document).filter(row => {
@@ -290,6 +393,8 @@
             });
         });
         const detailNodeBelongs = (node, id, itemUrl) => {
+            const modernRoot = node.closest(avantDetailRoot);
+            if (modernRoot && modernRoot !== modernRootState.root) return false;
             const panel = node.closest('[role="dialog"], aside, [class*="avantpro"][class*="panel"]');
             if (panel) {
                 return nodes('a[href]', panel).some(anchor => {
@@ -337,7 +442,8 @@
             const capturedCurrent = !!(id && clickedId === id && resolvedKeys.includes('id:' + id));
             metrics = combineMetrics(structuredCache[key], metrics);
             if (capturedCurrent) metrics = combineMetrics(metrics, readMetrics(floatingRowsFor(id, productUrl)));
-            if (metrics.rows) structuredCache[key] = metrics;
+            if (metrics.identityConflict) delete structuredCache[key];
+            else if (metrics.rows) structuredCache[key] = metrics;
             const image = card.querySelector('img');
             const title = card.querySelector('.poly-component__title, .ui-search-item__title, h2, h3') || link;
             const oldPrice = '.poly-price__old, .andes-money-amount--previous, .andes-money-amount--previous-price, [class*="previous-price"], .price-tag__disabled, s, del';
@@ -353,7 +459,7 @@
             anuncios.push({
                 id, key, url: productUrl, titulo: clean(title.textContent), imagem: image ? (image.getAttribute('data-src') || image.currentSrc || image.src || '') : '',
                 preco: priceValue,
-                posicao: anuncios.length + 1, catalogo: /\/p\/MLB/i.test(productUrl) || /\bcatalogo\b/.test(metrics.totalLabel),
+                posicao: anuncios.length + 1, catalogo: /\/p\/MLB/i.test(productUrl) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: attributedSeller, seller_perfil_url: cardIdentity.perfilUrl,
                 vendedor: clean(sellerLink && sellerLink.textContent),
                 _avantEvidence: {
@@ -368,12 +474,14 @@
             const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
             const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"]', content).filter(node => detailNodeBelongs(node, productId(url), url));
             const text = norm(avantRoots.map(node => node.textContent).join(' '));
-            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).find(anchor => identity(anchor.href).id || identity(anchor.href).perfilUrl);
+            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).filter(anchor => detailNodeBelongs(anchor, productId(url), url))
+                .find(anchor => identity(anchor.href).id || identity(anchor.href).perfilUrl);
             const proof = identity(avantLink && avantLink.href);
             const detailKey = productId(url) || url;
             const metrics = combineMetrics(structuredCache[detailKey], readMetrics(floatingRows.filter(row => detailNodeBelongs(row, productId(url), url))));
-            if (metrics.rows) structuredCache[detailKey] = metrics;
-            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || /\bcatalogo\b/.test(metrics.totalLabel),
+            if (metrics.identityConflict) delete structuredCache[detailKey];
+            else if (metrics.rows) structuredCache[detailKey] = metrics;
+            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
                 _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
@@ -607,7 +715,7 @@
             const source = 'avantpro_dom_estruturado';
             const monthlySource = 'avantpro_dom_estruturado';
             const sales = metrics.total;
-            const monthly = metrics.monthly;
+            const monthly = Number.isFinite(metrics.monthlyHistorical) ? metrics.monthlyHistorical : metrics.monthly;
             const validSales = Number.isFinite(sales) && sales >= 0;
             const validMonthly = Number.isFinite(monthly) && monthly >= 0;
             const catalogueProof = !base.catalogo || (evidence.sellerMetric && same(evidence.sellerId, evidence.perfilUrl));
@@ -621,6 +729,7 @@
                 vendasFonte: validSales ? source : '', vendas_fonte: validSales ? source : '',
                 vendas_rotulo: metrics.totalLabel || '', vendas_estimadas: Number.isFinite(metrics.estimated) ? metrics.estimated : null,
                 media_mensal: validMonthly ? monthly : null, media_mensal_fonte: validMonthly ? monthlySource : '',
+                ritmo_atual: Number.isFinite(metrics.monthly) ? metrics.monthly : null,
                 data_criacao: metrics.created || '', dataCriacaoFonte: metrics.created ? source : '',
                 rankable, status: rankable ? 'analisado' : (!scoped || nameConflict ? 'vendedor_nao_confirmado' : (!catalogueProof ? 'catalogo_sem_evidencia_vendedor' : (!validSales ? 'sem_quantidade_avant' : 'sem_dados_avant')))
             };
@@ -665,7 +774,7 @@
         const snapshotScript = options => {
             const seller = options && options.seller || {};
             const extract = render('extrair-anuncios-avant-pro-dom-webview-1', { p0: String(Number.MAX_SAFE_INTEGER) }).trim().replace(/;\s*$/, '');
-            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + JSON.stringify({ detail: !!(options && options.detail) }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
+            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + JSON.stringify({ detail: !!(options && options.detail), seller }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
         };
         const clickAvantScript = options => {
             if (options && options.detail) return '/*pm:avant-click*/(' + clickDetailAvant.toString() + ')(' + JSON.stringify(options.pending || []) + ')';

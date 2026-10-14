@@ -1098,6 +1098,11 @@ function historicResearch(h, sellers, listings) {
             const items = listings.get(key) || [];
             return { items: copy(items.slice(offset, offset + 100)), total: items.length, revision: 1 };
         }
+        if (method === 'PUT' && path.includes('/vendedores/')) {
+            listings.set(body.seller.key, copy(body.anuncios));
+            const seller = sellers.find(item => item.seller_key === body.seller.key);
+            if (seller) seller.pending = body.anuncios.filter(item => item.rankable !== true).length;
+        }
         return api(method, path, body);
     };
     const saved = h.saved();
@@ -1223,6 +1228,227 @@ async function freshCompleteDetailReplacesUnconfirmedOptionalMetrics() {
     assert.equal(h.saved().status, 'completed');
 }
 
+async function retryPublishedPendingAfterVersionTwo() {
+    let available = false;
+    const h = harness(avantFlowPages());
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111', categoria: 'Historic Category', pending: 18 };
+    const listing = Array.from({ length: 48 }, (_value, index) => salesListing('MLB' + (1000000001 + index), {
+        vendas: index < 30 ? 100 : null, media_mensal: index < 30 ? 10 : null,
+        rankable: index < 30, categoria: 'Historic Category'
+    }));
+    historicResearch(h, [previous], new Map([['id:111', listing]]));
+    const checkpoint = h.saved();
+    h.restoreCheckpoint({ ...checkpoint, checkpoint: { ...checkpoint.checkpoint, salesCollectionVersion: 2, salesRecoveryPending: true } });
+    const calls = [];
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: available ? [salesListing(options.expectedItem.id, { vendas: 100, media_mensal: 10, rankable: true })] : [] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(calls.length, 18, 'a version two job still consults its eighteen published incomplete advertisements');
+    assert.equal(h.vendors.get('id:111').anuncios.filter(item => item.rankable).length, 30);
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, true);
+    await h.runner.recoverPublishedSales();
+    assert.equal(calls.length, 18, 'one attach performs exactly one bounded round even while metrics remain unavailable');
+    available = true;
+    h.restoreCheckpoint({ ...h.saved(), status: 'paused' });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(calls.length, 36, 'a later resume retries only the same eighteen unresolved advertisements');
+    assert.equal(new Set(calls).size, 18, 'resolved advertisements are never consulted again');
+    assert.equal(h.vendors.get('id:111').anuncios.length, 48);
+    assert(h.vendors.get('id:111').anuncios.every(item => item.rankable));
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, false, 'fresh completed metrics clear the previous pending flag');
+    assert.deepEqual(h.saved().checkpoint.incompleteCategories, [], 'resolved metric warnings no longer mark a category incomplete');
+    assert.equal(h.saved().checkpoint.progress.warning, '');
+    assert.equal(h.saved().status, 'completed');
+    assert.deepEqual(h.saved().checkpoint.seenSeedIds, ['seed-a']);
+    assert.deepEqual(h.saved().checkpoint.seenSellerKeys, ['id:111']);
+}
+
+async function interruptedPublishedRoundKeepsItsDetailCursor() {
+    let entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const h = harness(avantFlowPages());
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111', pending: 3 };
+    const listing = [salesListing('MLB1000000001'), salesListing('MLB1000000002'), salesListing('MLB1000000003')];
+    historicResearch(h, [previous], new Map([['id:111', listing]]));
+    const calls = [];
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        calls.push(id);
+        await options.browser.navigate(options.url);
+        if (id === 'MLB1000000001') return { anuncios: [] };
+        if (id === 'MLB1000000003' && calls.length === 3) {
+            entered();
+            await new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => {
+                const error = new Error('interrupted detail'); error.name = 'AbortError'; reject(error);
+            }, { once: true }));
+        }
+        return { anuncios: [salesListing(id, { vendas: 100, media_mensal: 10, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await waiting;
+    await h.runner.stop('paused'); await h.runner.task;
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 2);
+    assert.deepEqual(h.saved().checkpoint.salesRecoverySellerKeys, [], 'an interrupted first seller retains its active round marker');
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, ['MLB1000000001', 'MLB1000000002', 'MLB1000000003', 'MLB1000000003'],
+        'resume keeps the interrupted round cursor and does not repeat earlier failed or resolved details');
+    assert.equal(h.vendors.get('id:111').anuncios.filter(item => item.rankable).length, 2);
+    assert.equal(h.saved().checkpoint.salesRecoverySellerKeys, undefined, 'finished round removes the per-round visit marker');
+    h.restoreCheckpoint({ ...h.saved(), status: 'paused' });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(calls.at(-1), 'MLB1000000001', 'the next new round revisits the earlier unresolved detail');
+    assert.equal(calls.length, 5);
+}
+
+async function failedSavedProfileRetriesOnNextRound() {
+    let unavailable = true;
+    const pages = avantFlowPages();
+    pages[`${base}/perfil/111`] = () => {
+        if (unavailable) throw new Error('temporarily unavailable saved profile');
+        return seller('111');
+    };
+    pages[`${base}/perfil/222`] = seller('222');
+    pages[`${base}/anuncios/222`] = {};
+    const h = harness(pages);
+    const sellers = ['111', '222'].map(id => ({ ...seller(id), id, nome: 'Seller ' + id, seller_key: 'id:' + id, pending: 1 }));
+    const listing = new Map(sellers.map((seller, index) => [seller.seller_key, [salesListing('MLB' + (1000000001 + index), {
+        seller_id: seller.id, seller_perfil_url: seller.perfilUrl
+    })]]));
+    historicResearch(h, sellers, listing);
+    const calls = [];
+    withDetailCollector(h, async options => {
+        calls.push(options.seller.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { seller_id: options.seller.id,
+            seller_perfil_url: options.seller.perfilUrl, vendas: 100, media_mensal: 10, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, ['222'], 'a transient profile error does not stop the rest of the round');
+    assert.equal(h.vendors.get('id:111').anuncios[0].vendas, null);
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, true);
+    unavailable = false;
+    h.restoreCheckpoint({ ...h.saved(), status: 'paused' });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, ['222', '111'], 'the failed seller is retried on the next round and the resolved seller is skipped');
+    assert.equal(h.vendors.get('id:111').anuncios[0].vendas, 100);
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, false);
+}
+
+async function recoveryPreservesRealCategoryWarnings() {
+    const h = harness(avantFlowPages());
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111', pending: 1 };
+    historicResearch(h, [previous], new Map([['id:111', [salesListing('MLB1000000001')]]]));
+    const saved = h.saved(), realWarning = 'A categoria retornou uma pagina repetida.';
+    h.restoreCheckpoint({ ...saved, checkpoint: { ...saved.checkpoint, salesCollectionVersion: 2, salesRecoveryPending: true,
+        incompleteCategories: [
+            { key: 'a', nome: 'A', motivo: 'Alguns anuncios ficaram sem dados suficientes do Avant.' },
+            { key: 'navigation', nome: 'Navigation', motivo: realWarning },
+            { key: 'metrics', nome: 'Metrics', motivo: 'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.' }
+        ], progress: { warning: 'Alguns anuncios ficaram sem dados suficientes do Avant.' }
+    } });
+    withDetailCollector(h, async options => {
+        await options.browser.navigate(options.url);
+        h.runner.incomplete(realWarning);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 100, media_mensal: 10, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, false);
+    assert.deepEqual(h.saved().checkpoint.incompleteCategories.map(item => [item.key, item.motivo]), [['a', realWarning], ['navigation', realWarning]],
+        'real category errors replace a generic metric reason and survive resolution of the metrics');
+    assert.equal(h.saved().checkpoint.progress.warning, realWarning);
+    assert.equal(h.saved().status, 'completed_partial', 'a real category failure still keeps the research partial');
+}
+
+async function publishedRecoveryWaitsForUnpublishedDetailCheckpoint() {
+    let firstPageCalls = 0;
+    const pages = avantFlowPages();
+    pages[`${base}/perfil/222`] = seller('222');
+    pages[`${base}/anuncios/222`] = {};
+    const h = harness(pages, async () => { firstPageCalls += 1; throw new Error('Saved first page must remain in use'); });
+    const published = { ...seller('222'), id: '222', nome: 'Seller 222', seller_key: 'id:222', pending: 1 };
+    historicResearch(h, [published], new Map([['id:222', [salesListing('MLB1000000003', {
+        seller_id: '222', seller_perfil_url: published.perfilUrl
+    })]]]));
+    const saved = h.saved();
+    h.restoreCheckpoint({ ...saved, checkpoint: { ...saved.checkpoint, categoryIndex: 0, salesCollectionVersion: 2,
+        seenSeedIds: [], page: { url: `${base}/a`, nextUrl: '', index: 0, anuncios: [{ id: 'seed-a', url: `${base}/product-a` }] },
+        sellerCollection: { sellerKey: 'id:111', url: `${base}/anuncios/111`, index: 1,
+            result: { anuncios: [salesListing('MLB1000000001', { vendas: 100, media_mensal: 10, rankable: true }),
+                salesListing('MLB1000000002')], reason: 'avant_data_incomplete', incomplete: true }
+        }
+    } });
+    const calls = [];
+    withDetailCollector(h, async options => {
+        calls.push([options.seller.id, options.expectedItem.id]);
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { seller_id: options.seller.id, seller_perfil_url: options.seller.perfilUrl,
+            vendas: 100, media_mensal: 10, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(firstPageCalls, 0);
+    assert.deepEqual(calls, [['111', 'MLB1000000002'], ['222', 'MLB1000000003']],
+        'finish the interrupted unpublished collection before reusing its checkpoint to retry a published seller');
+    assert.equal(h.vendors.get('id:111').anuncios.length, 2);
+    assert(h.vendors.get('id:111').anuncios.every(item => item.rankable));
+    assert.equal(h.vendors.get('id:222').anuncios[0].rankable, true);
+    assert.equal(h.saved().checkpoint.sellerCollection, undefined);
+    assert.equal(h.saved().status, 'completed');
+}
+
+async function interruptedUnpublishedSellerFailurePreservesItsCheckpoint() {
+    let unavailable = true, firstPageCalls = 0;
+    const pages = avantFlowPages();
+    pages[`${base}/product-a`] = () => {
+        if (unavailable) throw new Error('temporarily unavailable interrupted seller');
+        return seller('111');
+    };
+    pages[`${base}/product-b`] = seller('222');
+    pages[`${base}/perfil/222`] = seller('222');
+    pages[`${base}/anuncios/222`] = {};
+    const h = harness(pages, async ({ seller }) => {
+        firstPageCalls += 1;
+        assert.equal(seller.id, '222', 'the interrupted seller must keep its saved first page');
+        return { anuncios: [salesListing('MLB1000000003', { seller_id: '222', seller_perfil_url: seller.perfilUrl,
+            vendas: 100, media_mensal: 10, rankable: true })], reason: 'complete' };
+    });
+    const category = { key: 'a', nome: 'A', url: `${base}/a` };
+    h.restoreCheckpoint({ ...h.saved(), status: 'paused', checkpoint: { categories: [category], categoryIndex: 0,
+        currentCategory: category, discoveryInitialized: true, salesCollectionVersion: 2, seenSeedIds: [], seenSellerKeys: [],
+        page: { url: `${base}/a`, nextUrl: '', index: 0, anuncios: [{ id: 'seed-a', url: `${base}/product-a` },
+            { id: 'seed-b', url: `${base}/product-b` }] },
+        sellerCollection: { sellerKey: 'id:111', url: `${base}/anuncios/111`, index: 1,
+            result: { anuncios: [salesListing('MLB1000000001', { vendas: 100, media_mensal: 10, rankable: true }),
+                salesListing('MLB1000000002')], reason: 'avant_data_incomplete', incomplete: true }
+        }
+    } });
+    const calls = [];
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 100, media_mensal: 10, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(h.saved().status, 'failed', 'a transient error on an interrupted seller leaves a resumable failure');
+    assert.equal(h.saved().checkpoint.page.index, 0, 'the interrupted seller discovery cursor must not advance');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 1);
+    assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].media_mensal, 10);
+    assert.equal(h.saved().checkpoint.salesRecoverySellerKeys, undefined, 'no new published-recovery round starts before the interrupted seller completes');
+    assert.equal(firstPageCalls, 0);
+    assert.deepEqual(calls, []);
+    assert(!h.visited.includes(`${base}/product-b`), 'the next seller cannot overwrite the unpublished detail checkpoint');
+    unavailable = false;
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, ['MLB1000000002'], 'retry resumes only the interrupted detail');
+    assert.equal(firstPageCalls, 1, 'subsequent seller collection begins only after the checkpoint is safely published');
+    assert.equal(h.vendors.get('id:111').anuncios.length, 2);
+    assert(h.vendors.get('id:111').anuncios.every(item => item.rankable));
+    assert.equal(h.vendors.get('id:222').anuncios.length, 1);
+    assert.equal(h.saved().checkpoint.sellerCollection, undefined);
+    assert.equal(h.saved().status, 'completed');
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
@@ -1247,5 +1473,11 @@ async function freshCompleteDetailReplacesUnconfirmedOptionalMetrics() {
     await legacyUnavailableSellerPreservesAdsAndContinues();
     await legacyPartialSalesRequireTheirOwnProvenance();
     await freshCompleteDetailReplacesUnconfirmedOptionalMetrics();
+    await retryPublishedPendingAfterVersionTwo();
+    await interruptedPublishedRoundKeepsItsDetailCursor();
+    await failedSavedProfileRetriesOnNextRound();
+    await recoveryPreservesRealCategoryWarnings();
+    await publishedRecoveryWaitsForUnpublishedDetailCheckpoint();
+    await interruptedUnpublishedSellerFailurePreservesItsCheckpoint();
     console.log('Pesquisa de Mercado runner: official taxonomy, categories, dedup, background, pause, recovery, progress warnings and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });
