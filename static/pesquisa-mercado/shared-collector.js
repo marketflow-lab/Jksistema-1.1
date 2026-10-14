@@ -102,14 +102,21 @@
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
                 primeira_pagina: !opts.detail, elapsedMs: Math.max(0, now() - start) };
         };
+        // Internal observations also invalidate cached evidence when the page becomes blocked.
+        const observe = async result => {
+            aborted(opts.signal);
+            if (typeof opts.onPartial === 'function') await opts.onPartial(result);
+            aborted(opts.signal);
+            return result;
+        };
         await execute(scripts.prepareScript());
         await execute(scripts.scrollScript('top'));
 
         while (now() - start < timeout) {
             const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }));
-            if (!snapshot || typeof snapshot !== 'object') return finish('invalid_page_result');
-            if (snapshot.authRequired || snapshot.avantAuthRequired) return finish(snapshot.avantAuthRequired ? 'avant_login_required' : 'ml_login_required', true);
-            if (snapshot.url && initialUrl && pageKey(snapshot.url) !== initialUrl) return finish('page_changed');
+            if (!snapshot || typeof snapshot !== 'object') return observe(finish('invalid_page_result'));
+            if (snapshot.authRequired || snapshot.avantAuthRequired) return observe(finish(snapshot.avantAuthRequired ? 'avant_login_required' : 'ml_login_required', true));
+            if (snapshot.url && initialUrl && pageKey(snapshot.url) !== initialUrl) return observe(finish('page_changed'));
             empty = !!snapshot.empty;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {
                 if (!matchesExpected(incoming, opts.expectedItem)) continue;
@@ -130,6 +137,7 @@
                     ? { ...previous, ordem_coleta: order }
                     : { ...previous, ...item, ordem_coleta: order });
             }
+            if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const list = Array.from(items.values());
             const signature = JSON.stringify([snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
             if (signature !== lastSignature) { lastSignature = signature; stableSince = now(); quiet = 0; }
@@ -161,7 +169,7 @@
                 if (firstBottomAt !== null && now() - firstBottomAt >= missingWaitMs) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
             const click = allReady ? null : await execute(scripts.clickAvantScript({ pending: list.filter(item => !isComplete(item, now())), detail: !!opts.detail }));
-            if (click && click.loginBlocked) return finish('avant_login_required', true);
+            if (click && click.loginBlocked) return observe(finish('avant_login_required', true));
             clicksPending = !!(click && (click.clicked > 0 || click.eligiblePending > 0 || (Array.isArray(click.pendingKeys) && click.pendingKeys.length)));
             // Pending cards must not turn a failed Avant session into an endless job.
             if (quiet >= 2 && firstBottomAt !== null && now() - firstBottomAt >= missingWaitMs && !(click && click.clicked > 0)) {
@@ -175,12 +183,16 @@
 
     async function collectDetail(options) {
         const opts = options || {};
+        aborted(opts.signal);
         if (opts.url) {
-            aborted(opts.signal);
             if (!opts.browser || typeof opts.browser.navigate !== 'function') throw new Error('Navegacao indisponivel.');
+            if (typeof opts.onNavigationStart === 'function') await opts.onNavigationStart();
+            aborted(opts.signal);
             await opts.browser.navigate(opts.url, opts.signal);
             aborted(opts.signal);
         }
+        if (typeof opts.onNavigationComplete === 'function') await opts.onNavigationComplete();
+        aborted(opts.signal);
         return collectFirstPage({ ...opts, detail: true });
     }
 

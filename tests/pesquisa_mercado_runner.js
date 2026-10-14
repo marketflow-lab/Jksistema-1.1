@@ -974,7 +974,7 @@ async function completeSalesAndMonthlyDetails() {
     withDetailCollector(h, async options => {
         const id = options.expectedItem.id;
         calls.push(id);
-        assert.equal(options.timeoutMs, 18000);
+        assert.equal(options.timeoutMs, 30000);
         assert.equal(options.signal.aborted, false);
         await options.browser.navigate(options.url);
         const metric = id === 'MLB1000000001' ? { media_mensal: 10, status: 'sem_quantidade_avant' }
@@ -1030,6 +1030,170 @@ async function detailTimeoutPreservesPartialAndContinues() {
     release({ anuncios: [salesListing('MLB1000000001', { vendas: 999, media_mensal: 999, rankable: true })] });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(h.vendors.get('id:111'), publication, 'late timeout response cannot change a published result');
+}
+
+const detailDelay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+const waitForDetailAbort = signal => new Promise((_resolve, reject) => {
+    const abort = () => { const error = new Error('interrupted detail'); error.name = 'AbortError'; reject(error); };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+});
+async function beginObservedDetail(options) {
+    await options.onNavigationStart();
+    await options.browser.navigate(options.url, options.signal);
+    await options.onNavigationComplete();
+}
+
+async function detailNavigationDoesNotConsumeCollectionBudget() {
+    const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing('MLB1000000001')], incomplete: true }));
+    assert.equal(h.runner.detailTimeoutMs, 30000, 'loaded Avant collection has a thirty second budget');
+    assert.equal(h.runner.detailNavigationTimeoutMs, 35000, 'navigation has its own bounded budget');
+    h.runner.detailTimeoutMs = 30;
+    h.runner.detailNavigationTimeoutMs = 100;
+    withDetailCollector(h, async options => {
+        await options.onNavigationStart();
+        await options.browser.navigate(options.url);
+        await detailDelay(50);
+        assert.equal(options.signal.aborted, false, 'navigation does not spend the loaded panel budget');
+        await options.onNavigationComplete();
+        await detailDelay(15);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 100, media_mensal: 5, rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(h.vendors.get('id:111').anuncios[0].vendas, 100);
+    assert.equal(h.vendors.get('id:111').anuncios[0].rankable, true);
+    assert.equal(h.stopped(), 0);
+}
+
+async function detailOwnTimeoutKeepsObservedMetricsWithoutCatalogRank() {
+    const ids = ['MLB1000000001', 'MLB1000000002'];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    h.runner.detailTimeoutMs = 15;
+    let latePartial, release;
+    withDetailCollector(h, async options => {
+        await beginObservedDetail(options);
+        const found = salesListing(options.expectedItem.id, { vendas: 100, media_mensal: 5, rankable: options.expectedItem.id === ids[1],
+            catalogo: options.expectedItem.id === ids[0], status: options.expectedItem.id === ids[0] ? 'catalogo_sem_evidencia_vendedor' : 'analisado' });
+        if (options.expectedItem.id === ids[1]) return { anuncios: [found] };
+        await options.onPartial({ anuncios: [found], reason: 'partial', incomplete: true });
+        latePartial = options.onPartial;
+        return new Promise(resolve => { release = resolve; });
+    });
+    await h.runner.start(); await h.runner.task;
+    const published = copy(h.vendors.get('id:111'));
+    const byId = new Map(published.anuncios.map(item => [item.id, item]));
+    assert.equal(byId.get(ids[0]).vendas, 100, 'own timeout keeps sales observed before the abort');
+    assert.equal(byId.get(ids[0]).media_mensal, 5);
+    assert.equal(byId.get(ids[0]).rankable, false, 'catalog metrics still require specific seller proof');
+    assert.equal(byId.get(ids[1]).rankable, true, 'bounded timeout does not skip the next advertisement');
+    assert.equal(h.stopped(), 1);
+    await latePartial({ anuncios: [salesListing(ids[0], { vendas: 999, media_mensal: 999, rankable: true })] });
+    release({ anuncios: [salesListing(ids[0], { vendas: 999, media_mensal: 999, rankable: true })] });
+    await detailDelay(1);
+    assert.deepEqual(h.vendors.get('id:111'), published, 'late callback and return cannot mutate a finished detail');
+}
+
+async function timedOutLatestPartialRespectsIdentityAndTerminalVetoes() {
+    const invalidResults = [
+        id => ({ anuncios: [salesListing('MLB9999999999', { vendas: 999, media_mensal: 999, rankable: true })] }),
+        id => ({ anuncios: [salesListing(id, { seller_id: '222', seller_perfil_url: `${base}/perfil/222`, vendas: 999, media_mensal: 999, rankable: true })] }),
+        id => ({ anuncios: [salesListing(id, { seller_confirmed: false, status: 'vendedor_nao_confirmado', vendas: 999, media_mensal: 999, rankable: false })] }),
+        id => ({ anuncios: [], authRequired: true, reason: 'avant_login_required' }),
+        id => ({ anuncios: [], reason: 'page_changed' }),
+        id => ({ anuncios: [], reason: 'invalid_page_result' })
+    ];
+    const ids = invalidResults.map((_value, index) => 'MLB' + (1000000001 + index));
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    h.runner.detailTimeoutMs = 12;
+    withDetailCollector(h, async options => {
+        await beginObservedDetail(options);
+        const id = options.expectedItem.id;
+        await options.onPartial({ anuncios: [salesListing(id, { vendas: 100, media_mensal: 5, rankable: true })] });
+        await options.onPartial(invalidResults[ids.indexOf(id)](id));
+        return waitForDetailAbort(options.signal);
+    });
+    await h.runner.start(); await h.runner.task;
+    const ads = h.vendors.get('id:111').anuncios;
+    assert(ads.every(item => item.vendas === null && item.media_mensal === null && item.rankable === false),
+        'timeout cannot revive data before an item, seller, login or document conflict');
+    assert.equal(h.stopped(), invalidResults.length);
+}
+
+async function pauseAfterPartialPreservesOriginalAndCursor() {
+    const id = 'MLB1000000001';
+    const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+    let entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    withDetailCollector(h, async options => {
+        await beginObservedDetail(options);
+        await options.onPartial({ anuncios: [salesListing(id, { vendas: 100, media_mensal: 5, rankable: true })] });
+        entered();
+        return waitForDetailAbort(options.signal);
+    });
+    await h.runner.start(); await waiting;
+    await h.runner.stop('paused'); await h.runner.task;
+    assert.equal(h.saved().status, 'paused');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 0, 'user pause does not consume the detail cursor');
+    assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].vendas, null, 'user pause cannot salvage callback metrics');
+    assert.equal(h.vendors.size, 0);
+}
+
+async function loginAfterPartialKeepsTheDetailPending() {
+    const id = 'MLB1000000001';
+    const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+    withDetailCollector(h, async options => {
+        await beginObservedDetail(options);
+        await options.onPartial({ anuncios: [salesListing(id, { vendas: 100, media_mensal: 5, rankable: true })] });
+        return { anuncios: [], authRequired: true, reason: 'avant_login_required' };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(h.saved().status, 'waiting_login');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
+    assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].vendas, null);
+    assert.equal(h.vendors.size, 0);
+}
+
+async function terminalInvalidResultCannotMergeEarlierAnnouncements() {
+    for (const reason of ['page_changed', 'invalid_page_result', 'avant_login_required']) {
+        const id = 'MLB1000000001';
+        const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+        withDetailCollector(h, async options => {
+            await beginObservedDetail(options);
+            const anuncios = [salesListing(id, { vendas: 100, media_mensal: 5, rankable: true })];
+            await options.onPartial({ anuncios, reason: 'partial' });
+            return { anuncios, reason, authRequired: reason === 'avant_login_required' };
+        });
+        await h.runner.start(); await h.runner.task;
+        if (reason === 'avant_login_required') {
+            assert.equal(h.saved().status, 'waiting_login');
+            assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
+            assert.equal(h.vendors.size, 0);
+        } else {
+            const published = h.vendors.get('id:111').anuncios[0];
+            assert.equal(published.vendas, null, 'terminal ' + reason + ' vetoes old announcements in its result');
+            assert.equal(published.rankable, false);
+        }
+    }
+}
+
+async function navigationTimeoutIsBoundedAndClearsOldPartial() {
+    const ids = ['MLB1000000001', 'MLB1000000002'];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    h.runner.detailNavigationTimeoutMs = 12;
+    withDetailCollector(h, async options => {
+        if (options.expectedItem.id === ids[1]) {
+            await beginObservedDetail(options);
+            return { anuncios: [salesListing(ids[1], { vendas: 100, media_mensal: 5, rankable: true })] };
+        }
+        await options.onPartial({ anuncios: [salesListing(ids[0], { vendas: 999, media_mensal: 999, rankable: true })] });
+        await options.onNavigationStart();
+        return waitForDetailAbort(options.signal);
+    });
+    await h.runner.start(); await h.runner.task;
+    const byId = new Map(h.vendors.get('id:111').anuncios.map(item => [item.id, item]));
+    assert.equal(byId.get(ids[0]).vendas, null, 'navigation timeout cannot consume an observation from the previous document');
+    assert.equal(byId.get(ids[1]).rankable, true);
+    assert.equal(h.stopped(), 1);
 }
 
 async function pauseAndResumeSalesDetails() {
@@ -1467,6 +1631,13 @@ async function interruptedUnpublishedSellerFailurePreservesItsCheckpoint() {
     await automaticAvantLoginForSellerNames();
     await completeSalesAndMonthlyDetails();
     await detailTimeoutPreservesPartialAndContinues();
+    await detailNavigationDoesNotConsumeCollectionBudget();
+    await detailOwnTimeoutKeepsObservedMetricsWithoutCatalogRank();
+    await timedOutLatestPartialRespectsIdentityAndTerminalVetoes();
+    await pauseAfterPartialPreservesOriginalAndCursor();
+    await loginAfterPartialKeepsTheDetailPending();
+    await terminalInvalidResultCannotMergeEarlierAnnouncements();
+    await navigationTimeoutIsBoundedAndClearsOldPartial();
     await pauseAndResumeSalesDetails();
     await salesDetailLoginKeepsCursor();
     await legacySalesRecoveryKeepsAllSavedPages();

@@ -149,7 +149,127 @@ function slowAvantLazyBrowser() {
     };
 }
 
+async function testDetailObservationHooks() {
+    const url = 'https://produto.mercadolivre.com.br/MLB-1000000-fixture';
+    const target = { id: 'MLB1000000', url, seller_id: '123456', seller_confirmed: true,
+        vendas: 100, vendasFonte: 'avantpro_dom_estruturado', media_mensal: 5,
+        media_mensal_fonte: 'avantpro_dom_estruturado', rankable: true, status: 'analisado' };
+    const pending = { ...target, vendas: null, media_mensal: null, rankable: false, status: 'sem_quantidade_avant' };
+    const conflict = { ...target, seller_id: '999999', seller_confirmed: false, rankable: false,
+        status: 'vendedor_nao_confirmado', erro: 'Identidade divergente.' };
+    const frames = [[{ ...target, id: 'MLB9999999', vendas: 999999 }, pending], [target], [conflict]];
+    let clock = 0, reads = 0, navigationComplete = false;
+    const events = [], observations = [];
+    const browser = {
+        getURL: () => url,
+        navigate: async () => { events.push('navigate'); clock += 3500; },
+        executeJavaScript: async code => {
+            assert.equal(navigationComplete, true, 'nenhum script pode rodar antes do hook de navegacao concluida');
+            if (code.includes('/*pm:snapshot*/')) {
+                events.push('snapshot');
+                const anuncios = frames[Math.min(reads++, frames.length - 1)];
+                return { url, height: 100, atBottom: true, anuncios };
+            }
+            events.push(code.includes('/*pm:prepare*/') ? 'prepare' : 'control');
+            return {};
+        }
+    };
+    const result = await collector.collectDetail({ browser, url, expectedItem: { id: target.id }, now: () => clock,
+        wait: async ms => { clock += ms; }, settleMs: 20, missingWaitMs: 40, pollMs: 10,
+        onNavigationStart: async () => { await Promise.resolve(); events.push('start'); },
+        onNavigationComplete: async () => { await Promise.resolve(); events.push('complete'); navigationComplete = true; },
+        onPartial: async partial => { await Promise.resolve(); events.push('partial'); observations.push(JSON.parse(JSON.stringify(partial))); }
+    });
+    assert.deepEqual(events.slice(0, 6), ['start', 'navigate', 'complete', 'prepare', 'control', 'snapshot']);
+    assert.ok(observations.length >= 3, 'cada snapshot observado deve produzir um parcial atualizado');
+    assert.ok(observations.every(item => item.reason === 'partial' && item.primeira_pagina === false && item.total === 1));
+    assert.ok(observations.every(item => item.anuncios[0].id === target.id), 'parcial aplica expectedItem antes do callback');
+    assert.equal(observations[0].anuncios[0].rank, null);
+    assert.equal(observations[1].anuncios[0].media_vendas_mensal, 5, 'parcial usa o resultado normalizado pelo ranking');
+    assert.equal(observations[1].anuncios[0].rank, 1);
+    assert.equal(observations[1].com_dados_avant, 1);
+    const last = observations.at(-1);
+    assert.equal(last.anuncios[0].status, 'vendedor_nao_confirmado');
+    assert.equal(last.anuncios[0].rankable, false, 'identidade contraditoria substitui o parcial confirmado anterior');
+    assert.equal(last.anuncios[0].rank, null);
+    assert.equal(last.incompletos, 1);
+    assert.equal(result.anuncios[0].rankable, false);
+    assert.ok(last.elapsedMs < clock && last.elapsedMs < 3500, 'elapsed do coletor conta somente a etapa depois da navegacao');
+
+    const noNavigation = fakeBrowser({ count: 1, lazy: false, delayed: false });
+    let started = 0, completed = 0;
+    await collector.collectDetail({ browser: noNavigation, now: noNavigation.now, wait: noNavigation.wait,
+        settleMs: 20, pollMs: 10, onNavigationStart: () => { started += 1; }, onNavigationComplete: () => { completed += 1; } });
+    assert.equal(started, 0, 'sem url nao inicia uma navegacao ficticia');
+    assert.equal(completed, 1, 'sem url inicia o orcamento de coleta da pagina atual');
+
+    for (const hook of ['onNavigationStart', 'onNavigationComplete', 'onPartial']) {
+        const controller = new AbortController();
+        let navigated = 0, executed = 0, waited = 0, published = 0;
+        const cancellationBrowser = {
+            getURL: () => url,
+            navigate: async () => { navigated += 1; },
+            executeJavaScript: async code => {
+                executed += 1;
+                return code.includes('/*pm:snapshot*/') ? { url, height: 100, atBottom: true, anuncios: [target] } : {};
+            }
+        };
+        const hooks = { [hook]: async () => { published += 1; controller.abort(); } };
+        await assert.rejects(collector.collectDetail({ browser: cancellationBrowser, url, signal: controller.signal,
+            wait: async () => { waited += 1; }, ...hooks }), { name: 'AbortError' });
+        assert.equal(published, 1);
+        assert.equal(navigated, hook === 'onNavigationStart' ? 0 : 1);
+        assert.equal(executed, hook === 'onPartial' ? 3 : 0, 'cancelamento no hook impede a proxima etapa');
+        assert.equal(waited, 0, 'cancelamento no parcial impede espera ou clique subsequente');
+    }
+
+    for (const [frame, reason] of [[null, 'invalid_page_result'],
+        [{ url, authRequired: true, anuncios: [target] }, 'ml_login_required'],
+        [{ url, avantAuthRequired: true, anuncios: [target] }, 'avant_login_required'],
+        [{ url: url + '-outra', anuncios: [target] }, 'page_changed']]) {
+        let scan = 0;
+        const invalidations = [];
+        const rejectedBrowser = { getURL: () => url, executeJavaScript: async code => code.includes('/*pm:snapshot*/')
+            ? scan++ === 0 ? { url, height: 100, atBottom: true, anuncios: [target] } : frame : {} };
+        const rejected = await collector.collectDetail({ browser: rejectedBrowser,
+            onPartial: partial => { invalidations.push(partial); }, wait: async () => {} });
+        assert.equal(invalidations.length, 2, 'observacao confirmada e depois invalidada pelo proximo snapshot');
+        assert.equal(invalidations[0].reason, 'partial');
+        assert.equal(invalidations[0].com_dados_avant, 1);
+        assert.equal(invalidations[1].reason, reason, 'caller recebe motivo que veta reutilizar observacao anterior');
+        assert.equal(invalidations[1].authRequired, reason.endsWith('login_required'));
+        assert.deepEqual(invalidations[1], rejected, 'invalidacao usa o mesmo resultado final de compatibilidade');
+    }
+
+    let blockedClock = 0;
+    const blockedObservations = [];
+    const blockedQueueBrowser = { getURL: () => url, executeJavaScript: async code => {
+        if (code.includes('/*pm:snapshot*/')) return { url, height: 100, atBottom: true, anuncios: [pending] };
+        return code.includes('/*pm:avant-click*/') ? { loginBlocked: true } : {};
+    } };
+    const queueLogin = await collector.collectDetail({ browser: blockedQueueBrowser, now: () => blockedClock,
+        wait: async ms => { blockedClock += ms; }, settleMs: 20, pollMs: 10,
+        onPartial: partial => { blockedObservations.push(partial); } });
+    assert.equal(queueLogin.reason, 'avant_login_required');
+    assert.equal(blockedObservations.at(-1).authRequired, true, 'login detectado pela fila tambem invalida observacoes anteriores');
+    assert.equal(blockedObservations.at(-1).reason, 'avant_login_required');
+
+    let catalogClock = 0, lastCatalog;
+    const catalog = { ...target, catalogo: true, rankable: false, status: 'catalogo_sem_evidencia_vendedor',
+        erro: 'O catalogo nao comprovou vendas deste vendedor.' };
+    const catalogBrowser = { getURL: () => url, executeJavaScript: async code => code.includes('/*pm:snapshot*/')
+        ? { url, height: 100, atBottom: true, anuncios: [catalog] } : {} };
+    await collector.collectDetail({ browser: catalogBrowser, now: () => catalogClock, wait: async ms => { catalogClock += ms; },
+        settleMs: 20, pollMs: 10, missingWaitMs: 40, onPartial: partial => { lastCatalog = partial; } });
+    assert.equal(lastCatalog.anuncios[0].vendas, 100, 'parcial conserva valores observados do catalogo');
+    assert.equal(lastCatalog.anuncios[0].media_vendas_mensal, 5);
+    assert.equal(lastCatalog.anuncios[0].rankable, false, 'parcial nao afrouxa prova de vendedor no catalogo');
+    assert.equal(lastCatalog.anuncios[0].rank, null);
+    console.log('Pesquisa de Mercado: hooks de navegacao, parcial filtrado, conflito, catalogo e cancelamento OK');
+}
+
 async function run() {
+    await testDetailObservationHooks();
     const fake = fakeBrowser();
     let updates = 0;
     const result = await collector.collectFirstPage({ browser: fake, now: fake.now, wait: fake.wait, settleMs: 20, pollMs: 10, onProgress: () => { updates += 1; } });

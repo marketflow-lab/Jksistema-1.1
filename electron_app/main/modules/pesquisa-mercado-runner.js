@@ -315,7 +315,8 @@ class PesquisaMercadoRunner {
         this.salesRecoveryDeferred = false;
         this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
-        this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 18000);
+        this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 30000);
+        this.detailNavigationTimeoutMs = Math.max(1, options.detailNavigationTimeoutMs || 35000);
     }
 
     snapshot() {
@@ -881,18 +882,59 @@ class PesquisaMercadoRunner {
             const controller = new AbortController();
             const abort = () => controller.abort();
             this.controller.signal.addEventListener('abort', abort, { once: true });
-            const timer = setTimeout(() => {
-                controller.abort();
-                if (typeof this.browser.stop === 'function') this.browser.stop();
-            }, this.detailTimeoutMs);
+            let timer, latestPartial = null, collectionTimedOut = false, active = true;
+            const armTimeout = (milliseconds, phase) => {
+                if (!active || controller.signal.aborted) return;
+                clearTimeout(timer);
+                timer = setTimeout(() => {
+                    collectionTimedOut = phase !== 'navigation';
+                    controller.abort();
+                    if (typeof this.browser.stop === 'function') this.browser.stop();
+                }, milliseconds);
+            };
+            // Legacy collectors retain a bounded call. Current collectors give
+            // navigation and the loaded Avant panel separate time budgets.
+            armTimeout(this.detailTimeoutMs, 'collection');
             try {
                 navigated = true;
-                const detail = await this.attempt(() => this.collector.collectDetail({
-                    browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
-                    expectedItem: { id: item.id || '', url: item.url },
-                    seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
-                    timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait
-                }), controller.signal);
+                let detail;
+                try {
+                    detail = await this.attempt(async () => {
+                        let attemptActive = true;
+                        latestPartial = null;
+                        const alive = () => attemptActive && active && !controller.signal.aborted;
+                        const capture = partial => {
+                            if (!alive()) return false;
+                            const invalid = !partial || partial.authRequired || partial.avantAuthRequired
+                                || ['avant_login_required', 'ml_login_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
+                            latestPartial = invalid ? null : clone(partial);
+                            return !invalid;
+                        };
+                        try {
+                            const observed = await this.collector.collectDetail({
+                                browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
+                                expectedItem: { id: item.id || '', url: item.url },
+                                seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
+                                timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
+                                onNavigationStart: () => {
+                                    if (!alive()) return;
+                                    latestPartial = null;
+                                    armTimeout(this.detailNavigationTimeoutMs, 'navigation');
+                                },
+                                onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
+                                onPartial: capture
+                            });
+                            // Authentication or a changed document also vetoes
+                            // metrics observed before the terminal result.
+                            const valid = capture(observed);
+                            return valid ? observed : { ...observed, anuncios: [] };
+                        } finally { attemptActive = false; }
+                    }, controller.signal);
+                } catch (error) {
+                    this.check();
+                    if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
+                    detail = latestPartial;
+                }
                 this.check();
                 const found = (detail.anuncios || []).find(candidate => item.id
                     ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
@@ -962,9 +1004,10 @@ class PesquisaMercadoRunner {
                 }
             } catch (error) {
                 this.check();
-                if (error.waitingLogin || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+                if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
                 // A bounded unavailable detail keeps the original card's evidence.
             } finally {
+                active = false;
                 clearTimeout(timer);
                 this.controller.signal.removeEventListener('abort', abort);
             }

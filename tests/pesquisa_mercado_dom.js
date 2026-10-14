@@ -370,7 +370,9 @@ async function run() {
         assert.equal(modern.rankable, true);
         assert.equal(modern.avant_seller_id, '', 'vendedor nao e fabricado a partir da URL da pagina');
         let modernClock = Date.parse('2026-10-14T12:00:00Z');
+        const modernPartials = [];
         const modernDetail = await detailCollector.collectDetail({ browser: adapter, seller, expectedItem: { id: modernItemId }, now: () => modernClock,
+            onPartial: partial => { modernPartials.push(partial); },
             wait: async ms => { modernClock += ms; await new Promise(resolve => setTimeout(resolve, ms)); },
             settleMs: 40, missingWaitMs: 300, pollMs: 40, timeoutMs: 3000 });
         assert.equal(modernDetail.incomplete, false, JSON.stringify(modernDetail));
@@ -380,6 +382,11 @@ async function run() {
         assert.equal(modernDetail.anuncios[0].media_vendas_mensal, require('../static/pesquisa-mercado/shared-ranking').calculateMetrics(modern, modernClock).media,
             'calculo total/data continua a regra do ranking quando ha data');
         assert.equal(modernDetail.anuncios[0].media_mensal_fonte, 'calculado_vendas_dias_avantpro');
+        assert.ok(modernPartials.length >= 2, 'cartoes modernos sao observados antes da estabilidade final');
+        assert.ok(modernPartials.every(partial => partial.reason === 'partial' && partial.primeira_pagina === false));
+        assert.ok(modernPartials.every(partial => partial.anuncios.length === 1 && partial.anuncios[0].id === modernItemId));
+        assert.ok(modernPartials.every(partial => partial.anuncios[0].vendas === 100 && partial.anuncios[0].vendas_estimadas === 155));
+        assert.ok(modernPartials.every(partial => partial.anuncios[0].rankable === true && partial.anuncios[0].media_mensal === 5));
 
         const withoutDate = await readModern(pdpRoot({ created: '' }));
         assert.equal(withoutDate.media_mensal, 5);
@@ -454,6 +461,14 @@ async function run() {
         const matchingCatalogRoot = await readModern(pdpRoot({ attrs: 'data-product-id="MLB9999999" data-catalog-product-id="MLB9999999"' }));
         assert.equal(matchingCatalogRoot.vendas, 100, 'id de produto do caminho p e distinto do wid e aceito quando corresponde');
         assert.equal(matchingCatalogRoot.rankable, false, 'pill de catalogo sem prova especifica continua pendente');
+        const catalogPartials = [];
+        const catalogDetail = await detailCollector.collectDetail({ browser: adapter, seller, expectedItem: { id: modernItemId },
+            onPartial: partial => { catalogPartials.push(partial); }, settleMs: 40, missingWaitMs: 100, pollMs: 40, timeoutMs: 3000 });
+        assert.equal(catalogDetail.reason, 'avant_data_incomplete');
+        assert.ok(catalogPartials.length >= 2);
+        assert.ok(catalogPartials.every(partial => partial.anuncios[0].vendas === 100 && partial.anuncios[0].media_mensal === 5));
+        assert.ok(catalogPartials.every(partial => partial.anuncios[0].status === 'catalogo_sem_evidencia_vendedor'
+            && partial.anuncios[0].rankable === false && partial.anuncios[0].rank === null), 'observacao preserva valores sem atribuir vendas de catalogo ao vendedor');
         await page.goto(modernUrl);
         const explicitCatalogPill = await readModern(pdpRoot({ extra: pdpPill('Catálogo') }));
         assert.equal(explicitCatalogPill.catalogo, true);
