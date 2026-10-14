@@ -944,6 +944,285 @@ async function automaticAvantLoginForSellerNames() {
     assert.equal(fallbackChecks, 1, 'Avant fallback cannot consume data with unknown authentication');
 }
 
+function salesListing(id, metrics = {}) {
+    return { id, url: `https://produto.mercadolivre.com.br/MLB-${id.replace(/^MLB/, '')}-produto`,
+        seller_id: '111', seller_perfil_url: `${base}/perfil/111`, seller_confirmed: true,
+        catalogo: false, vendas: null, media_mensal: null, rankable: false,
+        status: 'sem_dados_avant', vendasFonte: 'avantpro_dom_estruturado',
+        media_mensal_fonte: 'avantpro_dom_estruturado', ...metrics };
+}
+
+function withDetailCollector(h, detail) {
+    const shared = require('../static/pesquisa-mercado/shared-collector');
+    h.runner.collector = { ...h.runner.collector, collectDetail: detail,
+        isComplete: shared.isComplete, finalizeListings: shared.finalizeListings };
+}
+
+async function completeSalesAndMonthlyDetails() {
+    const listing = [
+        salesListing('MLB1000000001', { vendas: 100 }),
+        salesListing('MLB1000000002', { media_mensal: 7, status: 'sem_quantidade_avant' }),
+        salesListing('MLB1000000003', { vendas: 0, media_mensal: 0, rankable: true }),
+        salesListing('MLB1000000004', { catalogo: true, vendas: 4, media_mensal: 2, status: 'catalogo_sem_evidencia_vendedor' }),
+        salesListing('MLB1000000005', { vendas: 8 }),
+        salesListing('MLB1000000006', { vendas: 9 }),
+        salesListing('MLB1000000007', { vendas: 999, seller_confirmed: false, avant_seller_id: '222', status: 'vendedor_nao_confirmado' }),
+        salesListing('MLB1000000008', { vendas: 888, catalogo: true, avant_seller_id: '111', vendas_rotulo: 'vendas do produto', status: 'catalogo_sem_evidencia_vendedor' })
+    ];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true, reason: 'avant_data_incomplete' }));
+    const calls = [];
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        calls.push(id);
+        assert.equal(options.timeoutMs, 18000);
+        assert.equal(options.signal.aborted, false);
+        await options.browser.navigate(options.url);
+        const metric = id === 'MLB1000000001' ? { media_mensal: 10, status: 'sem_quantidade_avant' }
+            : id === 'MLB1000000002' ? { vendas: 70 }
+            : id === 'MLB1000000004' ? { catalogo: true, vendas: 4, media_mensal: 2, rankable: true, avant_seller_id: '111', vendas_rotulo: 'vendas do vendedor neste anuncio' }
+            : id === 'MLB1000000005' ? { vendas: 8, media_mensal: 2, rankable: true, seller_id: '222', seller_perfil_url: `${base}/perfil/111` }
+            : id === 'MLB1000000007' || id === 'MLB1000000008' ? { media_mensal: 6, status: 'sem_quantidade_avant', avant_seller_id: '111' }
+            : { vendas: 9, media_mensal: 3, rankable: true };
+        return { anuncios: [salesListing(id === 'MLB1000000006' ? 'MLB9999999999' : id, metric)] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(calls, ['MLB1000000001', 'MLB1000000002', 'MLB1000000004', 'MLB1000000005', 'MLB1000000006', 'MLB1000000007', 'MLB1000000008'], 'consult every incomplete advertisement, including absent catalog seller evidence');
+    const publication = h.vendors.get('id:111');
+    assert.equal(publication.anuncios.length, listing.length, 'keep all original cards');
+    const byId = new Map(publication.anuncios.map(item => [item.id, item]));
+    assert.equal(byId.get('MLB1000000001').vendas, 100, 'keep confirmed total when detail supplies monthly only');
+    assert.equal(byId.get('MLB1000000001').media_vendas_mensal, 10);
+    assert.equal(byId.get('MLB1000000002').vendas, 70);
+    assert.equal(byId.get('MLB1000000002').media_vendas_mensal, 7, 'keep confirmed monthly when detail supplies total only');
+    assert.equal(byId.get('MLB1000000003').media_vendas_mensal, 0, 'zero is a confirmed metric');
+    assert.equal(byId.get('MLB1000000004').rankable, true, 'catalog metrics require seller identity');
+    assert.equal(byId.get('MLB1000000005').rankable, false, 'reject metrics from another seller');
+    assert.equal(byId.get('MLB1000000005').vendas, 8, 'rejected detail cannot overwrite original evidence');
+    assert.equal(byId.get('MLB1000000006').rankable, false, 'reject recommendations for another advertisement');
+    assert.equal(byId.get('MLB1000000007').vendas, 999, 'keep original foreign sales visible without using them to rank');
+    assert.equal(byId.get('MLB1000000007').rankable, false);
+    assert.equal(byId.get('MLB1000000008').vendas, 888, 'keep original catalog sales visible without using them to rank');
+    assert.equal(byId.get('MLB1000000008').rankable, false);
+    assert.equal(h.runner.browser.getURL(), `${base}/anuncios/111`, 'restore seller first page after detail collection');
+    assert.equal(h.saved().status, 'completed_partial');
+    assert.equal(h.saved().checkpoint.sellerCollection, undefined, 'published collection no longer needs the pending cursor');
+    assert(h.events.some(event => /vendas e media do anuncio 7 de 8/.test(event.job.progress.detail)), 'detail progress remains visible');
+}
+
+async function detailTimeoutPreservesPartialAndContinues() {
+    const listing = [salesListing('MLB1000000001', { vendas: 100 }), salesListing('MLB1000000002', { vendas: 20 })];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: listing, incomplete: true, reason: 'avant_data_incomplete' }));
+    h.runner.detailTimeoutMs = 8;
+    const calls = [];
+    let release;
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        if (options.expectedItem.id === 'MLB1000000001') return new Promise(resolve => { release = resolve; });
+        return { anuncios: [salesListing('MLB1000000002', { vendas: 20, media_mensal: 5, rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(calls, ['MLB1000000001', 'MLB1000000002'], 'timeout must not skip remaining advertisements');
+    const publication = copy(h.vendors.get('id:111'));
+    assert.equal(publication.anuncios.find(item => item.id === 'MLB1000000001').vendas, 100, 'timeout keeps partial sales');
+    assert.equal(publication.anuncios.find(item => item.id === 'MLB1000000002').rankable, true);
+    assert.equal(h.stopped(), 1, 'stop timed out browser activity before navigating to next detail');
+    release({ anuncios: [salesListing('MLB1000000001', { vendas: 999, media_mensal: 999, rankable: true })] });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.vendors.get('id:111'), publication, 'late timeout response cannot change a published result');
+}
+
+async function pauseAndResumeSalesDetails() {
+    let firstPageCalls = 0, entered;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const listing = [salesListing('MLB1000000001', { vendas: 10 }), salesListing('MLB1000000002', { vendas: 20 })];
+    const h = harness(avantFlowPages(), async () => { firstPageCalls += 1; return { anuncios: listing, incomplete: true, reason: 'avant_data_incomplete' }; });
+    const calls = [];
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        calls.push(id);
+        await options.browser.navigate(options.url);
+        if (id === 'MLB1000000002' && calls.length === 2) {
+            entered();
+            await new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => {
+                const error = new Error('interrupted detail'); error.name = 'AbortError'; reject(error);
+            }, { once: true }));
+        }
+        return { anuncios: [salesListing(id, { vendas: id === 'MLB1000000001' ? 10 : 20, media_mensal: 5, rankable: true })] };
+    });
+    await h.runner.start(); await waiting;
+    await h.runner.stop('paused'); await h.runner.task;
+    const saved = h.saved();
+    assert.equal(saved.status, 'paused');
+    assert.equal(saved.checkpoint.page.index, 0, 'seller seed stays pending until complete publication');
+    assert.equal(saved.checkpoint.sellerCollection.index, 1, 'resume cursor points at interrupted detail');
+    assert.equal(saved.checkpoint.sellerCollection.result.anuncios[0].media_mensal, 5, 'confirmed first detail persists before pause');
+    assert.equal(h.vendors.size, 0, 'interrupted seller is not marked as published');
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(firstPageCalls, 1, 'resume reuses the saved seller card collection');
+    assert.deepEqual(calls, ['MLB1000000001', 'MLB1000000002', 'MLB1000000002'], 'resume consults only the interrupted detail');
+    assert.equal(h.saved().status, 'completed');
+    assert.equal(h.vendors.get('id:111').anuncios.length, 2);
+    assert(h.events.every(event => !JSON.stringify(event).includes('sellerCollection')), 'private detail checkpoint stays outside progress events');
+}
+
+async function salesDetailLoginKeepsCursor() {
+    let blocked = true, firstPageCalls = 0;
+    const h = harness(avantFlowPages(), async () => { firstPageCalls += 1; return {
+        anuncios: [salesListing('MLB1000000001', { vendas: 10 })], incomplete: true, reason: 'avant_data_incomplete'
+    }; });
+    withDetailCollector(h, async options => {
+        await options.browser.navigate(options.url);
+        return blocked ? { authRequired: true, reason: 'avant_login_required', anuncios: [] }
+            : { anuncios: [salesListing('MLB1000000001', { vendas: 10, media_mensal: 2, rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(h.saved().status, 'waiting_login');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 0, 'login never advances the pending detail');
+    assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].vendas, 10);
+    blocked = false;
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(firstPageCalls, 1);
+    assert.equal(h.saved().status, 'completed');
+}
+
+function historicResearch(h, sellers, listings) {
+    for (const seller of sellers) h.vendors.set(seller.seller_key, { seller, anuncios: copy(listings.get(seller.seller_key)) });
+    const api = h.runner.api, reads = [];
+    h.runner.api = async (method, path, body) => {
+        if (method === 'GET' && path.endsWith('/vendedores')) return { items: copy(sellers) };
+        if (method === 'GET' && path.includes('/ranking?')) {
+            const params = new URL(path, base).searchParams, key = params.get('seller_key');
+            const offset = Number(params.get('offset'));
+            reads.push([key, offset]);
+            const items = listings.get(key) || [];
+            return { items: copy(items.slice(offset, offset + 100)), total: items.length, revision: 1 };
+        }
+        return api(method, path, body);
+    };
+    const saved = h.saved();
+    const category = { key: 'a', nome: 'A', url: `${base}/a` };
+    h.restoreCheckpoint({ ...saved, status: 'paused', checkpoint: { categories: [category], categoryIndex: 1,
+        currentCategory: category, discoveryInitialized: true, seenSellerKeys: sellers.map(seller => seller.seller_key),
+        seenSeedIds: ['seed-a'] }, counters: { ...saved.counters, sellers: sellers.length,
+        ads: [...listings.values()].reduce((total, value) => total + value.length, 0) } });
+    return reads;
+}
+
+async function legacySalesRecoveryKeepsAllSavedPages() {
+    let firstPageCalls = 0;
+    const h = harness(avantFlowPages(), async () => { firstPageCalls += 1; throw new Error('Must preserve saved research cards'); });
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111', categoria: 'Historic Category', pending: 0 };
+    const listing = Array.from({ length: 105 }, (_value, index) => ({
+        ...salesListing('MLB' + (1000000001 + index), { vendas: index === 102 ? null : 10,
+            media_mensal: undefined, media_vendas_mensal: 2, rankable: true, seller_confirmed: undefined }),
+        categoria: 'Historic Category', status: 'ranked'
+    }));
+    const reads = historicResearch(h, [previous], new Map([['id:111', listing]]));
+    const details = [];
+    withDetailCollector(h, async options => {
+        details.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 44, media_mensal: 4, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(reads, [['id:111', 0], ['id:111', 100]], 'read every saved seller page even when old pending counter was zero');
+    assert.deepEqual(details, ['MLB1000000103'], 'old monthly-only rank must fetch the missing total');
+    assert.equal(firstPageCalls, 0, 'historical recovery must not replace its saved list with a new first page');
+    const ads = h.vendors.get('id:111').anuncios;
+    assert.equal(ads.length, 105, 'historical recovery preserves cardinality greater than the API page limit');
+    assert.deepEqual(new Set(ads.map(item => item.id)), new Set(listing.map(item => item.id)));
+    assert(ads.every(item => item.categoria === 'Historic Category'), 'historical category remains attached to every original advertisement');
+    assert.equal(ads.find(item => item.id === 'MLB1000000103').vendas, 44);
+    assert.equal(h.saved().checkpoint.salesCollectionVersion, 2);
+    assert.deepEqual(h.saved().checkpoint.seenSeedIds, ['seed-a'], 'recovery does not reset discovery progress');
+    assert.deepEqual(h.saved().checkpoint.seenSellerKeys, ['id:111']);
+    assert.equal(h.saved().status, 'completed');
+}
+
+async function legacyUnavailableSellerPreservesAdsAndContinues() {
+    const pages = avantFlowPages();
+    pages[`${base}/perfil/111`] = seller('333');
+    pages[`${base}/perfil/222`] = seller('222');
+    pages[`${base}/anuncios/222`] = {};
+    const h = harness(pages);
+    const sellers = ['111', '222'].map(id => ({ ...seller(id), id, nome: 'Seller ' + id, seller_key: 'id:' + id, pending: 1 }));
+    const listing = new Map(sellers.map((seller, index) => [seller.seller_key, [salesListing('MLB' + (1000000001 + index), {
+        seller_id: seller.id, seller_perfil_url: seller.perfilUrl, vendas: 10
+    })]]));
+    historicResearch(h, sellers, listing);
+    const original = copy(h.vendors.get('id:111'));
+    const details = [];
+    withDetailCollector(h, async options => {
+        details.push(options.seller.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { seller_id: '222', seller_perfil_url: sellers[1].perfilUrl,
+            vendas: 10, media_mensal: 2, rankable: true })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(details, ['222'], 'one unavailable saved seller must not skip the remaining sellers');
+    assert.deepEqual(h.vendors.get('id:111'), original, 'unavailable profile cannot delete or mutate its saved advertisements');
+    assert.equal(h.vendors.get('id:222').anuncios[0].rankable, true);
+    assert.equal(h.saved().status, 'completed_partial');
+    assert.equal(h.saved().checkpoint.salesRecoveryPending, true);
+    assert.equal(h.saved().checkpoint.salesCollectionVersion, 2);
+}
+
+async function legacyPartialSalesRequireTheirOwnProvenance() {
+    const h = harness(avantFlowPages());
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111', pending: 3 };
+    const ads = [
+        salesListing('MLB1000000001', { vendas: 100, seller_confirmed: undefined, status: 'pending', erro: 'Media mensal indisponivel.' }),
+        salesListing('MLB1000000002', { vendas: 999, seller_confirmed: undefined, status: 'pending', vendasFonte: 'mercadolivre_badge' }),
+        salesListing('MLB1000000003', { vendas: 888, seller_confirmed: undefined, status: 'pending', avant_seller_id: '222' })
+    ];
+    historicResearch(h, [previous], new Map([['id:111', ads]]));
+    withDetailCollector(h, async options => {
+        await options.browser.navigate(options.url);
+        return { anuncios: [salesListing(options.expectedItem.id, { media_mensal: 10, status: 'sem_quantidade_avant' })] };
+    });
+    await h.runner.resume('run-1'); await h.runner.task;
+    const byId = new Map(h.vendors.get('id:111').anuncios.map(item => [item.id, item]));
+    assert.equal(byId.get('MLB1000000001').vendas, 100, 'historical Avant total with matching seller stays valid even when seller_confirmed was not persisted');
+    assert.equal(byId.get('MLB1000000001').media_vendas_mensal, 10);
+    assert.equal(byId.get('MLB1000000001').rankable, true);
+    assert.equal(byId.get('MLB1000000002').vendas, 999, 'preserve a previous visible value with unconfirmed source');
+    assert.equal(byId.get('MLB1000000002').vendasFonte, 'mercadolivre_badge');
+    assert.equal(byId.get('MLB1000000002').rankable, false, 'public badge cannot become an Avant total by merging monthly data');
+    assert.equal(byId.get('MLB1000000003').vendas, 888);
+    assert.equal(byId.get('MLB1000000003').rankable, false, 'historical data from another Avant seller remains pending');
+    assert.equal(h.saved().status, 'completed_partial');
+}
+
+async function freshCompleteDetailReplacesUnconfirmedOptionalMetrics() {
+    const ads = [
+        salesListing('MLB1000000001', { vendas: 999, media_mensal: 888, catalogo: true, seller_confirmed: false,
+            avant_seller_id: '222', status: 'catalogo_sem_evidencia_vendedor', titulo: 'Original card', preco: 12 }),
+        salesListing('MLB1000000002', { vendas: 999, data_criacao: '01/01/1980', dataCriacaoFonte: '', seller_confirmed: false,
+            status: 'vendedor_nao_confirmado' })
+    ];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ads, incomplete: true, reason: 'avant_data_incomplete' }));
+    withDetailCollector(h, async options => {
+        await options.browser.navigate(options.url);
+        return { anuncios: [options.expectedItem.id === 'MLB1000000001'
+            ? salesListing('MLB1000000001', { vendas: 100, data_criacao: '01/01/2020', dataCriacaoFonte: 'avantpro_dom_estruturado', seller_perfil_url: '', rankable: true })
+            : salesListing('MLB1000000002', { vendas: 50, media_mensal: 5, data_criacao: '', rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    const byId = new Map(h.vendors.get('id:111').anuncios.map(item => [item.id, item]));
+    const derived = byId.get('MLB1000000001'), direct = byId.get('MLB1000000002');
+    assert.equal(derived.rankable, true, 'new complete metrics with numeric seller ID alone can replace unconfirmed catalog data');
+    assert.equal(derived.vendas, 100);
+    assert.equal(derived.media_mensal, null, 'old aggregate monthly value must not block freshly confirmed complete metrics');
+    assert.equal(derived.data_criacao, '01/01/2020');
+    assert.equal(derived.titulo, 'Original card');
+    assert.equal(derived.preco, 12);
+    assert.equal(direct.rankable, true);
+    assert.equal(direct.data_criacao, '', 'an old unconfirmed creation date cannot override a fresh direct monthly metric');
+    assert.equal(direct.media_vendas_mensal, 5);
+    assert.equal(h.saved().status, 'completed');
+}
+
 (async () => {
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
@@ -960,5 +1239,13 @@ async function automaticAvantLoginForSellerNames() {
     await mlChallengesNeverTriggerAvantLogin();
     await automaticAvantAbortAndOwnership();
     await automaticAvantLoginForSellerNames();
+    await completeSalesAndMonthlyDetails();
+    await detailTimeoutPreservesPartialAndContinues();
+    await pauseAndResumeSalesDetails();
+    await salesDetailLoginKeepsCursor();
+    await legacySalesRecoveryKeepsAllSavedPages();
+    await legacyUnavailableSellerPreservesAdsAndContinues();
+    await legacyPartialSalesRequireTheirOwnProvenance();
+    await freshCompleteDetailReplacesUnconfirmedOptionalMetrics();
     console.log('Pesquisa de Mercado runner: official taxonomy, categories, dedup, background, pause, recovery, progress warnings and retries OK');
 })().catch(err => { console.error(err); process.exitCode = 1; });

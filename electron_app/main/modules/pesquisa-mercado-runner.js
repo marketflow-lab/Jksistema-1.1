@@ -158,8 +158,10 @@ function cleanSellerName(value, id = '') {
 
 function sellerIdentity(value) {
     const ids = new Set(), profileIds = new Set();
-    const declared = String(value.id || value.sellerId || value.seller_id || '').trim();
-    if (/^\d+$/.test(declared)) ids.add(declared);
+    for (const field of ['id', 'sellerId', 'seller_id']) {
+        const declared = String(value[field] || '').trim();
+        if (/^\d+$/.test(declared)) ids.add(declared);
+    }
     const url = canonicalUrl(value.perfilUrl || value.seller_perfil_url || value.sellerUrl);
     let profile = '';
     if (url) {
@@ -309,6 +311,7 @@ class PesquisaMercadoRunner {
         this.officialNavigation = null;
         this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
+        this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 18000);
     }
 
     snapshot() {
@@ -611,16 +614,16 @@ class PesquisaMercadoRunner {
         }
     }
 
-    async attempt(operation) {
+    async attempt(operation, signal = this.controller.signal) {
         let last;
         const avantState = { checked: false, attempted: false, forced: false };
         for (let index = 0; index < 3; index += 1) {
             this.check();
             try {
-                const result = await operation(avantState);
+                const result = await this.nameStep(() => operation(avantState), signal);
                 this.check();
                 if (result && (result.authRequired || result.avantAuthRequired || result.reason === 'avant_login_required')) {
-                    if (await this.recoverAvantSession(result, this.controller.signal, avantState)) { index -= 1; continue; }
+                    if (await this.nameStep(() => this.recoverAvantSession(result, signal, avantState), signal)) { index -= 1; continue; }
                     const err = new Error(result.reason || 'Conclua o login do Mercado Livre ou Avant e clique em Retomar.');
                     err.waitingLogin = true;
                     throw err;
@@ -629,7 +632,7 @@ class PesquisaMercadoRunner {
             } catch (err) {
                 if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
-                if (index < 2) await this.wait(600 * (index + 1));
+                if (index < 2) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
             }
         }
         throw last;
@@ -850,17 +853,201 @@ class PesquisaMercadoRunner {
         this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
 
-    async publishSeller(seller, result) {
+    async complementSellerListings(seller, result, allAdsUrl) {
+        if (typeof this.collector.collectDetail !== 'function' || typeof this.collector.isComplete !== 'function') return result;
+        const saved = this.checkpoint.sellerCollection;
+        const collection = saved && saved.sellerKey === seller.key && saved.url === allAdsUrl
+            ? saved : { sellerKey: seller.key, url: allAdsUrl, result: clone(result), index: 0 };
+        if (!Array.isArray(collection.result.anuncios)) return result;
+        this.checkpoint.sellerCollection = collection;
+        await this.save();
+        const items = collection.result.anuncios;
+        let navigated = false;
+        for (let index = collection.index; index < items.length; index += 1) {
+            this.check();
+            const item = items[index];
+            if (this.collector.isComplete(item) || !allowedUrl(item.url)) { collection.index = index + 1; continue; }
+            this.setProgress('collecting', `Consultando vendas e media do anuncio ${index + 1} de ${items.length} de ${seller.nome || seller.id || 'vendedor'}...`);
+            const controller = new AbortController();
+            const abort = () => controller.abort();
+            this.controller.signal.addEventListener('abort', abort, { once: true });
+            const timer = setTimeout(() => {
+                controller.abort();
+                if (typeof this.browser.stop === 'function') this.browser.stop();
+            }, this.detailTimeoutMs);
+            try {
+                navigated = true;
+                const detail = await this.attempt(() => this.collector.collectDetail({
+                    browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
+                    expectedItem: { id: item.id || '', url: item.url },
+                    seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
+                    timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait
+                }), controller.signal);
+                this.check();
+                const found = (detail.anuncios || []).find(candidate => item.id
+                    ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
+                    : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+                if (found && found.seller_confirmed === true && sameSeller(seller, found)
+                    && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
+                        id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
+                    }))) {
+                    const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
+                        || String(value || '').toLowerCase().startsWith('avantpro');
+                    const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                    const previousProof = item.seller_confirmed !== false
+                        && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
+                        && !/identidade|vendedor|escopo|catalogo/.test(previousError) && sameSeller(seller, item)
+                        && (!(item.avant_seller_id || item.avant_seller_perfil_url) || sameSeller(seller, {
+                            id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                        })) && (!item.catalogo || item.seller_confirmed === true && /anuncio|item/i.test(String(item.vendas_rotulo || '')) && sameSeller(seller, {
+                            id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                        }));
+                    const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
+                    const freshComplete = this.collector.isComplete(found);
+                    let reusedUnconfirmed = false;
+                    // A detail panel may expose only the metric missing from the card.
+                    // Keep existing values visible, but only reuse proven provenance
+                    // to construct a complete rank from separate observations.
+                    for (const [value, sources] of [
+                        ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
+                        ['media_mensal', ['media_mensal_fonte']],
+                        ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
+                        ['data_criacao', ['dataCriacaoFonte']]
+                    ]) {
+                        if (freshComplete) {
+                            merged[value] = found[value] ?? (value === 'data_criacao' ? '' : null);
+                            for (const source of sources) merged[source] = found[source] || '';
+                            continue;
+                        }
+                        if (value === 'media_vendas_mensal' && (found[value] === null || found[value] === undefined)
+                            && Number.isFinite(found.media_mensal)) {
+                            merged[value] = found.media_mensal;
+                            merged.media_vendas_mensal_fonte = found.media_mensal_fonte;
+                            continue;
+                        }
+                        if (found[value] === null || found[value] === undefined || found[value] === '') {
+                            if (item[value] !== undefined) {
+                                merged[value] = item[value];
+                                for (const source of sources) if (item[source] !== undefined) merged[source] = item[source];
+                                const monthlySource = item.media_mensal_fonte || item.media_vendas_mensal_fonte;
+                                const provenance = value === 'vendas' ? avantSource(item.vendasFonte || item.vendas_fonte)
+                                    : value === 'data_criacao' ? avantSource(item.dataCriacaoFonte)
+                                        || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte)
+                                    : avantSource(monthlySource) || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte);
+                                if (item[value] !== null && item[value] !== '' && (!previousProof || !provenance)) reusedUnconfirmed = true;
+                            }
+                        }
+                    }
+                    const catalogueProof = !merged.catalogo || /anuncio|item/i.test(String(merged.vendas_rotulo || '')) && sameSeller(seller, {
+                        id: merged.avant_seller_id, perfilUrl: merged.avant_seller_perfil_url
+                    });
+                    merged.rankable = (found.rankable === true || ['sem_dados_avant', 'sem_quantidade_avant'].includes(found.status)) && catalogueProof;
+                    merged.rankable = !reusedUnconfirmed && this.collector.isComplete(merged);
+                    if (merged.rankable) { merged.status = 'analisado'; merged.erro = ''; }
+                    else if (reusedUnconfirmed) {
+                        merged.status = 'vendedor_nao_confirmado';
+                        merged.erro = 'A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
+                    }
+                    items[index] = merged;
+                }
+            } catch (error) {
+                this.check();
+                if (error.waitingLogin || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+                // A bounded unavailable detail keeps the original card's evidence.
+            } finally {
+                clearTimeout(timer);
+                this.controller.signal.removeEventListener('abort', abort);
+            }
+            collection.index = index + 1;
+            await this.save();
+        }
+        this.check();
+        if (navigated) await this.read(allAdsUrl, 'first-page');
+        const missing = items.filter(item => !this.collector.isComplete(item)).length;
+        const previousReason = collection.result.reason || 'complete';
+        const reason = !missing && ['complete', 'avant_data_incomplete'].includes(previousReason)
+            ? 'complete' : missing && previousReason === 'complete' ? 'avant_data_incomplete' : previousReason;
+        const anuncios = typeof this.collector.finalizeListings === 'function' ? this.collector.finalizeListings(items) : items;
+        return { ...collection.result, anuncios, reason, incomplete: reason !== 'complete' || missing > 0,
+            total: items.length, com_dados_avant: items.length - missing, incompletos: missing };
+    }
+
+    async recoverPublishedSales() {
+        if (this.checkpoint.salesCollectionVersion === 2 || typeof this.collector.collectDetail !== 'function'
+            || typeof this.collector.isComplete !== 'function') return;
+        const root = `${ROOT}/${encodeURIComponent(this.job.id)}`;
+        const response = await this.nameStep(() => this.api('GET', `${root}/vendedores`), this.controller.signal);
+        const done = new Set(this.checkpoint.salesRecoverySellerKeys || []);
+        for (const previous of response.items || []) {
+            this.check();
+            const key = previous.seller_key || previous.key;
+            if (!key || done.has(key)) continue;
+            const seller = { ...previous, key, nome: cleanSellerName(previous.nome || previous.vendedor, previous.id) };
+            this.setProgress('collecting', `Recuperando vendas e medias pendentes de ${seller.nome || seller.id || 'vendedor'}...`);
+            try {
+                // Read the complete saved seller list; a refreshed first page can
+                // differ from the old collection and must not delete its cards.
+                const anuncios = [];
+                let total = Infinity, revision;
+                for (let offset = 0; offset < total; offset += 100) {
+                    const page = await this.nameStep(() => this.api('GET', `${root}/ranking?seller_key=${encodeURIComponent(key)}&offset=${offset}&limit=100`), this.controller.signal);
+                    this.check();
+                    if (revision !== undefined && page.revision !== revision) throw new Error('A lista salva mudou durante a leitura.');
+                    revision = page.revision;
+                    total = Number(page.total);
+                    if (!Number.isSafeInteger(total) || total < 0 || !Array.isArray(page.items) || !page.items.length && offset < total) {
+                        throw new Error('A lista salva deste vendedor esta indisponivel.');
+                    }
+                    anuncios.push(...page.items);
+                }
+                if (anuncios.every(item => this.collector.isComplete(item))) {
+                    done.add(key);
+                    this.checkpoint.salesRecoverySellerKeys = [...done];
+                    await this.save();
+                    continue;
+                }
+                const perfilUrl = canonicalUrl(seller.perfilUrl) || (/^\d+$/.test(String(seller.id || ''))
+                    ? `https://lista.mercadolivre.com.br/_CustId_${seller.id}` : '');
+                if (!perfilUrl || !sameSeller(seller, seller)) throw new Error('Perfil do vendedor salvo indisponivel.');
+                const profile = await this.read(perfilUrl, 'seller');
+                const confirmed = sellerFromPage(profile);
+                if (!confirmed || !sameSeller(seller, confirmed)) throw new Error('O perfil salvo retornou outro vendedor.');
+                const allAdsUrl = canonicalUrl(profile.allAdsUrl);
+                if (!allAdsUrl) throw new Error('Primeira pagina do vendedor salvo indisponivel.');
+                await this.read(allAdsUrl, 'first-page');
+                const result = await this.complementSellerListings(seller, {
+                    anuncios, reason: 'avant_data_incomplete', incomplete: true, primeira_pagina: true
+                }, allAdsUrl);
+                this.check();
+                await this.publishSeller(seller, result, true);
+                delete this.checkpoint.sellerCollection;
+                if (result.incomplete) this.checkpoint.salesRecoveryPending = true;
+            } catch (error) {
+                this.check();
+                if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
+                this.checkpoint.salesRecoveryPending = true;
+                this.incomplete('Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.');
+            }
+            done.add(key);
+            this.checkpoint.salesRecoverySellerKeys = [...done];
+            await this.save();
+        }
+        this.checkpoint.salesCollectionVersion = 2;
+        delete this.checkpoint.salesRecoverySellerKeys;
+        await this.save();
+    }
+
+    async publishSeller(seller, result, preserveCategories = false) {
         seller = enrichSellerName(seller, result.anuncios);
         const category = this.checkpoint.currentCategory;
         const anuncios = (result.anuncios || []).map((item, index) => ({
             ...item, seller_key: seller.key, vendedor: item.vendedor || seller.nome,
-            categoria: category && category.nome || '',
-            categoria_key: category && category.key || '',
-            ordem_coleta: Number(this.job.counters && this.job.counters.ads || 0) + index
+            categoria: preserveCategories ? item.categoria || seller.categoria || '' : category && category.nome || '',
+            categoria_key: preserveCategories ? item.categoria_key || '' : category && category.key || '',
+            ordem_coleta: preserveCategories ? item.ordem_coleta ?? index : Number(this.job.counters && this.job.counters.ads || 0) + index
         }));
         const response = await this.api('PUT', `${ROOT}/${encodeURIComponent(this.job.id)}/vendedores/${encodeURIComponent(seller.key)}`, {
-            seller: { ...seller, categoria: category && category.nome || '' }, anuncios
+            seller: { ...seller, categoria: preserveCategories ? seller.categoria || '' : category && category.nome || '' }, anuncios
         });
         this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status, message: this.checkpoint.progress.detail };
         this.rememberSeller(seller.key);
@@ -911,7 +1098,9 @@ class PesquisaMercadoRunner {
                 seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
             if (!(await this.sellerPublished(seller.key))) {
                 this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
-                const result = await this.attempt(async avantState => {
+                const pending = this.checkpoint.sellerCollection;
+                const result = pending && pending.sellerKey === seller.key && pending.url === allAdsUrl
+                    ? clone(pending.result) : await this.attempt(async avantState => {
                     await this.ensureAvantSession(this.controller.signal, avantState);
                     return this.collector.collectFirstPage({
                         browser: this.browser, signal: this.controller.signal, seller: {
@@ -928,7 +1117,10 @@ class PesquisaMercadoRunner {
                     });
                 });
                 this.check();
-                await this.publishSeller(seller, result);
+                const complete = await this.complementSellerListings(seller, result, allAdsUrl);
+                this.check();
+                await this.publishSeller(seller, complete);
+                delete this.checkpoint.sellerCollection;
             }
             this.rememberSeller(discoveredKey);
         }
@@ -946,6 +1138,7 @@ class PesquisaMercadoRunner {
             this.check();
             await this.save();
             await this.prepareOfficialTaxonomy();
+            await this.recoverPublishedSales();
             if (!this.checkpoint.discoveryInitialized) {
                 this.setProgress('categories', 'Carregando as categorias do Mercado Livre...');
                 const root = await this.read('https://www.mercadolivre.com.br/', 'index');
@@ -1063,7 +1256,7 @@ class PesquisaMercadoRunner {
                 await this.finishCategory();
             }
             this.setProgress('finalizing', 'Finalizando a pesquisa e salvando os resultados...');
-            this.job.status = this.checkpoint.incompleteCategories.length ? 'completed_partial' : 'completed';
+            this.job.status = this.checkpoint.incompleteCategories.length || this.checkpoint.salesRecoveryPending ? 'completed_partial' : 'completed';
             this.setProgress(this.job.status, this.job.status === 'completed' ? 'Pesquisa concluida.' : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
             await this.save();
         } catch (err) {

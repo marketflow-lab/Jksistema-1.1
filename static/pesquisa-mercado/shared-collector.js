@@ -40,6 +40,31 @@
         } catch (_err) { return String(value || ''); }
     }
 
+    function isComplete(item, nowMs) {
+        const metric = ranking.calculateMetrics(item, nowMs);
+        return !!item && item.rankable === true && Number.isFinite(metric.vendas) && metric.vendas >= 0
+            && Number.isFinite(metric.media) && metric.media >= 0;
+    }
+
+    function finalizeListings(items, nowMs = Date.now()) {
+        return ranking.rankListings((Array.isArray(items) ? items : []).map(item => {
+            const metric = ranking.calculateMetrics(item, nowMs);
+            const hasMetric = Number.isFinite(metric.media) && metric.media >= 0;
+            const hasSales = Number.isFinite(metric.vendas) && metric.vendas >= 0;
+            const source = metric.meses !== null ? 'calculado_vendas_dias_avantpro' : (item.media_mensal_fonte || '');
+            return { ...item, rankable: isComplete(item, nowMs),
+                media_mensal_fonte: source, media_vendas_mensal_fonte: source,
+                erro: item.erro || (!hasSales ? 'O Avant Pro ainda nao informou a quantidade de vendas.'
+                    : (!hasMetric ? 'O Avant Pro ainda nao informou ritmo mensal ou vendas com data de criacao.' : '')) };
+        }), nowMs);
+    }
+
+    function matchesExpected(item, expected) {
+        if (!expected) return true;
+        if (expected.id) return String(item.id || '').replace('-', '').toUpperCase() === String(expected.id).replace('-', '').toUpperCase();
+        return !!expected.url && pageKey(item.url) === pageKey(expected.url);
+    }
+
     async function collectFirstPage(options) {
         const opts = options || {}, browser = opts.browser;
         if (!browser || typeof browser.executeJavaScript !== 'function' || typeof browser.getURL !== 'function') throw new Error('Navegador da Pesquisa de Mercado indisponivel.');
@@ -70,32 +95,29 @@
         };
         const finish = (reason, authRequired) => {
             const timestamp = now();
-            const anuncios = ranking.rankListings(Array.from(items.values()).map(item => {
-                const metric = ranking.calculateMetrics(item, timestamp);
-                const hasMetric = Number.isFinite(metric.media) && metric.media >= 0;
-                return { ...item, rankable: item.rankable === true && hasMetric,
-                    media_vendas_mensal_fonte: metric.meses !== null ? 'calculado_vendas_dias_avantpro' : (item.media_mensal_fonte || ''),
-                    erro: item.erro || (!hasMetric ? 'O Avant Pro ainda nao informou ritmo mensal ou vendas com data de criacao.' : '') };
-            }), timestamp);
+            const anuncios = finalizeListings(Array.from(items.values()), timestamp);
             const missing = anuncios.filter(item => item.rankable !== true).length;
             const resultReason = reason === 'complete' && missing > 0 ? 'avant_data_incomplete' : reason;
             return { anuncios, incomplete: resultReason !== 'complete' || missing > 0, authRequired: !!authRequired, reason: resultReason,
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
-                primeira_pagina: true, elapsedMs: Math.max(0, now() - start) };
+                primeira_pagina: !opts.detail, elapsedMs: Math.max(0, now() - start) };
         };
         await execute(scripts.prepareScript());
         await execute(scripts.scrollScript('top'));
 
         while (now() - start < timeout) {
-            const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {} }));
+            const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }));
             if (!snapshot || typeof snapshot !== 'object') return finish('invalid_page_result');
             if (snapshot.authRequired || snapshot.avantAuthRequired) return finish(snapshot.avantAuthRequired ? 'avant_login_required' : 'ml_login_required', true);
             if (snapshot.url && initialUrl && pageKey(snapshot.url) !== initialUrl) return finish('page_changed');
             empty = !!snapshot.empty;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {
+                if (!matchesExpected(incoming, opts.expectedItem)) continue;
                 const metric = ranking.calculateMetrics(incoming, now());
-                const item = incoming.rankable === true && !Number.isFinite(metric.media)
-                    ? { ...incoming, rankable: false, status: 'sem_dados_avant', erro: 'Aguardando ritmo mensal ou vendas e data de criacao do Avant Pro.' }
+                const hasSales = Number.isFinite(metric.vendas) && metric.vendas >= 0;
+                const item = incoming.rankable === true && !isComplete(incoming, now())
+                    ? { ...incoming, rankable: false, status: hasSales ? 'sem_dados_avant' : 'sem_quantidade_avant',
+                        erro: hasSales ? 'Aguardando ritmo mensal ou vendas e data de criacao do Avant Pro.' : 'Aguardando a quantidade de vendas do Avant Pro.' }
                     : incoming;
                 const key = item.id || item.key || item.url;
                 if (!key) continue;
@@ -131,14 +153,14 @@
                 stableSince = now();
                 quiet = 0;
             }
-            const allReady = list.length > 0 && list.every(item => item.rankable);
+            const allReady = list.length > 0 && list.every(item => isComplete(item, now()));
             // Avant may scroll back to a card. Once the page is materialized, its
             // current viewport must not reset the wait for missing metrics.
             if (quiet >= 2 && now() - stableSince >= settleMs && (!clicksPending || allReady)) {
                 if (allReady || empty) return finish('complete');
                 if (firstBottomAt !== null && now() - firstBottomAt >= missingWaitMs) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
-            const click = allReady ? null : await execute(scripts.clickAvantScript());
+            const click = allReady ? null : await execute(scripts.clickAvantScript({ pending: list.filter(item => !isComplete(item, now())), detail: !!opts.detail }));
             if (click && click.loginBlocked) return finish('avant_login_required', true);
             clicksPending = !!(click && (click.clicked > 0 || click.eligiblePending > 0 || (Array.isArray(click.pendingKeys) && click.pendingKeys.length)));
             // Pending cards must not turn a failed Avant session into an endless job.
@@ -156,10 +178,11 @@
         if (opts.url) {
             aborted(opts.signal);
             if (!opts.browser || typeof opts.browser.navigate !== 'function') throw new Error('Navegacao indisponivel.');
-            await opts.browser.navigate(opts.url);
+            await opts.browser.navigate(opts.url, opts.signal);
+            aborted(opts.signal);
         }
-        return collectFirstPage(opts);
+        return collectFirstPage({ ...opts, detail: true });
     }
 
-    return Object.freeze({ collectFirstPage, collectDetail, discoveryScript: () => defaultScripts.discoveryScript() });
+    return Object.freeze({ collectFirstPage, collectDetail, isComplete, finalizeListings, discoveryScript: () => defaultScripts.discoveryScript() });
 });

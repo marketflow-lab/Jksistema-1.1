@@ -25,7 +25,7 @@
     }
 
     // Self contained: serialized into the Mercado Livre renderer. Never follows pagination.
-    function readPage() {
+    function readPage(options) {
         const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
         const norm = value => clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
         const nodes = (selector, scope) => Array.from((scope || document).querySelectorAll(selector));
@@ -261,11 +261,44 @@
             }
             return metrics;
         };
+        const combineMetrics = (previous, current) => {
+            if (!previous || current.identityConflict
+                || current.sellerId && sellerId && current.sellerId !== sellerId
+                || current.sellerName && previous.sellerName && norm(current.sellerName) !== norm(previous.sellerName)
+                || current.sellerId && previous.sellerId && current.sellerId !== previous.sellerId
+                || current.perfilUrl && previous.perfilUrl && current.perfilUrl !== previous.perfilUrl) return current;
+            const combined = { ...previous, rows: Math.max(previous.rows || 0, current.rows || 0) };
+            if (Number.isFinite(current.total)) {
+                combined.total = current.total; combined.totalLabel = current.totalLabel; combined.totalPriority = current.totalPriority;
+            }
+            for (const field of ['estimated', 'monthly']) if (Number.isFinite(current[field])) combined[field] = current[field];
+            for (const field of ['monthlyLabel', 'created', 'sellerName', 'sellerId', 'perfilUrl']) if (current[field]) combined[field] = current[field];
+            if (current.sellerId || current.perfilUrl) combined.identityConflict = !!current.identityConflict;
+            return combined;
+        };
         const floatingRows = metricRows(document).filter(row => {
-            if (row.closest(cardSelector)) return false;
+            if (row.closest(cardSelector + ', [class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]')) return false;
             const rect = row.getBoundingClientRect();
             return rect.width > 0 && rect.height > 0 && window.getComputedStyle(row).visibility !== 'hidden';
         });
+        const floatingRowsFor = (id, itemUrl) => floatingRows.filter(row => {
+            const panel = row.closest('[role="dialog"], aside, [class*="avantpro"][class*="panel"]');
+            if (!panel) return false;
+            return nodes('a[href]', panel).some(anchor => {
+                const target = absolute(anchor.getAttribute('href'));
+                return id ? productId(target) === id : target === itemUrl;
+            });
+        });
+        const detailNodeBelongs = (node, id, itemUrl) => {
+            const panel = node.closest('[role="dialog"], aside, [class*="avantpro"][class*="panel"]');
+            if (panel) {
+                return nodes('a[href]', panel).some(anchor => {
+                    const target = absolute(anchor.getAttribute('href'));
+                    return id ? productId(target) === id : target === itemUrl;
+                });
+            }
+            return content.contains(node) && !node.closest(cardSelector + ', [class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]');
+        };
         const structuredCache = window.__JK_PM_AVANT_STRUCTURED_CACHE || (window.__JK_PM_AVANT_STRUCTURED_CACHE = Object.create(null));
         const currentClick = window.__JK_AVANT_LAST_CARD_CLICKED || {};
         const resolvedKeys = (window.__JK_AVANT_LAST_QUEUE_RESULT || {}).resolvedKeys || [];
@@ -278,7 +311,7 @@
             cards.push(outer);
         });
         const anuncios = [], known = new Set();
-        for (const card of cards) {
+        for (const card of options && options.detail ? [] : cards) {
             const link = nodes('a[href]', card).find(anchor => isProduct(absolute(anchor.getAttribute('href'))));
             if (!link) continue;
             const productUrl = absolute(link.getAttribute('href'));
@@ -302,10 +335,9 @@
             let metrics = readMetrics(localRows);
             const clickedId = clean(currentClick.id || currentClick.mlb).replace('-', '').toUpperCase();
             const capturedCurrent = !!(id && clickedId === id && resolvedKeys.includes('id:' + id));
-            if (!localRows.length && capturedCurrent && floatingRows.length) {
-                metrics = readMetrics(floatingRows);
-                if (metrics.rows) structuredCache[key] = metrics;
-            } else if (!localRows.length && structuredCache[key]) metrics = structuredCache[key];
+            metrics = combineMetrics(structuredCache[key], metrics);
+            if (capturedCurrent) metrics = combineMetrics(metrics, readMetrics(floatingRowsFor(id, productUrl)));
+            if (metrics.rows) structuredCache[key] = metrics;
             const image = card.querySelector('img');
             const title = card.querySelector('.poly-component__title, .ui-search-item__title, h2, h3') || link;
             const oldPrice = '.poly-price__old, .andes-money-amount--previous, .andes-money-amount--previous-price, [class*="previous-price"], .price-tag__disabled, s, del';
@@ -321,7 +353,7 @@
             anuncios.push({
                 id, key, url: productUrl, titulo: clean(title.textContent), imagem: image ? (image.getAttribute('data-src') || image.currentSrc || image.src || '') : '',
                 preco: priceValue,
-                posicao: anuncios.length + 1, catalogo: /\/(?:p|up)\/MLB/i.test(productUrl),
+                posicao: anuncios.length + 1, catalogo: /\/p\/MLB/i.test(productUrl) || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: attributedSeller, seller_perfil_url: cardIdentity.perfilUrl,
                 vendedor: clean(sellerLink && sellerLink.textContent),
                 _avantEvidence: {
@@ -334,12 +366,14 @@
         // Item pages are used for discovery and optional explicit detail collection.
         if (!anuncios.length && isProduct(url) && document.querySelector('.ui-pdp-title, [data-testid="product-title"]')) {
             const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
-            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"]', content);
+            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"]', content).filter(node => detailNodeBelongs(node, productId(url), url));
             const text = norm(avantRoots.map(node => node.textContent).join(' '));
             const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).find(anchor => identity(anchor.href).id || identity(anchor.href).perfilUrl);
             const proof = identity(avantLink && avantLink.href);
-            const metrics = readMetrics(floatingRows);
-            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/(?:p|up)\/MLB/i.test(url),
+            const detailKey = productId(url) || url;
+            const metrics = combineMetrics(structuredCache[detailKey], readMetrics(floatingRows.filter(row => detailNodeBelongs(row, productId(url), url))));
+            if (metrics.rows) structuredCache[detailKey] = metrics;
+            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
                 _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
@@ -577,7 +611,7 @@
             const validSales = Number.isFinite(sales) && sales >= 0;
             const validMonthly = Number.isFinite(monthly) && monthly >= 0;
             const catalogueProof = !base.catalogo || (evidence.sellerMetric && same(evidence.sellerId, evidence.perfilUrl));
-            const rankable = scoped && !nameConflict && catalogueProof && (validSales || validMonthly);
+            const rankable = scoped && !nameConflict && catalogueProof && validSales && (validMonthly || !!metrics.created);
             const item = { ...base, vendedor: nameConflict ? '' : observedName || meaningfulName(base.vendedor) || meaningfulName(page.vendedor),
                 seller_name_kind: observedName ? 'seller' : page.seller_name_kind || 'seller',
                 seller_name_source: observedName ? 'avant' : 'perfil',
@@ -588,13 +622,41 @@
                 vendas_rotulo: metrics.totalLabel || '', vendas_estimadas: Number.isFinite(metrics.estimated) ? metrics.estimated : null,
                 media_mensal: validMonthly ? monthly : null, media_mensal_fonte: validMonthly ? monthlySource : '',
                 data_criacao: metrics.created || '', dataCriacaoFonte: metrics.created ? source : '',
-                rankable, status: rankable ? 'analisado' : (!scoped || nameConflict ? 'vendedor_nao_confirmado' : (!catalogueProof ? 'catalogo_sem_evidencia_vendedor' : 'sem_dados_avant'))
+                rankable, status: rankable ? 'analisado' : (!scoped || nameConflict ? 'vendedor_nao_confirmado' : (!catalogueProof ? 'catalogo_sem_evidencia_vendedor' : (!validSales ? 'sem_quantidade_avant' : 'sem_dados_avant')))
             };
-            item.erro = rankable ? '' : (!scoped || nameConflict ? 'Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado.' : (!catalogueProof ? 'O catalogo nao apresentou vendas Avant Pro comprovadas para este vendedor.' : 'O Avant Pro ainda nao apresentou dados de vendas ou ritmo mensal para este anuncio.'));
+            item.erro = rankable ? '' : (!scoped || nameConflict ? 'Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado.' : (!catalogueProof ? 'O catalogo nao apresentou vendas Avant Pro comprovadas para este vendedor.' : (!validSales ? 'O Avant Pro ainda nao apresentou a quantidade de vendas deste anuncio.' : 'O Avant Pro ainda nao apresentou ritmo mensal ou data de criacao para calcular a media deste anuncio.')));
             delete item._avantEvidence;
             return item;
         });
         return page;
+    }
+
+    async function clickDetailAvant(pending) {
+        const item = Array.isArray(pending) && pending[0];
+        if (!item) return { clicked: 0, pendingKeys: [] };
+        const key = item.id ? 'id:' + item.id : 'url:' + item.url;
+        const attempts = window.__JK_PM_AVANT_DETAIL_CLICKS || (window.__JK_PM_AVANT_DETAIL_CLICKS = Object.create(null));
+        if ((attempts[key] || 0) >= 3) return { clicked: 0, pendingKeys: [] };
+        const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+        const visible = node => {
+            const rect = node.getBoundingClientRect(), style = window.getComputedStyle(node);
+            return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const scope = document.querySelector('main') || document.body;
+        const controls = Array.from(scope.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"], [class*="andes-button"]'));
+        const control = controls.find(node => {
+            if (!visible(node) || node.matches('[disabled], [aria-disabled="true"]')
+                || node.closest('[aria-disabled="true"], [class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"], a[href]')) return false;
+            const text = normalize([node.textContent, node.value, node.getAttribute('aria-label'), node.getAttribute('title')].join(' '));
+            if (/login|entrar|vincular|baixar|download|imagens?|images?|fotos?|photos?|zip|exportar|salvar|gallery|galeria|assinar|suporte/.test(text)) return false;
+            return /informacoes?\s+avant|informacoes?\s+avantpro|avantpro\s+info|carregar\s+dados\s+avant|dados\s+avantpro|dados\s+avant\s*pro/.test(text);
+        });
+        if (!control) return { clicked: 0, pendingKeys: [] };
+        attempts[key] = (attempts[key] || 0) + 1;
+        control.scrollIntoView({ block: 'center', inline: 'center' });
+        control.click();
+        await new Promise(resolve => setTimeout(resolve, 160));
+        return { clicked: 1, pendingKeys: [key] };
     }
 
     function create(options) {
@@ -603,14 +665,20 @@
         const snapshotScript = options => {
             const seller = options && options.seller || {};
             const extract = render('extrair-anuncios-avant-pro-dom-webview-1', { p0: String(Number.MAX_SAFE_INTEGER) }).trim().replace(/;\s*$/, '');
-            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')();const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
+            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + JSON.stringify({ detail: !!(options && options.detail) }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
         };
-        const clickAvantScript = () => {
+        const clickAvantScript = options => {
+            if (options && options.detail) return '/*pm:avant-click*/(' + clickDetailAvant.toString() + ')(' + JSON.stringify(options.pending || []) + ')';
             const script = render('acionar-cards-avant-pro-fila-webview-1', { p0: '1', p1: '3', p2: '4500', p3: 'true', p4: 'true' }).trim().replace(/;\s*$/, '');
-            return '/*pm:avant-click*/(' + withItemLinks.toString() + ')(()=>(' + script + '))';
+            const pending = options && Array.isArray(options.pending) ? options.pending : null;
+            const keys = pending && pending.map(item => item.id ? 'id:' + String(item.id).replace('-', '').toUpperCase() : 'url:' + String(item.url || item.key || ''));
+            return '/*pm:avant-click*/(async function(){const previous=window.__JK_PM_AVANT_PENDING_KEYS;try{'
+                + (keys ? 'window.__JK_PM_AVANT_PENDING_KEYS=Object.fromEntries(' + JSON.stringify(keys) + '.map(key=>[key,true]));' : '')
+                + 'return await (' + withItemLinks.toString() + ')(()=>(' + script + '));'
+                + '}finally{if(previous===undefined)delete window.__JK_PM_AVANT_PENDING_KEYS;else window.__JK_PM_AVANT_PENDING_KEYS=previous;}})()';
         };
         const scrollScript = target => '/*pm:scroll*/(function(){const el=document.scrollingElement||document.documentElement;const y=' + (target === 'top' ? '0' : 'Math.min(el.scrollHeight, (window.scrollY||el.scrollTop||0)+Math.max(350,window.innerHeight*0.75))') + ';window.scrollTo(0,y);return {y:y,height:el.scrollHeight};})()';
-        const prepareScript = () => '/*pm:prepare*/window.__JK_PM_AVANT_STRUCTURED_CACHE=Object.create(null);' + render('coletar-primeira-pagina-favoritos-controlada-1', {});
+        const prepareScript = () => '/*pm:prepare*/window.__JK_PM_AVANT_STRUCTURED_CACHE=Object.create(null);window.__JK_PM_AVANT_DETAIL_CLICKS=Object.create(null);' + render('coletar-primeira-pagina-favoritos-controlada-1', {});
         const nextCategoryPageScript = expectedUrl => '/*pm:next-category*/(' + clickNextCategoryPage.toString() + ')(' + JSON.stringify(String(expectedUrl || '')) + ')';
         return Object.freeze({ discoveryScript, sellerInfoScript: discoveryScript, snapshotScript, clickAvantScript, scrollScript, prepareScript, nextCategoryPageScript });
     }

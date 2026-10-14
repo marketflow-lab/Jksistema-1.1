@@ -83,6 +83,21 @@
                             return anchor.closest('li, article, section, div') || anchor;
                         }
                     };
+                    // Opt-in identity uses the listing wid before the catalog product ID.
+                    var pmCardData = function (card) {
+                        if (!window.__JK_PM_AVANT_PENDING_KEYS) return null;
+                        var href = productHref(card);
+                        var parsed;
+                        try { parsed = new URL(href, location.href); } catch (_pmUrlErr) { return { key: '' }; }
+                        parsed.hash = '';
+                        ['tracking_id', 'position', 'polycard_client', 'sid', 'reco_id', 'searchVariation'].forEach(function (key) { parsed.searchParams.delete(key); });
+                        var explicit = String(card && card.getAttribute && (card.getAttribute('data-item-id') || card.getAttribute('data-id')) || '');
+                        var match = parsed.href.match(/[?&](?:wid|item_id)=(MLB\\d{6,})(?:[&#]|$)/i)
+                            || explicit.match(/\\b(MLB-?\\d{6,})\\b/i)
+                            || parsed.href.match(/\\b(MLB-\\d{6,})\\b/i);
+                        var id = match ? match[1].replace('-', '').toUpperCase() : '';
+                        return { id: id, mlb: id, link: parsed.href, key: id ? 'id:' + id : 'url:' + parsed.href };
+                    };
                     var cards = [];
                     var cardsPorKey = {};
                     var debugFila = {
@@ -115,7 +130,8 @@
                     };
                     var incluirCard = function (card) {
                         if (!card) return false;
-                        var key = keyCard(card);
+                        var pmIdentity = pmCardData(card);
+                        var key = pmIdentity ? pmIdentity.key : keyCard(card);
                         if (!key) {
                             debugFila.skippedNoKey += 1;
                             return false;
@@ -185,22 +201,28 @@
                     for (var c = 0; c < cards.length && hasTime(550); c += 1) {
                         var card = cards[c];
                         var baseParaCache = baseCardDataLeve(card);
+                        var pmIdentity = pmCardData(card);
+                        if (pmIdentity) baseParaCache = Object.assign({}, baseParaCache, pmIdentity);
                         var key = baseParaCache.mlb ? ('id:' + baseParaCache.mlb) : (baseParaCache.link ? ('url:' + baseParaCache.link) : keyCard(card));
                         var tentativas = Number((store[key] && store[key].count) || store[key] || 0);
                         var canonicalCache = baseParaCache.mlb ? ('mlb:' + baseParaCache.mlb) : (baseParaCache.link ? ('link:' + String(baseParaCache.link).toLowerCase()) : '');
                         var cacheAtual = canonicalCache && window.__JK_AVANT_CARD_DATA_CACHE && window.__JK_AVANT_CARD_DATA_CACHE[canonicalCache];
                         var cacheTemDados = !!(cacheAtual && (cacheAtual.vendasFonte || cacheAtual.vendedorFonte || cacheAtual.data_criacao || cacheAtual.media_mensal || cacheAtual.visitas));
                         verificarTentativa();
-                        if (typeof __jkFavoritosConfirmedKeys !== 'undefined' && __jkFavoritosConfirmedKeys.indexOf(String(canonicalCache).toLowerCase()) >= 0) {
+                        // Pesquisa de Mercado opts in only while requesting missing metrics.
+                        var pmPendingKeys = window.__JK_PM_AVANT_PENDING_KEYS;
+                        var pmNeedsEnrichment = !!(pmPendingKeys && Object.prototype.hasOwnProperty.call(pmPendingKeys, key));
+                        if (pmPendingKeys && !pmNeedsEnrichment) continue;
+                        if (!pmNeedsEnrichment && typeof __jkFavoritosConfirmedKeys !== 'undefined' && __jkFavoritosConfirmedKeys.indexOf(String(canonicalCache).toLowerCase()) >= 0) {
                           resolvedKeys.push(key);
                           continue;
                         }
                         if (!key || tentativas >= maxTentativasPorCard) continue;
-                        if (cacheTemDados) {
+                        if (!pmNeedsEnrichment && cacheTemDados) {
                             resolvedKeys.push(key);
                             continue;
                         }
-                        if (cardTemDadosAvant(card)) {
+                        if (!pmNeedsEnrichment && cardTemDadosAvant(card)) {
                             var capturadoExistente = await capturarPainelAvantParaCard(card, '', baseParaCache);
                             verificarTentativa();
                             if (capturadoExistente) {

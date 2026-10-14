@@ -14,6 +14,16 @@ assert.equal(ranking.calculateMetrics({ vendas: 100, data_criacao: created, medi
 assert.equal(ranking.calculateMetrics({ vendas: 100, media_mensal: '7,5' }, now).media, 7.5);
 assert.equal(ranking.calculateMetrics({ vendas: null, data_criacao: created, media_mensal: 4 }, now).media, 4);
 assert.equal(ranking.calculateMetrics({ vendas: 1, data_criacao: new Date(now + 86400000).toISOString(), media_mensal: 3 }, now).media, 3);
+assert.equal(collector.isComplete({ vendas: null, media_mensal: 4, rankable: true }, now), false, 'media sozinha nao representa coleta completa');
+assert.equal(collector.isComplete({ vendas: 0, media_mensal: 0, rankable: true }, now), true, 'zeros informados continuam completos');
+assert.equal(collector.isComplete({ vendas: 100, data_criacao: created, rankable: true }, now), true, 'total e data permitem media calculada');
+assert.equal(collector.isComplete({ vendas: 100, media_mensal: 4, rankable: false }, now), false, 'seller ou catalogo bloqueado nao completa');
+const derived = collector.finalizeListings([{ vendas: 100, data_criacao: created, vendasFonte: 'avantpro_dom_estruturado', rankable: true }], now)[0];
+assert.equal(derived.media_vendas_mensal, 100);
+assert.equal(derived.media_mensal_fonte, 'calculado_vendas_dias_avantpro');
+assert.equal(derived.media_vendas_mensal_fonte, derived.media_mensal_fonte);
+assert.equal(collector.finalizeListings([{ vendas: null, media_mensal: 4, rankable: true }], now)[0].rank, null);
+
 const ranked = ranking.rankListings([
     { id: 'unknown', vendas: 999999, media_mensal: 9999, rankable: false },
     { id: 'b', vendas: 50, media_mensal: 10, posicao: 2, ordem_coleta: 2 },
@@ -166,6 +176,17 @@ async function run() {
     assert.equal((await collector.collectFirstPage({ browser: login, now: login.now, wait: login.wait })).authRequired, true);
     const changed = fakeBrowser({ changed: true });
     assert.equal((await collector.collectFirstPage({ browser: changed, now: changed.now, wait: changed.wait })).reason, 'page_changed');
+    const wrongItem = fakeBrowser({ count: 1, lazy: false, delayed: false });
+    const wrongDetail = await collector.collectDetail({ browser: wrongItem, expectedItem: { id: 'MLB9999999' }, now: wrongItem.now, wait: wrongItem.wait, settleMs: 20, missingWaitMs: 40, pollMs: 10 });
+    assert.equal(wrongDetail.anuncios.length, 0, 'complemento nao aceita dados de outro anuncio');
+    const abortAfterNavigation = new AbortController();
+    let afterNavigationReads = 0;
+    await assert.rejects(collector.collectDetail({ browser: {
+        navigate: async () => abortAfterNavigation.abort(),
+        getURL: () => 'https://produto.mercadolivre.com.br/MLB-1000000-fixture',
+        executeJavaScript: async () => { afterNavigationReads += 1; return {}; }
+    }, url: 'https://produto.mercadolivre.com.br/MLB-1000000-fixture', signal: abortAfterNavigation.signal }), { name: 'AbortError' });
+    assert.equal(afterNavigationReads, 0, 'cancelamento durante navigate impede scripts de complemento');
     const abort = new AbortController();
     abort.abort();
     await assert.rejects(collector.collectFirstPage({ browser: fakeBrowser(), signal: abort.signal }), { name: 'AbortError' });

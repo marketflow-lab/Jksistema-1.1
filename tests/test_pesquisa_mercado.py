@@ -415,13 +415,86 @@ def test_avant_provenance_and_seller_specific_catalog_metrics(store):
     assert rows["MLB9"]["rank"] is not None
 
 
-def test_direct_monthly_avant_average_without_total_sales_is_rankable(store):
+def test_direct_monthly_avant_average_waits_for_total_sales(store):
     job = store.start("cliente-a", "alice")
     publish(store, job, [ad(1, monthly=50, sales=None, vendasFonte="", media_mensal_fonte="avantpro_media", data_criacao=""), ad(2, monthly=50, sales=0)])
     rows = store.ranking(job["id"], "cliente-a", "alice")["items"]
     assert [row["id"] for row in rows] == ["MLB2", "MLB1"]
-    assert all(row["rankable"] for row in rows)
+    assert rows[0]["rankable"] is True
+    assert rows[1]["rankable"] is False
+    assert rows[1]["rank"] is None
     assert rows[1]["vendas"] is None
+    assert rows[1]["media_vendas_mensal"] == 50
+    assert "Quantidade de vendas" in rows[1]["erro"]
+
+
+def test_catalog_warning_keeps_missing_metrics_visible(store):
+    job = store.start("cliente-a", "alice")
+    publish(store, job, [ad(catalogo=True, monthly=None), ad(2, catalogo=True, monthly=10, sales=None, vendasFonte="", media_mensal_fonte="avantpro_media")])
+    rows = {row["id"]: row for row in store.ranking(job["id"], "cliente-a", "alice")["items"]}
+    assert "catalogo" in rows["MLB1"]["erro"]
+    assert "Media mensal" in rows["MLB1"]["erro"]
+    assert "catalogo" in rows["MLB2"]["erro"]
+    assert "Quantidade de vendas" in rows["MLB2"]["erro"]
+    assert all(not row["rankable"] for row in rows.values())
+
+
+def test_complete_metrics_require_avant_total_source_and_preserve_monthly_alias(store):
+    job = store.start("cliente-a", "alice")
+    publish(store, job, [
+        ad(1, sales=100, vendasFonte="mercadolivre", media_mensal_fonte="avantpro_media"),
+        ad(2, monthly=0, sales=0, media_vendas_mensal_fonte="calculado_vendas_dias_avantpro"),
+    ])
+    rows = {row["id"]: row for row in store.ranking(job["id"], "cliente-a", "alice")["items"]}
+    assert rows["MLB1"]["rankable"] is False
+    assert "Fonte da quantidade" in rows["MLB1"]["erro"]
+    assert rows["MLB2"]["rankable"] is True
+    assert rows["MLB2"]["vendas"] == rows["MLB2"]["media_vendas_mensal"] == 0
+    assert rows["MLB2"]["media_mensal_fonte"] == "calculado_vendas_dias_avantpro"
+
+
+def test_partial_observation_becomes_ranked_after_missing_total_is_collected(store):
+    job = store.start("cliente-a", "alice")
+    first = publish(store, job, [ad(monthly=10, sales=None, media_mensal_fonte="avantpro_media")])
+    assert first["counters"]["pending"] == 1
+    completed = publish(store, job, [ad(monthly=10, sales=100, media_mensal_fonte="avantpro_media")])
+    assert completed["counters"]["pending"] == 0
+    row = store.ranking(job["id"], "cliente-a", "alice")["items"][0]
+    assert row["rankable"] is True
+    assert row["vendas"] == 100
+    assert row["media_vendas_mensal"] == 10
+
+
+@pytest.mark.parametrize("monthly", [None, 10])
+@pytest.mark.parametrize("proof", [{"avant_seller_id": "999"}, {"avant_seller_perfil_url": "https://example.test/perfil/LOJA"}])
+def test_explicit_avant_seller_conflict_blocks_even_non_catalog_metrics(store, monthly, proof):
+    job = store.start("cliente-a", "alice")
+    publish(store, job, [ad(monthly=monthly, **proof)])
+    row = store.ranking(job["id"], "cliente-a", "alice")["items"][0]
+    assert row["rankable"] is False
+    assert "vendedor nas metricas" in row["erro"]
+    if monthly is None:
+        assert "Media mensal" in row["erro"]
+
+
+def test_partial_metric_warning_preserves_observed_identity_failure(store):
+    job = store.start("cliente-a", "alice")
+    observed = "Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado."
+    publish(store, job, [ad(monthly=None, rankable=False, erro=observed)])
+    row = store.ranking(job["id"], "cliente-a", "alice")["items"][0]
+    assert row["rankable"] is False
+    assert observed in row["erro"]
+    assert "Media mensal" in row["erro"]
+
+
+def test_user_product_url_does_not_imply_aggregate_catalog_sales(store):
+    job = store.start("cliente-a", "alice")
+    url = "https://www.mercadolivre.com.br/produto/up/MLBU123456?wid=MLB654321"
+    publish(store, job, [ad(id="MLBU123456", url=url, catalogo=False)])
+    row = store.ranking(job["id"], "cliente-a", "alice")["items"][0]
+    assert row["id"] == "MLB654321"
+    assert row["catalogo"] is False
+    assert row["rankable"] is True
 
 
 @pytest.mark.parametrize("query,expected_id", [

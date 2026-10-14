@@ -72,6 +72,8 @@ async function run() {
             };
             window.addEventListener('scroll', append);
         }, Array.from({ length: 113 }, (_, i) => card(i + 8, avant(i + 9))).join(''));
+        await page.bringToFront();
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         const lazyAdapter = { getURL: () => page.url(), executeJavaScript: code => page.evaluate(code), navigate: () => { throw new Error('nao navegar na coleta'); } };
         const lazy = await collectFirstPage({ browser: lazyAdapter, seller, settleMs: 100, pollMs: 30, timeoutMs: 25000 });
         assert.equal(lazy.anuncios.length, 121, 'lazy loading real precisa materializar todos os cards da primeira pagina');
@@ -146,7 +148,8 @@ async function run() {
         await page.setContent(fixture('<li class="ui-search-layout__item"><article class="poly-card"><a class="poly-component__title" href="https://www.mercadolivre.com.br/kit/up/MLBU5102939588#polycard_client%3Dsearch%26wid%3DMLB5181894003">Kit Tivui</a>' + avant(50, 'BAEHFCGBD5542', 'Vendas do produto', '<a href="https://www.mercadolivre.com.br/loja/tivui">Vendedor</a>') + '</article></li>'));
         const officialCatalog = await page.evaluate(scripts.snapshotScript({ seller: officialSeller }));
         assert.equal(officialCatalog.anuncios[0].vendas, 50, 'wid codificado continua associado ao parser Avant');
-        assert.equal(officialCatalog.anuncios[0].rankable, false, 'Vendas do produto continua pendente em catalogo mesmo com perfil oficial');
+        assert.equal(officialCatalog.anuncios[0].catalogo, false, 'User Products Page nao prova que o anuncio e de catalogo');
+        assert.equal(officialCatalog.anuncios[0].rankable, true, 'UP do vendedor confirmado usa o total estruturado do produto');
         const currentPrice = (integer, cents, old) => `<s class="poly-price__old"><span class="andes-money-amount"><span class="andes-money-amount__fraction">${old}</span></span></s><div class="poly-price__current"><span class="andes-money-amount"><span class="andes-money-amount__fraction">${integer}</span><span class="andes-money-amount__cents">${cents}</span></span></div>`;
         const liveRows = liveAvantRow('Vendas do catálogo', '1.000') + liveAvantRow('Vendas estimadas', '4.372') + liveAvantRow('Ritmo atual (vendas/mês)', '1.566') + liveAvantRow('Anúncio criado em', '24/06/2026', '<span class="avantpro-creation-time-inline">Há 102 dias</span>');
         await page.setContent(fixture('<li class="ui-search-layout__item"><article class="poly-card"><a class="poly-component__title" href="https://www.mercadolivre.com.br/inversor/up/MLBU7032306368?wid=MLB7032306368">Inversor Carro 12v/24v Turbo Tomada De Lightning Tipo C 100w</a>' + currentPrice('67', '63', '119') + '<section class="avantpro-product-info">' + liveRows + '</section></article></li>'));
@@ -157,7 +160,8 @@ async function run() {
         assert.equal(normalizedLive.anuncios[0].vendas_estimadas, 4372, 'estimativa e preservada separadamente do total observado');
         assert.equal(normalizedLive.anuncios[0].media_mensal, 1566, 'ritmo PT-BR com ponto representa milhar');
         assert.equal(normalizedLive.anuncios[0].data_criacao, '24/06/2026', 'idade inline nao pode substituir a data de criacao');
-        assert.equal(normalizedLive.anuncios[0].rankable, false, 'catalogo sem metricas especificas do vendedor nao entra no ranking');
+        assert.equal(normalizedLive.anuncios[0].catalogo, true, 'rotulo explicito de vendas de catalogo preserva protecao tambem na rota UP');
+        assert.equal(normalizedLive.anuncios[0].rankable, false, 'total explicitamente agregado continua sem atribuicao ao vendedor');
         assert.equal(normalizedLive.anuncios[0].status, 'catalogo_sem_evidencia_vendedor');
         console.log('Reproducao parser Favoritos anterior, labels com ponto de milhar:', JSON.stringify({
             raw: originalLive.anuncios.map(item => ({ vendas: item.vendas, estimadas: item.vendas_estimadas, ritmo: item.media_mensal, criacao: item.data_criacao })),
@@ -171,7 +175,7 @@ async function run() {
         assert.equal(publicProduct.anuncios[0].data_criacao, '03/09/2026');
         assert.equal(publicProduct.anuncios[0].vendedor, 'BAEHFCGBD5542');
         assert.equal(publicProduct.anuncios[0].preco, 55.44);
-        assert.equal(publicProduct.anuncios[0].rankable, false, 'catalogo de produto com nickname sozinho nao prova vendas especificas');
+        assert.equal(publicProduct.anuncios[0].rankable, true, 'UP na listagem oficial confirmada pode rankear com total e media');
         await page.setContent(fixture(card(9, '<section class="avantpro-product-info">' + liveProductRows + '</section>')));
         const plainProduct = await page.evaluate(scripts.snapshotScript({ seller: officialSeller }));
         assert.equal(plainProduct.anuncios[0].rankable, true);
@@ -179,11 +183,13 @@ async function run() {
         assert.equal(plainProduct.anuncios[0].data_criacao, '03/09/2026');
         assert.equal(plainProduct.anuncios[0].media_mensal, 99);
         await page.setContent(fixture(card(9, '<section class="avantpro-product-info">' + liveAvantRow('Vendas estimadas', '4.372') + liveAvantRow('Ritmo atual (vendas/mês)', '1.566') + liveAvantRow('Anúncio criado em', '31/02/2026') + '</section>')));
+        await page.evaluate(scripts.prepareScript()); // A new independent fixture starts a new collection.
         const estimatesOnly = await page.evaluate(scripts.snapshotScript({ seller: officialSeller }));
         assert.equal(estimatesOnly.anuncios[0].vendas, null, 'vendas estimadas nunca substituem total ausente');
         assert.equal(estimatesOnly.anuncios[0].media_mensal, 1566);
         assert.equal(estimatesOnly.anuncios[0].data_criacao, '', 'data calendario invalida e rejeitada');
-        assert.equal(estimatesOnly.anuncios[0].rankable, true, 'sem total pode usar ritmo Avant explicito quando vendedor confirmado');
+        assert.equal(estimatesOnly.anuncios[0].rankable, false, 'media sem quantidade nao encerra a coleta de dados');
+        assert.equal(estimatesOnly.anuncios[0].status, 'sem_quantidade_avant');
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
 
         await page.setContent(fixture(card(1, '<span>+10 mil vendidos</span>')));
@@ -221,6 +227,110 @@ async function run() {
         const floating = await collectFirstPage({ browser: adapter, seller, settleMs: 100, missingWaitMs: 1500, timeoutMs: 15000, pollMs: 100 });
         assert.deepEqual(floating.anuncios.map(item => [item.id, item.vendas]).sort(), [['MLB10000021', 1200], ['MLB10000022', 3400]], 'painel flutuante fica associado somente ao card clicado e confirmado');
         assert.equal(floating.incomplete, false, JSON.stringify(floating));
+
+        // Partial rows must request missing metrics without changing Favoritos' default policy.
+        const partialRows = '<section class="avantpro-product-info">' + liveAvantRow('Vendas do produto', '100') + '</section>';
+        const partialButton = '<button class="avantpro-button" title="Informacoes Avantpro">Informacoes Avantpro</button>';
+        await page.setContent(fixture(card(31, partialRows + partialButton)));
+        await page.evaluate(() => { window.pmFixtureClicks = 0; document.querySelector('button').onclick = () => { window.pmFixtureClicks += 1; }; });
+        await page.evaluate(scripts.prepareScript());
+        const legacyPartial = await page.evaluate(originalAvant.render('acionar-cards-avant-pro-fila-webview-1', { p0: '1', p1: '3', p2: '4500', p3: 'true', p4: 'true' }));
+        assert.equal(legacyPartial.clicked, 0, 'Favoritos sem opt-in conserva criterio anterior');
+        assert.equal(await page.evaluate(() => window.pmFixtureClicks), 0);
+        await page.evaluate(() => {
+            document.querySelector('button').onclick = () => {
+                window.pmFixtureClicks += 1;
+                setTimeout(() => document.querySelector('.avantpro-product-info').insertAdjacentHTML('beforeend',
+                    '<div class="avantpro-product-info-row"><span class="avantpro-product-info-row-label">Ritmo atual</span><span class="avantpro-product-info-row-value">4,5</span></div>'), 30);
+            };
+        });
+        const enrichedPartial = await collectFirstPage({ browser: adapter, seller, settleMs: 80, missingWaitMs: 1500, pollMs: 80, timeoutMs: 10000 });
+        assert.equal(enrichedPartial.incomplete, false, JSON.stringify(enrichedPartial));
+        assert.equal(enrichedPartial.anuncios[0].vendas, 100);
+        assert.equal(enrichedPartial.anuncios[0].media_vendas_mensal, 4.5);
+        assert.equal(await page.evaluate(() => window.pmFixtureClicks), 1, 'dados parciais deixam de impedir o clique de complemento');
+        assert.equal(await page.evaluate(() => '__JK_PM_AVANT_PENDING_KEYS' in window), false, 'opt-in nao persiste depois do clique');
+
+        await page.setContent(fixture(card(32, '<section class="avantpro-product-info">' + liveAvantRow('Ritmo atual', '8') + '</section>' + partialButton)));
+        await page.evaluate(html => { document.querySelector('button').onclick = () => setTimeout(() => document.querySelector('.avantpro-product-info').insertAdjacentHTML('beforeend', html), 30); }, liveAvantRow('Vendas do produto', '0'));
+        const monthlyPartial = await collectFirstPage({ browser: adapter, seller, settleMs: 80, missingWaitMs: 1500, pollMs: 80, timeoutMs: 10000 });
+        assert.equal(monthlyPartial.incomplete, false, JSON.stringify(monthlyPartial));
+        assert.equal(monthlyPartial.anuncios[0].vendas, 0, 'zero informado e quantidade valida');
+        assert.equal(monthlyPartial.anuncios[0].media_vendas_mensal, 8);
+
+        await page.setContent(fixture(card(33, '<section class="avantpro-product-info">' + liveAvantRow('Ritmo atual', '8') + '</section>')));
+        const missingQuantity = await collectFirstPage({ browser: adapter, seller, settleMs: 40, missingWaitMs: 150, pollMs: 40, timeoutMs: 3000 });
+        assert.equal(missingQuantity.incomplete, true);
+        assert.equal(missingQuantity.anuncios[0].vendas, null, 'ritmo mensal nunca vira quantidade inventada');
+        assert.equal(missingQuantity.anuncios[0].rank, null);
+
+        // Failed queue execution must restore the caller's prior scope too.
+        await page.evaluate(() => { window.__JK_PM_AVANT_PENDING_KEYS = { caller: true }; });
+        const rejectingScripts = scripts.create({ renderAvantScript: () => '(async function(){throw new Error("fixture queue failure");})()' });
+        await assert.rejects(page.evaluate(rejectingScripts.clickAvantScript({ pending: [{ id: 'MLB10000033' }] })), /fixture queue failure/);
+        assert.deepEqual(await page.evaluate(() => window.__JK_PM_AVANT_PENDING_KEYS), { caller: true });
+        await page.evaluate(() => { delete window.__JK_PM_AVANT_PENDING_KEYS; });
+
+        // Catalog product IDs must not override wid or collapse two listing identities.
+        const catalogCard = (id, total, monthly) => '<li class="ui-search-layout__item"><article class="poly-card">'
+            + '<a class="poly-component__title" href="https://www.mercadolivre.com.br/produto/p/MLB9999999?wid=MLB' + id + '">Catalogo ' + id + '</a>'
+            + '<section class="avantpro-product-info">' + liveAvantRow('Vendas do anuncio', total)
+            + (monthly === null ? '' : liveAvantRow('Ritmo atual', monthly))
+            + liveAvantRow('Nome do vendedor', 'Loja Alvo', '<a href="https://lista.mercadolivre.com.br/_CustId_123456">Vendedor</a>') + '</section>' + partialButton + '</article></li>';
+        await page.setContent(fixture(catalogCard('10000041', '41', null) + catalogCard('10000042', '42', '7')));
+        await page.evaluate(html => {
+            window.pmClickedListings = [];
+            document.querySelectorAll('button').forEach(button => { button.onclick = () => {
+                const card = button.closest('article');
+                window.pmClickedListings.push(card.querySelector('.poly-component__title').href);
+                setTimeout(() => card.querySelector('.avantpro-product-info').insertAdjacentHTML('beforeend', html), 30);
+            }; });
+        }, liveAvantRow('Ritmo atual', '6'));
+        const catalogEnriched = await collectFirstPage({ browser: adapter, seller, settleMs: 80, missingWaitMs: 1500, pollMs: 80, timeoutMs: 10000 });
+        assert.equal(catalogEnriched.incomplete, false, JSON.stringify(catalogEnriched));
+        assert.deepEqual(catalogEnriched.anuncios.map(item => item.id).sort(), ['MLB10000041', 'MLB10000042']);
+        assert.deepEqual(await page.evaluate(() => window.pmClickedListings), ['https://www.mercadolivre.com.br/produto/p/MLB9999999?wid=MLB10000041']);
+
+        // An explicit detail uses the selected PDP, never a recommendation card.
+        await page.goto('https://produto.mercadolivre.com.br/MLB-10000034-produto-_JM');
+        await page.setContent('<main><h1 class="ui-pdp-title">Produto de detalhe</h1><a class="ui-pdp-seller__link" href="https://lista.mercadolivre.com.br/_CustId_123456">Loja Alvo</a>'
+            + '<section class="avantpro-product-info">' + liveAvantRow('Vendas do produto', '40') + '</section>'
+            + '<button disabled class="avantpro-button" title="Informacoes Avantpro">Informacoes Avantpro</button>' + partialButton
+            + '<section class="same-seller">' + card(35, avant(999)) + '</section></main>');
+        await page.evaluate(html => { document.querySelector('button:not([disabled])').onclick = () => setTimeout(() => document.querySelector('.avantpro-product-info').insertAdjacentHTML('beforeend', html), 30); }, liveAvantRow('Ritmo atual', '6'));
+        const detailCollector = require('../static/pesquisa-mercado/shared-collector');
+        const detail = await detailCollector.collectDetail({ browser: adapter, seller, expectedItem: { id: 'MLB10000034' }, settleMs: 80, missingWaitMs: 1500, pollMs: 80, timeoutMs: 10000 });
+        assert.equal(detail.incomplete, false, JSON.stringify(detail));
+        assert.deepEqual(detail.anuncios.map(item => item.id), ['MLB10000034']);
+        assert.equal(detail.anuncios[0].vendas, 40);
+        assert.equal(detail.anuncios[0].media_vendas_mensal, 6);
+        assert.equal(detail.primeira_pagina, false);
+        await page.evaluate(html => {
+            const aside = document.createElement('aside'); aside.className = 'avantpro-panel';
+            aside.innerHTML = '<a href="https://produto.mercadolivre.com.br/MLB-10000999-outro-_JM">Outro produto</a><section class="avantpro-product-info">' + html + '</section>';
+            document.body.appendChild(aside);
+        }, liveAvantRow('Vendas do produto', '999') + liveAvantRow('Ritmo atual', '999') + liveAvantRow('Nome do vendedor', 'Outro vendedor', '<a href="https://lista.mercadolivre.com.br/_CustId_999">Vendedor</a>'));
+        const boundedDetail = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+        assert.equal(boundedDetail.anuncios[0].vendas, 40, 'painel explicitamente de outro produto nao substitui dados do PDP selecionado');
+        assert.equal(boundedDetail.anuncios[0].media_mensal, 6);
+        assert.equal(boundedDetail.anuncios[0].seller_confirmed, true, 'proof do painel de outro produto nao conflita com o vendedor principal');
+        await page.evaluate(() => { document.querySelector('aside').remove(); });
+        await page.evaluate(scripts.prepareScript());
+        await page.evaluate(html => { document.querySelector('.avantpro-product-info').innerHTML = html; }, liveAvantRow('Vendas do produto', '40'));
+        const firstDetailSnapshot = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+        assert.equal(firstDetailSnapshot.anuncios[0].vendas, 40);
+        assert.equal(firstDetailSnapshot.anuncios[0].media_mensal, null);
+        await page.evaluate(html => { document.querySelector('.avantpro-product-info').innerHTML = html; }, liveAvantRow('Ritmo atual', '6'));
+        const secondDetailSnapshot = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+        assert.equal(secondDetailSnapshot.anuncios[0].vendas, 40, 'total confirmado permanece quando o painel exibe apenas a media depois');
+        assert.equal(secondDetailSnapshot.anuncios[0].media_mensal, 6);
+        assert.equal(secondDetailSnapshot.anuncios[0].rankable, true);
+        await page.evaluate(html => { document.querySelector('.avantpro-product-info').innerHTML = html; }, liveAvantRow('Ritmo atual', '999') + liveAvantRow('Nome do vendedor', 'Outro vendedor', '<a href="https://lista.mercadolivre.com.br/_CustId_999">Vendedor</a>'));
+        const conflictingDetailSnapshot = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+        assert.equal(conflictingDetailSnapshot.anuncios[0].rankable, false, 'cache parcial nao permite metricas de vendedor divergente');
+        assert.equal(conflictingDetailSnapshot.anuncios[0].vendas, null, 'mudanca de vendedor invalida quantidade anterior do painel');
+
+        await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
 
         // Discovery is constrained to category and product elements, not arbitrary links.
         await page.goto('https://www.mercadolivre.com.br/categorias');

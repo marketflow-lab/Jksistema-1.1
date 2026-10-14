@@ -281,7 +281,7 @@ def _normalize_ad(raw: dict, seller: dict, original_index: int) -> tuple[str, di
         raise HTTPException(422, "Anuncio sem identificador ou link valido do Mercado Livre.")
     key = "id:" + item_id if item_id else "url:" + url
     source = _text(raw.get("vendasFonte"), 100).lower()
-    monthly_source = _text(raw.get("media_mensal_fonte"), 100).lower()
+    monthly_source = _text(raw.get("media_mensal_fonte") or raw.get("media_vendas_mensal_fonte"), 100).lower()
     sales = _number(raw.get("vendas"))
     monthly = _number(raw.get("media_vendas_mensal"))
     belongs = _matches_identity(
@@ -292,17 +292,34 @@ def _normalize_ad(raw: dict, seller: dict, original_index: int) -> tuple[str, di
     catalog_identified = _matches_identity(
         seller, raw.get("avant_seller_id"), raw.get("avant_seller_perfil_url"),
     )
-    avant = any(value in {"avant", "avant_pro", "avant-pro"} or value.startswith("avantpro") for value in (source, monthly_source))
-    reason = _text(raw.get("erro"), 600)
+    avant_identity_present = bool(_text(raw.get("avant_seller_id"), 80) or _text(raw.get("avant_seller_perfil_url"), 4000))
+    avant_identity_matches = not avant_identity_present or catalog_identified
+    sales_avant = source in {"avant", "avant_pro", "avant-pro"} or source.startswith("avantpro")
+    avant = sales_avant or monthly_source in {"avant", "avant_pro", "avant-pro"} or monthly_source.startswith("avantpro")
+    reasons = []
     if not belongs:
-        reason = "Identidade do vendedor do anuncio nao confirmada."
+        reasons.append("Identidade do vendedor do anuncio nao confirmada.")
+    elif not avant_identity_matches:
+        reasons.append("Identidade do vendedor nas metricas do Avant Pro divergente.")
     elif catalog and not catalog_identified:
-        reason = "Vendas de catalogo sem identificacao especifica do vendedor."
-    elif not avant:
-        reason = "Metricas do Avant Pro indisponiveis."
-    elif monthly is None:
-        reason = reason or "Metricas insuficientes do Avant Pro."
-    rankable = bool(belongs and (not catalog or catalog_identified) and avant and monthly is not None and raw.get("rankable") is not False)
+        reasons.append("Vendas de catalogo sem identificacao especifica do vendedor.")
+    if not avant:
+        reasons.append("Metricas do Avant Pro indisponiveis.")
+    else:
+        if sales is None:
+            reasons.append("Quantidade de vendas do Avant Pro indisponivel.")
+        elif not sales_avant:
+            reasons.append("Fonte da quantidade de vendas do Avant Pro nao confirmada.")
+        if monthly is None:
+            reasons.append("Media mensal do Avant Pro indisponivel; aguardando ritmo mensal ou vendas com data de criacao.")
+    # Both metrics must be present; a monthly-only observation remains pending.
+    # Keep the seller/catalog checks independent from missing metrics so the UI
+    # explains every blocking condition rather than masking partial collection.
+    rankable = bool(belongs and avant_identity_matches and (not catalog or catalog_identified) and sales_avant and sales is not None and monthly is not None and raw.get("rankable") is not False)
+    observed_reason = _text(raw.get("erro"), 600)
+    if not rankable and observed_reason and observed_reason not in " ".join(reasons):
+        reasons.append(observed_reason)
+    reason = _text(" ".join(reasons), 600)
     if not rankable and not reason:
         reason = "Metricas insuficientes do Avant Pro."
     ad = {
