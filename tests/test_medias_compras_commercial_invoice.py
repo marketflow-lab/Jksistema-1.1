@@ -20,7 +20,7 @@ from backend.services import cadastro_compatibilidade, cadastro_fornecedores, ca
 
 CONDICOES_COMERCIAIS_INVOICE = (
     "Commercial Use - Formal",
-    "Within 45 days after full payment",
+    "Within 45 days after full payment of Incoterms: - EXW",
     "Payment terms: 100% prepaid",
 )
 
@@ -233,7 +233,7 @@ def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monk
     assert sheet["I14"].value == 19
     assert sheet["A15"].value.splitlines()[0] == "Commercial Use - Formal"
     assert "Note - invoice JK48-18082026" in sheet["A15"].value.splitlines()
-    assert "Incoterms: EXW" in sheet["A15"].value
+    assert "Incoterms: - EXW" in sheet["A15"].value
     assert "Payment Currency: USD" in sheet["A15"].value
     assert sheet["E15"].value in (None, "")
     assert sheet["I15"].value == "Company stamp and signature"
@@ -480,6 +480,33 @@ def fornecedores_rodape_invoice(tmp_path, monkeypatch):
     return tmp_path, fornecedor
 
 
+@pytest.mark.parametrize(
+    ("campos_incoterm", "esperado"),
+    [
+        pytest.param({}, "EXW", id="ausente"),
+        pytest.param({"incoterm": None}, "EXW", id="nulo"),
+        pytest.param({"incoterm": ""}, "EXW", id="vazio"),
+        pytest.param({"incoterm": "   "}, "EXW", id="espacos"),
+        pytest.param({"incoterm": "EXW"}, "EXW", id="exw-explicito"),
+        pytest.param({"incoterm": "  FOB  "}, "FOB", id="fob-explicito-com-espacos"),
+    ],
+)
+def test_commercial_invoice_rodape_garante_incoterm_sem_mutar_lista(
+    fornecedores_rodape_invoice, campos_incoterm, esperado,
+):
+    lista = {"itens": [], **campos_incoterm}
+    lista_original = copy.deepcopy(lista)
+
+    sheet = _carregar_commercial_invoice(
+        excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a")
+    )
+
+    assert lista == lista_original
+    assert sheet["A13"].value.splitlines()[1] == (
+        f"Within 45 days after full payment of Incoterms: - {esperado}"
+    )
+
+
 def test_commercial_invoice_rodape_exporta_dados_bancarios_do_fornecedor(fornecedores_rodape_invoice):
     raiz, _registro = fornecedores_rodape_invoice
     arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
@@ -502,7 +529,7 @@ def test_commercial_invoice_rodape_exporta_dados_bancarios_do_fornecedor(fornece
     assert sheet["A15"].value.splitlines()[0] == "Commercial Use - Formal"
     assert sheet["A15"].value.splitlines() == [
         "Commercial Use - Formal",
-        "Within 45 days after full payment of Incoterms: EXW",
+        "Within 45 days after full payment of Incoterms: - EXW",
         "Payment terms: 100% prepaid",
         "Note - invoice JK48-18082026",
         "Payment Currency: EUR Payment Method: Bank transfer",

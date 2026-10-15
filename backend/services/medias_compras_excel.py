@@ -655,12 +655,12 @@ def _gerar_commercial_invoice_bytes(
         str(cadastro_fornecedor.get("moeda_pagamento") or "").strip()
         or str(lista.get("currency") or "").strip()
     )
-    incoterm = str(lista.get("incoterm") or "").strip()
+    incoterm = str(lista.get("incoterm") or "").strip() or "EXW"
     rodape_condicoes = "\n".join(
         texto
         for texto in (
             "Commercial Use - Formal",
-            "Within 45 days after full payment" + (f" of Incoterms: {incoterm}" if incoterm else ""),
+            f"Within 45 days after full payment of Incoterms: - {incoterm}",
             "Payment terms: 100% prepaid",
             f"Note - invoice {numero_invoice}" if numero_invoice else "",
             " ".join(filter(None, (
