@@ -29,7 +29,7 @@ function makeList(id, numeroInvoice) {
     status: 'Analisando orçamento',
     fornecedor_id: suppliers[0].id, supplier: suppliers[0].nome_empresa,
     nacionalizador_id: nationalizers[0].id, nacionalizador: nationalizers[0].nome_empresa,
-    itens: [{ SKU: 'DEMO-001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20 }],
+    itens: [{ NCM: '85437099', SKU: 'DEMO-001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20 }],
     total_itens: 1, total_quantidade: 2, total_m3: 0.4, total_usd: 20,
     created_at: '2026-10-05T12:00:00Z',
   };
@@ -121,7 +121,7 @@ async function installRoutes(page) {
         const list = state.lists.find(item => item.id === decodeURIComponent(match[1]));
         assert(list, 'Requisição deve consultar somente listas da fixture');
         if (method === 'GET') {
-          state.detailReads.push({ id: list.id, numero_invoice: list.numero_invoice });
+          state.detailReads.push({ id: list.id, numero_invoice: list.numero_invoice, somente_salvos: url.searchParams.get('somente_salvos') === 'true' });
           return json(route, { lista: structuredClone(list) });
         }
         if (method === 'PUT') {
@@ -472,8 +472,8 @@ async function testCommercialInvoiceWaitsForSave(page) {
   assert.strictEqual(download.suggestedFilename(), 'commercial_invoice_fixture.xlsx');
   await closedInvoice(page, 'invoice-main', 'INV-DOCUMENTO-ATUAL');
   assert.deepStrictEqual(state.detailReads.slice(beforeReads),
-    [{ id: 'invoice-main', numero_invoice: 'INV-DOCUMENTO-ATUAL' }],
-    'Consulta para geração deve enxergar somente o número já salvo');
+    [{ id: 'invoice-main', numero_invoice: 'INV-DOCUMENTO-ATUAL', somente_salvos: true }],
+    'Consulta para geração deve usar o snapshot atual sem recalcular impostos e frete');
   assert.deepStrictEqual(state.commercialInvoices.slice(beforeDocuments),
     [{ id: 'invoice-main', numero_invoice: 'INV-DOCUMENTO-ATUAL' }],
     'Documento deve ser gerado uma vez com a Invoice salva pelo blur');

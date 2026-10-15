@@ -121,7 +121,10 @@ async function routes(page) {
       if (detail) {
         const list = lists.find(item => item.id === decodeURIComponent(detail[1]));
         assert(list);
-        if (request.method() === 'GET') return json(route, { lista: { ...structuredClone(list), packing_list_ready: packingReady[list.id] } });
+        if (request.method() === 'GET') {
+          assert.strictEqual(url.searchParams.get('somente_salvos'), 'true', 'Preflight deve consultar apenas os dados salvos');
+          return json(route, { lista: { ...structuredClone(list), packing_list_ready: packingReady[list.id] } });
+        }
         assert.strictEqual(request.method(), 'PUT');
         const payload = request.postDataJSON();
         assert.strictEqual(Object.keys(payload).length, 1, 'Salvamento deve enviar apenas o campo editado');

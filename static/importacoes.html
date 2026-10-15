@@ -2590,17 +2590,40 @@
             return simples ? simples[1] : fallback;
         }
 
-        async function carregarListaCommercialInvoice(listaId) {
-            const resp = await fetch(
-                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId),
-                { method: 'GET', headers: { ...obterAuthHeaders() } }
-            );
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Não foi possível verificar os dados da lista.');
-            }
-            const data = await resp.json();
-            return data && data.lista ? data.lista : {};
+        async function carregarListaCommercialInvoice(listaId, prepararInvoice = false) {
+            const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId);
+            const consultar = async (somenteSalvos) => {
+                const resp = await fetch(url + (somenteSalvos ? '?somente_salvos=true' : ''), {
+                    method: 'GET', cache: 'no-store', headers: { ...obterAuthHeaders() }
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Não foi possível verificar os dados da lista.');
+                }
+                const data = await resp.json();
+                return data && data.lista ? data.lista : {};
+            };
+            const listaSalva = await consultar(true);
+            const precisaPrepararInvoice = prepararInvoice && (listaSalva.itens || []).some(item => {
+                if (!item || typeof item !== 'object') return true;
+                const ncm = [item.NCM, item.ncm]
+                    .find(valor => valor != null && String(valor).trim() !== '');
+                const ncmNormalizado = typeof ncm === 'string' && /^(?:\d+|\d{4}\.\d{2}\.\d{2})$/.test(ncm);
+                const camposNumericos = ['Quantidade', 'Valor unidade', 'Valor total'];
+                const numerosNormalizados = camposNumericos
+                    .every(campo => typeof item[campo] === 'number' && Number.isFinite(item[campo]) && item[campo] >= 0);
+                // O snapshot pode preencher campos canônicos a partir de aliases.
+                const aliasesNumericos = [
+                    'quantidade', 'quantity', 'qtd', 'qtde', 'qty', 'valorunidade', 'valorunitario',
+                    'cost', 'custo', 'preco', 'valortotal', 'subtotalusd', 'subtotal'
+                ];
+                const temAliasNumerico = Object.keys(item).some(campo =>
+                    !camposNumericos.includes(campo) && aliasesNumericos.includes(
+                        campo.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '')));
+                return !ncmNormalizado || !numerosNormalizados || temAliasNumerico;
+            });
+            // Conserva a normalização de valores e o preenchimento fiscal dos pedidos antigos.
+            return precisaPrepararInvoice ? consultar(false) : listaSalva;
         }
 
         async function persistirInvoiceLegadoSeNecessario(lista, listaId) {
@@ -2641,7 +2664,7 @@
                 if (!(await window.JKDataPedidoLista.aguardarSalvamento(listaId))) throw new Error('Salve a data do pedido antes de gerar o Commercial Invoice.');
                 const listaAtualizada = {
                     ...(lista || {}),
-                    ...(await carregarListaCommercialInvoice(listaId))
+                    ...(await carregarListaCommercialInvoice(listaId, true))
                 };
                 const invoice = obterInvoiceLista(listaAtualizada, listaId);
                 await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId);

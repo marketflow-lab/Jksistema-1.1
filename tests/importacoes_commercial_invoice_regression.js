@@ -12,7 +12,7 @@ const detalhe = fs.readFileSync(detalhePath, 'utf8');
 const requiredImportacoes = [
     'data-commercial-invoice',
     'async function baixarCommercialInvoice(lista, btn)',
-    'async function carregarListaCommercialInvoice(listaId)',
+    'async function carregarListaCommercialInvoice(listaId, prepararInvoice = false)',
     "btn.textContent = 'Verificando...'",
     'await carregarListaCommercialInvoice(listaId)',
     '/commercial-invoice',
@@ -154,6 +154,12 @@ async function executarDownloadComSucesso(listaAtualizada, listaInicial = {}) {
     });
     const botao = { textContent: 'Commercial Invoice', disabled: false };
     await ambiente.baixarCommercialInvoice({ id: listaId, ...listaInicial }, botao);
+    assert.strictEqual(chamadas[0].url,
+        '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '?somente_salvos=true',
+        'Verificacao deve consultar o snapshot salvo sem recalcular impostos e frete');
+    assert.strictEqual(chamadas[0].options.method, 'GET');
+    assert.strictEqual(chamadas[0].options.cache, 'no-store', 'Verificacao deve buscar os dados atuais');
+    assert.strictEqual(chamadas[0].options.headers.Authorization, 'Bearer teste');
     return { ambiente, botao, chamadas };
 }
 
@@ -188,7 +194,7 @@ async function testarPrecedenciaDoNomeDoArquivo() {
         nome_lista: 'JK 48',
         numero_invoice: 'INV 7/2026',
         itens: [],
-    });
+    }, { numero_invoice: 'INV-ANTIGA', nome_lista: 'Nome desatualizado' });
     assert.strictEqual(comInvoice.ambiente.links[0].download, 'commercial_invoice_INV_7_2026.xlsx');
 
     const somenteId = await executarDownloadComSucesso({
@@ -199,6 +205,47 @@ async function testarPrecedenciaDoNomeDoArquivo() {
     });
     assert.strictEqual(somenteId.ambiente.links[0].download, 'commercial_invoice_lista-por-id.xlsx');
     assert.notStrictEqual(somenteId.ambiente.links[0].download, 'commercial_invoice_.xlsx');
+}
+
+async function testarConsultaCompletaSomenteParaNcmPendente() {
+    const casos = [
+        [{ NCM: '8543.70.99' }, false],
+        [{ ncm: '85437099' }, false],
+        [{ NCM: '', ncm: '85437099' }, false],
+        [{ NCM: '0' }, false],
+        [{ NCM: 0 }, true],
+        [{ NCM: 85437099 }, true],
+        [{ NCM: 8543.7099 }, true],
+        [{}, true],
+        [{ NCM: 'pendente', ncm: '85437099' }, true],
+        [{ NCM: 'ABC123' }, true],
+        [{ NCM: '8543-70-99' }, true],
+        [{ 'Código NCM': '85437099' }, true],
+        ...['Quantidade', 'Valor unidade', 'Valor total'].flatMap(campo =>
+            [undefined, '', '2', -1, Infinity, NaN].map(valor => [{ NCM: '85437099', [campo]: valor }, true])),
+        ...['quantity', 'Cost', 'Subtotal', 'Quantity', 'QUANTIDADE', 'VALOR UNIDADE', 'Sub Total USD', 'PRÉÇO']
+            .map(campo => [{ NCM: '85437099', [campo]: 2 }, true]),
+        [{ NCM: '85437099', Quantidade: 0, 'Valor unidade': 0, 'Valor total': 0 }, false],
+    ];
+    for (const [item, esperaCompleta] of casos) {
+        const consultas = [];
+        const ambiente = criarAmbiente(async (url) => {
+            if (url.endsWith('/commercial-invoice')) return resposta({ blobSize: 12 });
+            consultas.push(url);
+            const somenteSalvos = url.endsWith('?somente_salvos=true');
+            return resposta({ json: { lista: {
+                id: 'ncm', numero_invoice: somenteSalvos ? 'INV-SALVA' : 'INV-ATUALIZADA',
+                itens: [{ SKU: '001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20,
+                    ...(somenteSalvos ? item : { NCM: '85437099' }) }],
+            } } });
+        });
+        await ambiente.baixarCommercialInvoice({ id: 'ncm', numero_invoice: 'INV-ANTIGA' }, { textContent: 'Commercial Invoice' });
+        const esperadas = ['/api/medias-compras/listas-pedidos/ncm?somente_salvos=true'];
+        if (esperaCompleta) esperadas.push('/api/medias-compras/listas-pedidos/ncm');
+        assert.deepStrictEqual(consultas, esperadas, 'Invoice legada deve consultar o detalhe completo para preservar valores e NCM: ' + JSON.stringify(item));
+        assert.strictEqual(ambiente.links[0].download, esperaCompleta ? 'commercial_invoice_INV-ATUALIZADA.xlsx' : 'commercial_invoice_INV-SALVA.xlsx');
+        assert.deepStrictEqual(ambiente.alertas, []);
+    }
 }
 
 async function testarPersistenciaOpcionalDaInvoiceLegada() {
@@ -240,6 +287,39 @@ async function testarErroRealDoEndpoint() {
     assert.strictEqual(botao.textContent, 'Commercial Invoice');
 }
 
+async function testarErroNaLeituraSalvaImpedeGeracao() {
+    const chamadas = [];
+    const ambiente = criarAmbiente(async (url) => {
+        chamadas.push(url);
+        return resposta({ ok: false, json: { detail: 'Lista indisponivel para verificacao' } });
+    });
+    const botao = { textContent: 'Commercial Invoice', disabled: false };
+    await ambiente.baixarCommercialInvoice({ id: 'lista-indisponivel', numero_invoice: 'INV-ANTIGA' }, botao);
+    assert.deepStrictEqual(chamadas, ['/api/medias-compras/listas-pedidos/lista-indisponivel?somente_salvos=true']);
+    assert.deepStrictEqual(ambiente.alertas, ['Lista indisponivel para verificacao']);
+    assert.strictEqual(ambiente.links.length, 0, 'Falha da leitura atual nao pode gerar documento com dados do cartao');
+    assert.strictEqual(botao.disabled, false);
+    assert.strictEqual(botao.textContent, 'Commercial Invoice');
+}
+
+async function testarErroAoCompletarNcmImpedeGeracao() {
+    const chamadas = [];
+    const ambiente = criarAmbiente(async (url) => {
+        chamadas.push(url);
+        if (url.endsWith('?somente_salvos=true')) {
+            return resposta({ json: { lista: { id: 'ncm-pendente', itens: [{ SKU: '001' }] } } });
+        }
+        return resposta({ ok: false, json: { detail: 'Falha ao completar NCM' } });
+    });
+    await ambiente.baixarCommercialInvoice({ id: 'ncm-pendente' }, { textContent: 'Commercial Invoice' });
+    assert.deepStrictEqual(chamadas, [
+        '/api/medias-compras/listas-pedidos/ncm-pendente?somente_salvos=true',
+        '/api/medias-compras/listas-pedidos/ncm-pendente',
+    ]);
+    assert.deepStrictEqual(ambiente.alertas, ['Falha ao completar NCM']);
+    assert.strictEqual(ambiente.links.length, 0);
+}
+
 async function testarArquivoVazioComoErroReal() {
     const ambiente = criarAmbiente(async (url) => {
         if (url.endsWith('/commercial-invoice')) return resposta({ blobSize: 0 });
@@ -258,8 +338,11 @@ async function testarArquivoVazioComoErroReal() {
 (async () => {
     await testarRascunhoSemCamposObrigatorios();
     await testarPrecedenciaDoNomeDoArquivo();
+    await testarConsultaCompletaSomenteParaNcmPendente();
     await testarPersistenciaOpcionalDaInvoiceLegada();
     await testarErroRealDoEndpoint();
+    await testarErroNaLeituraSalvaImpedeGeracao();
+    await testarErroAoCompletarNcmImpedeGeracao();
     await testarArquivoVazioComoErroReal();
     console.log('OK: Commercial Invoice gera rascunho sem campos obrigatorios e preserva erros reais.');
 })().catch((erro) => {

@@ -122,11 +122,11 @@ def tenants(tmp_path, monkeypatch):
     # These synthetic tenants have no store/importer registry. Do not inherit
     # the global store runtime configured by unrelated test modules.
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"store_id": "store-a", "scope": "store", "produtos": [
+                        lambda *_args, **_kwargs: {"store_id": "store-a", "scope": "store", "produtos": [
                             {"sku": "001", "cg_product description": "Sensor description", "Unit/Pair": "Unit"},
                             {"sku": "002", "cg_product description": "Cable description", "Unit/Pair": "Pair"},
                         ]})
-    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", lambda *_args: "")
+    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", lambda *_args, **_kwargs: "")
     monkeypatch.setattr(cadastro_importador_loja, "ler_importador_loja_por_store_id", lambda *_args: {})
     return raiz
 
@@ -274,7 +274,9 @@ def test_exportacao_cache_preserva_imagens_relacionamentos_e_xml(monkeypatch):
                 assert depois.read(info.filename) == esperado
             else:
                 assert depois.read(info.filename) == antes.read(info)
-            assert depois.getinfo(info.filename).compress_type == info.compress_type
+            compressao_esperada = (zipfile.ZIP_STORED if info.filename.startswith("xl/media/")
+                                  else info.compress_type)
+            assert depois.getinfo(info.filename).compress_type == compressao_esperada
     assert len(_sheet(conteudo)._images) == 4
 
 
@@ -405,8 +407,8 @@ def test_exportacao_busca_foto_atual_por_sku_e_ignora_imagens_do_fornecedor(tena
         {"sku": "002", "cg_product description": "Current cable, cardboard box", "foto": "002.png"},
     ]
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"scope": "store", "store_id": "store-a", "produtos": produtos})
-    resolver = lambda _client, _sku, foto="", *_args: foto
+                        lambda *_args, **_kwargs: {"scope": "store", "store_id": "store-a", "produtos": produtos})
+    resolver = lambda _client, _sku, foto="", *_args, **_kwargs: foto
     monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", resolver)
     monkeypatch.setattr(excel, "_resolver_foto_cadastro_sku", resolver)
     dados = packing._ler_packing_list_bytes(_modelo())
@@ -432,7 +434,7 @@ def test_exportacao_busca_foto_atual_por_sku_e_ignora_imagens_do_fornecedor(tena
 
 def test_exportacao_sem_cadastro_nao_usa_descricao_ou_foto_externas(tenants, monkeypatch):
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"scope": "unresolved", "store_id": "", "produtos": []})
+                        lambda *_args, **_kwargs: {"scope": "unresolved", "store_id": "", "produtos": []})
     sheet = _sheet(packing._gerar_packing_list_bytes(_lista(), packing._ler_packing_list_bytes(_modelo()), client_id="cliente-a"))
     assert all(sheet[f"D{row}"].value is None for row in range(9, 13))
     assert len(sheet._images) == 0
@@ -440,6 +442,9 @@ def test_exportacao_sem_cadastro_nao_usa_descricao_ou_foto_externas(tenants, mon
 
 
 def _response_bytes(response):
+    if hasattr(response, "body"):
+        return response.body
+
     async def ler():
         return b"".join([chunk async for chunk in response.body_iterator])
     return asyncio.run(ler())
@@ -456,7 +461,7 @@ def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants
     lista["itens"][0]["Color/side"] = "Left"
     path.write_text(json.dumps([lista]), encoding="utf-8")
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"store_id": "store-a", "scope": "store", "produtos": [
+                        lambda *_args, **_kwargs: {"store_id": "store-a", "scope": "store", "produtos": [
                             {"sku": "001", "cg_product description": "Current registered sensor", "Unit/Pair": "Unit"},
                             {"sku": "002", "cg_product description": "Cable description", "Unit/Pair": "Pair"},
                         ]})
@@ -474,6 +479,32 @@ def test_download_usa_invoice_e_enriquecimento_atuais_sem_mudar_original(tenants
     assert "UPDATED-2026" in response.headers["content-disposition"]
     assert path.read_bytes() == before
     assert next((path.parent / "packing_lists").glob("*.xlsx")).read_bytes() == original
+
+
+def test_download_envia_xlsx_pronto_em_corpo_unico_com_tamanho_exato(tenants):
+    packing._importar_packing_list_sync("lista-1", _modelo(), "packing.xlsx", "cliente-a")
+    response = packing._baixar_packing_list_sync("lista-1", "cliente-a")
+    conteudo = _response_bytes(response)
+    mensagens = []
+
+    async def receber():
+        pytest.fail("O download pronto nao deve aguardar dados da requisicao.")
+
+    async def enviar(mensagem):
+        mensagens.append(mensagem)
+
+    async def executar():
+        await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receber, enviar)
+
+    asyncio.run(executar())
+    assert [mensagem["type"] for mensagem in mensagens] == ["http.response.start", "http.response.body"]
+    assert mensagens[1]["body"] == conteudo
+    assert not mensagens[1].get("more_body", False)
+    headers = dict(mensagens[0]["headers"])
+    assert headers[b"content-length"] == str(len(conteudo)).encode("ascii")
+    assert headers[b"content-type"] == b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert headers[b"content-disposition"] == b'attachment; filename="Packing_List_TEST-14072026.xlsx"'
+    assert _sheet(conteudo)["A2"].value == "PACKING LIST"
 
 
 def test_download_rejeita_documento_corrompido(tenants, monkeypatch):
@@ -549,7 +580,7 @@ def test_upload_extensao_nao_suportada_nao_persiste(tenants, nome):
 
 def test_cabecalho_comprador_usa_identidade_exata_da_loja_e_tenant(monkeypatch):
     calls = []
-    def contexto(client_id, referencia):
+    def contexto(client_id, referencia, **_kwargs):
         calls.append(("scope", client_id, referencia))
         return {"store_id": referencia, "scope": "store"}
     def comprador(client_id, store_id):
@@ -566,7 +597,7 @@ def test_cabecalho_comprador_usa_identidade_exata_da_loja_e_tenant(monkeypatch):
 
 
 def test_loja_nao_resolvida_nao_busca_outro_cadastro(monkeypatch):
-    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja", lambda *_args: {"store_id": "", "scope": "unresolved"})
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja", lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"})
     monkeypatch.setattr(cadastro_importador_loja, "ler_importador_loja_por_store_id", lambda *_args: pytest.fail("Unresolved store must not trigger buyer lookup"))
     sheet = _sheet(packing._gerar_packing_list_bytes(_lista(), packing._ler_packing_list_bytes(_modelo()), client_id="cliente-a"))
     assert sheet["I4"].value == "STORE: Loja A"
@@ -626,7 +657,7 @@ def test_pasta_packing_symlink_nao_permite_acesso_a_outro_tenant(tenants):
 
 
 def test_http_fluxo_sem_documento_upload_resumo_e_download_atual(tenants, monkeypatch):
-    monkeypatch.setattr(listas_service, "_construir_mapa_m3_sku", lambda *_args: {})
+    monkeypatch.setattr(listas_service, "_construir_mapa_m3_sku", lambda *_args, **_kwargs: {})
     app = FastAPI()
     app.include_router(create_medias_compras_router())
     app.dependency_overrides[common.get_tenant_id] = lambda: "cliente-a"

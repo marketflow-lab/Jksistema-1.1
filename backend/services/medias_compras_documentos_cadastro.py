@@ -106,10 +106,17 @@ def _descricoes_legadas(client_id, produtos, store_id):
 def _contexto_cadastro_documentos(lista, client_id, *, skus=None):
     if not client_id:
         return {"scope": "legacy", "store_id": "", "por_sku": {}}
+    if skus is None:
+        skus = [item.get("SKU") or item.get("sku") for item in lista.get("itens") or []
+                if isinstance(item, dict)]
+    interesses = {_chave_sku_documento(sku) for sku in skus}
+    interesses.discard("")
     from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
     try:
         contexto = visao_produtos_cadastro_contexto_loja(
             client_id, lista.get("store_id") or lista.get("loja") or "",
+            skus=tuple(sorted(interesses)),
+            _normalizar_sku_consulta=_chave_sku_documento,
         )
     except RuntimeError:
         contexto = {"scope": "unavailable", "store_id": "", "produtos": []}
@@ -119,10 +126,6 @@ def _contexto_cadastro_documentos(lista, client_id, *, skus=None):
         return contexto
     store_id = str(contexto.get("store_id") or "").strip()
     controlados = {_chave_sku_documento(sku) for sku in contexto.get("skus_controlados") or []}
-    if skus is None:
-        skus = [item.get("SKU") or item.get("sku") for item in lista.get("itens") or []
-                if isinstance(item, dict)]
-    interesses = {_chave_sku_documento(sku) for sku in skus}
     produtos = {}
     for produto in contexto.get("produtos") or []:
         if not isinstance(produto, dict):
@@ -136,10 +139,13 @@ def _contexto_cadastro_documentos(lista, client_id, *, skus=None):
                if produto.get("scope_source") == "legacy_shadow"
                or (contexto.get("scope") == "global_safe" and chave not in controlados)}
     descricoes_legadas = _descricoes_legadas(client_id, legados, store_id)
+    mapas_fotos = {}
     for chave, produto in produtos.items():
         sku = str(produto.get("sku") or produto.get("SKU") or "").strip()
         foto_ref = common._primeiro_texto_item(produto, ["foto", "Foto", "cg_foto", "Picture", "imagem"])
-        foto = common._resolver_foto_cadastro_sku(client_id, sku, foto_ref, store_id or None)
+        foto = common._resolver_foto_cadastro_sku(
+            client_id, sku, foto_ref, store_id or None, mapas_fotos=mapas_fotos,
+        )
         unidade = common._primeiro_texto_item(produto, ["Unit/Pair", "Unit Pair", "unidade_bling", "Unidade"])
         if not unidade or unidade.casefold() in {"un", "und", "unidade", "pcs", "pc"}:
             unidade = "Unit"

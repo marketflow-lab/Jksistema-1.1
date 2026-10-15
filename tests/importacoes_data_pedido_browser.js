@@ -26,7 +26,7 @@ function fixture() {
     nacionalizador_id: 'nationalizer-a', nacionalizador: 'Nacionalizador A',
     created_at: '2026-10-05T12:00:00Z', updated_at: '2026-10-05T12:00:00Z',
     invoice: 'SYN-001', total_itens: 1, total_quantidade: 2, total_usd: 20, total_m3: 0.03,
-    itens: [{ SKU: 'SYN-001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20 }],
+    itens: [{ NCM: '85437099', SKU: 'SYN-001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20 }],
   };
   return {
     lists: [
@@ -88,7 +88,7 @@ async function installRoutes(page, state) {
         const list = state.lists.find(item => item.id === id);
         assert(list, 'A requisição deve referenciar uma lista sintética existente');
         if (request.method() === 'GET') {
-          state.detailReads.push({ id, order_date: list.order_date });
+          state.detailReads.push({ id, order_date: list.order_date, somente_salvos: url.searchParams.get('somente_salvos') === 'true' });
           return json(route, { lista: structuredClone(list) });
         }
         assert.strictEqual(request.method(), 'PUT');
@@ -451,7 +451,7 @@ async function testCommercialInvoiceDates(browser) {
     await waitDocument(page, async () => { state.dateGate = null; release(); });
     assert.strictEqual(await page.evaluate(() => window.esperaDaData), true, 'Espera paralela da mesma lista deve concluir com sucesso');
     await waitClosed(page, 'order', '14/10/2026');
-    assert.deepStrictEqual(state.detailReads.slice(beforeReads), [{ id: 'order', order_date: '2026-10-14' }]);
+    assert.deepStrictEqual(state.detailReads.slice(beforeReads), [{ id: 'order', order_date: '2026-10-14', somente_salvos: true }]);
     assert.deepStrictEqual(state.commercialInvoices.slice(beforeDocuments), [{ id: 'order', order_date: '2026-10-14' }]);
 
     console.log('PASS Commercial Invoice: data salva antes do documento');

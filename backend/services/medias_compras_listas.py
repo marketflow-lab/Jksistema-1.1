@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from backend.schemas import (
     ListaPedidoAddSkuRequest,
@@ -1670,8 +1670,8 @@ def _api_medias_compras_lista_pedido_commercial_invoice_sync(
     if not nome_seguro:
         nome_seguro = re.sub(r"[^A-Za-z0-9_-]+", "_", str(lista_id)).strip("_") or "lista"
     nome_arquivo = f"commercial_invoice_{nome_seguro}.xlsx"
-    return StreamingResponse(
-        io.BytesIO(file_bytes),
+    return Response(
+        content=file_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
     )

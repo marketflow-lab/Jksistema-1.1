@@ -168,7 +168,7 @@ def test_gerador_commercial_invoice_reproduz_modelo_totais_e_foto(tmp_path, monk
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "visao_produtos_cadastro_contexto_loja",
-        lambda _client_id, _referencia: {"store_id": "", "scope": "unresolved"},
+        lambda _client_id, _referencia, **_kwargs: {"store_id": "", "scope": "unresolved"},
     )
     monkeypatch.setattr(
         excel_service,
@@ -292,7 +292,7 @@ def test_commercial_invoice_usa_todos_os_dados_da_loja_exata(tmp_path, monkeypat
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "visao_produtos_cadastro_contexto_loja",
-        lambda _client_id, referencia: {"store_id": referencia if referencia in registros else ""},
+        lambda _client_id, referencia, **_kwargs: {"store_id": referencia if referencia in registros else ""},
     )
 
     lista = {"store_id": "store-a", "loja": "Loja A", "itens": []}
@@ -354,7 +354,7 @@ def fornecedores_invoice(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "visao_produtos_cadastro_contexto_loja",
-        lambda *_args: {"store_id": "", "scope": "unresolved"},
+        lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"},
     )
     return tmp_path, fornecedor
 
@@ -471,7 +471,7 @@ def fornecedores_rodape_invoice(tmp_path, monkeypatch):
     monkeypatch.setattr(excel_service, "_resolver_caminho_foto_commercial_invoice", lambda *_args: None)
     monkeypatch.setattr(
         cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-        lambda *_args: {"store_id": "", "scope": "unresolved"},
+        lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"},
     )
     monkeypatch.setattr(
         cadastro_fornecedores, "get_tenant_path",
@@ -615,7 +615,7 @@ def test_commercial_invoice_rodape_sem_id_nao_consulta_cadastro(monkeypatch):
     monkeypatch.setattr(cadastro_fornecedores, "ler_fornecedor_por_id",
                         lambda *_args, **_kwargs: pytest.fail("Sem vinculo nao deve ler cadastro"))
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-                        lambda *_args: {"store_id": "", "scope": "unresolved"})
+                        lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"})
     sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(
         {"supplier": "Fornecedor historico", "itens": []}, client_id="tenant-a",
     ))
@@ -832,7 +832,7 @@ def nacionalizadores_invoice(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cadastro_compatibilidade,
         "visao_produtos_cadastro_contexto_loja",
-        lambda *_args: {"store_id": "", "scope": "unresolved"},
+        lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"},
     )
     return tmp_path, nacionalizador
 
@@ -913,7 +913,7 @@ def test_commercial_invoice_nacionalizador_compartilhado_preserva_buyer_da_loja(
     monkeypatch.setattr(cadastro_importador_loja.lojas, "get_tenant_path", lambda client_id: str(raiz / client_id))
     monkeypatch.setattr(
         cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-        lambda _client_id, referencia: {"store_id": referencia},
+        lambda _client_id, referencia, **_kwargs: {"store_id": referencia},
     )
     lista = {"store_id": store_id, "loja": "Mesmo nome de loja", "nacionalizador_id": "nacionalizador-a", "itens": []}
     sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
@@ -950,7 +950,7 @@ def test_commercial_invoice_sem_id_nao_consulta_cadastro_nacionalizadores(monkey
     )
     monkeypatch.setattr(
         cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
-        lambda *_args: {"store_id": "", "scope": "unresolved"},
+        lambda *_args, **_kwargs: {"store_id": "", "scope": "unresolved"},
     )
     sheet = _carregar_commercial_invoice(
         excel_service._gerar_commercial_invoice_bytes({"nome_lista": "Lista sem vinculo", "itens": []}, client_id="tenant-a")
@@ -1294,6 +1294,35 @@ def test_edicao_de_outro_campo_preserva_alias_invoice_legado(invoice_edit_state,
     assert salva["numero_invoice"] == "Invoice anterior"
     assert resultado["lista"]["numero_invoice"] == "Invoice anterior"
     assert estado["tenant-b"] == antes["tenant-b"]
+
+
+def test_endpoint_entrega_bytes_completos_sem_fragmentar_por_linha(monkeypatch):
+    lista = {"id": "lista-1", "numero_invoice": "INV-001", "itens": []}
+    conteudo = b"PK\x03\x04" + b"foto\nproduto\r\n\x00" * 4096
+    monkeypatch.setattr(listas_service, "_carregar_listas_pedidos", lambda _client: [lista])
+    monkeypatch.setattr(
+        listas_service, "_gerar_commercial_invoice_bytes",
+        lambda *_args, **_kwargs: conteudo,
+    )
+    resposta = listas_service._api_medias_compras_lista_pedido_commercial_invoice_sync(
+        "lista-1", client_id="tenant-a",
+    )
+    mensagens = []
+
+    async def receber():
+        pytest.fail("Documento pronto nao precisa aguardar entrada HTTP")
+
+    async def enviar(mensagem):
+        mensagens.append(mensagem)
+
+    asyncio.run(resposta({"type": "http"}, receber, enviar))
+
+    assert resposta.headers["content-length"] == str(len(conteudo))
+    assert resposta.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert resposta.headers["content-disposition"] == 'attachment; filename="commercial_invoice_INV-001.xlsx"'
+    assert [mensagem["type"] for mensagem in mensagens] == ["http.response.start", "http.response.body"]
+    assert mensagens[1]["body"] == conteudo
+    assert not mensagens[1].get("more_body", False)
 
 
 def test_router_expoe_download_do_commercial_invoice():

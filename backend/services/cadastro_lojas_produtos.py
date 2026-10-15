@@ -1654,17 +1654,24 @@ def _listar_produtos_loja_sync(
     include_catalog_metadata: bool = False,
     skus: Iterable[Any] | None = None,
     _registros_persistidos: list[dict[str, str]] | None = None,
+    _normalizar_sku_consulta: Callable[[Any], str] | None = None,
 ) -> list[dict[str, Any]]:
-    chaves_skus = None if skus is None else {
-        chave for sku in skus for chave in _sku_lookup_keys_cadastro(sku) if chave
-    }
+    if skus is None:
+        chaves_skus = None
+    elif _normalizar_sku_consulta is not None:
+        # Adapt the read filter only; durable SKU identities and global conflict
+        # consolidation must keep the Cadastro's original keys.
+        chaves_skus = {chave for sku in skus if (chave := _normalizar_sku_consulta(sku))}
+    else:
+        chaves_skus = {chave for sku in skus for chave in _sku_lookup_keys_cadastro(sku) if chave}
 
     def sku_interessa(registro: dict[str, Any]) -> bool:
-        return chaves_skus is None or any(
-            chave in chaves_skus
-            for chave in _sku_lookup_keys_cadastro(registro.get("sku") or registro.get("sku_normalizado") or "")
-            if chave
-        )
+        if chaves_skus is None:
+            return True
+        sku = registro.get("sku") or registro.get("sku_normalizado") or ""
+        if _normalizar_sku_consulta is not None:
+            return _normalizar_sku_consulta(sku) in chaves_skus
+        return any(chave in chaves_skus for chave in _sku_lookup_keys_cadastro(sku) if chave)
 
     loja = resolver_loja_cadastro(client_id, store_id)
     caminho = _cadastro_produtos_lojas_path(client_id)

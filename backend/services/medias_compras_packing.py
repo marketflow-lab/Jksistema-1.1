@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape
 
 import openpyxl
 from fastapi import Depends, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 from openpyxl.compat import safe_string
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
@@ -298,6 +298,11 @@ def _preencher_cache_totais_packing(conteudo, totais):
                     content, quantidade = padrao.subn(atualizar, content)
                     if quantidade != 1:
                         raise ValueError("Célula de total do Packing List inválida.")
+            if info.filename.startswith("xl/media/"):
+                # Images already have their own compression; keep their bytes intact
+                # without recompressing them just to cache the worksheet totals.
+                info = copy.copy(info)
+                info.compress_type = zipfile.ZIP_STORED
             target.writestr(info, content)
     return output.getvalue()
 
@@ -613,8 +618,8 @@ def _baixar_packing_list_sync(lista_id, client_id):
     output = _gerar_packing_list_bytes(lista, dados, client_id=client_id)
     nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
     nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
-    return StreamingResponse(io.BytesIO(output), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             headers={"Content-Disposition": f'attachment; filename="Packing_List_{nome}.xlsx"'})
+    return Response(content=output, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="Packing_List_{nome}.xlsx"'})
 
 
 async def api_medias_compras_lista_pedido_packing_list(lista_id: str, client_id: str = Depends(common.get_tenant_id)):

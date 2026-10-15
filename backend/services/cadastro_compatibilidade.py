@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 import unicodedata
 
 from fastapi import HTTPException
@@ -300,10 +300,13 @@ def _consolidar_sku_seguro(
 
 def visao_compatibilidade_produtos_lojas(
     client_id: str, *, skus: Iterable[Any] | None = None,
+    _normalizar_sku_consulta: Callable[[Any], str] | None = None,
 ) -> dict[str, Any]:
     """Return safe global rows plus every SKU owned by the new store file."""
 
     skus = tuple(skus) if skus is not None else None
+    opcoes_filtro = ({"_normalizar_sku_consulta": _normalizar_sku_consulta}
+                     if _normalizar_sku_consulta is not None else {})
     caminho = _cadastro_produtos_lojas_path(client_id)
     with _bloquear_config_e_arquivo_cadastro(client_id, caminho):
         registros, _ = _ler_registros_persistidos(client_id)
@@ -325,7 +328,7 @@ def visao_compatibilidade_produtos_lojas(
                 _listar_produtos_loja_sync(client_id, store_id)
                 if skus is None
                 else _listar_produtos_loja_sync(
-                    client_id, store_id, skus=skus, _registros_persistidos=registros,
+                    client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
                 )
             )
             for produto in produtos_loja:
@@ -352,6 +355,7 @@ def visao_produtos_cadastro_contexto_loja(
     loja_referencia: Any = "",
     *,
     skus: Iterable[Any] | None = None,
+    _normalizar_sku_consulta: Callable[[Any], str] | None = None,
 ) -> dict[str, Any]:
     """Resolve uma loja somente para leitura e falha fechado se for ambigua.
 
@@ -363,8 +367,10 @@ def visao_produtos_cadastro_contexto_loja(
 
     referencia = str(loja_referencia or "").strip()
     referencia_norm = _normalizar_loja_leitura(referencia)
+    opcoes_filtro = ({"_normalizar_sku_consulta": _normalizar_sku_consulta}
+                     if _normalizar_sku_consulta is not None else {})
     if referencia_norm in {"", "todas", "todas as lojas"} or referencia == "__todas":
-        visao = visao_compatibilidade_produtos_lojas(client_id, skus=skus)
+        visao = visao_compatibilidade_produtos_lojas(client_id, skus=skus, **opcoes_filtro)
         return {
             **visao,
             "store_id": "",
@@ -410,7 +416,7 @@ def visao_produtos_cadastro_contexto_loja(
             _listar_produtos_loja_sync(client_id, store_id)
             if skus is None
             else _listar_produtos_loja_sync(
-                client_id, store_id, skus=skus, _registros_persistidos=registros,
+                client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
             )
         )
 
