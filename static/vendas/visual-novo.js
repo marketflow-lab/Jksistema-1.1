@@ -18,6 +18,7 @@
     let detailRenderKey = '';
     let renderFrame = null;
     let chartFrame = null;
+    let photoHydration = 0;
     const moves = [];
     const themedCharts = new Map();
     const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -485,12 +486,21 @@
     }
 
     function hydratePhotos() {
-        if (state.active && root) window.JKVendasNovaFotos?.hydrate(root, state.snapshot);
+        if (!state.active || !root) return;
+        const photoRoot = root, context = state.context, hydration = ++photoHydration;
+        const pending = window.JKVendasNovaFotos?.hydrate(photoRoot, state.snapshot);
+        photoHint();
+        Promise.resolve(pending).then(() => {
+            if (state.active && root === photoRoot && state.context === context && photoHydration === hydration) photoHint();
+        }).catch(() => {});
     }
 
     function photoHint() {
-        const selectedStore = state.snapshot?.filters?.loja;
-        const showHint = selectedStore === '__todas' && !root.querySelector('.vn-featured-photo.vn-photo-ready');
+        const image = root?.querySelector('.vn-featured-photo img[data-vendas-foto]');
+        const showHint = state.active && !state.snapshot?.loading
+            && image?.getAttribute('data-vendas-foto-ambiguo') === 'true'
+            && image.getAttribute('data-vendas-foto-estado') !== 'loading'
+            && !image.getAttribute('data-jk-auth-src') && !image.closest('.vn-photo')?.classList.contains('vn-photo-ready');
         if (find('vnPhotoHint')) find('vnPhotoHint').hidden = !showHint;
     }
 
@@ -537,6 +547,7 @@
         }
         state.context = nextContext;
         state.snapshot = snapshot;
+        photoHint();
         // Invalidate previous visuals before the next paint, including when the replacement request fails.
         renderGraphState(snapshot);
         if (renderFrame) cancelAnimationFrame(renderFrame);
@@ -672,6 +683,8 @@
     function hide() {
         if (!state.active) return;
         state.active = false;
+        photoHydration++;
+        photoHint();
         document.getElementById('btnVersaoNovaVendas')?.setAttribute('aria-expanded', 'false');
         if (typeof unsubscribe === 'function') unsubscribe();
         unsubscribe = null;

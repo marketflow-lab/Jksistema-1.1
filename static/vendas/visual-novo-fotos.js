@@ -46,13 +46,36 @@
         img.removeAttribute('src');
         img.removeAttribute('data-vendas-foto-owner');
         img.removeAttribute('data-vendas-foto-resolved-store-id');
+        img.removeAttribute('data-vendas-foto-ambiguo');
+        img.removeAttribute('title');
         img.setAttribute('data-vendas-foto-estado', status || 'missing');
         img.hidden = true;
         img.classList && img.classList.remove('jk-auth-image-error');
         const frame = img.closest && img.closest('.vn-photo');
         frame && frame.classList.remove('vn-photo-ready');
     }
-    function photoUrl(reference, clientId, storeId) {
+    function tenantPhotoUrl(reference, clientId) {
+        const raw = String(reference || '').trim();
+        if (!raw || raw.length > 8192 || /[\\\u0000-\u001f\u007f]/.test(raw)
+            || !/^(?:\/api\/cadastro\/foto\/|https?:\/\/)/i.test(raw)) return '';
+        // Validate the original path before URL parsing can collapse dot segments.
+        const path = raw.replace(/^https?:\/\/[^/?#]*/i, '').split(/[?#]/, 1)[0];
+        let parts, url;
+        try {
+            parts = path.split('/').map(decodeURIComponent);
+            url = new global.URL(raw, global.location.origin);
+        } catch (_error) { return ''; }
+        if (url.origin !== global.location.origin || !/^https?:$/.test(url.protocol) || url.username || url.password
+            || parts.length !== 6 || parts[0] !== '' || parts[1].toLowerCase() !== 'api'
+            || parts[2].toLowerCase() !== 'cadastro' || parts[3].toLowerCase() !== 'foto'
+            || parts[4] !== clientId
+            || parts.slice(4).some(part => !part || part === '.' || part === '..'
+                || /[\\/:%\u0000-\u001f\u007f]/.test(part))
+            || !/\.(?:png|jpe?g|gif|webp|bmp)$/i.test(parts[5])) return '';
+        return `/api/cadastro/foto/${encodeURIComponent(clientId)}/${encodeURIComponent(parts[5])}?tenant_only=true`;
+    }
+    function photoUrl(reference, clientId, storeId, scope) {
+        if (scope === 'tenant') return tenantPhotoUrl(reference, clientId);
         const media = global.JKAuthenticatedMedia;
         if (!media || typeof media.normalizarUrlFotoCadastro !== 'function') return '';
         const raw = String(reference || '').trim();
@@ -118,10 +141,14 @@
             payload.rows.forEach(row => {
                 if (!row || typeof row !== 'object') return;
                 const key = skuKey(row.sku), storeId = String(row.store_id || '').trim();
-                if (!key || !storeId) return;
-                storeIds.add(storeId);
+                const scope = row.photo_scope === 'tenant' ? 'tenant' : 'store';
+                const ambiguous = row.photo_ambiguous === true;
+                if (!key || (!storeId && scope !== 'tenant' && !ambiguous)) return;
+                if (storeId) storeIds.add(storeId);
                 if (photos.has(key)) { photos.set(key, null); return; }
-                photos.set(key, { storeId, reference: String(row.foto || '').trim() });
+                photos.set(key, { storeId, scope, ambiguous,
+                    storeName: typeof row.photo_store_name === 'string' ? row.photo_store_name.trim() : '',
+                    reference: String(row.foto || '').trim() });
             });
             if ((!context.allStores && storeIds.size > 1) || (context.storeId && storeIds.size && !storeIds.has(context.storeId))) {
                 throw new Error('Loja das fotos inválida.');
@@ -158,14 +185,19 @@
             const record = state.entry.photos.get(skuKey(sku));
             const declaredStore = String(img.getAttribute('data-vendas-foto-store-id') || '').trim();
             const url = record && (!declaredStore || record.storeId === declaredStore)
-                ? photoUrl(record.reference, state.context.clientId, record.storeId) : '';
-            if (!url || !media || typeof media.hidratar !== 'function') { markMissing(img); return; }
+                ? photoUrl(record.reference, state.context.clientId, record.storeId, record.scope) : '';
+            if (!url || !media || typeof media.hidratar !== 'function') {
+                markMissing(img);
+                if (!url && record?.ambiguous) img.setAttribute('data-vendas-foto-ambiguo', 'true');
+                return;
+            }
             if (img.getAttribute('data-jk-auth-src') === url && img.getAttribute('data-vendas-foto-owner') === String(state.epoch)) return;
             markMissing(img, 'loading');
             img.hidden = false;
             img.setAttribute('data-vendas-foto-owner', String(state.epoch));
             img.setAttribute('data-vendas-foto-resolved-store-id', record.storeId);
             img.setAttribute('data-jk-auth-src', url);
+            if (record.scope === 'store' && record.storeName) img.setAttribute('title', `Foto cadastrada em ${record.storeName}`);
             if (!state.listeners.has(img)) {
                 const loaded = () => {
                     if (!current(root, state) || img.getAttribute('data-vendas-foto-owner') !== String(state.epoch)) return;

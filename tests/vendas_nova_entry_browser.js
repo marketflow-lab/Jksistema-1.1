@@ -67,6 +67,10 @@ const fixtureState = `
         },
         getChartInstances: () => [], resizeCharts() {},
     };
+    window.__entrySetSnapshot = patch => {
+        Object.assign(snapshot, patch);
+        listeners.forEach(listener => listener(structuredClone(snapshot)));
+    };
 })();`;
 
 function createFixture(name, html, extraCss) {
@@ -185,6 +189,77 @@ async function verifyCase(context, fixture, embedded, width) {
     }
 }
 
+async function verifyPhotoFeedback(context, fixture) {
+    const details = { mode: 'iframe', width: 1206, feature: 'async photo feedback' };
+    const { page, frame } = await loadCase(context, fixture, true, 1206);
+    try {
+        // The photo helper's scope, URL and cleanup contract is tested separately.
+        // Drive its async completion here without image/network dependencies in the entry fixture.
+        await frame.evaluate(() => {
+            let epoch = 0;
+            const requests = [];
+            const clear = root => root.querySelectorAll('img[data-vendas-foto]').forEach(img => {
+                img.removeAttribute('data-vendas-foto-ambiguo');
+                img.removeAttribute('data-jk-auth-src');
+                img.setAttribute('data-vendas-foto-estado', 'idle');
+            });
+            const release = root => { epoch++; clear(root); };
+            window.__entryPhotoRequests = requests;
+            window.JKVendasNovaFotos = {
+                release,
+                hydrate(root, snapshot) {
+                    if (snapshot.loading) { release(root); return Promise.resolve(); }
+                    return new Promise(resolve => requests.push({ root, key: snapshot.contextKey, epoch, resolve }));
+                },
+            };
+            window.__entryFinishPhotos = (key, ambiguous) => {
+                requests.filter(request => request.key === key).forEach(request => {
+                    if (request.epoch === epoch) request.root.querySelectorAll('img[data-vendas-foto]').forEach(img => {
+                        if (ambiguous) img.setAttribute('data-vendas-foto-ambiguo', 'true');
+                        else img.removeAttribute('data-vendas-foto-ambiguo');
+                        img.setAttribute('data-vendas-foto-estado', 'missing');
+                    });
+                    request.resolve();
+                });
+            };
+            window.__entrySetSnapshot({ contextKey: 'photo-absence', rows: [{sku: '001', produto: 'Produto do teste', valor: 1}], loading: false });
+            JKVendasNova.show();
+        });
+        const waitForPhoto = key => frame.waitForFunction(value => __entryPhotoRequests.some(request => request.key === value), key);
+        const hint = frame.locator('#vnPhotoHint');
+        await waitForPhoto('photo-absence');
+        check('pending metadata does not ask the user to select a store', await hint.isHidden(), details);
+        await frame.evaluate(() => __entryFinishPhotos('photo-absence', false));
+        check('missing photo without explicit ambiguity keeps the hint hidden', await hint.isHidden(), details);
+
+        await frame.evaluate(() => __entrySetSnapshot({ contextKey: 'photo-ambiguous' }));
+        await waitForPhoto('photo-ambiguous');
+        await frame.evaluate(() => __entryFinishPhotos('photo-ambiguous', true));
+        await frame.waitForFunction(() => !document.getElementById('vnPhotoHint').hidden);
+        check('explicit ambiguity displays the hint after metadata finishes without a load event', await hint.isVisible(), details);
+        check('loading hides the previous hint immediately', await frame.evaluate(() => {
+            __entrySetSnapshot({ loading: true });
+            return document.getElementById('vnPhotoHint').hidden;
+        }), details);
+
+        await frame.evaluate(() => __entrySetSnapshot({ contextKey: 'photo-stale', loading: false }));
+        await waitForPhoto('photo-stale');
+        await frame.evaluate(() => __entrySetSnapshot({ contextKey: 'photo-current' }));
+        await waitForPhoto('photo-current');
+        await frame.evaluate(() => { __entryFinishPhotos('photo-current', false); __entryFinishPhotos('photo-stale', true); });
+        check('late metadata from another context cannot restore the hint', await hint.isHidden(), details);
+        check('late metadata cannot mark the featured photo ambiguous', await frame.locator('.vn-featured-photo img').getAttribute('data-vendas-foto-ambiguo') === null, details);
+
+        await frame.evaluate(() => __entrySetSnapshot({ contextKey: 'photo-hidden' }));
+        await waitForPhoto('photo-hidden');
+        await frame.locator('#vnBack').click();
+        await frame.evaluate(() => __entryFinishPhotos('photo-hidden', true));
+        check('completion after leaving the layout keeps the hint hidden', await frame.evaluate(() => !JKVendasNova.isActive() && document.getElementById('vnPhotoHint').hidden), details);
+    } finally {
+        await page.close();
+    }
+}
+
 (async () => {
     let context;
     try {
@@ -204,6 +279,7 @@ async function verifyCase(context, fixture, embedded, width) {
             await verifyCase(context, fixture, false, width);
             await verifyCase(context, fixture, true, width);
         }
+        await verifyPhotoFeedback(context, fixture);
         assert.equal(report.errors.length, 0, 'The entry fixture must have no page errors or external browser requests');
         report.passing = true;
         console.log(`vendas nova entry browser: ok (${report.checks.length} checks; standalone/iframe; 1206/1366/390 px)`);
