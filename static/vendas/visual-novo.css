@@ -1,7 +1,14 @@
-/* Every presentation rule is scoped to the optional sales view. */
+/* The entry point stays with the sales shortcuts inside the Electron tab shell. */
+.header-shortcuts .vendas-shortcut-versao-nova { color: #fff; background: linear-gradient(120deg, #7544d4, #512798); border-color: #a17ae7; box-shadow: 0 3px 12px #51279840; }
+.header-shortcuts .vendas-shortcut-versao-nova span { color: #ece0ff; }
+.header-shortcuts .vendas-shortcut-versao-nova strong { color: #fff; }
+.header-shortcuts .vendas-shortcut-versao-nova:hover { background: linear-gradient(120deg, #8653e5, #6334b2); border-color: #c6a8ff; }
+.header-shortcuts .vendas-shortcut-versao-nova:focus-visible { outline: 3px solid #d5c0ff; outline-offset: 3px; }
+/* Every presentation rule below is scoped to the optional sales view. */
 body.vendas-layout-novo { padding: 0; background: radial-gradient(ellipse at 90% 0, #fff 0, transparent 48%), #f7f8fc; color: #19172b; }
 body.vendas-layout-novo::before { display: none; }
 body.vendas-layout-novo > .container[hidden] { display: none !important; }
+body.vendas-layout-novo > .jk-nav-card-group { display: none !important; }
 .vn-root { --vn-accent: #6835c7; --vn-ink: #1a1830; --vn-muted: #848ba5; --vn-border: #e3e6f0; --vn-soft: #eee7fc; position: relative; z-index: 1; max-width: 1640px; margin: 0 auto; padding: 0 32px 24px; color: var(--vn-ink); font: 14px/1.45 'Segoe UI', Arial, sans-serif; font-variant-numeric: tabular-nums; -webkit-font-smoothing: antialiased; }
 .vn-root[hidden], .vn-root [hidden] { display: none !important; }
 .vn-root *, .vn-root *::before, .vn-root *::after { box-sizing: border-box; }

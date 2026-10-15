@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Tag da versao, por exemplo v1.0.232
+        description: Tag da versao, por exemplo v1.0.233
         required: true
         type: string
       release_mode:
