@@ -25,16 +25,17 @@ def _ml_listar_promocoes_ativas_payload(client_id: str, loja: str) -> dict:
     if not nome_loja:
         raise HTTPException(status_code=400, detail="Informe a loja do Mercado Livre.")
 
-    cache_key = f"promocoes:{client_id}:{nome_loja}"
-    cached = _ml_cache_get(cache_key, _ML_CACHE_TTL_CAMPANHA)
-    if isinstance(cached, dict):
-        return cached
-    stale_cache = _ml_cache_get_stale(cache_key, _ML_CACHE_TTL_CAMPANHA_STALE)
-
     cfg = ctx.obter_cfg_ml(client_id, nome_loja)
     user_id = str(cfg.get("user_id") or "").strip()
     if not user_id:
         raise HTTPException(status_code=400, detail="ID do usuario do Mercado Livre nao encontrado para esta loja.")
+    site_id = str(cfg.get("site_id") or "").strip().upper()
+    # Reconectar a mesma loja a outro seller nao pode reutilizar campanhas antigas.
+    cache_key = f"promocoes:{client_id}:{nome_loja}:{user_id}:{site_id}"
+    cached = _ml_cache_get(cache_key, _ML_CACHE_TTL_CAMPANHA)
+    if isinstance(cached, dict):
+        return cached
+    stale_cache = _ml_cache_get_stale(cache_key, _ML_CACHE_TTL_CAMPANHA_STALE)
 
     try:
         timeout_promocoes = int(float(str(os.getenv("ML_PROMO_TIMEOUT", "18") or "18").replace(",", ".")))
@@ -144,6 +145,9 @@ def _ml_listar_promocoes_ativas_payload(client_id: str, loja: str) -> dict:
     payload = {
         "success": True,
         "loja": nome_loja,
+        "seller_id": user_id,
+        "site_id": site_id,
+        "discovery_available": True,
         "campaigns": campanhas,
         "total": len(campanhas),
     }
@@ -289,7 +293,9 @@ def listar_promocoes_ativas_mercado_livre(client_id: str, loja: str) -> dict:
 def listar_promocoes_contagens_mercado_livre(client_id: str, loja: str) -> dict:
     payload = _ml_listar_promocoes_ativas_payload(client_id, loja)
     loja_nome = payload.get("loja") or str(loja or "").strip()
-    cache_key = f"camp_contagens:{client_id}:{loja_nome}:ativos_elegiveis_v3"
+    seller_id = str(payload.get("seller_id") or "").strip()
+    site_id = str(payload.get("site_id") or "").strip().upper()
+    cache_key = f"camp_contagens:{client_id}:{loja_nome}:{seller_id}:{site_id}:ativos_elegiveis_v3"
     cached = _ml_cache_get(cache_key, _ML_CACHE_TTL_CONTAGENS)
     if isinstance(cached, dict):
         return cached

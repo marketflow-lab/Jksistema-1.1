@@ -1467,7 +1467,249 @@ async function acompanharJobAnaliseApi(jobId, contexto = capturarContextoAnalise
     });
 }
 
+let apiPromoDiscoveryContext = null;
+
+function pararDescobertaPromocoesApi() {
+    const contexto = apiPromoDiscoveryContext;
+    apiPromoDiscoveryContext = null;
+    if (contexto?.timer) clearTimeout(contexto.timer);
+    contexto?.controller?.abort();
+    const status = document.getElementById('apiPromoDiscoveryStatus');
+    if (status) status.style.display = 'none';
+}
+
+function contextoDescobertaPromocoesAtual(contexto) {
+    return contexto === apiPromoDiscoveryContext && contexto.carregamentoAtual()
+        && String(getAuthHeadersWithClient().Authorization || '') === contexto.authorization;
+}
+
+function mostrarStatusDescobertaPromocoes(contexto, mensagem, permitirRetomar = false) {
+    if (!contextoDescobertaPromocoesAtual(contexto)) return;
+    let status = document.getElementById('apiPromoDiscoveryStatus');
+    if (!status) {
+        const campanhas = document.getElementById('apiPromoBSelect');
+        if (!campanhas?.parentElement?.insertBefore) return;
+        status = document.createElement('div');
+        status.id = 'apiPromoDiscoveryStatus';
+        status.className = 'api-promo-discovery-status';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        campanhas.parentElement.insertBefore(status, campanhas);
+    }
+    status.style.display = 'flex';
+    status.innerHTML = `<span class="api-promo-selection-summary">${escapeHtml(mensagem)}</span>${permitirRetomar
+        ? '<button type="button" class="api-promo-mini-btn">' + (contexto.restartRequired ? 'Atualizar consulta' : 'Retomar consulta') + '</button>' : ''}`;
+    const botao = status.querySelector('button');
+    if (botao) botao.onclick = () => {
+        contexto.resumeRounds = 0;
+        contexto.stalledRounds = 0;
+        contexto.networkFailures = 0;
+        iniciarJobDescobertaPromocoes(contexto, contexto.restartRequired === true);
+    };
+}
+
+function validarSnapshotDescobertaPromocoes(contexto, payload, jobId = '') {
+    return contextoDescobertaPromocoesAtual(contexto) && payload?.success === true
+        && String(payload.loja || '') === contexto.loja
+        && (!payload.client_id || String(payload.client_id) === contexto.clientId)
+        && !!String(payload.job_id || '').trim()
+        && (!jobId || String(payload.job_id) === jobId)
+        && (!contexto.sellerId || String(payload.seller_id || '') === contexto.sellerId)
+        && (!contexto.siteId || String(payload.site_id || '') === contexto.siteId);
+}
+
+function chaveCampanhaDescobertaPromocoes(campanha) {
+    return JSON.stringify([String(campanha?.id || '').trim(),
+        String(campanha?.type || campanha?.promotion_type || '').toUpperCase()]);
+}
+
+async function unirCampanhasDescobertasPromocoes(contexto, payload) {
+    const jobId = contexto.jobId;
+    const existentes = Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [];
+    const porCampanha = new Map(existentes.map(campanha => [chaveCampanhaDescobertaPromocoes(campanha), campanha]));
+    const novidades = new Map();
+    const recebidas = new Map((Array.isArray(payload.campaigns) ? payload.campaigns : [])
+        .filter(campanha => campanha?.id && !isApiPurchaseCoupon(campanha.type || campanha.promotion_type)
+            && isCampanhaMercadoLivre(campanha))
+        .map(campanha => [chaveCampanhaDescobertaPromocoes(campanha), campanha]));
+    for (const [chave, campanha] of recebidas) {
+        if (!porCampanha.has(chave)) novidades.set(chave, applyPromoCounts(campanha));
+    }
+    const expandidas = novidades.size ? await expandirCampanhasRelampago(Array.from(novidades.values()), contexto.loja) : [];
+    if (!validarSnapshotDescobertaPromocoes(contexto, payload, jobId)) return;
+    // Janelas existentes conservam suas contagens por data e suas chaves de seleção.
+    const atuais = Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : [];
+    const atualizadas = atuais.map(campanha => {
+        const recebida = recebidas.get(chaveCampanhaDescobertaPromocoes(campanha));
+        return recebida && !campanha.selection_id ? applyPromoCounts({ ...campanha, ...recebida }) : campanha;
+    });
+    const chaves = new Set(atualizadas.map(campanha => JSON.stringify([chaveCampanhaDescobertaPromocoes(campanha), campanha.selection_id || ''])));
+    for (const campanha of expandidas) {
+        const chave = JSON.stringify([chaveCampanhaDescobertaPromocoes(campanha), campanha.selection_id || '']);
+        if (chaves.has(chave)) continue;
+        chaves.add(chave);
+        atualizadas.push(campanha);
+        contexto.additionalCampaigns.add(chaveCampanhaDescobertaPromocoes(campanha));
+    }
+    // A seleção já hidratada permanece intacta; novos cartões não entram na automação por conta própria.
+    renderApiPromoBButtons(atualizadas);
+}
+
+function agendarDescobertaPromocoes(contexto, executar) {
+    if (!contextoDescobertaPromocoesAtual(contexto)) return;
+    if (contexto.timer) clearTimeout(contexto.timer);
+    contexto.timer = setTimeout(() => {
+        contexto.timer = null;
+        if (contextoDescobertaPromocoesAtual(contexto)) executar();
+    }, 3000);
+}
+
+async function buscarSnapshotDescobertaPromocoes(contexto, url, options = {}) {
+    contexto.controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const controller = contexto.controller;
+    const timeout = controller ? setTimeout(() => controller.abort(), 20000) : null;
+    try {
+        const response = await fetch(url, { ...options, headers: { ...contexto.headers, ...(options.headers || {}) },
+            ...(controller ? { signal: controller.signal } : {}) });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || payload.success === false) {
+            const erro = new Error(buildApiErrorMessage(response, payload, 'Erro na consulta complementar de promoções.'));
+            erro.status = response.status;
+            throw erro;
+        }
+        return payload;
+    } finally {
+        if (timeout) clearTimeout(timeout);
+        if (contexto.controller === controller) contexto.controller = null;
+    }
+}
+
+function falharDescobertaPromocoes(contexto, erro, repetir) {
+    if (!contextoDescobertaPromocoesAtual(contexto)) return;
+    contexto.networkFailures += 1;
+    const permanente = [400, 401, 403, 404, 422].includes(erro?.status);
+    if (!permanente && contexto.networkFailures < 3) {
+        mostrarStatusDescobertaPromocoes(contexto, 'A consulta complementar foi interrompida. Tentando novamente...');
+        agendarDescobertaPromocoes(contexto, repetir);
+        return;
+    }
+    mostrarStatusDescobertaPromocoes(contexto, 'Consulta complementar incompleta. ' + (erro?.message || 'Não foi possível consultar todos os anúncios.'), true);
+}
+
+async function aplicarSnapshotDescobertaPromocoes(contexto, payload) {
+    if (!validarSnapshotDescobertaPromocoes(contexto, payload, contexto.jobId)) {
+        mostrarStatusDescobertaPromocoes(contexto, 'A consulta complementar recebeu um contexto diferente. Recarregue as promoções.');
+        return;
+    }
+    const revision = Number(payload.revision);
+    if (Number.isFinite(revision) && revision < contexto.revision) {
+        agendarDescobertaPromocoes(contexto, () => consultarJobDescobertaPromocoes(contexto));
+        return;
+    }
+    if (!Number.isFinite(revision) || revision > contexto.revision) {
+        await unirCampanhasDescobertasPromocoes(contexto, payload);
+        if (!validarSnapshotDescobertaPromocoes(contexto, payload, contexto.jobId)) return;
+        if (Number.isFinite(revision)) contexto.revision = revision;
+    }
+    contexto.networkFailures = 0;
+    const progress = payload.progress || {};
+    const processed = parsePromoCount(progress.processed) || 0;
+    const total = parsePromoCount(progress.total);
+    const failed = parsePromoCount(progress.failed) || 0;
+    const ignoradas = parsePromoCount(payload.ignored_without_campaign_id) || 0;
+    const progresso = `${processed}${total !== null ? ' de ' + total : ''} anúncio(s) consultado(s)`;
+    const adicionais = `${contexto.additionalCampaigns.size} campanha(s) adicional(is)`;
+    const individuais = ignoradas ? ` O Mercado Livre retornou também ${ignoradas} sugestões individuais que precisam ser consultadas no anúncio.` : '';
+    if (payload.status === 'completed' && payload.complete === true) {
+        mostrarStatusDescobertaPromocoes(contexto, `Consulta complementar concluída: ${progresso}; ${adicionais}.${individuais}`);
+        return;
+    }
+    if (payload.status === 'queued' || payload.status === 'running') {
+        mostrarStatusDescobertaPromocoes(contexto, `Buscando outras promoções: ${progresso}; ${adicionais}.`);
+        agendarDescobertaPromocoes(contexto, () => consultarJobDescobertaPromocoes(contexto));
+        return;
+    }
+    contexto.restartRequired = payload.resumable !== true;
+    const marco = JSON.stringify([processed, total, progress.pages]);
+    contexto.stalledRounds = marco === contexto.lastResumeProgress ? contexto.stalledRounds + 1 : 0;
+    contexto.lastResumeProgress = marco;
+    const retomar = payload.resumable === true && contexto.resumeRounds < 20 && contexto.stalledRounds < 3;
+    const falhas = failed ? ` ${failed} anúncio(s) com consulta pendente.` : '';
+    const warning = (Array.isArray(payload.warnings) ? payload.warnings : []).find(aviso => typeof aviso?.message === 'string' && aviso.message.trim());
+    const aviso = warning ? ` ${warning.message.trim().slice(0, 400)}` : '';
+    mostrarStatusDescobertaPromocoes(contexto, `Consulta complementar parcial: ${progresso}; ${adicionais}.${falhas}${aviso}${individuais}${retomar ? ' Retomando...' : ''}`, !retomar);
+    if (retomar) {
+        contexto.resumeRounds += 1;
+        agendarDescobertaPromocoes(contexto, () => iniciarJobDescobertaPromocoes(contexto));
+    }
+}
+
+async function iniciarJobDescobertaPromocoes(contexto, forceRefresh = false) {
+    if (!contextoDescobertaPromocoesAtual(contexto) || contexto.busy) return;
+    contexto.busy = true;
+    if (forceRefresh) {
+        const campanhasBase = (Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : []).filter(campanha =>
+            contexto.baseCampaignKeys.has(JSON.stringify([chaveCampanhaDescobertaPromocoes(campanha), campanha.selection_id || ''])));
+        apiPromoBPendingSelectedIds = new Set(apiPromoBSelectedIds);
+        contexto.additionalCampaigns.clear();
+        contexto.revision = -1;
+        renderApiPromoBButtons(campanhasBase);
+        mostrarStatusDescobertaPromocoes(contexto, 'Atualizando a consulta complementar de promoções...');
+    }
+    try {
+        const query = new URLSearchParams({ loja: contexto.loja, force_refresh: String(forceRefresh) });
+        const payload = await buscarSnapshotDescobertaPromocoes(contexto, `/api/mercadolivre/promocoes/descoberta/start?${query}`, {
+            method: 'POST',
+        });
+        if (!validarSnapshotDescobertaPromocoes(contexto, payload, forceRefresh ? '' : contexto.jobId)) {
+            mostrarStatusDescobertaPromocoes(contexto, 'A consulta complementar recebeu um contexto diferente. Recarregue as promoções.');
+            return;
+        }
+        if (contexto.jobId !== String(payload.job_id)) contexto.revision = -1;
+        contexto.jobId = String(payload.job_id);
+        contexto.sellerId = contexto.sellerId || String(payload.seller_id || '');
+        contexto.siteId = contexto.siteId || String(payload.site_id || '');
+        contexto.restartRequired = false;
+        await aplicarSnapshotDescobertaPromocoes(contexto, payload);
+    } catch (erro) {
+        falharDescobertaPromocoes(contexto, erro, () => iniciarJobDescobertaPromocoes(contexto, forceRefresh));
+    } finally {
+        contexto.busy = false;
+    }
+}
+
+async function consultarJobDescobertaPromocoes(contexto) {
+    if (!contextoDescobertaPromocoesAtual(contexto) || contexto.busy) return;
+    contexto.busy = true;
+    const jobId = contexto.jobId;
+    try {
+        const query = new URLSearchParams({ loja: contexto.loja });
+        const payload = await buscarSnapshotDescobertaPromocoes(contexto,
+            `/api/mercadolivre/promocoes/descoberta/${encodeURIComponent(jobId)}?${query}`);
+        await aplicarSnapshotDescobertaPromocoes(contexto, payload);
+    } catch (erro) {
+        if (erro?.status === 404) contexto.restartRequired = true;
+        falharDescobertaPromocoes(contexto, erro, () => consultarJobDescobertaPromocoes(contexto));
+    } finally {
+        contexto.busy = false;
+    }
+}
+
+function iniciarDescobertaPromocoesApi({ loja, clientId, data, carregamentoAtual }) {
+    const headers = getAuthHeadersWithClient();
+    const contexto = { loja, clientId, headers, carregamentoAtual, authorization: String(headers.Authorization || ''),
+        sellerId: String(data.seller_id || ''), siteId: String(data.site_id || ''), jobId: '', revision: -1,
+        timer: null, controller: null, busy: false, networkFailures: 0, resumeRounds: 0, stalledRounds: 0,
+        lastResumeProgress: '', restartRequired: false, additionalCampaigns: new Set(),
+        baseCampaignKeys: new Set((Array.isArray(apiPromoBCampaigns) ? apiPromoBCampaigns : []).map(campanha =>
+            JSON.stringify([chaveCampanhaDescobertaPromocoes(campanha), campanha.selection_id || '']))) };
+    apiPromoDiscoveryContext = contexto;
+    mostrarStatusDescobertaPromocoes(contexto, 'Buscando outras promoções nos anúncios...');
+    iniciarJobDescobertaPromocoes(contexto);
+}
+
 async function carregarPromocoesApi() {
+    pararDescobertaPromocoesApi();
     const loja = document.getElementById('apiLojaSelect')?.value || '';
     const clientId = getPromoClientId();
     const geracaoCarregamento = ++apiPromocoesCarregamentoGeracao;
@@ -1534,6 +1776,7 @@ async function carregarPromocoesApi() {
         const campanhasPorJanela = await expandirCampanhasRelampago(campanhasB, loja);
         if (!carregamentoAtual()) return;
         renderApiPromoBButtons(campanhasPorJanela);
+        if (data.discovery_available === true) iniciarDescobertaPromocoesApi({ loja, clientId, data, carregamentoAtual });
         if (apiAutoInicializada && getApiAutoPrefs().enabled) {
             salvarApiAutoPrefsServidor().catch(() => {});
         }

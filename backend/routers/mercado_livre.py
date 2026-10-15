@@ -19,6 +19,11 @@ from backend.services.mercadolivre import (
     listar_promocoes_contagens_mercado_livre,
 )
 
+from backend.services.mercadolivre_promocoes_descoberta import (
+    iniciar_descoberta_promocoes_mercado_livre,
+    consultar_descoberta_promocoes_mercado_livre,
+)
+
 
 @dataclass(frozen=True)
 class MercadoLivreRouterConfig:
@@ -94,5 +99,21 @@ def create_mercado_livre_router(config: MercadoLivreRouterConfig) -> APIRouter:
         client_id: str = Depends(config.get_tenant_id),
     ):
         return listar_promocoes_contagens_mercado_livre(client_id, loja)
+
+    @router.post("/api/mercadolivre/promocoes/descoberta/start", name="ml_iniciar_descoberta_promocoes")
+    def ml_iniciar_descoberta_promocoes(
+        loja: str,
+        force_refresh: bool = False,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return iniciar_descoberta_promocoes_mercado_livre(client_id, loja, force_refresh)
+
+    @router.get("/api/mercadolivre/promocoes/descoberta/{job_id}", name="ml_consultar_descoberta_promocoes")
+    def ml_consultar_descoberta_promocoes(
+        job_id: str,
+        loja: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        return consultar_descoberta_promocoes_mercado_livre(client_id, loja, job_id)
 
     return router

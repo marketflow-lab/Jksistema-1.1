@@ -563,6 +563,22 @@
             align-items:stretch;
             gap:8px;
         }
+        .api-promo-discovery-status {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            flex-wrap:wrap;
+            gap:8px;
+            margin-bottom:8px;
+            padding:10px 12px;
+            border:1px solid rgba(126, 181, 231, 0.22);
+            border-radius:6px;
+            background:rgba(18, 40, 64, 0.72);
+        }
+        .api-promo-discovery-status .api-promo-selection-summary {
+            min-width:0;
+            overflow-wrap:anywhere;
+        }
         .api-promo-toolbar {
             display:flex;
             align-items:center;
