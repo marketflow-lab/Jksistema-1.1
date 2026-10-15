@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.schemas import VendasSyncRequest
@@ -35,6 +35,7 @@ def create_vendas_router(
 
     @router.get("/api/vendas/resumo", name="resumo_vendas")
     def resumo_vendas(
+        request: Request,
         data_inicio: str = None,
         data_fim: str = None,
         sku: str = None,
@@ -43,7 +44,12 @@ def create_vendas_router(
         incluir_ebazar: bool = False,
         client_id: str = Depends(tenant_dependency),
     ):
-        return _transport(service.resumo_vendas, client_id=client_id, data_inicio=data_inicio, data_fim=data_fim, sku=sku, loja=loja, unidade_negocio=unidade_negocio, incluir_ebazar=incluir_ebazar)
+        result = _transport(service.resumo_vendas, client_id=client_id, data_inicio=data_inicio, data_fim=data_fim, sku=sku, loja=loja, unidade_negocio=unidade_negocio, incluir_ebazar=incluir_ebazar)
+        if request.headers.get("X-JK-Vendas-Fotos") == "1":
+            from .photos import enrich_summary_photos
+
+            return enrich_summary_photos(result, client_id, loja)
+        return result
 
     @router.get("/api/vendas", name="listar_vendas")
     def listar_vendas(
