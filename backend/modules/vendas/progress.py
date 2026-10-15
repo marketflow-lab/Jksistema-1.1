@@ -109,14 +109,15 @@ def _sync_active_jobs(client_id: str) -> dict:
     with SYNC_ACTIVE_LOCK:
         return dict(_sync_active_jobs_unlocked(client_id))
 
-def _sync_register_active_unlocked(client_id: str, req: "VendasSyncRequest") -> str:
+def _sync_register_active_unlocked(client_id: str, req: "VendasSyncRequest", job_id: str | None = None) -> str:
     active = dict(_sync_active_jobs_unlocked(client_id))
-    job_id = uuid.uuid4().hex
+    job_id = job_id or uuid.uuid4().hex
     agora = datetime.now().isoformat()
     meta = {
         "id": job_id,
         "client_id": client_id,
         "loja": req.loja,
+        "store_id": req.store_id,
         "data_inicio": req.data_inicio,
         "data_fim": req.data_fim,
         "forcar_resync": bool(req.forcar_resync),
@@ -210,6 +211,7 @@ def _set_progresso(client_id: str, data: dict):
             mensagem = str(data.get("mensagem") or "")
             data["mensagem"] = f"Dia {dia_indice}/{total_dias} ({ctx.get('dia_atual')}): {mensagem}"
             data["_global_percent_applied"] = True
+            data["concluido"] = False
         except Exception:
             pass
     if isinstance(data, dict):
@@ -252,6 +254,9 @@ def _sync_log(client_id: str, mensagem: str):
         SYNC_LOGS[client_id] = logs_cliente
 
 def _verificar_cancelamento(client_id: str):
+    lease_check = getattr(SYNC_THREAD_CONTEXT, "lease_check", None)
+    if lease_check is not None and not lease_check():
+        raise HTTPException(status_code=409, detail="Execução pausada ou assumida por outra tentativa.")
     key = _sync_context_key(client_id)
     if SYNC_CANCEL_FLAGS.get(client_id) or SYNC_CANCEL_FLAGS.get(key):
         SYNC_CANCEL_FLAGS.pop(key, None)
@@ -259,9 +264,13 @@ def _verificar_cancelamento(client_id: str):
         raise HTTPException(status_code=409, detail="Sincronização cancelada pelo usuário.")
 
 def cancelar_sincronizacao_vendas(client_id: str):
+    from .sync_queue import SyncQueue
+    SyncQueue(client_id).pause_all()
     SYNC_CANCEL_FLAGS[client_id] = True
-    _set_progresso(client_id, _criar_progresso("Cancelamento", 0, 0, 0, "Cancelamento solicitado."))
-    return {"success": True, "message": "Cancelamento solicitado."}
+    for job_id in _sync_active_jobs(client_id):
+        SYNC_CANCEL_FLAGS[job_id] = True
+    _set_progresso(client_id, _criar_progresso("Pausado", 0, 0, 0, "Sincronização pausada; progresso preservado."))
+    return {"success": True, "message": "Sincronização pausada; progresso preservado."}
 
 def progresso_sincronizacao_vendas(client_id: str):
     active_jobs = _sync_active_jobs(client_id)
@@ -316,12 +325,66 @@ def progresso_sincronizacao_vendas(client_id: str):
             "id": job_id,
             "progress": job_progress,
         })
+    from .sync_queue import SyncQueue
+    from .sync_automation import remember_authorization
+    remember_authorization(client_id)
+    automacao = SyncQueue(client_id).summary()
+    durable_jobs = automacao.get("jobs") or []
+    from backend.services.vendas_collection_checkpoint import collection_day_summary
+    for job in durable_jobs:
+        if job.get("status") == "complete":
+            continue
+        # Read operational staging, not business-row counts: a partially collected
+        # document belongs to this exact tenant/store/cycle/day.
+        done = set(job.get("dias_concluidos") or [])
+        start = dt.date.fromisoformat(job["data_inicio"])
+        end = dt.date.fromisoformat(job["data_fim"])
+        day = start
+        while day <= end and day.isoformat() in done:
+            day += dt.timedelta(days=1)
+        if day <= end:
+            checkpoint = collection_day_summary(client_id, job["store_id"], job["id"], day.isoformat())
+            if checkpoint.get("documentos_salvos"):
+                job["checkpoint"] = checkpoint
+                for store in automacao.get("lojas") or []:
+                    if store.get("job_id") == job["id"]:
+                        store["checkpoint"] = checkpoint
+    if durable_jobs:
+        operational = [job for job in durable_jobs if job.get("status") in {"queued", "running", "retry", "blocked"}]
+        paused_jobs = [job for job in durable_jobs if job.get("status") == "paused"]
+        latest = durable_jobs[0]
+        pending = operational or (paused_jobs if latest.get("status") != "complete" else [])
+        sync_state = (pending or durable_jobs)[0]
+        due = [job for job in pending if job.get("status") == "running"
+               or (job.get("status") in {"queued", "retry"} and float(job.get("next_attempt") or 0) <= time.time())]
+        active = bool(active_jobs) or bool(due)
+        known = {job["id"] for job in active_jobs_payload}
+        for job in due:
+            if job["id"] not in known:
+                active_jobs_payload.append({
+                    "id": job["id"], "loja": job["loja"], "store_id": job["store_id"],
+                    "data_inicio": job["data_inicio"], "data_fim": job["data_fim"],
+                    "forcar_resync": job["forcar_resync"], "status": job["status"],
+                    "progress": None,
+                })
+        if not active and pending:
+            paused = all(job.get("status") == "paused" for job in pending)
+            message = ("Sincronização pausada; progresso preservado." if paused
+                       else "Há registros pendentes. Acompanhe a próxima tentativa ou o acesso da integração.")
+            progress = _criar_progresso("Pausado" if paused else "Pendente", 0, 0, 0, message)
+            progress["concluido"] = False
+        elif not active and not pending:
+            progress = _criar_progresso("Finalizado", 1, 1, 100, "Períodos solicitados conferidos.")
+            progress["concluido"] = True
+        elif not progress:
+            progress = _criar_progresso("Fila", 0, 0, 0, "Períodos salvos; aguardando processamento.")
     return {
         "success": True,
+        "automacao": automacao,
         "progress": progress,
         "logs": [_corrigir_texto_mojibake(log) for log in SYNC_LOGS.get(client_id, [])],
         "active": active,
-        "active_count": len(active_jobs),
+        "active_count": sum(job.get("status") == "running" for job in active_jobs_payload),
         "active_jobs": active_jobs_payload,
         "job_progress": {
             job_id: SYNC_PROGRESS.get(job_id)

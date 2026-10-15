@@ -48,6 +48,7 @@
     </div>
 
     <div id="status" class="status-bar"></div>
+    <div id="syncPersistenteStatus" class="status-bar" role="status" aria-live="polite"></div>
 
     <div class="filters">
         <div class="periodo-linha">
@@ -68,11 +69,15 @@
             </select>
             <label class="sync-toggle">
                 <input type="checkbox" id="forcarSync" style="cursor:pointer;">
-                <span>Re-sicronizar</span>
+                <span>Re-sincronizar</span>
+            </label>
+            <label class="sync-toggle" title="Ativada ao clicar em Atualizar; continua enquanto o serviço do sistema estiver funcionando.">
+                <input type="checkbox" id="syncAutomatico" style="cursor:pointer;" checked>
+                <span>Atualizar automaticamente</span>
             </label>
             <div class="sync-actions">
                 <button id="btnSync" class="back-btn icon-sync-btn" style="background:#28a745;" title="Atualizar período" aria-label="Atualizar período">&#x1F504;</button>
-                <button id="btnCancel" class="back-btn icon-sync-btn" style="background:#dc3545;" title="Cancelar sincronização" aria-label="Cancelar sincronização" disabled>&#x23F9;</button>
+                <button id="btnCancel" class="back-btn icon-sync-btn" style="background:#dc3545;" title="Pausar sincronização e atualização automática de todas as lojas" aria-label="Pausar sincronização e atualização automática de todas as lojas" disabled>&#x23F9;</button>
             </div>
         </div>
     </div>
@@ -281,8 +286,8 @@
 </div>
 
     <script src="/vendas/runtime.js?v=20260831-vendas-lojas-visiveis-v1"></script>
-    <script src="/vendas/periodo-cache.js?v=20260831-vendas-lojas-visiveis-v1"></script>
-    <script src="/vendas/sync.js?v=20260831-vendas-lojas-visiveis-v1"></script>
+    <script src="/vendas/periodo-cache.js?v=20261015-vendas-sync-persistente-v1"></script>
+    <script src="/vendas/sync.js?v=20261015-vendas-sync-persistente-v1"></script>
     <script src="/vendas/dados-render.js?v=20260831-vendas-lojas-visiveis-v1"></script>
   <script src="/vendas/periodos-completos.js?v=20260827-vendas-previsao-mes-atual-v1"></script>
   <script src="/vendas/grafico.js?v=20260828-vendas-sem-resumo-previsao-v1"></script>

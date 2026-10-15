@@ -178,6 +178,8 @@ def _shared_sync_path_permanently_excluded(rel_path: str) -> bool:
     parts = [part.split(":", 1)[0].rstrip(" .") for part in rel.split("/") if part]
     return any(
         part in {"contextvault", "context_hub", ".obsidian", "sku", "_stores_publication"}
+        or any(part == name or part.startswith(name + "-") or part.startswith(name + ".")
+               for name in ("vendas_sync_queue.db", "vendas_collection_checkpoint.db"))
         or part == "lojas_public_snapshot.json"
         or part.startswith("lojas_public_snapshot.json.")
         for part in parts

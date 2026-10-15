@@ -28,6 +28,9 @@ def create_vendas_router(
     dependencies: VendasModuleDependencies,
 ) -> APIRouter:
     router = APIRouter(tags=["vendas"])
+    from .sync_automation import start, stop
+    router.add_event_handler("startup", start)
+    router.add_event_handler("shutdown", stop)
     tenant_dependency = dependencies.get_tenant_id
 
     @router.get("/api/vendas/resumo", name="resumo_vendas")

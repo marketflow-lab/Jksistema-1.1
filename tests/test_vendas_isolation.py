@@ -97,17 +97,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # A central adiciona status, atualizacao manual de lojas e concessao
-        # de acesso. O treinamento por loja adiciona leitura, gravacao e lista
-        # de SKUs. Perguntas adiciona quatro consultas progressivas, duas rotas
-        # de sincronizacao do catalogo e a lista de solicitacoes. Cadastro soma
-        # a listagem consolidada das lojas. A Sala de Reuniao deixa de registrar
-        # as quatro rotas RustDesk. Firebase soma tres rotas de provisionamento
-        # e uma de status da sessao (e06e8db). As fichas de treinamento somam
-        # duas rotas (1161317), e renomear loja soma uma (bb40d26).
+        # Contagens verificadas no commit base 36741ae (v1.0.230).
         # O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 469,
-        "pairs": 467,
+        "routes": 507,
+        "pairs": 505,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
@@ -158,45 +151,44 @@ def test_app_paths_never_moves_global_legacy_file_into_non_default_tenant(
     assert legacy.read_text(encoding="utf-8") == "sku,estoque\nA,1\n"
 
 
-def test_sync_preserves_already_running_two_account_limit_and_cancel(monkeypatch) -> None:
-    stores = (SYNC_ACTIVE, SYNC_CANCEL_FLAGS, SYNC_DAY_CONTEXT, SYNC_LOGS, SYNC_META, SYNC_PROGRESS)
-    snapshots = [dict(store) for store in stores]
+def test_sync_queue_keeps_capacity_limit_and_cancellation_contract(tmp_path, monkeypatch) -> None:
+    # Work that exceeds capacity is now durably queued instead of discarded.
+    from backend.modules.vendas import sync_automation
+    from backend.modules.vendas.sync_queue import SyncQueue
+    _create_module(tmp_path)
 
     class FakeThread:
         def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-
+            self.alive = False
         def start(self):
-            return None
+            self.alive = True
+        def is_alive(self):
+            return self.alive
 
-    monkeypatch.setattr(vendas_sync_engine.threading, "Thread", FakeThread)
+    stores = (SYNC_ACTIVE, SYNC_CANCEL_FLAGS, SYNC_DAY_CONTEXT, SYNC_LOGS, SYNC_META, SYNC_PROGRESS)
+    snapshots = [dict(store) for store in stores]
+    monkeypatch.setattr(sync_automation.threading, "Thread", FakeThread)
+    monkeypatch.setattr(sync_automation, "start", lambda: None)
+    monkeypatch.setattr(sync_automation, "_RUNNING", {})
+    monkeypatch.setattr(sync_automation, "_AUTH", {})
+    monkeypatch.setattr(vendas_sync_engine, "_resolve_store",
+                        lambda req, _: req.model_copy(update={"store_id": req.loja}))
     try:
         for store in stores:
             store.clear()
-        req_a = VendasSyncRequest(loja="Loja A", data_inicio="2026-07-01", data_fim="2026-07-01")
-        req_b = VendasSyncRequest(loja="Loja B", data_inicio="2026-07-01", data_fim="2026-07-01")
-        req_c = VendasSyncRequest(loja="Loja C", data_inicio="2026-07-01", data_fim="2026-07-01")
-
-        first = vendas_sync_engine.sincronizar_vendas(req_a, "tenant-sync")
-        duplicate = vendas_sync_engine.sincronizar_vendas(req_a, "tenant-sync")
-        second = vendas_sync_engine.sincronizar_vendas(req_b, "tenant-sync")
-        limited = vendas_sync_engine.sincronizar_vendas(req_c, "tenant-sync")
+        reqs = [VendasSyncRequest(loja=name, data_inicio="2026-07-01", data_fim="2026-07-01")
+                for name in ("A", "B", "C")]
+        first = vendas_sync_engine.sincronizar_vendas(reqs[0], "tenant-sync")
+        duplicate = vendas_sync_engine.sincronizar_vendas(reqs[0], "tenant-sync")
+        second = vendas_sync_engine.sincronizar_vendas(reqs[1], "tenant-sync")
+        queued = vendas_sync_engine.sincronizar_vendas(reqs[2], "tenant-sync")
+        assert first["started"] and second["started"]
+        assert duplicate["job_id"] == first["job_id"]
+        assert queued["queued"] and queued["accepted"]
+        assert len(SYNC_ACTIVE["tenant-sync"]) == 2
         cancelled = vendas_progress.cancelar_sincronizacao_vendas("tenant-sync")
-
-        assert first["started"] is True
-        assert duplicate == {
-            "started": False,
-            "already_running": True,
-            "job_id": first["job_id"],
-            "message": "Esta loja ja esta sincronizando.",
-        }
-        assert second["started"] is True and second["active_count"] == 2
-        assert limited["already_running"] is True
-        assert limited["limit_reached"] is True
-        assert limited["active_count"] == limited["limit"] == 2
         assert cancelled["success"] is True
-        assert SYNC_CANCEL_FLAGS["tenant-sync"] is True
+        assert all(job["status"] == "paused" for job in SyncQueue("tenant-sync").list_jobs())
     finally:
         for store, snapshot in zip(stores, snapshots):
             store.clear()

@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from backend.services.bling import BLING_SESSION, _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
 from backend.services.bling_oauth import exchange_bling_refresh_token
 from backend.services.sqlite_coordination import sqlite_lock_for_path
+from backend.services.vendas_collection_checkpoint import load_collected_document, save_collected_document
 
 logger = logging.getLogger("jk_sistema")
 PASTA_INFO = os.path.join(os.getcwd(), "info")
@@ -27,6 +28,17 @@ _criar_progresso_fn: Callable[..., Any] | None = None
 _set_progresso_fn: Callable[[str, dict], Any] | None = None
 _sync_log_fn: Callable[[str, str], Any] | None = None
 _verificar_cancelamento_fn: Callable[[str], Any] | None = None
+
+
+def _documento_ja_coletado(seen: dict, document_id: Any, listing: dict) -> bool:
+    """Overlapping pages must not duplicate a document or mix two revisions."""
+    key = str(document_id)
+    revision = json.dumps(listing, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    previous = seen.get(key)
+    if previous is not None and previous != revision:
+        raise HTTPException(status_code=502, detail="Documento mudou durante a paginacao; repita a coleta do dia.")
+    seen[key] = revision
+    return previous is not None
 
 
 def _iterar_janelas_data_bling(data_inicio: str, data_fim: str, dias_por_janela: int = 31) -> list[tuple[str, str]]:
@@ -1791,6 +1803,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
 
     pagina = 1
     limiter_lista = _BlingAdaptiveLimiter(start_interval=0.08)
+    seen_documents = {}
     limiter_detalhe = _BlingAdaptiveLimiter(start_interval=0.06)
     while True:
         # Verificar cancelamento antes de cada requisição
@@ -1876,6 +1889,13 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
             pid = p.get("id")
             if pid is None or not str(pid).strip():
                 raise HTTPException(status_code=502, detail="Pedido sem identificador obrigatorio na resposta da Bling.")
+            if _documento_ja_coletado(seen_documents, pid, p):
+                continue
+            cached = load_collected_document("pedido", pid, p)
+            if cached is not None:
+                registros.extend(cached["sales"])
+                continue
+            document_start = len(registros)
             url_det = f"https://api.bling.com.br/Api/v3/pedidos/vendas/{pid}"
             det = _bling_get_with_adaptive_limit(
                 url_det,
@@ -2001,7 +2021,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                 comprador = contato.get("nome", "")
             
             venda_itens = _bling_required_items(venda, "buscar detalhe obrigatorio de pedido")
-            for item in venda_itens:
+            for item_index, item in enumerate(venda_itens):
                 sku = item.get("codigo") or "N/D"
                 produto = item.get("descricao") or "Produto s/ descrição"
                 qtd = _bling_required_float(item.get("quantidade", 0), "detalhar item de pedido")
@@ -2011,6 +2031,9 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                     "loja_conta": loja_nome,
                     "canal": canal,
                     "id_pedido": str(pid or ""),
+                    "origem_tipo": "pedido",
+                    "origem_id": str(pid),
+                    "item_id": str(item_index + 1),
                     "numero": numero,
                     "situacao": situacao,
                     "devolucao": devolucao,
@@ -2027,6 +2050,10 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                     "intermediador_nome": intermediador_nome,
                     "intermediador_cnpj": intermediador_cnpj,
                 })
+            save_collected_document(
+                "pedido", pid, p,
+                {"sales": registros[document_start:], "notes": [], "items": []},
+            )
         pagina += 1
 
     return registros, 200
@@ -2226,6 +2253,8 @@ def _bling_listar_notas_entrada(
     registros = []
     itens = []
     pagina = 1
+    page_signatures = set()
+    seen_documents = {}
     limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     mapa_lojas_cliente = {}
     if client_id:
@@ -2277,6 +2306,11 @@ def _bling_listar_notas_entrada(
         if not notas:
             break
 
+        signature = tuple(str(_bling_required_dict(n, "listar NFe de entrada").get("id")) for n in notas)
+        if signature in page_signatures or pagina > 10000:
+            raise HTTPException(status_code=502, detail="Paginacao repetida ou sem fim ao listar NFe de entrada.")
+        page_signatures.add(signature)
+
         total_notas_pagina = len(notas)
         pct_detalhe = min(progress_end, max(progress_start, pct_pagina + 1))
         _notificar_progresso_nf(
@@ -2313,6 +2347,14 @@ def _bling_listar_notas_entrada(
                     status_code=502,
                     detail="NFe de entrada sem identificador para buscar detalhe obrigatorio.",
                 )
+            if _documento_ja_coletado(seen_documents, nid, nf):
+                continue
+            cached = load_collected_document("nfe_entrada", nid, nf)
+            if cached is not None:
+                registros.extend(cached["notes"])
+                itens.extend(cached["items"])
+                continue
+            document_start = len(itens)
             numero = nf.get("numero")
             data_emissao = nf.get("dataEmissao") or nf.get("data")
             valor = nf.get("valorTotal") or nf.get("total") or 0
@@ -2502,7 +2544,7 @@ def _bling_listar_notas_entrada(
             if registros:
                 registros[-1]["devolucao"] = devolucao
                 registros[-1]["unidade_negocio_virtual"] = unidade_virtual
-            for item in nota_itens:
+            for item_index, item in enumerate(nota_itens):
                 item = _bling_required_dict(item, "detalhar item de NFe de entrada")
                 # SKU vem diretamente no campo "codigo" do item
                 sku = item.get("codigo") or item.get("sku") or item.get("id")
@@ -2517,6 +2559,7 @@ def _bling_listar_notas_entrada(
 
                 itens.append({
                     "id_nota": nid,
+                    "item_id": str(item_index + 1),
                     "numero_nota": numero,
                     "origem_codigo": origem_codigo,
                     "data_emissao": data_emissao,
@@ -2532,6 +2575,10 @@ def _bling_listar_notas_entrada(
                     ,"unidade_negocio": unidade_nf,
                     "unidade_negocio_virtual": unidade_virtual
                 })
+            save_collected_document(
+                "nfe_entrada", nid, nf,
+                {"sales": [], "notes": [registros[-1]], "items": itens[document_start:]},
+            )
 
         _notificar_log_nf(
             log_callback,
@@ -2610,6 +2657,8 @@ def _bling_listar_vendas_fallback_nf_saida(
     registros = []
     pagina = 1
     max_paginas = 400
+    page_signatures = set()
+    seen_documents = {}
     limiter = _BlingAdaptiveLimiter(start_interval=0.08)
     mapa_lojas_cliente = mapa_lojas_cliente or {}
     if not mapa_lojas_cliente and client_id:
@@ -2677,6 +2726,11 @@ def _bling_listar_vendas_fallback_nf_saida(
         if not notas:
             break
 
+        signature = tuple(str(_bling_required_dict(n, "listar NFe de saida").get("id")) for n in notas)
+        if signature in page_signatures:
+            raise HTTPException(status_code=502, detail="Paginacao repetida ao listar NFe de saida.")
+        page_signatures.add(signature)
+
         total_notas_pagina = len(notas)
         pct_detalhe = min(progress_end, max(progress_start, pct_pagina + 1))
         _notificar_progresso_nf(
@@ -2709,6 +2763,13 @@ def _bling_listar_vendas_fallback_nf_saida(
             nf_id = str(nf.get("id") or "").strip()
             if not nf_id:
                 raise HTTPException(status_code=502, detail="NFe de saida sem identificador para buscar detalhe obrigatorio.")
+            if _documento_ja_coletado(seen_documents, nf_id, nf):
+                continue
+            cached = load_collected_document("nfe_saida", nf_id, nf)
+            if cached is not None:
+                registros.extend(cached["sales"])
+                continue
+            document_start = len(registros)
             numero_nf = str(nf.get("numero") or "").strip()
             data_venda = nf.get("dataEmissao") or nf.get("data") or ""
             contato = nf.get("contato") or {}
@@ -2803,7 +2864,7 @@ def _bling_listar_vendas_fallback_nf_saida(
             unidade_negocio = _normalizar_unidade_negocio_ml(unidade_resolvida or loja_desc or canal, canal, prefer_full=True)
 
             itens = _bling_required_items(detalhe, "detalhar NFe de saida")
-            for item in itens:
+            for item_index, item in enumerate(itens):
                 item = _bling_required_dict(item, "detalhar item de NFe de saida")
                 sku = item.get("codigo") or item.get("sku") or "N/D"
                 produto = item.get("descricao") or item.get("nome") or "Produto s/ descrição"
@@ -2819,6 +2880,9 @@ def _bling_listar_vendas_fallback_nf_saida(
                     "canal": canal,
                     "numero": numero,
                     "situacao": "Faturado",
+                    "origem_tipo": "nfe_saida",
+                    "origem_id": nf_id,
+                    "item_id": str(item_index + 1),
                     "devolucao": 0,
                     "sku": sku,
                     "produto": produto,
@@ -2833,6 +2897,10 @@ def _bling_listar_vendas_fallback_nf_saida(
                     "intermediador_nome": intermediador_nome,
                     "intermediador_cnpj": intermediador_cnpj,
                 })
+            save_collected_document(
+                "nfe_saida", nf_id, nf,
+                {"sales": registros[document_start:], "notes": [], "items": []},
+            )
 
         _notificar_log_nf(
             log_callback,

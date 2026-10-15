@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -54,6 +56,12 @@ _SQL_INSERT_VENDAS = """
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
+_SQL_INSERT_VENDAS_IDENTIFICADAS = _SQL_INSERT_VENDAS.replace(
+    "intermediador_nome, intermediador_cnpj)",
+    "intermediador_nome, intermediador_cnpj, origem_tipo, origem_id, item_id)",
+).replace("VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+
 _SQL_INSERT_NOTAS = """
     INSERT OR REPLACE INTO notas_entrada
     (id_unico, id_bling, numero, data_emissao, natureza_operacao,
@@ -70,6 +78,11 @@ _SQL_INSERT_ITENS = """
      unidade_negocio_virtual)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
+
+
+def _insert_com_store_id(sql: str) -> str:
+    columns, values = sql.split("VALUES", 1)
+    return columns.rstrip().removesuffix(")") + ", store_id) VALUES" + values.rstrip().removesuffix(")") + ", ?)"
 
 _SQL_CREATE_VENDAS = """
     CREATE TABLE IF NOT EXISTS vendas (
@@ -124,8 +137,13 @@ _SYNC_SCHEMA_COLUMNS = {
         "unidade_id": "TEXT",
         "intermediador_nome": "TEXT",
         "intermediador_cnpj": "TEXT",
+        "origem_tipo": "TEXT",
+        "origem_id": "TEXT",
+        "item_id": "TEXT",
+        "store_id": "TEXT",
     },
     "notas_entrada": {
+        "store_id": "TEXT",
         "id_bling": "TEXT",
         "numero": "TEXT",
         "data_emissao": "TEXT",
@@ -140,6 +158,7 @@ _SYNC_SCHEMA_COLUMNS = {
         "unidade_negocio_virtual": "TEXT",
     },
     "notas_entrada_itens": {
+        "store_id": "TEXT",
         "id_nota": "TEXT",
         "numero_nota": "TEXT",
         "data_emissao": "TEXT",
@@ -181,6 +200,8 @@ def _ensure_sync_schema(cursor: sqlite3.Cursor) -> None:
     cursor.execute(_SQL_CREATE_ITENS)
     for table, columns in _SYNC_SCHEMA_COLUMNS.items():
         _ensure_table_columns(cursor, table, columns)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vendas_documento_origem ON vendas(loja_conta, origem_tipo, origem_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vendas_store_documento ON vendas(store_id, origem_tipo, origem_id)")
 
 
 def _normalizar_numero_deduplicacao_venda(valor: Any) -> str:
@@ -237,6 +258,11 @@ def _montar_id_unico_venda(
     valor_normalizado = _normalizar_valor_deduplicacao_venda(valor) or "0"
     loja = _normalizar_numero_deduplicacao_venda(loja_conta).replace("/", "_") or "sem_loja"
     return f"{loja}_{referencia}_{sku_normalizado}_{quantidade_normalizada}_{valor_normalizado}"
+
+
+def _id_item_documento(loja: str, tipo: str, documento: str, item: str) -> str:
+    material = json.dumps([loja, tipo, documento, item], ensure_ascii=False, separators=(",", ":"))
+    return "bling_v2_" + hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _coerce_status_code(status: Any) -> int:
@@ -303,6 +329,8 @@ def _preparar_payload_vendas(
 ) -> list[tuple]:
     payload: list[tuple] = []
     chaves_processadas: set[tuple] = set()
+    linhas_identificadas: dict[tuple, dict] = {}
+    indices_documentos: dict[tuple, int] = {}
     total = len(registros)
     lote_size = 100
     total_lotes = (total + lote_size - 1) // lote_size
@@ -341,6 +369,11 @@ def _preparar_payload_vendas(
         id_pedido = str(registro.get("id_pedido") or "").strip()
         numero_nf = str(registro.get("numero_nf") or "").strip()
         nota_fiscal_id = str(registro.get("nota_fiscal_id") or "").strip()
+        origem_tipo = str(registro.get("origem_tipo") or ("pedido" if id_pedido else "")).strip()
+        origem_id = str(registro.get("origem_id") or id_pedido or "").strip()
+        document_key = (origem_tipo, origem_id)
+        indices_documentos[document_key] = indices_documentos.get(document_key, 0) + 1
+        item_id = str(registro.get("item_id") or indices_documentos[document_key])
         id_unico = _montar_id_unico_venda(
             loja_conta=req.loja,
             id_pedido=id_pedido,
@@ -363,11 +396,20 @@ def _preparar_payload_vendas(
             valor=registro.get("valor", 0),
             id_pedido=id_pedido,
         )
-        if chave in chaves_processadas:
-            continue
-        chaves_processadas.add(chave)
-        payload.append(
-            (
+        if origem_tipo and origem_id:
+            identity = (origem_tipo, origem_id, item_id)
+            previous = linhas_identificadas.get(identity)
+            if previous is not None:
+                if previous != registro:
+                    raise HTTPException(status_code=502, detail="Item de venda repetido com dados conflitantes.")
+                continue
+            linhas_identificadas[identity] = registro
+            id_unico = _id_item_documento(str(getattr(req, "store_id", None) or req.loja), origem_tipo, origem_id, item_id)
+        else:
+            if chave in chaves_processadas:
+                continue
+            chaves_processadas.add(chave)
+        row = (
                 id_unico,
                 data_str,
                 req.loja,
@@ -388,8 +430,10 @@ def _preparar_payload_vendas(
                 registro.get("unidade_id", ""),
                 registro.get("intermediador_nome", ""),
                 registro.get("intermediador_cnpj", ""),
-            )
         )
+        if origem_tipo and origem_id:
+            row += (origem_tipo, origem_id, item_id)
+        payload.append(row)
     return payload
 
 
@@ -416,6 +460,8 @@ def _preparar_payload_notas(
             if id_bling is not None
             else f"{req.loja}_{nota.get('numero')}_{data_base}"
         )
+        if getattr(req, "store_id", None) and id_bling is not None:
+            id_unico = _id_item_documento(str(req.store_id), "nfe_entrada", str(id_bling), "header")
         payload_notas[id_unico] = (
             id_unico,
             id_bling,
@@ -433,6 +479,7 @@ def _preparar_payload_notas(
         )
 
     payload_itens: dict[str, tuple] = {}
+    indices_notas: dict[str, int] = {}
     for idx, item in enumerate(notas_itens):
         if idx % 100 == 0:
             _verificar_cancelamento(client_id)
@@ -448,7 +495,12 @@ def _preparar_payload_notas(
                 item.get("natureza_operacao"),
                 req.loja,
             )
-        id_unico = f"{req.loja}_{item.get('id_nota')}_{item.get('sku')}"
+        nota_id = str(item.get("id_nota") or "")
+        indices_notas[nota_id] = indices_notas.get(nota_id, 0) + 1
+        item_id = str(item.get("item_id") or indices_notas[nota_id])
+        id_unico = _id_item_documento(str(getattr(req, "store_id", None) or req.loja), "nfe_entrada", nota_id, item_id)
+        if id_unico in payload_itens:
+            raise HTTPException(status_code=502, detail="Item de nota repetido no documento coletado.")
         payload_itens[id_unico] = (
             id_unico,
             item.get("id_nota"),
@@ -472,7 +524,7 @@ def _preparar_payload_notas(
 
 
 def _filtrar_vendas_ja_existentes(
-    cursor: sqlite3.Cursor, payload: list[tuple], loja: str
+    cursor: sqlite3.Cursor, payload: list[tuple], loja: str, store_id: str = ""
 ) -> list[tuple]:
     existentes_ids: set[str] = set()
     chaves_existentes: set[tuple] = set()
@@ -481,9 +533,10 @@ def _filtrar_vendas_ja_existentes(
         SELECT loja_conta, numero, sku, data, numero_nf, nota_fiscal_id,
                canal, comprador, quantidade, valor, id_unico
         FROM vendas
-        WHERE loja_conta = ?
+        WHERE (store_id = ? AND ? != '')
+           OR (coalesce(store_id, '') = '' AND ? = '' AND loja_conta = ?)
         """,
-        (loja,),
+        (store_id, store_id, store_id, loja),
     ).fetchall():
         if str(row[10] or "").strip():
             existentes_ids.add(str(row[10]).strip())
@@ -524,6 +577,105 @@ def _filtrar_vendas_ja_existentes(
     return filtrado
 
 
+def _escopo_store(req: VendasSyncRequest) -> tuple[str, tuple]:
+    store_id = str(getattr(req, "store_id", None) or "").strip()
+    if store_id:
+        return "store_id = ?", (store_id,)
+    return "coalesce(store_id, '') = '' AND loja_conta = ?", (req.loja,)
+
+
+def _legado_loja_nao_ambiguo(cursor: sqlite3.Cursor, req: VendasSyncRequest) -> bool:
+    """A known different account with the same name prevents legacy adoption."""
+    store_id = str(getattr(req, "store_id", None) or "").strip()
+    for table in ("vendas", "notas_entrada", "notas_entrada_itens"):
+        if cursor.execute(
+            f"SELECT 1 FROM {table} WHERE loja_conta=? AND trim(coalesce(store_id,''))!='' "
+            "AND store_id!=? LIMIT 1", (req.loja, store_id),
+        ).fetchone():
+            return False
+    return True
+
+
+def _substituir_documentos_vendas(
+    cursor: sqlite3.Cursor, rows: list[tuple], req: VendasSyncRequest,
+    notas_saida_observadas: set[str] | None = None,
+) -> None:
+    """Replace only observed documents; keep unrelated/unknown legacy sales."""
+    documents: dict[tuple[str, str], list[tuple]] = {}
+    for row in rows:
+        documents.setdefault((row[20], row[21]), []).append(row)
+    observed_invoices = set(notas_saida_observadas or ())
+    if not documents and not observed_invoices:
+        return
+    store_clause, store_args = _escopo_store(req)
+    legacy_allowed = _legado_loja_nao_ambiguo(cursor, req)
+    if getattr(req, "store_id", None) and legacy_allowed:
+        store_clause = f"({store_clause}) OR (coalesce(store_id,'')='' AND loja_conta=?)"
+        store_args += (req.loja,)
+    # A legacy row carries its document reference in id_unico, but no typed ID.
+    # Adopt it only when the exact old identity can be reconstructed. Never
+    # remove records merely because buyer, amount or SKU happen to be equal.
+    legacy_rows = cursor.execute(
+        "SELECT id_unico, sku, quantidade, valor, numero_nf, numero, nota_fiscal_id, canal "
+        "FROM vendas WHERE loja_conta=? AND coalesce(store_id,'')='' AND coalesce(origem_tipo,'')=''",
+        (req.loja,),
+    ).fetchall() if legacy_allowed else []
+    remove_legacy: set[str] = set()
+    for invoice_id in observed_invoices:
+        cursor.execute(
+            f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo='nfe_saida' AND origem_id=?",
+            (*store_args, invoice_id),
+        )
+    for legacy in legacy_rows:
+        legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, _channel = legacy
+        if str(invoice_id or "") in observed_invoices and str(legacy_id) == _montar_id_unico_venda(
+            req.loja, numero_nf=invoice_number, numero=number, sku=sku, quantidade=quantity, valor=amount,
+        ):
+            remove_legacy.add(str(legacy_id))
+    for (kind, document_id), document_rows in documents.items():
+        cursor.execute(
+            f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo=? AND origem_id=?",
+            (*store_args, kind, document_id),
+        )
+        invoice_ids = {str(row[15]) for row in document_rows if str(row[15] or "")}
+        covered_skus = {str(row[7] or "").strip().upper() for row in document_rows}
+        if kind == "pedido":
+            for invoice_id in invoice_ids:
+                cursor.executemany(
+                    f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo='nfe_saida' AND origem_id=? AND upper(trim(coalesce(sku,'')))=?",
+                    [(*store_args, invoice_id, sku) for sku in covered_skus],
+                )
+        for legacy in legacy_rows:
+            legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, channel = legacy
+            legacy_invoice_id = _montar_id_unico_venda(
+                req.loja, numero_nf=invoice_number, numero=number, sku=sku,
+                quantidade=quantity, valor=amount,
+            )
+            if (kind == "pedido" and str(invoice_id or "") in invoice_ids
+                    and str(sku or "").strip().upper() in covered_skus and str(legacy_id) == legacy_invoice_id):
+                remove_legacy.add(str(legacy_id))
+                continue
+            expected = _montar_id_unico_venda(
+                req.loja, id_pedido=document_id if kind == "pedido" else "",
+                numero_nf=invoice_number, numero=number, sku=sku, quantidade=quantity, valor=amount,
+            )
+            if str(legacy_id) != expected:
+                continue
+            if kind == "nfe_saida" and str(invoice_id or "") != document_id:
+                continue
+            # Same old reference could mean an order ID or an invoice number.
+            # Keep ambiguous rows rather than adopting another document.
+            if kind == "pedido" and not any(
+                str(row[4] or "") == str(number or "")
+                or (str(invoice_id or "") and str(row[15] or "") == str(invoice_id))
+                for row in document_rows
+            ):
+                continue
+            remove_legacy.add(str(legacy_id))
+    cursor.executemany("DELETE FROM vendas WHERE coalesce(store_id,'')='' AND loja_conta=? AND id_unico=?",
+                       [(req.loja, row_id) for row_id in remove_legacy])
+
+
 def _persistir_periodo_atomico(
     db_path: str,
     req: VendasSyncRequest,
@@ -531,6 +683,8 @@ def _persistir_periodo_atomico(
     payload_notas: list[tuple],
     payload_itens: list[tuple],
     client_id: str,
+    *,
+    notas_saida_observadas: set[str] | None = None,
 ) -> dict[str, int]:
     """Persist all commercial tables in one SQLite transaction."""
 
@@ -545,41 +699,79 @@ def _persistir_periodo_atomico(
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
             _ensure_sync_schema(cursor)
+            store_id = str(getattr(req, "store_id", None) or "").strip()
+            store_clause, store_args = _escopo_store(req)
+            legacy_allowed = _legado_loja_nao_ambiguo(cursor, req)
 
             if req.forcar_resync:
+                force_clause, force_args = store_clause, store_args
+                if store_id and legacy_allowed:
+                    force_clause += " OR (coalesce(store_id,'')='' AND loja_conta=?)"
+                    force_args += (req.loja,)
+                elif not store_id and not legacy_allowed:
+                    force_clause, force_args = "0", ()
                 cursor.execute(
-                    "DELETE FROM vendas WHERE loja_conta = ? AND date(data) BETWEEN ? AND ?",
-                    (req.loja, req.data_inicio, req.data_fim),
+                    f"DELETE FROM vendas WHERE ({force_clause}) AND date(data) BETWEEN ? AND ?",
+                    (*force_args, req.data_inicio, req.data_fim),
                 )
                 cursor.execute(
-                    "DELETE FROM notas_entrada WHERE loja_conta = ? AND date(data_emissao) BETWEEN ? AND ?",
-                    (req.loja, req.data_inicio, req.data_fim),
+                    f"DELETE FROM notas_entrada WHERE ({force_clause}) AND date(data_emissao) BETWEEN ? AND ?",
+                    (*force_args, req.data_inicio, req.data_fim),
                 )
                 cursor.execute(
-                    "DELETE FROM notas_entrada_itens WHERE loja_conta = ? AND date(data_emissao) BETWEEN ? AND ?",
-                    (req.loja, req.data_inicio, req.data_fim),
+                    f"DELETE FROM notas_entrada_itens WHERE ({force_clause}) AND date(data_emissao) BETWEEN ? AND ?",
+                    (*force_args, req.data_inicio, req.data_fim),
                 )
-                vendas_para_salvar = payload_vendas
-            else:
-                vendas_para_salvar = _filtrar_vendas_ja_existentes(cursor, payload_vendas, req.loja)
+            identified_sales = [row for row in payload_vendas if len(row) == 23]
+            legacy_sales = [row for row in payload_vendas if len(row) == 20]
+            if len(identified_sales) + len(legacy_sales) != len(payload_vendas):
+                raise HTTPException(status_code=502, detail="Formato invalido de venda para persistencia.")
+            _substituir_documentos_vendas(cursor, identified_sales, req, notas_saida_observadas)
+            vendas_para_salvar = legacy_sales if req.forcar_resync else _filtrar_vendas_ja_existentes(cursor, legacy_sales, req.loja, store_id)
             _verificar_cancelamento(client_id)
 
             if vendas_para_salvar:
-                cursor.executemany(_SQL_INSERT_VENDAS, vendas_para_salvar)
+                cursor.executemany(_insert_com_store_id(_SQL_INSERT_VENDAS), [(*row, store_id) for row in vendas_para_salvar])
+            if identified_sales:
+                cursor.executemany(_insert_com_store_id(_SQL_INSERT_VENDAS_IDENTIFICADAS), [(*row, store_id) for row in identified_sales])
             _verificar_cancelamento(client_id)
 
             if payload_notas:
-                cursor.executemany(_SQL_INSERT_NOTAS, payload_notas)
+                # The full details of each observed note are validated before
+                # this transaction. Replace its items, including removed SKUs.
+                for row in payload_notas:
+                    note_clause, note_args = store_clause, store_args
+                    note_id = str(row[1])
+                    if store_id and legacy_allowed:
+                        legacy_header = cursor.execute(
+                            "SELECT id_unico FROM notas_entrada WHERE coalesce(store_id,'')='' "
+                            "AND loja_conta=? AND CAST(id_bling AS TEXT)=?", (req.loja, note_id),
+                        ).fetchall()
+                        if any(str(header[0]) in {
+                            f"{req.loja}_{note_id}",
+                            _id_item_documento(req.loja, "nfe_entrada", note_id, "header"),
+                        } for header in legacy_header):
+                            note_clause += " OR (coalesce(store_id,'')='' AND loja_conta=?)"
+                            note_args += (req.loja,)
+                    cursor.execute(
+                        f"DELETE FROM notas_entrada_itens WHERE ({note_clause}) AND CAST(id_nota AS TEXT)=?",
+                        (*note_args, note_id),
+                    )
+                    cursor.execute(
+                        f"DELETE FROM notas_entrada WHERE ({note_clause}) AND CAST(id_bling AS TEXT)=?",
+                        (*note_args, note_id),
+                    )
+                cursor.executemany(_insert_com_store_id(_SQL_INSERT_NOTAS), [(*row, store_id) for row in payload_notas])
             _verificar_cancelamento(client_id)
 
             if payload_itens:
-                cursor.executemany(_SQL_INSERT_ITENS, payload_itens)
+                cursor.executemany(_insert_com_store_id(_SQL_INSERT_ITENS), [(*row, store_id) for row in payload_itens])
             _verificar_cancelamento(client_id)
 
             conn.commit()
             committed = True
             return {
-                "vendas": len(vendas_para_salvar),
+                "vendas": len(vendas_para_salvar) + len(identified_sales),
                 "notas": len(payload_notas),
                 "itens": len(payload_itens),
             }
@@ -749,15 +941,19 @@ async def _sincronizar_vendas_periodo_impl(
     if not req.data_inicio or not req.data_fim:
         raise HTTPException(status_code=400, detail="Informe data inicial e final.")
 
-    loja = buscar_loja(client_id, req.loja)
+    requested_store_id = str(getattr(req, "store_id", None) or "").strip()
+    loja = buscar_loja(client_id, req.loja, store_id=requested_store_id) if requested_store_id else buscar_loja(client_id, req.loja)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
     store_id = str(loja.get("store_id") or "").strip()
+    if requested_store_id and requested_store_id != store_id:
+        raise HTTPException(status_code=409, detail="A conta da sincronizacao nao corresponde a loja conectada.")
     if not store_id:
         raise HTTPException(
             status_code=409,
             detail="Loja sem store_id persistido; recarregue a configuração.",
         )
+    req = req.model_copy(update={"store_id": store_id})
     bling_cfg = loja.get("integracoes", {}).get("bling")
     if not bling_cfg:
         raise HTTPException(status_code=400, detail="Loja não possui integração Bling conectada.")
@@ -846,7 +1042,6 @@ async def _sincronizar_vendas_periodo_impl(
         )
         if chave not in chaves_nf_existentes:
             registros.append(copy.deepcopy(item))
-            chaves_nf_existentes.add(chave)
 
     _sync_log(client_id, f"[SYNC] {len(registros)} itens de venda coletados e validados.")
 
@@ -1023,6 +1218,10 @@ async def _sincronizar_vendas_periodo_impl(
         payload_notas,
         payload_itens,
         client_id,
+        notas_saida_observadas={
+            str(item.get("nota_fiscal_id") or "").strip()
+            for item in registros_nf if str(item.get("nota_fiscal_id") or "").strip()
+        },
     )
 
     # O banco ja foi confirmado neste ponto. Invalide por dia para que um

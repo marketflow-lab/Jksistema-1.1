@@ -15,6 +15,8 @@ class VendasSyncRequest(BaseModel):
     data_inicio: str
     data_fim: str
     forcar_resync: bool = False
+    store_id: str | None = None
+    automatico: bool = False
 
 
 __all__ = [

@@ -28,7 +28,7 @@ assert.match(canonicalHtml, /aria-label="Selecionar loja virtual"/);
 assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const asset of ['styles.css', 'runtime.js', 'periodo-cache.js', 'sync.js', 'dados-render.js']) {
   assert.ok(
-    canonicalHtml.includes(`/vendas/${asset}?v=${cacheKey}`),
+    canonicalHtml.includes(`/vendas/${asset}?v=${['sync.js', 'periodo-cache.js'].includes(asset) ? '20261015-vendas-sync-persistente-v1' : cacheKey}`),
     `o cache-buster de ${asset} deve refletir a correcao`,
   );
 }
@@ -85,6 +85,7 @@ const pageHtml = `<!doctype html>
           <option value="__todos">Todas as lojas virtuais</option>
         </select>
         <label class="sync-toggle"><input id="forcarSync" type="checkbox"><span>Re-sincronizar</span></label>
+        <label class="sync-toggle"><input id="syncAutomatico" type="checkbox" checked><span>Atualizar automaticamente</span></label>
         <div class="sync-actions">
           <button id="btnSync" type="button">Atualizar</button>
           <button id="btnCancel" type="button">Cancelar</button>

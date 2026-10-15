@@ -513,7 +513,20 @@ async function aguardarFimSyncAtual() {
     return payload;
 }
 
-async function recuperarSyncLojaAposFalhaFetch(lojaNome, erroOriginal) {
+let envioSyncVendasPromise = null;
+
+function pedidoSyncVendasConfirmado(job, pedido) {
+    const mesmaIdentidade = pedido.store_id
+        ? String(job?.store_id || '') === String(pedido.store_id)
+        : mesmaLoja(job?.loja, pedido.loja);
+    return mesmaIdentidade
+        && String(job?.data_inicio || '') === pedido.data_inicio
+        && String(job?.data_fim || '') === pedido.data_fim
+        && Boolean(job?.forcar_resync) === Boolean(pedido.forcar_resync)
+        && !['cancelado', 'pausado', 'paused', 'complete', 'concluido', 'finalizado'].includes(String(job?.status || '').toLowerCase());
+}
+
+async function recuperarSyncLojaAposFalhaFetch(pedido, erroOriginal) {
     const mensagem = String(erroOriginal?.message || erroOriginal || '').toLowerCase();
     if (!mensagem.includes('failed to fetch') && erroOriginal?.name !== 'TypeError' && erroOriginal?.name !== 'AbortError') {
         return null;
@@ -524,17 +537,20 @@ async function recuperarSyncLojaAposFalhaFetch(lojaNome, erroOriginal) {
         try {
             const payload = await vendasSyncMonitor.refresh({ propagateError: true });
             const jobs = []
+                .concat(Array.isArray(payload?.automacao?.jobs) ? payload.automacao.jobs : [])
                 .concat(Array.isArray(payload?.active_jobs) ? payload.active_jobs : [])
                 .concat(Array.isArray(payload?.progress?.jobs) ? payload.progress.jobs : []);
-            const jobDaLoja = jobs.find(job => mesmaLoja(job?.loja, lojaNome));
-            if (payload?.active && jobDaLoja) {
-                statusEl.className = 'status-bar loading';
-                statusEl.innerHTML = `${spinnerHtml}<strong>Sincroniza\u00e7\u00e3o iniciada.</strong><div style="color:#9bd1ff;font-size:0.85rem;">A resposta inicial oscilou, mas o backend confirmou o processamento de ${escaparHtmlVendas(lojaNome)}.</div>`;
+            const jobConfirmado = jobs.find(job => pedidoSyncVendasConfirmado(job, pedido));
+            const configuracao = (payload?.automacao?.lojas || []).find(loja => (
+                pedido.store_id
+                    ? String(loja?.store_id || '') === String(pedido.store_id)
+                    : mesmaLoja(loja?.loja, pedido.loja)
+            ));
+            if (jobConfirmado && (!pedido.automatico || configuracao?.habilitado)) {
                 return {
-                    started: true,
+                    queued: true,
                     recovered_after_fetch_error: true,
-                    job_id: jobDaLoja.id || jobDaLoja.job_id || null,
-                    message: 'Sincronizacao confirmada pelo progresso apos falha de rede.'
+                    job_id: jobConfirmado.job_id || jobConfirmado.id || null
                 };
             }
         } catch (_erroConfirmacao) {}
@@ -542,90 +558,67 @@ async function recuperarSyncLojaAposFalhaFetch(lojaNome, erroOriginal) {
     return null;
 }
 
-async function iniciarSyncLoja(lojaNome, periodo = null) {
-    const inicioSync = periodo?.data_inicio || getDataIniISO();
-    const fimSync = periodo?.data_fim || getDataFimISO();
+async function iniciarSyncLoja(lojaNome, periodo = null, opcoes = {}) {
+    const loja = (lojasDisponiveis || []).find(item => mesmaLoja(item?.nome, lojaNome));
+    const pedido = {
+        loja: lojaNome,
+        data_inicio: periodo?.data_inicio || getDataIniISO(),
+        data_fim: periodo?.data_fim || getDataFimISO(),
+        forcar_resync: opcoes.forcar_resync ?? Boolean(document.getElementById('forcarSync')?.checked),
+        automatico: opcoes.automatico ?? Boolean(document.getElementById('syncAutomatico')?.checked)
+    };
+    if (loja?.store_id) pedido.store_id = String(loja.store_id);
 
-    let resp = null;
+    let resp;
     try {
-        resp = await fetch('/api/vendas/sync', {
+        resp = await fetchComTimeout('/api/vendas/sync', {
             method: 'POST',
-            headers: obterAuthHeaders({
-                'Content-Type': 'application/json'
-            }),
-            body: JSON.stringify({
-                loja: lojaNome,
-                data_inicio: inicioSync,
-                data_fim: fimSync,
-                forcar_resync: document.getElementById('forcarSync').checked
-            }),
-            signal: syncController.signal
+            headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(pedido),
+            signal: syncController?.signal
         });
     } catch (erroFetch) {
-        const recuperado = await recuperarSyncLojaAposFalhaFetch(lojaNome, erroFetch);
+        const recuperado = await recuperarSyncLojaAposFalhaFetch(pedido, erroFetch);
         if (recuperado) return recuperado;
         throw erroFetch;
     }
 
     const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-        throw new Error(result.detail || 'Erro ao sincronizar.');
+        const detalhe = result.detail?.message || result.detail;
+        throw new Error(typeof detalhe === 'string' ? detalhe : 'Erro ao registrar a sincronização.');
     }
-    if (result.already_running) {
-        await aguardarFimSyncAtual();
-        return result;
+    if (!result.accepted && !result.started && !result.queued) {
+        throw new Error('O servidor não confirmou o registro deste período. Tente atualizar novamente.');
     }
-    void vendasSyncMonitor.refresh();
     return result;
 }
 
 async function executarSync(opcoes = {}) {
     if (syncEmAndamento) return;
-    const syncAutomatico = false;
     cancelarSyncAutomaticoVendas();
     fecharCalendariosData();
 
     const dataIniIso = getDataIniISO();
     const dataFimIso = getDataFimISO();
     if (!dataIniIso || !dataFimIso) {
-        if (syncAutomatico) return;
         alert('Informe data inicial e final para sincronizar.');
         return;
     }
     periodoSelecionadoPeloUsuario = true;
     const lojaSelecionadaNoInicio = lojaSelecionada;
-    const forcarResync = document.getElementById('forcarSync').checked;
+    const opcoesSync = {
+        forcar_resync: Boolean(document.getElementById('forcarSync')?.checked),
+        automatico: Boolean(document.getElementById('syncAutomatico')?.checked)
+    };
     const diasSelecionados = diasNoPeriodo(dataIniIso, dataFimIso);
-
-    let periodosBase = [];
-    if (forcarResync) {
-        periodosBase = [{ data_inicio: dataIniIso, data_fim: dataFimIso }];
-    } else {
-        const dadosParaCalculo = (lojaSelecionadaNoInicio === '__todas')
-            ? dados
-            : (dados || []).filter(row => mesmaLoja(row.loja_conta, lojaSelecionadaNoInicio));
-        const devolucoesParaCalculo = (lojaSelecionadaNoInicio === '__todas')
-            ? devolucaoItens
-            : (devolucaoItens || []).filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionadaNoInicio));
-
-        periodosBase = montarPeriodosFaltantes(dataIniIso, dataFimIso, dadosParaCalculo, devolucoesParaCalculo);
-        if (!periodosBase.length) {
-            if (syncAutomatico) return;
-            alert('N\u00e3o h\u00e1 dias faltantes no per\u00edodo selecionado. Para atualizar dias j\u00e1 sincronizados, marque "For\u00e7ar re-sincroniza\u00e7\u00e3o".');
-            return;
-        }
+    if (diasSelecionados <= 0) {
+        alert('A data final deve ser igual ou posterior à data inicial.');
+        return;
     }
-
-    const lotesPeriodo = periodosBase.flatMap(p => montarPeriodosEmFila(p.data_inicio, p.data_fim, 365));
-    const diasParaSincronizar = totalDiasDosPeriodos(lotesPeriodo);
-
-    if (!syncAutomatico && diasParaSincronizar > 365) {
-        const cont = confirm(`Ser\u00e3o sincronizados ${diasParaSincronizar} dia(s) em ${lotesPeriodo.length} lote(s) para envio em fila. Deseja continuar?`);
-        if (!cont) return;
-    } else if (!syncAutomatico && (diasSelecionados > 15 || diasParaSincronizar > 15)) {
-        const cont = confirm(`Ser\u00e3o sincronizados ${diasParaSincronizar} dia(s). A atualiza\u00e7\u00e3o pode demorar. Deseja continuar?`);
-        if (!cont) return;
-    }
+    // A presença de vendas não comprova a conclusão de um dia. O servidor recebe
+    // todo o intervalo e conserva os checkpoints por loja, mesmo após fechar a tela.
+    const periodoCompleto = { data_inicio: dataIniIso, data_fim: dataFimIso };
     clientId = clientId || obterClientId();
     if (!clientId) { window.location.href = '/frontend_index.html'; return; }
 
@@ -684,13 +677,6 @@ async function executarSync(opcoes = {}) {
         : [lojaSelecionadaNoInicio];
 
     if (!lojasParaSincronizar.length) {
-        if (syncAutomatico) {
-            syncEmAndamento = false;
-            setSyncButtons(false);
-            syncController = null;
-            pararMonitoramentoProgresso();
-            return;
-        }
         alert('Nenhuma loja dispon\u00edvel para sincronizar.');
         syncEmAndamento = false;
         setSyncButtons(false);
@@ -699,97 +685,74 @@ async function executarSync(opcoes = {}) {
         return;
     }
 
-    // Atualizar status local
-    statusEl.className = 'status-bar loading';
-    statusEl.innerHTML = `<span class="spinner"></span>Iniciando sincroniza\u00e7\u00e3o de vendas... (0%)`;
-    
-    // Executar sincronização em background (não bloqueia UI)
-    (async () => {
-        try {
-            const inicioSync = new Date();
-            console.log('[SYNC] Iniciando sincroniza\u00e7\u00e3o...', lojasParaSincronizar);
-            const totalLojas = lojasParaSincronizar.length;
-            const totalLotes = Math.max(1, lotesPeriodo.length);
-            const totalEtapas = totalLojas * totalLotes;
-            let etapaAtual = 0;
-
-            for (let idx = 0; idx < totalLojas; idx++) {
-                const lojaAtual = lojasParaSincronizar[idx];
-                for (let loteIdx = 0; loteIdx < totalLotes; loteIdx++) {
-                    const lote = lotesPeriodo[loteIdx];
-                    const percentualBase = Math.round((etapaAtual / totalEtapas) * 100);
-                    statusEl.className = 'status-bar loading';
-                    statusEl.innerHTML = `<span class="spinner"></span><strong>Sincronizando loja ${idx + 1} de ${totalLojas}</strong><br>
-                        &#127980; ${escaparHtmlVendas(lojaAtual)}<br>
-                        &#128198; Lote ${loteIdx + 1}/${totalLotes}: ${formatDate(lote.data_inicio)} at\u00e9 ${formatDate(lote.data_fim)}<br>
-                        <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
-                            <div style="height:8px;width:${percentualBase}%;background:#4facfe;"></div>
-                        </div>
-                        <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percentualBase}%</div>`;
-
-                    await iniciarSyncLoja(lojaAtual, lote);
-                    await aguardarFimSyncAtual();
-                    etapaAtual += 1;
-                }
-            }
-
+    const falhas = [];
+    let registradas = 0;
+    try {
+        // Registrar todas as lojas antes de acompanhar a execução: a fila pertence
+        // ao servidor e não depende de manter esta página aberta.
+        for (let idx = 0; idx < lojasParaSincronizar.length; idx++) {
+            if (cancelSolicitado) break;
+            const lojaAtual = lojasParaSincronizar[idx];
             statusEl.className = 'status-bar loading';
-            statusEl.innerHTML = `<span class="spinner"></span><strong>Sincroniza\u00e7\u00e3o conclu\u00edda.</strong><br>
-                Recarregando dados...`;
-            
-            await carregarVendas();
-            await carregarGrafico();
-            
-            // Finalizar
-            statusEl.className = 'status-bar success';
-            const tempoTotal = ((new Date() - inicioSync) / 1000).toFixed(2);
-            statusEl.innerHTML = `&#9989; <strong>Sincroniza\u00e7\u00e3o Finalizada!</strong><br>
-                Lojas processadas: <strong>${lojasParaSincronizar.length}</strong><br>
-                &#9201;&#65039; Tempo total: ${tempoTotal}s`;
-            
-            // Limpar após 5 segundos
-            setTimeout(() => { 
-                statusEl.className = 'status-bar';
-                statusEl.textContent = ''; 
-            }, 5000);
-            
-        } catch (e) {
-            console.error('[SYNC] Erro na sincroniza\u00e7\u00e3o:', e);
-            if (cancelSolicitado || e.name === 'AbortError') {
-                statusEl.className = 'status-bar';
-                statusEl.textContent = '\u23f9\ufe0f Sincroniza\u00e7\u00e3o cancelada.';
-            } else {
-                statusEl.className = 'status-bar error';
-                statusEl.innerHTML = `&#10060; Erro ao sincronizar: ${escaparHtmlVendas(e.message)}`;
+            statusEl.innerHTML = `${spinnerHtml}<strong>Registrando período para ${idx + 1} de ${lojasParaSincronizar.length} loja(s)...</strong>`;
+            try {
+                envioSyncVendasPromise = iniciarSyncLoja(lojaAtual, periodoCompleto, opcoesSync);
+                await envioSyncVendasPromise;
+                registradas += 1;
+            } catch (erro) {
+                if (cancelSolicitado) break;
+                falhas.push({ loja: lojaAtual, mensagem: erro.message || 'Falha de comunicação.' });
+            } finally {
+                envioSyncVendasPromise = null;
             }
-        } finally {
-            syncEmAndamento = false;
-            setSyncButtons(false);
-            syncController = null;
-            cancelSolicitado = false;
-            // Aguardar 2 segundos para mostrar o progresso final 100%
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            pararMonitoramentoProgresso();
         }
-    })();
+    } finally {
+        const foiPausada = cancelSolicitado;
+        syncController = null;
+        cancelSolicitado = false;
+        syncEmAndamento = false;
+        setSyncButtons(false);
+        const estado = await vendasSyncMonitor.refresh();
+        aplicarEstadoMonitorSyncVendas(estado);
+        if (falhas.length) {
+            statusEl.className = 'status-bar error';
+            statusEl.innerHTML = `<strong>Período registrado em ${registradas} loja(s).</strong><br>`
+                + falhas.map(falha => `${escaparHtmlVendas(falha.loja)}: ${escaparHtmlVendas(falha.mensagem)}`).join('<br>')
+                + '<br>Clique em Atualizar para tentar registrar as lojas restantes.';
+        } else if (!foiPausada && !estado?.active) {
+            statusEl.className = 'status-bar';
+            statusEl.textContent = `Período registrado em ${registradas} loja(s). Acompanhe as pendências de sincronização abaixo.`;
+        }
+    }
 }
 
 btnCancel.addEventListener('click', async () => {
-    if (!syncEmAndamento) return;
+    const estado = vendasSyncMonitor.getLastPayload();
+    if (!syncEmAndamento && !estado?.automacao?.habilitadas && !estado?.automacao?.pendentes) return;
     cancelSolicitado = true;
+    btnCancel.disabled = true;
     statusEl.className = 'status-bar loading';
-    statusEl.innerHTML = `${spinnerHtml}Cancelando sincroniza\u00e7\u00e3o...`;
+    statusEl.innerHTML = `${spinnerHtml}Pausando sincronização e atualização automática de todas as lojas...`;
     try {
-        clientId = clientId || obterClientId();
-        if (clientId) {
-            await fetch('/api/vendas/sync/cancel', {
-                method: 'POST',
-                headers: obterAuthHeaders()
-            });
-            void vendasSyncMonitor.refresh();
-        }
-    } catch (e) {
-        console.warn('[SYNC] Falha ao solicitar cancelamento:', e);
+        // A pausa deve chegar depois do registro em curso para não ser anulada por ele.
+        if (envioSyncVendasPromise) await envioSyncVendasPromise.catch(() => {});
+        const resp = await fetchComTimeout('/api/vendas/sync/cancel', {
+            method: 'POST',
+            headers: obterAuthHeaders()
+        });
+        if (!resp.ok) throw new Error('O servidor não confirmou a pausa. Tente novamente.');
+        if (syncController) syncController.abort();
+        const checkbox = document.getElementById('syncAutomatico');
+        if (checkbox) checkbox.checked = false;
+        aplicarEstadoMonitorSyncVendas(await vendasSyncMonitor.refresh());
+        statusEl.className = 'status-bar';
+        statusEl.textContent = 'Sincronização pausada. O progresso confirmado foi preservado.';
+    } catch (erro) {
+        cancelSolicitado = false;
+        setSyncButtons(syncEmAndamento);
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = erro.message || 'Não foi possível pausar a sincronização.';
+    } finally {
+        if (!syncController) cancelSolicitado = false;
     }
-    if (syncController) syncController.abort();
 });

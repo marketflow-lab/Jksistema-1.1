@@ -63,8 +63,78 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false, preferen
 }
 
 function setSyncButtons(isSyncing) {
+    const automacao = vendasSyncMonitor.getLastPayload()?.automacao;
     btnSync.disabled = isSyncing;
-    btnCancel.disabled = !isSyncing;
+    btnCancel.disabled = !isSyncing && !automacao?.habilitadas && !automacao?.pendentes;
+}
+
+function formatarMomentoSyncVendas(valor) {
+    if (!valor) return '';
+    const data = new Date(valor);
+    return Number.isNaN(data.getTime()) ? String(valor) : data.toLocaleString('pt-BR');
+}
+
+function renderAutomacaoSyncVendas(data) {
+    const painel = document.getElementById('syncPersistenteStatus');
+    if (!painel) return;
+    const automacao = data?.automacao;
+    const lojas = Array.isArray(automacao?.lojas) ? automacao.lojas : [];
+    if (!lojas.length) {
+        painel.innerHTML = '';
+        return;
+    }
+    const pendentes = Math.max(0, Number(automacao?.pendentes || 0));
+    const habilitadas = Math.max(0, Number(automacao?.habilitadas || 0));
+    const temErro = lojas.some(loja => Boolean(loja?.ultimo_erro));
+    const estados = {
+        queued: 'Aguardando sincronização',
+        running: 'Sincronizando',
+        retry: 'Aguardando próxima tentativa',
+        blocked: 'Aguardando correção da pendência',
+        paused: 'Pausada',
+        complete: 'Período conferido',
+        pendente: 'Aguardando sincronização',
+        executando: 'Sincronizando',
+        em_execucao: 'Sincronizando',
+        aguardando: 'Aguardando próxima tentativa',
+        erro: 'Aguardando nova tentativa',
+        pausado: 'Pausada',
+        cancelado: 'Pausada',
+        concluido: 'Período conferido',
+        finalizado: 'Período conferido'
+    };
+    painel.className = 'status-bar' + (temErro ? ' error' : '');
+    painel.innerHTML = `<strong>Sincronização salva</strong> · ${pendentes} sincronização(ões) pendente(s) · Atualização automática em ${habilitadas} loja(s).`
+        + lojas.map(loja => {
+            const status = String(loja?.status || '').toLowerCase();
+            const conferidaComPendencia = ['complete', 'concluido', 'finalizado'].includes(status)
+                && (loja?.ultimo_erro || Number(loja?.pendentes || 0) > 0);
+            const rotulo = conferidaComPendencia ? 'Conferência pendente'
+                : (estados[status] || (loja?.habilitado ? 'Atualização automática habilitada' : 'Atualização automática desabilitada'));
+            const periodo = loja?.data_inicio && loja?.data_fim
+                ? ` · ${formatDate(loja.data_inicio)} a ${formatDate(loja.data_fim)}` : '';
+            const dias = Number(loja?.dias_total || 0) > 0
+                ? ` · ${Number(loja.dias_concluidos || 0)}/${Number(loja.dias_total)} dia(s) conferido(s)` : '';
+            const ultima = loja?.ultima_conferencia
+                ? `<br>Última conferência: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.ultima_conferencia))}` : '';
+            const proxima = loja?.habilitado && loja?.proxima_execucao
+                ? `<br>Próxima atualização: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.proxima_execucao))}` : '';
+            const erro = loja?.ultimo_erro
+                ? `<br>Pendência: ${escaparHtmlVendas(loja.ultimo_erro)}` : '';
+            const checkpoint = loja?.checkpoint || {};
+            const tiposDocumento = { pedido: 'Pedido', nfe_entrada: 'NF-e de entrada', nfe_saida: 'NF-e de saída' };
+            const documento = checkpoint.ultimo_id
+                ? `${tiposDocumento[checkpoint.ultimo_tipo] || 'Documento'} #${checkpoint.ultimo_id}` : '';
+            const quantidadeColetada = Math.max(0, Number(checkpoint.documentos_salvos || 0));
+            const coletados = quantidadeColetada > 0
+                ? ` · ${quantidadeColetada} documento(s) coletado(s) nesta etapa` : '';
+            const coletaEm = checkpoint.atualizado_em
+                ? ` · ${formatarMomentoSyncVendas(checkpoint.atualizado_em)}` : '';
+            const coleta = documento
+                ? `<br>Último documento coletado: ${escaparHtmlVendas(documento + coletados + coletaEm)}` : '';
+            return `<div style="margin-top:6px;"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong> · ${escaparHtmlVendas(rotulo + periodo + dias)}${coleta}${ultima}${proxima}${erro}</div>`;
+        }).join('')
+        + '<div style="margin-top:6px;">O progresso é preservado ao sair desta tela. As atualizações continuam enquanto o serviço do sistema estiver funcionando.</div>';
 }
 
 function renderProgresso(p, logs) {
@@ -85,6 +155,7 @@ let progressReloadInFlight = false;
 
 function aplicarEstadoMonitorSyncVendas(data) {
     if (!data) return;
+    renderAutomacaoSyncVendas(data);
     const progresso = data.progress || null;
     const etapa = String(progresso?.etapa || '').toLowerCase();
     const loteLocalAtivo = !!syncController;
@@ -110,7 +181,7 @@ function aplicarEstadoMonitorSyncVendas(data) {
         statusEl.textContent = `Erro ao sincronizar: ${corrigirTextoVendas(progresso?.mensagem || 'Falha na sincronização.')}`;
     } else if (etapa === 'cancelamento' && !loteLocalAtivo) {
         statusEl.className = 'status-bar';
-        statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Sincronização cancelada.');
+        statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Sincronização pausada.');
     }
 }
 
@@ -143,13 +214,14 @@ window.addEventListener('jk:vendas-sync-finished', event => {
     if (syncController || progressReloadInFlight || etapa === 'erro' || etapa === 'cancelamento') return;
     progressReloadInFlight = true;
     statusEl.className = 'status-bar loading';
-    statusEl.innerHTML = `${spinnerHtml}Sincronização finalizada. Atualizando dados...`;
+    statusEl.innerHTML = `${spinnerHtml}Atualizando os dados confirmados...`;
     void (async () => {
         try {
             await carregarVendas();
             await carregarGrafico();
             statusEl.className = 'status-bar';
             statusEl.textContent = '';
+            aplicarEstadoMonitorSyncVendas(vendasSyncMonitor.getLastPayload() || payload);
         } finally {
             progressReloadInFlight = false;
         }
