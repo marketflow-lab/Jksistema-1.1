@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from backend.services.runtime_bridge import bind_runtime_globals
-from backend.services.shared_sync_bundle import _shared_sync_sanitize_transient_oauth_entries
+from backend.services.shared_sync_bundle import _shared_sync_source_fingerprint_entries
 from backend.services.shared_sync_common import *
 from backend.services.shared_sync_context import configure_shared_sync_context
 
@@ -55,13 +55,9 @@ def _shared_sync_local_fingerprint(
         entries, _warnings = _shared_sync_coletar_arquivos(
             sessao.get("client_id"), scope, username=sessao.get("username"), user_only=True,
         )
-        entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
-        fingerprint_entries = list(entries)
+        ai_context_snapshot = None
         if scope == "cadastro" and include_ai_context:
-            from backend.services.shared_sync_ai_context import (
-                build_snapshot_bytes,
-                fingerprint_entry,
-            )
+            from backend.services.shared_sync_ai_context import build_snapshot_bytes
 
             tenant_abs = os.path.abspath(get_tenant_path(sessao.get("client_id")))
             data, payload = build_snapshot_bytes(
@@ -69,7 +65,10 @@ def _shared_sync_local_fingerprint(
                 sessao.get("username") or "",
                 info_root=os.path.dirname(tenant_abs),
             )
-            fingerprint_entries.append(fingerprint_entry(data, payload))
+            ai_context_snapshot = (data, payload)
+        fingerprint_entries = _shared_sync_source_fingerprint_entries(
+            scope, entries, ai_context_snapshot=ai_context_snapshot,
+        )
         hashes[scope] = _shared_sync_snapshot_hash(fingerprint_entries)
         files[scope] = [
             {

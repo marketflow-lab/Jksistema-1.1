@@ -95,6 +95,21 @@ def _shared_sync_sanitize_transient_oauth_entries(scope: str, entries: list[dict
     return sanitized
 
 
+def _shared_sync_source_fingerprint_entries(
+    scope: str,
+    entries: list[dict],
+    *,
+    ai_context_snapshot: tuple[bytes, dict] | None = None,
+) -> list[dict]:
+    """Use the same source view for preview and the frozen outgoing capture."""
+    source = list(_shared_sync_sanitize_transient_oauth_entries(scope, entries))
+    if scope == "cadastro" and ai_context_snapshot is not None:
+        from backend.services.shared_sync_ai_context import fingerprint_entry
+
+        source.append(fingerprint_entry(*ai_context_snapshot))
+    return source
+
+
 def _shared_sync_sanitize_strict_legacy_photo_entries(
     client_id: str,
     entries: list[dict],
@@ -492,22 +507,15 @@ def _shared_sync_capture_entries(
                         )
                     if os.path.exists(os.path.join(tenant_abs, rel))
                 }
-        if known_keys is None or capture_only:
-            entries, warnings = _shared_sync_coletar_arquivos(
-                client_id,
-                scope,
-                username=username,
-                user_only=user_only,
-                **({"capture_only": True} if capture_only else {}),
-            )
-        else:
-            entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
-                client_id,
-                scope,
-                username=username,
-                user_only=user_only,
-                known_keys=known_keys,
-            )
+        # Always capture the complete source. Delta selection belongs after
+        # capture, so its transport hash cannot replace the approved source hash.
+        entries, warnings = _shared_sync_coletar_arquivos(
+            client_id,
+            scope,
+            username=username,
+            user_only=user_only,
+            **({"capture_only": True} if capture_only else {}),
+        )
         # Mantem o conjunto de arquivos, bytes, hash e tamanho no mesmo
         # instante. Antes, um tombstone podia nascer entre a coleta e o ZIP.
         if scope == "lojas_integracoes":
@@ -610,6 +618,15 @@ def _shared_sync_capture_entries(
         {**item, "data": bytes(item["data"] if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"]))}
         for item in entries
     ]
+    source_entries = [dict(item) for item in entries]
+    ai_context_snapshot = None
+    if scope == "cadastro" and include_ai_context:
+        from backend.services.shared_sync_ai_context import build_snapshot_bytes
+
+        tenant_abs = os.path.abspath(get_tenant_path(client_id))
+        ai_context_snapshot = build_snapshot_bytes(
+            client_id, username, info_root=os.path.dirname(tenant_abs),
+        )
     strict = None
     references = {}
     if capture_only:
@@ -630,7 +647,8 @@ def _shared_sync_capture_entries(
                 [(item["relative_path"], item["data"]) for item in entries],
             )
     return {"entries": entries, "warnings": warnings, "item_keys": item_keys,
-            "capture_only": capture_only, "strict": strict, "references": references}
+            "capture_only": capture_only, "strict": strict, "references": references,
+            "source_entries": source_entries, "ai_context_snapshot": ai_context_snapshot}
 
 
 def _shared_sync_montar_pacote_locked(
@@ -650,13 +668,22 @@ def _shared_sync_montar_pacote_locked(
         sanitize_user_share_oauth, include_ai_context,
     )
     entries, warnings, item_keys = captured["entries"], captured["warnings"], captured["item_keys"]
+    # Hash frozen bytes outside the coordinated capture lock. Never reopen a
+    # source file here: the packer and preview guard must refer to one capture.
+    source_entries = [
+        _shared_sync_entry_from_bytes(item["relative_path"], item["data"], item["mtime"])
+        for item in captured["source_entries"]
+    ]
+    source_hash = _shared_sync_snapshot_hash(_shared_sync_source_fingerprint_entries(
+        scope, source_entries, ai_context_snapshot=captured["ai_context_snapshot"],
+    ))
     if captured["capture_only"]:
         entries = [_shared_sync_entry_from_bytes(item["relative_path"], item["data"], item["mtime"], item.get("item_keys")) for item in entries]
-        if known_keys is not None:
-            entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
-                client_id, scope, username=username, user_only=user_only,
-                known_keys=known_keys, captured_entries=(entries, warnings),
-            )
+    if known_keys is not None:
+        entries, warnings, item_keys = _shared_sync_coletar_arquivos_delta(
+            client_id, scope, username=username, user_only=user_only,
+            known_keys=known_keys, captured_entries=(entries, warnings),
+        )
     if sanitize_user_share_oauth and scope == "lojas_integracoes":
         sanitizadas = []
         for item in entries:
@@ -706,17 +733,11 @@ def _shared_sync_montar_pacote_locked(
     if scope == "cadastro" and include_ai_context:
         from backend.services.shared_sync_ai_context import (
             AI_CONTEXT_EXTENSION_KEY,
-            build_snapshot_bytes,
             extension_descriptor,
             fingerprint_entry,
         )
 
-        tenant_abs = os.path.abspath(get_tenant_path(client_id))
-        ai_context_data, ai_context_payload = build_snapshot_bytes(
-            client_id,
-            username,
-            info_root=os.path.dirname(tenant_abs),
-        )
+        ai_context_data, ai_context_payload = captured["ai_context_snapshot"]
         ai_context_descriptor = extension_descriptor(
             ai_context_data,
             ai_context_payload,
@@ -766,6 +787,9 @@ def _shared_sync_montar_pacote_locked(
             status_code=413,
             detail="Pacote maior que o limite de sincronizacao. Reduza arquivos antigos ou aumente JK_SHARED_SYNC_MAX_BUNDLE_BYTES.",
         )
+    # Local-only guard metadata: keep the public ZIP/Firestore manifest and
+    # snapshot_hash transport integrity contract unchanged.
+    manifest["source_snapshot_hash"] = source_hash
     return bundle, manifest, warnings
 
 
@@ -824,6 +848,7 @@ __all__ = [
     "_shared_sync_snapshot_hash",
     "_shared_sync_remove_transient_oauth",
     "_shared_sync_sanitize_transient_oauth_entries",
+    "_shared_sync_source_fingerprint_entries",
     "_shared_sync_sanitize_strict_legacy_photo_entries",
     "_shared_sync_montar_pacote",
 ]

@@ -34,6 +34,19 @@ def _csv_rows(data: bytes) -> list[dict[str, str]]:
     return list(csv.DictReader(io.StringIO(data.decode("utf-8-sig"))))
 
 
+def _mock_source_collection(monkeypatch, tenant_root, entries, warnings=()):
+    # The bundle freezes the full source first, then the real delta collector
+    # consumes those captured bytes. Do not mock a second filesystem read.
+    monkeypatch.setattr(
+        shared_sync_bundle, "get_tenant_path",
+        lambda _client_id: str(tenant_root), raising=False,
+    )
+    monkeypatch.setattr(
+        shared_sync_bundle, "_shared_sync_coletar_arquivos",
+        lambda *_args, **_kwargs: (entries, list(warnings)),
+    )
+
+
 def _montar_bundle(monkeypatch, entries: list[dict], *, strict: bool):
     tenant_root = next(
         (
@@ -376,21 +389,16 @@ def test_delta_foto_orfa_nao_e_marcada_conhecida_e_sai_apos_materializacao(
         f"cadastro:file:{photo_rel}:revision:"
         + hashlib.sha256(b"foto-tardia").hexdigest()
     )
-    row_key = "cadastro:cadastro_produtos_lojas.csv:store_id:store-a:sku:late:revision:row"
+    row = _csv_rows(canonico.read_bytes())[0]
+    row_key = shared_sync_delta._shared_sync_cadastro_lojas_delta_key(
+        "cadastro", canonico.name, row, list(row),
+    )
     monkeypatch.setattr(
         cadastro_fotos,
         "_cadastro_fotos_escopo_estrito",
         lambda _client_id: True,
     )
-    monkeypatch.setattr(
-        shared_sync_bundle,
-        "_shared_sync_coletar_arquivos_delta",
-        lambda *_args, **_kwargs: (
-            [canonico_entry, foto_entry],
-            [],
-            [row_key, foto_key],
-        ),
-    )
+    _mock_source_collection(monkeypatch, tmp_path, [canonico_entry, foto_entry])
 
     _bundle, manifest, warnings = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002",
@@ -434,11 +442,7 @@ def test_bundle_falha_se_linha_ativa_referencia_foto_ausente(
             "_cadastro_fotos_escopo_estrito",
             lambda _client_id: True,
         )
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos_delta",
-            lambda *_args, **_kwargs: ([entry], [], ["row-key"]),
-        )
+        _mock_source_collection(monkeypatch, tmp_path, [entry])
         montar = lambda: shared_sync_bundle._shared_sync_montar_pacote_locked(
             "000002",
             "cadastro",
@@ -499,11 +503,7 @@ def test_bundle_falha_se_foto_ativa_existente_foi_omitida_da_coleta(
     )
     warning = f"{photo_rel} ignorado: {motivo}."
     if delta:
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos_delta",
-            lambda *_args, **_kwargs: ([entry], [warning], ["row-key"]),
-        )
+        _mock_source_collection(monkeypatch, tmp_path, [entry], [warning])
         kwargs = {"known_keys": set()}
     else:
         monkeypatch.setattr(
@@ -630,23 +630,8 @@ def test_bundle_rejeita_config_fora_do_schema_fechado(
         lambda _client_id: str(tmp_path),
         raising=False,
     )
-    if delta:
-        delta_entry = dict(entry)
-        delta_entry["data"] = config.read_bytes()
-        delta_entry.pop("abs_path", None)
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos_delta",
-            lambda *_args, **_kwargs: ([delta_entry], [], ["config-key"]),
-        )
-        kwargs = {"known_keys": set()}
-    else:
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos",
-            lambda *_args, **_kwargs: ([entry], []),
-        )
-        kwargs = {}
+    _mock_source_collection(monkeypatch, tmp_path, [entry])
+    kwargs = {"known_keys": set()} if delta else {}
 
     with pytest.raises(HTTPException) as exc_info:
         shared_sync_bundle._shared_sync_montar_pacote_locked(
@@ -705,23 +690,8 @@ def test_bundle_canonicaliza_config_valida_com_parser_do_receiver(
         "_cadastro_fotos_escopo_estrito",
         lambda _client_id: True,
     )
-    if delta:
-        delta_entry = dict(entry)
-        delta_entry["data"] = config.read_bytes()
-        delta_entry.pop("abs_path", None)
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos_delta",
-            lambda *_args, **_kwargs: ([delta_entry], [], ["config-key"]),
-        )
-        kwargs = {"known_keys": set()}
-    else:
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos",
-            lambda *_args, **_kwargs: ([entry], []),
-        )
-        kwargs = {}
+    _mock_source_collection(monkeypatch, tmp_path, [entry])
+    kwargs = {"known_keys": set()} if delta else {}
 
     bundle, manifest, warnings = shared_sync_bundle._shared_sync_montar_pacote_locked(
         "000002",
@@ -790,11 +760,7 @@ def test_bundle_inclui_config_e_foto_store_gif_bmp(
             "_cadastro_fotos_escopo_estrito",
             lambda _client_id: True,
         )
-        monkeypatch.setattr(
-            shared_sync_bundle,
-            "_shared_sync_coletar_arquivos_delta",
-            lambda *_args, **_kwargs: (entries, [], ["config", "row", "photo"]),
-        )
+        _mock_source_collection(monkeypatch, tmp_path, entries)
         _bundle_data, manifest, warnings = (
             shared_sync_bundle._shared_sync_montar_pacote_locked(
                 "000002",

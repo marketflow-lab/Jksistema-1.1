@@ -284,7 +284,25 @@ def _shared_sync_csv_read_canonical_bytes(scope: str, rel: str, data: bytes) -> 
     if _shared_sync_is_cadastro_custos_csv(scope, rel):
         _shared_sync_cadastro_custos_columns(list(df.columns))
     else:
-        _shared_sync_cadastro_lojas_columns(list(df.columns))
+        mapped = _shared_sync_cadastro_lojas_columns(list(df.columns))
+        normalized_sku_columns = [
+            column for column in df.columns
+            if _shared_sync_col_norm(column) == "skunormalizado"
+        ]
+        missing_sku = df[mapped["sku"]].str.strip().eq("")
+        if missing_sku.any() and len(normalized_sku_columns) > 1:
+            raise HTTPException(
+                status_code=502,
+                detail="cadastro_produtos_lojas.csv possui sku_normalizado duplicado/ambiguo.",
+            )
+        if len(normalized_sku_columns) == 1:
+            # Historical persisted rows can carry only sku_normalizado. Use
+            # the same fallback as Cadastro CRUD, on the captured frame only,
+            # so preview/photo ownership and delta keys see one logical row.
+            # Keep every explicit raw SKU and all other source fields intact.
+            df.loc[missing_sku, mapped["sku"]] = (
+                df.loc[missing_sku, normalized_sku_columns[0]].map(_normalizar_sku_mes)
+            )
     return df
 
 

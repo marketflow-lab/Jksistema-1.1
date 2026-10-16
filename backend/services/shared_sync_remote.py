@@ -408,7 +408,8 @@ def _shared_sync_push_scope(
 
         stores_count = len(_shared_sync_lojas_config_from_bundle(bundle))
     local_hash = str(manifest.get("snapshot_hash") or "")
-    if expected_snapshot_hash and local_hash != str(expected_snapshot_hash).strip():
+    source_hash = str(manifest.get("source_snapshot_hash") or local_hash)
+    if expected_snapshot_hash and source_hash != str(expected_snapshot_hash).strip():
         raise HTTPException(
             status_code=409,
             detail="Os dados locais mudaram depois da previa; confira novamente.",
