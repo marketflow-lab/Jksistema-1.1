@@ -833,14 +833,21 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     return saida
 
 
-def _construir_mapa_m3_sku(client_id: str, loja: str = "", store_id: str = "") -> dict[str, float]:
+def _construir_mapa_m3_sku(
+    client_id: str,
+    loja: str = "",
+    store_id: str = "",
+    *,
+    skus: list[str] | None = None,
+) -> dict[str, float]:
     """Cubagem do Cadastro da loja exata, sem aliases ou arquivos de backup."""
     from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
 
     referencia = str(store_id or loja or "").strip()
     if not referencia or referencia == "__todas":
         return {}
-    contexto = visao_produtos_cadastro_contexto_loja(client_id, referencia)
+    opcoes = {"skus": skus} if skus is not None else {}
+    contexto = visao_produtos_cadastro_contexto_loja(client_id, referencia, **opcoes)
     identidade = str(contexto.get("store_id") or "").strip()
     if contexto.get("scope") != "store" or not identidade:
         return {}

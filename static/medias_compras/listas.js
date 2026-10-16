@@ -54,36 +54,36 @@
             }
         }
 
-        async function carregarListasPedidos() {
-            try {
-                setStatusListaPedido('Carregando listas de pedidos...');
-                const params = new URLSearchParams();
-                if (lojaSelecionada && lojaSelecionada !== '__todas') {
-                    params.set('loja', lojaSelecionada);
-                    params.set('store_id', String(storeIdSelecionado || ''));
-                }
-                const resp = await fetch('/api/medias-compras/listas-pedidos' + (params.toString() ? '?' + params.toString() : ''), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Falha ao carregar listas de pedidos.');
-                }
-                const data = await resp.json();
-                listasPedidosResumo = Array.isArray(data.listas) ? data.listas : [];
-                renderListaPedidosResumo();
-                if (!listasPedidosResumo.length) {
-                    listaPedidoAtual = null;
-                    renderEditorListaPedido();
-                    setStatusListaPedido('Nenhuma lista salva ainda.');
-                } else if (!listaPedidoAtual) {
-                    renderEditorListaPedido();
-                    setStatusListaPedido('Clique em uma lista para visualizar e editar.');
-                }
-            } catch (e) {
-                setStatusListaPedido(e.message || 'Erro ao carregar listas de pedidos.');
+        async function carregarListasPedidos(forcar = false) {
+            const params = new URLSearchParams();
+            if (lojaSelecionada && lojaSelecionada !== '__todas') {
+                params.set('loja', lojaSelecionada);
+                params.set('store_id', String(storeIdSelecionado || ''));
             }
+            const url = '/api/medias-compras/listas-pedidos' + (params.toString() ? '?' + params.toString() : '');
+            const headers = { ...obterAuthHeaders() };
+            const escopo = JSON.stringify([tenantKey, userScopeKey, url, headers]);
+            return context.modules.api.executarTarefa('listas-resumo', escopo, async tarefa => {
+                try {
+                    setStatusListaPedido('Carregando listas de pedidos...');
+                    const resp = await fetch(url, { method: 'GET', headers, signal: tarefa.signal });
+                    const data = await resp.json();
+                    if (!tarefa.ativa()) return;
+                    if (!resp.ok) throw new Error(data.detail || 'Falha ao carregar listas de pedidos.');
+                    listasPedidosResumo = Array.isArray(data.listas) ? data.listas : [];
+                    renderListaPedidosResumo();
+                    if (!listasPedidosResumo.length) {
+                        listaPedidoAtual = null;
+                        renderEditorListaPedido();
+                        setStatusListaPedido('Nenhuma lista salva ainda.');
+                    } else if (!listaPedidoAtual) {
+                        renderEditorListaPedido();
+                        setStatusListaPedido('Clique em uma lista para visualizar e editar.');
+                    }
+                } catch (e) {
+                    if (tarefa.ativa()) setStatusListaPedido(e.message || 'Erro ao carregar listas de pedidos.');
+                }
+            }, forcar);
         }
 
         function renderListaPedidosResumo() {
@@ -253,6 +253,11 @@
             }
         }
 
+        function atualizarResumoAposMutacao() {
+            if (abaAtual === 'listas_pedidos') return carregarListasPedidos(true);
+            context.modules.api.cancelarTarefa('listas-resumo');
+        }
+
         async function atualizarStatusListaPedido(listaId, novoStatus) {
             if (!listaId || !novoStatus) return;
             const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/status', {
@@ -280,6 +285,7 @@
                 renderListaPedidosResumo();
                 renderEditorListaPedido();
             }
+            await atualizarResumoAposMutacao();
         }
 
         async function excluirListaPedido(listaId, nomeLista, statusLista) {
@@ -311,6 +317,7 @@
                 }
                 renderListaPedidosResumo();
                 renderEditorListaPedido();
+                await atualizarResumoAposMutacao();
                 setStatusListaPedido('Lista apagada com sucesso.');
             } catch (e) {
                 setStatusListaPedido(e.message || 'Erro ao apagar lista.');

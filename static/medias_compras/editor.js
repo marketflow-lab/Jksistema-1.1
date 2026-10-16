@@ -463,9 +463,9 @@
                     throw new Error(err.detail || 'Falha ao salvar alterações da lista.');
                 }
                 const data = await resp.json();
-                if (!listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) { await carregarListasPedidos(); return; }
+                if (!listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) { await carregarListasPedidos(true); return; }
                 listaPedidoAtual = data.lista || listaPedidoAtual;
-                await carregarListasPedidos();
+                await carregarListasPedidos(true);
                 if (listaPedidoAtual && listaPedidoAtual.id) {
                     await abrirListaPedidoPorId(listaPedidoAtual.id);
                 }

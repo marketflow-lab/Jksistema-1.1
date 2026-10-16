@@ -791,3 +791,32 @@ def test_link_cadastro_normaliza_linha_uma_vez_por_busca(monkeypatch):
     assert fiscal._pick_cadastro_link(row) == "https://example.test/product"
     assert all(counts[f"campo extra {index}"] == 1 for index in range(100))
     assert sum(counts.values()) <= len(row) + 2 * len(fiscal._META_LINK_CANDIDATOS)
+
+
+@pytest.mark.parametrize("referencia", ["store-a", "__todas"])
+def test_visao_completa_reutiliza_cadastro_capturado_sem_mudar_resultado(ambiente, monkeypatch, referencia):
+    expected = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", referencia)
+    original_read = produtos._ler_registros_persistidos
+    reads = []
+
+    def read(client_id):
+        reads.append(client_id)
+        return original_read(client_id)
+
+    monkeypatch.setattr(cadastro, "_ler_registros_persistidos", read)
+    monkeypatch.setattr(produtos, "_ler_registros_persistidos", read)
+    actual = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", referencia)
+    assert actual == expected
+    assert reads == ["cliente-a"]
+
+
+def test_visao_completa_recarrega_cadastro_entre_requisicoes(ambiente):
+    first = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a")
+    rows, _ = produtos._ler_registros_persistidos("cliente-a")
+    for row in rows:
+        if row["store_id"] == "store-a":
+            row["nome"] = "Produto atualizado depois da primeira leitura"
+    _csv(ambiente["root"] / "cliente-a" / "cadastro_produtos_lojas.csv", rows)
+    second = cadastro.visao_produtos_cadastro_contexto_loja("cliente-a", "store-a")
+    assert first["produtos"][0]["nome"] == "Produto de teste"
+    assert second["produtos"][0]["nome"] == "Produto atualizado depois da primeira leitura"

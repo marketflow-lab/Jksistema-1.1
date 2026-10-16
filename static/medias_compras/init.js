@@ -39,8 +39,10 @@
             app.assertReady();
             ligarEventos();
             renderBotoesLojas([]);
-            carregarSkusOcultosServidor().finally(() => {
-                carregarLojas().finally(() => carregarVisao(12));
+            app.state.inicializacaoMediasPendente = true;
+            Promise.allSettled([carregarSkusOcultosServidor(), carregarLojas()]).then(() => {
+                app.state.inicializacaoMediasPendente = false;
+                return carregarVisao(periodoAtual);
             });
         }
 

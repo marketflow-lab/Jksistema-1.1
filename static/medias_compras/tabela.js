@@ -4,8 +4,8 @@
     const app = global.JKMedias;
     app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas'], (context) => {
         const fetch = context.modules.api.request;
-        const fetchLatest = context.modules.api.requestLatest;
         const obterAuthHeaders = context.modules.api.authHeaders;
+        let escopoVisaoExibida = '';
 
         function obterQuantidadesSugeridasEditadas() {
             const quantidades = {};
@@ -158,7 +158,7 @@
             const codigosTemporarios = new Set(['stores_snapshot_initializing', 'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
             for (let tentativa = 0; tentativa <= 4; tentativa++) {
                 if (geracaoAtual !== geracaoCarregamentoVisao) return null;
-                const resp = await fetchLatest('visao', url, opcoes);
+                const resp = await fetch(url, opcoes);
                 if (geracaoAtual !== geracaoCarregamentoVisao) return null;
                 if (resp.ok) return resp;
                 const erro = await resp.json().catch(() => ({}));
@@ -182,53 +182,64 @@
             }
         }
 
+        function cancelarCarregamentoVisao() {
+            geracaoCarregamentoVisao++;
+            context.modules.api.cancelarTarefa('visao');
+            setStatus('');
+        }
+
         async function carregarVisao(meses) {
-            const geracaoAtual = ++geracaoCarregamentoVisao;
-            ocultarBalaoEstoqueEmTransito();
-            if ([3, 6, 12].includes(Number(meses))) {
-                periodoAtual = Number(meses);
-            }
+            if ([3, 6, 12].includes(Number(meses))) periodoAtual = Number(meses);
             atualizarBotoesPeriodo();
+            if (abaAtual === 'listas_pedidos') { cancelarCarregamentoVisao(); return; }
+            if (context.app.state.inicializacaoMediasPendente) return;
             const periodoSolicitado = periodoAtual;
             const lojaSolicitada = lojaSelecionada;
-            const lojaTexto = (lojaSolicitada && lojaSolicitada !== '__todas') ? (' da loja ' + lojaSolicitada) : ' de todas as lojas';
-            setStatus('Carregando dados de vendas e estoque' + lojaTexto + '...');
-
-            try {
-                const params = new URLSearchParams();
-                params.set('meses', String(periodoSolicitado));
-                if (lojaSolicitada && lojaSolicitada !== '__todas') {
-                    params.set('loja', lojaSolicitada);
-                    params.set('store_id', String(storeIdSelecionado || ''));
-                }
-                const resp = await consultarVisaoComRetentativa('/api/medias-compras/visao?' + params.toString(), {
-                    method: 'GET',
-                    headers: {
-                        ...obterAuthHeaders()
-                    }
-                }, geracaoAtual);
-
-                if (geracaoAtual !== geracaoCarregamentoVisao) return;
-                if (!resp) return;
-
-                const data = await resp.json();
-                if (geracaoAtual !== geracaoCarregamentoVisao) return;
-                colunasMesesAtuais = data.colunas_meses || [];
-                itensVisaoAtual = data.itens || [];
-                comprasSugeridasEditadas.clear();
-                try {
-                    renderAbaAtual();
-                } catch (renderErr) {
-                    console.error('[Medias] Erro ao renderizar:', renderErr);
-                    setStatus('Erro ao renderizar tabela: ' + (renderErr.message || renderErr));
-                    return;
-                }
-                setStatus('');
-            } catch (e) {
-                if (geracaoAtual !== geracaoCarregamentoVisao) return;
-                console.error('[Medias] Erro ao carregar:', e);
-                setStatus('Falha ao carregar dados: ' + (e.message || e));
+            const params = new URLSearchParams({ meses: String(periodoSolicitado) });
+            if (lojaSolicitada && lojaSolicitada !== '__todas') {
+                params.set('loja', lojaSolicitada);
+                params.set('store_id', String(storeIdSelecionado || ''));
             }
+            const url = '/api/medias-compras/visao?' + params.toString();
+            const headers = { ...obterAuthHeaders() };
+            const escopo = JSON.stringify([tenantKey, userScopeKey, url, headers]);
+            if (escopoVisaoExibida && escopoVisaoExibida !== escopo) {
+                itensVisaoAtual = [];
+                colunasMesesAtuais = [];
+                comprasSugeridasEditadas.clear();
+                escopoVisaoExibida = '';
+                renderAbaAtual();
+            }
+            return context.modules.api.executarTarefa('visao', escopo, async tarefa => {
+                const geracaoAtual = ++geracaoCarregamentoVisao;
+                ocultarBalaoEstoqueEmTransito();
+                const lojaTexto = (lojaSolicitada && lojaSolicitada !== '__todas') ? (' da loja ' + lojaSolicitada) : ' de todas as lojas';
+                setStatus('Carregando dados de vendas e estoque' + lojaTexto + '...');
+                try {
+                    const resp = await consultarVisaoComRetentativa(url, {
+                        method: 'GET', headers, signal: tarefa.signal,
+                    }, geracaoAtual);
+                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao || !resp) return;
+                    const data = await resp.json();
+                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao) return;
+                    colunasMesesAtuais = data.colunas_meses || [];
+                    itensVisaoAtual = data.itens || [];
+                    escopoVisaoExibida = escopo;
+                    comprasSugeridasEditadas.clear();
+                    try {
+                        renderAbaAtual();
+                    } catch (renderErr) {
+                        console.error('[Medias] Erro ao renderizar:', renderErr);
+                        setStatus('Erro ao renderizar tabela: ' + (renderErr.message || renderErr));
+                        return;
+                    }
+                    setStatus('');
+                } catch (e) {
+                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao) return;
+                    console.error('[Medias] Erro ao carregar:', e);
+                    setStatus('Falha ao carregar dados: ' + (e.message || e));
+                }
+            });
         }
 
         function prepararEstruturaTabela(colunasMeses) {
@@ -402,6 +413,7 @@
             obterItensOcultados,
             renderAbaAtual,
             carregarVisao,
+            cancelarCarregamentoVisao,
             renderTabela
         };
     });

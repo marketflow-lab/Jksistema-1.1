@@ -418,12 +418,23 @@ def _api_medias_compras_listas_pedidos_sync(
             if legado["store_id"] == store_id_alvo:
                 filtradas.append(lista)
         listas = filtradas
-    mapas_m3 = {}
+    skus_por_referencia: dict[str, set[str]] = {}
+    for lista in listas:
+        if _cubagem_lista_historica(lista):
+            continue
+        referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
+        skus = skus_por_referencia.setdefault(referencia, set())
+        for item in lista.get("itens") or []:
+            sku = _primeiro_texto_item(item, ("SKU", "sku"))
+            if sku:
+                skus.add(sku)
+    mapas_m3 = {
+        referencia: _construir_mapa_m3_sku(client_id, loja=referencia, skus=sorted(skus))
+        for referencia, skus in skus_por_referencia.items()
+    }
     resumos = []
     for lista in listas:
         referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
-        if not _cubagem_lista_historica(lista) and referencia not in mapas_m3:
-            mapas_m3[referencia] = _construir_mapa_m3_sku(client_id, loja=referencia)
         resumos.append(_resumo_lista_pedido(lista, mapas_m3.get(referencia, {})))
     return {"success": True, "listas": resumos}
 

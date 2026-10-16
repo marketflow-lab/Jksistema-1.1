@@ -51,13 +51,13 @@
                     if (lojaAnterior !== lojaSelecionada || storeIdAnterior !== storeIdSelecionado) {
                         cancelarAberturaListaPedido();
                         listaPedidoAtual = null;
+                        listasPedidosResumo = [];
+                        renderListaPedidosResumo();
                         renderEditorListaPedido();
                     }
                     renderBotoesLojas(lojasDisponiveis || []);
-                    carregarVisao(periodoAtual);
-                    if (abaAtual === 'listas_pedidos') {
-                        carregarListasPedidos();
-                    }
+                    if (abaAtual === 'listas_pedidos') carregarListasPedidos();
+                    else carregarVisao(periodoAtual);
                 };
                 box.appendChild(btn);
             };
@@ -295,6 +295,7 @@
         }
 
         function selecionarAba(aba) {
+            const abaAnterior = abaAtual;
             abaAtual = (aba === 'ocultados' || aba === 'listas_pedidos') ? aba : 'lista';
             const btnLista = document.getElementById('btnAbaLista');
             const btnOcultados = document.getElementById('btnAbaOcultados');
@@ -304,7 +305,11 @@
             if (btnListasPedidos) btnListasPedidos.classList.toggle('active', abaAtual === 'listas_pedidos');
 
             if (abaAtual === 'listas_pedidos') {
+                cancelarCarregamentoVisao();
                 carregarListasPedidos();
+            } else if (abaAnterior === 'listas_pedidos') {
+                context.modules.api.cancelarTarefa('listas-resumo');
+                carregarVisao(periodoAtual);
             }
             renderAbaAtual();
         }

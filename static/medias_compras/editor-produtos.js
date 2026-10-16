@@ -245,7 +245,7 @@
                 : false;
             if (!skuSalvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
 
-            await carregarListasPedidos();
+            await carregarListasPedidos(true);
             if (listaPedidoAtual && listaPedidoAtual.id) await abrirListaPedidoPorId(listaPedidoAtual.id);
             const skuAposReabrir = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
                 ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))

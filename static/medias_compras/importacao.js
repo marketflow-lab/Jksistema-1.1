@@ -86,7 +86,7 @@
                     } catch (_e) {
                         // Não bloqueia atualização de preços se status falhar.
                     }
-                    await carregarListasPedidos();
+                    await carregarListasPedidos(true);
                     if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId)) {
                         await abrirListaPedidoPorId(listaId);
                     }
@@ -177,7 +177,7 @@
                     const data = await resp.json();
                     const listaCriada = data.lista || {};
                     const listaId = String(listaCriada.id || data.lista_id || '').trim();
-                    await carregarListasPedidos();
+                    await carregarListasPedidos(true);
                     if (listaId) {
                         await abrirListaPedidoPorId(listaId);
                     }

@@ -5,6 +5,7 @@
     app.defineModule('api', ['core', 'state'], ({ modules }) => {
         const { definirStatusInicial, parseJsonLocalStorage } = modules.core;
         const requisicoesMaisRecentes = new Map();
+        const tarefasPendentes = new Map();
 
         if (typeof global.obterAuthHeaders !== 'function') {
             global.obterAuthHeaders = function obterAuthHeadersFallback(extra) {
@@ -48,6 +49,26 @@
             requisicoesMaisRecentes.delete(registro.chave);
         }
 
+        function cancelarTarefa(chave) {
+            const tarefa = tarefasPendentes.get(chave);
+            if (!tarefa) return;
+            tarefasPendentes.delete(chave);
+            tarefa.controller.abort();
+        }
+
+        function executarTarefa(chave, escopo, executar, forcar = false) {
+            const anterior = tarefasPendentes.get(chave);
+            if (!forcar && anterior && anterior.escopo === escopo) return anterior.promessa;
+            cancelarTarefa(chave);
+            const controller = new global.AbortController();
+            const tarefa = { escopo, controller };
+            const ativa = () => tarefasPendentes.get(chave) === tarefa;
+            tarefa.promessa = Promise.resolve().then(() => ativa() ? executar({ signal: controller.signal, ativa }) : undefined)
+                .finally(() => { if (ativa()) tarefasPendentes.delete(chave); });
+            tarefasPendentes.set(chave, tarefa);
+            return tarefa.promessa;
+        }
+
         async function requestLatest(chave, input, init) {
             const chaveNormalizada = String(chave || '').trim();
             if (!chaveNormalizada || typeof global.AbortController !== 'function') {
@@ -78,6 +99,8 @@
             request,
             requestLatest,
             cancelarRequisicao,
+            cancelarTarefa,
+            executarTarefa,
             authHeaders: (extra) => global.obterAuthHeaders(extra),
         };
     });

@@ -324,12 +324,8 @@ def visao_compatibilidade_produtos_lojas(
             store_id = str(loja.get("store_id") or "").strip()
             if not store_id:
                 continue
-            produtos_loja = (
-                _listar_produtos_loja_sync(client_id, store_id)
-                if skus is None
-                else _listar_produtos_loja_sync(
-                    client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
-                )
+            produtos_loja = _listar_produtos_loja_sync(
+                client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
             )
             for produto in produtos_loja:
                 sku = _normalizar_sku_chave(
@@ -412,12 +408,8 @@ def visao_produtos_cadastro_contexto_loja(
                 "loja_resolvida": False,
                 "scope": "unresolved",
             }
-        produtos = (
-            _listar_produtos_loja_sync(client_id, store_id)
-            if skus is None
-            else _listar_produtos_loja_sync(
-                client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
-            )
+        produtos = _listar_produtos_loja_sync(
+            client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
         )
 
     return {
