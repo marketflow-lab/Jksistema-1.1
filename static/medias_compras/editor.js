@@ -464,11 +464,11 @@
                 }
                 const data = await resp.json();
                 if (!listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) { await carregarListasPedidos(true); return; }
-                listaPedidoAtual = data.lista || listaPedidoAtual;
+                const listaSalva = data.lista || listaPedidoAtual;
+                listaPedidoAtual = listaSalva;
                 await carregarListasPedidos(true);
-                if (listaPedidoAtual && listaPedidoAtual.id) {
-                    await abrirListaPedidoPorId(listaPedidoAtual.id);
-                }
+                if (listaPedidoAtual !== listaSalva) return;
+                if (!await abrirListaPedidoPorId(listaId, { preservarConteudo: true })) return;
                 setStatusListaPedido('Lista salva com sucesso.');
             } catch (e) {
                 setStatusListaPedido(e.message || 'Erro ao salvar lista.');

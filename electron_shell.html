@@ -312,14 +312,18 @@
         .tab-view {
             background: #ffffff;
             border: 0;
-            display: none;
+            /* Keep iframe layout to retain its scroll position in Electron 28. */
+            display: block;
+            visibility: hidden;
+            pointer-events: none;
             height: 100%;
             inset: 0;
             position: absolute;
             width: 100%;
         }
         .tab-view.is-active {
-            display: block;
+            visibility: visible;
+            pointer-events: auto;
         }
         .tab-load-state {
             align-items: center;

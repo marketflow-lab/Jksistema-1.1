@@ -22,13 +22,19 @@ function lista(id, store = stores[0], full = false) {
   };
 }
 
-async function fixture(browser, tenant, { twoItems = false, materializedLegacy = false, allowSave = false } = {}) {
+async function fixture(browser, tenant, { twoItems = false, materializedLegacy = false, allowSave = false, longList = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const state = { errors: [], routeErrors: [], calls: [], saves: [] };
   const saved = { a: lista('a'), b: lista('b'), c: lista('c', stores[1]) };
   const enriched = { a: lista('a', stores[0], true), b: lista('b', stores[0], true), c: lista('c', stores[1], true) };
+  if (longList) {
+    for (const data of [saved, enriched]) {
+      data.a.itens = Array.from({ length: 200 }, (_, index) => ({ ...data.a.itens[0], SKU: 'LONG-' + index }));
+      for (let index = 0; index < 40; index++) data['extra-' + index] = lista('extra-' + index);
+    }
+  }
   if (twoItems) {
     const extra = { SKU: 'SKU-B2', 'Título do produto em inglês': 'Segundo item salvo', Quantidade: 3,
       'Valor unidade': 5, 'Valor total': 15, 'Estimed CBM': '', 'M3 individual': '' };
@@ -503,6 +509,117 @@ async function testMaterializedLegacyRename(browser) {
   console.log('PASS legado materializado: renomear e salvar preservam SKU, quantidade, preço e total do snapshot rápido.');
 }
 
+async function testSavePreservesViewport(browser) {
+  const test = await fixture(browser, 'tenant-save-position', { allowSave: true, longList: true });
+  const { page } = test;
+  try {
+    await click(page, 'a');
+    await ready(page, 'a');
+    await page.addStyleTag({ content: '.editor-lista { min-width: 0; } .mini-table-wrap { max-width: 600px; }' });
+    await page.evaluate(() => {
+      const name = document.getElementById('nomeListaPedidoEdit');
+      name.value = 'Pedido A editado';
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+      document.getElementById('listasPedidosLista').scrollTop = 700;
+      document.querySelector('.mini-table-wrap').scrollLeft = 180;
+      window.scrollTo(0, 1400);
+      window.__savedFirstRow = document.querySelector('#tblListaPedidoItens tbody').firstElementChild;
+    });
+    const viewport = () => page.evaluate(() => ({ y: window.scrollY,
+      list: document.getElementById('listasPedidosLista').scrollTop,
+      x: document.querySelector('.mini-table-wrap').scrollLeft,
+      rows: document.querySelectorAll('#tblListaPedidoItens tbody tr[data-lista-pedido-row]').length }));
+    const before = await viewport();
+    assert.deepStrictEqual(before, { y: 1400, list: 700, x: 180, rows: 200 }, 'A fixture precisa de rolagem real vertical, horizontal e no painel lateral.');
+    await plan(page, 'a:saved', { phase: 'body' });
+    await page.evaluate(() => { window.__savePending = salvarListaPedidoAtual(); });
+    await page.waitForFunction(() => __listHarness.calls.length === 2 && __listHarness.pending().length === 1);
+    assert.deepStrictEqual(await viewport(), before, 'Atualizar a mesma lista após salvar não pode encolher a tabela nem perder a posição.');
+    assert.strictEqual(await page.evaluate(() => window.__savedFirstRow === document.querySelector('#tblListaPedidoItens tbody').firstElementChild), true, 'Os itens salvos continuam visíveis durante a atualização.');
+    assert.strictEqual(await page.locator('#editorListaPedido').evaluate(el => el.inert), true, 'A atualização pendente deve impedir novas edições sobre o snapshot anterior.');
+    await release(page, 1);
+    await page.evaluate(() => window.__savePending);
+    assert.deepStrictEqual(await viewport(), before, 'A posição deve permanecer depois da resposta da mesma lista.');
+    assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Pedido A editado');
+    assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista salva com sucesso.');
+    assert.strictEqual(test.state.saves[0].itens.length, 200);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS posição ao salvar: 200 itens e rolagens vertical, horizontal e lateral preservados antes, durante e após a atualização.');
+}
+
+async function testSaveRefreshFailures(browser) {
+  for (const mode of ['error', 'timeout']) {
+    const test = await fixture(browser, 'tenant-save-failure-' + mode, { allowSave: true, longList: true });
+    const { page } = test;
+    try {
+      await click(page, 'a');
+      await ready(page, 'a');
+      await page.evaluate(() => {
+        const name = document.getElementById('nomeListaPedidoEdit');
+        name.value = 'Pedido A salvo';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        window.scrollTo(0, 1400);
+        window.__rowBeforeFailedRefresh = document.querySelector('#tblListaPedidoItens tbody').firstElementChild;
+      });
+      await plan(page, 'a:saved', { phase: 'body', ignoreAbort: true });
+      await page.evaluate(() => { window.__savePending = salvarListaPedidoAtual(); });
+      await page.waitForFunction(() => __listHarness.pending().includes(1));
+      if (mode === 'error') await fail(page, 1, 'Falha sintética ao atualizar a lista salva.');
+      else assert.strictEqual(await run(page, 5000), 1);
+      await page.evaluate(() => window.__savePending);
+      assert.match(await page.locator('#statusListaPedido').innerText(), mode === 'error' ? /Falha sintética/ : /demorou para responder/);
+      assert.strictEqual(await page.evaluate(() => window.scrollY), 1400, 'A falha da atualização mantém a posição na lista salva.');
+      assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 200);
+      assert.strictEqual(await page.evaluate(() => window.__rowBeforeFailedRefresh === document.querySelector('#tblListaPedidoItens tbody').firstElementChild), true);
+      assert.strictEqual(await page.locator('#editorListaPedido').evaluate(el => el.inert), false, 'A falha libera edição e nova tentativa.');
+      await page.evaluate(async () => {
+        const name = document.getElementById('nomeListaPedidoEdit');
+        name.value = 'Pedido A após nova tentativa';
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+        await salvarListaPedidoAtual();
+      });
+      if (mode === 'timeout') await release(page, 1);
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista salva com sucesso.');
+      assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Pedido A após nova tentativa');
+      assert.strictEqual(await page.evaluate(() => window.scrollY), 1400);
+      assert.strictEqual(test.state.saves.length, 2);
+      await clean(test);
+    } finally { await test.context.close(); }
+  }
+  console.log('PASS falha ao atualizar após salvar: conteúdo/posição preservados, sem sucesso indevido, nova tentativa e resposta tardia protegidas.');
+}
+
+async function testSaveRefreshSelectionRaces(browser) {
+  for (const change of ['list', 'store']) {
+    const test = await fixture(browser, 'tenant-save-selection-' + change, { allowSave: true });
+    const { page } = test;
+    try {
+      await click(page, 'a');
+      await ready(page, 'a');
+      await page.locator('#nomeListaPedidoEdit').fill('Pedido A salvo');
+      await plan(page, 'a:saved', { phase: 'body', ignoreAbort: true });
+      await page.evaluate(() => { window.__savePending = salvarListaPedidoAtual(); });
+      await page.waitForFunction(() => __listHarness.calls.length === 2 && __listHarness.pending().length === 1);
+      if (change === 'list') { await click(page, 'b'); await ready(page, 'b'); }
+      else {
+        await page.locator('#lojaBotoes button').filter({ hasText: 'Loja B' }).click();
+        await page.locator('.lista-item').filter({ hasText: 'Pedido C' }).waitFor();
+      }
+      const status = await page.locator('#statusListaPedido').innerText();
+      assert.strictEqual((await calls(page))[1].aborted, true);
+      await release(page, 1);
+      await page.evaluate(() => window.__savePending);
+      assert.strictEqual(await page.evaluate(() => listaPedidoAtual?.id || null), change === 'list' ? 'b' : null);
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), status, 'A resposta do salvamento anterior não pode alterar o status da nova seleção.');
+      assert.strictEqual(await page.locator('#editorListaPedido').evaluate(el => el.inert), false);
+      if (change === 'store') assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+      await clean(test);
+    } finally { await test.context.close(); }
+  }
+  console.log('PASS concorrência ao salvar: outra lista ou loja cancela a atualização anterior sem reabrir conteúdo nem substituir o status atual.');
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
@@ -515,5 +632,8 @@ async function testMaterializedLegacyRename(browser) {
     await testStoreSwitchCancelsSnapshot(browser);
     await testDragInProgressPreservesDom(browser);
     await testMaterializedLegacyRename(browser);
+    await testSavePreservesViewport(browser);
+    await testSaveRefreshSelectionRaces(browser);
+    await testSaveRefreshFailures(browser);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

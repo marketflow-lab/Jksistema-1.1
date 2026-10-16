@@ -379,15 +379,16 @@
             if (painel) painel.inert = false;
         }
 
-        async function abrirListaPedidoPorId(listaId) {
+        async function abrirListaPedidoPorId(listaId, { preservarConteudo = false } = {}) {
             if (!listaId) return;
+            const manterConteudo = preservarConteudo && listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId);
             cancelarAberturaListaPedido();
             const abertura = { carga: ++cargaListaPedido, controller: null, editada: false };
             aberturaListaPedido = abertura;
             listaPedidoEmAbertura = String(listaId);
-            listaPedidoAtual = null;
+            if (!manterConteudo) listaPedidoAtual = null;
             renderListaPedidosResumo();
-            renderEditorListaPedido();
+            if (!manterConteudo) renderEditorListaPedido();
             const painel = document.getElementById('editorListaPedido');
             if (painel) { painel.classList.remove('hidden'); painel.inert = true; }
             setStatusListaPedido('Abrindo lista...');
@@ -411,6 +412,7 @@
                     abertura.removerEscuta = () => { for (const evento of ['input', 'change', 'dragstart']) painel.removeEventListener(evento, marcarEdicao, true); };
                 }
                 abertura.timer = global.setTimeout(() => atualizarComplementosListaPedido(listaId, abertura, lista), 300);
+                return true;
             } catch (e) {
                 if (abertura === aberturaListaPedido) setStatusListaPedido(e.message || 'Erro ao abrir lista.');
             } finally {
