@@ -95,6 +95,7 @@
             padding: 0 7px 0 8px;
             transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease, transform 140ms ease;
             user-select: none;
+            touch-action: none;
         }
         .tab:hover {
             background: #ffffff;
@@ -1277,7 +1278,7 @@
 
         function hideTabsToolbar() {
             if (!shellEl || !toolbarEl) return;
-            if (screenSearchIsOpen) {
+            if (screenSearchIsOpen || tabDragState) {
                 showTabsToolbar(0);
                 return;
             }
@@ -1299,7 +1300,7 @@
 
         function scheduleTabsToolbarHide(timeout = 700) {
             clearTimeout(toolbarAutoHideTimer);
-            if (screenSearchIsOpen) return;
+            if (screenSearchIsOpen || tabDragState) return;
             toolbarAutoHideTimer = setTimeout(hideTabsToolbar, timeout);
         }
 
@@ -1611,11 +1612,11 @@
                 dragged,
                 ...remaining.slice(targetIndex)
             ];
+            if (entries.every(([id], index) => id === nextEntries[index][0])) return;
             tabs.clear();
-            nextEntries.forEach(([id, tab]) => {
-                tabs.set(id, tab);
-                if (tab.button) tabsEl.appendChild(tab.button);
-            });
+            nextEntries.forEach(([id, tab]) => tabs.set(id, tab));
+            const targetButton = targetId ? tabs.get(targetId).button : null;
+            tabsEl.insertBefore(dragged[1].button, targetButton);
         }
 
         async function detachTabToWindow(id) {
@@ -1635,10 +1636,19 @@
             } catch (_err) {}
         }
 
+        function clearTabDragState() {
+            const state = tabDragState;
+            tabDragState = null;
+            clearTabDragClasses();
+            if (state) {
+                try { tabsEl.releasePointerCapture(state.pointerId); } catch (_err) {}
+            }
+        }
+
         function bindTabDragHandlers(button, id) {
             button.dataset.tabId = id;
             button.addEventListener('pointerdown', (event) => {
-                if (event.button !== 0 || event.target.closest('.tab-close')) return;
+                if (event.button !== 0 || !event.isPrimary || tabDragState || event.target.closest('.tab-close')) return;
                 tabDragState = {
                     id,
                     pointerId: event.pointerId,
@@ -1646,65 +1656,76 @@
                     startY: event.clientY,
                     dragging: false
                 };
-                try { button.setPointerCapture(event.pointerId); } catch (_err) {}
-            });
-            button.addEventListener('pointermove', (event) => {
-                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
-                const dx = Math.abs(event.clientX - tabDragState.startX);
-                const dy = Math.abs(event.clientY - tabDragState.startY);
-                if (!tabDragState.dragging && Math.max(dx, dy) < 6) return;
-                if (!tabDragState.dragging) {
-                    tabDragState.dragging = true;
-                    button.classList.add('is-dragging');
-                    showTabsToolbar(0);
-                }
-                event.preventDefault();
-                const detach = isDetachDropPoint(event);
-                clearTabDragClasses();
-                button.classList.add('is-dragging');
-                button.classList.toggle('is-detach-target', detach);
-                if (tabDetachHint) tabDetachHint.classList.toggle('is-active', detach);
-                if (!detach) {
-                    const targetId = getDropTargetId(event.clientX);
-                    reorderTabBefore(id, targetId);
-                    const targetButton = targetId && tabs.get(targetId) ? tabs.get(targetId).button : null;
-                    if (targetButton) targetButton.classList.add('is-drop-before');
-                }
-            });
-            const finalizar = (event) => {
-                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
-                const shouldDetach = tabDragState.dragging && isDetachDropPoint(event);
-                const wasDragging = tabDragState.dragging;
-                tabDragState = null;
-                clearTabDragClasses();
-                try { button.releasePointerCapture(event.pointerId); } catch (_err) {}
-                if (wasDragging) {
-                    button.dataset.dragSuppress = '1';
-                    setTimeout(() => { delete button.dataset.dragSuppress; }, 0);
-                    event.preventDefault();
-                    event.stopPropagation();
-                }
-                if (shouldDetach) {
-                    detachTabToWindow(id);
-                } else if (wasDragging) {
-                    activateTab(id);
-                    showTabsToolbar(1200);
-                }
-            };
-            button.addEventListener('pointerup', finalizar);
-            button.addEventListener('pointercancel', (event) => {
-                if (!tabDragState || tabDragState.id !== id || tabDragState.pointerId !== event.pointerId) return;
-                tabDragState = null;
-                clearTabDragClasses();
-                try { button.releasePointerCapture(event.pointerId); } catch (_err) {}
-            });
-            button.addEventListener('lostpointercapture', () => {
-                if (tabDragState && tabDragState.id === id) {
-                    tabDragState = null;
-                    clearTabDragClasses();
+                // Capture on the stable strip: moving a tab button releases its own capture.
+                try { tabsEl.setPointerCapture(event.pointerId); } catch (_err) {
+                    clearTabDragState();
                 }
             });
         }
+
+        tabsEl.addEventListener('pointermove', (event) => {
+            if (!tabDragState || tabDragState.pointerId !== event.pointerId) return;
+            const { id, startX, startY } = tabDragState;
+            const tab = tabs.get(id);
+            if (!tab) {
+                clearTabDragState();
+                return;
+            }
+            const dx = Math.abs(event.clientX - startX);
+            const dy = Math.abs(event.clientY - startY);
+            if (!tabDragState.dragging && Math.max(dx, dy) < 6) return;
+            if (!tabDragState.dragging) {
+                tabDragState.dragging = true;
+                showTabsToolbar(0);
+            }
+            event.preventDefault();
+            const detach = isDetachDropPoint(event);
+            clearTabDragClasses();
+            tab.button.classList.add('is-dragging');
+            tab.button.classList.toggle('is-detach-target', detach);
+            if (tabDetachHint) tabDetachHint.classList.toggle('is-active', detach);
+            if (!detach) {
+                const targetId = getDropTargetId(event.clientX);
+                reorderTabBefore(id, targetId);
+                const targetButton = targetId && tabs.get(targetId) ? tabs.get(targetId).button : null;
+                if (targetButton) targetButton.classList.add('is-drop-before');
+            }
+        });
+
+        tabsEl.addEventListener('pointerup', (event) => {
+            if (!tabDragState || tabDragState.pointerId !== event.pointerId) return;
+            const { id, dragging } = tabDragState;
+            const shouldDetach = dragging && isDetachDropPoint(event);
+            clearTabDragState();
+            if (dragging) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (shouldDetach) {
+                detachTabToWindow(id);
+            } else {
+                // Captured clicks end on the strip, so activate the original tab explicitly.
+                activateTab(id);
+                if (dragging) {
+                    tabs.get(id)?.button.focus({ preventScroll: true });
+                    showTabsToolbar(1200);
+                }
+            }
+        });
+
+        const cancelTabDrag = (event) => {
+            if (!tabDragState || tabDragState.pointerId !== event.pointerId) return;
+            clearTabDragState();
+            showTabsToolbar(1200);
+        };
+        tabsEl.addEventListener('pointercancel', cancelTabDrag);
+        tabsEl.addEventListener('lostpointercapture', cancelTabDrag);
+        window.addEventListener('blur', () => {
+            if (tabDragState) {
+                clearTabDragState();
+                scheduleTabsToolbarHide();
+            }
+        });
 
         function setUpdateSaveOverlay(active, message = '') {
             if (updateSaveOverlay) updateSaveOverlay.classList.toggle('is-active', !!active);
@@ -2302,6 +2323,7 @@
         function closeTab(id) {
             const tab = tabs.get(id);
             if (!tab) return;
+            if (tabDragState && tabDragState.id === id) clearTabDragState();
             if (mlBrowserOwnerId === id) {
                 mlBrowserOwnerId = '';
                 hideEmbeddedMlBrowserShell({ destroy: true, reason: 'tab-close' });
@@ -2343,7 +2365,6 @@
             button.innerHTML = '<span class="tab-icon" aria-hidden="true"></span><span class="tab-title"></span><span class="tab-close" title="Fechar aba" aria-label="Fechar aba">x</span>';
             bindTabDragHandlers(button, id);
             button.addEventListener('click', () => {
-                if (button.dataset.dragSuppress === '1') return;
                 activateTab(id);
             });
             button.querySelector('.tab-close').addEventListener('click', (event) => {
