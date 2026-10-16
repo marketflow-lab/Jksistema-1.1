@@ -37,7 +37,7 @@ def pedido(monkeypatch, tmp_path):
         assert client_id == CLIENT_ID
         return copy.deepcopy(estado["cadastro"])
 
-    def contexto_loja(client_id, produtos_legados, loja_referencia):
+    def contexto_loja(client_id, produtos_legados, loja_referencia, *, skus=None):
         assert client_id == CLIENT_ID
         assert loja_referencia == STORE_ID
         return {

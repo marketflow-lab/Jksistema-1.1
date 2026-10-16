@@ -71,7 +71,7 @@ async function fixture(browser, options = {}) {
             else if(key.startsWith('sku:')) {const sku=url.searchParams.get('sku');if(sku==='MISSING'){status=404;body={detail:'SKU not found'};}else body={produto:product(sku)};}
             else if(key.startsWith('detail:'))body={lista:clone(lists[id])};
             else if(key.startsWith('save:')) {assertList(id);lists[id]={...lists[id],...clone(payload)};body={lista:clone(lists[id])};}
-            else if(key.startsWith('add:')) {assertList(id);const row=item(payload.sku);row.Quantidade=payload.quantidade;row['Valor unidade']=payload.valor_unitario;row['Valor total']=row.Quantidade*row['Valor unidade'];const at=lists[id].itens.findIndex(it=>it.SKU===row.SKU);if(at<0)lists[id].itens.push(row);else lists[id].itens[at]=row;body={lista:clone(lists[id]),acao:at<0?'adicionado':'atualizado'};}
+            else if(key.startsWith('add:')) {assertList(id);const row=item(selected.canonicalSku||payload.sku);row.Quantidade=payload.quantidade;row['Valor unidade']=payload.valor_unitario;row['Valor total']=row.Quantidade*row['Valor unidade'];Object.assign(row,clone(selected.item||{}));const at=lists[id].itens.findIndex(it=>it.SKU===row.SKU);if(at<0)lists[id].itens.push(row);else lists[id].itens[at]=row;body={lista:clone(lists[id]),sku:row.SKU,acao:at<0?'adicionado':'atualizado'};}
             if(selected.body)body=clone(selected.body);
             call.done=true;call.response=clone(body);
             return {ok:status<400,status,headers:new Headers(),json:async()=>clone(body)};
@@ -94,11 +94,12 @@ async function fixture(browser, options = {}) {
 }
 
 async function openList(page,letter){
+    const start=await page.evaluate(()=>__autosaveFixture.calls.length);
     await page.locator('.lista-item').filter({hasText:'Pedido '+letter}).click();
     await page.waitForFunction(letter=>document.querySelector('#nomeListaPedidoEdit')?.value==='Pedido '+letter&&!document.querySelector('#editorListaPedido').inert,letter);
     await page.waitForFunction(()=>!document.querySelector('#fornecedorListaPedidoEdit').disabled);
-    // Let the real delayed enrichment settle before starting the edited-list race.
-    await page.waitForTimeout(350);
+    // Wait for the actual enrichment response; a fixed delay races the scheduled callback under load.
+    await page.waitForFunction(({letter,start})=>__autosaveFixture.calls.slice(start).some(call=>call.key==='detail:list-'+letter.toLowerCase()&&!call.savedOnly&&call.done),{letter,start});
 }
 function field(page,kind,index=0){return page.locator(`#tblListaPedidoItens [data-kind="${kind}"][data-idx="${index}"]`);}
 async function plan(page,key,value){await page.evaluate(({key,value})=>__autosaveFixture.plan(key,value),{key,value});}

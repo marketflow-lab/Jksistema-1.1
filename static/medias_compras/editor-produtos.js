@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('editor-produtos', ['core', 'state', 'api', 'editor', 'editor-salvamento'], (context) => {
+    app.defineModule('editor-produtos', ['core', 'state', 'api', 'editor', 'editor-salvamento', 'resultados'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
 
@@ -46,42 +46,34 @@
             return '';
         }
 
+        function rotaCadastroIndisponivel(resp, data) {
+            return resp.status === 405 || (resp.status === 404 && data.detail === 'Not Found');
+        }
+
+        function erroCadastro(data, mensagem) {
+            return new Error(typeof data?.detail === 'string' ? data.detail : data?.detail?.message || mensagem);
+        }
+
         async function buscarProdutoCadastroPorSku(sku, headersEscopo) {
             const skuTxt = String(sku || '').trim();
-            if (!skuTxt) {
-                throw new Error('Informe um SKU válido.');
-            }
-
+            if (!skuTxt) throw new Error('Informe um SKU válido.');
             const headers = { ...(headersEscopo || obterAuthHeaders()) };
-            const resp = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuTxt), {
-                method: 'GET',
-                headers
-            });
-            if (resp.ok) {
-                const data = await resp.json();
-                return (data && data.produto) ? data.produto : {};
-            }
+            const sessao = context.modules.resultados.identidadeSessao(headers);
+            context.modules.resultados.exigirSessao(sessao);
+            const resp = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuTxt), { method: 'GET', headers });
+            const data = await resp.json().catch(() => ({}));
+            context.modules.resultados.exigirSessao(sessao);
+            if (resp.ok) return data.produto || {};
+            if (!rotaCadastroIndisponivel(resp, data)) throw erroCadastro(data, 'SKU não encontrado no cadastro.');
 
-            const respLista = await fetch('/api/cadastro/produtos', {
-                method: 'GET',
-                headers
-            });
-            if (!respLista.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'SKU não encontrado no cadastro.');
-            }
-
-            const lista = await respLista.json();
-            const produtos = Array.isArray(lista) ? lista : [];
+            const respLista = await fetch('/api/cadastro/produtos', { method: 'GET', headers });
+            const lista = await respLista.json().catch(() => ({}));
+            context.modules.resultados.exigirSessao(sessao);
+            if (!respLista.ok) throw erroCadastro(lista, 'SKU não encontrado no cadastro.');
             const skuCmp = normalizarSku(skuTxt);
-            const encontrado = produtos.find((p) => {
-                const skuProd = (p && (p.cubagem_sku || p.sku || p.SKU)) || '';
-                return normalizarSku(skuProd) === skuCmp;
-            });
-
-            if (!encontrado) {
-                throw new Error('SKU não encontrado no cadastro.');
-            }
+            const encontrado = (Array.isArray(lista) ? lista : []).find(produto =>
+                normalizarSku(produto && (produto.cubagem_sku || produto.sku || produto.SKU) || '') === skuCmp);
+            if (!encontrado) throw new Error('SKU não encontrado no cadastro.');
             return encontrado;
         }
 
@@ -217,39 +209,69 @@
         }
 
         async function persistirNovoItemListaPedido(dados, registro, snapshot, revisao) {
-            const { skuCadastro, quantidade, valorUnidade, nomeLista, lojaLista, storeIdLista, novoItem } = dados;
+            const { skuDigitado, quantidade, valorUnidade, nomeLista, lojaLista, storeIdLista } = dados;
+            const headers = { 'Content-Type': 'application/json', ...registro.headers };
+            const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(registro.id);
+            context.modules.resultados.exigirSessao(registro.identidade);
+            setStatusModalAdicionarSku('Salvando SKU na lista...');
+            let resp = await fetch(url + '/adicionar-sku', { method: 'POST', headers,
+                body: JSON.stringify({ sku: skuDigitado, quantidade, valor_unitario: valorUnidade }) });
+            let data = await resp.json().catch(() => ({}));
+            context.modules.resultados.exigirSessao(registro.identidade);
+            let skuCadastro = normalizarSku(data.sku || skuDigitado);
+            let listaLegada = null;
+            if (!resp.ok && rotaCadastroIndisponivel(resp, data)) {
+                setStatusModalAdicionarSku('Buscando dados do SKU no cadastro...');
+                const produto = await buscarProdutoCadastroPorSku(skuDigitado, registro.headers);
+                context.modules.resultados.exigirSessao(registro.identidade);
+                const novoItem = criarItemListaPedidoComProdutoCadastro(produto, skuDigitado, {
+                    Quantidade: quantidade, 'Valor unidade': valorUnidade,
+                    'Estimed CBM': '', 'Estimed Weigh': '', 'Individual packaging': '',
+                });
+                skuCadastro = novoItem.SKU;
                 const itens = snapshot.itens.map(item => ({ ...item }));
                 const indice = itens.findIndex(item => normalizarSku(item.SKU) === skuCadastro);
                 if (indice >= 0) itens[indice] = { ...itens[indice], ...novoItem };
                 else itens.push(novoItem);
-                const headers = { 'Content-Type': 'application/json', ...registro.headers };
-                const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(registro.id);
-                let resp = await fetch(url + '/adicionar-sku', { method: 'POST', headers,
-                    body: JSON.stringify({ sku: skuCadastro, quantidade, valor_unitario: valorUnidade }) });
-                let data = await resp.json().catch(() => ({}));
-                if (!resp.ok && (resp.status === 405 || (resp.status === 404 && data.detail === 'Not Found'))) {
-                    resp = await fetch(url, { method: 'PUT', headers,
-                        body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens }) });
-                    data = await resp.json().catch(() => ({}));
+                listaLegada = { ...snapshot, id: registro.id, itens };
+                setStatusModalAdicionarSku('Salvando SKU na lista...');
+                resp = await fetch(url, { method: 'PUT', headers,
+                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens }) });
+                data = await resp.json().catch(() => ({}));
+                context.modules.resultados.exigirSessao(registro.identidade);
+                skuCadastro = normalizarSku(data.sku || skuCadastro);
+            }
+            if (!resp.ok) throw erroCadastro(data, 'Falha ao salvar item na lista.');
+            const lista = data.lista || listaLegada;
+            if (!lista || String(lista.id) !== registro.id) throw new Error('A resposta não contém a lista solicitada.');
+            const salvo = lista.itens?.find(item => normalizarSku(item.SKU) === skuCadastro);
+            if (!salvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
+            const incorporar = incorporarItemSalvoListaPedido(registro, salvo, snapshot);
+            if (contextoEdicaoListaPedidoVigente(registro)) {
+                context.modules.api.cancelarTarefa('listas-resumo');
+                const resumos = listasPedidosResumo || [];
+                const existente = resumos.find(resumo => String(resumo.id) === registro.id);
+                const resumoSalvo = { ...existente, ...lista, total_itens: lista.itens.length };
+                const storeIdResposta = String(lista.store_id || '').trim();
+                // O resumo já foi filtrado pelo servidor, inclusive quando uma lista legada ainda não tem ID.
+                const pertenceAoFiltro = !lojaSelecionada || lojaSelecionada === '__todas' ||
+                    (storeIdSelecionado ? (storeIdResposta ? storeIdResposta === String(storeIdSelecionado) : !!existente)
+                        : String(lista.loja || '') === String(lojaSelecionada));
+                listasPedidosResumo = existente
+                    ? resumos.flatMap(resumo => String(resumo.id) === registro.id ? (pertenceAoFiltro ? [resumoSalvo] : []) : [resumo])
+                    : pertenceAoFiltro ? [...resumos, resumoSalvo] : resumos;
+                renderListaPedidosResumo();
+                if (registro.revisao === revisao && !registro.pendentes.size) {
+                    listaPedidoAtual = lista;
+                    renderEditorListaPedido();
+                } else {
+                    const rascunho = capturarDadosEditorListaPedido();
+                    incorporar(rascunho);
+                    listaPedidoAtual = { ...lista, ...rascunho };
                 }
-                if (!resp.ok) throw new Error(data.detail || 'Falha ao salvar item na lista.');
-                if (data.lista && String(data.lista.id) !== registro.id) throw new Error('A resposta não contém a lista solicitada.');
-                const lista = data.lista || { ...snapshot, id: registro.id, itens };
-                const salvo = lista.itens?.find(item => normalizarSku(item.SKU) === skuCadastro);
-                if (!salvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
-                const incorporar = incorporarItemSalvoListaPedido(registro, salvo, snapshot);
-                if (contextoEdicaoListaPedidoVigente(registro)) {
-                    if (registro.revisao === revisao && !registro.pendentes.size) {
-                        listaPedidoAtual = lista;
-                        renderEditorListaPedido();
-                        await carregarListasPedidos(true);
-                    } else {
-                        const rascunho = capturarDadosEditorListaPedido();
-                        incorporar(rascunho);
-                        listaPedidoAtual = { ...lista, ...rascunho };
-                    }
-                }
-                return { data, msgAcao: 'SKU ' + skuCadastro + (indice >= 0 ? ' já existia e foi atualizado.' : ' adicionado na lista.') };
+            }
+            const existia = snapshot.itens.some(item => normalizarSku(item.SKU) === skuCadastro);
+            return { data, skuCadastro, msgAcao: 'SKU ' + skuCadastro + (existia ? ' já existia e foi atualizado.' : ' adicionado na lista.') };
         }
 
         async function confirmarAdicionarSkuPedido() {
@@ -259,6 +281,7 @@
             }
 
             const registro = obterContextoEdicaoListaPedido();
+            if (!registro) { setStatusModalAdicionarSku('A sessão mudou. Reabra a lista para continuar.'); return; }
             const snapshot = capturarDadosEditorListaPedido();
             const revisao = registro.revisao;
             const inputSku = document.getElementById('addSkuInput');
@@ -299,47 +322,11 @@
 
             try {
                 btnConfirmar.disabled = true;
+                setStatusModalAdicionarSku('Aguardando salvamento em andamento...');
                 await executarMutacaoListaPedido(registro, async () => {
-                setStatusModalAdicionarSku('Buscando dados do SKU no cadastro...');
-                const produto = await buscarProdutoCadastroPorSku(skuDigitado, registro.headers);
-
-                const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['cubagem sku', 'sku']) || skuDigitado);
-                const titulo = obterCampoProdutoCadastro(produto, [
-                    'produtos blig', 'produto blig', 'produtos bling', 'produto bling',
-                    'titulo do produto em ingles', 'título do produto em inglês', 'titulo', 'produto',
-                    'nome', 'product name', 'description', 'product description', 'tradução ptbr ou nome na bling'
-                ]);
-                const foto = obterCampoProdutoCadastro(produto, ['foto']);
-                const oem = obterCampoProdutoCadastro(produto, ['oem', 'oem/ model', 'oem model', 'codigo oem', 'part number']);
-                const corLado = obterCampoProdutoCadastro(produto, ['color side', 'color/side', 'cor lado', 'cor/lado', 'lado cor', 'lado/cor', 'lado', 'cor', 'color', 'side']);
-                const link = obterCampoProdutoCadastro(produto, ['link', 'link aliexpress', 'url aliexpress', 'url', 'mlb principal']);
                 const valorUnidade = Math.round((Number(valorNumero) + Number.EPSILON) * 100) / 100;
-                const valorTotal = Math.round(((quantidade * valorUnidade) + Number.EPSILON) * 100) / 100;
-
-                const novoItem = {
-                    SKU: skuCadastro,
-                    Foto: foto,
-                    'Título do produto em inglês': titulo,
-                    OEM: oem,
-                    'Color/side': corLado,
-                    Link: link,
-                    Quantidade: quantidade,
-                    'Valor unidade': valorUnidade,
-                    'Valor total': valorTotal,
-                    'Estimed CBM': '',
-                    'Estimed Weigh': '',
-                    'Individual packaging': '',
-                };
-
-                Object.assign(novoItem, criarItemListaPedidoComProdutoCadastro(produto, skuCadastro, novoItem));
-                const { data, msgAcao } = await persistirNovoItemListaPedido({
-                    skuCadastro,
-                    quantidade,
-                    valorUnidade,
-                    nomeLista,
-                    lojaLista,
-                    storeIdLista,
-                    novoItem,
+                const { data, msgAcao, skuCadastro } = await persistirNovoItemListaPedido({
+                    skuDigitado, quantidade, valorUnidade, nomeLista, lojaLista, storeIdLista,
                 }, registro, snapshot, revisao);
                 if (!contextoEdicaoListaPedidoVigente(registro)) return;
 

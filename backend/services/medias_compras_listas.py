@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.services.medias_compras_leitura import consulta_medias, medir_etapa
+from backend.services.medias_compras_leitura import consulta_medias, fotos_da_consulta, leitura_medias, medir_etapa
 
 import copy
 import io
@@ -1392,128 +1392,147 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
     if vu <= 0:
         raise HTTPException(status_code=400, detail="Valor unitÃƒÂ¡rio deve ser maior que zero")
 
-    # Busca dados do cadastro no backend para garantir consistÃƒÂªncia da inclusÃƒÂ£o.
-    try:
-        prod_resp = _obter_produto_cadastro_sync(sku=sku_in, client_id=client_id)
-        produto = (prod_resp or {}).get("produto") or {}
-    except HTTPException:
-        # Fallback: busca por comparacao normalizada na listagem inteira do cadastro.
-        produtos = _listar_produtos_cadastro_sync(client_id=client_id)
-        alvo_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_in).upper()
-        produto = None
-        for p in (produtos or []):
-            sku_p = _normalizar_sku_mes(str((p or {}).get("sku") or ""))
-            sku_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_p).upper()
-            if sku_cmp and sku_cmp == alvo_cmp:
-                produto = p
-                break
+    # Each transaction attempt owns fresh read inputs; release them before commit.
+    with leitura_medias():
+        # Busca dados do cadastro no backend para garantir consistÃƒÂªncia da inclusÃƒÂ£o.
+        try:
+            prod_resp = _obter_produto_cadastro_sync(sku=sku_in, client_id=client_id)
+            produto = (prod_resp or {}).get("produto") or {}
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            # Fallback: busca por comparacao normalizada na listagem inteira do cadastro.
+            produtos = _listar_produtos_cadastro_sync(client_id=client_id)
+            alvo_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_in).upper()
+            produto = None
+            for p in (produtos or []):
+                sku_p = _normalizar_sku_mes(str((p or {}).get("sku") or ""))
+                sku_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_p).upper()
+                if sku_cmp and sku_cmp == alvo_cmp:
+                    produto = p
+                    break
+            if not produto:
+                raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro")
+
+        from backend.services.cadastro_compatibilidade import (
+            mesclar_produtos_legados_com_contexto_loja,
+        )
+
+        referencia_loja = str(lista.get("store_id") or lista.get("loja") or "")
+        skus_contexto = [
+            _primeiro_texto_item(item, ("SKU", "sku"))
+            for item in lista.get("itens") or [] if isinstance(item, dict)
+        ] + [sku_in]
+        contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
+            client_id,
+            [produto] if isinstance(produto, dict) else [],
+            referencia_loja,
+            skus=skus_contexto,
+        )
+        produto = next(
+            (
+                dict(item)
+                for item in contexto_cadastro.get("produtos") or []
+                if normalizar_sku_cubagem(item.get("cubagem_sku") or item.get("sku")) == sku_in
+            ),
+            None,
+        )
         if not produto:
-            raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro")
+            raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro desta loja")
+        store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
 
-    from backend.services.cadastro_compatibilidade import (
-        mesclar_produtos_legados_com_contexto_loja,
-    )
+        def _norm_prod_key(chave: str) -> str:
+            txt = unicodedata.normalize("NFKD", str(chave or ""))
+            txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+            txt = txt.lower().replace("_", " ").strip()
+            txt = re.sub(r"\s+", " ", txt)
+            txt = re.sub(r"[^a-z0-9 ]", "", txt)
+            txt = txt.strip()
+            if txt.startswith("cg "):
+                txt = txt[3:].strip()
+            return txt
 
-    contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
-        client_id,
-        [produto] if isinstance(produto, dict) else [],
-        str(lista.get("store_id") or lista.get("loja") or ""),
-    )
-    produto = next(
-        (
-            dict(item)
-            for item in contexto_cadastro.get("produtos") or []
-            if normalizar_sku_cubagem(item.get("cubagem_sku") or item.get("sku")) == sku_in
-        ),
-        None,
-    )
-    if not produto:
-        raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro desta loja")
-    store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
+        def _pick_prod(cands: list[str]) -> str:
+            if not isinstance(produto, dict):
+                return ""
 
-    def _norm_prod_key(chave: str) -> str:
-        txt = unicodedata.normalize("NFKD", str(chave or ""))
-        txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
-        txt = txt.lower().replace("_", " ").strip()
-        txt = re.sub(r"\s+", " ", txt)
-        txt = re.sub(r"[^a-z0-9 ]", "", txt)
-        txt = txt.strip()
-        if txt.startswith("cg "):
-            txt = txt[3:].strip()
-        return txt
+            mapa = {}
+            for k, v in produto.items():
+                if v is None or not str(v).strip():
+                    continue
+                nk = _norm_prod_key(str(k or ""))
+                if nk and nk not in mapa:
+                    mapa[nk] = str(v).strip()
 
-    def _pick_prod(cands: list[str]) -> str:
-        if not isinstance(produto, dict):
+            for c in cands:
+                key = _norm_prod_key(str(c or ""))
+                if not key:
+                    continue
+                val = mapa.get(key)
+                if val:
+                    return val
+
+                # Fallback por inclusÃƒÂ£o para colunas longas/variantes importadas de planilha.
+                for mk, mv in mapa.items():
+                    if mk == key or key in mk or mk in key:
+                        if mv:
+                            return mv
             return ""
 
-        mapa = {}
-        for k, v in produto.items():
-            if v is None or not str(v).strip():
-                continue
-            nk = _norm_prod_key(str(k or ""))
-            if nk and nk not in mapa:
-                mapa[nk] = str(v).strip()
+        sku_final = normalizar_sku_cubagem(produto.get("cubagem_sku") or _pick_prod(["sku"]) or sku_in)
+        titulo = _pick_prod([
+            "produto bling", "produtos bling", "produto blig", "produtos blig",
+            "titulo do produto em ingles", "titulo do produto em ingles",
+            "titulo em ingles", "titulo", "product name", "nome", "produto",
+            "traducao ptbr ou nome na bling"
+        ])
+        foto = fotos_da_consulta(_resolver_foto_cadastro_sku)(
+            client_id,
+            sku_final,
+            _pick_prod(["foto", "imagem", "url foto", "link foto"]),
+            store_id_cadastro or None,
+        )
+        oem = _pick_prod(["oem", "codigo oem", "part number", "oem model", "oem model"])
+        cor_lado = _pick_prod(["color side", "color/side", "cor lado", "cor/lado", "lado cor", "lado/cor", "lado", "cor", "color", "side"])
+        link = _pick_prod(["link", "url", "link aliexpress", "url aliexpress", "mlb principal", "url ml"])
 
-        for c in cands:
-            key = _norm_prod_key(str(c or ""))
-            if not key:
-                continue
-            val = mapa.get(key)
-            if val:
-                return val
+        itens = [_normalizar_item_lista_pedido(i) for i in (lista.get("itens") or [])]
+        idx_existente = next((i for i, it in enumerate(itens) if normalizar_sku_cubagem(it.get("SKU", "")) == sku_final), -1)
 
-            # Fallback por inclusÃƒÂ£o para colunas longas/variantes importadas de planilha.
-            for mk, mv in mapa.items():
-                if mk == key or key in mk or mk in key:
-                    if mv:
-                        return mv
-        return ""
+        item_novo = {
+            "SKU": sku_final,
+            "Foto": foto,
+            TITULO_PRODUTO_INGLES_KEY: titulo,
+            "OEM": oem,
+            COR_LADO_LISTA_PEDIDO_KEY: cor_lado,
+            "Link": link,
+            "Quantidade": qtd,
+            "Valor unidade": vu,
+            "Valor total": round(qtd * vu, 2),
+        }
 
-    sku_final = normalizar_sku_cubagem(produto.get("cubagem_sku") or _pick_prod(["sku"]) or sku_in)
-    titulo = _pick_prod([
-        "produto bling", "produtos bling", "produto blig", "produtos blig",
-        "titulo do produto em ingles", "titulo do produto em ingles",
-        "titulo em ingles", "titulo", "product name", "nome", "produto",
-        "traducao ptbr ou nome na bling"
-    ])
-    foto = _resolver_foto_cadastro_sku(
-        client_id,
-        sku_final,
-        _pick_prod(["foto", "imagem", "url foto", "link foto"]),
-        store_id_cadastro or None,
-    )
-    oem = _pick_prod(["oem", "codigo oem", "part number", "oem model", "oem model"])
-    cor_lado = _pick_prod(["color side", "color/side", "cor lado", "cor/lado", "lado cor", "lado/cor", "lado", "cor", "color", "side"])
-    link = _pick_prod(["link", "url", "link aliexpress", "url aliexpress", "mlb principal", "url ml"])
+        acao = "adicionado"
+        if idx_existente >= 0:
+            itens[idx_existente] = _normalizar_item_lista_pedido({**itens[idx_existente], **item_novo})
+            acao = "atualizado"
+        else:
+            itens.append(_normalizar_item_lista_pedido(item_novo))
 
-    itens = [_normalizar_item_lista_pedido(i) for i in (lista.get("itens") or [])]
-    idx_existente = next((i for i, it in enumerate(itens) if normalizar_sku_cubagem(it.get("SKU", "")) == sku_final), -1)
-
-    item_novo = {
-        "SKU": sku_final,
-        "Foto": foto,
-        TITULO_PRODUTO_INGLES_KEY: titulo,
-        "OEM": oem,
-        COR_LADO_LISTA_PEDIDO_KEY: cor_lado,
-        "Link": link,
-        "Quantidade": qtd,
-        "Valor unidade": vu,
-        "Valor total": round(qtd * vu, 2),
-    }
-
-    acao = "adicionado"
-    if idx_existente >= 0:
-        itens[idx_existente] = _normalizar_item_lista_pedido({**itens[idx_existente], **item_novo})
-        acao = "atualizado"
-    else:
-        itens.append(_normalizar_item_lista_pedido(item_novo))
-
-    lista["itens"] = _recalcular_frete_internacional_itens_lista(
-        client_id,
-        itens,
-        loja=str(lista.get("store_id") or lista.get("loja") or ""),
-        preservar_cubagem=_cubagem_lista_historica(lista),
-    )
+        # The store projection covers every list SKU, including public aliases.
+        # Global compatibility also merges the legacy lookup row; that row was
+        # never part of the fiscal global projection, so retain its original path.
+        opcoes_contexto = {}
+        if contexto_cadastro.get("scope") == "store":
+            opcoes_contexto["contexto_cadastro"] = _ContextoCadastroLista(
+                client_id, referencia_loja, contexto_cadastro,
+            )
+        lista["itens"] = _recalcular_frete_internacional_itens_lista(
+            client_id,
+            itens,
+            loja=referencia_loja,
+            preservar_cubagem=_cubagem_lista_historica(lista),
+            **opcoes_contexto,
+        )
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
     listas[idx] = lista
     _salvar_listas_pedidos(client_id, listas)

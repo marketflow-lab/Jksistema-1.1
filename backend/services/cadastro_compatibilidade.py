@@ -470,10 +470,12 @@ def mesclar_produtos_legados_com_contexto_loja(
     client_id: str,
     produtos_legados: Iterable[dict[str, Any]],
     loja_referencia: Any = "",
+    *,
+    skus: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
     """Adapta consumidores legados sem permitir fallback entre lojas."""
 
-    visao = visao_produtos_cadastro_contexto_loja(client_id, loja_referencia)
+    visao = visao_produtos_cadastro_contexto_loja(client_id, loja_referencia, skus=skus)
     if visao["scope"] == "store":
         return visao
     if visao["scope"] == "unresolved":
@@ -510,7 +512,9 @@ def obter_produto_controlado_para_compatibilidade(
     client_id: str, sku: str
 ) -> tuple[bool, dict[str, Any] | None]:
     sku_normalizado = _normalizar_sku_chave(sku)
-    visao = visao_compatibilidade_produtos_lojas(client_id)
+    # Filter enrichment, not ownership: tombstones and the complete controlled
+    # SKU set still prevent a stale global row from resurfacing.
+    visao = visao_compatibilidade_produtos_lojas(client_id, skus=[sku_normalizado])
     controlado = sku_normalizado in set(visao["skus_controlados"])
     produto = next(
         (

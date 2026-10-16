@@ -64,6 +64,7 @@ from backend.services.cadastro_custos import *
 from backend.services.cadastro_fotos import *
 from backend.services.cadastro_sync_ncm import *
 from backend.services.path_coordination import path_locks_for
+from backend.services.medias_compras_leitura import consulta_medias
 
 
 def configure_cadastro_produtos_runtime(runtime_module=None):
@@ -363,6 +364,7 @@ async def obter_produto_cadastro(sku: str, client_id: str = Depends(get_tenant_i
     return await run_heavy(_obter_produto_cadastro_sync, sku, client_id)
 
 
+@consulta_medias
 def _obter_produto_cadastro_sync(sku: str, client_id: str):
     sku_norm = _normalizar_sku_mes(sku)
     from backend.services.cadastro_compatibilidade import (

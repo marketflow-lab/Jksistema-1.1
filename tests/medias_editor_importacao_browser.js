@@ -95,7 +95,7 @@ const json = (route, body, status = 200) => route.fulfill({
         if (sku === 'ZX-9') produtosFallback = [{ sku: 'ZX9' }];
         if (sku === 'QX9') produtosFallback = [{ sku: 'QX-9' }];
         if (sku === 'SEM-CADASTRO' || produtosFallback.length) {
-          await json(route, { detail: 'SKU não encontrado no cadastro.' }, 404);
+          await json(route, { detail: produtosFallback.length ? 'Not Found' : 'SKU não encontrado no cadastro.' }, 404);
           return;
         }
         await json(route, {
@@ -160,18 +160,23 @@ const json = (route, body, status = 200) => route.fulfill({
           await json(route, { detail: respostaAdicionarSku.detail }, respostaAdicionarSku.status);
           return;
         }
+        if (['SEM-CADASTRO', 'ZX-9', 'QX9'].includes(payload.sku)) {
+          await json(route, { detail: 'SKU não encontrado no cadastro.' }, 404);
+          return;
+        }
         inclusoesSku.push(payload);
+        const skuCanonico = payload.sku.toUpperCase();
         const item = {
-          SKU: payload.sku,
+          SKU: skuCanonico,
           'Título do produto em inglês': 'Produto adicionado',
           Quantidade: payload.quantidade,
           'Valor unidade': payload.valor_unitario,
           'Valor total': payload.quantidade * payload.valor_unitario,
         };
-        const index = lista.itens.findIndex(item => item.SKU === payload.sku);
+        const index = lista.itens.findIndex(item => item.SKU === skuCanonico);
         if (index >= 0) lista.itens[index] = item;
         else lista.itens.push(item);
-        await json(route, { lista, acao: index >= 0 ? 'atualizado' : 'adicionado' });
+        await json(route, { lista, sku: skuCanonico, acao: index >= 0 ? 'atualizado' : 'adicionado' });
         return;
       }
       if (url.pathname === '/api/medias-compras/listas-pedidos' && method === 'GET') {
@@ -269,8 +274,8 @@ const json = (route, body, status = 200) => route.fulfill({
       await adicionarSku(sku, qtd, valor);
       await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
       const skuCadastro = sku.toUpperCase();
-      assert.strictEqual(skusConsultados.at(-1), sku);
-      assert.deepStrictEqual(inclusoesSku.at(-1), { sku: skuCadastro, quantidade: qtd, valor_unitario: valor });
+      assert.deepStrictEqual(skusConsultados, [], 'The modern endpoint validates the raw SKU without a duplicate browser lookup');
+      assert.deepStrictEqual(inclusoesSku.at(-1), { sku, quantidade: qtd, valor_unitario: valor });
       const item = listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === skuCadastro);
       assert.strictEqual(item['Valor total'], qtd * valor);
       const destacado = page.locator('#tblListaPedidoItens tbody tr').filter({
@@ -330,7 +335,20 @@ const json = (route, body, status = 200) => route.fulfill({
     await adicionarSku('ROTA-LEGADA', 2, 5);
     await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
     assert.strictEqual(salvamentos.length, salvamentosAntes + 1);
+    assert.strictEqual(skusConsultados.at(-1), 'ROTA-LEGADA');
     assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === 'ROTA-LEGADA').Quantidade, 2);
+    // Only missing routes may use the old complete-catalog path; exact SKU identity still applies there.
+    await adicionarSku('FALLBACK-OK', 3, 6);
+    await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
+    assert.strictEqual(salvamentos.length, salvamentosAntes + 2);
+    assert.strictEqual(listas.find(item => item.id === 'lista-2').itens.find(item => item.SKU === 'FALLBACK-OK').Quantidade, 3);
+    for (const sku of ['ZX-9', 'QX9']) {
+      await adicionarSku(sku, 1, 5);
+      await page.locator('#modalAdicionarSkuStatus', { hasText: 'SKU não encontrado no cadastro.' }).waitFor();
+      assert.strictEqual(salvamentos.length, salvamentosAntes + 2, 'A different hyphenated SKU cannot authorize the legacy PUT');
+      await page.locator('#modalAvisoSkuCentral [data-jk-action="fechar-aviso"]').click();
+      await page.locator('#modalAdicionarSkuPedido [data-jk-action="fechar-adicionar-sku"]').click();
+    }
     respostaAdicionarSku = null;
     assert.deepStrictEqual(errosPagina, []);
 
