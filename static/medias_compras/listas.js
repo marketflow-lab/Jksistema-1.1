@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('listas', ['core', 'state', 'api', 'editor', 'importacao'], (context) => {
+    app.defineModule('listas', ['core', 'state', 'api', 'editor', 'editor-salvamento', 'importacao'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
         let cargaListaPedido = 0;
@@ -368,6 +368,7 @@
         }
 
         function cancelarAberturaListaPedido() {
+            invalidarContextoEdicaoListaPedido();
             if (aberturaListaPedido) {
                 aberturaListaPedido.controller?.abort();
                 global.clearTimeout(aberturaListaPedido.timer);
@@ -379,7 +380,7 @@
             if (painel) painel.inert = false;
         }
 
-        async function abrirListaPedidoPorId(listaId, { preservarConteudo = false } = {}) {
+        async function abrirListaPedidoPorId(listaId, { preservarConteudo = false, aguardarSalvamento = true } = {}) {
             if (!listaId) return;
             const manterConteudo = preservarConteudo && listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId);
             cancelarAberturaListaPedido();
@@ -393,6 +394,8 @@
             if (painel) { painel.classList.remove('hidden'); painel.inert = true; }
             setStatusListaPedido('Abrindo lista...');
             try {
+                if (aguardarSalvamento) await aguardarSalvamentoListaPedido(listaId);
+                if (abertura !== aberturaListaPedido) return;
                 const lista = await lerListaPedido(listaId, abertura, true);
                 if (abertura !== aberturaListaPedido) return;
                 listaPedidoAtual = lista;

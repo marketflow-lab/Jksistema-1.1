@@ -23,6 +23,7 @@ const moduleFiles = [
   'pedido-hover.js',
   'editor.js',
   'editor-produtos.js',
+  'editor-salvamento.js',
   'importacao.js',
   'tabela.js',
   'init.js',

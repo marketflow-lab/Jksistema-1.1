@@ -227,6 +227,8 @@
                 foto.setAttribute('aria-label', (foto.alt || 'Foto do produto') + '. Passe o mouse ou use o teclado para ampliar.');
             }
             [foto, quantidade].filter(Boolean).forEach(alvo => {
+                if (alvo.dataset.detalhesPedidoLigados) return;
+                alvo.dataset.detalhesPedidoLigados = '1';
                 const mostrar = () => {
                     if (alvo === foto) mostrarFoto(alvo);
                     else void mostrarQuantidade(alvo, linha);

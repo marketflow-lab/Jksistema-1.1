@@ -333,7 +333,7 @@ async function testComplementFailureAndSelection(browser) {
 
 async function testEditingPreservesDom(browser) {
   for (const when of ['before-start', 'pending-body', 'change']) {
-    const test = await fixture(browser, 'tenant-edits-' + when);
+    const test = await fixture(browser, 'tenant-edits-' + when, { allowSave: true });
     const { page } = test;
     try {
       await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -361,7 +361,8 @@ async function testEditingPreservesDom(browser) {
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '7');
         assert.strictEqual(await page.locator('input[data-kind="vtot"]').inputValue(), '70');
       }
-      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista carregada.');
+      if (when === 'change') await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
+      else assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Alterações pendentes de confirmação.');
       await clean(test);
     } finally { await test.context.close(); }
   }
@@ -371,7 +372,7 @@ async function testEditingPreservesDom(browser) {
 async function testStructuralEdits(browser) {
   for (const action of ['delete', 'reorder']) {
     for (const when of ['before-start', 'pending-body', 'pending-failure']) {
-      const test = await fixture(browser, 'tenant-structural-' + action + '-' + when, { twoItems: true });
+      const test = await fixture(browser, 'tenant-structural-' + action + '-' + when, { twoItems: true, allowSave: true });
       const { page } = test;
       try {
         await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -391,6 +392,7 @@ async function testStructuralEdits(browser) {
             finalizarArrasteLinhasListaPedido(tbody);
           });
         }
+        await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
         const expected = action === 'delete' ? ['SKU-B2'] : ['SKU-B2', 'SKU-B'];
         assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), expected);
         const statusEdited = await page.locator('#statusListaPedido').innerText();
@@ -449,7 +451,7 @@ async function testStoreSwitchCancelsSnapshot(browser) {
 }
 
 async function testDragInProgressPreservesDom(browser) {
-  const test = await fixture(browser, 'tenant-drag-in-progress', { twoItems: true });
+  const test = await fixture(browser, 'tenant-drag-in-progress', { twoItems: true, allowSave: true });
   const { page } = test;
   try {
     await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -473,7 +475,7 @@ async function testDragInProgressPreservesDom(browser) {
     await page.evaluate(() => finalizarArrasteLinhasListaPedido(document.querySelector('#tblListaPedidoItens tbody')));
     assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), ['SKU-B2', 'SKU-B']);
     assert.strictEqual(await page.locator('tr.dragging').count(), 0);
-    assert((await page.locator('#statusListaPedido').innerText()).startsWith('Ordem dos SKUs alterada.'));
+    await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
     await clean(test);
   } finally { await test.context.close(); }
   console.log('PASS arraste aberto: dragstart cancela complemento e mantém a mesma linha/DOM até confirmar a nova ordem.');
@@ -493,8 +495,8 @@ async function testMaterializedLegacyRename(browser) {
     assert.strictEqual(await run(page, 300), 0);
     await page.locator('#btnSalvarListaPedido').click();
     await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
-    assert.strictEqual(test.state.saves.length, 1);
-    const payload = test.state.saves[0];
+    assert(test.state.saves.length >= 1 && test.state.saves.length <= 2, 'Confirmação automática e botão manual podem compartilhar a gravação pendente ou confirmar novamente.');
+    const payload = test.state.saves.at(-1);
     assert.strictEqual(payload.nome_lista, 'Pedido legado renomeado');
     assert.strictEqual(payload.store_id, 'store-a');
     assert.strictEqual(payload.loja, 'Loja A');

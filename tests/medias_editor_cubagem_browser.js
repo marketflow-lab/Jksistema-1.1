@@ -113,15 +113,20 @@ async function checkFooter(page, volume, pending) {
         await checkFooter(page, initialVolume - 0.0000625 + 0.0000001, 6);
         await page.locator('input[data-kind="qtd"][data-idx="7"]').fill('0');
         await checkFooter(page, initialVolume - 0.0000625 + 0.0000001, 5);
-        assert.strictEqual(state.writes.length, 0, 'Edições de CBM/quantidade refazem soma somente em memória');
+        await page.evaluate(() => salvarListaPedidoAtual());
+        assert(state.writes.some(write => write.method === 'PUT'), 'Campos confirmados devem persistir automaticamente.');
+        assert.strictEqual(state.lista.itens[0].Quantidade, 0);
+        assert.strictEqual(state.lista.itens[7].Quantidade, 0);
+        assert.strictEqual(state.lista.itens[6]['Estimed CBM'], '1e-7');
 
-        // Reabre a fixture para testar exclusão e inclusão sem depender de edições ainda não salvas.
+        // Reinicia os dados sintéticos para testar exclusão e inclusão em um caso independente.
+        state.lista = fixture();
+        const writesBeforeStructural = state.writes.length;
         await page.evaluate(() => abrirListaPedidoPorId('lista-1'));
         await checkFooter(page, initialVolume, 7);
         await page.locator('button[data-kind="excluir-item"][data-idx="0"]').click();
         assert.strictEqual(await page.locator('#tblListaPedidoItens tbody tr[data-lista-pedido-row]').count(), 12);
         await checkFooter(page, initialVolume - 0.0000625, 7);
-        await page.locator('#btnSalvarListaPedido').click();
         await page.locator('#statusListaPedido', { hasText: 'Lista salva com sucesso.' }).waitFor();
         assert.strictEqual(state.lista.itens.length, 12);
         assert.strictEqual(state.lista.created_at, '2026-08-26T10:00:00Z');
@@ -135,7 +140,7 @@ async function checkFooter(page, volume, pending) {
         await page.locator('#modalAdicionarSkuPedido').waitFor({ state: 'hidden' });
         assert.strictEqual(await page.locator('#tblListaPedidoItens tbody tr[data-lista-pedido-row]').count(), 13);
         await checkFooter(page, initialVolume - 0.0000625 + 0.00002, 7);
-        assert.strictEqual(state.writes.length, 2, 'Só salvar exclusão e adicionar SKU atingem as APIs sintéticas');
+        assert.strictEqual(state.writes.length - writesBeforeStructural, 2, 'Exclusão confirmada e inclusão de SKU persistem uma vez cada.');
 
         // Lista completa usa o mesmo total sem o rótulo parcial; quantidade zero dispensa cubagem.
         state.lista.itens = [{ SKU: 'A', Quantidade: 1, 'Estimed CBM': '0,0000001' }, { SKU: 'ZERO', Quantidade: 0, 'Estimed CBM': '' }];
