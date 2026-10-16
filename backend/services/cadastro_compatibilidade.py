@@ -11,11 +11,17 @@ from __future__ import annotations
 
 from collections import defaultdict
 from contextlib import contextmanager
+from pathlib import Path
 import re
 from typing import Any, Callable, Iterable
 import unicodedata
 
 from fastapi import HTTPException
+from backend.services import cadastro_lojas_produtos as _store
+from backend.services.cadastro_fotos import (
+    _cadastro_fotos_capturar_leitura,
+    _cadastro_fotos_contexto_leitura,
+)
 
 from backend.services.cadastro_lojas_produtos import (
     _aliases_nome_loja,
@@ -298,6 +304,30 @@ def _consolidar_sku_seguro(
     return resultado
 
 
+def _capturar_cadastro_para_leitura(client_id: str):
+    """Capture a coherent input once; never enrich products under writer locks."""
+
+    tenant = Path(_store.get_tenant_path(client_id))
+    caminho = _cadastro_produtos_lojas_path(client_id)
+    legados = {arquivo: tenant / arquivo for arquivo in _store._ARQUIVOS_LEGADOS.values()}
+    with _store.integracoes.lojas_config_lock(client_id):
+        with _store.path_locks_for([caminho, *legados.values()]):
+            lojas = _lojas_atuais(client_id)
+            registros, _ = _ler_registros_persistidos(client_id)
+            fotos = _cadastro_fotos_capturar_leitura(client_id, lojas)
+            fontes = {}
+            for arquivo, path in legados.items():
+                try:
+                    fontes[arquivo] = path.read_bytes()
+                except FileNotFoundError:
+                    fontes[arquivo] = b""
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500, detail="Nao foi possivel ler o cadastro por loja.",
+                    ) from exc
+    return registros, lojas, fontes, fotos
+
+
 def visao_compatibilidade_produtos_lojas(
     client_id: str, *, skus: Iterable[Any] | None = None,
     _normalizar_sku_consulta: Callable[[Any], str] | None = None,
@@ -307,9 +337,8 @@ def visao_compatibilidade_produtos_lojas(
     skus = tuple(skus) if skus is not None else None
     opcoes_filtro = ({"_normalizar_sku_consulta": _normalizar_sku_consulta}
                      if _normalizar_sku_consulta is not None else {})
-    caminho = _cadastro_produtos_lojas_path(client_id)
-    with _bloquear_config_e_arquivo_cadastro(client_id, caminho):
-        registros, _ = _ler_registros_persistidos(client_id)
+    registros, lojas_atuais, fontes, fotos = _capturar_cadastro_para_leitura(client_id)
+    with _cadastro_fotos_contexto_leitura(fotos):
         skus_controlados = {
             str(item.get("sku_normalizado") or "").strip()
             for item in registros
@@ -319,13 +348,13 @@ def visao_compatibilidade_produtos_lojas(
             return {"produtos": [], "skus_controlados": set()}
 
         por_sku: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        lojas_atuais = _lojas_atuais(client_id)
         for loja in lojas_atuais:
             store_id = str(loja.get("store_id") or "").strip()
             if not store_id:
                 continue
             produtos_loja = _listar_produtos_loja_sync(
-                client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
+                client_id, store_id, skus=skus, _registros_persistidos=registros,
+                _lojas_capturadas=lojas_atuais, _fontes_capturadas=fontes, **opcoes_filtro,
             )
             for produto in produtos_loja:
                 sku = _normalizar_sku_chave(
@@ -374,15 +403,13 @@ def visao_produtos_cadastro_contexto_loja(
             "scope": "global_safe",
         }
 
-    caminho = _cadastro_produtos_lojas_path(client_id)
-    with _bloquear_config_e_arquivo_cadastro(client_id, caminho):
-        registros, _ = _ler_registros_persistidos(client_id)
+    registros, lojas, fontes, fotos = _capturar_cadastro_para_leitura(client_id)
+    with _cadastro_fotos_contexto_leitura(fotos):
         skus_controlados = {
             str(item.get("sku_normalizado") or "").strip()
             for item in registros
             if str(item.get("sku_normalizado") or "").strip()
         }
-        lojas = _lojas_atuais(client_id)
         identidade = resolver_loja_ativa_para_leitura(
             client_id,
             referencia,
@@ -390,6 +417,7 @@ def visao_produtos_cadastro_contexto_loja(
                 str(loja.get("store_id") or "").strip() == referencia
                 for loja in lojas
             ) else "",
+            lojas=lojas,
         )
         if not identidade.get("loja_resolvida"):
             return {
@@ -409,7 +437,8 @@ def visao_produtos_cadastro_contexto_loja(
                 "scope": "unresolved",
             }
         produtos = _listar_produtos_loja_sync(
-            client_id, store_id, skus=skus, _registros_persistidos=registros, **opcoes_filtro,
+            client_id, store_id, skus=skus, _registros_persistidos=registros,
+            _lojas_capturadas=lojas, _fontes_capturadas=fontes, **opcoes_filtro,
         )
 
     return {

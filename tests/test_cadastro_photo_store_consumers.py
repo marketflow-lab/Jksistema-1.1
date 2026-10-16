@@ -179,8 +179,10 @@ def test_listas_medias_filtram_por_store_id_e_omitem_legado_ambiguo(
         "_carregar_listas_pedidos",
         lambda _client_id: listas,
     )
-    def construir_mapa_m3(_client_id, *, loja=""):
+    def construir_mapa_m3(_client_id, *, loja="", skus=None):
+        assert _client_id == "000002"
         assert loja == "store-a"
+        assert skus == []
         return {}
 
     monkeypatch.setattr(

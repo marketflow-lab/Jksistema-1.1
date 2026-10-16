@@ -12,6 +12,7 @@ from backend.services import (
     cadastro_fotos,
     cadastro_lojas_produtos,
     cadastro_produtos,
+    integracoes,
 )
 
 
@@ -28,13 +29,19 @@ def _configurar(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
     for modulo in (cadastro_fotos, cadastro_lojas_produtos, cadastro_produtos):
         monkeypatch.setattr(modulo, "get_tenant_path", tenant_path)
+    # Legacy writes also acquire the store-identity guard. Keep that service
+    # and its publication barrier inside the same synthetic tenant.
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(info_root))
+    tenant = Path(tenant_path(CLIENT_ID))
+    (tenant / "lojas_config.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info_root), raising=False)
     monkeypatch.setattr(
         cadastro_fotos,
         "_cadastro_carregar_lojas_foto",
         lambda _client_id: [],
     )
-    return Path(tenant_path(CLIENT_ID))
+    return tenant
 
 
 def _data_url(conteudo: bytes, tipo: str = "jpeg") -> str:

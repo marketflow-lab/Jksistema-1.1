@@ -6,6 +6,8 @@ import inspect
 import json
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -726,6 +728,9 @@ def _cadastro_carregar_lojas_foto(client_id: str) -> list[dict[str, Any]]:
 
 
 def _cadastro_store_ids_foto_atuais(client_id: str) -> list[str]:
+    snapshot = _CADASTRO_FOTOS_LEITURA.get()
+    if snapshot is not None and snapshot.client_id == str(client_id):
+        return list(snapshot.store_ids)
     ids: list[str] = []
     vistos: set[str] = set()
     for loja in _cadastro_carregar_lojas_foto(client_id):
@@ -740,11 +745,81 @@ class CadastroFotosConfigInvalida(ValueError):
     """A configuracao existe, mas nao pode autorizar fallback ou fan-out."""
 
 
+@dataclass(frozen=True)
+class _CadastroFotosLeitura:
+    client_id: str
+    store_ids: tuple[str, ...]
+    config_existe: bool
+    escopo_estrito: bool
+    grupos: tuple[tuple[str, tuple[str, ...]], ...]
+    config_erro: str = ""
+
+
+_CADASTRO_FOTOS_LEITURA: ContextVar[_CadastroFotosLeitura | None] = ContextVar(
+    "cadastro_fotos_leitura", default=None,
+)
+
+
+def _cadastro_fotos_capturar_leitura(
+    client_id: str,
+    lojas: list[dict[str, Any]],
+) -> _CadastroFotosLeitura:
+    """Captura politica e IDs no lock de lojas para uma leitura de enriquecimento.
+
+    O chamador captura junto dos registros e depois ativa o contexto fora do
+    lock. Nenhum arquivo de foto e cacheado, nem este snapshot autoriza mutacoes.
+    """
+    ids = tuple(dict.fromkeys(
+        store_id
+        for loja in lojas
+        if isinstance(loja, dict)
+        if (store_id := _cadastro_store_id_foto_exato(loja.get("store_id")))
+    ))
+    try:
+        config = _cadastro_fotos_config_ler(client_id, store_ids=ids)
+    except CadastroFotosConfigInvalida as exc:
+        return _CadastroFotosLeitura(str(client_id), ids, False, True, (), str(exc))
+    return _CadastroFotosLeitura(
+        str(client_id), ids, config["exists"], config["strict_store_scope"],
+        tuple((grupo["group_id"], tuple(grupo["store_ids"])) for grupo in config["shared_groups"]),
+    )
+
+
+@contextmanager
+def _cadastro_fotos_contexto_leitura(snapshot: _CadastroFotosLeitura):
+    """Reutiliza somente dentro da consulta; nao envolver caminhos de mutacao."""
+    token = _CADASTRO_FOTOS_LEITURA.set(snapshot)
+    try:
+        yield
+    finally:
+        _CADASTRO_FOTOS_LEITURA.reset(token)
+
+
 def _cadastro_fotos_config_path(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), CADASTRO_FOTOS_CONFIG_ARQUIVO)
 
 
 def _cadastro_fotos_config_carregar(client_id: str) -> dict[str, Any]:
+    snapshot = _CADASTRO_FOTOS_LEITURA.get()
+    if snapshot is not None and snapshot.client_id == str(client_id):
+        if snapshot.config_erro:
+            raise CadastroFotosConfigInvalida(snapshot.config_erro)
+        return {
+            "exists": snapshot.config_existe,
+            "strict_store_scope": snapshot.escopo_estrito,
+            "shared_groups": [
+                {"group_id": group_id, "store_ids": list(store_ids)}
+                for group_id, store_ids in snapshot.grupos
+            ],
+        }
+    return _cadastro_fotos_config_ler(client_id)
+
+
+def _cadastro_fotos_config_ler(
+    client_id: str,
+    *,
+    store_ids: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     tenant_path = _cadastro_tenant_path_fotos_seguro(client_id)
     if not tenant_path:
         raise CadastroFotosConfigInvalida("tenant_inseguro")
@@ -780,7 +855,9 @@ def _cadastro_fotos_config_carregar(client_id: str) -> dict[str, Any]:
     if not isinstance(estrito, bool) or not isinstance(grupos, list):
         raise CadastroFotosConfigInvalida("campos_invalidos")
 
-    store_ids_atuais = set(_cadastro_store_ids_foto_atuais(client_id))
+    store_ids_atuais = set(
+        _cadastro_store_ids_foto_atuais(client_id) if store_ids is None else store_ids
+    )
     usados: set[str] = set()
     grupos_normalizados: list[dict[str, Any]] = []
     for indice, grupo in enumerate(grupos):
@@ -1408,6 +1485,8 @@ __all__ = [
     "_cadastro_store_id_por_segmento_foto",
     "_cadastro_fotos_config_path",
     "_cadastro_fotos_config_carregar",
+    "_cadastro_fotos_capturar_leitura",
+    "_cadastro_fotos_contexto_leitura",
     "_cadastro_fotos_escopo_estrito",
     "_cadastro_foto_cabecalho_normalizar",
     "_cadastro_foto_coluna_candidata",

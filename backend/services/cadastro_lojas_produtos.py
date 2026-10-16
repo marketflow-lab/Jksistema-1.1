@@ -595,7 +595,10 @@ def _lojas_atuais(client_id: str, *, somente_commit: bool = False) -> list[dict[
     return [dict(loja) for loja in (lojas or []) if isinstance(loja, dict)]
 
 
-def resolver_loja_cadastro(client_id: str, store_id: str, *, somente_commit: bool = False) -> dict[str, str]:
+def resolver_loja_cadastro(
+    client_id: str, store_id: str, *, somente_commit: bool = False,
+    _lojas_capturadas: Iterable[dict[str, Any]] | None = None,
+) -> dict[str, str]:
     """Resolve an exact store id through Integracoes; names never identify rows."""
 
     store_id_alvo = str(store_id or "").strip()
@@ -603,7 +606,10 @@ def resolver_loja_cadastro(client_id: str, store_id: str, *, somente_commit: boo
         raise HTTPException(status_code=400, detail="store_id e obrigatorio.")
     correspondentes = [
         loja
-        for loja in _lojas_atuais(client_id, somente_commit=somente_commit)
+        for loja in (
+            _lojas_atuais(client_id, somente_commit=somente_commit)
+            if _lojas_capturadas is None or somente_commit else _lojas_capturadas
+        )
         if str(loja.get("store_id") or "").strip() == store_id_alvo
     ]
     if len(correspondentes) == 1:
@@ -1655,6 +1661,8 @@ def _listar_produtos_loja_sync(
     skus: Iterable[Any] | None = None,
     _registros_persistidos: list[dict[str, str]] | None = None,
     _normalizar_sku_consulta: Callable[[Any], str] | None = None,
+    _lojas_capturadas: list[dict[str, Any]] | None = None,
+    _fontes_capturadas: dict[str, bytes] | None = None,
 ) -> list[dict[str, Any]]:
     if skus is None:
         chaves_skus = None
@@ -1673,14 +1681,21 @@ def _listar_produtos_loja_sync(
             return _normalizar_sku_consulta(sku) in chaves_skus
         return any(chave in chaves_skus for chave in _sku_lookup_keys_cadastro(sku) if chave)
 
-    loja = resolver_loja_cadastro(client_id, store_id)
+    loja = resolver_loja_cadastro(client_id, store_id, _lojas_capturadas=_lojas_capturadas)
     caminho = _cadastro_produtos_lojas_path(client_id)
     if _registros_persistidos is None:
         with _lock_arquivo(caminho):
             registros, _ = _ler_registros_persistidos(client_id)
     else:
         registros = _registros_persistidos
-    contexto = _contexto_legado(client_id, loja)
+    contexto = (
+        _contexto_legado(client_id, loja)
+        if _lojas_capturadas is None
+        else _contexto_legado_de_tenant(
+            client_id, loja, get_tenant_path(client_id), _lojas_capturadas,
+            fontes_capturadas=_fontes_capturadas,
+        )
+    )
     saida: list[dict[str, Any]] = []
     chaves_explicitadas: set[str] = set()
     for item in registros:

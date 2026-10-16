@@ -1,11 +1,12 @@
 import csv
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
-from backend.services import cadastro_fotos, cadastro_lojas_produtos, integracoes
+from backend.services import cadastro_fotos, cadastro_lojas_produtos, integracoes, store_public_snapshot
 from backend.services import cadastro_lojas_listagem as listagem
 
 
@@ -36,11 +37,12 @@ def _configure(monkeypatch, tmp_path, stores_by_client):
     monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info_root), raising=False)
-    monkeypatch.setattr(
-        integracoes,
-        "carregar_lojas",
-        lambda client_id: stores_by_client.get(str(client_id), []),
-    )
+    # The operational reader consumes the published store projection, not the
+    # mutation loader. Initialize both files without scheduling recovery jobs.
+    for client_id, stores in stores_by_client.items():
+        tenant = Path(tenant_path(client_id))
+        (tenant / "lojas_config.json").write_text(json.dumps(stores), encoding="utf-8")
+        store_public_snapshot.write_snapshot(tenant, store_public_snapshot.build_snapshot(stores))
     monkeypatch.setattr(
         cadastro_lojas_produtos,
         "_cadastro_mapa_fotos_locais",

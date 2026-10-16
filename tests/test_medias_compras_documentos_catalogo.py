@@ -2,11 +2,12 @@
 
 import copy
 import csv
-from contextlib import nullcontext
+import json
 
 import pytest
 
 from backend.services import cadastro_compatibilidade, cadastro_fotos, cadastro_lojas_produtos
+from backend.services import integracoes, store_public_snapshot
 from backend.services import medias_compras_common as common
 from backend.services import medias_compras_documentos_cadastro as documentos
 
@@ -23,7 +24,11 @@ def _csv(path, rows):
 def catalogo(tmp_path, monkeypatch):
     pasta = tmp_path / "cliente-a"
     pasta.mkdir()
-    monkeypatch.setattr(common, "get_tenant_path", lambda client: str(tmp_path / client))
+    for module in (common, cadastro_fotos, cadastro_lojas_produtos):
+        monkeypatch.setattr(module, "get_tenant_path", lambda client: str(tmp_path / client))
+    monkeypatch.setattr(integracoes, "_get_tenant_path", lambda client: str(tmp_path / client))
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
+    monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(tmp_path), raising=False)
     monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", lambda _client, _sku, foto, _store, **_kwargs: foto)
     return pasta
 
@@ -122,33 +127,33 @@ def test_alias_sku_nao_confunde_sufixos_e_resolve_somente_itens_solicitados(cata
     assert chamados == ["1", "375-2"]
 
 
-def _catalogo_real_simulado(monkeypatch, registros, *, sombras_por_loja=None):
+def _instrumentar_catalogo_real(monkeypatch, catalogo, registros, *, sombras_por_loja=None):
     lojas = [{"store_id": "loja-a", "nome": "Loja A"}, {"store_id": "loja-b", "nome": "Loja B"}]
+    (catalogo / "lojas_config.json").write_text(json.dumps(lojas), encoding="utf-8")
+    store_public_snapshot.write_snapshot(catalogo, store_public_snapshot.build_snapshot(lojas))
+    _csv(catalogo / "cadastro_produtos_lojas.csv", registros)
+    if sombras_por_loja:
+        _csv(catalogo / "cadastro_produtos.csv", [
+            {**sombra, "store_id": store_id}
+            for store_id, sombras in sombras_por_loja.items()
+            for sombra in sombras.values()
+        ])
     leituras = []
     enriquecidos = []
+    leitura_real = cadastro_lojas_produtos._ler_registros_persistidos
 
     def ler_registros(client_id):
         leituras.append(client_id)
-        return registros, list(registros[0]) if registros else []
+        return leitura_real(client_id)
 
     def enriquecer(registro, _loja, _legado, *, scope_source="store_file"):
         enriquecidos.append(registro["sku"])
         return {**registro, "scope_source": scope_source}
 
-    monkeypatch.setattr(cadastro_compatibilidade, "_cadastro_produtos_lojas_path", lambda *_: "unused.csv")
-    monkeypatch.setattr(cadastro_compatibilidade, "_bloquear_config_e_arquivo_cadastro", lambda *_: nullcontext())
+    # Instrument only the work count: capture, store resolution and legacy
+    # contexts exercise their real paths against this temporary tenant.
     monkeypatch.setattr(cadastro_compatibilidade, "_ler_registros_persistidos", ler_registros)
-    monkeypatch.setattr(cadastro_compatibilidade, "_lojas_atuais", lambda *_: lojas)
-    monkeypatch.setattr(cadastro_compatibilidade, "resolver_loja_ativa_para_leitura",
-                        lambda _client, referencia, _store: {"loja_resolvida": True, "store_id": referencia})
-    monkeypatch.setattr(cadastro_lojas_produtos, "resolver_loja_cadastro",
-                        lambda _client, store: next(loja for loja in lojas if loja["store_id"] == store))
-    monkeypatch.setattr(cadastro_lojas_produtos, "_cadastro_produtos_lojas_path", lambda *_: "unused.csv")
-    monkeypatch.setattr(cadastro_lojas_produtos, "_lock_arquivo", lambda *_: nullcontext())
     monkeypatch.setattr(cadastro_lojas_produtos, "_ler_registros_persistidos", ler_registros)
-    monkeypatch.setattr(cadastro_lojas_produtos, "_contexto_legado", lambda _client, loja: {
-        "sombras": (sombras_por_loja or {}).get(loja["store_id"], {}),
-    })
     monkeypatch.setattr(cadastro_lojas_produtos, "_enriquecer_produto", enriquecer)
     return leituras, enriquecidos
 
@@ -162,7 +167,7 @@ def test_consulta_filtrada_preserva_aliases_sem_enriquecer_catalogo_inteiro(
          "cg_product description": f"Description {sku}", "foto": f"{sku}.png"}
         for sku in ("1", "375-1", "375-2", "AB-007", "12-6", "380", "999")
     ]
-    leituras, enriquecidos = _catalogo_real_simulado(monkeypatch, registros)
+    leituras, enriquecidos = _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
     aliases = ("SKU:001 Sensor", "SKU:375-2 Light", "sku #ab-007", "12/JUN")
     lista = {"store_id": "loja-a", "itens": [{"SKU": sku} for sku in aliases]}
     kwargs = {}
@@ -173,7 +178,8 @@ def test_consulta_filtrada_preserva_aliases_sem_enriquecer_catalogo_inteiro(
     contexto = documentos._contexto_cadastro_documentos(lista, "cliente-a", **kwargs)
 
     assert leituras == ["cliente-a"]
-    assert enriquecidos == ["1", "375-2", "AB-007", "12-6"]
+    # The real persisted-file reader canonicalizes numeric SKU 1 to 001.
+    assert enriquecidos == ["001", "375-2", "AB-007", "12-6"]
     assert [documentos._dados_produto_documento(contexto, sku)["descricao"] for sku in aliases] == [
         "Description 1", "Description 375-2", "Description AB-007", "Description 12-6",
     ]
@@ -233,7 +239,7 @@ def test_filtro_documento_preserva_sku_rotulado_colisoes_e_conflitos_globais(
          "cg_product description": f"{loja} / {sku}", "foto": f"{loja}/{sku}.png", "Unit/Pair": "Pair"}
         for loja in ("loja-a", "loja-b") for sku in skus
     ]
-    _leituras, enriquecidos = _catalogo_real_simulado(monkeypatch, registros)
+    _leituras, enriquecidos = _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
     lista = {"store_id": loja_referencia, "itens": [{"SKU": "375-2"}]}
     original = copy.deepcopy(registros)
     visao_real = cadastro_compatibilidade.visao_produtos_cadastro_contexto_loja
@@ -257,8 +263,8 @@ def test_filtro_documento_preserva_sku_rotulado_colisoes_e_conflitos_globais(
 def test_filtro_documento_preserva_sombra_legada_com_sku_rotulado(catalogo, monkeypatch):
     sombra = {"sku": "SKU:001 Sensor", "sku_normalizado": "SKU:001 SENSOR",
               "cg_product description": "Legacy technical description", "foto": "001.png"}
-    _leituras, enriquecidos = _catalogo_real_simulado(
-        monkeypatch, [], sombras_por_loja={"loja-a": {sombra["sku_normalizado"]: sombra}},
+    _leituras, enriquecidos = _instrumentar_catalogo_real(
+        monkeypatch, catalogo, [], sombras_por_loja={"loja-a": {sombra["sku_normalizado"]: sombra}},
     )
     contexto = documentos._contexto_cadastro_documentos(
         {"store_id": "loja-a", "itens": [{"SKU": "001"}]}, "cliente-a",
@@ -272,7 +278,7 @@ def test_filtro_documento_preserva_sombra_legada_com_sku_rotulado(catalogo, monk
 def test_consulta_cadastro_sem_normalizador_preserva_aliases_existentes(catalogo, monkeypatch):
     registros = [{"sku": sku, "sku_normalizado": sku.upper(), "store_id": "loja-a"}
                  for sku in ("375-2", "SKU:375-2 Light")]
-    _catalogo_real_simulado(monkeypatch, registros)
+    _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
     resultado = cadastro_compatibilidade.visao_produtos_cadastro_contexto_loja(
         "cliente-a", "loja-a", skus=["3752"],
     )

@@ -42,7 +42,6 @@ def registry(monkeypatch, tmp_path):
     monkeypatch.setattr(common, "get_tenant_path", lambda client_id: str(root / client_id))
     monkeypatch.setattr(cadastro, "get_tenant_path", lambda *_args: pytest.fail("O vínculo deve usar pasta_tenant canônica"))
     monkeypatch.setattr(listas, "_limpar_cache_lista_pedido", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(listas, "_construir_mapa_m3_sku", lambda *_args: {})
     return root
 
 
@@ -228,7 +227,15 @@ def test_resumos_expoem_vinculo_e_filtro_preserva_loja(registry, monkeypatch):
     _edit({"nacionalizador_id": "shared-id"})
     _edit({"nacionalizador_id": "second-id"}, lista_id="list-b")
     monkeypatch.setattr(listas, "_resolver_escopo_loja_medias", lambda _client, _loja, store_id: {"store_id": store_id})
+    consultas_m3 = []
+
+    def construir_mapa_m3(client_id, *, loja, skus):
+        consultas_m3.append((client_id, loja, list(skus)))
+        return {}
+
+    monkeypatch.setattr(listas, "_construir_mapa_m3_sku", construir_mapa_m3)
     response = asyncio.run(listas.api_medias_compras_listas_pedidos(store_id="store-a", client_id="tenant-a"))
+    assert consultas_m3 == [("tenant-a", "store-a", [])]
     assert len(response["listas"]) == 1
     assert response["listas"][0]["id"] == "list-a"
     assert response["listas"][0]["nacionalizador_id"] == "shared-id"
