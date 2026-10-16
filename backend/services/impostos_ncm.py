@@ -273,29 +273,20 @@ def _normalizar_valor_str_excel(valor: Any) -> str:
 
 
 def _indice_ncm_referencia_por_ncm(client_id: str) -> dict[str, dict]:
-    _garantir_base_ncm_populada(client_id)
-    conn = _conexao_db_ncm_impostos(client_id)
-    try:
-        rows = conn.execute(
-            """
-            SELECT ncm, cest, descricao, descricao_completa
-            FROM ncm_referencia
-            """
-        ).fetchall()
-        idx = {}
-        for r in rows:
-            ncm = _normalizar_codigo_fiscal(r["ncm"])
-            if not ncm:
-                continue
-            idx[ncm] = {
-                "ncm": ncm,
-                "cest": _normalizar_codigo_fiscal(r["cest"]),
-                "descricao": str(r["descricao"] or "").strip(),
-                "descricao_completa": str(r["descricao_completa"] or "").strip(),
-            }
-        return idx
-    finally:
-        conn.close()
+    from backend.services.medias_compras_leitura import linhas_ncm_referencia
+    rows = linhas_ncm_referencia(client_id, _garantir_base_ncm_populada, _conexao_db_ncm_impostos, "ncm,cest,descricao,descricao_completa")
+    idx = {}
+    for r in rows:
+        ncm = _normalizar_codigo_fiscal(r["ncm"])
+        if not ncm:
+            continue
+        idx[ncm] = {
+            "ncm": ncm,
+            "cest": _normalizar_codigo_fiscal(r["cest"]),
+            "descricao": str(r["descricao"] or "").strip(),
+            "descricao_completa": str(r["descricao_completa"] or "").strip(),
+        }
+    return idx
 
 
 async def importar_ncm_excel_impostos(client_id: str = Depends(get_tenant_id)):

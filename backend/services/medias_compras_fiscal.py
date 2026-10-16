@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
 import unicodedata
 from urllib.parse import urlsplit
 
@@ -24,6 +25,9 @@ from backend.services.impostos_ncm import (
 from backend.services.impostos_regras import _carregar_cadastro_para_impostos
 from backend.services.medias_compras_common import *
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.medias_compras_leitura import (
+    fotos_da_consulta, ler_csv, linhas_ncm_referencia, etapa, medir_etapa, registrar_tempo,
+)
 
 _RUNTIME_NAMES = (
     "logger",
@@ -96,7 +100,31 @@ def _normalizar_coluna_cadastro_meta(valor: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", base.lower())
 
 
-def _pick_cadastro_meta(row_dict: dict, cands: list[str]) -> str:
+class _LinhaCadastroMeta(dict):
+    """Private immutable-use row index, owned by one enrichment calculation."""
+
+    def __init__(self, row, normalizar=_normalizar_coluna_cadastro_meta):
+        super().__init__(row)
+        self.normalizar = normalizar
+        self.valores = {}
+        for key, value in self.items():
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            normalized = normalizar(key)
+            if text and normalized and normalized not in self.valores:
+                self.valores[normalized] = text
+
+
+def _indexar_linha_cadastro_meta(row, normalizar):
+    return _LinhaCadastroMeta(row, normalizar)
+
+
+def _indice_valores_cadastro_meta(row_dict):
+    if isinstance(row_dict, _LinhaCadastroMeta):
+        return row_dict.valores
     norm_map = {}
     for k, v in (row_dict or {}).items():
         if v is None or not str(v).strip():
@@ -104,9 +132,15 @@ def _pick_cadastro_meta(row_dict: dict, cands: list[str]) -> str:
         k_norm = _normalizar_coluna_cadastro_meta(k)
         if k_norm and k_norm not in norm_map:
             norm_map[k_norm] = str(v).strip()
+    return norm_map
+
+
+def _pick_cadastro_meta(row_dict: dict, cands: list[str]) -> str:
+    norm_map = _indice_valores_cadastro_meta(row_dict)
+    normalizar = row_dict.normalizar if isinstance(row_dict, _LinhaCadastroMeta) else _normalizar_coluna_cadastro_meta
 
     for cand in (cands or []):
-        c_norm = _normalizar_coluna_cadastro_meta(cand)
+        c_norm = normalizar(cand)
         if not c_norm:
             continue
         val = norm_map.get(c_norm)
@@ -125,6 +159,12 @@ def _pick_cadastro_oem(row_dict: dict) -> str:
     aliases = tuple(
         name for alias in _META_OEM_CANDIDATOS for name in (alias, f"cg {alias}")
     )
+    if isinstance(row_dict, _LinhaCadastroMeta):
+        for name in aliases:
+            value = row_dict.valores.get(row_dict.normalizar(name))
+            if value:
+                return value
+        return ""
     return medias_common._primeiro_texto_item(row_dict, aliases)
 
 
@@ -134,19 +174,11 @@ def _pick_cadastro_link(row_dict: dict) -> str:
     if not isinstance(row_dict, dict):
         return ""
     # Cada alias consulta o mesmo indice: nao renormaliza a linha inteira.
-    norm_map: dict[str, str] = {}
-    for chave, valor in (row_dict or {}).items():
-        if valor is None:
-            continue
-        texto = str(valor).strip()
-        if not texto:
-            continue
-        chave_norm = _normalizar_coluna_cadastro_meta(chave)
-        if chave_norm and chave_norm not in norm_map:
-            norm_map[chave_norm] = texto
+    norm_map = _indice_valores_cadastro_meta(row_dict)
+    normalizar = row_dict.normalizar if isinstance(row_dict, _LinhaCadastroMeta) else _normalizar_coluna_cadastro_meta
     for alias in _META_LINK_CANDIDATOS:
         for name in (alias, f"cg {alias}"):
-            value = norm_map.get(_normalizar_coluna_cadastro_meta(name), "")
+            value = norm_map.get(normalizar(name), "")
             if not value or any(char.isspace() for char in value):
                 continue
             try:
@@ -297,6 +329,8 @@ def _merge_fiscal_sku_payload(destino: dict[str, dict], chave: str, payload: dic
         atual["m3_individual"] = m3_novo
 
 
+@fotos_da_consulta
+@etapa("frete")
 def _recalcular_frete_internacional_itens_lista(
     client_id: str,
     itens: list[dict],
@@ -403,29 +437,14 @@ def _recalcular_frete_internacional_itens_lista(
 
 
 def _indice_ncm_referencia_aliquotas(client_id: str) -> dict[str, dict]:
-    _garantir_base_ncm_populada(client_id)
-    conn = _conexao_db_ncm_impostos(client_id)
-    try:
-        rows = conn.execute(
-            """
-            SELECT ncm, ii, ipi, pis, cofins
-            FROM ncm_referencia
-            """
-        ).fetchall()
-        idx = {}
-        for r in rows:
-            ncm = _normalizar_codigo_fiscal(r["ncm"])
-            if not ncm:
-                continue
-            idx[ncm] = {
-                "ii": float(r["ii"] or 0),
-                "ipi": float(r["ipi"] or 0),
-                "pis": float(r["pis"] or 0),
-                "cofins": float(r["cofins"] or 0),
-            }
-        return idx
-    finally:
-        conn.close()
+    rows = linhas_ncm_referencia(client_id, _garantir_base_ncm_populada, _conexao_db_ncm_impostos, "ncm,ii,ipi,pis,cofins")
+    idx = {}
+    for r in rows:
+        ncm = _normalizar_codigo_fiscal(r["ncm"])
+        if not ncm:
+            continue
+        idx[ncm] = {key: float(r[key] or 0) for key in ("ii", "ipi", "pis", "cofins")}
+    return idx
 
 
 def _chave_campo_cubagem(campo):
@@ -502,6 +521,7 @@ def _aplicar_cubagem_item_lista(item: dict, cubagem: dict | None, store_id: str,
     return novo
 
 
+@etapa("enriquecimento")
 def _enriquecer_itens_lista_pedido_com_impostos(
     client_id: str,
     itens: list[dict],
@@ -527,7 +547,23 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     def _sku_interessa(k1: str, k2: str, k3: str) -> bool:
         return not skus_interesse or any(k and k in skus_interesse for k in (k1, k2, k3))
 
-    df_cad, caminho_cadastro_principal = _carregar_cadastro_para_impostos(client_id)
+    def _linhas_relevantes(frame):
+        # Keep alias and ordering semantics, avoiding thousands of pandas Series
+        # allocations for rows that the existing loop would immediately skip.
+        if not skus_interesse or "sku" not in frame.columns:
+            return frame
+        mask = frame["sku"].map(lambda sku: _sku_interessa(*_sku_lookup_keys_sync_ncm(str(sku or "").strip())))
+        return frame.loc[mask]
+
+    normalized_columns = {}
+    def _normalizar_coluna_da_consulta(value):
+        key = str(value or "")
+        if key not in normalized_columns:
+            normalized_columns[key] = _normalizar_coluna_cadastro_meta(key)
+        return normalized_columns[key]
+
+    with medir_etapa("catalogo_fiscal"):
+        df_cad, caminho_cadastro_principal = _carregar_cadastro_para_impostos(client_id)
     sku_para_fiscal: dict[str, dict] = {}
     sku_para_meta: dict[str, dict] = {}
     sku_para_meta_fallback: dict[str, dict] = {}
@@ -535,6 +571,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         visao_produtos_cadastro_contexto_loja,
     )
 
+    contexto_started = time.perf_counter()
     contexto_preparado = (
         contexto_cadastro.obter(client_id, loja)
         if isinstance(contexto_cadastro, _ContextoCadastroLista)
@@ -559,6 +596,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     cubagem_por_sku = resolver_cubagem_produtos(
         contexto_cadastro.get("produtos") or [], store_id_cadastro,
     ) if contexto_cadastro.get("scope") == "store" else {}
+    registrar_tempo("cadastro_contexto", contexto_started)
     contexto_fotos_indisponivel = (
         str(contexto_cadastro.get("scope") or "").strip() == "unavailable"
     )
@@ -576,9 +614,10 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         # explicitas diferentes devem continuar passando pelo resolvedor.
         chave = (client_id_foto, store_id, sku, foto_ref)
         if chave not in fotos_resolvidas:
-            fotos_resolvidas[chave] = _resolver_foto_cadastro_sku(
-                client_id_foto, sku, foto_ref, store_id, mapas_fotos=mapas_fotos,
-            )
+            with medir_etapa("fotos_resolucao"):
+                fotos_resolvidas[chave] = _resolver_foto_cadastro_sku(
+                    client_id_foto, sku, foto_ref, store_id, mapas_fotos=mapas_fotos,
+                )
         return fotos_resolvidas[chave]
 
     def _sku_controlado(k1: str, k2: str, k3: str) -> bool:
@@ -587,35 +626,9 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             for chave in (k1, k2, k3)
         )
 
+    principal_started = time.perf_counter()
     if not df_cad.empty:
-        def _norm_col_name(v: str) -> str:
-            base = unicodedata.normalize("NFKD", str(v or ""))
-            base = "".join(ch for ch in base if not unicodedata.combining(ch))
-            return re.sub(r"[^a-z0-9]+", "", base.lower())
-
-        def _pick_cadastro(row_dict: dict, cands: list[str]) -> str:
-            norm_map = {}
-            for k, v in (row_dict or {}).items():
-                if v is None or not str(v).strip():
-                    continue
-                k_norm = _norm_col_name(k)
-                if k_norm and k_norm not in norm_map:
-                    norm_map[k_norm] = str(v).strip()
-
-            for cand in (cands or []):
-                c_norm = _norm_col_name(cand)
-                if not c_norm:
-                    continue
-                val = norm_map.get(c_norm)
-                if val:
-                    return val
-                for mk, mv in norm_map.items():
-                    if mk == c_norm or c_norm in mk or mk in c_norm:
-                        if mv:
-                            return mv
-            return ""
-
-        for _, row in df_cad.iterrows():
+        for _, row in _linhas_relevantes(df_cad).iterrows():
             sku = str(row.get("sku", "") or "").strip()
             if not sku:
                 continue
@@ -623,22 +636,22 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             if not _sku_interessa(k1, k2, k3):
                 continue
 
-            row_dict = row.to_dict() if hasattr(row, "to_dict") else {}
+            row_dict = _indexar_linha_cadastro_meta(row.to_dict() if hasattr(row, "to_dict") else {}, _normalizar_coluna_da_consulta)
             payload = _payload_fiscal_cadastro_row(row)
             for k in (k1, k2, k3):
                 _merge_fiscal_sku_payload(sku_para_fiscal, k, payload)
 
-            titulo_cad = _pick_cadastro(row_dict, _META_TITULO_CANDIDATOS_FORTES)
+            titulo_cad = _pick_cadastro_meta(row_dict, _META_TITULO_CANDIDATOS_FORTES)
             foto_cad = ""
             if not contexto_fotos_indisponivel and not _sku_controlado(k1, k2, k3):
                 foto_cad = _resolver_foto(
                     client_id,
                     sku,
-                    _pick_cadastro(row_dict, _META_FOTO_CANDIDATOS),
+                    _pick_cadastro_meta(row_dict, _META_FOTO_CANDIDATOS),
                     store_id_cadastro or None,
                 )
             oem_cad = _pick_cadastro_oem(row_dict)
-            cor_lado_cad = _pick_cadastro(row_dict, _META_COR_LADO_CANDIDATOS)
+            cor_lado_cad = _pick_cadastro_meta(row_dict, _META_COR_LADO_CANDIDATOS)
             link_cad = _pick_cadastro_link(row_dict)
 
             meta_payload = {
@@ -662,12 +675,14 @@ def _enriquecer_itens_lista_pedido_com_impostos(
                 _merge_meta_sku(sku_para_meta, k, meta_payload)
                 _merge_meta_sku(sku_para_meta_fallback, k, meta_payload_fallback)
 
+    registrar_tempo("metadados_principal", principal_started)
+    historico_started = time.perf_counter()
     caminho_principal_abs = os.path.abspath(caminho_cadastro_principal) if caminho_cadastro_principal else ""
     for caminho_meta in _caminhos_cadastros_meta(client_id):
         try:
             if caminho_principal_abs and os.path.abspath(caminho_meta) == caminho_principal_abs:
                 continue
-            df_meta = pd.read_csv(caminho_meta, dtype=str).fillna("")
+            df_meta = ler_csv(caminho_meta, dtype=str).fillna("")
             if df_meta.empty:
                 continue
             df_meta.columns = [str(c or "").strip().lower() for c in df_meta.columns]
@@ -676,14 +691,14 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         except Exception:
             continue
 
-        for _, row in df_meta.iterrows():
+        for _, row in _linhas_relevantes(df_meta).iterrows():
             sku = str(row.get("sku", "") or "").strip()
             if not sku:
                 continue
             k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
             if not _sku_interessa(k1, k2, k3):
                 continue
-            row_dict = row.to_dict() if hasattr(row, "to_dict") else {}
+            row_dict = _indexar_linha_cadastro_meta(row.to_dict() if hasattr(row, "to_dict") else {}, _normalizar_coluna_da_consulta)
             payload = _payload_fiscal_cadastro_row(row)
             meta_payload = _meta_payload_cadastro(
                 client_id,
@@ -709,6 +724,8 @@ def _enriquecer_itens_lista_pedido_com_impostos(
                 _merge_meta_sku(sku_para_meta, k, meta_payload)
                 _merge_meta_sku(sku_para_meta_fallback, k, meta_payload_fallback)
 
+    registrar_tempo("metadados_historico", historico_started)
+    metadados_contexto_started = time.perf_counter()
     for row_dict in contexto_cadastro.get("produtos") or []:
         if not isinstance(row_dict, dict):
             continue
@@ -718,6 +735,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         k1, k2, k3 = _sku_lookup_keys_sync_ncm(sku)
         if not _sku_interessa(k1, k2, k3):
             continue
+        row_dict = _indexar_linha_cadastro_meta(row_dict, _normalizar_coluna_da_consulta)
         link_contextual = _pick_cadastro_link(row_dict)
         foto_contextual = _resolver_foto(
             client_id,
@@ -745,9 +763,12 @@ def _enriquecer_itens_lista_pedido_com_impostos(
             if titulo_fb:
                 atual[TITULO_PRODUTO_INGLES_KEY] = titulo_fb
 
-    idx_aliquotas = _indice_ncm_referencia_aliquotas(client_id) if incluir_impostos else {}
-    idx_ncm_ref = _indice_ncm_referencia_por_ncm(client_id) if incluir_impostos else {}
+    registrar_tempo("metadados_contexto", metadados_contexto_started)
+    with medir_etapa("fiscal"):
+        idx_aliquotas = _indice_ncm_referencia_aliquotas(client_id) if incluir_impostos else {}
+        idx_ncm_ref = _indice_ncm_referencia_por_ncm(client_id) if incluir_impostos else {}
     saida = []
+    itens_started = time.perf_counter()
     for item in lista_itens:
         if not isinstance(item, dict):
             continue
@@ -830,6 +851,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
 
         saida.append(novo)
 
+    registrar_tempo("itens", itens_started)
     return saida
 
 

@@ -246,7 +246,7 @@
             if (!skuSalvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
 
             await carregarListasPedidos(true);
-            if (listaPedidoAtual && listaPedidoAtual.id) await abrirListaPedidoPorId(listaPedidoAtual.id);
+            if (listaPedidoAtual && listaPedidoAtual.id) await abrirListaPedidoPorId(listaPedidoAtual.id, { preservarConteudo: true });
             const skuAposReabrir = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
                 ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
                 : false;
@@ -268,7 +268,7 @@
 
                 const dataForcado = await respForcado.json();
                 listaPedidoAtual = dataForcado.lista || listaPedidoAtual;
-                await abrirListaPedidoPorId(listaPedidoAtual.id);
+                await abrirListaPedidoPorId(listaPedidoAtual.id, { preservarConteudo: true });
                 const skuAposForcar = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
                     ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
                     : false;

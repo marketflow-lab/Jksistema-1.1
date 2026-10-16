@@ -38,6 +38,15 @@
         function iniciar() {
             app.assertReady();
             ligarEventos();
+            if (global.JKAuthenticatedMedia?.configurarCacheRaiz) {
+                const liberar = global.JKAuthenticatedMedia.configurarCacheRaiz(document, img => ({
+                    tenantId: tenantKey === 'default' ? '' : tenantKey,
+                    sessionId: userScopeKey,
+                    storeId: String(img.closest('#tblListaPedidoItens') ? listaPedidoAtual?.store_id || '' : storeIdSelecionado || '__todas'),
+                    revision: img.dataset.jkPhotoRevision || '',
+                }));
+                global.addEventListener('pagehide', liberar, { once: true });
+            }
             renderBotoesLojas([]);
             app.state.inicializacaoMediasPendente = true;
             Promise.allSettled([carregarSkusOcultosServidor(), carregarLojas()]).then(() => {

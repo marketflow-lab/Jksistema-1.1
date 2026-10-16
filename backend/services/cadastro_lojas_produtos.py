@@ -234,7 +234,8 @@ def _ler_csv_generico(caminho: str) -> tuple[list[dict[str, str]], list[str]]:
     if not os.path.exists(caminho):
         return [], []
     try:
-        bruto = Path(caminho).read_bytes()
+        from backend.services.medias_compras_leitura import capturar_bytes
+        bruto = capturar_bytes(caminho)
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Nao foi possivel ler o cadastro por loja.") from exc
     return _ler_csv_capturado(bruto)
@@ -792,23 +793,7 @@ def _aplicar_compilado(
     return derivados
 
 
-def _contexto_legado_de_tenant(
-    client_id: str,
-    loja: dict[str, str],
-    tenant: os.PathLike[str] | str,
-    lojas: Iterable[dict[str, Any]],
-    *,
-    fotos: dict[str, str] | None = None,
-    fontes_capturadas: dict[str, bytes] | None = None,
-) -> dict[str, Any]:
-    """Build the legacy shadow from explicit, already trusted inputs.
-
-    The regular CRUD wrapper below supplies the runtime tenant and current
-    stores.  Photo migration uses this pure variant while it already owns the
-    tenant transition lock, avoiding any temporary mutation of runtime globals
-    when more than one canonical data root is migrated together.
-    """
-
+def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas):
     lojas = [dict(item) for item in lojas if isinstance(item, dict)]
     ids_por_nome, nomes_ambiguos = _nomes_lojas_unicos(lojas)
     store_ids_atuais = {
@@ -841,7 +826,6 @@ def _contexto_legado_de_tenant(
     custos_por_loja: dict[str, dict[str, dict[str, str]]] = {}
     prioridades_compilado: dict[tuple[str, str], int] = {}
     prioridades_custos: dict[tuple[str, str], int] = {}
-    campos_derivados_sombras: dict[str, set[str]] = {}
 
     for fonte, linhas in fontes.items():
         for indice, linha in enumerate(linhas, start=2):
@@ -972,6 +956,34 @@ def _contexto_legado_de_tenant(
                     if prioridade >= prioridades_custos.get(chave_custo, 0):
                         prioridades_custos[chave_custo] = prioridade
                         custos_por_loja.setdefault(store_id, {})[sku] = dict(linha)
+
+    return (associacoes, base_generica, base_por_loja, compilado_por_loja, custos_por_loja, nao_mapeados, resumo, colunas_fontes)
+
+
+def _contexto_legado_de_tenant(
+    client_id: str,
+    loja: dict[str, str],
+    tenant: os.PathLike[str] | str,
+    lojas: Iterable[dict[str, Any]],
+    *,
+    fotos: dict[str, str] | None = None,
+    fontes_capturadas: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """Build the legacy shadow from explicit, already trusted inputs.
+
+    The regular CRUD wrapper below supplies the runtime tenant and current
+    stores.  Photo migration uses this pure variant while it already owns the
+    tenant transition lock, avoiding any temporary mutation of runtime globals
+    when more than one canonical data root is migrated together.
+    """
+
+    from backend.services.medias_compras_leitura import reutilizar, chave_arquivo, leitura_atual
+    lojas = [dict(item) for item in lojas if isinstance(item, dict)]
+    chave = ("indice_legado", client_id, chave_arquivo(tenant), repr(lojas)) if leitura_atual() else None
+    (associacoes, base_generica, base_por_loja, compilado_por_loja, custos_por_loja, nao_mapeados, resumo, colunas_fontes) = reutilizar(
+        chave, lambda: _indice_legado_de_tenant(tenant, lojas, fontes_capturadas),
+    )
+    campos_derivados_sombras: dict[str, set[str]] = {}
 
     store_id = loja["store_id"]
     nome_loja = loja["nome"]

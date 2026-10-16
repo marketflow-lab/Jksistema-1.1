@@ -17,6 +17,7 @@ def store(tmp_path, monkeypatch):
     def location(client_id):
         return str(tmp_path / client_id / "listas_pedidos.json")
     monkeypatch.setattr(common, "_arquivo_listas_pedidos", location)
+    monkeypatch.setattr(service, "get_tenant_path", lambda client_id: str(tmp_path / client_id))
     rows = [
         {"id": "a", "store_id": "store-a", "itens": [{"SKU": "001", "Quantidade": 2}]},
         {"id": "b", "store_id": "store-b", "itens": [{"SKU": "002", "Quantidade": 3}]},

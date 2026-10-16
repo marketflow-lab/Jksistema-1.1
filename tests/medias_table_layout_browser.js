@@ -195,7 +195,8 @@ async function aguardarPeriodo(page, periodo, quantidadeItens) {
   await page.waitForFunction(({ periodoEsperado, itensEsperados, colunasEsperadas }) => {
     const app = window.JKMedias;
     const botao = document.getElementById(`btnPeriodo${periodoEsperado}`);
-    const linhas = document.querySelectorAll('#tblResultado tbody tr').length;
+    const tabela = document.querySelector('#tblResultado');
+    const linhas = document.querySelectorAll('#tblResultado tbody tr[data-jk-virtual-row]').length;
     return Boolean(
       app
       && app.state
@@ -205,7 +206,8 @@ async function aguardarPeriodo(page, periodo, quantidadeItens) {
       && Array.isArray(app.state.itensVisaoAtual)
       && app.state.itensVisaoAtual.length === itensEsperados
       && document.querySelectorAll('#tblResultado thead th[data-col-key]').length === colunasEsperadas
-      && linhas === (itensEsperados > 0 ? itensEsperados : 1)
+      && Number(tabela?.dataset.totalRows) === itensEsperados
+      && (itensEsperados > 0 ? linhas > 0 && linhas <= itensEsperados : linhas === 0)
       && botao
       && botao.classList.contains('active')
     );

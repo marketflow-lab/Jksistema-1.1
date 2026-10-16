@@ -88,7 +88,7 @@
                     }
                     await carregarListasPedidos(true);
                     if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId)) {
-                        await abrirListaPedidoPorId(listaId);
+                        await abrirListaPedidoPorId(listaId, { preservarConteudo: true });
                     }
                     const skusIncluidos = Array.isArray(data.skus_incluidos) ? data.skus_incluidos.filter(Boolean) : [];
                     const sufixoSkusIncluidos = skusIncluidos.length
@@ -289,6 +289,7 @@
             setStatusModalListaCompra('Gerando arquivo Excel...');
 
             try {
+                await confirmarVisaoAtualizada();
                 const payload = obterOpcaoListaCompraSelecionada();
                 payload.fornecedor_id = fornecedorId;
                 payload.nome_lista = String((inputNome && inputNome.value) || '').trim();
@@ -375,6 +376,7 @@
             exibirOverlayDownload(true);
             setStatus('Gerando lista de sugestão de compra...');
             try {
+                await confirmarVisaoAtualizada();
                 const params = new URLSearchParams();
                 params.set('meses', String(Number(periodoAtual || 12)));
                 params.set('loja', String(lojaSelecionada || '__todas'));

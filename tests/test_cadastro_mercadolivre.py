@@ -41,7 +41,15 @@ def _store(store_id: str, seller_id: str, *, name: str = "Loja repetida") -> dic
 
 
 def _configure_store_runtime(monkeypatch, stores):
-    monkeypatch.setattr(service.integracoes, "carregar_lojas", lambda _client_id: stores)
+    def ler_lojas(client_id):
+        assert client_id == "client-1"
+        return stores
+
+    monkeypatch.setattr(service.integracoes, "ler_lojas", ler_lojas)
+    monkeypatch.setattr(
+        service.integracoes, "carregar_lojas",
+        lambda _client_id: pytest.fail("Lookup read-only nao deve executar manutencao de lojas."),
+    )
     monkeypatch.setattr(
         service.mercadolivre,
         "_ml_cfg_com_store_id_context",

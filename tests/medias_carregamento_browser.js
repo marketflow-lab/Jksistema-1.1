@@ -24,7 +24,8 @@ function success(tenant, request) {
     sku: itemSku(tenant, request), titulo_anuncio: 'Produto sintético isolado', vendas_mensais: {},
     total_vendas_periodo: 4, media_mensal: 1, saldo_atual_estoque: 5,
     estoque_em_transito: 0, posicao_estoque: 5, compra_sugerida: 0,
-  }] } };
+  }], _cache: { estado: 'ready', stale: false, atualizando: false, completo: true,
+    versao: itemSku(tenant, request), gerado_em: new Date().toISOString(), autoridade: tenant + '-authority' } } };
 }
 
 async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', respond } = {}) {
@@ -36,19 +37,57 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
   await page.addInitScript(({ tenant, timers }) => {
     localStorage.setItem('user_data', JSON.stringify({ client_id: tenant, username: 'synthetic-user' }));
     localStorage.setItem('access_token', 'synthetic-' + tenant);
-    const original = window.setTimeout.bind(window);
-    window.__retryTimers = { delays: [], pending: [] };
-    window.setTimeout = (callback, delay, ...args) => {
-      if (Number(delay) >= 2000) {
-        window.__retryTimers.delays.push(Number(delay));
-        if (timers === 'hold') {
-          window.__retryTimers.pending.push(() => callback(...args));
-          return -window.__retryTimers.pending.length;
+    const original = window.setTimeout.bind(window), originalClear = window.clearTimeout.bind(window);
+    const nativeNow = Date.now.bind(Date), nativeFetch = fetch.bind(window);
+    const scheduled = new Map();
+    let id = 0, clock = nativeNow(), inFlight = 0;
+    if (timers !== 'real') Date.now = () => clock;
+    const delays = [];
+    const pending = () => inFlight ? [] : [...scheduled].filter(([, timer]) => timer.delay <= 5000);
+    const release = key => {
+      const timer = scheduled.get(key);
+      if (!timer) return;
+      scheduled.delete(key);
+      clock = Math.max(clock, timer.at);
+      delays.push(timer.delay);
+      timer.callback();
+    };
+    window.__retryTimers = { delays, get pending() { return pending().map(([key]) => () => release(key)); },
+      until: async predicate => {
+        for (let turn = 0; turn < 1000; turn++) {
+          if (predicate()) return;
+          if (timers === 'fast') {
+            const next = pending().sort((a, b) => a[1].at - b[1].at)[0];
+            if (next) release(next[0]);
+          }
+          await new Promise(resolve => original(resolve, 5));
         }
-        if (timers === 'fast') return original(callback, 0, ...args);
+        throw new Error('A fixture não atingiu o estado esperado dentro do prazo.');
+      } };
+    window.fetch = async (...args) => {
+      inFlight++;
+      let active = true;
+      const done = () => { if (active) { active = false; inFlight--; } };
+      try {
+        const response = await nativeFetch(...args);
+        const json = response.json.bind(response);
+        response.json = async () => { try { return await json(); } finally { done(); } };
+        return response;
+      } catch (error) { done(); throw error; }
+    };
+    window.setTimeout = (callback, delay, ...args) => {
+      if (Number(delay) >= 1000) {
+        if (timers === 'real') return original(() => {
+          if (delay <= 5000) delays.push(delay);
+          callback(...args);
+        }, delay);
+        const key = --id;
+        scheduled.set(key, { delay: Number(delay), at: clock + Number(delay), callback: () => callback(...args) });
+        return key;
       }
       return original(callback, delay, ...args);
     };
+    window.clearTimeout = key => key < 0 ? scheduled.delete(key) : originalClear(key);
   }, { tenant, timers });
   await page.route('**/*', async route => {
     const request = route.request();
@@ -84,7 +123,8 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
           assert([3, 6, 12].includes(call.months));
           if (call.storeId) assert.strictEqual(stores.find(store => store.store_id === call.storeId)?.nome, call.storeName);
           else assert.strictEqual(call.storeName, '');
-          assert.deepStrictEqual([...url.searchParams.keys()].sort(), call.storeId ? ['loja', 'meses', 'store_id'] : ['meses']);
+          assert.deepStrictEqual([...url.searchParams.keys()].sort(), call.storeId ? ['cache_mode', 'loja', 'meses', 'store_id'] : ['cache_mode', 'meses']);
+          assert.strictEqual(url.searchParams.get('cache_mode'), 'stale');
           state.calls.push(call);
           response = respond ? await respond(call, state) : success(tenant, call);
         } else throw new Error('Rota de API inesperada na fixture: ' + url.pathname);
@@ -102,13 +142,13 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
 }
 
 async function ready(page, sku) {
-  await page.waitForFunction(expected => document.querySelector('#status')?.textContent === '' &&
-    document.querySelector('#tblResultado tbody')?.textContent.includes(expected), sku);
+  await page.evaluate(expected => __retryTimers.until(() => document.querySelector('#status')?.textContent.startsWith('Dados atualizados em ') &&
+    document.querySelector('#tblResultado tbody')?.textContent.includes(expected)), sku);
 }
 
 async function failed(page, message) {
-  await page.waitForFunction(expected => document.querySelector('#status')?.textContent ===
-    'Falha ao carregar dados: ' + expected, message);
+  await page.evaluate(expected => __retryTimers.until(() => document.querySelector('#status')?.textContent ===
+    'Falha ao carregar dados: ' + expected), message);
   assert(!((await page.locator('#status').innerText()).includes('[object Object]')));
 }
 
@@ -120,28 +160,32 @@ async function assertClean({ page, state }) {
 
 async function releaseWaitingRetries(page) {
   await page.evaluate(async () => {
-    for (const release of window.__retryTimers.pending.splice(0)) release();
+    for (const release of window.__retryTimers.pending) release();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   });
 }
 
 async function testRecoveryAndIsolation(browser) {
-  for (const [index, code] of knownCodes.entries()) {
+  const recoverable = knownCodes.map(code => ({ code, retryAfter: '2' })).concat([
+    { code: knownCodes[0], retryAfter: '11' },
+    { code: knownCodes[0], retryAfter: new Date(Date.now() + 60000).toUTCString() },
+  ]);
+  for (const [index, { code, retryAfter }] of recoverable.entries()) {
     const tenant = 'tenant-recovery-' + index;
     const fixture = await openFixture(browser, { tenant, timers: index === 0 ? 'real' : 'fast',
-      respond: (call, state) => state.calls.length === 1 ? unavailable(code, undefined, index === 1 ? '3' : '2') : success(tenant, call) });
+      respond: (call, state) => state.calls.length === 1 ? unavailable(code, undefined, retryAfter) : success(tenant, call) });
     try {
       await ready(fixture.page, tenant + '-TODAS-12');
       assert.strictEqual(fixture.state.calls.length, 2);
       assert.strictEqual(fixture.state.calls[0].url, fixture.state.calls[1].url, 'Retry preserva período e loja solicitados.');
-      assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [index === 1 ? 3000 : 2000]);
-      if (index === 0) assert(fixture.state.calls[1].at - fixture.state.calls[0].at >= 1900,
-        'O caso real precisa aguardar o backoff de dois segundos.');
+      assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [1000]);
+      if (index === 0) assert(fixture.state.calls[1].at - fixture.state.calls[0].at >= 900,
+        'O caso real precisa aguardar o primeiro intervalo de um segundo.');
       assert(!((await fixture.page.locator('#tblResultado tbody').innerText()).includes('tenant-recovery-' + (index + 1))));
       await assertClean(fixture);
     } finally { await fixture.context.close(); }
   }
-  console.log('PASS 503: três códigos permitidos, recuperação, autenticação/cliente, URL preservada e uma espera real.');
+  console.log('PASS 503: códigos temporários e Retry-After antigos seguem polling de 1 s; recuperação, escopo, URL e espera real preservados.');
 }
 
 async function testTerminalErrors(browser) {
@@ -149,8 +193,6 @@ async function testTerminalErrors(browser) {
     unavailable('store_scope_unresolved', 'Selecione uma loja sintética.', '2', 409),
     unavailable(knownCodes[0], 'Conflito sintético não repetível.', '2', 409),
     unavailable('unknown_code', 'Indisponibilidade não permitida.'),
-    unavailable(knownCodes[0], 'Aguarde além do limite.', '11'),
-    unavailable(knownCodes[0], 'Aguarde a data HTTP além do limite.', new Date(Date.now() + 60000).toUTCString()),
     { status: 503, body: { detail: 'Mensagem sintética simples.' } },
   ];
   for (const response of cases) {
@@ -162,21 +204,22 @@ async function testTerminalErrors(browser) {
       await assertClean(fixture);
     } finally { await fixture.context.close(); }
   }
-  console.log('PASS erros: 409, código não permitido, detalhe string e Retry-After numérico/data HTTP acima de dez segundos não repetem.');
+  console.log('PASS erros terminais: 409, código desconhecido e detalhe string não repetem nem exibem objeto bruto.');
 }
 
 async function testBoundedRetries(browser) {
   const fixture = await openFixture(browser, { respond: () => unavailable(knownCodes[0], 'Snapshot sintético continua indisponível.') });
   try {
-    await failed(fixture.page, 'Snapshot sintético continua indisponível.');
-    assert.strictEqual(fixture.state.calls.length, 5, 'Uma chamada inicial e quatro repetições no máximo.');
+    await fixture.page.evaluate(() => __retryTimers.until(() => document.querySelector('#status').textContent.includes('Atualização pendente')));
+    assert(fixture.state.calls.length >= 12 && fixture.state.calls.length <= 13, 'Consultas ficam limitadas ao orçamento de 30 s, incluindo a fronteira final.');
+    const callsAtDeadline = fixture.state.calls.length;
     assert.strictEqual(new Set(fixture.state.calls.map(call => call.url)).size, 1);
-    assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [2000, 4000, 8000, 8000]);
+    assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [1000, 1000, 1000, 1000, 1000, 2000, 2000, 2000, 5000, 5000, 5000, 4000]);
     await releaseWaitingRetries(fixture.page);
-    assert.strictEqual(fixture.state.calls.length, 5);
+    assert.strictEqual(fixture.state.calls.length, callsAtDeadline, 'A espera encerrada não pode reiniciar polling.');
     await assertClean(fixture);
   } finally { await fixture.context.close(); }
-  console.log('PASS limite: 503 persistente termina após quatro repetições e backoff 2/4/8/8 segundos.');
+  console.log('PASS limite: 503 persistente usa polling 1/2/5 s até 30 s e termina com pendência honesta, sem novas consultas.');
 }
 
 async function testPeriodAndStoreChanges(browser) {
@@ -195,7 +238,7 @@ async function testPeriodAndStoreChanges(browser) {
     await ready(fixture.page, tenant + '-store-b-6');
     await releaseWaitingRetries(fixture.page);
     assert.deepStrictEqual(fixture.state.calls.map(call => [call.months, call.storeId]), [[12, ''], [6, ''], [6, 'store-a'], [6, 'store-b']]);
-    assert.strictEqual(await fixture.page.locator('#status').innerText(), '');
+    assert.match(await fixture.page.locator('#status').innerText(), /^Dados atualizados em /);
     assert(!(await fixture.page.locator('#tblResultado tbody').innerText()).includes('store-a'));
     assert.strictEqual(await fixture.page.locator('#btnPeriodo6').evaluate(button => button.classList.contains('active')), true);
     await assertClean(fixture);

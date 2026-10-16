@@ -26,7 +26,7 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
-  const state = { errors: [], routeErrors: [], calls: [], saves: [] };
+  const state = { errors: [], routeErrors: [], calls: [], saves: [], allowedScopes: [] };
   const saved = { a: lista('a'), b: lista('b'), c: lista('c', stores[1]) };
   const enriched = { a: lista('a', stores[0], true), b: lista('b', stores[0], true), c: lista('c', stores[1], true) };
   if (longList) {
@@ -55,13 +55,15 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
     const nativeClear = window.clearTimeout.bind(window);
     const nativeFetch = window.fetch.bind(window);
     let timerId = 0;
+    let clock = Date.now();
+    Date.now = () => clock;
     const timers = new Map();
     const plans = new Map();
     const pending = new Map();
     const calls = [];
     const tick = () => new Promise(resolve => nativeTimeout(resolve, 0));
     window.setTimeout = (callback, delay, ...args) => {
-      if (delay === 300 || delay === 5000) {
+      if (Number.isFinite(delay) && delay >= 300 && delay <= 30000) {
         const id = --timerId;
         timers.set(id, { delay, callback: () => callback(...args) });
         return id;
@@ -86,7 +88,10 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
         method: init.method || 'GET', hasSignal: !!init.signal, aborted: !!init.signal?.aborted,
         phase: plan.phase || 'immediate', finished: false };
       calls.push(call);
-      const body = plan.body || { lista: (fast ? saved : enriched)[id] };
+      const body = plan.body || { lista: (fast ? saved : enriched)[id],
+        _cache: { estado: 'ready', stale: false, atualizando: false, versao: (fast ? 'saved-' : 'fresh-') + id,
+          gerado_em: new Date().toISOString(), autoridade: 'authority-a', politica_fotos: 'photos-a', pendente_fontes: false, completo: !fast },
+      };
       let rejectPending;
       const wait = () => new Promise((resolve, reject) => {
         rejectPending = reject;
@@ -118,6 +123,7 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
       fail: async (index, message) => { if (!pending.has(index)) throw new Error('No pending call ' + index);
         pending.get(index).reject(message); await tick(); await tick(); },
       run: async delay => { const selected = [...timers].filter(([, timer]) => timer.delay === delay);
+        if (selected.length) clock += delay;
         for (const [id, timer] of selected) { timers.delete(id); timer.callback(); } await tick(); await tick(); return selected.length; },
       timers: () => [...timers.values()].map(timer => timer.delay), pending: () => [...pending.keys()],
       setSaved: (id, item) => { saved[id] = item; enriched[id] = item; },
@@ -128,15 +134,24 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
     const url = new URL(request.url());
     try {
       if (url.origin !== 'http://jk.test') return route.fulfill({ status: 200, contentType: 'text/css', body: '' });
+      if (url.pathname === '/synthetic-photo.gif') return route.fulfill({ contentType: 'image/gif', body: Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64') });
       if (url.pathname === '/medias_compras.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
       if (url.pathname.startsWith('/medias_compras/')) return route.fulfill({ status: 200,
         contentType: url.pathname.endsWith('.css') ? 'text/css' : 'application/javascript',
         body: fs.readFileSync(path.join(root, 'static', url.pathname.slice(1))) });
       if (url.pathname === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript', body:
-        'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic-' + tenant + '","X-Client-ID":"' + tenant + '"});' });
+        'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer "+localStorage.getItem("access_token"),"X-Client-ID":JSON.parse(localStorage.getItem("user_data")).client_id});' });
       if (url.pathname.startsWith('/api/')) {
-        assert.strictEqual(request.headers().authorization, 'Bearer synthetic-' + tenant);
-        assert.strictEqual(request.headers()['x-client-id'], tenant);
+        const auth = request.headers().authorization, client = request.headers()['x-client-id'];
+        const initialScope = auth === 'Bearer synthetic-' + tenant && client === tenant;
+        assert(initialScope || state.allowedScopes.some(scope => scope.auth === auth && scope.client === client), 'Toda leitura usa uma sessão sintética conhecida.');
+        if (!initialScope) {
+          assert.strictEqual(request.method(), 'GET', 'Troca de sessão não pode gravar dados.');
+          state.calls.push({ pathname: url.pathname, params: Object.fromEntries(url.searchParams), otherScope: true });
+          if (url.pathname === '/api/medias-compras/listas-pedidos') return route.fulfill({ contentType: 'application/json', body: '{"listas":[]}' });
+          if (url.pathname === '/api/cadastro/fornecedores') return route.fulfill({ contentType: 'application/json', body: '[]' });
+          throw new Error('Leitura inesperada após troca de sessão: ' + url.pathname);
+        }
         const updateId = url.pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)$/);
         if (allowSave && request.method() === 'PUT' && updateId) {
           const id = decodeURIComponent(updateId[1]);
@@ -174,7 +189,8 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
   await page.goto(host);
   await page.locator('#lojaBotoes button').filter({ hasText: 'Loja A' }).click();
   await page.locator('#btnAbaListasPedidos').click();
-  await page.locator('.lista-item').filter({ hasText: 'Pedido A' }).waitFor();
+  try { await page.locator('.lista-item').filter({ hasText: 'Pedido A' }).waitFor(); }
+  catch (error) { throw new Error('Fixture não carregou: ' + JSON.stringify(state), { cause: error }); }
   return { page, context, state, tenant };
 }
 
@@ -198,7 +214,7 @@ async function clean(test) {
     assert.strictEqual(call.headers.authorization, 'Bearer synthetic-' + test.tenant);
     assert.strictEqual(call.headers['x-client-id'], test.tenant);
     const url = new URL(call.url);
-    assert.deepStrictEqual([...url.searchParams.entries()], call.fast ? [['somente_salvos', 'true']] : []);
+    assert.deepStrictEqual([...url.searchParams.entries()], call.fast ? [['somente_salvos', 'true'], ['cache_mode', 'stale']] : [['cache_mode', 'stale']]);
   }
 }
 
@@ -255,7 +271,7 @@ async function testSelectionRaces(browser) {
       else if (late === 'body') await release(page, 1);
       assert.strictEqual(await page.evaluate(() => listaPedidoAtual.id), 'a');
       assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Pedido A');
-      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista carregada.');
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Dados salvos exibidos. Atualizando dados...');
       assert.strictEqual(await run(page, 300), 1, 'Somente a seleção atual agenda complemento.');
       await ready(page, 'a', 'Complementado a');
       assert.deepStrictEqual((await calls(page)).map(call => [call.id, call.fast]), [['a', true], ['b', true], ['a', true], ['a', false]]);
@@ -288,7 +304,7 @@ async function testInitialFailuresAndRetry(browser) {
       await click(page, 'a');
       await ready(page, 'a');
       if (item.name === 'timeout') await release(page, 0);
-      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista carregada.');
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Dados salvos exibidos. Atualizando dados...');
       assert.deepStrictEqual((await calls(page)).map(call => [call.id, call.fast]), [['a', true], ['a', true]]);
       await clean(test);
     } finally { await test.context.close(); }
@@ -311,10 +327,14 @@ async function testComplementFailureAndSelection(browser) {
         assert.strictEqual((await calls(page))[1].aborted, true);
         await release(page, 1);
         await ready(page, 'a');
-        assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista carregada.');
+        assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Dados salvos exibidos. Atualizando dados...');
       } else {
-        if (mode === 'timeout') await run(page, 5000);
-        await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent.includes('A atualização dos dados não terminou'));
+        if (mode === 'timeout') {
+          assert.strictEqual(await run(page, 5000), 0, 'O complemento não usa o prazo de 5 s da abertura.');
+          assert.strictEqual((await calls(page))[1].aborted, false);
+          assert.strictEqual(await run(page, 30000), 1, 'O complemento tem orçamento total de 30 s.');
+        }
+        await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent.includes('Atualização pendente'));
         assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Pedido B');
         await ready(page, 'b');
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '2');
@@ -361,7 +381,8 @@ async function testEditingPreservesDom(browser) {
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '7');
         assert.strictEqual(await page.locator('input[data-kind="vtot"]').inputValue(), '70');
       }
-      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Lista carregada.');
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Edições em andamento. A atualização será aplicada após salvar e reabrir.');
+      assert.strictEqual(test.state.saves.length, 0, 'Edição e resposta tardia não salvam automaticamente.');
       await clean(test);
     } finally { await test.context.close(); }
   }
@@ -401,7 +422,7 @@ async function testStructuralEdits(browser) {
         } else {
           if (when === 'pending-failure') {
             if (action === 'delete') await fail(page, 1, 'Erro de complemento após edição estrutural.');
-            else await run(page, 5000);
+            else await run(page, 30000);
           } else await release(page, 1);
           assert.strictEqual((await calls(page)).length, 2);
         }
@@ -411,6 +432,13 @@ async function testStructuralEdits(browser) {
         assert.strictEqual(await page.locator('#statusListaPedido').innerText(), statusEdited);
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').first().inputValue(), '3');
         assert.strictEqual(await page.evaluate(() => listaPedidoAtual.itens[0]['Valor unidade']), 5);
+        const requestCount = (await calls(page)).length;
+        await click(page, 'b');
+        assert.strictEqual((await calls(page)).length, requestCount, 'Reabrir a mesma lista editada não inicia nova leitura.');
+        assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), expected);
+        assert.strictEqual(await page.evaluate(() => window.__structuralRow === document.querySelector('#tblListaPedidoItens tbody tr')), true, 'Reclique preserva o DOM após excluir/reordenar sem evento input.');
+        assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Há edições em andamento. Salve a lista antes de atualizar os dados.');
+        assert.strictEqual(test.state.saves.length, 0, 'Excluir/reordenar não pode provocar salvamento automático.');
         await clean(test);
       } finally { await test.context.close(); }
     }
@@ -620,9 +648,306 @@ async function testSaveRefreshSelectionRaces(browser) {
   console.log('PASS concorrência ao salvar: outra lista ou loja cancela a atualização anterior sem reabrir conteúdo nem substituir o status atual.');
 }
 
+
+function cached(id, version, { stale = false, waiting = false, title = null } = {}) {
+  const result = waiting ? { dados: null } : { lista: lista(id, stores[0], !stale) };
+  if (title) result.lista.itens[0]['Título do produto em inglês'] = title;
+  result._cache = { estado: waiting ? 'waiting' : 'ready', stale, atualizando: stale || waiting,
+    versao: version, gerado_em: new Date().toISOString(), autoridade: 'authority-a', politica_fotos: 'photos-a', pendente_fontes: false, completo: !waiting };
+  return result;
+}
+
+async function testStalePollingAndVersion(browser) {
+  for (const cold of [false, true]) {
+    const test = await fixture(browser, 'tenant-cache-' + cold);
+    const { page } = test;
+    try {
+      if (!cold) {
+        await plan(page, 'b:full', { body: cached('b', 'v1', { stale: true, title: 'Anterior b' }) });
+        await plan(page, 'b:full', { body: cached('b', 'v1', { stale: true, title: 'Mesmo resultado não deve reconstruir' }) });
+      }
+      await plan(page, 'b:full', { status: 202, body: cached('b', null, { waiting: true }) });
+      await plan(page, 'b:full', { body: cached('b', 'v2') });
+      await click(page, 'b');
+      await ready(page, 'b');
+      await page.evaluate(() => { window.__cacheRow = document.querySelector('#tblListaPedidoItens tbody tr'); });
+      await run(page, 300);
+      if (!cold) {
+        await ready(page, 'b', 'Anterior b');
+        assert.match(await page.locator('#statusListaPedido').innerText(), /^Dados de .+Atualizando dados/);
+        await page.evaluate(() => { window.__cacheRow = document.querySelector('#tblListaPedidoItens tbody tr'); });
+        await run(page, 1000);
+        await ready(page, 'b', 'Anterior b');
+        assert.strictEqual(await page.evaluate(() => window.__cacheRow === document.querySelector('#tblListaPedidoItens tbody tr')), true, 'Versão repetida não refaz o DOM.');
+        await run(page, 1000);
+      }
+      assert.strictEqual(await page.evaluate(() => window.__cacheRow === document.querySelector('#tblListaPedidoItens tbody tr')), true, '202 conserva o último conteúdo visível.');
+      assert.match(await page.locator('#statusListaPedido').innerText(), /Atualizando dados/);
+      assert.doesNotMatch(await page.locator('#statusListaPedido').innerText(), /Dados atualizados em/);
+      await run(page, 1000);
+      await ready(page, 'b', 'Complementado b');
+      assert.match(await page.locator('#statusListaPedido').innerText(), /^Dados atualizados em /);
+      assert.strictEqual((await calls(page)).length, cold ? 3 : 5);
+      assert.deepStrictEqual(await page.evaluate(() => __listHarness.timers()), []);
+      assert.strictEqual(test.state.saves.length, 0);
+      await clean(test);
+    } finally { await test.context.close(); }
+  }
+  console.log('PASS cache: versão stale aparece com horário; versão repetida preserva DOM; 202 retém dados e fresh conclui sem gravação.');
+}
+
+async function testEditingDuringRefresh(browser) {
+  const test = await fixture(browser, 'tenant-cache-edit', { allowSave: true });
+  const { page } = test;
+  try {
+    await plan(page, 'b:full', { body: cached('b', 'v1', { stale: true, title: 'Anterior b' }) });
+    await plan(page, 'b:full', { body: cached('b', 'v2'), phase: 'body', ignoreAbort: true });
+    await click(page, 'b');
+    await ready(page, 'b');
+    await run(page, 300);
+    await ready(page, 'b', 'Anterior b');
+    await run(page, 1000);
+    await page.evaluate(() => { window.__cacheEditRow = document.querySelector('#tblListaPedidoItens tbody tr'); });
+    await page.locator('#nomeListaPedidoEdit').fill('Nome durante atualização');
+    await page.locator('input[data-kind="qtd"]').fill('19');
+    assert.strictEqual((await calls(page))[2].aborted, true);
+    await release(page, 2);
+    assert.strictEqual(await page.evaluate(() => window.__cacheEditRow === document.querySelector('#tblListaPedidoItens tbody tr')), true);
+    assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Nome durante atualização');
+    assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '19');
+    assert.strictEqual(await page.locator('input[data-kind="vtot"]').inputValue(), '190');
+    await ready(page, 'b', 'Anterior b');
+    await click(page, 'b');
+    assert.strictEqual((await calls(page)).length, 3, 'Reclique durante edição não faz nova leitura.');
+    assert.match(await page.locator('#statusListaPedido').innerText(), /Há edições em andamento/);
+    assert.strictEqual(test.state.saves.length, 0, 'Chegada de fresh ou reclique não salva automaticamente.');
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS edição após stale: fresh tardio não sobrescreve nome, quantidade, DOM nem dispara salvamento.');
+}
+
+async function testPollingDeadline(browser) {
+  const test = await fixture(browser, 'tenant-cache-budget');
+  const { page } = test;
+  try {
+    for (let index = 0; index < 25; index++) await plan(page, 'a:full', { status: 202, body: cached('a', null, { waiting: true }) });
+    await click(page, 'a');
+    await ready(page, 'a');
+    await run(page, 300);
+    let elapsed = 0;
+    const delays = [];
+    while (elapsed < 30000) {
+      const timers = await page.evaluate(() => __listHarness.timers());
+      assert.strictEqual(timers.length, 1, 'Uma consulta concluída deixa apenas o próximo passo de polling.');
+      const delay = timers[0];
+      assert(delay > 0 && delay <= 5000);
+      delays.push(delay);
+      elapsed += delay;
+      await run(page, delay);
+    }
+    assert.strictEqual(elapsed, 30000);
+    assert(delays.includes(1000) && delays.includes(2000) && delays.includes(5000), 'Polling diminui a frequência durante a espera.');
+    assert.match(await page.locator('#statusListaPedido').innerText(), /Atualização pendente/);
+    await ready(page, 'a');
+    assert.deepStrictEqual(await page.evaluate(() => __listHarness.timers()), []);
+    assert.strictEqual(test.state.saves.length, 0);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS prazo do polling: espera progressiva de 30 s termina com dados salvos e aviso honesto, sem repetição infinita.');
+}
+
+
+async function changeSession(page, tenant, kind, event = 'none', restore = false) {
+  await page.evaluate(({ tenant, kind, event, restore }) => {
+    const key = kind === 'tenant' ? 'user_data' : kind === 'permissions' ? 'permissions' : 'access_token';
+    const oldValue = localStorage.getItem(key);
+    const value = kind === 'tenant' ? JSON.stringify({ client_id: restore ? tenant : 'tenant-replacement', username: 'synthetic-user' })
+      : kind === 'permissions' ? (restore ? null : JSON.stringify({ medias_compras: false }))
+      : 'synthetic-' + (restore ? tenant : 'new-session');
+    if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+    if (event === 'storage') dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: value, storageArea: localStorage }));
+    if (event === 'auth') dispatchEvent(new Event('jk-auth-changed'));
+  }, { tenant, kind, event, restore });
+}
+
+async function testSessionIsolation(browser) {
+  const cases = [
+    { phase: 'saved', kind: 'tenant', event: 'none' },
+    { phase: 'full', kind: 'tenant', event: 'none' },
+    { phase: 'before-full', kind: 'permissions', event: 'none' },
+    { phase: 'before-full', kind: 'tenant', event: 'none' },
+    { phase: 'before-full', kind: 'token', event: 'none' },
+    { phase: 'saved', kind: 'token', event: 'auth' },
+    { phase: 'full', kind: 'tenant', event: 'storage' },
+    { phase: 'edited', kind: 'permissions', event: 'storage' },
+    { phase: 'edited', kind: 'token', event: 'auth' },
+  ];
+  for (const item of cases) {
+    const test = await fixture(browser, 'tenant-session-' + item.phase + '-' + item.kind), { page } = test;
+    try {
+      if (item.phase === 'saved') await plan(page, 'b:saved', { phase: 'body', ignoreAbort: true });
+      else await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
+      await click(page, 'b');
+      if (item.phase === 'saved') await page.waitForFunction(() => __listHarness.pending().includes(0));
+      else {
+        await ready(page, 'b');
+        if (item.phase !== 'before-full') await run(page, 300);
+        if (item.phase === 'edited') {
+          await page.locator('#nomeListaPedidoEdit').fill('Edição de outra sessão');
+          await page.locator('input[data-kind="qtd"]').fill('27');
+        }
+      }
+      if (item.kind === 'tenant') test.state.allowedScopes.push({ auth: 'Bearer synthetic-' + test.tenant, client: 'tenant-replacement' });
+      if (item.kind === 'token') test.state.allowedScopes.push({ auth: 'Bearer synthetic-new-session', client: test.tenant });
+      await changeSession(page, test.tenant, item.kind, item.event);
+      if (item.event !== 'none') {
+        assert.strictEqual(await page.evaluate(() => listaPedidoAtual), null, 'Evento de sessão limpa imediatamente o modelo e edições.');
+        assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+        assert.strictEqual(await page.locator('.lista-item').count(), 0, 'Cartões da sessão anterior são removidos.');
+      }
+      if (item.phase === 'before-full') await run(page, 300);
+      else await release(page, item.phase === 'saved' ? 0 : 1);
+      await page.waitForFunction(() => listaPedidoAtual === null);
+      assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0, 'Corpo atrasado não restaura conteúdo de outra sessão.');
+      assert.strictEqual(await page.locator('#editorListaPedido').evaluate(el => el.inert), false);
+      assert.strictEqual(await run(page, 300), 0);
+      assert.strictEqual(test.state.saves.length, 0, 'Invalidação não salva a edição antiga.');
+      await changeSession(page, test.tenant, item.kind, 'auth', true);
+      await page.evaluate(() => abrirListaPedidoPorId('b'));
+      await ready(page, 'b');
+      assert.strictEqual(await page.locator('#nomeListaPedidoEdit').inputValue(), 'Pedido B');
+      assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '2', 'Edição da sessão invalidada não volta na nova abertura.');
+      await clean(test);
+    } catch (error) { throw new Error(JSON.stringify(item) + ': ' + error.message, { cause: error }); }
+    finally { await test.context.close(); }
+  }
+  console.log('PASS sessão: tenant, token e permissões mudam durante saved/complemento/edição; respostas e edições antigas não retornam.');
+}
+
+
+async function testUnavailableSnapshotAuthority(browser) {
+  for (const phase of ['full', 'saved-preserved']) {
+    for (const invalidation of ['same', 'authority', 'sources', 'expired']) {
+      const test = await fixture(browser, 'tenant-authority-' + phase + '-' + invalidation), { page } = test;
+      try {
+        const initial = cached('b', 'saved-a');
+        initial._cache.completo = false;
+        if (invalidation === 'expired') initial._cache.gerado_em = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+        initial.lista.itens[0]['Título do produto em inglês'] = 'Salvo com foto';
+        initial.lista.itens[0].Foto = 'http://jk.test/synthetic-photo.gif';
+        await plan(page, 'b:saved', { body: initial });
+        const unavailable = cached('b', null, { waiting: true });
+        if (invalidation === 'authority') {
+          unavailable._cache.autoridade = 'authority-b';
+          unavailable._cache.politica_fotos = 'photos-b';
+        }
+        if (invalidation === 'sources') unavailable._cache.pendente_fontes = true;
+        const fresh = cached('b', 'fresh-next', { title: 'Resultado permitido atual' });
+        fresh._cache.autoridade = unavailable._cache.autoridade;
+        fresh._cache.politica_fotos = unavailable._cache.politica_fotos;
+        if (phase === 'full') await plan(page, 'b:full', { status: 202, body: unavailable });
+        await plan(page, 'b:full', { body: fresh });
+        await click(page, 'b');
+        await ready(page, 'b', 'Salvo com foto');
+        assert.strictEqual(await page.locator('#tblListaPedidoItens img.foto-sku').count(), 1, 'A fixture deve exibir a foto antiga antes da invalidação.');
+        await page.evaluate(() => {
+          window.__authorityRow = document.querySelector('#tblListaPedidoItens tbody tr');
+          window.__authorityPhoto = document.querySelector('#tblListaPedidoItens img.foto-sku');
+        });
+        if (phase === 'saved-preserved') {
+          await plan(page, 'b:saved', { status: 202, body: unavailable });
+          assert.strictEqual(await page.evaluate(() => abrirListaPedidoPorId('b', { preservarConteudo: true })), true, '202 mantém a abertura em progresso, sem falha de lista ausente.');
+        } else await run(page, 300);
+        if (invalidation === 'same') {
+          assert.strictEqual(await page.evaluate(() => __authorityRow === document.querySelector('#tblListaPedidoItens tbody tr')), true, '202 da mesma autoridade preserva o snapshot e o DOM.');
+          assert.strictEqual(await page.evaluate(() => __authorityPhoto.isConnected), true);
+          await ready(page, 'b', 'Salvo com foto');
+        } else {
+          assert.strictEqual(await page.evaluate(() => listaPedidoAtual), null, 'Autoridade alterada/fontes pendentes invalidam dados do snapshot.');
+          assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+          assert.strictEqual(await page.locator('#tblListaPedidoItens img.foto-sku').count(), 0);
+          assert.strictEqual(await page.evaluate(() => __authorityRow.isConnected || __authorityPhoto.isConnected), false, 'Linhas e fotos anteriores saem do DOM imediatamente.');
+          assert.strictEqual(await page.locator('#btnSalvarListaPedido').isDisabled(), true);
+        }
+        assert.match(await page.locator('#statusListaPedido').innerText(), /Atualizando dados/);
+        await run(page, phase === 'full' ? 1000 : 300);
+        await ready(page, 'b', 'Resultado permitido atual');
+        assert.match(await page.locator('#statusListaPedido').innerText(), /^Dados atualizados em /);
+        assert.strictEqual(await page.evaluate(() => __authorityRow.isConnected || __authorityPhoto.isConnected), false);
+        assert.strictEqual(test.state.saves.length, 0);
+        await clean(test);
+      } finally { await test.context.close(); }
+    }
+  }
+  console.log('PASS autoridade 202: mesma autoridade preserva snapshot; mudança de autoridade/fontes pendentes remove dados e fotos, e próxima 200 preenche a mesma abertura.');
+}
+
+async function testColdSavedPending(browser) {
+  const test = await fixture(browser, 'tenant-cold-saved'), { page } = test;
+  try {
+    await plan(page, 'a:saved', { status: 202, body: cached('a', null, { waiting: true }) });
+    await click(page, 'a');
+    assert.strictEqual(await page.evaluate(() => listaPedidoAtual), null);
+    assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+    assert.match(await page.locator('#statusListaPedido').innerText(), /Atualizando dados/);
+    assert.doesNotMatch(await page.locator('#statusListaPedido').innerText(), /não contém|Falha/);
+    await run(page, 300);
+    await ready(page, 'a', 'Complementado a');
+    assert.strictEqual(test.state.saves.length, 0);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS saved 202 frio: abertura vazia continua até resposta completa sem aplicar lista ausente.');
+}
+
+async function testSessionChangedBeforeReopen(browser) {
+  const test = await fixture(browser, 'tenant-edited-reopen'), { page } = test;
+  try {
+    await click(page, 'b');
+    await ready(page, 'b');
+    await page.locator('#nomeListaPedidoEdit').fill('Edição sem a sessão original');
+    await page.locator('input[data-kind="qtd"]').fill('27');
+    await changeSession(page, test.tenant, 'permissions', 'none');
+    await page.evaluate(() => abrirListaPedidoPorId('b'));
+    assert.strictEqual(await page.evaluate(() => listaPedidoAtual), null, 'Reabrir lista editada com sessão alterada deve limpar a edição antes do guard de mesmo ID.');
+    assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+    assert.strictEqual((await calls(page)).length, 1, 'Sessão inválida não inicia consulta com conteúdo anterior preservado.');
+    assert.strictEqual(test.state.saves.length, 0);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS reclique após sessão: permissões alteradas silenciosamente invalidam edição antes da proteção de mesmo ID.');
+}
+
+async function testSavedRefreshAccessDenied(browser) {
+  for (const status of [401, 403, 404]) {
+    const test = await fixture(browser, 'tenant-denied-' + status), { page } = test;
+    try {
+      await click(page, 'b');
+      await ready(page, 'b');
+      await page.locator('#nomeListaPedidoEdit').fill('Edição sem acesso');
+      await plan(page, 'b:saved', { status, body: { detail: 'Acesso removido.' } });
+      await page.evaluate(() => abrirListaPedidoPorId('b', { preservarConteudo: true }));
+      assert.strictEqual(await page.evaluate(() => listaPedidoAtual), null, 'HTTP ' + status + ' deve limpar mesmo o conteúdo preservado.');
+      assert.strictEqual(await page.locator('input[data-kind="sku"]').count(), 0);
+      assert.strictEqual(await page.locator('#btnSalvarListaPedido').isDisabled(), true);
+      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Acesso removido.');
+      assert.strictEqual(test.state.saves.length, 0);
+      await clean(test);
+    } finally { await test.context.close(); }
+  }
+  console.log('PASS acesso removido: savedOnly 401/403/404 limpa itens e edição preservados, sem salvamento automático.');
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    await testUnavailableSnapshotAuthority(browser);
+    await testColdSavedPending(browser);
+    await testSessionChangedBeforeReopen(browser);
+    await testSavedRefreshAccessDenied(browser);
+    await testSessionIsolation(browser);
+    await testStalePollingAndVersion(browser);
+    await testEditingDuringRefresh(browser);
+    await testPollingDeadline(browser);
     await testSavedFirstAndStore(browser);
     await testSelectionRaces(browser);
     await testInitialFailuresAndRetry(browser);

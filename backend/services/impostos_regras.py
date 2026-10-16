@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import pandas as pd
+from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta
 import requests
 from bs4 import BeautifulSoup
 from fastapi import Depends, Header, HTTPException, Request, UploadFile
@@ -189,7 +190,7 @@ def _ler_csv_classificacao_cadastro(caminho: str) -> pd.DataFrame:
     ultimo_erro = None
     for encoding in ("utf-8-sig", "utf-8", "latin1"):
         try:
-            df = pd.read_csv(caminho, dtype=str, keep_default_na=False, encoding=encoding).fillna("")
+            df = ler_csv(caminho, dtype=str, keep_default_na=False, encoding=encoding).fillna("")
             df.columns = [str(c or "").strip().lower() for c in df.columns]
             df = df.loc[:, ~df.columns.duplicated()]
             return df
@@ -258,7 +259,7 @@ def _carregar_cadastro_para_impostos(client_id: str) -> tuple[pd.DataFrame, str]
     arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
     if not arquivo or not os.path.exists(arquivo):
         return pd.DataFrame(), arquivo
-    df = pd.read_csv(arquivo, dtype=str).fillna("")
+    df = ler_csv(arquivo, dtype=str).fillna("")
     df.columns = [str(c or "").strip().lower() for c in df.columns]
     for c in ["sku", "nome", "ncm", "cest", "custo", "preco", "imposto"]:
         if c not in df.columns:

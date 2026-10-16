@@ -82,6 +82,11 @@ PREEXISTING_STABLE_AUTH_ROUTES = {
         "POST",
         "aplicar_importacao_catalogo",
     ),
+    (
+        "/api/cadastro/lojas/{store_id}/importacoes/{job_id}/retentar-fotos",
+        "POST",
+        "retentar_fotos_importacao_catalogo",
+    ),
 }
 
 
@@ -163,8 +168,8 @@ def test_cadastro_preserves_routes_and_late_bound_auth_dependencies_follow_recon
     router = create_cadastro_router()
     routes = {route.name: route for route in router.routes}
 
-    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 37
-    assert len(router.routes) == 38
+    assert len([route for route in router.routes if route.name != "listar_produtos_lojas"]) == 38
+    assert len(router.routes) == 39
     assert LATE_BOUND_AUTH_ROUTE_NAMES <= routes.keys()
     assert len(LATE_BOUND_AUTH_ROUTE_NAMES) == 29
 
@@ -189,14 +194,14 @@ def test_cadastro_preserves_routes_and_late_bound_auth_dependencies_follow_recon
     } == {name: "tenant-reconfigured" for name in LATE_BOUND_AUTH_ROUTE_NAMES}
 
 
-def test_other_8_existing_routes_and_new_bulk_route_keep_tenant_dependency():
+def test_other_9_existing_routes_and_new_bulk_route_keep_tenant_dependency():
     router = create_cadastro_router()
     existing = {
         (route.path, method, route.name): route
         for route in router.routes
         for method in route.methods or set()
     }
-    assert len(PREEXISTING_STABLE_AUTH_ROUTES) == 8
+    assert len(PREEXISTING_STABLE_AUTH_ROUTES) == 9
     assert PREEXISTING_STABLE_AUTH_ROUTES <= existing.keys()
     bulk_key = ("/api/cadastro/lojas/produtos", "GET", "listar_produtos_lojas")
     assert bulk_key in existing

@@ -116,7 +116,10 @@ async function checkFooter(page, volume, pending) {
         assert.strictEqual(state.writes.length, 0, 'Edições de CBM/quantidade refazem soma somente em memória');
 
         // Reabre a fixture para testar exclusão e inclusão sem depender de edições ainda não salvas.
-        await page.evaluate(() => abrirListaPedidoPorId('lista-1'));
+        await page.evaluate(() => {
+            cancelarAberturaListaPedido();
+            return abrirListaPedidoPorId('lista-1');
+        });
         await checkFooter(page, initialVolume, 7);
         await page.locator('button[data-kind="excluir-item"][data-idx="0"]').click();
         assert.strictEqual(await page.locator('#tblListaPedidoItens tbody tr[data-lista-pedido-row]').count(), 12);

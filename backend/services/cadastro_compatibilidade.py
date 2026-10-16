@@ -305,6 +305,17 @@ def _consolidar_sku_seguro(
 
 
 def _capturar_cadastro_para_leitura(client_id: str):
+    from backend.services.medias_compras_leitura import reutilizar, chave_arquivo, medir_etapa, leitura_atual
+    if leitura_atual() is None:
+        return _capturar_cadastro_para_leitura_sem_cache(client_id)
+    with medir_etapa("cadastro"):
+        return reutilizar(
+            ("cadastro", client_id, chave_arquivo(_store.get_tenant_path(client_id))),
+            lambda: _capturar_cadastro_para_leitura_sem_cache(client_id),
+        )
+
+
+def _capturar_cadastro_para_leitura_sem_cache(client_id: str):
     """Capture a coherent input once; never enrich products under writer locks."""
 
     tenant = Path(_store.get_tenant_path(client_id))
@@ -318,13 +329,18 @@ def _capturar_cadastro_para_leitura(client_id: str):
             fontes = {}
             for arquivo, path in legados.items():
                 try:
-                    fontes[arquivo] = path.read_bytes()
+                    from backend.services.medias_compras_leitura import capturar_bytes
+                    fontes[arquivo] = capturar_bytes(path)
                 except FileNotFoundError:
                     fontes[arquivo] = b""
                 except OSError as exc:
                     raise HTTPException(
                         status_code=500, detail="Nao foi possivel ler o cadastro por loja.",
                     ) from exc
+    from backend.services.medias_compras_leitura import leitura_atual
+    current = leitura_atual()
+    if current is not None:
+        current.values[("cadastro_fotos", client_id)] = fotos
     return registros, lojas, fontes, fotos
 
 

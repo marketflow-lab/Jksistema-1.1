@@ -8,6 +8,7 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from backend.services.medias_compras_leitura import etapa
 from pathlib import Path
 from typing import Any, Optional
 
@@ -562,6 +563,7 @@ def _salvar_foto_data_url_no_tenant(
     return relativos[0] if relativos else ""
 
 
+@etapa("fotos")
 def _cadastro_mapa_fotos_locais(client_id: str, store_id: str | None = None) -> dict[str, str]:
     """Mapeia fotos jÃ¡ salvas em cadastro_fotos pelo SKU do nome do arquivo."""
     store_exato = _cadastro_store_id_foto_exato(store_id)

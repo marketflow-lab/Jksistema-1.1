@@ -13,6 +13,7 @@ function _isHtmlInterna(url) {
 }
 
 function navegarComTransicao(url) {
+    window.JKAuthenticatedMedia?.invalidarCache();
     if (!_isHtmlInterna(url)) {
         window.location.href = url;
         return;
@@ -425,8 +426,87 @@ function obterAuthHeaders(extra) {
     if (global.JKAuthenticatedMedia) return;
     const SOURCE_ATTR = 'data-jk-auth-src';
     const LINK_ATTR = 'data-jk-auth-link';
+    const REVISION_ATTR = 'data-jk-photo-revision';
     const registros = new WeakMap();
     const ativos = new Set();
+    const raizesCache = new Set();
+    let cache = null;
+    let identidadeCache = '';
+    let autenticacaoCache = '';
+    let geracaoAuth = 0;
+
+    function pertence(raiz, img) {
+        return raiz === img || !!(raiz && raiz.contains && raiz.contains(img));
+    }
+
+    function invalidarCache(raiz) {
+        Array.from(ativos).forEach((registro) => {
+            if (!raiz || pertence(raiz, registro.img)) revogarImagem(registro.img);
+        });
+        if (cache) cache.invalidar();
+    }
+
+    function revogarChaveCache(chave) {
+        Array.from(ativos).forEach(registro => {
+            if (registro.cacheKey === chave) revogarImagem(registro.img);
+        });
+    }
+
+    function configurarCacheRaiz(raiz, obterEscopo) {
+        if (!raiz || typeof obterEscopo !== 'function') return () => {};
+        for (const anterior of raizesCache) {
+            if (anterior.raiz === raiz) raizesCache.delete(anterior);
+        }
+        const configuracao = { raiz, obterEscopo };
+        raizesCache.add(configuracao);
+        return () => {
+            if (!raizesCache.has(configuracao)) return;
+            invalidarCache(raiz);
+            raizesCache.delete(configuracao);
+        };
+    }
+
+    function atualizarPoliticaRaiz(raiz, token) {
+        const configuracao = Array.from(raizesCache).find(item => item.raiz === raiz);
+        const politica = String(token || '').trim();
+        if (!configuracao || !politica || configuracao.policyRevision === politica) return false;
+        configuracao.policyRevision = politica;
+        invalidarCache(raiz);
+        hidratar(raiz);
+        return true;
+    }
+
+    function contextoCache(img, fonte) {
+        let configuracao = null;
+        for (const candidata of raizesCache) {
+            if (pertence(candidata.raiz, img) && (!configuracao || pertence(configuracao.raiz, candidata.raiz))) {
+                configuracao = candidata;
+            }
+        }
+        if (!configuracao || !global.JKAuthenticatedMediaCache) return null;
+        let escopo;
+        try { escopo = configuracao.obterEscopo(img); } catch (_error) { return null; }
+        const tenant = String(escopo?.tenantId || '').trim();
+        const loja = String(escopo?.storeId || '').trim();
+        if (!tenant || !loja) return null;
+        let headers = {};
+        try { headers = global.obterAuthHeaders?.() || {}; } catch (_error) {}
+        const auth = JSON.stringify(Object.keys(headers).sort().map(nome => [nome, headers[nome]]));
+        const politica = String(configuracao.policyRevision ?? escopo.policyRevision ?? '');
+        const identidade = JSON.stringify([tenant, String(escopo.sessionId || ''), politica]);
+        if (auth !== autenticacaoCache || identidade !== identidadeCache) {
+            invalidarCache();
+            autenticacaoCache = auth;
+            identidadeCache = identidade;
+            geracaoAuth += 1;
+        }
+        if (!cache) cache = global.JKAuthenticatedMediaCache.criar({ aoNegarAcesso: invalidarCache, aoRevogarChave: revogarChaveCache });
+        const chave = JSON.stringify([
+            geracaoAuth, tenant, loja, new global.URL(fonte, global.location.href).href,
+            String(escopo.revision || ''), politica, String(escopo.sessionId || ''),
+        ]);
+        return { chave, headers };
+    }
 
     function segmentoFotoSeguro(valor) {
         const bruto = String(valor || '');
@@ -569,8 +649,25 @@ function obterAuthHeaders(extra) {
         }
     }
 
+    function agendarRevalidacao(registro) {
+        if (registro.timerFoto != null) global.clearTimeout(registro.timerFoto);
+        registro.timerFoto = null;
+        if (registro.revogado || registro.carregando || !registro.objectUrl || !registro.cacheExpira
+            || !registro.visivel || global.document.hidden || typeof global.setTimeout !== 'function') return;
+        registro.timerFoto = global.setTimeout(() => {
+            registro.timerFoto = null;
+            if (registros.get(registro.img) !== registro || !registro.visivel || global.document.hidden
+                || registro.img.isConnected === false) return;
+            hidratarImagem(registro.img, undefined, { preservarImagem: true });
+        }, Math.max(0, registro.cacheExpira() - global.Date.now()));
+    }
+
     function revogarRegistro(registro) {
-        if (!registro) return;
+        if (!registro || registro.revogado) return;
+        registro.revogado = true;
+        if (registro.timerFoto != null) global.clearTimeout(registro.timerFoto);
+        if (visibilityObserver && registro.cacheKey) visibilityObserver.unobserve(registro.img);
+        if (registro.liberarCache) registro.liberarCache();
         if (registro.controller) registro.controller.abort();
         if (registro.objectUrl && global.URL && typeof global.URL.revokeObjectURL === 'function') {
             global.URL.revokeObjectURL(registro.objectUrl);
@@ -588,7 +685,7 @@ function obterAuthHeaders(extra) {
         if (link && registro.objectUrl && link.getAttribute('href') === registro.objectUrl) link.removeAttribute('href');
     }
 
-    async function hidratarImagem(img, fonteExplicita) {
+    async function hidratarImagem(img, fonteExplicita, { preservarImagem = false } = {}) {
         if (!img || typeof img.getAttribute !== 'function') return '';
         const fonte = String(fonteExplicita || img.getAttribute(SOURCE_ATTR) || '').trim();
         if (!fonte) {
@@ -601,46 +698,84 @@ function obterAuthHeaders(extra) {
             return fonte;
         }
 
+        const contexto = contextoCache(img, fonte);
+        const cacheKey = contexto?.chave || '';
         const anterior = registros.get(img);
-        if (anterior && anterior.source === fonte) return anterior.promise;
+        if (anterior && anterior.source === fonte && anterior.cacheKey === cacheKey
+            && (!anterior.cacheValido || anterior.cacheValido())) return anterior.promise;
+        const urlAnterior = preservarImagem && anterior?.source === fonte && anterior.cacheKey === cacheKey
+            ? anterior.objectUrl : '';
+        if (urlAnterior) anterior.objectUrl = ''; // Transfere a URL para a nova carga sem piscar a foto.
         revogarImagem(img);
         img.setAttribute(SOURCE_ATTR, fonte);
-        img.removeAttribute('src');
+        if (!urlAnterior) img.removeAttribute('src');
 
-        const controller = typeof global.AbortController === 'function' ? new global.AbortController() : null;
-        const registro = { source: fonte, controller, objectUrl: '', promise: null };
+        const controller = !contexto && typeof global.AbortController === 'function' ? new global.AbortController() : null;
+        const registro = { img, source: fonte, cacheKey, controller, objectUrl: urlAnterior, promise: null,
+            carregando: true, visivel: !visibilityObserver };
         registros.set(img, registro);
         ativos.add(registro);
+        if (contexto && visibilityObserver) visibilityObserver.observe(img);
         registro.promise = (async () => {
             if (typeof global.obterAuthHeaders !== 'function') throw new Error('Autenticacao indisponivel.');
-            const headers = global.obterAuthHeaders();
+            const headers = contexto ? contexto.headers : global.obterAuthHeaders();
             if (!headers || !Object.keys(headers).length) throw new Error('Autenticacao indisponivel.');
-            const response = await global.fetch(fonte, {
-                headers,
-                ...(controller ? { signal: controller.signal } : {}),
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const blob = await response.blob();
+            let blob;
+            if (contexto) {
+                const consumo = cache.adquirir(cacheKey, fonte, headers);
+                registro.liberarCache = consumo.liberar;
+                registro.cacheValido = consumo.valido;
+                registro.cacheExpira = consumo.venceEm;
+                blob = await consumo.promise;
+            } else {
+                const response = await global.fetch(fonte, {
+                    headers,
+                    ...(controller ? { signal: controller.signal } : {}),
+                });
+                if (response.status === 401 || response.status === 403) invalidarCache();
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                blob = await response.blob();
+            }
             if (!blob || (blob.type && !String(blob.type).toLowerCase().startsWith('image/'))) {
                 throw new Error('Resposta de foto invalida.');
             }
             if (registros.get(img) !== registro) return '';
+            if (contexto && contextoCache(img, fonte)?.chave !== cacheKey) {
+                revogarImagem(img);
+                return '';
+            }
             const objectUrl = global.URL.createObjectURL(blob);
             if (registros.get(img) !== registro) {
                 global.URL.revokeObjectURL(objectUrl);
                 return '';
             }
+            if (registro.objectUrl) global.URL.revokeObjectURL(registro.objectUrl);
             registro.objectUrl = objectUrl;
             registro.controller = null;
+            registro.carregando = false;
             img.setAttribute('src', objectUrl);
             img.classList && img.classList.remove('jk-auth-image-error');
             const link = img.closest && img.closest(`a[${LINK_ATTR}]`);
             if (link) link.setAttribute('href', objectUrl);
+            agendarRevalidacao(registro);
             return objectUrl;
         })().catch((error) => {
+            if (contexto && registros.get(img) === registro && contextoCache(img, fonte)?.chave !== cacheKey) {
+                revogarImagem(img);
+                return '';
+            }
             if (registros.get(img) === registro) {
+                if (registro.objectUrl && error?.name !== 'AbortError') {
+                    registro.carregando = false;
+                    registro.liberarCache?.();
+                    registro.liberarCache = null;
+                    const repetirEm = global.Date.now() + 60000;
+                    registro.cacheExpira = () => repetirEm;
+                    agendarRevalidacao(registro);
+                    return registro.objectUrl;
+                }
                 registros.delete(img);
-                ativos.delete(registro);
+                revogarRegistro(registro);
                 img.removeAttribute('src');
                 if (!error || error.name !== 'AbortError') {
                     img.classList && img.classList.add('jk-auth-image-error');
@@ -652,6 +787,17 @@ function obterAuthHeaders(extra) {
         return registro.promise;
     }
 
+    let visibilityObserver = null;
+    if (typeof global.IntersectionObserver === 'function') {
+        visibilityObserver = new global.IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                const registro = registros.get(entry.target);
+                if (!registro || !registro.cacheKey) return;
+                registro.visivel = entry.isIntersecting;
+                agendarRevalidacao(registro);
+            });
+        }, { rootMargin: '0px' });
+    }
     let intersectionObserver = null;
     if (typeof global.IntersectionObserver === 'function') {
         intersectionObserver = new global.IntersectionObserver((entries) => {
@@ -669,8 +815,10 @@ function obterAuthHeaders(extra) {
             revogarImagem(img);
             return;
         }
+        const contexto = ehUrlProtegidaCadastro(fonte) ? contextoCache(img, fonte) : null;
         const atual = registros.get(img);
-        if (atual && atual.source === fonte) {
+        if (atual && atual.source === fonte && atual.cacheKey === (contexto?.chave || '')
+            && (!atual.cacheValido || atual.cacheValido())) {
             if (atual.objectUrl && img.getAttribute('src') !== atual.objectUrl) {
                 img.setAttribute('src', atual.objectUrl);
             }
@@ -715,12 +863,15 @@ function obterAuthHeaders(extra) {
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: [SOURCE_ATTR],
+            attributeFilter: [SOURCE_ATTR, REVISION_ATTR],
         });
     }
 
     global.JKAuthenticatedMedia = Object.freeze({
         ehUrlProtegidaCadastro,
+        configurarCacheRaiz,
+        atualizarPoliticaRaiz,
+        invalidarCache,
         hidratar,
         hidratarImagem,
         liberar,
@@ -730,10 +881,19 @@ function obterAuthHeaders(extra) {
     if (global.document.readyState === 'loading') {
         global.document.addEventListener('DOMContentLoaded', iniciarObservacao, { once: true });
     } else iniciarObservacao();
+    global.addEventListener('storage', (event) => {
+        if (!event.key || ['access_token', 'user_data', 'permissions'].includes(event.key)) invalidarCache();
+    });
+    ['pagehide', 'jk-auth-changed', 'jk-tenant-changed', 'jk-photo-policy-changed'].forEach((evento) => {
+        global.addEventListener(evento, () => invalidarCache());
+    });
+    global.document.addEventListener?.('visibilitychange', () => {
+        Array.from(ativos).forEach(agendarRevalidacao);
+    });
     global.addEventListener('beforeunload', () => {
         if (mutationObserver) mutationObserver.disconnect();
         if (intersectionObserver) intersectionObserver.disconnect();
-        Array.from(ativos).forEach(revogarRegistro);
-        ativos.clear();
+        if (visibilityObserver) visibilityObserver.disconnect();
+        invalidarCache();
     });
 })(window);

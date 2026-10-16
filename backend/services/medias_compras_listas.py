@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from backend.services.medias_compras_leitura import consulta_medias, medir_etapa
+
 import copy
 import io
 import json
@@ -11,7 +13,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -681,17 +683,55 @@ async def api_medias_compras_lista_pedido_detalhe(
     lista_id: str,
     client_id: str = Depends(medias_common.get_tenant_id),
     somente_salvos: bool = False,
+    cache_mode: Literal["stale"] | None = None,
 ):
     from backend.services.blocking_workers import run_blocking, run_heavy
 
-    if somente_salvos:
+    if somente_salvos and cache_mode is None:
         return await run_blocking(
             _api_medias_compras_lista_pedido_detalhe_sync,
             lista_id=lista_id,
             client_id=client_id,
             somente_salvos=True,
         )
-    return await run_heavy(_api_medias_compras_lista_pedido_detalhe_sync, lista_id=lista_id, client_id=client_id)
+    from backend.services.medias_compras_cache import resultados_medias
+    from backend.services.medias_compras_fontes import capturar_fontes, digest_lista, extras_runtime
+    from backend.services.medias_compras_leitura import chave_arquivo
+    import sys
+
+    if cache_mode not in (None, "stale"):
+        raise HTTPException(422, "cache_mode deve ser stale")
+    tenant = get_tenant_path(client_id)
+    tenant_key = chave_arquivo(tenant)
+
+    def probe():
+        if chave_arquivo(get_tenant_path(client_id)) != tenant_key:
+            raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
+        snapshot = _carregar_listas_pedidos(client_id)
+        target = next((row for row in snapshot if str(row.get("id", "")) == str(lista_id)), None)
+        if target is None:
+            raise HTTPException(404, "Lista de pedidos nao encontrada")
+        return capturar_fontes(
+            tenant, detalhe=True, extras=extras_runtime(sys.modules[__name__]),
+            alvo=digest_lista(target), snapshot=snapshot,
+            escopo=(str(lista_id),),
+        )
+
+    if somente_salvos:
+        from backend.services.medias_compras_cache import consultar_snapshot_salvo
+        return await consultar_snapshot_salvo(
+            probe, lambda source: _api_medias_compras_lista_pedido_detalhe_sync(
+                lista_id=lista_id, client_id=client_id, somente_salvos=True, _snapshot=source.snapshot,
+            ),
+        )
+
+    # The owner controls the two-attempt budget, including transaction conflicts.
+    core = _api_medias_compras_lista_pedido_detalhe_sync.__wrapped__
+    return await resultados_medias.consultar(
+        client_id, (tenant_key, "lista", str(lista_id)), probe,
+        lambda source: core(lista_id=lista_id, client_id=client_id, _snapshot=source.snapshot),
+        stale=cache_mode == "stale",
+    )
 
 
 def _itens_salvos_lista_pedido_no_escopo(client_id: str, lista: dict) -> list[dict]:
@@ -756,12 +796,14 @@ def _itens_salvos_lista_pedido_no_escopo(client_id: str, lista: dict) -> list[di
 
 
 @_retry_listas_pedidos
+@consulta_medias
 def _api_medias_compras_lista_pedido_detalhe_sync(
     lista_id: str,
     client_id: str = Depends(medias_common.get_tenant_id),
     somente_salvos: bool = False,
+    *, _snapshot=None,
 ):
-    listas = _carregar_listas_pedidos(client_id)
+    listas = _snapshot if _snapshot is not None else _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
     alvo = listas[idx] if idx >= 0 else None
     if not alvo:
@@ -792,11 +834,12 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
                 visao_produtos_cadastro_contexto_loja,
             )
 
-            contexto_cadastro = visao_produtos_cadastro_contexto_loja(
-                client_id,
-                referencia_loja_cadastro,
-                skus=[_primeiro_texto_item(item, ("SKU", "sku")) for item in alvo.get("itens") or [] if isinstance(item, dict)],
-            )
+            with medir_etapa("cadastro_contexto"):
+                contexto_cadastro = visao_produtos_cadastro_contexto_loja(
+                    client_id,
+                    referencia_loja_cadastro,
+                    skus=[_primeiro_texto_item(item, ("SKU", "sku")) for item in alvo.get("itens") or [] if isinstance(item, dict)],
+                )
             escopo_cadastro_nao_resolvido = (
                 contexto_cadastro.get("scope") == "unresolved"
             )
@@ -837,23 +880,31 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
             foto_original = str(original.get("Foto") or "").strip()
             if foto_original:
                 itens_persistidos[indice]["Foto"] = foto_original
-    mudou_itens = json.dumps(
-        itens_persistidos,
-        ensure_ascii=False,
-        sort_keys=True,
-    ) != json.dumps(alvo.get("itens") or [], ensure_ascii=False, sort_keys=True)
+    with medir_etapa("comparacao"):
+        mudou_itens = json.dumps(
+            itens_persistidos,
+            ensure_ascii=False,
+            sort_keys=True,
+        ) != json.dumps(alvo.get("itens") or [], ensure_ascii=False, sort_keys=True)
     mudou_store_id = str(alvo.get("store_id") or "").strip() != store_id_antes
     if mudou_itens or mudou_store_id:
         alvo["itens"] = itens_persistidos
         alvo["updated_at"] = datetime.now().isoformat(timespec="seconds")
         listas[idx] = alvo
-        _salvar_listas_pedidos(client_id, listas)
+        with medir_etapa("persistencia"):
+            _salvar_listas_pedidos(client_id, listas)
+        from backend.services.medias_compras_cache import registrar_commit_lista
+        from backend.services.medias_compras_fontes import digest_lista
+        committed = next(row for row in listas if str(row.get("id", "")) == str(lista_id))
+        registrar_commit_lista(digest_lista(committed))
         _limpar_cache_lista_pedido(client_id, str(alvo.get("id", "") or ""), manter_versao=alvo.get("updated_at"))
 
+    with medir_etapa("resumo"):
+        resumo = _resumo_lista_pedido(alvo)
     return {
         "success": True,
         "lista": {
-            **_resumo_lista_pedido(alvo),
+            **resumo,
             "itens": itens_recalculados,
         }
     }

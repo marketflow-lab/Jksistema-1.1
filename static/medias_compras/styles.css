@@ -718,10 +718,10 @@
         #tblListaPedidoItens tbody tr td {
             transition: background-color 0.15s ease;
         }
-        #tblResultado tbody tr:nth-child(odd) td {
+        #tblResultado tbody tr.linha-impar td {
             background: #101826 !important;
         }
-        #tblResultado tbody tr:nth-child(even) td {
+        #tblResultado tbody tr.linha-par td {
             background: #1a2940 !important;
         }
         #tblResultado tbody tr.risco-critico td {
@@ -821,10 +821,10 @@
             color: #f0fdf4;
             box-shadow: inset 2px 0 #4ade80, inset -2px 0 #4ade80, 0 2px 0 rgba(74, 222, 128, 0.25);
         }
-        #tblResultado tbody tr:nth-child(odd) td.col-estoque-fisico {
+        #tblResultado tbody tr.linha-impar td.col-estoque-fisico {
             background: #173c2d !important;
         }
-        #tblResultado tbody tr:nth-child(even) td.col-estoque-fisico {
+        #tblResultado tbody tr.linha-par td.col-estoque-fisico {
             background: #1c4936 !important;
         }
         #tblResultado tbody tr:hover td.col-estoque-fisico {
@@ -849,10 +849,10 @@
             color: #ecfeff;
             box-shadow: inset 2px 0 #2dd4bf, inset -2px 0 #2dd4bf, 0 2px 0 rgba(45, 212, 191, 0.25);
         }
-        #tblResultado tbody tr:nth-child(odd) td.col-posicao-estoque {
+        #tblResultado tbody tr.linha-impar td.col-posicao-estoque {
             background: #103645 !important;
         }
-        #tblResultado tbody tr:nth-child(even) td.col-posicao-estoque {
+        #tblResultado tbody tr.linha-par td.col-posicao-estoque {
             background: #124252 !important;
         }
         #tblResultado tbody tr:hover td.col-posicao-estoque {
@@ -1519,4 +1519,14 @@
             margin-top: 8px;
             color: #a8bad0;
             font-size: 11px;
+        }
+
+        #secaoTabelaPrincipal { overflow-anchor: none; }
+        #tblResultado tbody tr.virtual-spacer td {
+            padding: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            font-size: 0;
+            line-height: 0;
+            pointer-events: none;
         }

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20260909-sync-manual-cadastro-v1';
+  const VERSION = '20261016-medias-photo-cache-v1';
   const CHUNKS = [
     "session.js",
     "navigation.js",

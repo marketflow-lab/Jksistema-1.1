@@ -91,7 +91,8 @@ def test_transito_todas_as_lojas_agrega_listas_de_todas_as_lojas(monkeypatch):
     ]
 
 
-def test_visao_expoe_total_e_composicao_do_transito(monkeypatch):
+def test_visao_expoe_total_e_composicao_do_transito(monkeypatch, tmp_path):
+    monkeypatch.setattr(visao, "get_tenant_path", lambda _client_id: str(tmp_path))
     monkeypatch.setattr(
         visao,
         "_resolver_escopo_loja_medias",
@@ -107,7 +108,7 @@ def test_visao_expoe_total_e_composicao_do_transito(monkeypatch):
     monkeypatch.setattr(visao, "_cadastro_resolver_foto_local", lambda *_args: "", raising=False)
     monkeypatch.setattr(visao, "ARQUIVO_DB_PRODUTOS", "", raising=False)
     monkeypatch.setattr(visao, "ARQUIVO_DB_CADASTRO_PRODUTOS", "", raising=False)
-    monkeypatch.setattr(visao, "_mapa_ultima_venda_por_sku", lambda *_args: {})
+    monkeypatch.setattr(visao, "_mapa_ultima_venda_por_sku", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         visao,
         "_mapa_estoque_em_transito_detalhado_por_sku",

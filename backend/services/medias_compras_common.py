@@ -28,6 +28,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from backend.services.cadastro_common import _normalizar_sku_mes, _sku_lookup_keys_cadastro
 from backend.services.runtime_bridge import bind_runtime_globals, current_backend_runtime
 from backend.services.path_coordination import canonical_path_key, path_lock_for
+from backend.services.medias_compras_leitura import etapa
 
 logger = logging.getLogger("jk_sistema")
 _get_tenant_id_fn = None
@@ -651,8 +652,9 @@ def _mensagem_sem_venda(meses_sem_vender: int) -> str:
     return ""
 
 
-def _mapa_ultima_venda_por_sku(client_id: str, loja: str = "__todas") -> dict[str, str]:
-    db_paths = _listar_bancos_vendas_tenant(client_id, loja)
+@etapa("historico")
+def _mapa_ultima_venda_por_sku(client_id: str, loja: str = "__todas", *, _db_paths=None) -> dict[str, str]:
+    db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja)
     resultado: dict[str, str] = {}
 
     for db_vendas in db_paths:

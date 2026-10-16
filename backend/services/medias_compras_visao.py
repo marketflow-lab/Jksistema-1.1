@@ -6,9 +6,12 @@ import os
 import re
 import sqlite3
 import unicodedata
+import time
 from datetime import datetime
+from typing import Literal
 
 import pandas as pd
+from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta, registrar_tempo
 from fastapi import Depends, HTTPException
 
 from backend.schemas import MediasComprasRequest
@@ -61,24 +64,48 @@ async def api_medias_compras_visao(
     meses: int = 12,
     loja: str = "__todas",
     store_id: str = "",
-    client_id: str = Depends(medias_common.get_tenant_id)
+    client_id: str = Depends(medias_common.get_tenant_id),
+    cache_mode: Literal["stale"] | None = None,
 ):
-    from backend.services.blocking_workers import run_heavy
+    from backend.services.medias_compras_cache import resultados_medias
+    from backend.services.medias_compras_fontes import capturar_fontes, extras_runtime
+    from backend.services.medias_compras_leitura import chave_arquivo
+    import sys
 
-    return await run_heavy(
-        _api_medias_compras_visao_sync,
-        meses=meses,
-        loja=loja,
-        store_id=store_id,
-        client_id=client_id,
+    if meses not in (3, 6, 12):
+        raise HTTPException(400, "O periodo deve ser 3, 6 ou 12 meses")
+    tenant = get_tenant_path(client_id)
+    tenant_key = chave_arquivo(tenant)
+
+    def probe():
+        if chave_arquivo(get_tenant_path(client_id)) != tenant_key:
+            raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
+        scope = _resolver_escopo_loja_medias(client_id, loja, store_id)
+        extras = extras_runtime(sys.modules[__name__])
+        db_paths = tuple(_listar_bancos_vendas_tenant(client_id, scope["loja"]))
+        extras.extend(db_paths)
+        return capturar_fontes(
+            tenant, extras=extras, escopo=(scope["store_id"], scope["loja"]),
+            snapshot={"escopo": scope, "db_paths": db_paths},
+        )
+
+    return await resultados_medias.consultar(
+        client_id, lambda source: (tenant_key, "visao", meses, source.autoridade[1][0] or "__todas"), probe,
+        lambda source: _api_medias_compras_visao_sync(
+            meses=meses, loja=loja, store_id=store_id, client_id=client_id,
+            _escopo_validado=source.snapshot["escopo"], _db_paths=source.snapshot["db_paths"],
+        ),
+        stale=cache_mode == "stale",
     )
 
 
+@consulta_medias
 def _api_medias_compras_visao_sync(
     meses: int = 12,
     loja: str = "__todas",
     store_id: str = "",
     client_id: str = "default",
+    *, _escopo_validado=None, _db_paths=None,
 ):
     try:
         if meses not in (3, 6, 12):
@@ -159,7 +186,7 @@ def _api_medias_compras_visao_sync(
         inicio_periodo = f"{meses_ref[0]}-01"
         fim_periodo = datetime.now().strftime("%Y-%m-%d")
 
-        escopo_loja = _resolver_escopo_loja_medias(
+        escopo_loja = _escopo_validado if _escopo_validado is not None else _resolver_escopo_loja_medias(
             client_id,
             loja,
             store_id,
@@ -169,7 +196,8 @@ def _api_medias_compras_visao_sync(
         loja_sel_norm = loja_sel.lower()
 
         # Vendas por SKU e por mÃƒÂªs (somatÃƒÂ³rio de quantidade), consolidando todos os bancos do tenant.
-        db_paths = _listar_bancos_vendas_tenant(client_id, loja_sel)
+        inicio_historico = time.perf_counter()
+        db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja_sel)
         vendas_por_sku = {}
         titulos_vendas_por_sku = {}
         ids_vendas_processados = set()
@@ -274,12 +302,13 @@ def _api_medias_compras_visao_sync(
             finally:
                 conn.close()
 
+        registrar_tempo("historico", inicio_historico)
         # Saldo de estoque por SKU considerando a loja selecionada.
         saldo_por_sku = {}
         arquivo_estoque = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
         if arquivo_estoque and os.path.exists(arquivo_estoque):
             try:
-                df_est = pd.read_csv(arquivo_estoque).fillna("")
+                df_est = ler_csv(arquivo_estoque).fillna("")
                 if not df_est.empty:
                     colunas_lower = {str(c).strip().lower(): c for c in df_est.columns}
                     col_sku = colunas_lower.get("sku") or next((c for c in df_est.columns if str(c).strip().lower() == "sku"), None)
@@ -312,7 +341,10 @@ def _api_medias_compras_visao_sync(
             sku: float((detalhe or {}).get("total", 0) or 0)
             for sku, detalhe in transito_detalhado_por_sku.items()
         }
-        ultima_venda_por_sku = _mapa_ultima_venda_por_sku(client_id, loja_sel)
+        ultima_venda_por_sku = (
+            _mapa_ultima_venda_por_sku(client_id, loja_sel, _db_paths=db_paths)
+            if _db_paths is not None else _mapa_ultima_venda_por_sku(client_id, loja_sel)
+        )
 
         # Dados do cadastro por SKU (foto e tÃƒÂ­tulo do anuncio).
         cadastro_por_sku = {}
@@ -331,7 +363,7 @@ def _api_medias_compras_visao_sync(
         linhas_cadastro_legado = []
         for caminho_cadastro in caminhos_cadastro:
             try:
-                df_cad = pd.read_csv(caminho_cadastro, dtype=str).fillna("")
+                df_cad = ler_csv(caminho_cadastro, dtype=str).fillna("")
                 if not df_cad.empty:
                     df_cad.columns = [str(c).strip().lower() for c in df_cad.columns]
                     linhas_cadastro_legado.extend(df_cad.to_dict(orient="records"))
@@ -356,7 +388,7 @@ def _api_medias_compras_visao_sync(
                 "scope": "unavailable",
             }
         store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()
-        mapa_fotos_cadastro = _cadastro_mapa_fotos_locais(
+        mapa_fotos_cadastro = fotos_da_consulta(_cadastro_mapa_fotos_locais)(
             client_id,
             store_id_cadastro or None,
         )

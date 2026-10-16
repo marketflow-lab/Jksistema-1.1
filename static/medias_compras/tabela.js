@@ -2,10 +2,9 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas'], (context) => {
-        const fetch = context.modules.api.request;
-        const obterAuthHeaders = context.modules.api.authHeaders;
-        let escopoVisaoExibida = '';
+    app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'visao-carregamento'], (context) => {
+        let controladorTabelaVirtual = null;
+        let escopoTabelaVirtual = '';
 
         function obterQuantidadesSugeridasEditadas() {
             const quantidades = {};
@@ -22,6 +21,7 @@
             const sku = normalizarSku(decodeURIComponent(String(skuCodificado || '')));
             const item = (itensVisaoAtual || []).find(i => normalizarSku(i && i.sku) === sku);
             if (!celula || !item || celula.querySelector('.compra-sugerida-input')) return;
+            const sessaoDaEdicao = context.modules.resultados.identidadeSessao();
 
             const valorAnterior = normalizarQuantidadeCompraSugerida(item.compra_sugerida) ?? 0;
             const input = document.createElement('input');
@@ -36,6 +36,10 @@
             let finalizado = false;
             const finalizar = (confirmar) => {
                 if (finalizado) return;
+                if (!(itensVisaoAtual || []).includes(item) || sessaoDaEdicao !== context.modules.resultados.identidadeSessao()) {
+                    finalizado = true;
+                    return;
+                }
                 if (confirmar) {
                     const quantidade = normalizarQuantidadeCompraSugerida(input.value);
                     if (quantidade === null) {
@@ -48,7 +52,7 @@
                     comprasSugeridasEditadas.set(sku, quantidade);
                 }
                 finalizado = true;
-                renderAbaAtual();
+                if (!context.modules['visao-carregamento'].concluirEdicaoVisao()) renderAbaAtual();
             };
 
             input.addEventListener('input', () => input.setCustomValidity(''));
@@ -154,94 +158,6 @@
             renderTabela(colunasMesesAtuais, visiveis, 'lista');
         }
 
-        async function consultarVisaoComRetentativa(url, opcoes, geracaoAtual) {
-            const codigosTemporarios = new Set(['stores_snapshot_initializing', 'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
-            for (let tentativa = 0; tentativa <= 4; tentativa++) {
-                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
-                const resp = await fetch(url, opcoes);
-                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
-                if (resp.ok) return resp;
-                const erro = await resp.json().catch(() => ({}));
-                if (geracaoAtual !== geracaoCarregamentoVisao) return null;
-                const detalhe = erro && erro.detail;
-                const mensagem = typeof detalhe === 'string' && detalhe.trim() ? detalhe :
-                    (detalhe && typeof detalhe.message === 'string' && detalhe.message.trim() ? detalhe.message :
-                        'Erro ao consultar visao de medias e compras.');
-                const retryAfter = String(resp.headers.get('Retry-After') || '').trim();
-                const dataRetryAfter = Date.parse(retryAfter);
-                const esperaSolicitada = /^\d+(\.\d+)?$/.test(retryAfter) ? Number(retryAfter) :
-                    (Number.isFinite(dataRetryAfter) ? Math.max(0, (dataRetryAfter - Date.now()) / 1000) : 2);
-                const esperaSegundos = Math.max(Math.min(2 ** (tentativa + 1), 8), esperaSolicitada);
-                if (resp.status === 503 && detalhe && codigosTemporarios.has(detalhe.code) &&
-                    tentativa < 4 && esperaSegundos <= 10) {
-                    setStatus('Preparando dados da loja. Nova tentativa ' + (tentativa + 1) + ' de 4...');
-                    await new Promise(resolve => setTimeout(resolve, esperaSegundos * 1000));
-                    continue;
-                }
-                throw new Error(mensagem);
-            }
-        }
-
-        function cancelarCarregamentoVisao() {
-            geracaoCarregamentoVisao++;
-            context.modules.api.cancelarTarefa('visao');
-            setStatus('');
-        }
-
-        async function carregarVisao(meses) {
-            if ([3, 6, 12].includes(Number(meses))) periodoAtual = Number(meses);
-            atualizarBotoesPeriodo();
-            if (abaAtual === 'listas_pedidos') { cancelarCarregamentoVisao(); return; }
-            if (context.app.state.inicializacaoMediasPendente) return;
-            const periodoSolicitado = periodoAtual;
-            const lojaSolicitada = lojaSelecionada;
-            const params = new URLSearchParams({ meses: String(periodoSolicitado) });
-            if (lojaSolicitada && lojaSolicitada !== '__todas') {
-                params.set('loja', lojaSolicitada);
-                params.set('store_id', String(storeIdSelecionado || ''));
-            }
-            const url = '/api/medias-compras/visao?' + params.toString();
-            const headers = { ...obterAuthHeaders() };
-            const escopo = JSON.stringify([tenantKey, userScopeKey, url, headers]);
-            if (escopoVisaoExibida && escopoVisaoExibida !== escopo) {
-                itensVisaoAtual = [];
-                colunasMesesAtuais = [];
-                comprasSugeridasEditadas.clear();
-                escopoVisaoExibida = '';
-                renderAbaAtual();
-            }
-            return context.modules.api.executarTarefa('visao', escopo, async tarefa => {
-                const geracaoAtual = ++geracaoCarregamentoVisao;
-                ocultarBalaoEstoqueEmTransito();
-                const lojaTexto = (lojaSolicitada && lojaSolicitada !== '__todas') ? (' da loja ' + lojaSolicitada) : ' de todas as lojas';
-                setStatus('Carregando dados de vendas e estoque' + lojaTexto + '...');
-                try {
-                    const resp = await consultarVisaoComRetentativa(url, {
-                        method: 'GET', headers, signal: tarefa.signal,
-                    }, geracaoAtual);
-                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao || !resp) return;
-                    const data = await resp.json();
-                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao) return;
-                    colunasMesesAtuais = data.colunas_meses || [];
-                    itensVisaoAtual = data.itens || [];
-                    escopoVisaoExibida = escopo;
-                    comprasSugeridasEditadas.clear();
-                    try {
-                        renderAbaAtual();
-                    } catch (renderErr) {
-                        console.error('[Medias] Erro ao renderizar:', renderErr);
-                        setStatus('Erro ao renderizar tabela: ' + (renderErr.message || renderErr));
-                        return;
-                    }
-                    setStatus('');
-                } catch (e) {
-                    if (!tarefa.ativa() || geracaoAtual !== geracaoCarregamentoVisao) return;
-                    console.error('[Medias] Erro ao carregar:', e);
-                    setStatus('Falha ao carregar dados: ' + (e.message || e));
-                }
-            });
-        }
-
         function prepararEstruturaTabela(colunasMeses) {
             const tabela = document.getElementById('tblResultado');
             const head = document.getElementById('headRow');
@@ -313,11 +229,97 @@
             return { headers, tbody };
         }
 
+        function criarLinhaResultado(i, indice, colunasMeses, modo) {
+            const tr = document.createElement('tr');
+            tr.classList.add(indice % 2 === 0 ? 'linha-impar' : 'linha-par');
+
+            const compraSugeridaNivel = Number(i.compra_sugerida || 0);
+            const mediaMensalNivel = Number(i.media_mensal || 0);
+            const saldoFisicoNivel = Number(i.saldo_atual_estoque || 0);
+            const posicaoEstoqueNivel = Number(i.posicao_estoque || 0);
+            const mesesRestantesNivel = calcularCoberturaMeses(posicaoEstoqueNivel, mediaMensalNivel) ?? 999;
+
+            if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
+                if (saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5) {
+                    tr.classList.add('risco-critico');
+                } else {
+                    tr.classList.add('risco-atencao');
+                }
+            }
+
+            const tds = [];
+            tds.push('<td>' + escaparHtml(i.sku || '') + '</td>');
+
+            const fotoUrl = obterUrlFoto(i.foto || '');
+            if (fotoUrl) {
+                tds.push('<td><img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
+            } else {
+                tds.push('<td><span class="foto-empty">Sem foto</span></td>');
+            }
+
+            const alertaSemVenda = String(i.aviso_sem_venda || '').trim();
+            const tituloAnuncio = escaparHtml(i.titulo_anuncio || '');
+            const alertaHtml = alertaSemVenda ? '<div class="produto-alerta-sem-venda">' + escaparHtml(alertaSemVenda) + '</div>' : '';
+            tds.push('<td class="titulo-anuncio" title="' + tituloAnuncio + '">' + tituloAnuncio + alertaHtml + '</td>');
+
+            colunasMeses.forEach((c, idxMes) => {
+                const v = i.vendas_mensais ? i.vendas_mensais[c.key] : 0;
+                const classeMes = idxMes % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b';
+                const classePrimeiroMes = idxMes === 0 ? ' col-venda-mes-primeira' : '';
+                tds.push('<td class="num col-venda-mes ' + classeMes + classePrimeiroMes + '">' + numero(v) + '</td>');
+            });
+
+            const compraSugerida = Number(i.compra_sugerida || 0);
+
+            tds.push('<td class="num col-total-periodo"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
+            tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
+            tds.push('<td class="num col-estoque-fisico"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
+            tds.push(renderizarCelulaEstoqueEmTransito(i));
+            tds.push('<td class="num col-posicao-estoque"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
+            tds.push('<td class="num col-cobertura-estoque" title="Posição de estoque dividida pela VMM">' + formatarCoberturaMeses(i.posicao_estoque, i.media_mensal) + '</td>');
+            const classeCompraPositiva = compraSugerida > 0 ? ' positiva' : '';
+            const skuCompraCodificado = encodeURIComponent(String(i.sku || ''));
+            tds.push('<td class="num compra-sugerida-cell"><button type="button" class="compra-sugerida-editavel' + classeCompraPositiva + '" data-sku="' + skuCompraCodificado + '" title="Clique para editar a sugestão de compra" aria-label="Editar sugestão de compra do SKU ' + escaparHtml(i.sku || '') + '">' + numero(compraSugerida) + '</button></td>');
+
+            const skuCodificado = encodeURIComponent(String(i.sku || ''));
+            if (modo === 'ocultados') {
+                tds.push('<td><button type="button" class="btn-success-soft" data-jk-action="reexibir-sku" data-sku="' + skuCodificado + '">Reexibir</button></td>');
+            } else {
+                tds.push('<td><button type="button" class="btn-danger-soft btn-icon-action" title="Ocultar SKU" aria-label="Ocultar SKU" data-jk-action="ocultar-sku" data-sku="' + skuCodificado + '">&minus;</button></td>');
+            }
+
+            tr.innerHTML = tds.join('');
+            const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
+            configurarBalaoEstoqueEmTransito(
+                tr.querySelector('.transito-quantidade--detalhes'),
+                Number(i.estoque_em_transito || 0),
+                detalhesTransito
+            );
+            const botaoCompraSugerida = tr.querySelector('.compra-sugerida-editavel');
+            if (botaoCompraSugerida) {
+                botaoCompraSugerida.addEventListener('click', () => {
+                    iniciarEdicaoCompraSugerida(botaoCompraSugerida, botaoCompraSugerida.dataset.sku || '');
+                });
+            }
+            return tr;
+        }
+
         function renderTabela(colunasMeses, itens, modo) {
             ocultarBalaoEstoqueEmTransito();
+            const raiz = document.getElementById('secaoTabelaPrincipal');
+            const escopo = JSON.stringify([tenantKey, userScopeKey, storeIdSelecionado, lojaSelecionada, periodoAtual, modo, filtroSkuAtual]);
+            const ancora = escopo === escopoTabelaVirtual && controladorTabelaVirtual
+                ? controladorTabelaVirtual.capturarAncora() : null;
+            if (controladorTabelaVirtual) controladorTabelaVirtual.destruir();
+            controladorTabelaVirtual = null;
+            escopoTabelaVirtual = escopo;
+            const scrollLeft = raiz.scrollLeft;
             const { headers, tbody } = prepararEstruturaTabela(colunasMeses);
-
+            const tabela = document.getElementById('tblResultado');
+            if (!ancora) raiz.scrollTop = 0;
             if (!itens.length) {
+                tabela.setAttribute('aria-rowcount', '1');
+                tabela.dataset.totalRows = '0';
                 const tr = document.createElement('tr');
                 const msgVazio = obterPesquisaSkuNormalizada()
                     ? 'Nenhum SKU encontrado para a pesquisa.'
@@ -326,84 +328,15 @@
                     : "Nenhum SKU encontrado para o período selecionado.";
                 tr.innerHTML = '<td colspan="' + headers.length + '">' + msgVazio + '</td>';
                 tbody.appendChild(tr);
-                autoAjustarLargurasColunasPrimeiroUso(itensVisaoAtual, colunasMeses);
-                return;
-            }
-
-            itens.forEach(i => {
-                const tr = document.createElement('tr');
-
-                const compraSugeridaNivel = Number(i.compra_sugerida || 0);
-                const mediaMensalNivel = Number(i.media_mensal || 0);
-                const saldoFisicoNivel = Number(i.saldo_atual_estoque || 0);
-                const posicaoEstoqueNivel = Number(i.posicao_estoque || 0);
-                const mesesRestantesNivel = calcularCoberturaMeses(posicaoEstoqueNivel, mediaMensalNivel) ?? 999;
-
-                if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
-                    if (saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5) {
-                        tr.classList.add('risco-critico');
-                    } else {
-                        tr.classList.add('risco-atencao');
-                    }
-                }
-
-                const tds = [];
-                tds.push('<td>' + escaparHtml(i.sku || '') + '</td>');
-
-                const fotoUrl = obterUrlFoto(i.foto || '');
-                if (fotoUrl) {
-                    tds.push('<td><img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
-                } else {
-                    tds.push('<td><span class="foto-empty">Sem foto</span></td>');
-                }
-
-                const alertaSemVenda = String(i.aviso_sem_venda || '').trim();
-                const tituloAnuncio = escaparHtml(i.titulo_anuncio || '');
-                const alertaHtml = alertaSemVenda ? '<div class="produto-alerta-sem-venda">' + escaparHtml(alertaSemVenda) + '</div>' : '';
-                tds.push('<td class="titulo-anuncio" title="' + tituloAnuncio + '">' + tituloAnuncio + alertaHtml + '</td>');
-
-                colunasMeses.forEach((c, idxMes) => {
-                    const v = i.vendas_mensais ? i.vendas_mensais[c.key] : 0;
-                    const classeMes = idxMes % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b';
-                    const classePrimeiroMes = idxMes === 0 ? ' col-venda-mes-primeira' : '';
-                    tds.push('<td class="num col-venda-mes ' + classeMes + classePrimeiroMes + '">' + numero(v) + '</td>');
+            } else {
+                controladorTabelaVirtual = context.modules['tabela-virtual'].criarTabelaVirtual({
+                    raiz, tabela, tbody, colunas: headers.length, overscan: 10,
+                    renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo),
                 });
-
-                const compraSugerida = Number(i.compra_sugerida || 0);
-
-                tds.push('<td class="num col-total-periodo"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
-                tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
-                tds.push('<td class="num col-estoque-fisico"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
-                tds.push(renderizarCelulaEstoqueEmTransito(i));
-                tds.push('<td class="num col-posicao-estoque"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
-                tds.push('<td class="num col-cobertura-estoque" title="Posição de estoque dividida pela VMM">' + formatarCoberturaMeses(i.posicao_estoque, i.media_mensal) + '</td>');
-                const classeCompraPositiva = compraSugerida > 0 ? ' positiva' : '';
-                const skuCompraCodificado = encodeURIComponent(String(i.sku || ''));
-                tds.push('<td class="num compra-sugerida-cell"><button type="button" class="compra-sugerida-editavel' + classeCompraPositiva + '" data-sku="' + skuCompraCodificado + '" title="Clique para editar a sugestão de compra" aria-label="Editar sugestão de compra do SKU ' + escaparHtml(i.sku || '') + '">' + numero(compraSugerida) + '</button></td>');
-
-                const skuCodificado = encodeURIComponent(String(i.sku || ''));
-                if (modo === 'ocultados') {
-                    tds.push('<td><button type="button" class="btn-success-soft" data-jk-action="reexibir-sku" data-sku="' + skuCodificado + '">Reexibir</button></td>');
-                } else {
-                    tds.push('<td><button type="button" class="btn-danger-soft btn-icon-action" title="Ocultar SKU" aria-label="Ocultar SKU" data-jk-action="ocultar-sku" data-sku="' + skuCodificado + '">&minus;</button></td>');
-                }
-
-                tr.innerHTML = tds.join('');
-                const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
-                configurarBalaoEstoqueEmTransito(
-                    tr.querySelector('.transito-quantidade--detalhes'),
-                    Number(i.estoque_em_transito || 0),
-                    detalhesTransito
-                );
-                const botaoCompraSugerida = tr.querySelector('.compra-sugerida-editavel');
-                if (botaoCompraSugerida) {
-                    botaoCompraSugerida.addEventListener('click', () => {
-                        iniciarEdicaoCompraSugerida(botaoCompraSugerida, botaoCompraSugerida.dataset.sku || '');
-                    });
-                }
-                tbody.appendChild(tr);
-            });
+                controladorTabelaVirtual.atualizarItens(itens, { ancora });
+            }
             autoAjustarLargurasColunasPrimeiroUso(itensVisaoAtual, colunasMeses);
+            raiz.scrollLeft = scrollLeft;
         }
 
         return {
@@ -412,8 +345,8 @@
             obterItensVisiveis,
             obterItensOcultados,
             renderAbaAtual,
-            carregarVisao,
-            cancelarCarregamentoVisao,
+            carregarVisao: context.modules['visao-carregamento'].carregarVisao,
+            cancelarCarregamentoVisao: context.modules['visao-carregamento'].cancelarCarregamentoVisao,
             renderTabela
         };
     });

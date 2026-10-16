@@ -9,6 +9,7 @@ from backend.services import (
     cadastro_lojas_produtos,
     favoritos_storage,
     impostos_regras,
+    integracoes,
 )
 
 
@@ -16,9 +17,12 @@ def _configurar(monkeypatch, tmp_path):
     tenant = tmp_path / "cliente-a"
     tenant.mkdir()
 
-    def tenant_path(_client_id):
+    def tenant_path(client_id):
+        assert client_id == "cliente-a"
         return str(tenant)
 
+    monkeypatch.setattr(integracoes, "_get_tenant_path", tenant_path)
+    monkeypatch.setattr(integracoes, "PASTA_INFO", str(tmp_path))
     monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(favoritos_storage, "get_tenant_path", tenant_path, raising=False)
     monkeypatch.setattr(impostos_regras, "get_tenant_path", tenant_path)
