@@ -136,6 +136,121 @@ async function main() {
             assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:false });
             assert.equal(await f.submits(), 0); assert.equal(f.stats.frameExecutions, 0);
         });
+        await test({ loggedIn:true, timeoutMs:1000 }, async f => {
+            const execute = f.contents.executeJavaScript;
+            let interrupted = false;
+            f.contents.executeJavaScript = async code => {
+                if (!interrupted && code === pageScript('probe')) {
+                    interrupted = true;
+                    await f.page.reload();
+                    throw new Error('Execution context was destroyed during page reload.');
+                }
+                return execute(code);
+            };
+            assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:false });
+            assert(interrupted, 'The parent document must actually reload during confirmation.');
+            assert.equal(await f.submits(), 0, 'A confirmed session does not require another login.');
+        });
+        await test({ success:true, beginPopup:true, confirmDelay:30, timeoutMs:1000 }, async f => {
+            const execute = f.contents.executeJavaScript;
+            let interrupted = false;
+            f.contents.executeJavaScript = async code => {
+                if (!interrupted && f.stats.frameExecutions > 0 && code === pageScript('probe')) {
+                    interrupted = true;
+                    throw new Error('Render frame was disposed before WebFrameMain could be accessed');
+                }
+                return execute(code);
+            };
+            assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:true });
+            assert(interrupted);
+            assert.equal(await f.submits(), 1, 'Lost parent confirmation must never resubmit the login.');
+            assert.equal(f.stats.frameExecutions, 1);
+        });
+        await test({ loggedIn:true, timeoutMs:80 }, async f => {
+            let probes = 0;
+            f.contents.executeJavaScript = async () => {
+                probes++;
+                throw new Error('Execution context was destroyed');
+            };
+            const started = Date.now();
+            const result = await f.session.ensure();
+            assert.equal(result.authenticated, false);
+            assert.equal(result.reason, 'avant_login_not_confirmed');
+            assert(probes > 1, 'A temporary document failure must be checked again.');
+            assert(Date.now() - started < 1000, 'Persistent navigation errors must keep the existing deadline.');
+            assert.equal(f.stats.frameExecutions, 0);
+        });
+        await test({ loggedIn:true }, async f => {
+            let probes = 0;
+            f.contents.executeJavaScript = async () => { probes++; throw new Error('Unexpected script failure'); };
+            assert.equal((await f.session.ensure()).authenticated, false);
+            assert.equal(probes, 1, 'Unknown script failures must not be retried as a navigation event.');
+        });
+        for (const interruption of ['abort', 'context', 'contents']) {
+            await test({ loggedIn:true, timeoutMs:500 }, async f => {
+                const controller = new AbortController();
+                let probes = 0;
+                f.contents.executeJavaScript = async () => {
+                    probes++;
+                    if (interruption === 'abort') controller.abort();
+                    else if (interruption === 'context') f.switchContext();
+                    else f.session.getContents = () => null;
+                    throw new Error('Execution context was destroyed');
+                };
+                await assert.rejects(f.session.ensure({ signal:controller.signal }), error => error.name === 'AbortError');
+                assert.equal(probes, 1, 'Navigation recovery must stop when its original context is no longer valid.');
+                assert.equal(f.stats.frameExecutions, 0);
+            });
+        }
+        await test({ loggedIn:true }, async f => {
+            let probes = 0;
+            f.contents.executeJavaScript = async () => {
+                probes++;
+                f.contents.getURL = () => 'https://www.mercadolivre.com.br/account-verification';
+                throw new Error('Execution context was destroyed');
+            };
+            const result = await f.session.ensure();
+            assert.equal(result.reason, 'ml_login_required');
+            assert.equal(probes, 1, 'Navigation recovery must validate the new destination before executing.');
+            assert.equal(f.stats.frameExecutions, 0);
+        });
+        for (const redirect of [true, false]) {
+            await test({ loggedIn:true, timeoutMs:500 }, async f => {
+                const execute = f.contents.executeJavaScript;
+                await f.page.evaluate(() => document.querySelector('#btnLogoutMenu').remove());
+                let interrupted = false;
+                f.contents.executeJavaScript = async code => {
+                    if (code === pageScript('open-menu')) {
+                        const result = await execute(code);
+                        await f.page.evaluate(() => {
+                            const logout = document.createElement('div');
+                            logout.id = 'btnLogoutMenu';
+                            document.querySelector('.avantpro-menu-content').appendChild(logout);
+                        });
+                        return result;
+                    }
+                    if (!interrupted && code === pageScript('close-menu')) {
+                        interrupted = true;
+                        if (redirect) f.contents.getURL = () => 'https://www.mercadolivre.com.br/account-verification';
+                        else {
+                            f.setEmail('');
+                            await f.page.evaluate(() => {
+                                const logout = document.querySelector('#btnLogoutMenu');
+                                logout.id = 'btnLoginMenu';
+                                logout.textContent = 'Fazer Login';
+                            });
+                        }
+                        throw new Error('Execution context was destroyed');
+                    }
+                    return execute(code);
+                };
+                const result = await f.session.ensure();
+                assert(interrupted, 'The confirmation must encounter navigation during menu cleanup.');
+                assert.equal(result.authenticated, false, 'A previous document cannot confirm the new session.');
+                assert.equal(result.reason, redirect ? 'ml_login_required' : 'avant_email_missing');
+                assert.equal(f.stats.frameExecutions, 0);
+            });
+        }
         await test({ success:true }, async f => {
             assert.equal((await f.probe()).state, 'logged_out', 'Hidden logout menu must be detected.');
             assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:true });

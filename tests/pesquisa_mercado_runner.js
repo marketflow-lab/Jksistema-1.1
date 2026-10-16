@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('assert');
 const { PesquisaMercadoRunner, sellerFromPage, allowedUrl, normalizeCategory, sameCategoryPage, verifiedCategoryPage, currentPageRequiresLogin, validateCheckpointTaxonomy } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { AvantSession } = require('../electron_app/main/modules/pesquisa-mercado-avant-auth');
 const copy = value => JSON.parse(JSON.stringify(value));
 const base = 'https://www.mercadolivre.com.br';
 
@@ -712,6 +713,75 @@ async function automaticAvantLoginAndFreshDocument() {
         assert.equal(h.saved().counters.pages, 1, 'authentication reload cannot duplicate the category checkpoint');
         assert.equal(h.vendors.size, 1);
         assert.equal(h.saved().counters.ads, 1);
+    }
+}
+
+async function automaticAvantDocumentReloadRecovery() {
+    for (const scenario of ['existing-session', 'submitted-login', 'unconfirmed-login']) {
+        const h = harness(avantFlowPages());
+        const category = { key: 'a', nome: 'A', url: `${base}/a` };
+        const previous = h.saved();
+        previous.status = 'paused';
+        previous.counters.pages = 1;
+        previous.checkpoint = { categories: [category], categoryIndex: 0, discoveryInitialized: true,
+            currentCategory: category, seenSeedIds: ['previous-seed'], seenSellerKeys: [],
+            page: { categoryKey: 'a', url: `${base}/a`, index: 0,
+                anuncios: [{ id: 'seed-a', url: `${base}/product-a` }] } };
+        h.restoreCheckpoint(previous);
+        let probes = 0, submissions = 0, publications = 0, interrupted = false;
+        let interruptedCheckpoint;
+        const api = h.runner.api;
+        h.runner.api = async (...args) => {
+            if (args[0] === 'PUT') publications += 1;
+            return api(...args);
+        };
+        const mainFrame = {};
+        const authFrame = { url: 'https://auth.avantprocloud.com.br/', parent: mainFrame,
+            async executeJavaScript() {
+                submissions += 1;
+                assert.equal(submissions, 1, 'a document reload must not resubmit the login');
+                return { submitted: true };
+            } };
+        mainFrame.framesInSubtree = [mainFrame, authFrame];
+        const contents = { mainFrame, getURL: () => h.runner.browser.getURL(),
+            isDestroyed: () => false, isLoadingMainFrame: () => false,
+            async executeJavaScript() {
+                probes += 1;
+                if (!interrupted && (scenario === 'existing-session' || submissions > 0)) {
+                    interrupted = true;
+                    interruptedCheckpoint = copy(h.runner.checkpoint);
+                    assert.equal(publications, 0, 'an unconfirmed page cannot publish seller data');
+                    throw new Error('Execution context was destroyed, most likely because of a navigation.');
+                }
+                return { state: scenario === 'existing-session'
+                    || submissions > 0 && scenario === 'submitted-login' ? 'authenticated' : 'login_form' };
+            } };
+        const session = new AvantSession({ getContents: () => contents,
+            getEmail: () => 'researcher@account.example', getContext: () => 1,
+            timeoutMs: 100, probeMs: 20, pollMs: 1 });
+        h.runner.browser.ensureAvantSession = options => session.ensure(options);
+        await h.runner.resume('run-1');
+        await h.runner.task;
+        assert(interrupted, 'the fixture must interrupt the real AvantSession main-document probe');
+        assert.equal(interruptedCheckpoint.page.index, 0);
+        assert.equal(interruptedCheckpoint.categoryIndex, 0);
+        assert.deepEqual(interruptedCheckpoint.seenSeedIds, ['previous-seed']);
+        assert.equal(h.saved().counters.pages, 1, 'authentication cannot duplicate the saved category page');
+        assert.equal(submissions, scenario === 'existing-session' ? 0 : 1);
+        if (scenario === 'unconfirmed-login') {
+            assert.equal(h.saved().status, 'waiting_login', 'a persistent invalid session remains blocked');
+            assert.equal(publications, 0);
+            assert.equal(h.saved().checkpoint.page.index, 0);
+            assert.equal(h.saved().checkpoint.categoryIndex, 0);
+            assert.deepEqual(h.saved().checkpoint.seenSeedIds, ['previous-seed']);
+        } else {
+            assert.equal(h.saved().status, 'completed', `${scenario} must confirm the fresh document automatically`);
+            assert(probes > 1, 'the fresh document must be probed after the reload');
+            assert.equal(publications, 1, 'the resumed seller must be published exactly once');
+            assert.equal(h.saved().counters.ads, 1);
+            assert.equal(h.saved().counters.sellers, 1);
+            assert(!h.events.some(event => event.job.status === 'waiting_login'), 'a transient reload must not request manual login');
+        }
     }
 }
 
@@ -1623,6 +1693,7 @@ async function interruptedUnpublishedSellerFailurePreservesItsCheckpoint() {
     await progressWarningAndRestart();
     await pauseDuringPublication();
     await automaticAvantLoginAndFreshDocument();
+    await automaticAvantDocumentReloadRecovery();
     await discoveryDoesNotRequireAvantControls();
     await automaticAvantRecoveryDuringCollection();
     await automaticAvantFailuresPreserveProgress();

@@ -127,6 +127,24 @@ class AvantSession {
             try { const result = await Promise.race([frame.executeJavaScript(code, true), interrupt]); guard(); return result || {}; }
             finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', onAbort); }
         };
+        const executePage = async action => {
+            while (true) {
+                guard();
+                if (!allowedPage(contents.getURL())) return { state: 'ml_login' };
+                if (Date.now() >= deadline) throw new Error('avant_timeout');
+                try { return await execute(contents, pageScript(action)); }
+                catch (error) {
+                    if (error.name === 'AbortError') throw error;
+                    guard();
+                    // Reloading after login can destroy the parent document too.
+                    // Retry its controls only; submitting the auth frame is never replayed.
+                    const navigationInterrupted = /execution context was destroyed|cannot find context with specified id|(?:render )?frame (?:was |has been )?(?:disposed|detached|destroyed)/i.test(String(error.message || ''))
+                        || contents.isLoadingMainFrame();
+                    if (!navigationInterrupted || Date.now() >= deadline) throw error;
+                    await wait(Math.min(this.pollMs, Math.max(1, deadline - Date.now())), signal);
+                }
+            }
+        };
         let attempted = false, openedMenu = false, menuTried = false, loginOpened = false;
         let formDeadline = 0;
         try {
@@ -137,9 +155,13 @@ class AvantSession {
                 guard();
                 if (!allowedPage(contents.getURL())) return fail('ml_login_required', attempted);
                 if (contents.isLoadingMainFrame()) { menuTried = false; await wait(this.pollMs, signal); continue; }
-                const state = await execute(contents, pageScript('probe'));
+                const state = await executePage('probe');
                 if (state.state === 'authenticated') {
-                    if (openedMenu) await execute(contents, pageScript('close-menu'));
+                    if (openedMenu) {
+                        await executePage('close-menu');
+                        openedMenu = false;
+                        continue; // Confirm the current document after menu cleanup too.
+                    }
                     this.failure = null;
                     return { authenticated: true, attempted };
                 }
@@ -150,7 +172,7 @@ class AvantSession {
                     if (!email) return fail('avant_email_missing');
                     if (!attempted && this.failure && this.failure.context === context && this.failure.until > Date.now()) return fail(this.failure.reason, false);
                     if (state.state === 'logged_out') {
-                        if (!loginOpened) { await execute(contents, pageScript('open-login')); loginOpened = true; }
+                        if (!loginOpened) { await executePage('open-login'); loginOpened = true; }
                     } else if (!attempted) {
                         const main = contents.mainFrame;
                         const frames = main && main.framesInSubtree || [];
@@ -174,7 +196,7 @@ class AvantSession {
                         }
                     }
                 } else if (state.state === 'unknown' && !menuTried) {
-                    const result = await execute(contents, pageScript('open-menu'));
+                    const result = await executePage('open-menu');
                     menuTried = !!result.menuOpened;
                     openedMenu = openedMenu || menuTried;
                 }
