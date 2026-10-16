@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'importacao', 'tabela'], () => {
+    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'editor-salvamento', 'importacao', 'tabela'], () => {
         function executarAcao(elemento) {
             const action = elemento.dataset.jkAction;
             if (action === 'periodo') return carregarVisao(Number(elemento.dataset.periodo));
@@ -25,6 +25,7 @@
         }
 
         function ligarEventos() {
+            ligarSalvamentoAutomaticoListaPedido();
             document.addEventListener('click', (event) => {
                 const elemento = event.target && event.target.closest ? event.target.closest('[data-jk-action]') : null;
                 if (!elemento) return;

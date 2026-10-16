@@ -2,11 +2,12 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('listas-carregamento', ['core', 'state', 'api', 'resultados'], ({ modules }) => {
+    app.defineModule('listas-carregamento', ['core', 'state', 'api', 'resultados', 'editor-salvamento'], ({ modules }) => {
         let aberturaListaPedido = null;
         let listaPedidoEmAbertura = '';
 
         function cancelarAberturaListaPedido() {
+            invalidarContextoEdicaoListaPedido();
             const abertura = aberturaListaPedido;
             abertura?.controller.abort();
             if (abertura) {
@@ -45,6 +46,7 @@
             const expirado = Number.isFinite(geradoEm) && Date.now() - geradoEm > 15 * 60 * 1000;
             if (!meta?.pendente_fontes && !expirado && (!autoridadeAnterior || autoridadeAnterior === meta?.autoridade)) return;
             // O conteúdo deixou de ser válido, mas o ciclo atual pode receber a próxima versão.
+            invalidarContextoEdicaoListaPedido();
             listaPedidoAtual = null;
             abertura.lista = null;
             abertura.assinatura = JSON.stringify(null);
@@ -102,7 +104,7 @@
             return resultado.dados.lista;
         }
 
-        async function abrirListaPedidoPorId(listaId, { preservarConteudo = false } = {}) {
+        async function abrirListaPedidoPorId(listaId, { preservarConteudo = false, aguardarSalvamento = true } = {}) {
             if (!listaId) return;
             if (aberturaListaPedido) {
                 try {
@@ -117,7 +119,7 @@
             // Clicar novamente para acompanhar uma atualização não apaga um formulário alterado.
             const edicaoLocal = aberturaListaPedido && (aberturaListaPedido.editada ||
                 (aberturaListaPedido.assinatura && JSON.stringify(listaPedidoAtual) !== aberturaListaPedido.assinatura));
-            if (mesmaLista && edicaoLocal && !preservarConteudo) {
+            if (mesmaLista && edicaoLocal && !preservarConteudo && !edicaoListaPedidoConfirmada()) {
                 setStatusListaPedido('Há edições em andamento. Salve a lista antes de atualizar os dados.');
                 return false;
             }
@@ -140,7 +142,9 @@
             if (painel) { painel.classList.remove('hidden'); painel.inert = true; }
             setStatusListaPedido('Abrindo lista...');
             try {
+                if (aguardarSalvamento) await aguardarSalvamentoListaPedido(listaId);
                 modules.resultados.exigirSessao(abertura.sessao);
+                if (abertura !== aberturaListaPedido) return false;
                 const { resp, data } = await modules.resultados.consultarResultado(
                     abertura.url + '?somente_salvos=true&cache_mode=stale', abertura.headers, abertura.controller.signal, 5000);
                 modules.resultados.exigirSessao(abertura.sessao);
@@ -163,7 +167,6 @@
                         abertura.atual = false;
                         global.clearTimeout(abertura.timer);
                         abertura.controller.abort();
-                        setStatusListaPedido('Edições em andamento. A atualização será aplicada após salvar e reabrir.');
                     };
                     for (const evento of ['input', 'change', 'dragstart']) painel.addEventListener(evento, marcarEdicao, true);
                     abertura.removerEscuta = () => { for (const evento of ['input', 'change', 'dragstart']) painel.removeEventListener(evento, marcarEdicao, true); };

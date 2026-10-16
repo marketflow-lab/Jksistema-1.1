@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('editor-produtos', ['core', 'state', 'api', 'editor'], (context) => {
+    app.defineModule('editor-produtos', ['core', 'state', 'api', 'editor', 'editor-salvamento'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
 
@@ -46,13 +46,13 @@
             return '';
         }
 
-        async function buscarProdutoCadastroPorSku(sku) {
+        async function buscarProdutoCadastroPorSku(sku, headersEscopo) {
             const skuTxt = String(sku || '').trim();
             if (!skuTxt) {
                 throw new Error('Informe um SKU válido.');
             }
 
-            const headers = { ...obterAuthHeaders() };
+            const headers = { ...(headersEscopo || obterAuthHeaders()) };
             const resp = await fetch('/api/cadastro/produto?sku=' + encodeURIComponent(skuTxt), {
                 method: 'GET',
                 headers
@@ -104,7 +104,7 @@
                 ...preservados,
                 SKU: skuCadastro,
                 Foto: obterCampoProdutoCadastro(produto, ['foto']),
-                'TÃ­tulo do produto em inglÃªs': titulo,
+                'Título do produto em inglês': titulo,
                 OEM: obterCampoProdutoCadastro(produto, ['oem', 'oem/ model', 'oem model', 'codigo oem', 'part number']),
                 'Color/side': obterCampoProdutoCadastro(produto, ['color side', 'color/side', 'cor lado', 'cor/lado', 'lado cor', 'lado/cor', 'lado', 'cor', 'color', 'side']),
                 Link: obterCampoProdutoCadastro(produto, ['link', 'link aliexpress', 'url aliexpress', 'url', 'mlb principal']),
@@ -118,163 +118,138 @@
             };
         }
 
+        const consultasSku = new WeakMap();
+
+        function consultarSkuEditado(input, registro) {
+            const emCurso = consultasSku.get(input);
+            if (emCurso) return emCurso;
+            const row = input?.closest('tr[data-lista-pedido-row="1"]');
+            const anterior = normalizarSku(input?.dataset.originalSku || '');
+            const novo = normalizarSku(input?.value || '');
+            if (!row || !novo || novo === anterior) {
+                if (input) input.value = anterior || novo;
+                return Promise.resolve({ ok: true, sku: novo });
+            }
+            const rows = [...row.parentNode.querySelectorAll('tr[data-lista-pedido-row="1"]')];
+            if (rows.some(linha => linha !== row && normalizarSku(linha.querySelector('[data-kind="sku"]')?.value) === novo)) {
+                input.value = anterior;
+                input.dataset.skuRejeitado = '1';
+                const item = registro?.confirmado.itens[Number(row.dataset.idx)];
+                if (item) item.SKU = anterior;
+                setStatusListaPedido('SKU ' + novo + ' já existe nesta lista.');
+                abrirAvisoSkuCentral('SKU ' + novo + ' já existe nesta lista.');
+                return Promise.resolve({ ok: false });
+            }
+            const valoresAntes = Object.fromEntries(['cbm', 'peso', 'embalagem'].map(kind => [kind, row.querySelector('[data-kind="' + kind + '"]')?.value]));
+            input.dataset.aplicandoSku = '1';
+            input.disabled = true;
+            const promessa = (async () => {
+                try {
+                    const produto = await buscarProdutoCadastroPorSku(novo, registro.headers);
+                    if (contextoEdicaoListaPedidoVigente(registro) && input.isConnected && normalizarSku(input.value) === novo) {
+                        const atualizado = criarItemListaPedidoComProdutoCadastro(produto, novo, capturarItemListaPedidoDaLinha(row));
+                        listaPedidoAtual.itens[Number(row.dataset.idx)] = atualizado;
+                        input.value = atualizado.SKU;
+                        input.dataset.originalSku = atualizado.SKU;
+                        row.dataset.skuCmp = normalizarSkuComparacaoLocal(atualizado.SKU);
+                        row.cells[2].textContent = atualizado['Título do produto em inglês'] || '';
+                        row.cells[2].title = row.cells[2].textContent;
+                        row.cells[3].textContent = atualizado.OEM || '';
+                        row.cells[4].textContent = atualizado['Color/side'] || '';
+                        row.cells[5].innerHTML = atualizado.Link ? '<a href="' + escaparHtml(atualizado.Link) + '" target="_blank" rel="noopener noreferrer">' + escaparHtml(atualizado.Link) + '</a>' : '';
+                        const foto = obterUrlFoto(atualizado.Foto || '');
+                        row.cells[1].innerHTML = foto ? '<img class="foto-sku" ' + atributoSrcFotoCadastro(foto) + ' alt="Foto" loading="lazy">' : '<span class="foto-empty">Sem foto</span>';
+                        for (const [kind, campo] of [['cbm', 'Estimed CBM'], ['peso', 'Estimed Weigh'], ['embalagem', 'Individual packaging']]) {
+                            const el = row.querySelector('[data-kind="' + kind + '"]');
+                            if (el && el.value === valoresAntes[kind]) el.value = String(atualizado[campo] || '');
+                        }
+                        row.querySelector('[data-kind="cbm"]').dataset.cbmIndividual = String(atualizado['M3 individual'] || '');
+                        configurarDetalhesLinhaListaPedido(row);
+                        atualizarTotaisListaPedido();
+                    }
+                    return { ok: true, sku: novo, produto };
+                } catch (erro) {
+                    if (contextoEdicaoListaPedidoVigente(registro)) {
+                        if (input.isConnected) { input.value = anterior; input.dataset.skuRejeitado = '1'; }
+                        const item = registro.confirmado.itens[Number(row.dataset.idx)];
+                        if (item) item.SKU = anterior;
+                        setStatusListaPedido(erro.message || 'Não foi possível alterar o SKU.');
+                        if (/sku/i.test(String(erro.message || ''))) abrirAvisoSkuCentral(erro.message);
+                    }
+                    return { ok: false };
+                } finally {
+                    input.disabled = false;
+                    delete input.dataset.aplicandoSku;
+                    consultasSku.delete(input);
+                }
+            })();
+            consultasSku.set(input, promessa);
+            return promessa;
+        }
+
         async function atualizarSkuItemListaPedido(ev) {
-            const input = ev && ev.target ? ev.target : null;
-            if (!input || input.dataset.aplicandoSku === '1') return true;
-            const row = input.closest ? input.closest('tr[data-lista-pedido-row="1"]') : null;
-            if (!row || !listaPedidoAtual || !Array.isArray(listaPedidoAtual.itens)) return true;
+            return (await consultarSkuEditado(ev?.target, obterContextoEdicaoListaPedido())).ok;
+        }
 
-            const skuAnterior = normalizarSku(input.dataset.originalSku || '');
-            const skuNovo = normalizarSku(input.value || '');
-            if (!skuNovo || skuNovo === skuAnterior) {
-                input.value = skuAnterior || skuNovo;
-                return true;
-            }
-
-            const skuCmpNovo = normalizarSku(skuNovo);
-            const rows = Array.from(row.parentNode ? row.parentNode.querySelectorAll('tr[data-lista-pedido-row="1"]') : []);
-            const duplicado = rows.some((linha) => {
-                if (linha === row) return false;
-                const skuLinha = normalizarSku(linha.querySelector('input[data-kind="sku"]')?.value || '');
-                return normalizarSku(skuLinha) === skuCmpNovo;
+        function prepararSkusSnapshotListaPedido(dados, registro) {
+            const pendentes = [];
+            document.querySelectorAll('#tblListaPedidoItens input[data-kind="sku"]').forEach(input => {
+                const sku = normalizarSku(input.value || '');
+                if (!consultasSku.has(input) && sku === normalizarSku(input.dataset.originalSku || '')) return;
+                const indice = dados.itens.findIndex(item => normalizarSku(item.SKU) === sku);
+                if (indice < 0) return;
+                pendentes.push(consultarSkuEditado(input, registro).then(resultado => {
+                    if (!resultado.ok) return false;
+                    if (resultado.produto) {
+                        dados.itens[indice] = criarItemListaPedidoComProdutoCadastro(resultado.produto, sku, dados.itens[indice]);
+                        atualizarCadastroSkuConfirmado(registro, sku, resultado.produto);
+                    }
+                    return true;
+                }));
             });
-            if (duplicado) {
-                input.value = skuAnterior;
-                setStatusListaPedido('SKU ' + skuNovo + ' jÃ¡ existe nesta lista.');
-                abrirAvisoSkuCentral('SKU ' + skuNovo + ' jÃ¡ existe nesta lista.');
-                return false;
-            }
-
-            try {
-                input.dataset.aplicandoSku = '1';
-                input.disabled = true;
-                setStatusListaPedido('Buscando dados do SKU ' + skuNovo + ' no cadastro...');
-                const itemPreservado = capturarItemListaPedidoDaLinha(row);
-                const produto = await buscarProdutoCadastroPorSku(skuNovo);
-                const itemAtualizado = criarItemListaPedidoComProdutoCadastro(produto, skuNovo, {
-                    ...itemPreservado,
-                    SKU: skuNovo
-                });
-                const itens = capturarItensListaPedidoDoEditor();
-                const posVisual = rows.indexOf(row);
-                if (posVisual >= 0 && posVisual < itens.length) {
-                    itens[posVisual] = itemAtualizado;
-                } else {
-                    const idx = Number(row.dataset.idx || -1);
-                    if (Number.isInteger(idx) && idx >= 0 && idx < itens.length) itens[idx] = itemAtualizado;
-                }
-                listaPedidoAtual.itens = itens;
-                renderEditorListaPedido();
-                destacarSkuNaTabelaPedido(itemAtualizado.SKU);
-                setStatusListaPedido('SKU ' + skuAnterior + ' alterado para ' + itemAtualizado.SKU + '. Dados atualizados pelo cadastro. Clique em "Salvar alteraÃ§Ãµes" para confirmar.');
-                return true;
-            } catch (e) {
-                input.value = skuAnterior;
-                setStatusListaPedido(e.message || 'NÃ£o foi possÃ­vel alterar o SKU.');
-                if (/sku/i.test(String(e.message || ''))) {
-                    abrirAvisoSkuCentral(e.message || 'SKU nÃ£o encontrado no cadastro.');
-                }
-                return false;
-            } finally {
-                input.disabled = false;
-                input.dataset.aplicandoSku = '';
-            }
+            return Promise.all(pendentes).then(resultados => resultados.every(Boolean));
         }
 
         async function aplicarEdicoesSkuPendentesListaPedido() {
-            for (let tentativas = 0; tentativas < 30; tentativas += 1) {
-                const inputs = Array.from(document.querySelectorAll('#tblListaPedidoItens tbody input[data-kind="sku"]'));
-                const pendente = inputs.find((input) => normalizarSku(input.value || '') !== normalizarSku(input.dataset.originalSku || ''));
-                if (!pendente) return true;
-                const ok = await atualizarSkuItemListaPedido({ target: pendente });
-                if (!ok) return false;
-            }
-            return true;
+            const registro = obterContextoEdicaoListaPedido();
+            const dados = capturarDadosEditorListaPedido();
+            return await prepararSkusSnapshotListaPedido(dados, registro);
         }
 
-        async function persistirNovoItemListaPedido(dados) {
+        async function persistirNovoItemListaPedido(dados, registro, snapshot, revisao) {
             const { skuCadastro, quantidade, valorUnidade, nomeLista, lojaLista, storeIdLista, novoItem } = dados;
-            const itensAtuais = Array.isArray(listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
-            const idxExistente = itensAtuais.findIndex((i) => normalizarSku(i && i.SKU) === skuCadastro);
-            let msgAcao = '';
-            if (idxExistente >= 0) {
-                itensAtuais[idxExistente] = { ...itensAtuais[idxExistente], ...novoItem };
-                msgAcao = 'SKU ' + skuCadastro + ' já existia e foi atualizado.';
-            } else {
-                itensAtuais.push(novoItem);
-                msgAcao = 'SKU ' + skuCadastro + ' adicionado na lista.';
-            }
-
-            setStatusModalAdicionarSku('Salvando item na lista...');
-            const headers = { 'Content-Type': 'application/json', ...obterAuthHeaders() };
-            let data = null;
-            let falhaRotaDedicada = false;
-            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)) + '/adicionar-sku', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({ sku: skuCadastro, quantidade, valor_unitario: valorUnidade })
-            });
-
-            if (resp.ok) {
-                data = await resp.json();
-            } else {
-                const err = await resp.json().catch(() => ({}));
-                const rotaIndisponivel = resp.status === 405 || (resp.status === 404 && err.detail === 'Not Found');
-                if (!rotaIndisponivel) {
-                    throw new Error(err.detail || 'Falha ao salvar item na lista.');
+                const itens = snapshot.itens.map(item => ({ ...item }));
+                const indice = itens.findIndex(item => normalizarSku(item.SKU) === skuCadastro);
+                if (indice >= 0) itens[indice] = { ...itens[indice], ...novoItem };
+                else itens.push(novoItem);
+                const headers = { 'Content-Type': 'application/json', ...registro.headers };
+                const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(registro.id);
+                let resp = await fetch(url + '/adicionar-sku', { method: 'POST', headers,
+                    body: JSON.stringify({ sku: skuCadastro, quantidade, valor_unitario: valorUnidade }) });
+                let data = await resp.json().catch(() => ({}));
+                if (!resp.ok && (resp.status === 405 || (resp.status === 404 && data.detail === 'Not Found'))) {
+                    resp = await fetch(url, { method: 'PUT', headers,
+                        body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens }) });
+                    data = await resp.json().catch(() => ({}));
                 }
-                falhaRotaDedicada = true;
-            }
-
-            if (falhaRotaDedicada) {
-                const respPut = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
-                    method: 'PUT',
-                    headers,
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, store_id: storeIdLista || undefined, itens: itensAtuais })
-                });
-                if (!respPut.ok) {
-                    const errPut = await respPut.json().catch(() => ({}));
-                    throw new Error(errPut.detail || 'Falha ao salvar item na lista.');
+                if (!resp.ok) throw new Error(data.detail || 'Falha ao salvar item na lista.');
+                if (data.lista && String(data.lista.id) !== registro.id) throw new Error('A resposta não contém a lista solicitada.');
+                const lista = data.lista || { ...snapshot, id: registro.id, itens };
+                const salvo = lista.itens?.find(item => normalizarSku(item.SKU) === skuCadastro);
+                if (!salvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
+                const incorporar = incorporarItemSalvoListaPedido(registro, salvo, snapshot);
+                if (contextoEdicaoListaPedidoVigente(registro)) {
+                    if (registro.revisao === revisao && !registro.pendentes.size) {
+                        listaPedidoAtual = lista;
+                        renderEditorListaPedido();
+                        await carregarListasPedidos(true);
+                    } else {
+                        const rascunho = capturarDadosEditorListaPedido();
+                        incorporar(rascunho);
+                        listaPedidoAtual = { ...lista, ...rascunho };
+                    }
                 }
-                data = await respPut.json();
-            }
-
-            listaPedidoAtual = data.lista || listaPedidoAtual;
-            const skuSalvo = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
-                : false;
-            if (!skuSalvo) throw new Error('O item não retornou na lista após salvar. Tente novamente.');
-
-            await carregarListasPedidos(true);
-            if (listaPedidoAtual && listaPedidoAtual.id) await abrirListaPedidoPorId(listaPedidoAtual.id, { preservarConteudo: true });
-            const skuAposReabrir = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
-                : false;
-            if (!skuAposReabrir) {
-                const itensForcados = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens) ? [...listaPedidoAtual.itens] : [];
-                const idxForcado = itensForcados.findIndex((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro));
-                if (idxForcado >= 0) itensForcados[idxForcado] = { ...itensForcados[idxForcado], ...novoItem };
-                else itensForcados.push({ ...novoItem });
-
-                const respForcado = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaPedidoAtual.id)), {
-                    method: 'PUT',
-                    headers,
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista || undefined, store_id: storeIdLista || undefined, itens: itensForcados })
-                });
-                if (!respForcado.ok) {
-                    const errForcado = await respForcado.json().catch(() => ({}));
-                    throw new Error(errForcado.detail || 'Não foi possível confirmar o SKU na lista.');
-                }
-
-                const dataForcado = await respForcado.json();
-                listaPedidoAtual = dataForcado.lista || listaPedidoAtual;
-                await abrirListaPedidoPorId(listaPedidoAtual.id, { preservarConteudo: true });
-                const skuAposForcar = Array.isArray(listaPedidoAtual && listaPedidoAtual.itens)
-                    ? listaPedidoAtual.itens.some((i) => normalizarSku(i && i.SKU) === normalizarSku(skuCadastro))
-                    : false;
-                if (!skuAposForcar) throw new Error('SKU não apareceu na lista após tentativas de salvamento.');
-            }
-            return { data, msgAcao };
+                return { data, msgAcao: 'SKU ' + skuCadastro + (indice >= 0 ? ' já existia e foi atualizado.' : ' adicionado na lista.') };
         }
 
         async function confirmarAdicionarSkuPedido() {
@@ -283,6 +258,9 @@
                 return;
             }
 
+            const registro = obterContextoEdicaoListaPedido();
+            const snapshot = capturarDadosEditorListaPedido();
+            const revisao = registro.revisao;
             const inputSku = document.getElementById('addSkuInput');
             const inputQtd = document.getElementById('addSkuQtdInput');
             const inputValor = document.getElementById('addSkuValorInput');
@@ -321,8 +299,9 @@
 
             try {
                 btnConfirmar.disabled = true;
+                await executarMutacaoListaPedido(registro, async () => {
                 setStatusModalAdicionarSku('Buscando dados do SKU no cadastro...');
-                const produto = await buscarProdutoCadastroPorSku(skuDigitado);
+                const produto = await buscarProdutoCadastroPorSku(skuDigitado, registro.headers);
 
                 const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['cubagem sku', 'sku']) || skuDigitado);
                 const titulo = obterCampoProdutoCadastro(produto, [
@@ -361,8 +340,14 @@
                     lojaLista,
                     storeIdLista,
                     novoItem,
-                });
+                }, registro, snapshot, revisao);
+                if (!contextoEdicaoListaPedidoVigente(registro)) return;
 
+                if (registro.revisao !== revisao || registro.pendentes.size) {
+                    fecharModalAdicionarSkuPedido();
+                    setStatusListaPedido('SKU salvo. Alterações pendentes de confirmação.');
+                    return;
+                }
                 const apareceuVisual = destacarSkuNaTabelaPedido(skuCadastro);
                 if (!apareceuVisual) {
                     throw new Error('SKU salvo, mas não foi localizado visualmente na tabela.');
@@ -378,7 +363,9 @@
 
                 fecharModalAdicionarSkuPedido();
                 setStatusListaPedido(msgFinal + ' Salvo com sucesso.');
+                });
             } catch (e) {
+                if (!contextoEdicaoListaPedidoVigente(registro)) return;
                 const msgErro = e.message || 'Não foi possível adicionar o SKU ao pedido.';
                 setStatusModalAdicionarSku(msgErro);
                 if (/sku/i.test(String(msgErro))) {
@@ -395,6 +382,7 @@
             criarItemListaPedidoComProdutoCadastro,
             atualizarSkuItemListaPedido,
             aplicarEdicoesSkuPendentesListaPedido,
+            prepararSkusSnapshotListaPedido,
             confirmarAdicionarSkuPedido
         };
     });

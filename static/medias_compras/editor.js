@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('editor', ['core', 'state', 'api', 'listas', 'pedido-hover', 'editor-produtos', 'tabela-colunas'], (context) => {
+    app.defineModule('editor', ['core', 'state', 'api', 'listas', 'pedido-hover', 'editor-produtos', 'tabela-colunas', 'editor-salvamento'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
         let cargaFornecedorEditor = 0;
@@ -80,6 +80,10 @@
         }
 
         function renderEditorListaPedido() {
+            return renderizarEditorSemSalvar(renderConteudoEditorListaPedido);
+        }
+
+        function renderConteudoEditorListaPedido() {
             limparDetalhesListaPedido();
             const inputNome = document.getElementById('nomeListaPedidoEdit');
             const selectLoja = document.getElementById('lojaListaPedidoEdit');
@@ -113,6 +117,7 @@
             if (!itens.length) {
                 tbody.innerHTML = '<tr><td colspan="13">Lista sem itens.</td></tr>';
                 atualizarTotaisListaPedido();
+                prepararEditorSalvamentoListaPedido();
                 return;
             }
 
@@ -188,7 +193,7 @@
                         inp.blur();
                     }
                 });
-                inp.addEventListener('blur', atualizarSkuItemListaPedido);
+
             });
             tbody.querySelectorAll('input[data-kind="qtd"], input[data-kind="vun"]').forEach(inp => {
                 inp.addEventListener('input', recalcularLinhaListaPedido);
@@ -212,6 +217,7 @@
             });
             habilitarArrasteLinhasListaPedido(tbody);
             atualizarTotaisListaPedido();
+            prepararEditorSalvamentoListaPedido();
         }
 
         function obterValorInputLinhaPedido(row, kind) {
@@ -230,8 +236,8 @@
             const base = (Number.isInteger(idx) && listaPedidoAtual && Array.isArray(listaPedidoAtual.itens))
                 ? (listaPedidoAtual.itens[idx] || {})
                 : {};
-            const quantidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'qtd') || base.Quantidade || 0);
-            const valorUnidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vun') || base['Valor unidade'] || 0);
+            const quantidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'qtd'));
+            const valorUnidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vun'));
             const valorTotal = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vtot') || base['Valor total'] || (quantidade * valorUnidade));
             return {
                 ...base,
@@ -273,9 +279,10 @@
             tbody.querySelectorAll('.dragging').forEach(row => row.classList.remove('dragging'));
             delete tbody.dataset.dragStartOrder;
             if (!ordemInicial || ordemInicial === ordemAtual) return;
-            listaPedidoAtual.itens = capturarItensListaPedidoDoEditor();
+            const snapshot = capturarDadosEditorListaPedido();
+            Object.assign(listaPedidoAtual, snapshot);
             renderEditorListaPedido();
-            setStatusListaPedido('Ordem dos SKUs alterada. Clique em "Salvar alteraÃ§Ãµes" para confirmar.');
+            void confirmarEdicaoListaPedido(null, { integral: true, snapshot });
         }
 
         function habilitarArrasteLinhasListaPedido(tbody) {
@@ -320,11 +327,11 @@
             const confirmar = window.confirm('Deseja excluir o SKU ' + sku + ' desta lista?');
             if (!confirmar) return;
 
-            const itens = [...listaPedidoAtual.itens];
-            itens.splice(pos, 1);
-            listaPedidoAtual.itens = itens;
+            const snapshot = capturarDadosEditorListaPedido();
+            snapshot.itens.splice(pos, 1);
+            Object.assign(listaPedidoAtual, snapshot);
             renderEditorListaPedido();
-            setStatusListaPedido('SKU ' + sku + ' removido. Clique em "Salvar alterações" para confirmar.');
+            void confirmarEdicaoListaPedido(null, { integral: true, snapshot });
         }
 
         function destacarSkuNaTabelaPedido(sku) {
@@ -403,77 +410,7 @@
             atualizarTotaisListaPedido();
         }
 
-        async function salvarListaPedidoAtual() {
-            if (!listaPedidoAtual || !listaPedidoAtual.id) {
-                setStatusListaPedido('Selecione uma lista para salvar.');
-                return;
-            }
-            const inputNome = document.getElementById('nomeListaPedidoEdit');
-            const selectLoja = document.getElementById('lojaListaPedidoEdit');
-            const selectFornecedor = document.getElementById('fornecedorListaPedidoEdit');
-            const listaId = String(listaPedidoAtual.id);
-            const opcaoFornecedor = selectFornecedor && selectFornecedor.selectedOptions[0];
-            const fornecedorId = String((selectFornecedor && !selectFornecedor.disabled && opcaoFornecedor && !opcaoFornecedor.disabled && selectFornecedor.value) || '').trim();
-            const nomeLista = String((inputNome && inputNome.value) || '').trim();
-            if (!nomeLista) {
-                setStatusListaPedido('Informe o nome da lista.');
-                return;
-            }
-            const lojaLista = obterLojaListaPedidoSelecionada();
-            const storeIdLista = obterStoreIdListaPedidoSelecionado();
-            if (!lojaLista || !storeIdLista) {
-                setStatusListaPedido('Selecione a loja da lista.');
-                if (selectLoja) selectLoja.focus();
-                return;
-            }
-
-            const skuOk = await aplicarEdicoesSkuPendentesListaPedido();
-            if (!skuOk || !listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) return;
-            const itensOriginais = capturarItensListaPedidoDoEditor();
-            const itens = itensOriginais.map((item, idx) => {
-                const qtdEl = document.querySelector('input[data-kind="qtd"][data-idx="' + idx + '"]');
-                const vunEl = document.querySelector('input[data-kind="vun"][data-idx="' + idx + '"]');
-                const vtotEl = document.querySelector('input[data-kind="vtot"][data-idx="' + idx + '"]');
-                const cbmEl = document.querySelector('input[data-kind="cbm"][data-idx="' + idx + '"]');
-                const pesoEl = document.querySelector('input[data-kind="peso"][data-idx="' + idx + '"]');
-                const embalagemEl = document.querySelector('input[data-kind="embalagem"][data-idx="' + idx + '"]');
-                return {
-                    ...item,
-                    Quantidade: toNumeroDecimal((qtdEl && qtdEl.value) || item.Quantidade || 0),
-                    'Valor unidade': toNumeroDecimal((vunEl && vunEl.value) || item['Valor unidade'] || 0),
-                    'Valor total': toNumeroDecimal((vtotEl && vtotEl.value) || item['Valor total'] || 0),
-                    'Estimed CBM': (cbmEl && cbmEl.value !== undefined) ? String(cbmEl.value || '').trim() : String(item['Estimed CBM'] || '').trim(),
-                    'Estimed Weigh': (pesoEl && pesoEl.value !== undefined) ? String(pesoEl.value || '').trim() : String(item['Estimed Weigh'] || '').trim(),
-                    'Individual packaging': (embalagemEl && embalagemEl.value !== undefined) ? String(embalagemEl.value || '').trim() : String(item['Individual packaging'] || '').trim(),
-                };
-            });
-
-            try {
-                setStatusListaPedido('Salvando alterações...');
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...obterAuthHeaders()
-                    },
-                    body: JSON.stringify({ nome_lista: nomeLista, loja: lojaLista, store_id: storeIdLista, itens, ...(fornecedorId ? { fornecedor_id: fornecedorId } : {}) })
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Falha ao salvar alterações da lista.');
-                }
-                const data = await resp.json();
-                if (!listaPedidoAtual || String(listaPedidoAtual.id) !== listaId) { await carregarListasPedidos(true); return; }
-                const listaSalva = data.lista || listaPedidoAtual;
-                listaPedidoAtual = listaSalva;
-                await carregarListasPedidos(true);
-                if (listaPedidoAtual !== listaSalva) return;
-                if (!await abrirListaPedidoPorId(listaId, { preservarConteudo: true })) return;
-                setStatusListaPedido('Lista salva com sucesso.');
-            } catch (e) {
-                setStatusListaPedido(e.message || 'Erro ao salvar lista.');
-            }
-        }
+        function salvarListaPedidoAtual() { return salvarEdicaoListaPedidoManual(); }
 
         return {
             setStatusModalAdicionarSku,

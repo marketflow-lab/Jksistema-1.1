@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('listas', ['core', 'state', 'api', 'editor', 'importacao', 'listas-carregamento'], (context) => {
+    app.defineModule('listas', ['core', 'state', 'api', 'editor', 'editor-salvamento', 'importacao', 'listas-carregamento'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
 

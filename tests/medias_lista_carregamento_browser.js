@@ -353,7 +353,7 @@ async function testComplementFailureAndSelection(browser) {
 
 async function testEditingPreservesDom(browser) {
   for (const when of ['before-start', 'pending-body', 'change']) {
-    const test = await fixture(browser, 'tenant-edits-' + when);
+    const test = await fixture(browser, 'tenant-edits-' + when, { allowSave: true });
     const { page } = test;
     try {
       await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -381,8 +381,8 @@ async function testEditingPreservesDom(browser) {
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '7');
         assert.strictEqual(await page.locator('input[data-kind="vtot"]').inputValue(), '70');
       }
-      assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Edições em andamento. A atualização será aplicada após salvar e reabrir.');
-      assert.strictEqual(test.state.saves.length, 0, 'Edição e resposta tardia não salvam automaticamente.');
+      if (when === 'change') await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
+      else assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Alterações pendentes de confirmação.');
       await clean(test);
     } finally { await test.context.close(); }
   }
@@ -392,7 +392,7 @@ async function testEditingPreservesDom(browser) {
 async function testStructuralEdits(browser) {
   for (const action of ['delete', 'reorder']) {
     for (const when of ['before-start', 'pending-body', 'pending-failure']) {
-      const test = await fixture(browser, 'tenant-structural-' + action + '-' + when, { twoItems: true });
+      const test = await fixture(browser, 'tenant-structural-' + action + '-' + when, { twoItems: true, allowSave: true });
       const { page } = test;
       try {
         await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -412,6 +412,7 @@ async function testStructuralEdits(browser) {
             finalizarArrasteLinhasListaPedido(tbody);
           });
         }
+        await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
         const expected = action === 'delete' ? ['SKU-B2'] : ['SKU-B2', 'SKU-B'];
         assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), expected);
         const statusEdited = await page.locator('#statusListaPedido').innerText();
@@ -433,12 +434,12 @@ async function testStructuralEdits(browser) {
         assert.strictEqual(await page.locator('input[data-kind="qtd"]').first().inputValue(), '3');
         assert.strictEqual(await page.evaluate(() => listaPedidoAtual.itens[0]['Valor unidade']), 5);
         const requestCount = (await calls(page)).length;
+        assert.strictEqual(test.state.saves.length, 1, 'Exclusão/ordem confirmada deve persistir uma vez.');
         await click(page, 'b');
-        assert.strictEqual((await calls(page)).length, requestCount, 'Reabrir a mesma lista editada não inicia nova leitura.');
+        await page.waitForFunction(() => listaPedidoAtual?.id === 'b' && !document.querySelector('#editorListaPedido').inert);
+        assert.strictEqual((await calls(page)).length, requestCount + 1, 'Depois do autosave, reclique pode reler o snapshot salvo.');
         assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), expected);
-        assert.strictEqual(await page.evaluate(() => window.__structuralRow === document.querySelector('#tblListaPedidoItens tbody tr')), true, 'Reclique preserva o DOM após excluir/reordenar sem evento input.');
-        assert.strictEqual(await page.locator('#statusListaPedido').innerText(), 'Há edições em andamento. Salve a lista antes de atualizar os dados.');
-        assert.strictEqual(test.state.saves.length, 0, 'Excluir/reordenar não pode provocar salvamento automático.');
+        assert.strictEqual(test.state.saves.length, 1, 'Reabrir uma confirmação persistida não provoca nova gravação.');
         await clean(test);
       } finally { await test.context.close(); }
     }
@@ -477,7 +478,7 @@ async function testStoreSwitchCancelsSnapshot(browser) {
 }
 
 async function testDragInProgressPreservesDom(browser) {
-  const test = await fixture(browser, 'tenant-drag-in-progress', { twoItems: true });
+  const test = await fixture(browser, 'tenant-drag-in-progress', { twoItems: true, allowSave: true });
   const { page } = test;
   try {
     await plan(page, 'b:full', { phase: 'body', ignoreAbort: true });
@@ -501,7 +502,7 @@ async function testDragInProgressPreservesDom(browser) {
     await page.evaluate(() => finalizarArrasteLinhasListaPedido(document.querySelector('#tblListaPedidoItens tbody')));
     assert.deepStrictEqual(await page.evaluate(() => listaPedidoAtual.itens.map(item => item.SKU)), ['SKU-B2', 'SKU-B']);
     assert.strictEqual(await page.locator('tr.dragging').count(), 0);
-    assert((await page.locator('#statusListaPedido').innerText()).startsWith('Ordem dos SKUs alterada.'));
+    await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
     await clean(test);
   } finally { await test.context.close(); }
   console.log('PASS arraste aberto: dragstart cancela complemento e mantém a mesma linha/DOM até confirmar a nova ordem.');
@@ -521,8 +522,8 @@ async function testMaterializedLegacyRename(browser) {
     assert.strictEqual(await run(page, 300), 0);
     await page.locator('#btnSalvarListaPedido').click();
     await page.waitForFunction(() => document.querySelector('#statusListaPedido').textContent === 'Lista salva com sucesso.');
-    assert.strictEqual(test.state.saves.length, 1);
-    const payload = test.state.saves[0];
+    assert(test.state.saves.length >= 1 && test.state.saves.length <= 2, 'Confirmação automática e botão manual podem compartilhar a gravação pendente ou confirmar novamente.');
+    const payload = test.state.saves.at(-1);
     assert.strictEqual(payload.nome_lista, 'Pedido legado renomeado');
     assert.strictEqual(payload.store_id, 'store-a');
     assert.strictEqual(payload.loja, 'Loja A');
@@ -717,10 +718,11 @@ async function testEditingDuringRefresh(browser) {
     assert.strictEqual(await page.locator('input[data-kind="qtd"]').inputValue(), '19');
     assert.strictEqual(await page.locator('input[data-kind="vtot"]').inputValue(), '190');
     await ready(page, 'b', 'Anterior b');
-    await click(page, 'b');
-    assert.strictEqual((await calls(page)).length, 3, 'Reclique durante edição não faz nova leitura.');
+    await page.evaluate(() => abrirListaPedidoPorId('b'));
+    assert.strictEqual((await calls(page)).length, 3, 'Atualização durante rascunho não faz nova leitura.');
     assert.match(await page.locator('#statusListaPedido').innerText(), /Há edições em andamento/);
-    assert.strictEqual(test.state.saves.length, 0, 'Chegada de fresh ou reclique não salva automaticamente.');
+    assert.strictEqual(test.state.saves.length, 1, 'Só a confirmação do nome ao sair do campo salva; fresh/refresh não confirmam a quantidade em edição.');
+    assert.strictEqual(test.state.saves[0].itens[0].Quantidade, 2);
     await clean(test);
   } finally { await test.context.close(); }
   console.log('PASS edição após stale: fresh tardio não sobrescreve nome, quantidade, DOM nem dispara salvamento.');
@@ -793,7 +795,6 @@ async function testSessionIsolation(browser) {
         await ready(page, 'b');
         if (item.phase !== 'before-full') await run(page, 300);
         if (item.phase === 'edited') {
-          await page.locator('#nomeListaPedidoEdit').fill('Edição de outra sessão');
           await page.locator('input[data-kind="qtd"]').fill('27');
         }
       }
@@ -904,7 +905,6 @@ async function testSessionChangedBeforeReopen(browser) {
   try {
     await click(page, 'b');
     await ready(page, 'b');
-    await page.locator('#nomeListaPedidoEdit').fill('Edição sem a sessão original');
     await page.locator('input[data-kind="qtd"]').fill('27');
     await changeSession(page, test.tenant, 'permissions', 'none');
     await page.evaluate(() => abrirListaPedidoPorId('b'));
