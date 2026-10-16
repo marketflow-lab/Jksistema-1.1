@@ -1303,6 +1303,30 @@
         box.style.color = erro ? '#ffb1b1' : '#bfe4ff';
     }
 
+    function mensagemErroSincronizacao(payload, fallback = 'Não foi possível concluir a sincronização.') {
+        const vistos = new Set();
+        function extrair(valor, profundidade = 0) {
+            if (typeof valor === 'string') return valor.trim();
+            if (!valor || typeof valor !== 'object' || profundidade > 5 || vistos.has(valor)) return '';
+            vistos.add(valor);
+            if (Array.isArray(valor)) {
+                return [...new Set(valor.slice(0, 5).map(item => extrair(item, profundidade + 1)).filter(Boolean))].join('; ');
+            }
+            let mensagem = '';
+            for (const campo of ['detail', 'message', 'msg', 'errors', 'error']) {
+                mensagem = extrair(valor[campo], profundidade + 1);
+                if (mensagem) break;
+            }
+            const codigo = typeof valor.code === 'string' && /^[a-z][a-z0-9_.-]{0,99}$/i.test(valor.code)
+                ? valor.code : '';
+            if (codigo && !mensagem.includes(codigo)) {
+                return `${mensagem || fallback} (código: ${codigo})`;
+            }
+            return mensagem;
+        }
+        return extrair(payload) || fallback;
+    }
+
     function setMachineSyncStatus(msg, erro) {
         const box = document.getElementById('machineSyncActionStatus');
         if (box) {
@@ -1696,7 +1720,7 @@
                 cache: 'no-store'
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recarregar histórico de favoritos.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao recarregar histórico de favoritos.'));
             const historico = Array.isArray(data.historico) ? data.historico.slice(0, 30) : [];
             const evento = {
                 tipo: 'historico-favoritos-importado',
@@ -1849,7 +1873,7 @@
             const resp = await fetch('/api/admin/shared-sync/config', { headers: obterAuthHeaders(), cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) {
-                throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamento.');
+                throw new Error(mensagemErroSincronizacao(data, 'Erro ao carregar compartilhamento.'));
             }
             renderCompartilhamentoDados(data);
             return true;
@@ -1872,7 +1896,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) {
-                throw new Error(data.detail || data.message || 'Erro ao salvar regras.');
+                throw new Error(mensagemErroSincronizacao(data, 'Erro ao salvar regras.'));
             }
             renderCompartilhamentoDados(data);
             if (!silencioso) setStatus('Regras de compartilhamento salvas.');
@@ -1939,7 +1963,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) {
-                throw new Error(data.detail || data.message || 'Erro ao sincronizar dados.');
+                throw new Error(mensagemErroSincronizacao(data, 'Erro ao sincronizar dados.'));
             }
             if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results, scopes);
             await carregarCompartilhamentoDados();
@@ -2980,7 +3004,7 @@
                     cache: 'no-store'
                 });
                 const data = await resp.json().catch(() => ({}));
-                if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar sincronização.');
+                if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao carregar sincronização.'));
                 renderSincronizacaoMinhasMaquinas(data);
                 await carregarStatusProvisionamentoFirebase({ silencioso: true });
                 return true;
@@ -3037,7 +3061,7 @@
                 body: JSON.stringify(payload)
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao salvar sincronização.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao salvar sincronização.'));
             renderSincronizacaoMinhasMaquinas(data);
             if (!silencioso) setStatus('Seleção salva. Use Enviar agora ou Importar agora para transferir os dados.');
             return true;
@@ -3055,7 +3079,7 @@
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok || data.success === false || !data.operation_id) {
-            throw new Error(data.detail || data.message || 'Não foi possível gerar a prévia.');
+            throw new Error(mensagemErroSincronizacao(data, 'Não foi possível gerar a prévia.'));
         }
         const total = data.totals || {};
         const resumo = [
@@ -3110,7 +3134,7 @@
                 body: JSON.stringify({ scopes, machine_id: machineIdAtual(), operation_id: operationId })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || data.message || 'Erro ao sincronizar minhas máquinas.');
+            if (!resp.ok) throw new Error(mensagemErroSincronizacao(data, 'Erro ao sincronizar minhas máquinas.'));
             const resultados = Array.isArray(data.results) ? data.results : [];
             const resultadosConcluidos = resultados.filter(item => item && item.success !== false);
             const scopesRetornados = new Set(resultados.filter(Boolean).map(item => String(item.scope || '')));
@@ -3160,7 +3184,7 @@
         try {
             const resp = await fetch('/api/shared-sync/users', { headers: obterAuthHeaders(), cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar usuários.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao carregar usuários.'));
             renderUsuariosCompartilhamento(data);
             return true;
         } catch (error) {
@@ -3189,7 +3213,7 @@
         try {
             const resp = await fetch('/api/shared-sync/user-shares', { headers: obterAuthHeaders(), cache: 'no-store' });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao carregar compartilhamentos.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao carregar compartilhamentos.'));
             renderCompartilhamentoEntreUsuarios(data);
             return true;
         } catch (error) {
@@ -3228,7 +3252,7 @@
                 })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao criar vínculo.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao criar vínculo.'));
             limparConviteCompartilhamentoUsuario();
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareProcesso('Vínculo', 100, data.message || 'Vínculo ativo criado. Nenhum dado foi enviado.');
@@ -3249,7 +3273,7 @@
                 body: JSON.stringify({ keep_synced: keepSynced, machine_id: machineIdAtual() })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao aceitar convite.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao aceitar convite.'));
             setUserShareProcesso('Aceite do convite', 70, 'Atualizando cache local.');
             await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();
@@ -3268,7 +3292,7 @@
                 headers: obterAuthHeaders()
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao recusar convite.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao recusar convite.'));
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareStatus(data.message || 'Convite recusado.');
         } catch (error) {
@@ -3285,7 +3309,7 @@
                 headers: obterAuthHeaders()
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao cancelar convite.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao cancelar convite.'));
             await carregarCompartilhamentoEntreUsuarios({ silencioso: true });
             setUserShareProcesso('Cancelamento do convite', 100, data.message || 'Convite cancelado.');
         } catch (error) {
@@ -3302,7 +3326,7 @@
                 headers: obterAuthHeaders()
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao excluir convite.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao excluir convite.'));
             removerConviteCompartilhamentoUsuarioDaTela(inviteId);
             await carregarCompartilhamentoEntreUsuarios({ silencioso: true, forcar: true });
             setUserShareProcesso('Exclusão do convite', 100, data.message || 'Convite excluído.');
@@ -3319,7 +3343,7 @@
                 body: JSON.stringify({ keep_synced: !!keepSynced })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao atualizar vínculo.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao atualizar vínculo.'));
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareStatus(data.message || 'Preferências atualizadas.');
         } catch (error) {
@@ -3336,7 +3360,7 @@
                 body: JSON.stringify({ active: false })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao pausar vínculo.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao pausar vínculo.'));
             await carregarCompartilhamentoEntreUsuarios();
             setUserShareStatus(data.message || 'Compartilhamento pausado.');
         } catch (error) {
@@ -3374,7 +3398,7 @@
                 body: JSON.stringify(body)
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok || data.success === false) throw new Error(data.detail || data.message || 'Erro ao sincronizar vínculo.');
+            if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao sincronizar vínculo.'));
             setUserShareProcesso(nomeProcesso, 75, 'Atualizando tela e caches.');
             if (direcao === 'pull') await atualizarCacheHistoricoFavoritosSincronizado(data.results);
             await carregarCompartilhamentoEntreUsuarios();

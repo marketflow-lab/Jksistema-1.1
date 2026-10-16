@@ -681,6 +681,13 @@ def shared_sync_user_shares_link_pull(
         if isinstance(operation.get("remote_bundle_hashes"), dict)
         else {}
     )
+    # Validate the approved scope order above, then materialize selected stores
+    # before applying data whose store identities depend on that configuration.
+    execution_scopes = (
+        ["lojas_integracoes", *(scope for scope in scopes if scope != "lojas_integracoes")]
+        if "lojas_integracoes" in scopes
+        else scopes
+    )
     results = [
         _shared_sync_pull_pair_scope(
             sessao,
@@ -693,7 +700,7 @@ def shared_sync_user_shares_link_pull(
             ),
             expected_bundle_hash=str(expected_bundle_hashes.get(scope) or ""),
         )
-        for scope in scopes
+        for scope in execution_scopes
     ]
     _shared_sync_audit(sessao, record=operation, results=results, link_id=link_id)
     return {"success": True, "direction": "pull", "results": results, "link": _shared_sync_link_public(link, sessao)}

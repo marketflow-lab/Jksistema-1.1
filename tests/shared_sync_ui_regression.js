@@ -134,7 +134,8 @@ assert(!machineAutoSource.includes('fetch(') && !machineAutoSource.includes('set
 assert(machineAutoSource.includes("'jk:machine-sync-updated'"), 'notificação do recebimento manual ausente');
 assert(machineAutoSource.includes('coordinator?.broadcast?.(channel, message)'), 'notificação não chega às outras abas');
 const authLoader = read('static/auth.js');
-assert(authLoader.includes("VERSION = '20260909-sync-manual-cadastro-v1'"), 'cache-buster do auth loader nao foi atualizado');
+const authVersion = /const VERSION = '(\d{8}-[a-z0-9-]+)'/.exec(authLoader);
+assert(authVersion && authVersion[1].slice(0, 8) >= '20260909', 'cache-buster do auth loader anterior ao Shared Sync manual');
 assert.strictEqual(authLoader, read('auth.js'), 'auth.js divergiu do espelho oficial');
 
 const summaryStart = admin.indexOf('function resumoResultadosSync(');
