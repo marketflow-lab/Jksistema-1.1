@@ -122,11 +122,12 @@ function setup(options = {}) {
     reopened.context.aplicarEstadoMonitorSyncVendas(persisted);
     assert.equal(reopened.elements.btnSync.disabled, false);
     assert.equal(reopened.elements.btnCancel.disabled, false, 'pausa deve funcionar entre ciclos automáticos');
-    assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /1 sincronização.*pendente/);
+    assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /1 tarefa pendente/);
     assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /3\/15 dia/);
     assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /&lt;falha&gt;/);
-    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /<falha>|Período conferido/);
-    assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /Aguardando próxima tentativa/);
+    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /<falha>|Atualizada/);
+    assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /Requer atenção/);
+    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.className, /\berror\b/, 'a pendência de uma loja não deve marcar todo o painel como erro');
     assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /Último documento coletado: Pedido #123/);
     const coletaExibida = reopened.elements.syncPersistenteStatus.innerHTML.split('Último documento coletado: ')[1].split('<br>')[0];
     assert.match(coletaExibida, /2 documento\(s\) coletado\(s\) nesta etapa/);
@@ -137,7 +138,42 @@ function setup(options = {}) {
         assert(reopened.elements.syncPersistenteStatus.innerHTML.includes('Último documento coletado: ' + rotulo + ' #&lt;456&gt;'));
     }
     reopened.context.renderAutomacaoSyncVendas({ automacao: { ...persisted.automacao, lojas: [{ ...persisted.automacao.lojas[0], status: 'complete' }] } });
-    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /Período conferido/, 'status concluído com erro ou pendência não pode gerar sucesso');
+    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /Atualizada/, 'status concluído com erro ou pendência não pode gerar sucesso');
+    reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [
+        { loja: 'Conferência parcial', status: 'complete', pendentes: 2 },
+        { loja: 'Sem histórico', status: 'idle', habilitado: true }
+    ] } });
+    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /Atualizada/, 'tarefas restantes ou automação habilitada não comprovam atualização');
+    const mixed = {
+        active: true, progress: { percentual: 43, mensagem: 'Coletando página 2' }, logs: ['<registro técnico>'],
+        automacao: { pendentes: 9, habilitadas: 6, lojas: [
+            { loja: 'Loja A', status: 'running' },
+            { loja: 'Loja B', status: 'running', ultimo_erro: 'Falha na tentativa anterior' },
+            { loja: 'Loja C', status: 'queued', pendentes: 4 },
+            { loja: 'Loja D', status: 'complete', pendentes: 0 },
+            { loja: 'Loja E', status: 'retry', ultimo_erro: 'Sessão expirada. Faça login novamente.' },
+            { loja: 'Loja F', status: 'paused' }
+        ] }
+    };
+    reopened.context.aplicarEstadoMonitorSyncVendas(mixed);
+    const mixedHtml = reopened.elements.syncPersistenteStatus.innerHTML;
+    assert.match(mixedHtml, /2 lojas sincronizando · 1 loja aguardando · 1 loja atualizada · 1 loja pausada · 1 loja requer atenção/,
+        'o resumo deve contar lojas, mesmo quando há várias tarefas por loja');
+    assert.match(mixedHtml.split('<details')[0], /Loja E.*Sessão expirada\. Faça login novamente/,
+        'o aviso de login deve permanecer visível, mesmo com status retry');
+    assert.match(mixedHtml, /data-sync-state="paused">Pausada/);
+    assert.doesNotMatch(mixedHtml.split('<details')[0], /registro técnico|9 tarefas/);
+    assert.match(mixedHtml, /&lt;registro técnico&gt;/);
+    assert.match(mixedHtml, /Coletando página 2/, 'a mensagem da etapa deve continuar disponível nos detalhes');
+    assert.match(mixedHtml.split('<details')[0], /Loja B.*Falha na tentativa anterior/);
+    assert.match(reopened.elements.status.innerHTML, /Sincronizando · 43%/);
+    assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página/);
+    reopened.context.renderProgresso({ etapa: 'Fila', percentual: 0 }, [], reopened.elements.status, [{ status: 'queued' }]);
+    assert.match(reopened.elements.status.innerHTML, /Aguardando início/);
+    assert.doesNotMatch(reopened.elements.status.innerHTML, />Sincronizando/, 'a fila ativa não comprova coleta em andamento');
+    reopened.context.renderProgresso({ etapa: 'Erro', mensagem: '<Falha na consulta>' }, []);
+    assert.match(reopened.elements.status.innerHTML.split('<details')[0], /vendas-sync-alert.*&lt;Falha na consulta&gt;/,
+        'falhas da etapa devem continuar visíveis mesmo sem uma loja identificada');
     reopened.context.aplicarEstadoMonitorSyncVendas(persisted);
     reopened.elements.status.textContent = '';
     assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /Última conferência/, 'carregar vendas não deve apagar a situação persistida');

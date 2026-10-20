@@ -103,7 +103,7 @@
                 <div class="vn-sync-actions"><button type="button" id="vnSync" class="vn-btn vn-btn-primary">${icon('refresh')}Sincronizar</button><button type="button" id="vnPause" class="vn-btn vn-btn-pause" title="Pausar sincronização e atualização automática de todas as lojas">${icon('pause')}Pausar</button></div>
             </section>
             <section class="vn-rangebar" aria-label="Atalhos e opções do período"><div class="vn-control-group"><span class="vn-control-label">Período rápido</span>${segmented('Período rápido', [['3m', '3 meses', 'data-vn-period'], ['6m', '6 meses', 'data-vn-period'], ['1a', '1 ano', 'data-vn-period'], ['2a', '2 anos', 'data-vn-period'], ['max', 'Tudo', 'data-vn-period']])}</div><div class="vn-sync-options"><label><input type="checkbox" id="vnForce">Re-sincronizar</label><label><input type="checkbox" id="vnAuto">Atualizar automaticamente</label></div></section>
-            <div class="vn-status" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><span id="vnStatus"></span><span id="vnPersistentStatus"></span><span id="vnActionStatus"></span></div>
+            <div class="vn-status" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><div id="vnStatus"></div><div id="vnPersistentStatus"></div><div id="vnActionStatus"></div></div>
             <section class="vn-kpis" aria-label="Indicadores do período">
                 <article class="vn-kpi vn-kpi-primary"><h2>${icon('money')}Valor líquido</h2><div class="vn-kpi-value" id="vnNet">—</div><p id="vnGross">Bruto —</p></article>
                 <article class="vn-kpi"><h2>${icon('cart')}Pedidos</h2><div class="vn-kpi-value" id="vnOrders">—</div><p>No período selecionado</p></article>
@@ -308,6 +308,30 @@
         return match ? `${match[3]}/${match[2]}/${match[1]}` : String(iso || '');
     }
 
+    function renderSyncStatus(snapshot) {
+        const status = snapshot.status;
+        const sync = snapshot.sync;
+        const statusPanel = find('vnStatus');
+        const persistentPanel = find('vnPersistentStatus');
+        const nativeText = typeof status === 'string' ? status : status?.text ?? status?.message ?? '';
+        const nativeError = /(?:^|\s)error(?:\s|$)/.test(String(status?.className || ''));
+        const lojas = Array.isArray(sync?.automacao?.lojas) ? sync.automacao.lojas : [];
+        const nativeProgress = document.getElementById('status')?.querySelector('.vendas-sync-progress');
+        if (sync?.active && sync.progress && !nativeError && (!nativeText || nativeProgress)
+            && typeof renderProgresso === 'function' && statusPanel) {
+            renderProgresso(sync.progress, sync.logs, statusPanel, lojas);
+        } else {
+            if (statusPanel) statusPanel.className = nativeError ? 'vn-status-message error' : 'vn-status-message';
+            text('vnStatus', nativeText);
+        }
+        if (Array.isArray(sync?.automacao?.lojas) && typeof renderAutomacaoSyncVendas === 'function' && persistentPanel) {
+            renderAutomacaoSyncVendas(sync, persistentPanel);
+        } else {
+            if (persistentPanel) persistentPanel.className = '';
+            text('vnPersistentStatus', status?.automationText ?? status?.persistent ?? status?.persistentText ?? '');
+        }
+    }
+
     function controls(snapshot) {
         const filters = snapshot.filters || {};
         const options = snapshot.chartOptions || {};
@@ -344,9 +368,7 @@
         find('vnForce').checked = Boolean(document.getElementById('forcarSync')?.checked);
         find('vnAuto').checked = Boolean(document.getElementById('syncAutomatico')?.checked);
         find('vnLoading').hidden = !snapshot.loading;
-        const status = snapshot.status;
-        text('vnStatus', typeof status === 'string' ? status : status?.text ?? status?.message ?? '');
-        text('vnPersistentStatus', status?.automationText ?? status?.persistent ?? status?.persistentText ?? '');
+        renderSyncStatus(snapshot);
         text('vnFooterContext', `${filters.loja && filters.loja !== '__todas' ? filters.loja : 'Todas as lojas'}${filters.inicio && filters.fim ? ` · ${periodLabel}` : ''}`);
         find('vnOpenReturns').disabled = !document.querySelector('#resumo .card-devolucoes button');
     }

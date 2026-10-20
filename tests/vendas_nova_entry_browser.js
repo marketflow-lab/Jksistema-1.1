@@ -17,8 +17,12 @@ fs.mkdirSync(artifactBase, { recursive: true });
 const scratch = fs.mkdtempSync(path.join(artifactBase, 'run-'));
 const reportPath = process.env.JK_VENDAS_ENTRY_REPORT ? path.resolve(process.env.JK_VENDAS_ENTRY_REPORT) : path.join(scratch, 'report.json');
 const screenshotPath = process.env.JK_VENDAS_ENTRY_SCREENSHOT ? path.resolve(process.env.JK_VENDAS_ENTRY_SCREENSHOT) : null;
-const report = { before_reproduction: null, checks: [], errors: [], passing: false };
+const report = { before_reproduction: null, checks: [], screenshots: [], errors: [], passing: false };
 const inline = source => `<script>${source.replace(/<\/script/gi, '<\\/script')}</script>`;
+const periodSource = read('static/vendas/periodo-cache.js');
+const syncPresentation = `function formatDate(value) {
+    return String(value || '').replace(/^(\\d{4})-(\\d{2})-(\\d{2})$/, '$3/$2/$1');
+}\n` + periodSource.slice(periodSource.indexOf('function formatarMomentoSyncVendas('), periodSource.indexOf('let progressMonitorSubscribed'));
 
 const auxiliaryIa = path.join(scratch, 'ia-sidebar.js');
 fs.writeFileSync(auxiliaryIa, '// Unrelated lazy assistant asset; no navigation or visibility rules.\n');
@@ -83,7 +87,8 @@ function createFixture(name, html, extraCss) {
         'static/vendas/runtime.js', 'static/vendas/assistente.js', 'static/vendas/visual-novo.js',
     ];
     const assets = `<script src="${pathToFileURL(auxiliaryIa).href}"></script>`;
-    output = output.replace('</body>', assets + inline(fixtureState) + sources.map(relative => inline(read(relative))).join('')
+    output = output.replace('</body>', assets + inline(fixtureState) + sources.map(relative => inline(read(relative))
+        + (relative === 'static/vendas/runtime.js' ? inline(syncPresentation) : '')).join('')
         + inline('window.__vendasEntryFixtureReady = true;') + '</body>');
     const moduleFile = path.join(scratch, `${name}.html`);
     const shellFile = path.join(scratch, `${name}-shell.html`);
@@ -260,6 +265,131 @@ async function verifyPhotoFeedback(context, fixture) {
     }
 }
 
+async function verifySyncStatus(context, fixture, width, modern) {
+    const details = { mode: 'iframe', width, feature: 'sync status', layout: modern ? 'new' : 'legacy' };
+    const { page, frame } = await loadCase(context, fixture, true, width);
+    const panel = frame.locator(modern ? '#vnPersistentStatus' : '#syncPersistenteStatus');
+    const progress = frame.locator(modern ? '#vnStatus' : '#status');
+    try {
+        await frame.evaluate(() => {
+            const store = (loja, status, extra = {}) => ({
+                loja, store_id: loja, status, habilitado: status !== 'paused',
+                data_inicio: '2026-10-14', data_fim: '2026-10-20',
+                dias_concluidos: status === 'complete' ? 7 : 1, dias_total: 7,
+                proxima_execucao: '2026-10-20T12:00:00Z', ultima_conferencia: '2026-10-20T10:00:00Z',
+                ...extra,
+            });
+            window.__entrySyncPayload = {
+                active: true, progress: { percentual: 43, etapa: 'Coleta', mensagem: 'Etapa técnica exclusiva do fixture.' },
+                logs: ['LOG_TECNICO_RECOLHIDO <coleta>'],
+                automacao: {
+                    pendentes: 9, habilitadas: 5,
+                    lojas: [
+                        store('RCL', 'running', { checkpoint: { ultimo_tipo: 'pedido', ultimo_id: 'DOC-123', documentos_salvos: 26, atualizado_em: '2026-10-20T10:16:46Z' } }),
+                        store('JK Peças', 'running'),
+                        store('Carlos José', 'queued'),
+                        store('Aline 2', 'complete'),
+                        store('Deckas', 'retry', { ultimo_erro: 'Sessão expirada. Faça login novamente para continuar as pendências.' }),
+                        store('Randy', 'paused'),
+                    ],
+                },
+            };
+            window.__entryPublishSync = nativeMessage => {
+                const payload = window.__entrySyncPayload;
+                const native = document.getElementById('status');
+                renderAutomacaoSyncVendas(payload);
+                if (nativeMessage) {
+                    native.className = nativeMessage.className;
+                    native.textContent = nativeMessage.text;
+                } else {
+                    renderProgresso(payload.progress, payload.logs, native, payload.automacao.lojas);
+                }
+                __entrySetSnapshot({
+                    sync: structuredClone(payload),
+                    status: { text: native.textContent, className: native.className, automationText: 'FALLBACK_TEXTO_NAO_EXIBIR' },
+                });
+            };
+            __entryPublishSync();
+        });
+        if (modern) {
+            await frame.locator('#btnVersaoNovaVendas').click();
+            await frame.waitForFunction(() => JKVendasNova.isActive());
+        }
+        await panel.locator('.vendas-sync-counts').waitFor({ state: 'visible' });
+        const visible = await panel.innerText();
+        check('store counts distinguish activity, completion, pause and attention', [
+            '2 lojas sincronizando', '1 loja aguardando', '1 loja atualizada',
+            '1 loja pausada', '1 loja requer atenção',
+        ].every(label => visible.includes(label)), details);
+        check('job count is not presented as store count', !visible.includes('9 lojas'), details);
+        check('technical content starts collapsed', !/DOC-123|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva|9 tarefas|FALLBACK_TEXTO_NAO_EXIBIR/.test(visible), details);
+        check('both disclosure panels start closed', await panel.locator('details').evaluateAll(nodes => nodes.length === 2 && nodes.every(node => !node.open)), details);
+        check('session expiry stays visible outside the disclosure panels', await panel.locator('.vendas-sync-alert').evaluate(element =>
+            !element.closest('details') && element.textContent.includes('Sessão expirada') && element.getBoundingClientRect().height > 0), details);
+        check('the overall panel stays neutral', await panel.evaluate(element => !element.classList.contains('error')), details);
+        check('progress is concise and identifies running stores', /Sincronizando · 43%/.test(await progress.innerText())
+            && /RCL, JK Peças em andamento/.test(await progress.innerText())
+            && !/LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva/.test(await progress.innerText()), details);
+
+        await progress.scrollIntoViewIfNeeded();
+        await panel.scrollIntoViewIfNeeded();
+        const boxes = await Promise.all([progress.boundingBox(), panel.boundingBox()]);
+        const x = Math.max(0, Math.min(...boxes.map(box => box.x)));
+        const y = Math.max(0, Math.min(...boxes.map(box => box.y)));
+        const right = Math.min(width, Math.max(...boxes.map(box => box.x + box.width)));
+        const bottom = Math.min(900, Math.max(...boxes.map(box => box.y + box.height)));
+        const imagePath = path.join(scratch, `sync-${modern ? 'new' : 'legacy'}-${width}.png`);
+        await page.screenshot({ path: imagePath, clip: { x, y, width: right - x, height: bottom - y } });
+        report.screenshots.push({ ...details, path: path.basename(imagePath) });
+        check('collapsed panels do not overflow horizontally', await panel.evaluate(element => {
+            const rect = element.getBoundingClientRect();
+            return rect.left >= -1 && rect.right <= innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
+        }), details);
+
+        const stores = panel.locator('details[data-sync-details="stores"]');
+        const technical = panel.locator('details[data-sync-details="technical"]');
+        await stores.locator('summary').click();
+        check('store details reveal every store once', await stores.locator('.vendas-sync-store').count() === 6, details);
+        await technical.locator('summary').click();
+        check('technical details reveal checkpoint, stage and escaped log', /Pedido #DOC-123/.test(await technical.innerText())
+            && /Etapa técnica exclusiva/.test(await technical.innerText())
+            && /LOG_TECNICO_RECOLHIDO <coleta>/.test(await technical.innerText())
+            && await technical.locator('coleta').count() === 0, details);
+        check('expanded panels do not overflow horizontally', await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1), details);
+        await technical.locator('summary').focus();
+        await frame.evaluate(() => {
+            __entrySyncPayload.progress.percentual = 44;
+            __entrySyncPayload.logs.push('Novo registro após atualização.');
+            __entryPublishSync();
+        });
+        await frame.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-valuenow') === '44',
+            `${modern ? '#vnStatus' : '#status'} [role="progressbar"]`);
+        check('polling preserves both open disclosures and the focused summary', await panel.evaluate(element => {
+            const opened = Array.from(element.querySelectorAll('details'));
+            return opened.every(node => node.open)
+                && document.activeElement === element.querySelector('details[data-sync-details="technical"] > summary');
+        }), details);
+        await stores.locator('summary').focus();
+        await frame.evaluate(() => { __entrySyncPayload.logs.push('Mais um registro.'); __entryPublishSync(); });
+        await frame.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('Mais um registro.'), modern ? '#vnPersistentStatus' : '#syncPersistenteStatus');
+        check('polling preserves focus on the store summary too', await stores.locator('summary').evaluate(element => element === document.activeElement), details);
+
+        if (modern) {
+            await frame.evaluate(() => __entryPublishSync({ className: 'status-bar error', text: 'Erro nativo deve permanecer visível.' }));
+            await progress.getByText('Erro nativo deve permanecer visível.', { exact: true }).waitFor();
+            check('native errors override stale active progress locally', await progress.evaluate(element =>
+                element.classList.contains('error') && !element.querySelector('.vendas-sync-progress')), details);
+            check('a native error does not recolor the persistent panel', await panel.evaluate(element => !element.classList.contains('error')), details);
+            await frame.evaluate(() => __entryPublishSync({ className: 'status-bar loading', text: 'Pausando sincronização...' }));
+            await progress.getByText('Pausando sincronização...', { exact: true }).waitFor();
+            check('native action messages override stale active progress', await progress.evaluate(element =>
+                !element.classList.contains('error') && !element.querySelector('.vendas-sync-progress')), details);
+        }
+    } finally {
+        await page.close();
+    }
+}
+
 (async () => {
     let context;
     try {
@@ -280,6 +410,10 @@ async function verifyPhotoFeedback(context, fixture) {
             await verifyCase(context, fixture, true, width);
         }
         await verifyPhotoFeedback(context, fixture);
+        for (const width of [1206, 390]) {
+            await verifySyncStatus(context, fixture, width, false);
+            await verifySyncStatus(context, fixture, width, true);
+        }
         assert.equal(report.errors.length, 0, 'The entry fixture must have no page errors or external browser requests');
         report.passing = true;
         console.log(`vendas nova entry browser: ok (${report.checks.length} checks; standalone/iframe; 1206/1366/390 px)`);

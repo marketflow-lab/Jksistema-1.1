@@ -74,8 +74,39 @@ function formatarMomentoSyncVendas(valor) {
     return Number.isNaN(data.getTime()) ? String(valor) : data.toLocaleString('pt-BR');
 }
 
-function renderAutomacaoSyncVendas(data) {
-    const painel = document.getElementById('syncPersistenteStatus');
+function substituirConteudoSyncVendas(painel, html) {
+    if (painel.innerHTML === html) return;
+    const detalhes = Array.from(painel.querySelectorAll?.('details[data-sync-details]') || []);
+    const abertos = new Set(detalhes.filter(item => item.open).map(item => item.getAttribute('data-sync-details')));
+    const foco = detalhes.find(item => item.querySelector('summary') === document.activeElement)
+        ?.getAttribute('data-sync-details');
+    painel.innerHTML = html;
+    for (const item of painel.querySelectorAll?.('details[data-sync-details]') || []) {
+        const chave = item.getAttribute('data-sync-details');
+        item.open = abertos.has(chave);
+        if (chave === foco) item.querySelector('summary')?.focus({ preventScroll: true });
+    }
+}
+
+function estadoSyncLojaVendas(loja) {
+    const status = String(loja?.status || '').toLowerCase();
+    if (['paused', 'pausado', 'cancelado'].includes(status)) return ['paused', 'Pausada'];
+    if (['running', 'executando', 'em_execucao'].includes(status)) return ['running', 'Sincronizando'];
+    if (loja?.ultimo_erro || ['blocked', 'erro'].includes(status)) return ['attention', 'Requer atenção'];
+    if (['complete', 'concluido', 'finalizado'].includes(status) && !(Number(loja?.pendentes) > 0)) {
+        return ['complete', 'Atualizada'];
+    }
+    if (['queued', 'pendente', 'retry', 'aguardando', 'complete', 'concluido', 'finalizado'].includes(status)
+        || loja?.habilitado || Number(loja?.pendentes) > 0) return ['queued', 'Aguardando'];
+    return ['idle', 'Sem sincronização'];
+}
+
+function logsSyncVendas(logs) {
+    return (Array.isArray(logs) ? logs : []).slice(-10)
+        .map(log => `<div>${escaparHtmlVendas(log)}</div>`).join('');
+}
+
+function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncPersistenteStatus')) {
     if (!painel) return;
     const automacao = data?.automacao;
     const lojas = Array.isArray(automacao?.lojas) ? automacao.lojas : [];
@@ -85,69 +116,71 @@ function renderAutomacaoSyncVendas(data) {
     }
     const pendentes = Math.max(0, Number(automacao?.pendentes || 0));
     const habilitadas = Math.max(0, Number(automacao?.habilitadas || 0));
-    const temErro = lojas.some(loja => Boolean(loja?.ultimo_erro));
-    const estados = {
-        queued: 'Aguardando sincronização',
-        running: 'Sincronizando',
-        retry: 'Aguardando próxima tentativa',
-        blocked: 'Aguardando correção da pendência',
-        paused: 'Pausada',
-        complete: 'Período conferido',
-        pendente: 'Aguardando sincronização',
-        executando: 'Sincronizando',
-        em_execucao: 'Sincronizando',
-        aguardando: 'Aguardando próxima tentativa',
-        erro: 'Aguardando nova tentativa',
-        pausado: 'Pausada',
-        cancelado: 'Pausada',
-        concluido: 'Período conferido',
-        finalizado: 'Período conferido'
-    };
-    painel.className = 'status-bar' + (temErro ? ' error' : '');
-    painel.innerHTML = `<strong>Sincronização salva</strong> · ${pendentes} sincronização(ões) pendente(s) · Atualização automática em ${habilitadas} loja(s).`
-        + lojas.map(loja => {
-            const status = String(loja?.status || '').toLowerCase();
-            const conferidaComPendencia = ['complete', 'concluido', 'finalizado'].includes(status)
-                && (loja?.ultimo_erro || Number(loja?.pendentes || 0) > 0);
-            const rotulo = conferidaComPendencia ? 'Conferência pendente'
-                : (estados[status] || (loja?.habilitado ? 'Atualização automática habilitada' : 'Atualização automática desabilitada'));
-            const periodo = loja?.data_inicio && loja?.data_fim
-                ? ` · ${formatDate(loja.data_inicio)} a ${formatDate(loja.data_fim)}` : '';
-            const dias = Number(loja?.dias_total || 0) > 0
-                ? ` · ${Number(loja.dias_concluidos || 0)}/${Number(loja.dias_total)} dia(s) conferido(s)` : '';
-            const ultima = loja?.ultima_conferencia
-                ? `<br>Última conferência: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.ultima_conferencia))}` : '';
-            const proxima = loja?.habilitado && loja?.proxima_execucao
-                ? `<br>Próxima atualização: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.proxima_execucao))}` : '';
-            const erro = loja?.ultimo_erro
-                ? `<br>Pendência: ${escaparHtmlVendas(loja.ultimo_erro)}` : '';
-            const checkpoint = loja?.checkpoint || {};
-            const tiposDocumento = { pedido: 'Pedido', nfe_entrada: 'NF-e de entrada', nfe_saida: 'NF-e de saída' };
-            const documento = checkpoint.ultimo_id
-                ? `${tiposDocumento[checkpoint.ultimo_tipo] || 'Documento'} #${checkpoint.ultimo_id}` : '';
-            const quantidadeColetada = Math.max(0, Number(checkpoint.documentos_salvos || 0));
-            const coletados = quantidadeColetada > 0
-                ? ` · ${quantidadeColetada} documento(s) coletado(s) nesta etapa` : '';
-            const coletaEm = checkpoint.atualizado_em
-                ? ` · ${formatarMomentoSyncVendas(checkpoint.atualizado_em)}` : '';
-            const coleta = documento
-                ? `<br>Último documento coletado: ${escaparHtmlVendas(documento + coletados + coletaEm)}` : '';
-            return `<div style="margin-top:6px;"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong> · ${escaparHtmlVendas(rotulo + periodo + dias)}${coleta}${ultima}${proxima}${erro}</div>`;
-        }).join('')
-        + '<div style="margin-top:6px;">O progresso é preservado ao sair desta tela. As atualizações continuam enquanto o serviço do sistema estiver funcionando.</div>';
+    const estados = lojas.map(loja => ({ loja, estado: estadoSyncLojaVendas(loja) }));
+    const contagens = [
+        ['running', 'sincronizando'], ['queued', 'aguardando'], ['complete', 'atualizada', 'atualizadas'],
+        ['paused', 'pausada', 'pausadas'], ['attention', 'requer atenção', 'requerem atenção'], ['idle', 'sem sincronização']
+    ].map(([chave, singular, plural]) => {
+        const total = estados.filter(item => item.estado[0] === chave).length;
+        return total ? `${total} ${total === 1 ? 'loja' : 'lojas'} ${total === 1 ? singular : plural || singular}` : '';
+    }).filter(Boolean).join(' · ');
+    const alertas = estados.filter(item => item.loja?.ultimo_erro || item.estado[0] === 'attention')
+        .map(({ loja }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
+    const linhas = estados.map(({ loja, estado: [chave, rotulo] }) =>
+        `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong><span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`
+    ).join('');
+    const detalhesLojas = estados.map(({ loja, estado: [, rotulo] }) => {
+        const periodo = loja?.data_inicio && loja?.data_fim
+            ? ` · ${formatDate(loja.data_inicio)} a ${formatDate(loja.data_fim)}` : '';
+        const dias = Number(loja?.dias_total || 0) > 0
+            ? ` · ${Number(loja.dias_concluidos || 0)}/${Number(loja.dias_total)} dia(s) conferido(s)` : '';
+        const ultima = loja?.ultima_conferencia
+            ? `<br>Última conferência: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.ultima_conferencia))}` : '';
+        const proxima = loja?.habilitado && loja?.proxima_execucao
+            ? `<br>Próxima atualização: ${escaparHtmlVendas(formatarMomentoSyncVendas(loja.proxima_execucao))}` : '';
+        const checkpoint = loja?.checkpoint || {};
+        const tiposDocumento = { pedido: 'Pedido', nfe_entrada: 'NF-e de entrada', nfe_saida: 'NF-e de saída' };
+        const documento = checkpoint.ultimo_id
+            ? `${tiposDocumento[checkpoint.ultimo_tipo] || 'Documento'} #${checkpoint.ultimo_id}` : '';
+        const quantidadeColetada = Math.max(0, Number(checkpoint.documentos_salvos || 0));
+        const coletados = quantidadeColetada > 0
+            ? ` · ${quantidadeColetada} documento(s) coletado(s) nesta etapa` : '';
+        const coletaEm = checkpoint.atualizado_em
+            ? ` · ${formatarMomentoSyncVendas(checkpoint.atualizado_em)}` : '';
+        const coleta = documento
+            ? `<br>Último documento coletado: ${escaparHtmlVendas(documento + coletados + coletaEm)}` : '';
+        return `<div class="vendas-sync-technical-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong> · ${escaparHtmlVendas(rotulo + periodo + dias)}${coleta}${ultima}${proxima}</div>`;
+    }).join('');
+    const logs = logsSyncVendas(data?.logs);
+    const etapa = data?.progress?.mensagem ? `<div>${escaparHtmlVendas(data.progress.mensagem)}</div>` : '';
+    painel.className = 'status-bar vendas-sync-status';
+    substituirConteudoSyncVendas(painel, `<div class="vendas-sync-summary"><strong>Sincronização das lojas</strong><div class="vendas-sync-counts">${contagens}</div></div>${alertas}`
+        + `<details class="vendas-sync-details" data-sync-details="stores"><summary>Ver status de todas as lojas</summary>${linhas}</details>`
+        + `<details class="vendas-sync-details" data-sync-details="technical"><summary>Ver detalhes técnicos</summary>`
+        + `<div class="vendas-sync-muted">${pendentes} ${pendentes === 1 ? 'tarefa pendente' : 'tarefas pendentes'} · Atualização automática em ${habilitadas} ${habilitadas === 1 ? 'loja' : 'lojas'}.</div>`
+        + etapa + detalhesLojas + (logs ? `<div class="vendas-sync-logs"><strong>Registros recentes</strong>${logs}</div>` : '')
+        + '<p class="vendas-sync-muted">O progresso é salvo. As atualizações continuam enquanto o serviço do sistema estiver funcionando.</p></details>');
 }
 
-function renderProgresso(p, logs) {
-    if (!p) return;
-    const percent = Math.max(0, Math.min(100, Number(p.percentual || 0)));
-    const logsList = (logs || []).slice(-10).map(l => `<div style="color:#9bd1ff; margin:2px 0;">${escaparHtmlVendas(l)}</div>`).join('');
-    statusEl.className = 'status-bar loading';
-    statusEl.innerHTML = `${spinnerHtml}<strong>${escaparHtmlVendas(p.mensagem || 'Sincronizando...')}</strong>
-        <div style="margin-top:8px;background:#222;border-radius:6px;overflow:hidden;">
-            <div style="height:8px;width:${percent}%;background:#4facfe;"></div>
-        </div>
-        <div style="margin-top:6px;font-size:0.85rem;color:#9bd1ff;">${percent}%</div>
-        <div style="margin-top:8px;font-size:0.85rem;">${logsList}</div>`;
+function renderProgresso(p, logs, painel = statusEl, lojas = []) {
+    if (!p || !painel) return;
+    const valor = Number(p.percentual || 0);
+    const percent = Number.isFinite(valor) ? Math.max(0, Math.min(100, valor)) : 0;
+    const listaLojas = Array.isArray(lojas) ? lojas : [];
+    const lojasAtivas = listaLojas.filter(loja =>
+        ['running', 'executando', 'em_execucao'].includes(String(loja?.status || '').toLowerCase()));
+    const nomes = lojasAtivas.slice(0, 3).map(loja => loja?.loja || 'Loja').join(', ');
+    const outras = lojasAtivas.length > 3 ? ` e mais ${lojasAtivas.length - 3}` : '';
+    const registros = logsSyncVendas(logs);
+    const aguardando = (listaLojas.length > 0 && lojasAtivas.length === 0) || String(p.etapa || '').toLowerCase() === 'fila';
+    const erro = String(p.etapa || '').toLowerCase() === 'erro'
+        ? `<div class="vendas-sync-alert">${escaparHtmlVendas(p.mensagem || 'Falha na sincronização.')}</div>` : '';
+    const detalhes = !listaLojas.length && (registros || p.mensagem)
+        ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
+    painel.className = 'status-bar loading';
+    substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${aguardando ? 'Aguardando início' : 'Sincronizando'} · ${percent}%</strong>`
+        + (nomes ? `<div class="vendas-sync-muted">${escaparHtmlVendas(nomes + outras)} em andamento.</div>` : '')
+        + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${erro}${detalhes}`);
 }
 
 let progressMonitorSubscribed = false;
@@ -164,7 +197,7 @@ function aplicarEstadoMonitorSyncVendas(data) {
         syncEmAndamento = true;
         setSyncButtons(true);
         if (progresso) {
-            renderProgresso(progresso, data.logs);
+            renderProgresso(progresso, data.logs, statusEl, data.automacao?.lojas || []);
         } else {
             statusEl.className = 'status-bar loading';
             statusEl.innerHTML = `${spinnerHtml}<strong>Aguardando resposta do servidor...</strong>`;

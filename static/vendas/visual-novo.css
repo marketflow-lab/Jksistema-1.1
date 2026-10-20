@@ -69,10 +69,15 @@ body.vendas-layout-novo > .jk-nav-card-group { display: none !important; }
 .vn-root .vn-segmented button { border: 0; background: transparent; color: #7b738d; border-radius: 5px; padding: 7px 10px; font-size: 11px; line-height: 1.25; white-space: nowrap; }
 .vn-root .vn-segmented button[aria-pressed=true] { background: var(--vn-soft); color: var(--vn-accent); font-weight: 600; }
 .vn-root .vn-segmented button:hover { background: #f4f0fa; }
-.vn-root .vn-status { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; color: #8a809b; font-size: 11px; line-height: 1.5; margin-bottom: 14px; overflow-wrap: anywhere; }
-.vn-root .vn-status:has(>span:not(:empty)), .vn-root .vn-status:has(.vn-loading:not([hidden])) { padding: 10px 12px; background: #f0ebf9; border: 1px solid #e4dcef; border-radius: 8px; }
-.vn-root .vn-status:has(>span:not(:empty)) #vnPersistentStatus { display: block; flex-basis: 100%; }
-.vn-root #vnActionStatus:not(:empty) { color: #a44d67; }
+.vn-root .vn-status { --sync-muted: #71677e; --sync-error: #a13148; --sync-error-bg: #fff2f4; --sync-active: #6835c7; --sync-success: #20744b; --sync-border: #e4dcef; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; color: #53485f; font-size: 12px; line-height: 1.5; margin-bottom: 14px; overflow-wrap: anywhere; }
+.vn-root .vn-status:has(>div:not(:empty)), .vn-root .vn-status:has(.vn-loading:not([hidden])) { padding: 12px 14px; background: #faf8fd; border: 1px solid var(--sync-border); border-radius: 8px; }
+.vn-root .vn-status > div { flex-basis: 100%; min-width: 0; }
+.vn-root .vn-status > .status-bar { padding: 0; margin: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.vn-root .vn-status .vendas-sync-summary > strong { color: var(--vn-ink); }
+.vn-root .vn-status .vendas-sync-details > summary { color: var(--sync-active); font-weight: 500; }
+.vn-root .vn-status .vendas-sync-details > summary:hover { color: #4d1d9d; }
+.vn-root .vn-status .vendas-sync-track { background: #e8e0f3; }
+.vn-root #vnStatus.error:not(:empty), .vn-root #vnActionStatus:not(:empty) { color: var(--sync-error); background: var(--sync-error-bg); border: 1px solid #ebc2cc; border-radius: 6px; padding: 8px 10px; }
 .vn-root .vn-loading { width: 13px; height: 13px; border: 2px solid #dfd2f5; border-top-color: var(--vn-accent); border-radius: 50%; animation: vn-spin .8s linear infinite; }
 .vn-root .vn-syncing .vn-icon { animation: vn-spin 1s linear infinite; }
 .vn-root .vn-kpis { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px; }
