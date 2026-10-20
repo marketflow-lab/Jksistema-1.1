@@ -44,6 +44,18 @@ function vendaEhEbazarSomatorio(venda) {
     return comprador.includes('EBAZAR') || canal.includes('EBAZAR');
 }
 
+function abrirDevolucoesVendas() {
+    const qs = new URLSearchParams();
+    const inicio = getDataIniISO();
+    const fim = getDataFimISO();
+    if (inicio) qs.set('data_inicio', inicio);
+    if (fim) qs.set('data_fim', fim);
+    qs.set('loja', lojaSelecionada || '__todas');
+    const unidade = unidadeNegocioSelect.value;
+    if (unidade && unidade !== '__todos') qs.set('unidade_negocio', unidade);
+    window.location.href = `/devolucoes.html?${qs.toString()}`;
+}
+
 function renderResumoTotaisVendas(totais, exibirDevolucoes = true) {
     const avisoComposicao = document.getElementById('composicaoAviso');
     if (avisoComposicao) {
@@ -108,14 +120,7 @@ function renderResumoTotaisVendas(totais, exibirDevolucoes = true) {
             btn.style.background = '#9b59b6';
             btn.style.marginTop = '0';
             btn.textContent = 'Ver';
-            btn.onclick = () => {
-                const qs = new URLSearchParams();
-                const iniIso = getDataIniISO();
-                const fimIso = getDataFimISO();
-                if (iniIso) qs.append('data_inicio', iniIso);
-                if (fimIso) qs.append('data_fim', fimIso);
-                window.location.href = '/devolucoes.html' + (qs.toString() ? `?${qs.toString()}` : '');
-            };
+            btn.onclick = abrirDevolucoesVendas;
             valueRow.appendChild(btn);
         }
         resumo.appendChild(div);
@@ -187,14 +192,7 @@ function renderResumo(lista, devolucoesLista = [], exibirDevolucoes = true) {
             btn.style.background = '#9b59b6';
             btn.style.marginTop = '0';
             btn.textContent = 'Ver';
-            btn.onclick = () => {
-                const qs = new URLSearchParams();
-                const iniIso = getDataIniISO();
-                const fimIso = getDataFimISO();
-                if (iniIso) qs.append('data_inicio', iniIso);
-                if (fimIso) qs.append('data_fim', fimIso);
-                window.location.href = '/devolucoes.html' + (qs.toString() ? `?${qs.toString()}` : '');
-            };
+            btn.onclick = abrirDevolucoesVendas;
             valueRow.appendChild(btn);
         }
         resumo.appendChild(div);
@@ -366,12 +364,15 @@ function atualizarUnidadesNegocio(lista, mapeamento) {
         unidadeNegocioSelect.appendChild(opt);
     });
     
-    // Restaurar seleção anterior se ainda existir
-    if (atual && idsOrdenados.includes(atual)) {
-        unidadeNegocioSelect.value = atual;
-    } else {
-        unidadeNegocioSelect.value = '__todos';
+    // Um período sem vendas pode ter devoluções: preserve o filtro explícito.
+    // A troca de loja já limpa a seleção em atualizarSelecao.
+    if (atual && atual !== '__todos' && !idsOrdenados.includes(atual)) {
+        const opt = document.createElement('option');
+        opt.value = atual;
+        opt.textContent = mapeamentoUnidades[atual] || atual;
+        unidadeNegocioSelect.appendChild(opt);
     }
+    unidadeNegocioSelect.value = atual || '__todos';
 }
 
 function diasIntervalo(inicio, fim) {

@@ -72,16 +72,17 @@
         }
         .input-group {
             display: flex;
+            align-items: center;
             gap: 5px;
         }
-        input[type="date"], input[type="text"] {
+        input[type="date"], input[type="text"], select {
             padding: 8px 12px;
             border: 1px solid #ddd;
             border-radius: 6px;
             font-size: 14px;
             font-family: inherit;
         }
-        input[type="date"]:focus, input[type="text"]:focus {
+        input[type="date"]:focus, input[type="text"]:focus, select:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
@@ -246,11 +247,23 @@
 
         <div class="filters">
             <div class="input-group">
-                <label>De:</label>
+                <label for="lojaSelect">Loja:</label>
+                <select id="lojaSelect" aria-label="Selecionar loja">
+                    <option value="__todas">Todas as lojas</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="unidadeNegocioSelect">Loja virtual:</label>
+                <select id="unidadeNegocioSelect" aria-label="Selecionar loja virtual">
+                    <option value="__todos">Todas as lojas virtuais</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="dataInicio">De:</label>
                 <input type="date" id="dataInicio">
             </div>
             <div class="input-group">
-                <label>Até:</label>
+                <label for="dataFim">Até:</label>
                 <input type="date" id="dataFim">
             </div>
             <button class="btn btn-primary" onclick="carregarDevolucoes()">🔍 Filtrar</button>
@@ -300,8 +313,11 @@
         }
 
         const urlParams = new URLSearchParams(window.location.search);
-        const dataInicio = urlParams.get('data_inicio');
-        const dataFim = urlParams.get('data_fim');
+        const lojaSelect = document.getElementById('lojaSelect');
+        const unidadeNegocioSelect = document.getElementById('unidadeNegocioSelect');
+        let consultaDevolucoesToken = 0;
+        let consultaDevolucoesController = null;
+        let consultaUnidadesToken = 0;
         let devolucoesPorSku = [];
         let devolucoesItensPeriodo = [];
         let skuSelecionados = new Set();
@@ -357,51 +373,191 @@
             }).format(valor || 0);
         }
 
+        function chaveFiltrosDevolucoes() {
+            try {
+                const clientId = JSON.parse(localStorage.getItem('user_data') || '{}').client_id;
+                return clientId ? `devolucoes_filtros_v1:${clientId}` : null;
+            } catch (_erro) {
+                return null;
+            }
+        }
+
+        function obterFiltrosDevolucoes() {
+            return {
+                data_inicio: document.getElementById('dataInicio').value,
+                data_fim: document.getElementById('dataFim').value,
+                loja: lojaSelect.value || '__todas',
+                unidade_negocio: unidadeNegocioSelect.value || '__todos',
+            };
+        }
+
+        function parametrosDevolucoes(filtros = obterFiltrosDevolucoes()) {
+            const params = new URLSearchParams();
+            if (filtros.data_inicio) params.set('data_inicio', filtros.data_inicio);
+            if (filtros.data_fim) params.set('data_fim', filtros.data_fim);
+            params.set('loja', filtros.loja || '__todas');
+            if (filtros.unidade_negocio && filtros.unidade_negocio !== '__todos') {
+                params.set('unidade_negocio', filtros.unidade_negocio);
+            }
+            return params;
+        }
+
+        function assinaturaFiltrosDevolucoes() {
+            return `${chaveFiltrosDevolucoes() || ''}:${parametrosDevolucoes().toString()}`;
+        }
+
+        function selecionarFiltro(select, valor) {
+            if (!Array.from(select.options).some(opcao => opcao.value === valor)) {
+                select.add(new Option(valor, valor));
+            }
+            select.value = valor;
+        }
+
         function salvarFiltros() {
-            const inicio = document.getElementById('dataInicio').value;
-            const fim = document.getElementById('dataFim').value;
-            sessionStorage.setItem('devolucoes_data_inicio', inicio);
-            sessionStorage.setItem('devolucoes_data_fim', fim);
+            const filtros = obterFiltrosDevolucoes();
+            try {
+                const chave = chaveFiltrosDevolucoes();
+                if (chave) sessionStorage.setItem(chave, JSON.stringify(filtros));
+            } catch (_erro) {
+                // A URL ainda preserva o contexto quando o armazenamento está indisponível.
+            }
+            try {
+                const destino = `${window.location.pathname}?${parametrosDevolucoes(filtros)}${window.location.hash}`;
+                window.history.replaceState(null, '', destino);
+            } catch (_erro) {
+                // Os filtros da consulta continuam válidos sem armazenamento local.
+            }
         }
 
         function restaurarFiltros() {
-            const inicio = sessionStorage.getItem('devolucoes_data_inicio') || dataInicio || '';
-            const fim = sessionStorage.getItem('devolucoes_data_fim') || dataFim || '';
-            document.getElementById('dataInicio').value = inicio;
-            document.getElementById('dataFim').value = fim;
+            let salvos = {};
+            let inicioLegado = '';
+            let fimLegado = '';
+            try {
+                const chave = chaveFiltrosDevolucoes();
+                salvos = chave ? JSON.parse(sessionStorage.getItem(chave) || '{}') : {};
+                if (!salvos || typeof salvos !== 'object' || Array.isArray(salvos)) salvos = {};
+                inicioLegado = sessionStorage.getItem('devolucoes_data_inicio') || '';
+                fimLegado = sessionStorage.getItem('devolucoes_data_fim') || '';
+            } catch (_erro) {
+                salvos = {};
+            }
+            const contextoNaUrl = urlParams.has('loja') || urlParams.has('unidade_negocio');
+            const loja = contextoNaUrl ? urlParams.get('loja') || '__todas' : salvos.loja || '__todas';
+            const unidade = contextoNaUrl ? urlParams.get('unidade_negocio') || '__todos' : salvos.unidade_negocio || '__todos';
+            document.getElementById('dataInicio').value = urlParams.get('data_inicio') ?? salvos.data_inicio ?? inicioLegado;
+            document.getElementById('dataFim').value = urlParams.get('data_fim') ?? salvos.data_fim ?? fimLegado;
+            selecionarFiltro(lojaSelect, loja);
+            selecionarFiltro(unidadeNegocioSelect, unidade);
+        }
+
+        async function consultarJsonDevolucoes(url, signal) {
+            const controller = new AbortController();
+            const cancelar = () => controller.abort();
+            if (signal?.aborted) cancelar();
+            else signal?.addEventListener('abort', cancelar, { once: true });
+            const prazo = setTimeout(cancelar, 15000);
+            try {
+                const response = await fetch(url, {
+                    headers: typeof obterAuthHeaders === 'function' ? obterAuthHeaders() : {},
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                if (!response.ok) throw new Error(`Não foi possível carregar os dados (HTTP ${response.status}).`);
+                return await response.json();
+            } finally {
+                clearTimeout(prazo);
+                signal?.removeEventListener('abort', cancelar);
+            }
+        }
+
+        async function carregarLojasDevolucoes() {
+            const tenant = chaveFiltrosDevolucoes();
+            try {
+                const lojas = await consultarJsonDevolucoes('/api/lojas');
+                if (!Array.isArray(lojas)) throw new Error('Lista de lojas inválida.');
+                if (tenant !== chaveFiltrosDevolucoes()) return;
+                const atual = lojaSelect.value;
+                lojaSelect.replaceChildren(new Option('Todas as lojas', '__todas'));
+                const nomes = [...new Set(lojas.map(loja => String(loja?.nome || '').trim()).filter(Boolean))];
+                nomes.forEach(nome => lojaSelect.add(new Option(nome, nome)));
+                selecionarFiltro(lojaSelect, atual);
+                lojaSelect.title = '';
+            } catch (_erro) {
+                lojaSelect.title = 'Não foi possível atualizar a lista de lojas. O filtro selecionado foi mantido.';
+            }
+        }
+
+        async function carregarUnidadesDevolucoes() {
+            const token = ++consultaUnidadesToken;
+            const loja = lojaSelect.value;
+            const tenant = chaveFiltrosDevolucoes();
+            try {
+                const params = new URLSearchParams({ loja });
+                const dados = await consultarJsonDevolucoes(`/api/unidades-negocios?${params}`);
+                if (dados?.error || !Array.isArray(dados?.unidades)) throw new Error('Lista de lojas virtuais inválida.');
+                if (token !== consultaUnidadesToken || loja !== lojaSelect.value || tenant !== chaveFiltrosDevolucoes()) return;
+                const atual = unidadeNegocioSelect.value;
+                // A consulta de devoluções usa o nome da unidade; o mapeamento
+                // de IDs pode conter unidades de outras lojas do mesmo cliente.
+                const nomes = [...new Set(dados.unidades.map(unidade => String(unidade?.nome || '').trim()).filter(Boolean))];
+                unidadeNegocioSelect.replaceChildren(new Option('Todas as lojas virtuais', '__todos'));
+                nomes.forEach(nome => unidadeNegocioSelect.add(new Option(nome, nome)));
+                selecionarFiltro(unidadeNegocioSelect, atual);
+                unidadeNegocioSelect.title = '';
+            } catch (_erro) {
+                if (token !== consultaUnidadesToken) return;
+                unidadeNegocioSelect.title = 'Não foi possível atualizar as lojas virtuais. O filtro selecionado foi mantido.';
+            }
+        }
+
+        function limparDevolucoes() {
+            devolucoesItensPeriodo = [];
+            devolucoesPorSku = [];
+            renderizarTabela();
         }
 
         async function carregarDevolucoes() {
-            const inicio = document.getElementById('dataInicio').value;
-            const fim = document.getElementById('dataFim').value;
-
-            if (!inicio || !fim) {
-                alert('Informe as datas de início e fim.');
+            const token = ++consultaDevolucoesToken;
+            consultaDevolucoesController?.abort();
+            consultaDevolucoesController = null;
+            limparDevolucoes();
+            const filtros = obterFiltrosDevolucoes();
+            if (!filtros.data_inicio || !filtros.data_fim || filtros.data_inicio > filtros.data_fim) {
+                alert('Informe um período válido com as datas de início e fim.');
                 return;
             }
-
+            salvarFiltros();
+            const assinatura = assinaturaFiltrosDevolucoes();
+            const controller = new AbortController();
+            consultaDevolucoesController = controller;
             const statusBar = document.getElementById('statusBar');
-            statusBar.innerHTML = '⏳ Carregando...';
+            statusBar.textContent = 'Carregando devoluções da loja selecionada...';
             statusBar.style.display = 'block';
-
+            document.getElementById('tabelaCorpo').innerHTML = '<tr class="loading"><td colspan="6">Carregando...</td></tr>';
             try {
-                const response = await fetch(`/api/notas-entrada/itens?data_inicio=${inicio}&data_fim=${fim}`, {
-                    headers: (typeof obterAuthHeaders === 'function') ? obterAuthHeaders() : {}
-                });
-
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Erro ao carregar devoluções');
-                }
-
-                devolucoesItensPeriodo = await response.json();
-                devolucoesPorSku = agruparDevolucoesPorSku(devolucoesItensPeriodo);
-                salvarFiltros();
+                const itens = await consultarJsonDevolucoes(`/api/notas-entrada/itens?${parametrosDevolucoes(filtros)}`, controller.signal);
+                if (token !== consultaDevolucoesToken || assinatura !== assinaturaFiltrosDevolucoes()) return;
+                if (!Array.isArray(itens)) throw new Error('Resposta de devoluções inválida.');
+                devolucoesItensPeriodo = itens;
+                devolucoesPorSku = agruparDevolucoesPorSku(itens);
                 renderizarTabela();
                 statusBar.style.display = 'none';
             } catch (erro) {
-                statusBar.innerHTML = `❌ Erro: ${erro.message}`;
-                console.error('Erro:', erro);
+                if (token !== consultaDevolucoesToken || assinatura !== assinaturaFiltrosDevolucoes()) return;
+                renderizarTabela();
+                statusBar.textContent = erro.name === 'AbortError'
+                    ? 'A consulta excedeu o tempo de resposta. Clique em Filtrar para tentar novamente.'
+                    : `Erro: ${erro.message}`;
+            } finally {
+                if (token === consultaDevolucoesToken) {
+                    consultaDevolucoesController = null;
+                    if (assinatura !== assinaturaFiltrosDevolucoes()) {
+                        renderizarTabela();
+                        statusBar.textContent = 'Os filtros mudaram. Clique em Filtrar para carregar as devoluções.';
+                        statusBar.style.display = 'block';
+                    }
+                }
             }
         }
 
@@ -507,29 +663,41 @@
         }
 
         function voltarVendas() {
-            const inicio = document.getElementById('dataInicio').value;
-            const fim = document.getElementById('dataFim').value;
-            navegarComTransicao(`/vendas.html?data_inicio=${inicio}&data_fim=${fim}`);
+            navegarComTransicao(`/vendas.html?${parametrosDevolucoes()}`);
         }
 
-        // Inicializar
-        restaurarFiltros();
-        if (dataInicio && dataFim) {
-            carregarDevolucoes();
+        async function inicializarDevolucoes() {
+            restaurarFiltros();
+            const listas = Promise.allSettled([carregarLojasDevolucoes(), carregarUnidadesDevolucoes()]);
+            const filtros = obterFiltrosDevolucoes();
+            if (filtros.data_inicio && filtros.data_fim) await carregarDevolucoes();
+            await listas;
         }
 
-        window.jkGetContextoIA = async function({ loja } = {}) {
-            const ini = dataInicio || (document.getElementById('dataInicio') ? document.getElementById('dataInicio').value : '');
-            const fim = dataFim || (document.getElementById('dataFim') ? document.getElementById('dataFim').value : '');
-            if (!ini || !fim) return null;
-            const resp = await fetch(`/api/notas-entrada/itens?data_inicio=${encodeURIComponent(ini)}&data_fim=${encodeURIComponent(fim)}`, {
-                headers: typeof obterAuthHeaders === 'function' ? obterAuthHeaders() : {},
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const itens = await resp.json();
-            const itensFiltrados = loja && loja !== '__todas'
-                ? itens.filter(i => (i.loja_conta || i.unidade_negocio || '') === loja)
-                : itens;
+        lojaSelect.addEventListener('change', () => {
+            unidadeNegocioSelect.replaceChildren(new Option('Todas as lojas virtuais', '__todos'));
+            salvarFiltros();
+            limparDevolucoes();
+            void carregarUnidadesDevolucoes();
+            const filtros = obterFiltrosDevolucoes();
+            if (filtros.data_inicio && filtros.data_fim) void carregarDevolucoes();
+        });
+        unidadeNegocioSelect.addEventListener('change', () => {
+            salvarFiltros();
+            limparDevolucoes();
+            const filtros = obterFiltrosDevolucoes();
+            if (filtros.data_inicio && filtros.data_fim) void carregarDevolucoes();
+        });
+        void inicializarDevolucoes();
+
+        window.jkGetContextoIA = async function() {
+            const filtros = obterFiltrosDevolucoes();
+            if (!filtros.data_inicio || !filtros.data_fim) return null;
+            const assinatura = assinaturaFiltrosDevolucoes();
+            const itens = await consultarJsonDevolucoes(`/api/notas-entrada/itens?${parametrosDevolucoes(filtros)}`);
+            if (assinatura !== assinaturaFiltrosDevolucoes()) return null;
+            if (!Array.isArray(itens)) throw new Error('Resposta de devoluções inválida.');
+            const itensFiltrados = itens;
             const porSku = {};
             itensFiltrados.forEach(item => {
                 const k = item.sku || 'N/D';
@@ -546,8 +714,8 @@
             });
             return {
                 modulo: 'Devoluções',
-                periodo: { data_inicio: ini, data_fim: fim },
-                filtros: { loja: loja || '__todas' },
+                periodo: { data_inicio: filtros.data_inicio, data_fim: filtros.data_fim },
+                filtros: { loja: filtros.loja, unidade_negocio: filtros.unidade_negocio },
                 resumo: {
                     total_skus_devolvidos: Object.keys(porSku).length,
                     total_devolucoes: itensFiltrados.length,

@@ -29,7 +29,7 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const asset of ['styles.css', 'runtime.js', 'periodo-cache.js', 'sync.js', 'dados-render.js']) {
   const expectedCacheKey = asset === 'styles.css'
     ? '20261020-vendas-status-compacto-v2'
-    : (asset === 'sync.js' ? '20261020-vendas-composicao-v1' : asset === 'periodo-cache.js' ? '20261020-vendas-status-compacto-v2' : cacheKey);
+    : (['sync.js', 'periodo-cache.js'].includes(asset) ? '20261020-devolucoes-loja-v1' : cacheKey);
   assert.ok(
     canonicalHtml.includes(`/vendas/${asset}?v=${expectedCacheKey}`),
     `o cache-buster de ${asset} deve refletir a correcao`,

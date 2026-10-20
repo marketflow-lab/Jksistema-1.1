@@ -665,6 +665,14 @@ function fecharCalendariosData() {
 
 // Ler parâmetros de URL e preencher datas
 const params_url = new URLSearchParams(window.location.search);
+if (params_url.has('loja')) {
+    lojaSelecionada = params_url.get('loja') || '__todas';
+}
+const unidadeUrl = params_url.get('unidade_negocio');
+if (unidadeUrl && unidadeUrl !== '__todos') {
+    unidadeNegocioSelect.add(new Option(unidadeUrl, unidadeUrl));
+    unidadeNegocioSelect.value = unidadeUrl;
+}
 const data_inicio_param = params_url.get('data_inicio');
 const data_fim_param = params_url.get('data_fim');
 const retornoDoSku = params_url.get('from_sku') === '1';

@@ -241,6 +241,16 @@
         const sku = urlParams.get('sku');
         const dataInicio = urlParams.get('data_inicio');
         const dataFim = urlParams.get('data_fim');
+        const loja = urlParams.get('loja') || '__todas';
+        const unidadeNegocio = urlParams.get('unidade_negocio') || '__todos';
+
+        function parametrosDetalhesDevolucao() {
+            const params = new URLSearchParams({ loja });
+            if (dataInicio) params.set('data_inicio', dataInicio);
+            if (dataFim) params.set('data_fim', dataFim);
+            if (unidadeNegocio !== '__todos') params.set('unidade_negocio', unidadeNegocio);
+            return params;
+        }
         let itensDevolvidos = [];
 
         function formatarData(dataString) {
@@ -276,15 +286,10 @@
 
             try {
                 const clientId = JSON.parse(localStorage.getItem('user_data') || '{}').client_id;
-                let url = `/api/notas-entrada/sku/${encodeURIComponent(sku)}`;
-                if (dataInicio && dataFim) {
-                    url += `?data_inicio=${dataInicio}&data_fim=${dataFim}`;
-                }
-
+                const url = `/api/notas-entrada/sku/${encodeURIComponent(sku)}?${parametrosDetalhesDevolucao()}`;
                 const response = await fetch(url, {
-                    headers: {
-                        'X-Client-ID': clientId
-                    }
+                    headers: typeof obterAuthHeaders === 'function' ? obterAuthHeaders() : { 'X-Client-ID': clientId },
+                    cache: 'no-store',
                 });
 
                 if (!response.ok) throw new Error('Erro ao carregar detalhes');
@@ -347,11 +352,7 @@
         }
 
         function voltarDevolucoes() {
-            let url = '/devolucoes.html';
-            if (dataInicio && dataFim) {
-                url += `?data_inicio=${dataInicio}&data_fim=${dataFim}`;
-            }
-            navegarComTransicao(url);
+            navegarComTransicao(`/devolucoes.html?${parametrosDetalhesDevolucao()}`);
         }
 
         // Inicializar
