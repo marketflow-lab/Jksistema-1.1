@@ -17,6 +17,8 @@ $runtimeRoot = Join-Path $env:APPDATA 'JK Sistema Cliente\local_app'
 if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
     $pythonCandidates = @(
         (Join-Path $runtimeRoot 'python_runtime\portable\python.exe'),
+        (Join-Path $runtimeRoot '.python-runtime\python.exe'),
+        (Join-Path $runtimeRoot '.venv\Scripts\python.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\JK Sistema Cliente\resources\local_app\python_runtime\portable\python.exe')
     )
     $detectedPython = @($pythonCandidates | Where-Object {

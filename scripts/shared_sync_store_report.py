@@ -22,7 +22,7 @@ import unicodedata
 
 SCHEMA = "jk.shared_sync.store_report.v1"
 IDENTITY_FIELDS = ("store_id", "store_ref")
-NAME_FIELDS = ("loja", "loja_sync", "loja_nome", "nome_loja", "store_name")
+NAME_FIELDS = ("loja", "loja_sync", "loja_conta", "loja_nome", "nome_loja", "store_name")
 FORMATS = ("csv", "json", "sqlite")
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 MAX_TEXT_BYTES = 64 * 1024 * 1024
@@ -155,6 +155,7 @@ class StoreReport:
         )}
         self.stores = {}
         self.names = {}
+        self.name_labels = {}
         self.name_counts = {}
         self.unknown = _empty_refs()
         self.unattributed_photos = 0
@@ -227,9 +228,27 @@ class StoreReport:
                 self.stores[key] = {"store_id": key, "name": name,
                                     "exact_references": _empty_refs(),
                                     "photos": {"sid_sha256": 0, "legacy_id": 0}}
-                if name:
-                    normalized = _normal_name(name)
-                    self.names.setdefault(normalized, []).append(key)
+                previous = entry.get("nomes_anteriores", [])
+                if previous is None:
+                    previous = []
+                if not isinstance(previous, list):
+                    self.warn("invalid_format")
+                    previous = []
+                labels = [name]
+                for raw in previous:
+                    label = _safe_name(raw)
+                    if label:
+                        labels.append(label)
+                    else:
+                        self.warn("name_redacted")
+                for label in labels:
+                    if not label:
+                        continue
+                    normalized = _normal_name(label)
+                    candidates = self.names.setdefault(normalized, [])
+                    if key not in candidates:
+                        candidates.append(key)
+                    self.name_labels.setdefault(normalized, label)
                     self.name_counts.setdefault(normalized, {kind: 0 for kind in FORMATS})
         except (OSError, UnicodeError, ValueError, RecursionError, UnsafeInput) as exc:
             self.warn(str(exc) if isinstance(exc, UnsafeInput) else "registry_invalid")
@@ -254,11 +273,13 @@ class StoreReport:
         if not matched:
             for field in NAME_FIELDS:
                 value = record.get(field)
-                if isinstance(value, str) and _normal_name(value) in self.names:
-                    normalized = _normal_name(value)
-                    self.name_counts[normalized][kind] += count
-                    recognized = True
-                    self.warn("name_only_reference")
+                if isinstance(value, str):
+                    for label in value.split("|"):
+                        normalized = _normal_name(label)
+                        if normalized in self.names:
+                            self.name_counts[normalized][kind] += count
+                            recognized = True
+                            self.warn("name_only_reference")
         return recognized
 
     def csv(self, path):
@@ -478,7 +499,7 @@ class StoreReport:
         groups = []
         ambiguous = []
         for normalized, identities in sorted(self.names.items()):
-            name = self.stores[identities[0]]["name"]
+            name = self.name_labels[normalized]
             if len(identities) > 1:
                 groups.append({"name": name, "store_ids": sorted(identities), "name_does_not_prove_account": True})
             counts = self.name_counts[normalized]
@@ -488,6 +509,7 @@ class StoreReport:
         return {"schema": SCHEMA, "complete": self.complete,
                 "final_state_guaranteed": False, "zero_proves_unused": False,
                 "counts_are_reference_occurrences": True,
+                "name_references_include_history": True,
                 "stores": [self.stores[key] for key in sorted(self.stores)],
                 "candidate_groups_by_name": groups, "ambiguous_name_references": ambiguous,
                 "unattributed_exact_references": self.unknown,

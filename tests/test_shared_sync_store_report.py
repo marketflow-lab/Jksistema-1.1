@@ -335,3 +335,171 @@ def test_cli_rejects_case_alias_of_tenant_output(tenant):
     output = Path(str(tenant).swapcase()) / "report.json"
     assert report.main(["--tenant-root", str(tenant), "--output", str(output)]) == 2
     assert not (tenant / "report.json").exists()
+
+
+def _historical_registry(tenant):
+    write_json(tenant / "lojas_config.json", [
+        {"store_id": A, "nome": "Loja Atual A", "nomes_anteriores": ["Alias Comum", "Conta Antiga"],
+         "integracoes": {"access_token": SECRET, "seller_id": ACCOUNT}},
+        {"store_id": B, "nome": "Loja Atual B", "nomes_anteriores": [" Alias Comum "]},
+    ])
+
+
+def _name_rows(tenant, kind, rows):
+    if kind == "csv":
+        import csv
+        with (tenant / "historical.csv").open("w", encoding="utf-8-sig", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=["store_id", "loja_sync", "loja_conta"])
+            writer.writeheader()
+            writer.writerows(rows)
+    elif kind == "json":
+        write_json(tenant / "historical.json", {"records": rows})
+    else:
+        with sqlite3.connect(tenant / "historical.db") as connection:
+            connection.execute("CREATE TABLE records (store_id TEXT, loja_sync TEXT, loja_conta TEXT)")
+            connection.executemany(
+                "INSERT INTO records VALUES (?, ?, ?)",
+                [(row.get("store_id"), row.get("loja_sync"), row.get("loja_conta")) for row in rows],
+            )
+
+
+def test_shared_historical_alias_remains_ambiguous_without_attributing_data(tenant):
+    _historical_registry(tenant)
+    for kind in ("csv", "json", "sqlite"):
+        _name_rows(tenant, kind, [{"loja_sync": "Alias Comum"}])
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    assert all(entry["exact_references"] == report._empty_refs() for entry in result["stores"])
+    assert len(result["ambiguous_name_references"]) == 1
+    ambiguous = result["ambiguous_name_references"][0]
+    assert report._normal_name(ambiguous["name"]) == "alias comum"
+    assert ambiguous["candidate_store_ids"] == sorted([A, B])
+    assert ambiguous["reference_counts"] == {"csv": 1, "json": 1, "sqlite": 1}
+    assert ambiguous["assigned_to_store"] is False
+    assert "name_only_reference" in codes(result)
+    assert result["complete"] is False and result["zero_proves_unused"] is False
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
+
+
+@pytest.mark.parametrize("kind", ["csv", "json", "sqlite"])
+def test_pipe_labels_and_loja_conta_are_counted_but_exact_id_takes_precedence(tenant, kind):
+    _historical_registry(tenant)
+    _name_rows(tenant, kind, [
+        {"store_id": A, "loja_sync": "Alias Comum | Loja Atual B", "loja_conta": "Conta Antiga"},
+        {"loja_sync": " Alias Comum | Loja Atual B "},
+        {"loja_conta": "Conta Antiga"},
+    ])
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    actual = stores(result)
+    assert actual[A]["exact_references"][kind] == {"store_id": 1, "store_ref": 0}
+    assert actual[B]["exact_references"] == report._empty_refs()
+    ambiguous = {report._normal_name(item["name"]): item for item in result["ambiguous_name_references"]}
+    assert set(ambiguous) == {"alias comum", "loja atual b", "conta antiga"}
+    expected_candidates = {"alias comum": sorted([A, B]), "loja atual b": [B], "conta antiga": [A]}
+    for name, entry in ambiguous.items():
+        assert entry["reference_counts"] == {format_: int(format_ == kind) for format_ in ("csv", "json", "sqlite")}
+        assert entry["candidate_store_ids"] == expected_candidates[name]
+        assert entry["assigned_to_store"] is False
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
+
+
+def test_duplicate_historical_spellings_do_not_duplicate_candidate_store_ids(tenant):
+    write_json(tenant / "lojas_config.json", [
+        {"store_id": A, "nome": "Loja Atual", "nomes_anteriores": ["Loja Atual", "loja atual", "Alias Antigo", " ALIAS ANTIGO "]},
+        {"store_id": B, "nome": "Outra Loja"},
+    ])
+    write_json(tenant / "references.json", {"loja_sync": "Alias Antigo"})
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    assert result["candidate_groups_by_name"] == []
+    assert result["ambiguous_name_references"][0]["candidate_store_ids"] == [A]
+    assert result["ambiguous_name_references"][0]["reference_counts"] == {"csv": 0, "json": 1, "sqlite": 0}
+    assert all(entry["exact_references"] == report._empty_refs() for entry in result["stores"])
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
+
+
+@pytest.mark.parametrize("alias", [
+    "historical-private@example.invalid",
+    "987.654.321-00",
+    "Bearer " + SECRET,
+    "C:\\private\\historical-name",
+    "historical\x00invalid",
+    "SENSITIVE_HISTORICAL_ALIAS_" * 10,
+])
+def test_sensitive_historical_aliases_are_omitted_and_make_report_incomplete(tenant, alias):
+    write_json(tenant / "lojas_config.json", [
+        {"store_id": A, "nome": "Loja Atual A", "nomes_anteriores": [alias]},
+        {"store_id": B, "nome": "Loja Atual B", "nomes_anteriores": [alias]},
+    ])
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    assert result["complete"] is False
+    assert codes(result) - {"observation_only", "name_is_not_account_identity"}
+    assert result["candidate_groups_by_name"] == []
+    assert result["ambiguous_name_references"] == []
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert alias not in serialized
+    assert "SENSITIVE_HISTORICAL_ALIAS_" not in serialized
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
+
+
+@pytest.mark.parametrize("aliases", [
+    "INVALID_HISTORICAL_SCALAR",
+    "",
+    0,
+    False,
+    {},
+    42,
+    True,
+    {"name": "INVALID_HISTORICAL_OBJECT", "access_token": SECRET},
+    [42],
+    [False],
+    [None],
+    [{"name": "INVALID_HISTORICAL_ITEM", "access_token": SECRET}],
+    [["INVALID_HISTORICAL_NESTED"]],
+])
+def test_invalid_historical_alias_types_are_incomplete_without_exporting_values(tenant, aliases):
+    write_json(tenant / "lojas_config.json", [
+        {"store_id": A, "nome": "Loja Atual A", "nomes_anteriores": aliases},
+        {"store_id": B, "nome": "Loja Atual B"},
+    ])
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    assert result["complete"] is False
+    assert codes(result) - {"observation_only", "name_is_not_account_identity"}
+    assert result["candidate_groups_by_name"] == []
+    assert result["ambiguous_name_references"] == []
+    assert "INVALID_HISTORICAL_" not in json.dumps(result, ensure_ascii=False)
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
+
+
+def test_null_historical_aliases_preserve_legacy_absence_compatibility(tenant):
+    write_json(tenant / "lojas_config.json", [
+        {"store_id": A, "nome": "Loja Atual A", "nomes_anteriores": None},
+        {"store_id": B, "nome": "Loja Atual B"},
+    ])
+    before = hashes(tenant)
+
+    result = report.build_report(tenant)
+
+    assert result["complete"] is True
+    assert result["candidate_groups_by_name"] == []
+    assert result["zero_proves_unused"] is False
+    assert hashes(tenant) == before
+    assert_private(result, tenant)
