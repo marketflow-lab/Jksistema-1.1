@@ -4377,6 +4377,7 @@ def test_push_igual_so_pula_depois_de_criar_autoridade_v2(monkeypatch):
         lambda *args, **kwargs: (bundle, manifest, []),
     )
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_snapshot_id", lambda *args: "")
+    monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_snapshot_hash", lambda *args: "")
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_state_update", lambda *args: None)
     chamadas_guard = []
 
@@ -6445,7 +6446,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.252"
+    assert root_package["version"] == "1.0.253"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

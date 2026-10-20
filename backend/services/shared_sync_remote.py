@@ -488,16 +488,28 @@ def _shared_sync_push_scope(
     expected_remote_revision: Any = None
     guard_pointer = scope == "lojas_integracoes" and known_keys is None
     if guard_pointer:
-        base_snapshot_id = _shared_sync_state_snapshot_id(
-            client_id,
-            sessao.get("username") or "",
-            state_scope or scope,
-        )
+        from backend.services.shared_sync_config import _SHARED_SYNC_STATE_LOCK
+
+        with _SHARED_SYNC_STATE_LOCK:
+            base_snapshot_id = _shared_sync_state_snapshot_id(
+                client_id,
+                sessao.get("username") or "",
+                state_scope or scope,
+            )
+            base_snapshot_hash = ""
+            if not str(base_snapshot_id or "").strip():
+                base_snapshot_hash = _shared_sync_state_snapshot_hash(
+                    client_id,
+                    sessao.get("username") or "",
+                    state_scope or scope,
+                )
         expected_remote_revision = _shared_sync_validar_push_lojas_integracoes(
             bundle_id,
             bundle,
             key_context=key_context,
             base_snapshot_id=base_snapshot_id,
+            base_snapshot_hash=base_snapshot_hash,
+            expected_identity=extra_meta,
             return_guard_revision=True,
             client_id=client_id,
         )

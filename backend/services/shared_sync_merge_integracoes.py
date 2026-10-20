@@ -1960,6 +1960,106 @@ def _shared_sync_loja_preserva_campos_remotos(
     return True
 
 
+def _shared_sync_legacy_checkpoint_matches_remote(
+    bundle_id: str,
+    snapshot_hash: str,
+    remote_bundle: bytes,
+    remote_meta: dict,
+    *,
+    client_id: str,
+    expected_identity: Optional[dict] = None,
+) -> bool:
+    """Recognize an observed legacy base only from the validated current bytes."""
+    expected_hash = str(snapshot_hash or "").strip().lower()
+    logical_id = str(bundle_id or "").strip()
+    client_id = str(client_id or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_hash) or not logical_id or not client_id:
+        return False
+    if not isinstance(remote_meta, dict):
+        return False
+    status = remote_meta.get("status")
+    if status is not None and (
+        not isinstance(status, str) or status.strip().lower() not in {"", "complete"}
+    ):
+        return False
+    if (
+        remote_meta.get("schema") != 2
+        or remote_meta.get("encrypted") is not True
+        or str(remote_meta.get("id") or "").strip() != logical_id
+        or str(remote_meta.get("pointer_id") or "").strip() != logical_id
+        or str(remote_meta.get("client_id") or "").strip() != client_id
+        or remote_meta.get("scope") != "lojas_integracoes"
+        or str(remote_meta.get("snapshot_hash") or "").strip().lower() != expected_hash
+        or not str(remote_meta.get("snapshot_id") or "").strip()
+        or str(remote_meta.get("snapshot_id") or "").strip() == logical_id
+    ):
+        return False
+    from backend.services.shared_sync_remote import _shared_sync_v2_authority_id
+
+    guard_pointer = str(remote_meta.get("_guard_pointer_id") or "").strip()
+    if guard_pointer and guard_pointer not in {logical_id, _shared_sync_v2_authority_id(logical_id)}:
+        return False
+    expected = expected_identity if isinstance(expected_identity, dict) else {}
+    visibility = str(remote_meta.get("visibility") or "").strip()
+    if visibility != str(expected.get("visibility") or "").strip():
+        return False
+    sender = ""
+    if visibility == "user-share":
+        participant_keys = (
+            "source_client_id", "source_username", "target_client_id", "target_username",
+        )
+        participants = [str(expected.get(key) or "").strip() for key in participant_keys]
+        if not all(participants) or any(
+            str(remote_meta.get(key) or "").strip() != value
+            for key, value in zip(participant_keys, participants)
+        ):
+            return False
+        if participants[0] != client_id or logical_id != _shared_sync_pair_doc_id(
+            *participants, "lojas_integracoes",
+        ):
+            return False
+        if not str(expected.get("link_id") or "").strip() or expected.get("sync_direction") not in {
+            "source_to_target", "target_to_source",
+        }:
+            return False
+        # Early pair publications omitted these fields; present values must agree.
+        for key in ("link_id", "sync_direction"):
+            actual = str(remote_meta.get(key) or "").strip()
+            if actual and actual != str(expected.get(key) or "").strip():
+                return False
+        sender = participants[1]
+    elif visibility == "machine-sync":
+        owner_client = str(expected.get("owner_client_id") or "").strip()
+        sender = str(expected.get("owner_username") or "").strip()
+        if (
+            owner_client != client_id or not sender
+            or str(remote_meta.get("owner_client_id") or "").strip() != owner_client
+            or str(remote_meta.get("owner_username") or "").strip() != sender
+            or logical_id != _shared_sync_machine_doc_id(client_id, sender, "lojas_integracoes")
+        ):
+            return False
+    elif visibility or logical_id != _shared_sync_doc_id(client_id, "lojas_integracoes"):
+        return False
+    try:
+        from backend.services.shared_sync_apply_scope import _shared_sync_read_validated_bundle
+        from backend.services.shared_sync_bundle import _shared_sync_snapshot_hash
+
+        manifest, _ = _shared_sync_read_validated_bundle(remote_bundle, "lojas_integracoes")
+        manifest_client = str(manifest.get("client_id") or "").strip()
+        manifest_sender = str(manifest.get("created_by") or "").strip()
+        return bool(
+            manifest.get("schema") == 2
+            and (not manifest_client or manifest_client == client_id)
+            and (not sender or not manifest_sender or manifest_sender == sender)
+            and str(manifest.get("snapshot_hash") or "").strip().lower() == expected_hash
+            and isinstance(manifest.get("files"), list)
+            and _shared_sync_snapshot_hash(manifest["files"]) == expected_hash
+        )
+    except Exception:
+        # Invalid or incomplete proof retains the existing conservative guard.
+        return False
+
+
 def _shared_sync_validar_push_lojas_integracoes(
     bundle_id: str,
     bundle: bytes,
@@ -1967,6 +2067,8 @@ def _shared_sync_validar_push_lojas_integracoes(
     base_snapshot_id: str = "",
     return_guard_revision: bool = False,
     client_id: str = "",
+    base_snapshot_hash: str = "",
+    expected_identity: Optional[dict] = None,
 ) -> Any:
     from backend.services.shared_sync_remote import (
         _shared_sync_guard_expectation_from_meta,
@@ -2032,6 +2134,11 @@ def _shared_sync_validar_push_lojas_integracoes(
         str(base_snapshot_id or "").strip()
         and str(base_snapshot_id or "").strip() == expected_snapshot_id
     )
+    if not str(base_snapshot_id or "").strip():
+        base_causal_atual = _shared_sync_legacy_checkpoint_matches_remote(
+            bundle_id, base_snapshot_hash, remoto_bundle, _meta,
+            client_id=client_id, expected_identity=expected_identity,
+        )
 
     try:
         lojas_remotas = _shared_sync_lojas_config_from_bundle(remoto_bundle)
