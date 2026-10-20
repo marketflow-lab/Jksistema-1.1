@@ -247,3 +247,29 @@ def test_nao_publica_cache_de_fonte_que_mudou_durante_leitura(bancos, monkeypatc
     _ler(bancos)
     assert not historico._CONSOLIDADOS.entries
     assert _ler(bancos) == _referencia_sql_antigo(bancos, 3, "__todas")
+
+
+@pytest.mark.parametrize("data_invalida,periodos_afetados", [
+    ("2026-06-15", {6, 12}),
+    ("2026-01-15", {12}),
+    ("2026-10-15", {3, 6, 12}),
+])
+def test_quantidade_invalida_falha_somente_no_periodo_que_a_inclui(tmp_path, data_invalida, periodos_afetados):
+    paths = [_banco(tmp_path / "quantidades.db", [
+        ("duplicado", "VALIDO", "2026-10-20", "Venda válida", 3, "JK Peças"),
+        ("invalido", "INVALIDO", data_invalida, "Título histórico preservado", "quantidade inválida", "JK Peças"),
+        ("duplicado", "VALIDO", data_invalida, "Duplicata com quantidade inválida", "quantidade inválida", "JK Peças"),
+    ])]
+    # Start with a failing long period, then exercise the same cached
+    # projection/consolidation for the shorter, independently valid periods.
+    for periodo in [12, 3, 6, 3]:
+        if periodo in periodos_afetados:
+            with pytest.raises(ValueError):
+                _referencia_sql_antigo(paths, periodo, "__todas")
+            with pytest.raises(ValueError, match="período selecionado"):
+                _ler(paths, meses=periodo)
+        else:
+            atual = _ler(paths, meses=periodo)
+            assert atual == _referencia_sql_antigo(paths, periodo, "__todas")
+            assert atual[1]["INVALIDO"]["titulo"] == "Título histórico preservado"
+            assert atual[2]["INVALIDO"] == data_invalida

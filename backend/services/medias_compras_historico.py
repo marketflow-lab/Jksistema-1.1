@@ -56,6 +56,7 @@ class _MemoLimitado:
 
 _PROJECOES = _MemoLimitado(96 * 1024 * 1024, 64)
 _CONSOLIDADOS = _MemoLimitado(24 * 1024 * 1024, 24)
+_QUANTIDADE_INVALIDA = object()
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,13 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
                 # Keep original row order and raw SKU: both affect the legacy
                 # id_unico/fallback deduplication and floating-point sums.
                 identifier = str(identificador or "").strip()
-                qty = float(quantidade or 0)
+                try:
+                    qty = float(quantidade or 0)
+                except (TypeError, ValueError, OverflowError):
+                    # A shared twelve-month projection must not fail a short
+                    # period because a malformed quantity belongs outside it.
+                    # Keep neither source text nor an exception/traceback.
+                    qty = _QUANTIDADE_INVALIDA
                 recentes.append((identifier, sku_original, sku_norm, mes, qty))
                 weight += 112 + _peso_textos(identifier, sku_original, sku_norm, mes)
     finally:
@@ -161,9 +168,16 @@ def _consolidar(paths, projecoes, ultimo_mes):
     for path, projecao in zip(paths, projecoes):
         basename = os.path.basename(path)
         for identificador, sku_original, sku_norm, mes, qty in projecao.vendas:
-            chave = identificador or f"{basename}::{sku_original}::{mes}::{qty}"
+            chave = None if qty is _QUANTIDADE_INVALIDA else identificador or f"{basename}::{sku_original}::{mes}::{qty}"
             for periodo, meses in refs.items():
-                if mes not in conjuntos[periodo] or chave in vistos[periodo]:
+                if mes not in conjuntos[periodo] or vendas[periodo] is None:
+                    continue
+                # The original query converted quantity before deduplication.
+                if qty is _QUANTIDADE_INVALIDA:
+                    vendas[periodo] = None
+                    vistos[periodo].clear()
+                    continue
+                if chave in vistos[periodo]:
                     continue
                 vistos[periodo].add(chave)
                 item = vendas[periodo].get(sku_norm)
@@ -178,7 +192,7 @@ def _consolidar(paths, projecoes, ultimo_mes):
             if sku not in ultimas or data > ultimas[sku]:
                 ultimas[sku] = data
     weight = sum(400 + _peso_textos(sku) + len(item["vendas_mensais"]) * 112
-                 for period in vendas.values() for sku, item in period.items())
+                 for period in vendas.values() if period is not None for sku, item in period.items())
     weight += sum(160 + _peso_textos(sku, *value.values()) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
     return (vendas, titulos, ultimas), weight
@@ -212,4 +226,6 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
         key, revisoes, construir,
         lambda: tuple(_revisao_banco(path) for path in paths) == revisoes,
     )
+    if vendas[meses] is None:
+        raise ValueError("Quantidade de venda inválida no período selecionado.")
     return copy.deepcopy(vendas[meses]), copy.deepcopy(titulos), dict(ultimas)
