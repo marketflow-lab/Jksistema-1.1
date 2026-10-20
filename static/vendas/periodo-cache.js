@@ -119,12 +119,15 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
     const estados = lojas.map(loja => ({ loja, estado: estadoSyncLojaVendas(loja) }));
     const contagens = [
         ['running', 'sincronizando'], ['queued', 'aguardando'], ['complete', 'atualizada', 'atualizadas'],
-        ['paused', 'pausada', 'pausadas'], ['attention', 'requer atenção', 'requerem atenção'], ['idle', 'sem sincronização']
+        ['paused', 'pausada', 'pausadas'], ['idle', 'sem sincronização']
     ].map(([chave, singular, plural]) => {
         const total = estados.filter(item => item.estado[0] === chave).length;
-        return total ? `${total} ${total === 1 ? 'loja' : 'lojas'} ${total === 1 ? singular : plural || singular}` : '';
+        return total ? `${total} ${total === 1 ? singular : plural || singular}` : '';
     }).filter(Boolean).join(' · ');
-    const alertas = estados.filter(item => item.loja?.ultimo_erro || item.estado[0] === 'attention')
+    const lojasComAlerta = estados.filter(item => item.loja?.ultimo_erro || item.estado[0] === 'attention');
+    const indicadorAlertas = lojasComAlerta.length
+        ? `<span class="vendas-sync-attention">⚠ ${lojasComAlerta.length} ${lojasComAlerta.length === 1 ? 'alerta' : 'alertas'}</span>` : '';
+    const alertas = lojasComAlerta
         .map(({ loja }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
     const linhas = estados.map(({ loja, estado: [chave, rotulo] }) =>
         `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong><span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`
@@ -154,12 +157,13 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
     const logs = logsSyncVendas(data?.logs);
     const etapa = data?.progress?.mensagem ? `<div>${escaparHtmlVendas(data.progress.mensagem)}</div>` : '';
     painel.className = 'status-bar vendas-sync-status';
-    substituirConteudoSyncVendas(painel, `<div class="vendas-sync-summary"><strong>Sincronização das lojas</strong><div class="vendas-sync-counts">${contagens}</div></div>${alertas}`
-        + `<details class="vendas-sync-details" data-sync-details="stores"><summary>Ver status de todas as lojas</summary>${linhas}</details>`
-        + `<details class="vendas-sync-details" data-sync-details="technical"><summary>Ver detalhes técnicos</summary>`
+    substituirConteudoSyncVendas(painel, '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
+        + `<summary><span class="vendas-sync-counts">${contagens ? `Lojas: ${contagens}` : 'Sincronização das lojas'}</span>${indicadorAlertas}<span class="vendas-sync-toggle">Detalhes</span></summary>`
+        + `<div class="vendas-sync-content">${alertas}${linhas}`
+        + '<strong class="vendas-sync-technical-title">Detalhes técnicos</strong>'
         + `<div class="vendas-sync-muted">${pendentes} ${pendentes === 1 ? 'tarefa pendente' : 'tarefas pendentes'} · Atualização automática em ${habilitadas} ${habilitadas === 1 ? 'loja' : 'lojas'}.</div>`
         + etapa + detalhesLojas + (logs ? `<div class="vendas-sync-logs"><strong>Registros recentes</strong>${logs}</div>` : '')
-        + '<p class="vendas-sync-muted">O progresso é salvo. As atualizações continuam enquanto o serviço do sistema estiver funcionando.</p></details>');
+        + '<p class="vendas-sync-muted">O progresso é salvo. As atualizações continuam enquanto o serviço do sistema estiver funcionando.</p></div></details>');
 }
 
 function renderProgresso(p, logs, painel = statusEl, lojas = []) {
@@ -169,8 +173,6 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
     const listaLojas = Array.isArray(lojas) ? lojas : [];
     const lojasAtivas = listaLojas.filter(loja =>
         ['running', 'executando', 'em_execucao'].includes(String(loja?.status || '').toLowerCase()));
-    const nomes = lojasAtivas.slice(0, 3).map(loja => loja?.loja || 'Loja').join(', ');
-    const outras = lojasAtivas.length > 3 ? ` e mais ${lojasAtivas.length - 3}` : '';
     const registros = logsSyncVendas(logs);
     const aguardando = (listaLojas.length > 0 && lojasAtivas.length === 0) || String(p.etapa || '').toLowerCase() === 'fila';
     const erro = String(p.etapa || '').toLowerCase() === 'erro'
@@ -179,7 +181,6 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
         ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
     painel.className = 'status-bar loading';
     substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${aguardando ? 'Aguardando início' : 'Sincronizando'} · ${percent}%</strong>`
-        + (nomes ? `<div class="vendas-sync-muted">${escaparHtmlVendas(nomes + outras)} em andamento.</div>` : '')
         + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${erro}${detalhes}`);
 }
 

@@ -286,7 +286,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
                     pendentes: 9, habilitadas: 5,
                     lojas: [
                         store('RCL', 'running', { checkpoint: { ultimo_tipo: 'pedido', ultimo_id: 'DOC-123', documentos_salvos: 26, atualizado_em: '2026-10-20T10:16:46Z' } }),
-                        store('JK Peças', 'running'),
+                        store('JK Peças', 'running', { ultimo_erro: 'Falha na tentativa anterior <integracao>.' }),
                         store('Carlos José', 'queued'),
                         store('Aline 2', 'complete'),
                         store('Deckas', 'retry', { ultimo_erro: 'Sessão expirada. Faça login novamente para continuar as pendências.' }),
@@ -317,23 +317,34 @@ async function verifySyncStatus(context, fixture, width, modern) {
         }
         await panel.locator('.vendas-sync-counts').waitFor({ state: 'visible' });
         const visible = await panel.innerText();
-        check('store counts distinguish activity, completion, pause and attention', [
-            '2 lojas sincronizando', '1 loja aguardando', '1 loja atualizada',
-            '1 loja pausada', '1 loja requer atenção',
+        const bar = progress.locator('..');
+        const disclosure = panel.locator('details[data-sync-details="sync"]');
+        const summary = disclosure.locator('summary');
+        const attention = summary.locator('.vendas-sync-attention');
+        check('progress and persistent state share the compact wrapper', await bar.evaluate(element =>
+            element.classList.contains('vendas-sync-bar') && element.contains(document.querySelector('#' + (element.classList.contains('vn-status') ? 'vnPersistentStatus' : 'syncPersistenteStatus')))), details);
+        check('store counts distinguish activity, completion and pause', [
+            '2 sincronizando', '1 aguardando', '1 atualizada', '1 pausada',
         ].every(label => visible.includes(label)), details);
         check('job count is not presented as store count', !visible.includes('9 lojas'), details);
-        check('technical content starts collapsed', !/DOC-123|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva|9 tarefas|FALLBACK_TEXTO_NAO_EXIBIR/.test(visible), details);
-        check('both disclosure panels start closed', await panel.locator('details').evaluateAll(nodes => nodes.length === 2 && nodes.every(node => !node.open)), details);
-        check('session expiry stays visible outside the disclosure panels', await panel.locator('.vendas-sync-alert').evaluate(element =>
-            !element.closest('details') && element.textContent.includes('Sessão expirada') && element.getBoundingClientRect().height > 0), details);
+        check('technical content and full alerts start collapsed', !/DOC-123|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva|9 tarefas|FALLBACK_TEXTO_NAO_EXIBIR|Sessão expirada|Falha na tentativa anterior/.test(visible), details);
+        check('one disclosure starts closed and reveals all details', await panel.locator('details').evaluateAll(nodes => nodes.length === 1 && !nodes[0].open), details);
+        check('alert badge stays visible and counts running stores with an earlier error', await attention.isVisible()
+            && /\b2 alertas$/.test((await attention.innerText()).trim()), details);
+        check('the disclosure has a visible details label', await summary.locator('.vendas-sync-toggle').innerText() === 'Detalhes', details);
         check('the overall panel stays neutral', await panel.evaluate(element => !element.classList.contains('error')), details);
-        check('progress is concise and identifies running stores', /Sincronizando · 43%/.test(await progress.innerText())
-            && /RCL, JK Peças em andamento/.test(await progress.innerText())
-            && !/LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva/.test(await progress.innerText()), details);
+        check('progress stays concise while store names remain in the disclosure', /Sincronizando · 43%/.test(await progress.innerText())
+            && !/RCL|JK Peças|em andamento|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva/.test(await progress.innerText()), details);
+        check('progress retains its accessible percentage', await progress.locator('[role="progressbar"]').evaluate(element =>
+            element.getAttribute('aria-valuenow') === '43' && element.getAttribute('aria-valuemin') === '0'
+            && element.getAttribute('aria-valuemax') === '100' && Boolean(element.getAttribute('aria-label'))), details);
+        const collapsedHeight = await bar.evaluate(element => element.getBoundingClientRect().height);
+        check('collapsed status uses at most 60 px on desktop and 150 px on mobile', collapsedHeight > 0
+            && collapsedHeight <= (width <= 390 ? 150 : 60), { ...details, height: collapsedHeight });
 
         await progress.scrollIntoViewIfNeeded();
         await panel.scrollIntoViewIfNeeded();
-        const boxes = await Promise.all([progress.boundingBox(), panel.boundingBox()]);
+        const boxes = [await bar.boundingBox()];
         const x = Math.max(0, Math.min(...boxes.map(box => box.x)));
         const y = Math.max(0, Math.min(...boxes.map(box => box.y)));
         const right = Math.min(width, Math.max(...boxes.map(box => box.x + box.width)));
@@ -346,17 +357,24 @@ async function verifySyncStatus(context, fixture, width, modern) {
             return rect.left >= -1 && rect.right <= innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
         }), details);
 
-        const stores = panel.locator('details[data-sync-details="stores"]');
-        const technical = panel.locator('details[data-sync-details="technical"]');
-        await stores.locator('summary').click();
-        check('store details reveal every store once', await stores.locator('.vendas-sync-store').count() === 6, details);
-        await technical.locator('summary').click();
-        check('technical details reveal checkpoint, stage and escaped log', /Pedido #DOC-123/.test(await technical.innerText())
-            && /Etapa técnica exclusiva/.test(await technical.innerText())
-            && /LOG_TECNICO_RECOLHIDO <coleta>/.test(await technical.innerText())
-            && await technical.locator('coleta').count() === 0, details);
+        await summary.click();
+        check('one click reveals every store once', await disclosure.locator('.vendas-sync-store').count() === 6
+            && await disclosure.locator('.vendas-sync-store').first().isVisible(), details);
+        check('the same disclosure reveals checkpoint, stage and escaped log', /Pedido #DOC-123/.test(await disclosure.innerText())
+            && /Etapa técnica exclusiva/.test(await disclosure.innerText())
+            && /LOG_TECNICO_RECOLHIDO <coleta>/.test(await disclosure.innerText())
+            && await disclosure.locator('coleta').count() === 0, details);
+        check('expanded alerts preserve login guidance and escape markup', /Sessão expirada\. Faça login novamente/.test(await disclosure.innerText())
+            && /Falha na tentativa anterior <integracao>\./.test(await disclosure.innerText())
+            && await disclosure.locator('integracao').count() === 0
+            && await disclosure.locator('.vendas-sync-alert').count() === 2, details);
         check('expanded panels do not overflow horizontally', await panel.evaluate(element => element.scrollWidth <= element.clientWidth + 1), details);
-        await technical.locator('summary').focus();
+        if (width === 1206) {
+            const expandedPath = path.join(scratch, `sync-${modern ? 'new' : 'legacy'}-${width}-expanded.png`);
+            await bar.screenshot({ path: expandedPath });
+            report.screenshots.push({ ...details, expanded: true, path: path.basename(expandedPath) });
+        }
+        await summary.focus();
         await frame.evaluate(() => {
             __entrySyncPayload.progress.percentual = 44;
             __entrySyncPayload.logs.push('Novo registro após atualização.');
@@ -364,15 +382,22 @@ async function verifySyncStatus(context, fixture, width, modern) {
         });
         await frame.waitForFunction(selector => document.querySelector(selector)?.getAttribute('aria-valuenow') === '44',
             `${modern ? '#vnStatus' : '#status'} [role="progressbar"]`);
-        check('polling preserves both open disclosures and the focused summary', await panel.evaluate(element => {
-            const opened = Array.from(element.querySelectorAll('details'));
-            return opened.every(node => node.open)
-                && document.activeElement === element.querySelector('details[data-sync-details="technical"] > summary');
+        check('polling preserves the open disclosure and focused summary', await panel.evaluate(element => {
+            const disclosure = element.querySelector('details[data-sync-details="sync"]');
+            return disclosure.open && document.activeElement === disclosure.querySelector('summary');
         }), details);
-        await stores.locator('summary').focus();
+        await summary.press('Enter');
+        check('keyboard activation closes the disclosure', await disclosure.evaluate(element => !element.open)
+            && await disclosure.locator('.vendas-sync-store').first().isHidden(), details);
         await frame.evaluate(() => { __entrySyncPayload.logs.push('Mais um registro.'); __entryPublishSync(); });
         await frame.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('Mais um registro.'), modern ? '#vnPersistentStatus' : '#syncPersistenteStatus');
-        check('polling preserves focus on the store summary too', await stores.locator('summary').evaluate(element => element === document.activeElement), details);
+        check('polling preserves the closed disclosure and focused summary', await disclosure.evaluate(element =>
+            !element.open && element.querySelector('summary') === document.activeElement), details);
+        check('the alert badge remains visible after closing and polling', await attention.isVisible()
+            && !/Sessão expirada|Mais um registro/.test(await panel.innerText()), details);
+        await summary.press('Space');
+        check('keyboard activation can reopen all details', await disclosure.evaluate(element => element.open)
+            && await disclosure.locator('.vendas-sync-store').first().isVisible(), details);
 
         if (modern) {
             await frame.evaluate(() => __entryPublishSync({ className: 'status-bar error', text: 'Erro nativo deve permanecer visível.' }));

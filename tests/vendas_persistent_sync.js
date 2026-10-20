@@ -144,6 +144,16 @@ function setup(options = {}) {
         { loja: 'Sem histórico', status: 'idle', habilitado: true }
     ] } });
     assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /Atualizada/, 'tarefas restantes ou automação habilitada não comprovam atualização');
+    assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /vendas-sync-attention/, 'o indicador de alerta só deve aparecer quando há uma pendência de integração');
+    reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [{ loja: 'Loja bloqueada', status: 'blocked' }] } });
+    const attentionOnly = reopened.elements.syncPersistenteStatus.innerHTML;
+    const attentionSummary = attentionOnly.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
+    assert.match(attentionSummary, /vendas-sync-attention[^>]*>[^<]*1 alerta</,
+        'um estado de atenção sem último erro também deve produzir um indicador visível');
+    assert.match(attentionSummary, /Detalhes/);
+    assert.doesNotMatch(attentionSummary, /atualizada|sincronizando|aguardando/,
+        'uma lista contendo apenas lojas bloqueadas não pode informar atividade ou sucesso');
+    assert.match(attentionOnly, /Verifique a integração da loja para continuar/);
     const mixed = {
         active: true, progress: { percentual: 43, mensagem: 'Coletando página 2' }, logs: ['<registro técnico>'],
         automacao: { pendentes: 9, habilitadas: 6, lojas: [
@@ -157,17 +167,25 @@ function setup(options = {}) {
     };
     reopened.context.aplicarEstadoMonitorSyncVendas(mixed);
     const mixedHtml = reopened.elements.syncPersistenteStatus.innerHTML;
-    assert.match(mixedHtml, /2 lojas sincronizando · 1 loja aguardando · 1 loja atualizada · 1 loja pausada · 1 loja requer atenção/,
+    const mixedSummary = mixedHtml.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
+    assert.match(mixedSummary, /2 sincronizando · 1 aguardando · 1 atualizada · 1 pausada/,
         'o resumo deve contar lojas, mesmo quando há várias tarefas por loja');
-    assert.match(mixedHtml.split('<details')[0], /Loja E.*Sessão expirada\. Faça login novamente/,
-        'o aviso de login deve permanecer visível, mesmo com status retry');
+    assert.equal((mixedHtml.match(/<details\b/g) || []).length, 1, 'um único controle deve revelar todas as informações');
+    assert.match(mixedHtml, /data-sync-details="sync"/);
+    assert.match(mixedSummary, /vendas-sync-attention[^>]*>[^<]*2 alertas</,
+        'o indicador deve contar também a loja em execução com erro da tentativa anterior');
+    assert.match(mixedSummary, /vendas-sync-toggle[^>]*>Detalhes</);
+    assert.doesNotMatch(mixedSummary, /Loja [A-F]|Sessão expirada|Falha na tentativa anterior|registro técnico|9 tarefas|requer atenção/,
+        'o resumo compacto deve reservar mensagens e detalhes para a expansão');
+    assert.match(mixedHtml, /Loja E.*Sessão expirada\. Faça login novamente/,
+        'a orientação de login deve permanecer disponível nos detalhes');
     assert.match(mixedHtml, /data-sync-state="paused">Pausada/);
-    assert.doesNotMatch(mixedHtml.split('<details')[0], /registro técnico|9 tarefas/);
     assert.match(mixedHtml, /&lt;registro técnico&gt;/);
     assert.match(mixedHtml, /Coletando página 2/, 'a mensagem da etapa deve continuar disponível nos detalhes');
-    assert.match(mixedHtml.split('<details')[0], /Loja B.*Falha na tentativa anterior/);
+    assert.match(mixedHtml, /Loja B.*Falha na tentativa anterior/);
     assert.match(reopened.elements.status.innerHTML, /Sincronizando · 43%/);
-    assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página/);
+    assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página|Loja [A-F]|em andamento/);
+    assert.match(reopened.elements.status.innerHTML, /role="progressbar"[^>]*aria-valuenow="43"/);
     reopened.context.renderProgresso({ etapa: 'Fila', percentual: 0 }, [], reopened.elements.status, [{ status: 'queued' }]);
     assert.match(reopened.elements.status.innerHTML, /Aguardando início/);
     assert.doesNotMatch(reopened.elements.status.innerHTML, />Sincronizando/, 'a fila ativa não comprova coleta em andamento');

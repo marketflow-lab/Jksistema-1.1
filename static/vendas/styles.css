@@ -595,12 +595,30 @@
         .status-bar.loading { color: var(--accent); border-color: var(--accent-strong); background: rgba(10, 20, 40, 0.9); }
         .status-bar.error { color: var(--danger); border-color: rgba(255,100,100,0.5); background: rgba(40, 1, 13, 0.9); }
         .status-bar.success { color: var(--green); border-color: rgba(111, 230, 176, 0.4); background: rgba(13, 46, 13, 0.9); }
-        .vendas-sync-status, .vendas-sync-progress { line-height: 1.5; overflow-wrap: anywhere; }
+        .vendas-sync-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin: 5px 0; padding: 7px 10px; border: 1px solid var(--sync-border, var(--border)); border-radius: 8px; background: rgba(17, 27, 46, 0.9); font-size: 0.82rem; line-height: 1.5; min-width: 0; }
+        .vendas-sync-bar:not(:has(> div:not(:empty))) { display: none; }
+        .vendas-sync-bar > .status-bar { margin: 0; padding: 0; border: 0; background: transparent; min-width: 0; font: inherit; }
+        .vendas-sync-bar > .vendas-sync-status { flex: 1 1 380px; }
+        .vendas-sync-bar:has(.vendas-sync-disclosure[open]) > .vendas-sync-status { flex-basis: 100%; }
+        .vendas-sync-bar > .status-bar.error { flex-basis: 100%; color: var(--sync-error, var(--danger)); }
+        .vendas-sync-status { line-height: 1.5; overflow-wrap: anywhere; }
+        .vendas-sync-progress { display: flex; align-items: center; gap: 6px; line-height: 1.5; }
+        .vendas-sync-progress > strong { white-space: nowrap; }
+        .vendas-sync-progress > .spinner { margin: 0; flex-shrink: 0; }
         .vendas-sync-counts, .vendas-sync-muted { color: var(--sync-muted, var(--muted)); }
         .vendas-sync-alert { margin-top: 8px; padding: 7px 10px; color: var(--sync-error, var(--danger)); background: var(--sync-error-bg, rgba(255, 100, 100, 0.07)); border-left: 3px solid currentColor; border-radius: 4px; overflow-wrap: anywhere; }
         .vendas-sync-details { margin-top: 8px; line-height: 1.5; overflow-wrap: anywhere; }
         .vendas-sync-details > summary { cursor: pointer; width: fit-content; max-width: 100%; color: var(--sync-active, var(--accent)); padding: 3px 0; }
         .vendas-sync-details > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; border-radius: 3px; }
+        .vendas-sync-disclosure { margin: 0; }
+        .vendas-sync-disclosure > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; width: auto; padding: 0; list-style: none; }
+        .vendas-sync-disclosure > summary::-webkit-details-marker { display: none; }
+        .vendas-sync-attention { color: var(--sync-error, var(--danger)); background: var(--sync-error-bg, rgba(255, 100, 100, 0.07)); padding: 1px 7px; border-radius: 4px; white-space: nowrap; }
+        .vendas-sync-toggle { margin-left: auto; white-space: nowrap; }
+        .vendas-sync-toggle::after { content: ' ▾'; }
+        .vendas-sync-disclosure[open] > summary .vendas-sync-toggle::after { content: ' ▴'; }
+        .vendas-sync-content { margin-top: 8px; padding-top: 4px; border-top: 1px solid var(--sync-border, var(--border)); }
+        .vendas-sync-technical-title { display: block; margin-top: 12px; }
         .vendas-sync-store { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 14px; padding: 6px 0; border-bottom: 1px solid var(--sync-border, var(--border)); }
         .vendas-sync-label { color: var(--sync-muted, var(--muted)); }
         .vendas-sync-label[data-sync-state="running"] { color: var(--sync-active, var(--accent)); }
@@ -609,7 +627,7 @@
         .vendas-sync-technical-store { margin-top: 10px; }
         .vendas-sync-logs { margin-top: 10px; }
         .vendas-sync-logs > div { margin: 3px 0; }
-        .vendas-sync-track { margin-top: 8px; height: 6px; overflow: hidden; border-radius: 6px; background: var(--sync-border, var(--border)); }
+        .vendas-sync-track { width: 80px; flex: 0 1 80px; height: 4px; overflow: hidden; border-radius: 6px; background: var(--sync-border, var(--border)); }
         .vendas-sync-fill { height: 100%; background: var(--sync-active, var(--accent)); }
         .spinner { display:inline-block; width:11px; height:11px; border:2px solid var(--accent); border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-right:6px; vertical-align:-1px; }
         @keyframes spin { to { transform: rotate(360deg); } }
