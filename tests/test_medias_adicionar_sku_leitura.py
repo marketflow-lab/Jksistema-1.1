@@ -178,11 +178,11 @@ def test_conflicting_commit_recaptures_catalog_before_retry(inclusao, monkeypatc
 @pytest.mark.parametrize("status", [401, 403, 503])
 def test_lookup_authority_or_availability_errors_do_not_fall_back_to_full_catalog(inclusao, monkeypatch, status):
     before = copy.deepcopy(inclusao["lists"])
-    def unavailable(**kwargs):
+    def unavailable(*args, **kwargs):
         raise HTTPException(status, "synthetic error")
     def forbidden(**kwargs):
         pytest.fail("Full-catalog fallback must not mask authority/availability failures")
-    monkeypatch.setattr(lookup, "_obter_produto_cadastro_sync", unavailable)
+    monkeypatch.setattr(cadastro, "visao_produtos_cadastro_contexto_loja", unavailable)
     monkeypatch.setattr(listagem, "_listar_produtos_cadastro_sync", forbidden)
     with pytest.raises(HTTPException) as error:
         _add()

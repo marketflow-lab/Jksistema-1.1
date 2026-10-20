@@ -1370,7 +1370,6 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
     from backend.services.cadastro_produtos import _obter_produto_cadastro_sync
-    from backend.services.cadastro_listagem import _listar_produtos_cadastro_sync
 
     listas = _carregar_listas_pedidos(client_id)
     idx = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
@@ -1394,26 +1393,6 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
 
     # Each transaction attempt owns fresh read inputs; release them before commit.
     with leitura_medias():
-        # Busca dados do cadastro no backend para garantir consistÃƒÂªncia da inclusÃƒÂ£o.
-        try:
-            prod_resp = _obter_produto_cadastro_sync(sku=sku_in, client_id=client_id)
-            produto = (prod_resp or {}).get("produto") or {}
-        except HTTPException as exc:
-            if exc.status_code != 404:
-                raise
-            # Fallback: busca por comparacao normalizada na listagem inteira do cadastro.
-            produtos = _listar_produtos_cadastro_sync(client_id=client_id)
-            alvo_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_in).upper()
-            produto = None
-            for p in (produtos or []):
-                sku_p = _normalizar_sku_mes(str((p or {}).get("sku") or ""))
-                sku_cmp = re.sub(r"[^A-Za-z0-9]", "", sku_p).upper()
-                if sku_cmp and sku_cmp == alvo_cmp:
-                    produto = p
-                    break
-            if not produto:
-                raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro")
-
         from backend.services.cadastro_compatibilidade import (
             mesclar_produtos_legados_com_contexto_loja,
         )
@@ -1425,7 +1404,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         ] + [sku_in]
         contexto_cadastro = mesclar_produtos_legados_com_contexto_loja(
             client_id,
-            [produto] if isinstance(produto, dict) else [],
+            [],
             referencia_loja,
             skus=skus_contexto,
         )
@@ -1437,6 +1416,19 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
             ),
             None,
         )
+        # Resolve store membership before consulting legacy global rows. A
+        # scoped legacy shadow need not exist in the global product lookup.
+        # Missing products never require listing or repairing the full catalog.
+        if produto is None and contexto_cadastro.get("scope") == "global_safe":
+            prod_resp = _obter_produto_cadastro_sync(sku=sku_in, client_id=client_id)
+            produto_legado = (prod_resp or {}).get("produto") or {}
+            if (
+                isinstance(produto_legado, dict)
+                and normalizar_sku_cubagem(
+                    produto_legado.get("cubagem_sku") or produto_legado.get("sku")
+                ) == sku_in
+            ):
+                produto = dict(produto_legado)
         if not produto:
             raise HTTPException(status_code=404, detail="SKU nÃ£o encontrado no cadastro desta loja")
         store_id_cadastro = str(contexto_cadastro.get("store_id") or "").strip()

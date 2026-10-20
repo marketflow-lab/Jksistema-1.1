@@ -793,7 +793,7 @@ def _aplicar_compilado(
     return derivados
 
 
-def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas):
+def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas, *, sku_interessa=None):
     lojas = [dict(item) for item in lojas if isinstance(item, dict)]
     ids_por_nome, nomes_ambiguos = _nomes_lojas_unicos(lojas)
     store_ids_atuais = {
@@ -830,6 +830,10 @@ def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas):
     for fonte, linhas in fontes.items():
         for indice, linha in enumerate(linhas, start=2):
             sku = _normalizar_sku_chave(linha.get("sku") or "")
+            # Read projections only need the selected identities. Filter before
+            # resolving store labels and preparing every legacy product.
+            if sku_interessa is not None and not sku_interessa({"sku": sku}):
+                continue
             labels = _labels_loja(linha)
             ids_linha: list[str] = []
             if not sku:
@@ -968,6 +972,8 @@ def _contexto_legado_de_tenant(
     *,
     fotos: dict[str, str] | None = None,
     fontes_capturadas: dict[str, bytes] | None = None,
+    sku_interessa: Callable[[dict[str, Any]], bool] | None = None,
+    chave_filtro: Any = None,
 ) -> dict[str, Any]:
     """Build the legacy shadow from explicit, already trusted inputs.
 
@@ -979,9 +985,11 @@ def _contexto_legado_de_tenant(
 
     from backend.services.medias_compras_leitura import reutilizar, chave_arquivo, leitura_atual
     lojas = [dict(item) for item in lojas if isinstance(item, dict)]
-    chave = ("indice_legado", client_id, chave_arquivo(tenant), repr(lojas)) if leitura_atual() else None
+    chave = ("indice_legado", client_id, chave_arquivo(tenant), repr(lojas), chave_filtro) if leitura_atual() else None
     (associacoes, base_generica, base_por_loja, compilado_por_loja, custos_por_loja, nao_mapeados, resumo, colunas_fontes) = reutilizar(
-        chave, lambda: _indice_legado_de_tenant(tenant, lojas, fontes_capturadas),
+        chave, lambda: _indice_legado_de_tenant(
+            tenant, lojas, fontes_capturadas, sku_interessa=sku_interessa,
+        ),
     )
     campos_derivados_sombras: dict[str, set[str]] = {}
 
@@ -1706,6 +1714,8 @@ def _listar_produtos_loja_sync(
         else _contexto_legado_de_tenant(
             client_id, loja, get_tenant_path(client_id), _lojas_capturadas,
             fontes_capturadas=_fontes_capturadas,
+            sku_interessa=sku_interessa if chaves_skus is not None else None,
+            chave_filtro=(frozenset(chaves_skus), _normalizar_sku_consulta) if chaves_skus is not None else None,
         )
     )
     saida: list[dict[str, Any]] = []

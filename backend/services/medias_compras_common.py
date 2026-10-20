@@ -730,10 +730,7 @@ def _salvar_listas_pedidos_no_caminho(caminho: str, listas: list[dict]) -> None:
             listas.source_digest = fresh.source_digest
 
 
-def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str:
-    if not isinstance(item, dict):
-        return ""
-
+def _indexar_textos_item(item: dict) -> dict[str, Any]:
     mapa: dict[str, Any] = {}
     for chave, valor in item.items():
         if valor is None:
@@ -746,7 +743,10 @@ def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str
         base = re.sub(r"[^a-z0-9]+", "", base.lower())
         if base and base not in mapa:
             mapa[base] = valor
+    return mapa
 
+
+def _primeiro_texto_indexado(mapa: dict, chaves: list[str] | tuple[str, ...]) -> str:
     for chave in chaves:
         base = unicodedata.normalize("NFKD", str(chave or ""))
         base = "".join(ch for ch in base if not unicodedata.combining(ch))
@@ -757,6 +757,12 @@ def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str
         if valor is not None and str(valor).strip():
             return str(valor).strip()
     return ""
+
+
+def _primeiro_texto_item(item: dict, chaves: list[str] | tuple[str, ...]) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return _primeiro_texto_indexado(_indexar_textos_item(item), chaves)
 
 
 def _resolver_foto_cadastro_sku(
@@ -833,9 +839,16 @@ def _resolver_foto_cadastro_sku(
 def _normalizar_item_lista_pedido(item: dict) -> dict:
     if not isinstance(item, dict):
         item = {}
-    sku = _primeiro_texto_item(item, ["SKU", "sku"])
-    foto = _primeiro_texto_item(item, ["Foto", "Picture", "foto", "picture", "imagem", "image"])
-    titulo = _primeiro_texto_item(item, [
+    # Every field uses the same first non-empty alias from this item. Build
+    # that index once, without retaining values beyond this normalization.
+    indice = _indexar_textos_item(item)
+
+    def texto(chaves):
+        return _primeiro_texto_indexado(indice, chaves)
+
+    sku = texto(["SKU", "sku"])
+    foto = texto(["Foto", "Picture", "foto", "picture", "imagem", "image"])
+    titulo = texto([
         *TITULO_PRODUTO_INGLES_KEYS_LEGADO,
         "Description",
         "Descricao",
@@ -845,8 +858,8 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
         "Produto",
         "Nome",
     ])
-    oem = _primeiro_texto_item(item, ["OEM", "OEM/ Model", "OEM Model", "Modelo", "Numero do modelo", "Número do modelo"])
-    cor_lado = _primeiro_texto_item(item, [
+    oem = texto(["OEM", "OEM/ Model", "OEM Model", "Modelo", "Numero do modelo", "Número do modelo"])
+    cor_lado = texto([
         COR_LADO_LISTA_PEDIDO_KEY,
         "Color side",
         "Color/Side",
@@ -858,10 +871,10 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
         "Color",
         "Side",
     ])
-    link = _primeiro_texto_item(item, ["Link", "Link Aliexpress", "url aliexpress", "URL", "Url", "Link produto"])
-    quantidade = _to_float(_primeiro_texto_item(item, ["Quantidade", "quantity", "Qtd", "Qtde", "Qty"]), 0.0)
-    valor_unidade = _to_float(_primeiro_texto_item(item, ["Valor unidade", "Valor unitario", "Valor unitário", "Cost", "Custo", "Preco", "Preço"]), 0.0)
-    valor_total = _to_float(_primeiro_texto_item(item, ["Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"]), 0.0)
+    link = texto(["Link", "Link Aliexpress", "url aliexpress", "URL", "Url", "Link produto"])
+    quantidade = _to_float(texto(["Quantidade", "quantity", "Qtd", "Qtde", "Qty"]), 0.0)
+    valor_unidade = _to_float(texto(["Valor unidade", "Valor unitario", "Valor unitário", "Cost", "Custo", "Preco", "Preço"]), 0.0)
+    valor_total = _to_float(texto(["Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"]), 0.0)
     preservados = {
         _corrigir_mojibake_texto(str(chave)): _corrigir_mojibake_texto(valor) if isinstance(valor, str) else valor
         for chave, valor in item.items()
@@ -877,15 +890,15 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
         "Quantidade": int(max(0.0, quantidade)),
         "Valor unidade": max(0.0, valor_unidade),
         "Valor total": max(0.0, valor_total),
-        CBM_LISTA_PEDIDO_KEY: _primeiro_texto_item(item, [CBM_LISTA_PEDIDO_KEY, "Estimated CBM", "CBM", "M3", "M³"]),
-        PESO_LISTA_PEDIDO_KEY: _primeiro_texto_item(item, [PESO_LISTA_PEDIDO_KEY, "Estimated Weight", "Estimated Weigh", "Weight", "Peso"]),
-        EMBALAGEM_LISTA_PEDIDO_KEY: _primeiro_texto_item(item, [EMBALAGEM_LISTA_PEDIDO_KEY, "Packaging", "Embalagem individual", "Embalagem"]),
-        "M3 individual": _primeiro_texto_item(item, ["M3 individual", "M3 Individual", "M³ individual", "M³ Individual", "m3_individual", "CBM individual"]),
+        CBM_LISTA_PEDIDO_KEY: texto([CBM_LISTA_PEDIDO_KEY, "Estimated CBM", "CBM", "M3", "M³"]),
+        PESO_LISTA_PEDIDO_KEY: texto([PESO_LISTA_PEDIDO_KEY, "Estimated Weight", "Estimated Weigh", "Weight", "Peso"]),
+        EMBALAGEM_LISTA_PEDIDO_KEY: texto([EMBALAGEM_LISTA_PEDIDO_KEY, "Packaging", "Embalagem individual", "Embalagem"]),
+        "M3 individual": texto(["M3 individual", "M3 Individual", "M³ individual", "M³ Individual", "m3_individual", "CBM individual"]),
         "Frete Internacional": max(0.0, _to_float(item.get("Frete Internacional", 0), 0.0)),
-        "MOQ": max(0.0, _to_float(_primeiro_texto_item(item, ["MOQ", "moq", "Quantidade minima", "Quantidade mínima"]), 0.0)),
-        "package_multiple": max(1.0, _to_float(_primeiro_texto_item(item, ["package_multiple", "Multiplo embalagem", "Múltiplo embalagem", "Packing multiple"]), 1.0)),
-        "received_quantity": max(0.0, _to_float(_primeiro_texto_item(item, ["received_quantity", "Quantidade recebida", "Qtd recebida"]), 0.0)),
-        "defective_quantity": max(0.0, _to_float(_primeiro_texto_item(item, ["defective_quantity", "Quantidade defeituosa", "Qtd defeituosa"]), 0.0)),
+        "MOQ": max(0.0, _to_float(texto(["MOQ", "moq", "Quantidade minima", "Quantidade mínima"]), 0.0)),
+        "package_multiple": max(1.0, _to_float(texto(["package_multiple", "Multiplo embalagem", "Múltiplo embalagem", "Packing multiple"]), 1.0)),
+        "received_quantity": max(0.0, _to_float(texto(["received_quantity", "Quantidade recebida", "Qtd recebida"]), 0.0)),
+        "defective_quantity": max(0.0, _to_float(texto(["defective_quantity", "Quantidade defeituosa", "Qtd defeituosa"]), 0.0)),
     }
 
     campos_preservar = {
@@ -899,7 +912,7 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
         "Monofasico": ["Monofasico", "monofasico"],
     }
     for destino, aliases in campos_preservar.items():
-        valor = _primeiro_texto_item(item, aliases)
+        valor = texto(aliases)
         if valor:
             normalizado[destino] = valor
 
