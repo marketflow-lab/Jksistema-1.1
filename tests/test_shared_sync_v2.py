@@ -301,7 +301,12 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(
         lambda _client_id, _lojas: None,
     )
     monkeypatch.setattr(shared_sync_remote, "_shared_sync_encryption_secret", lambda: secret)
-    credentials = b'{"access_token":"token-super-secreto","refresh_token":"refresh-secreto","state":"temporario","code":"oauth-code"}'
+    credentials = json.dumps([{
+        "store_id": "store-1", "nome": "Loja teste", "integracoes": {
+            "mercadolivre": {"access_token": "token-super-secreto", "refresh_token": "refresh-secreto",
+                              "state": "temporario", "code": "oauth-code"},
+        },
+    }]).encode("utf-8")
     monkeypatch.setattr(
         shared_sync_bundle,
         "_shared_sync_coletar_arquivos",
@@ -312,7 +317,7 @@ def test_pacote_v2_criptografa_credenciais_sem_texto_legivel(
     )
     assert manifest["schema"] == 2
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as zf:
-        persisted = json.loads(zf.read("files/lojas_config.json").decode("utf-8"))
+        persisted = json.loads(zf.read("files/lojas_config.json").decode("utf-8"))[0]["integracoes"]["mercadolivre"]
     assert persisted["access_token"] == "token-super-secreto"
     assert persisted["refresh_token"] == "refresh-secreto"
     assert "state" not in persisted
@@ -341,16 +346,15 @@ def test_oauth_draft_transitorio_nao_altera_fingerprint_nem_pacote(
         "_integracoes_validar_tombstones_contra_lojas_para_envio",
         lambda _client_id, _lojas: None,
     )
-    base = {
-        "lojas": [
+    base = [
             {
+                "store_id": "store-1",
                 "nome": "Loja",
                 "integracoes": {"mercadolivre": {"connected": False}},
             }
         ]
-    }
     com_draft = json.loads(json.dumps(base))
-    com_draft["lojas"][0]["integracoes"]["mercadolivre"]["oauth_draft"] = {
+    com_draft[0]["integracoes"]["mercadolivre"]["oauth_draft"] = {
         "state": "state-transitorio",
         "app_id": "app-transitorio",
         "client_secret": "secret-transitorio",

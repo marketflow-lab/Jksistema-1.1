@@ -259,6 +259,58 @@ def _shared_sync_canonicalize_cadastro_photo_config(
     ]
 
 
+def _shared_sync_cadastro_needs_photo_config(entries: list[dict]) -> bool:
+    return any(
+        str(item.get("relative_path") or "").replace("\\", "/").casefold()
+        == "cadastro_produtos_lojas.csv"
+        or str(item.get("relative_path") or "").replace("\\", "/").casefold()
+        .startswith("cadastro_fotos/")
+        for item in entries
+    )
+
+
+def _shared_sync_capture_cadastro_photo_config(client_id: str, entries: list[dict]) -> dict | None:
+    """Freeze the policy dependency, including the effective legacy default.
+
+    The dependency is separate from physical source entries: preview guards
+    fingerprint the real files, while the transport must be self-contained.
+    """
+    from backend.services.cadastro_fotos import (
+        CADASTRO_FOTOS_CONFIG_ARQUIVO,
+        CADASTRO_FOTOS_CONFIG_SCHEMA,
+    )
+    from backend.services.shared_sync_apply_scope import _shared_sync_cadastro_photo_config_bytes
+
+    for item in entries:
+        if str(item.get("relative_path") or "").replace("\\", "/").casefold() == CADASTRO_FOTOS_CONFIG_ARQUIVO:
+            return dict(item)
+    if not _shared_sync_cadastro_needs_photo_config(entries):
+        return None
+
+    tenant_abs = os.path.abspath(get_tenant_path(client_id))
+    config_abs = _shared_sync_resolve_tenant_path(tenant_abs, CADASTRO_FOTOS_CONFIG_ARQUIVO)
+    if os.path.lexists(config_abs):
+        # A skipped/unreadable/oversized file is not an absent configuration.
+        # Sending a default here would silently replace the producer's policy.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "shared_sync_cadastro_photo_config_missing",
+                "message": "A configuracao de fotos existe na origem, mas nao foi capturada. Confira o arquivo e tente novamente.",
+                "file": CADASTRO_FOTOS_CONFIG_ARQUIVO,
+            },
+        )
+    return {
+        "relative_path": CADASTRO_FOTOS_CONFIG_ARQUIVO,
+        "data": _shared_sync_cadastro_photo_config_bytes({
+            "schema": CADASTRO_FOTOS_CONFIG_SCHEMA,
+            "strict_store_scope": False,
+            "shared_groups": [],
+        }),
+        "mtime": 0,
+    }
+
+
 def _shared_sync_filter_store_photos_by_canonical_rows(
     client_id: str,
     entries: list[dict],
@@ -612,12 +664,27 @@ def _shared_sync_capture_entries(
                             + ", ".join(sorted(arquivos_sensiveis_faltantes))
                         ),
                     )
-    # Freeze every payload before releasing the coordinated locks. No caller
-    # may reopen a source path while hashing, filtering deltas or writing ZIP.
-    entries = [
-        {**item, "data": bytes(item["data"] if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"]))}
-        for item in entries
-    ]
+        # Freeze every payload before releasing the coordinated locks. No caller
+        # may reopen a source path while hashing, filtering deltas or writing ZIP.
+        entries = [
+            {**item, "data": bytes(item["data"] if "data" in item else _shared_sync_ler_arquivo_pacote(item["abs_path"]))}
+            for item in entries
+        ]
+        connection_hashes = None
+        if user_only:
+            from backend.services.shared_sync_store_bindings import source_connection_hashes
+            from backend.services.shared_sync_common import _shared_sync_resolve_tenant_path
+            if scope == "lojas_integracoes":
+                config_bytes = next((item["data"] for item in entries
+                                     if item["relative_path"].casefold() == "lojas_config.json"), b"[]")
+            else:
+                config_path = _shared_sync_resolve_tenant_path(get_tenant_path(client_id), "lojas_config.json")
+                try:
+                    with open(config_path, "rb") as handle:
+                        config_bytes = handle.read()
+                except FileNotFoundError:
+                    config_bytes = b"[]"
+            connection_hashes = source_connection_hashes(config_bytes)
     source_entries = [dict(item) for item in entries]
     ai_context_snapshot = None
     if scope == "cadastro" and include_ai_context:
@@ -627,6 +694,12 @@ def _shared_sync_capture_entries(
         ai_context_snapshot = build_snapshot_bytes(
             client_id, username, info_root=os.path.dirname(tenant_abs),
         )
+    photo_config = None
+    if scope == "cadastro":
+        entries = _shared_sync_canonicalize_cadastro_photo_config(
+            client_id, entries, capture_only=capture_only,
+        )
+        photo_config = _shared_sync_capture_cadastro_photo_config(client_id, entries)
     strict = None
     references = {}
     if capture_only:
@@ -636,7 +709,6 @@ def _shared_sync_capture_entries(
             strict = _cadastro_fotos_escopo_estrito(client_id)
             # Trust/physical-path checks depend on the live store/config state;
             # perform them under the lock and retain their adjudicated result.
-            entries = _shared_sync_canonicalize_cadastro_photo_config(client_id, entries, capture_only=True)
             entries = _shared_sync_filter_store_photos_by_canonical_rows(
                 client_id, entries, strict_store_scope=strict,
                 captured_references=references, capture_only=True,
@@ -648,7 +720,8 @@ def _shared_sync_capture_entries(
             )
     return {"entries": entries, "warnings": warnings, "item_keys": item_keys,
             "capture_only": capture_only, "strict": strict, "references": references,
-            "source_entries": source_entries, "ai_context_snapshot": ai_context_snapshot}
+            "source_entries": source_entries, "ai_context_snapshot": ai_context_snapshot,
+            "photo_config": photo_config, "store_connection_hashes": connection_hashes}
 
 
 def _shared_sync_montar_pacote_locked(
@@ -696,11 +769,6 @@ def _shared_sync_montar_pacote_locked(
             sanitizadas.append(_shared_sync_entry_from_bytes(rel, data, item.get("mtime") or time.time(), item.get("item_keys") or []))
         entries = sanitizadas
     entries = _shared_sync_sanitize_transient_oauth_entries(scope, entries)
-    if scope == "cadastro" and not captured["capture_only"]:
-        entries = _shared_sync_canonicalize_cadastro_photo_config(
-            client_id,
-            entries,
-        )
     entries = _shared_sync_sanitize_strict_legacy_photo_entries(
         client_id, entries,
         **({"strict_store_scope": captured["strict"]} if captured["capture_only"] else {}),
@@ -727,6 +795,23 @@ def _shared_sync_montar_pacote_locked(
                 [(item["relative_path"], item["data"]) for item in frozen],
             )
             entries = frozen
+    if scope == "cadastro" and _shared_sync_cadastro_needs_photo_config(entries):
+        photo_config = captured["photo_config"]
+        if photo_config is not None and not any(
+            str(item.get("relative_path") or "").replace("\\", "/").casefold()
+            == "cadastro_fotos_config.json"
+            for item in entries
+        ):
+            # A known config key may suppress its own delta, but every emitted
+            # canonical cadastro/photo still needs this frozen dependency. It
+            # does not count as a new item or manufacture an otherwise empty delta.
+            entries = sorted([
+                *entries,
+                _shared_sync_entry_from_bytes(
+                    "cadastro_fotos_config.json", photo_config["data"],
+                    photo_config["mtime"], [],
+                ),
+            ], key=lambda item: item["relative_path"])
     ai_context_data: bytes | None = None
     ai_context_descriptor: dict[str, Any] | None = None
     snapshot_entries = list(entries)
@@ -772,6 +857,8 @@ def _shared_sync_montar_pacote_locked(
         manifest["extensions"] = {
             AI_CONTEXT_EXTENSION_KEY: ai_context_descriptor,
         }
+    if captured.get("store_connection_hashes") is not None:
+        manifest["store_connection_hashes"] = captured["store_connection_hashes"]
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
@@ -809,7 +896,7 @@ def _shared_sync_montar_pacote(
         central = current(client_id)
         if central is not None:
             central.refresh_stores()
-    if scope in {"lojas_integracoes", "cadastro", "vendas"}:
+    if scope in {"lojas_integracoes", "cadastro", "vendas"} or user_only:
         from backend.services import integracoes
 
         with integracoes._integracoes_bloquear_rmw_lojas(client_id):

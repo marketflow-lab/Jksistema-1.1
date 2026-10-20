@@ -472,6 +472,12 @@ def _shared_sync_pull_pair_scope_serialized(
         "base_bundle": base_bundle,
         "strict_oauth_conflicts": scope == "lojas_integracoes",
     }
+    from_client, from_user, to_client, to_user = _shared_sync_link_direction_parts(link, receive_direction)
+    scope_config["store_peer"] = {
+        "link_id": str(link.get("id") or ""), "sync_direction": receive_direction,
+        "source_client_id": from_client, "source_username": from_user,
+        "target_client_id": to_client, "target_username": to_user,
+    }
     result = _shared_sync_aplicar_pacote(target_sessao.get("client_id"), scope, bundle, target_sessao.get("username") or "", scope_config)
     _shared_sync_state_update(target_sessao.get("client_id"), target_sessao.get("username") or "", state_scope, meta, "pull")
     _shared_sync_user_share_add_known_keys(

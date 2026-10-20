@@ -1620,6 +1620,7 @@ def _shared_sync_aplicar_lojas_integracoes(
     base_tombstones_bytes: Optional[bytes] = None,
     strict_oauth_conflicts: bool = False,
     preserve_local_connections: bool = False,
+    store_peer: Optional[dict] = None,
 ) -> dict:
     """Mescla e grava o escopo inteiro sem expor estado parcialmente aplicado."""
     from backend.services.central_accounts_store_index import assert_legacy_sync_allowed
@@ -1681,6 +1682,8 @@ def _shared_sync_aplicar_lojas_integracoes(
         )
 
     rels = [rel for rel in canonical_order if rel in por_rel]
+    public_rels = list(rels)
+    reconciliation = None
     targets = {
         rel: _shared_sync_resolve_tenant_path(tenant_abs, rel)
         for rel in rels
@@ -1862,6 +1865,23 @@ def _shared_sync_aplicar_lojas_integracoes(
                 client_id=client_id,
             )
 
+        if store_peer:
+            from backend.services.shared_sync_store_bindings import prepare_store_import
+            from backend.services.shared_sync_store_identity import _remote_key
+            reconciliation = prepare_store_import(
+                client_id, tenant_abs, recovered_local_lojas or b"[]",
+                por_rel["lojas_config.json"], store_peer,
+            )
+            recovered_local_lojas = json.dumps(reconciliation["local_stores"], ensure_ascii=False).encode("utf-8")
+            por_rel["lojas_config.json"] = json.dumps(reconciliation["remote_stores"], ensure_ascii=False).encode("utf-8")
+            if base_lojas_bytes:
+                base_rows = json.loads(base_lojas_bytes.decode("utf-8-sig"))
+                for row in base_rows:
+                    destination_id = reconciliation["mapping"].get(_remote_key(row))
+                    if destination_id:
+                        row["store_id"] = destination_id
+                base_lojas_bytes = json.dumps(base_rows, ensure_ascii=False).encode("utf-8")
+
         for rel in rels:
             target_abs = targets[rel]
             if rel == "lojas_config.json":
@@ -1881,7 +1901,7 @@ def _shared_sync_aplicar_lojas_integracoes(
                     client_id=client_id,
                 )
             elif rel == "integracoes.json":
-                if preserve_local_connections:
+                if preserve_local_connections or (reconciliation and reconciliation["matched_local_ids"]):
                     # The canonical store snapshot already carries new stores.
                     # Never let a legacy file reimport old credentials over it.
                     prepared[rel] = preimages.get(rel) or b"{}"
@@ -1900,9 +1920,22 @@ def _shared_sync_aplicar_lojas_integracoes(
                         por_rel[rel],
                     )
 
+        if reconciliation and reconciliation["binding_bytes"] != reconciliation["binding_preimage"]:
+            from backend.services.shared_sync_store_bindings import BINDINGS_FILE
+            from backend.services.store_snapshot_transactions import before_write
+            binding_path = _shared_sync_resolve_tenant_path(tenant_abs, BINDINGS_FILE)
+            # Enlist the private map in the same durable stores publication
+            # journal before either the configuration or this map can change.
+            before_write(binding_path)
+            targets[BINDINGS_FILE] = binding_path
+            preimages[BINDINGS_FILE] = reconciliation["binding_preimage"]
+            prepared[BINDINGS_FILE] = reconciliation["binding_bytes"]
+            rels.append(BINDINGS_FILE)
+
         connection_conflicts = 0
         if preserve_local_connections:
-            original_connections = preimages.get("lojas_config.json") or b"[]"
+            original_connections = ((recovered_local_lojas or b"[]") if reconciliation
+                                    else (preimages.get("lojas_config.json") or b"[]"))
             connection_conflicts = _shared_sync_connection_conflicts(
                 original_connections, por_rel["lojas_config.json"],
             )
@@ -2070,8 +2103,8 @@ def _shared_sync_aplicar_lojas_integracoes(
 
     _shared_sync_prune_local_backups(tenant_abs)
     return {
-        "file_count": len(rels),
-        "files": rels,
+        "file_count": len(public_rels),
+        "files": public_rels,
         "backup_dir": backup_dir,
         "stores_count": len(lojas),
         "snapshot_stores_count": len(lojas_remotas),
@@ -2114,6 +2147,37 @@ def _shared_sync_aplicar_pacote(
             )
         tenant_abs = tenant_confiavel
     manifest, fontes = _shared_sync_read_validated_bundle(bundle, scope)
+    peer = (scope_config or {}).get("store_peer")
+    if peer:
+        from backend.services import integracoes
+        from backend.services.shared_sync_store_bindings import (
+            validate_peer, remap_bound_sources, validate_source_connections,
+            source_connection_hashes,
+        )
+        peer = validate_peer(client_id, peer, str(manifest.get("client_id") or ""))
+        if peer["target_username"] != str(username or "").strip().lower():
+            raise HTTPException(403, "O mapa de lojas pertence a outro destinatário.")
+        scope_config = {**scope_config, "store_peer": peer}
+        source_connections = validate_source_connections(manifest.get("store_connection_hashes"))
+        if scope == "lojas_integracoes" and source_connections is not None:
+            original_stores = dict(fontes).get("lojas_config.json", b"[]")
+            if source_connection_hashes(original_stores) != source_connections:
+                raise HTTPException(409, {
+                    "code": "shared_sync_store_binding_stale",
+                    "message": "A prova das conexões diverge das lojas recebidas. Reenvie Lojas e integrações junto com os dados.",
+                })
+        # A binding and its store must stay coherent through validation/apply.
+        # The canonical RLock is reentrant for the existing Cadastro writers.
+        with integracoes.lojas_config_lock(client_id, recovery="rollback"):
+            if scope != "lojas_integracoes":
+                fontes = remap_bound_sources(client_id, tenant_abs, peer, scope, fontes, source_connections)
+            return _shared_sync_aplicar_pacote_validado(
+                client_id, scope, username, scope_config, tenant_abs, manifest, fontes)
+    return _shared_sync_aplicar_pacote_validado(
+        client_id, scope, username, scope_config, tenant_abs, manifest, fontes)
+
+
+def _shared_sync_aplicar_pacote_validado(client_id, scope, username, scope_config, tenant_abs, manifest, fontes):
     ai_context_payload = manifest.pop("_ai_context_payload", None)
     ai_context_plan = None
     ai_context_staged = None
@@ -2317,6 +2381,7 @@ def _shared_sync_aplicar_pacote_conteudo(client_id, scope, username, scope_confi
             strict_oauth_conflicts=bool(
                 (scope_config or {}).get("strict_oauth_conflicts")
             ),
+            store_peer=(scope_config or {}).get("store_peer"),
         )
 
     if scope == "vendas":

@@ -346,7 +346,7 @@ def test_cadastro_machine_bundle_has_typed_sidecar_and_legacy_bundle_does_not(
     monkeypatch.setattr(
         shared_sync_bundle,
         "_shared_sync_canonicalize_cadastro_photo_config",
-        lambda _client, entries: entries,
+        lambda _client, entries, *, capture_only=False: entries,
     )
     monkeypatch.setattr(
         shared_sync_bundle,
@@ -422,7 +422,7 @@ def test_tampered_sidecar_is_rejected_before_payload_application(
         raising=False,
     )
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_coletar_arquivos", lambda *a, **k: ([], []))
-    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_canonicalize_cadastro_photo_config", lambda _c, e: e)
+    monkeypatch.setattr(shared_sync_bundle, "_shared_sync_canonicalize_cadastro_photo_config", lambda _c, e, *, capture_only=False: e)
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_sanitize_strict_legacy_photo_entries", lambda _c, e: e)
     monkeypatch.setattr(shared_sync_bundle, "_shared_sync_filter_store_photos_by_canonical_rows", lambda _c, e: e)
     bundle, _manifest, _warnings = shared_sync_bundle._shared_sync_montar_pacote_locked(

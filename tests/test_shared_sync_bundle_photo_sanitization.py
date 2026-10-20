@@ -338,12 +338,14 @@ def test_bundle_estrito_inclui_apenas_foto_de_linha_canonica_ativa(
 
     assert warnings == []
     assert {item["relative_path"] for item in manifest["files"]} == {
+        "cadastro_fotos_config.json",
         "cadastro_produtos_lojas.csv",
         f"cadastro_fotos/lojas/{segmento}/001.jpg",
     }
     with zipfile.ZipFile(io.BytesIO(bundle), "r") as arquivo:
         assert set(arquivo.namelist()) == {
             "manifest.json",
+            "files/cadastro_fotos_config.json",
             "files/cadastro_produtos_lojas.csv",
             f"files/cadastro_fotos/lojas/{segmento}/001.jpg",
         }
@@ -412,6 +414,7 @@ def test_delta_foto_orfa_nao_e_marcada_conhecida_e_sai_apos_materializacao(
     assert manifest["delta"] is True
     assert set(manifest["item_keys"]) == {row_key, foto_key}
     assert {item["relative_path"] for item in manifest["files"]} == {
+        "cadastro_fotos_config.json",
         "cadastro_produtos_lojas.csv",
         photo_rel,
     }
