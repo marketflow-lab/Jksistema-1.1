@@ -123,6 +123,7 @@
             rows: rowsMatch ? copy(capturedRows) : [],
             totals: totalsMatch ? copy(capturedTotals) : null,
             summaryCards: totalsMatch ? copy(capturedCards) : [],
+            compositionWarning: totalsMatch ? document.getElementById('composicaoAviso')?.textContent || '' : '',
             filters,
             stores: clientMatches && typeof lojasDisponiveis !== 'undefined' && Array.isArray(lojasDisponiveis) ? copy(lojasDisponiveis) : [],
             units: clientMatches && typeof unidadeNegocioSelect !== 'undefined' ? Array.from(unidadeNegocioSelect?.options || []).map(option => ({

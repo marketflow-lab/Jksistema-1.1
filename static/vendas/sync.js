@@ -45,6 +45,16 @@ function vendaEhEbazarSomatorio(venda) {
 }
 
 function renderResumoTotaisVendas(totais, exibirDevolucoes = true) {
+    const avisoComposicao = document.getElementById('composicaoAviso');
+    if (avisoComposicao) {
+        const composicao = typeof vendasResumoMeta !== 'undefined' ? vendasResumoMeta?.composicao : null;
+        const incompleta = Boolean(composicao?.incomplete);
+        const legadoSemConfirmacao = Array.isArray(composicao?.warnings) && composicao.warnings.some(aviso => ['legacy_composition_unverified', 'legacy_component_identity_unverified', 'legacy_catalog_unverified'].includes(aviso?.code));
+        avisoComposicao.hidden = !incompleta;
+        avisoComposicao.textContent = incompleta
+            ? `${legadoSemConfirmacao ? 'Há dados do cadastro legado que precisam de confirmação por loja.' : 'Há composições indisponíveis ou inválidas no cadastro.'} As quantidades desses SKUs foram mantidas como vendidas; atualize o Cadastro da loja para conferir as composições.`
+            : '';
+    }
     const totalPedidos = Number(totais?.pedidos || 0);
     const totalItens = Number(totais?.itens || 0);
     const totalValor = Number(totais?.valor || 0);
@@ -57,15 +67,15 @@ function renderResumoTotaisVendas(totais, exibirDevolucoes = true) {
     resumo.innerHTML = '';
     const cards = [
         { label: 'Pedidos', value: totalPedidos },
-        { label: 'Itens Vendidos', value: totalItens },
+        { label: 'Itens Vendidos', value: totalItens.toLocaleString('pt-BR', { maximumFractionDigits: 8 }) },
         { label: 'Valor Bruto', value: formatCurrency(totalValor) }
     ];
     if (exibirDevolucoes) {
         cards.push(
             { label: 'Devolu\u00e7\u00f5es', value: totalDevolucoes, isDevolucao: true },
-            { label: 'Itens Devolvidos', value: itensDevolucao, isNegative: true },
+            { label: 'Itens Devolvidos', value: itensDevolucao.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isNegative: true },
             { label: 'Valor Devolvido', value: formatCurrency(valorDevolucao), isNegative: true },
-            { label: 'Itens L\u00edquidos', value: itensLiquidos, isLiquido: true },
+            { label: 'Itens L\u00edquidos', value: itensLiquidos.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isLiquido: true },
             { label: 'Valor L\u00edquido', value: formatCurrency(valorLiquido), isLiquido: true }
         );
     }
@@ -134,16 +144,16 @@ function renderResumo(lista, devolucoesLista = [], exibirDevolucoes = true) {
     resumo.innerHTML = '';
     const cards = [
         { label: 'Pedidos', value: totalPedidos },
-        { label: 'Itens Vendidos', value: totalItens },
+        { label: 'Itens Vendidos', value: totalItens.toLocaleString('pt-BR', { maximumFractionDigits: 8 }) },
         { label: 'Valor Bruto', value: formatCurrency(totalValor) }
     ];
 
     if (exibirDevolucoes) {
         cards.push(
             { label: 'Devolu\u00e7\u00f5es', value: totalDevolucoes, isDevolucao: true },
-            { label: 'Itens Devolvidos', value: itensDevolucao, isNegative: true },
+            { label: 'Itens Devolvidos', value: itensDevolucao.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isNegative: true },
             { label: 'Valor Devolvido', value: formatCurrency(valorDevolucao), isNegative: true },
-            { label: 'Itens L\u00edquidos', value: itensLiquidos, isLiquido: true },
+            { label: 'Itens L\u00edquidos', value: itensLiquidos.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isLiquido: true },
             { label: 'Valor L\u00edquido', value: formatCurrency(valorLiquido), isLiquido: true }
         );
     }
@@ -239,7 +249,14 @@ function renderTabelaAgrupada(lista) {
                 const td = document.createElement('td');
                 let val = item[col];
                 if (col === 'valor') val = formatCurrency(obterValorExibicaoSku(item));
+                if (col === 'itens') val = Number(val || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                 td.textContent = val;
+                if (col === 'itens' && Number(item.itensComposicao || 0) > 0) {
+                    td.title = `${Number(item.itensDiretos || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 })} diretos + ${Number(item.itensComposicao).toLocaleString('pt-BR', { maximumFractionDigits: 8 })} por composição. Pedidos e valores permanecem no SKU vendido originalmente.`;
+                }
+                if (col === 'devolucoes' && Number(item.itensDevolucaoComposicao || 0) > 0) {
+                    td.title = `${Number(item.itensDevolucao || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 })} itens devolvidos, sendo ${Number(item.itensDevolucaoComposicao).toLocaleString('pt-BR', { maximumFractionDigits: 8 })} por composição. A ocorrência e o valor permanecem no SKU original.`;
+                }
 
                 if (col === 'devolucoes' && Number(item.devolucoes || 0) > 0) {
                     td.style.color = '#ff6b6b';

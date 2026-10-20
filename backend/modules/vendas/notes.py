@@ -29,7 +29,8 @@ from .legacy import (
     _sql_filtro_loja_notas_entrada,
     _sql_filtro_unidade_devolucao,
 )
-from .performance import append_indexable_date_filter, open_vendas_readonly
+from .compositions import load_composition_catalog
+from .performance import append_indexable_date_filter, cached_table_columns, open_vendas_readonly, select_compatible_column
 
 
 def listar_notas_entrada(client_id: str, data_inicio: str = None, data_fim: str = None, agrupado: bool = False, unidade_negocio: str = None, loja: str = None):
@@ -169,8 +170,12 @@ def listar_notas_entrada_por_sku(sku: str, client_id: str, data_inicio: str = No
         conn = open_vendas_readonly(db_path, row_factory=sqlite3.Row)
         cur = conn.cursor()
 
-        query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE sku = ? AND sku != '' AND devolucao = 1"
-        params = [sku]
+        catalog = load_composition_catalog(client_id)
+        candidates = sorted({str(value).strip().upper() for value in catalog.candidates(sku, loja)}) or [str(sku).strip().upper()]
+        columns = cached_table_columns(db_path, "notas_entrada_itens", conn)
+        identity = ", ".join(select_compatible_column(columns, name, "''") for name in ("id_unico", "store_id"))
+        query = "SELECT " + identity + ", numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE UPPER(trim(coalesce(sku,''))) IN (" + ",".join("?" for _ in candidates) + ") AND sku != '' AND devolucao = 1"
+        params = list(candidates)
 
         date_conditions: list[str] = []
         append_indexable_date_filter(date_conditions, params, "data_emissao", data_inicio, data_fim)
@@ -194,7 +199,7 @@ def listar_notas_entrada_por_sku(sku: str, client_id: str, data_inicio: str = No
                 item.get("natureza_operacao"),
                 item.get("loja_conta"),
             )
-        return dados
+        return catalog.project_rows(dados, target_sku=sku, store=loja)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler notas de entrada: {str(e)}")
     finally:

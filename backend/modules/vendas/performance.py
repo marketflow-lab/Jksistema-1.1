@@ -77,6 +77,7 @@ def vendas_source_paths(
     *,
     include_products: bool = False,
     include_stock: bool = False,
+    include_compositions: bool = False,
 ) -> list[str]:
     paths = [str(path) for path in db_paths if path]
     try:
@@ -90,6 +91,9 @@ def vendas_source_paths(
         if include_stock:
             paths.append(os.path.join(tenant_path, "estoque_historico.db"))
             paths.append(os.path.join(tenant_path, "lojas_config.json"))
+    if include_compositions:
+        from .compositions import composition_source_paths
+        paths.extend(composition_source_paths(client_id))
     return paths
 
 

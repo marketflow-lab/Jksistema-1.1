@@ -35,13 +35,13 @@ function renderizarRankingModalVendas(listaTop20, modo) {
 
     if (modo === 'devolucoes') {
         return listaTop20.map((item, idx) => {
-            const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+            const qtd = Number(item?.itens || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
             const taxa = Number(item?.taxa || 0).toFixed(1).replace('.', ',');
             return `<li><strong>${idx + 1}. ${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) devolvidos | taxa ${taxa}%</li>`;
         }).join('');
     } else {
         return listaTop20.map((item, idx) => {
-            const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+            const qtd = Number(item?.itens || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
             const valor = Number(item?.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
             return `<li><strong>${idx + 1}. ${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) | ${valor}</li>`;
         }).join('');
@@ -68,13 +68,13 @@ function renderRankingSidebarVendas() {
 
     if (rankingSidebarModo === 'devolucoes') {
         graficoRankingVendas.innerHTML = listaAtiva.map(item => {
-            const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+            const qtd = Number(item?.itens || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
             const taxa = Number(item?.taxa || 0).toFixed(1).replace('.', ',');
             return `<li><strong>${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) devolvidos | taxa ${taxa}%</li>`;
         }).join('');
     } else {
         graficoRankingVendas.innerHTML = listaAtiva.map(item => {
-            const qtd = Math.round(Number(item?.itens || 0)).toLocaleString('pt-BR');
+            const qtd = Number(item?.itens || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
             const valor = Number(item?.valor || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
             return `<li><strong>${item?.sku || 'N/D'}</strong>: ${qtd} item(ns) | ${valor}</li>`;
         }).join('');
@@ -351,11 +351,12 @@ function atualizarObservacoesGraficoVendas(data) {
 
     const devolContexto = dadosModoResumo
         ? vendasContexto
-            .filter(row => Number(row?.devolucoes || 0) > 0)
+            .filter(row => Number(row?.devolucoes || 0) > 0 || Number(row?.itensDevolucao || 0) > 0)
             .map(row => ({
                 sku: row?.sku,
                 descricao: row?.produto,
                 quantidade: row?.itensDevolucao || 0,
+                quantidade_componentes: row?.itensDevolucaoComponentes ?? row?.itensDevolucao ?? 0,
                 valor_total: row?.valorDevolucao || 0,
                 data_emissao: row?.data || dataFimIso || dataIniIso || '',
                 loja_conta: row?.loja_conta || lojaSelecionada,
@@ -394,7 +395,7 @@ function atualizarObservacoesGraficoVendas(data) {
         }
         mapaDevol[sku].itens += Number(dv?.quantidade || 0);
         mapaDevol[sku].valor += Number(dv?.valor_total || 0);
-        mapaDevol[sku].ocorrencias += Number(dv?.ocorrencias || 1);
+        mapaDevol[sku].ocorrencias += Number(dv?.ocorrencias ?? dv?.devolucoes_contribuicao ?? 1);
     });
     const devolOrdenados = Object.values(mapaDevol)
         .map(item => {
@@ -417,8 +418,9 @@ function atualizarObservacoesGraficoVendas(data) {
     rankingDevolTodos = devolOrdenados;
     renderRankingSidebarVendas();
 
-    const qtdDevolTotalContexto = devolContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
-    const qtdVendasContexto = vendasContexto.reduce((acc, cur) => acc + Number(cur?.quantidade || 0), 0);
+    const totaisContexto = dadosModoResumo && typeof resumoTotaisVendas !== 'undefined' ? resumoTotaisVendas : null;
+    const qtdDevolTotalContexto = Number(totaisContexto?.itensDevolucao ?? devolContexto.reduce((acc, cur) => acc + Number(cur?.quantidade_componentes ?? cur?.quantidade ?? 0), 0));
+    const qtdVendasContexto = Number(totaisContexto?.itens ?? vendasContexto.reduce((acc, cur) => acc + Number(cur?.itensComponentes ?? cur?.quantidade ?? 0), 0));
     const taxaContexto = qtdVendasContexto > 0 ? (qtdDevolTotalContexto / qtdVendasContexto) * 100 : 0;
     const previsaoMesAtual = normalizarPrevisaoMesAtual(data);
     const cardPrevisaoMesAtual = previsaoMesAtual ? `
@@ -437,13 +439,13 @@ function atualizarObservacoesGraficoVendas(data) {
     const obsCards = `
         <div class="sidebar-obs-card sidebar-obs-vendas">
             <div class="sidebar-obs-label">💰 Total Vendido</div>
-            <div class="sidebar-obs-valor">${Math.round(totalQtdV).toLocaleString('pt-BR')} item(ns)</div>
+            <div class="sidebar-obs-valor">${totalQtdV.toLocaleString('pt-BR', { maximumFractionDigits: 8 })} item(ns)</div>
             <div class="sidebar-obs-detalhe">${totalValV.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
         </div>
         ${cardPrevisaoMesAtual}
         <div class="sidebar-obs-card sidebar-obs-devolucao">
             <div class="sidebar-obs-label">📦 Total Devolvido</div>
-            <div class="sidebar-obs-valor">${Math.round(totalQtdD).toLocaleString('pt-BR')} item(ns)</div>
+            <div class="sidebar-obs-valor">${totalQtdD.toLocaleString('pt-BR', { maximumFractionDigits: 8 })} item(ns)</div>
             <div class="sidebar-obs-detalhe">${totalValD.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</div>
         </div>
         <div class="sidebar-obs-card sidebar-obs-devolucao">
@@ -897,7 +899,7 @@ function renderizarGrafico(data, dataComparativo = null) {
                         if (!valorMetrica) return;
                         const yBar = Math.min(pos.y - 6, chart.chartArea.bottom - 4);
                         const textoBarra = usandoQuantidade
-                            ? Math.round(valorMetrica).toLocaleString('pt-BR')
+                            ? valorMetrica.toLocaleString('pt-BR', { maximumFractionDigits: 8 })
                             : formatarMoeda(valorMetrica);
                         ctx.fillText(textoBarra, pos.x, yBar);
                         return;
@@ -907,7 +909,7 @@ function renderizarGrafico(data, dataComparativo = null) {
                         const valor = Number((dataset.data || [])[index] || 0);
                         if (!Number.isFinite(valor)) return;
                         const texto = usandoQuantidade
-                            ? Math.round(valor).toLocaleString('pt-BR')
+                            ? valor.toLocaleString('pt-BR', { maximumFractionDigits: 8 })
                             : formatarMoeda(valor);
                         const yLinha = pos.y - 8;
                         ctx.fillText(texto, pos.x, yLinha);
@@ -988,10 +990,10 @@ function renderizarGrafico(data, dataComparativo = null) {
                                 label += ': ';
                             }
                             if (usandoQuantidade) {
-                                label += Math.round(context.parsed.y);
+                                label += Number(context.parsed.y).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                             } else {
                                 label += formatarMoeda(context.parsed.y);
-                                label += ' | Qtd: ' + Math.round(quantidade);
+                                label += ' | Qtd: ' + Number(quantidade).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                                 const labelOriginal = labelsRender[context.dataIndex];
                                 if (
                                     dataset.isSalesActual
@@ -1023,7 +1025,7 @@ function renderizarGrafico(data, dataComparativo = null) {
                         color: '#e5e5e5',
                         callback: function(value) {
                             if (usandoQuantidade) {
-                                return Number(value || 0).toLocaleString('pt-BR');
+                                return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                             }
                             return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
                         }
@@ -1038,7 +1040,7 @@ function renderizarGrafico(data, dataComparativo = null) {
                     ticks: {
                         color: '#ffb199',
                         callback: function(value) {
-                            return Number(value || 0).toLocaleString('pt-BR');
+                            return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                         }
                     },
                     title: {
@@ -1200,7 +1202,7 @@ function renderizarGraficoEstoque(
                             if (valor === null || valor === undefined || !Number.isFinite(Number(valor))) {
                                 return `${context.dataset.label || 'Estoque'}: sem historico`;
                             }
-                            const valorFormatado = Math.round(Number(valor)).toLocaleString('pt-BR');
+                            const valorFormatado = Number(valor).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                             return `${context.dataset.label || 'Estoque'}: ${valorFormatado} un.`;
                         }
                     }
@@ -1221,7 +1223,7 @@ function renderizarGraficoEstoque(
                     ticks: {
                         color: '#ffb199',
                         callback: function(value) {
-                            return Number(value || 0).toLocaleString('pt-BR');
+                            return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                         }
                     },
                     title: {
@@ -1238,7 +1240,7 @@ function renderizarGraficoEstoque(
                     ticks: {
                         color: '#83cfff',
                         callback: function(value) {
-                            return Number(value || 0).toLocaleString('pt-BR');
+                            return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                         }
                     },
                     title: {

@@ -27,6 +27,7 @@ from backend.services.sqlite_coordination import (
 )
 
 from .dependencies import get_tenant_path, logger
+from .compositions import load_composition_catalog
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
     _bling_obter_numero_nf,
@@ -54,6 +55,16 @@ from .performance import (
     vendas_source_paths,
 )
 
+def _append_composition_sku_filter(conditions, params, sku, catalog, store):
+    if not sku:
+        return
+    candidates = sorted({str(value).strip().upper() for value in catalog.candidates(sku, store)})
+    if not candidates:
+        candidates = [str(sku).strip().upper()]
+    conditions.append("UPPER(trim(coalesce(sku,''))) IN (" + ",".join("?" for _ in candidates) + ")")
+    params.extend(candidates)
+
+
 def listar_vendas(
     client_id: str,
     data_inicio: str = None,
@@ -67,6 +78,7 @@ def listar_vendas(
     db_paths = _listar_bancos_vendas_tenant(client_id, loja)
     if not db_paths:
         return []
+    catalog = load_composition_catalog(client_id) if sku else None
 
     erros_bancos: list[str] = []
     bancos_processados = 0
@@ -86,7 +98,7 @@ def listar_vendas(
                 cur = conn.cursor()
                 cols = cached_table_columns(alvo, "vendas", conn)
                 select_specs = (
-                    ("id_unico", "''"), ("data", "''"), ("loja_conta", "''"),
+                    ("id_unico", "''"), ("data", "''"), ("loja_conta", "''"), ("store_id", "''"),
                     ("canal", "''"), ("numero", "''"), ("situacao", "''"),
                     ("devolucao", "0"), ("sku", "''"), ("produto", "''"),
                     ("quantidade", "0"), ("valor", "0"), ("numero_nf", "''"),
@@ -101,9 +113,7 @@ def listar_vendas(
                 conditions = ["coalesce(devolucao, 0) = 0"] if "devolucao" in cols else []
                 append_indexable_date_filter(conditions, params, "data", data_inicio, data_fim)
 
-                if sku:
-                    conditions.append("sku = ?")
-                    params.append(sku)
+                _append_composition_sku_filter(conditions, params, sku, catalog, loja)
 
                 if loja and loja != "__todas":
                     filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja)
@@ -163,6 +173,8 @@ def listar_vendas(
             return []
 
         dados = _deduplicar_vendas_consolidadas(dados)
+        if catalog is not None:
+            dados = catalog.project_rows(dados, target_sku=sku, store=loja)
         # Remove id_unico após dedup (campo interno, não deve ser exposto ao frontend)
         for item in dados:
             item.pop("id_unico", None)
@@ -181,7 +193,7 @@ def listar_vendas(
             cur = conn.cursor()
             cols = cached_table_columns(alvo, "vendas", conn)
             select_specs = (
-                ("id_unico", "''"), ("data", "''"), ("loja_conta", "''"),
+                ("id_unico", "''"), ("data", "''"), ("loja_conta", "''"), ("store_id", "''"),
                 ("canal", "''"), ("numero", "''"), ("situacao", "''"),
                 ("devolucao", "0"), ("sku", "''"), ("produto", "''"),
                 ("quantidade", "0"), ("valor", "0"), ("numero_nf", "''"),
@@ -196,9 +208,7 @@ def listar_vendas(
             conditions = ["coalesce(devolucao, 0) = 0"] if "devolucao" in cols else []
             append_indexable_date_filter(conditions, params, "data", data_inicio, data_fim)
 
-            if sku:
-                conditions.append("sku = ?")
-                params.append(sku)
+            _append_composition_sku_filter(conditions, params, sku, catalog, loja)
 
             if loja and loja != "__todas":
                 filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja)
@@ -353,7 +363,8 @@ def listar_vendas(
                 invalidate_vendas_cache(client_id)
 
             for item in dados:
-                item.pop("id_unico", None)
+                if catalog is None:
+                    item.pop("id_unico", None)
 
             bancos_processados += 1
             break
@@ -372,6 +383,10 @@ def listar_vendas(
         logger.info("[VENDAS] Retornando lista vazia para resolver_nf=true para evitar quebra na UI.")
         return []
 
+    if catalog is not None:
+        dados = catalog.project_rows(_deduplicar_vendas_consolidadas(dados), target_sku=sku, store=loja)
+        for item in dados:
+            item.pop("id_unico", None)
     return dados
 
 def _vendas_resumo_num(valor):
@@ -393,6 +408,12 @@ def _vendas_resumo_nova_linha(sku: str, produto: str = "") -> dict:
         "produto": produto or "-",
         "pedidos": 0,
         "itens": 0.0,
+        "itensDiretos": 0.0,
+        "itensComposicao": 0.0,
+        "itensComponentes": 0.0,
+        "itensDevolucaoDiretos": 0.0,
+        "itensDevolucaoComposicao": 0.0,
+        "itensDevolucaoComponentes": 0.0,
         "devolucoes": 0,
         "itensDevolucao": 0.0,
         "valorDevolucao": 0.0,
@@ -404,10 +425,34 @@ def _vendas_resumo_nova_linha(sku: str, produto: str = "") -> dict:
     }
 
 
+def _add_composition_summary_rows(summary, projected_rows, *, returns=False):
+    physical_field = "itensDevolucaoComponentes" if returns else "itensComponentes"
+    extra_field = "itensDevolucaoComposicao" if returns else "itensComposicao"
+    quantity_field = "itensDevolucao" if returns else "itens"
+    for item in projected_rows:
+        display_sku = str(item.get("sku") or "N/D").strip() or "N/D"
+        key = display_sku.upper()
+        row = summary.get(key)
+        if row is None:
+            row = _vendas_resumo_nova_linha(display_sku, str(item.get("produto") or item.get("descricao") or ""))
+            summary[key] = row
+        quantity = _vendas_resumo_num(item.get("quantidade"))
+        row[physical_field] += quantity
+        if item.get("__composicao"):
+            row[extra_field] += quantity
+            row[quantity_field] += quantity
+            if not returns:
+                row["quantidade"] += quantity
+        if not row.get("loja_conta"):
+            row["loja_conta"] = str(item.get("loja_conta") or "")
+        if not row.get("unidade_negocio"):
+            row["unidade_negocio"] = str(item.get("unidade_negocio") or "")
+
+
 def _vendas_resumo_cache_paths(arguments: dict) -> list[str]:
     client_id = arguments["client_id"]
     db_paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    return vendas_source_paths(client_id, db_paths)
+    return vendas_source_paths(client_id, db_paths, include_compositions=True)
 
 
 @cache_vendas_response("resumo", _vendas_resumo_cache_paths)
@@ -448,6 +493,7 @@ def resumo_vendas(
             },
         }
 
+    catalog = load_composition_catalog(client_id)
     mapa_lojas_cliente = _carregar_mapeamento_lojas_virtuais_cliente(client_id)
     unidade_sql = ""
     unidade_params: list = []
@@ -477,6 +523,7 @@ def resumo_vendas(
                 _vendas_resumo_col(cols, "id_unico"),
                 _vendas_resumo_col(cols, "data"),
                 _vendas_resumo_col(cols, "loja_conta"),
+                _vendas_resumo_col(cols, "store_id"),
                 _vendas_resumo_col(cols, "canal"),
                 _vendas_resumo_col(cols, "numero"),
                 _vendas_resumo_col(cols, "devolucao", "0"),
@@ -496,9 +543,7 @@ def resumo_vendas(
             params: list = []
             append_indexable_date_filter(conditions, params, "data", data_inicio, data_fim)
 
-            if sku:
-                conditions.append("sku = ?")
-                params.append(sku)
+            _append_composition_sku_filter(conditions, params, sku, catalog, loja)
 
             if loja and loja != "__todas":
                 filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja)
@@ -568,12 +613,16 @@ def resumo_vendas(
         "valorDevolucao": 0.0,
     }
 
-    for item in vendas_deduplicadas:
-        chave_sku = str(item.get("sku") or "N/D").strip() or "N/D"
+    physical_sales = catalog.project_rows(vendas_deduplicadas, target_sku=sku, store=loja)
+    commercial_sales = [item for item in vendas_deduplicadas
+                        if not sku or str(item.get("sku") or "").strip().upper() == str(sku).strip().upper()]
+    for item in commercial_sales:
+        display_sku = str(item.get("sku") or "N/D").strip() or "N/D"
+        chave_sku = display_sku.upper()
         produto = str(item.get("produto") or "").strip() or "-"
         linha = resumo_por_sku.get(chave_sku)
         if linha is None:
-            linha = _vendas_resumo_nova_linha(chave_sku, produto)
+            linha = _vendas_resumo_nova_linha(display_sku, produto)
             resumo_por_sku[chave_sku] = linha
         if not linha.get("produto") or linha.get("produto") == "-":
             linha["produto"] = produto
@@ -581,6 +630,7 @@ def resumo_vendas(
         valor = _vendas_resumo_num(item.get("valor"))
         linha["pedidos"] += 1
         linha["itens"] += qtd
+        linha["itensDiretos"] += qtd
         linha["quantidade"] += qtd
         linha["valor"] += valor
         if not linha.get("loja_conta"):
@@ -591,6 +641,10 @@ def resumo_vendas(
         totals["itens"] += qtd
         totals["valor"] += valor
 
+    # Physical units are computed once; money and orders retain the commercial SKU.
+    totals["itens"] = sum(_vendas_resumo_num(item.get("quantidade")) for item in physical_sales)
+    _add_composition_summary_rows(resumo_por_sku, physical_sales)
+    return_rows: list[dict] = []
     devolucoes_vistas: set[str] = set()
     for alvo in db_paths:
         if not (alvo and os.path.exists(alvo)):
@@ -616,6 +670,7 @@ def resumo_vendas(
                 _vendas_resumo_col(cols_itens, "quantidade", "0"),
                 _vendas_resumo_col(cols_itens, "valor_total", "0"),
                 _vendas_resumo_col(cols_itens, "loja_conta"),
+                _vendas_resumo_col(cols_itens, "store_id"),
                 _vendas_resumo_col(cols_itens, "unidade_negocio"),
                 _vendas_resumo_col(cols_itens, "unidade_negocio_virtual"),
                 _vendas_resumo_col(cols_itens, "natureza_operacao"),
@@ -628,6 +683,7 @@ def resumo_vendas(
             params: list = []
             date_conditions: list[str] = []
             append_indexable_date_filter(date_conditions, params, "data_emissao", data_inicio, data_fim)
+            _append_composition_sku_filter(date_conditions, params, sku, catalog, loja)
             if date_conditions:
                 query += " AND " + " AND ".join(date_conditions)
             filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
@@ -656,10 +712,15 @@ def resumo_vendas(
                 )
                 if unidade_dev:
                     unidades.add(str(unidade_dev))
-                chave_sku = str(dev.get("sku") or "N/D").strip() or "N/D"
+                dev["produto"] = dev.get("descricao") or ""
+                return_rows.append(dev)
+                if sku and str(dev.get("sku") or "").strip().upper() != str(sku).strip().upper():
+                    continue
+                display_sku = str(dev.get("sku") or "N/D").strip() or "N/D"
+                chave_sku = display_sku.upper()
                 linha = resumo_por_sku.get(chave_sku)
                 if linha is None:
-                    linha = _vendas_resumo_nova_linha(chave_sku, str(dev.get("descricao") or ""))
+                    linha = _vendas_resumo_nova_linha(display_sku, str(dev.get("descricao") or ""))
                     resumo_por_sku[chave_sku] = linha
                 if not linha.get("produto") or linha.get("produto") == "-":
                     linha["produto"] = str(dev.get("descricao") or "-")
@@ -667,6 +728,7 @@ def resumo_vendas(
                 valor_dev = _vendas_resumo_num(dev.get("valor_total"))
                 linha["devolucoes"] += 1
                 linha["itensDevolucao"] += qtd_dev
+                linha["itensDevolucaoDiretos"] += qtd_dev
                 linha["valorDevolucao"] += valor_dev
                 totals["devolucoes"] += 1
                 totals["itensDevolucao"] += qtd_dev
@@ -677,13 +739,18 @@ def resumo_vendas(
             if conn:
                 conn.close()
 
+    physical_returns = catalog.project_rows(return_rows, target_sku=sku, store=loja)
+    totals["itensDevolucao"] = sum(_vendas_resumo_num(item.get("quantidade")) for item in physical_returns)
+    _add_composition_summary_rows(resumo_por_sku, physical_returns, returns=True)
     totals["itensLiquidos"] = totals["itens"] - totals["itensDevolucao"]
     totals["valorLiquido"] = totals["valor"] - totals["valorDevolucao"]
 
     rows = list(resumo_por_sku.values())
     for item in rows:
-        for campo in ("itens", "quantidade", "valor", "itensDevolucao", "valorDevolucao"):
-            item[campo] = round(_vendas_resumo_num(item.get(campo)), 2)
+        for campo in ("itens", "quantidade", "valor", "itensDevolucao", "valorDevolucao",
+                      "itensDiretos", "itensComposicao", "itensComponentes",
+                      "itensDevolucaoDiretos", "itensDevolucaoComposicao", "itensDevolucaoComponentes"):
+            item[campo] = round(_vendas_resumo_num(item.get(campo)), 2 if campo in {"valor", "valorDevolucao"} else 12)
     rows.sort(
         key=lambda item: (
             _vendas_resumo_num(item.get("valor")) or _vendas_resumo_num(item.get("valorDevolucao")),
@@ -695,7 +762,8 @@ def resumo_vendas(
     return {
         "success": True,
         "rows": rows,
-        "totals": {k: round(v, 2) if isinstance(v, float) else v for k, v in totals.items()},
+        "totals": {k: round(v, 2 if k in {"valor", "valorDevolucao", "valorLiquido"} else 12)
+                   if isinstance(v, float) else v for k, v in totals.items()},
         "meta": {
             "data_inicio": data_inicio,
             "data_fim": data_fim,
@@ -704,7 +772,9 @@ def resumo_vendas(
             "dias_com_dados": sorted(dias_com_dados),
             "unidades": sorted(unidades),
             "bancos_processados": bancos_processados,
-            "registros_vendas": len(vendas_deduplicadas),
+            "registros_vendas": len(commercial_sales),
+            "registros_vendas_origem": len(vendas_deduplicadas),
+            "composicao": catalog.metadata,
             "registros_devolucoes": len(devolucoes_vistas),
             "source": "summary",
             "duration_ms": int((time.time() - inicio_tempo) * 1000),

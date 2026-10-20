@@ -4,8 +4,9 @@ External providers are collected in a background, read-only preview.  The
 preview is kept server-side and can only be applied by the same tenant and
 store. Applying creates missing SKUs and fills empty fields. Mercado Livre
 descriptions are refreshed when available. Existing Bling SKUs are the other
-deliberate exception: only their Bling title plus canonical/source NCM and CEST
-fields are refreshed, while every other existing value is kept.
+deliberate exception: their Bling title, canonical/source NCM and CEST, and
+verified composition metadata are refreshed. A missing Bling identity may be
+filled; a conflicting identity never gets silently replaced.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import secrets
 import threading
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Optional
 
 import requests
@@ -266,6 +268,8 @@ _ML_CONFIRMED_PARTIAL_FIELDS = {
 }
 _ML_UNSCOPED_LEGACY_FIELDS = _ML_FIELDS - {"descricao", "marca", "modelo", "categoria"}
 _ML_CONFIRMED_PARTIAL_SCOPE = "confirmed_sku_catalog_fields"
+_BLING_COMPOSITION_FIELDS = {"componentes_bling_json", "estrutura_bling", "formato_bling"}
+_BLING_UNSCOPED_COMPOSITION_FIELDS = _BLING_COMPOSITION_FIELDS | {"id_bling"}
 
 _BLING_EXISTING_SYNC_GROUPS = {
     "produto_bling": {
@@ -763,13 +767,135 @@ def _consolidar_campos_duplicados_bling(
     return consolidados, divergentes
 
 
+def _id_composicao_bling(value: Any) -> str:
+    if isinstance(value, bool) or not _valor_preenchido(value):
+        return ""
+    try:
+        number = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return ""
+    if not number.is_finite() or number <= 0 or number != number.to_integral_value():
+        return ""
+    return str(int(number))
+
+
+def _json_composicao_bling(value: Any, expected: type) -> Any:
+    parsed = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(parsed, expected):
+        raise ValueError("invalid_composition_shape")
+    # Reject NaN/Infinity and keep the same canonical serialization as Cadastro.
+    json.dumps(parsed, allow_nan=False)
+    return parsed
+
+
+def _campos_composicao_bling_existente(
+    entries: list[dict[str, Any]],
+    existente: dict[str, Any],
+    *,
+    store_id: str = "",
+) -> tuple[dict[str, Any], set[str]]:
+    fields, conflicts = _consolidar_campos_duplicados_bling(entries)
+    relevant_conflicts = conflicts & _BLING_UNSCOPED_COMPOSITION_FIELDS
+    for entry in entries:
+        declared = entry.get("conflicts")
+        if isinstance(declared, dict):
+            relevant_conflicts.update(
+                {str(name).strip().lower() for name in declared} & _BLING_UNSCOPED_COMPOSITION_FIELDS
+            )
+    observed_ids = []
+    for entry in entries:
+        raw_fields = entry.get("fields") if isinstance(entry.get("fields"), dict) else {}
+        external = entry.get("external_ids") if isinstance(entry.get("external_ids"), dict) else {}
+        for raw_id in (raw_fields.get("id_bling"), external.get("id_bling")):
+            if _valor_preenchido(raw_id):
+                observed_ids.append(_id_composicao_bling(raw_id))
+    ids = set(observed_ids)
+    has_composition = bool(set(fields) & _BLING_COMPOSITION_FIELDS)
+    if store_id and existente.get("store_id") and str(existente["store_id"]) != store_id:
+        return {}, {"composicao_bling"}
+    if len(ids) > 1 or "" in ids or "id_bling" in relevant_conflicts:
+        return {}, {"id_bling"}
+    if not ids:
+        return {}, {"composicao_bling"} if has_composition else set()
+    incoming_id = next(iter(ids))
+    current_raw_id = existente.get("id_bling")
+    current_id = _id_composicao_bling(current_raw_id)
+    if _valor_preenchido(current_raw_id) and current_id != incoming_id:
+        return {}, {"id_bling"}
+    updates = {}
+    if not current_id or existente.get("scope_source") == "legacy_shadow":
+        updates["id_bling"] = incoming_id
+    if relevant_conflicts & _BLING_COMPOSITION_FIELDS:
+        return updates, {"composicao_bling"}
+    if not has_composition:
+        return updates, set()
+    format_value = str(fields.get("formato_bling") or "").strip().upper()
+    try:
+        if format_value and format_value not in {"S", "E", "V"}:
+            raise ValueError("invalid_product_format")
+        structure = (
+            _json_composicao_bling(fields["estrutura_bling"], dict)
+            if "estrutura_bling" in fields else None
+        )
+        components = None
+        if "componentes_bling_json" in fields:
+            components = _json_composicao_bling(fields["componentes_bling_json"], list)
+        if structure is not None and "componentes" in structure:
+            nested = _json_composicao_bling(structure["componentes"], list)
+            if components is not None and components != nested:
+                raise ValueError("conflicting_components")
+            components = nested
+        if components is not None:
+            for component in components:
+                if not isinstance(component, dict) or not isinstance(component.get("produto"), dict):
+                    raise ValueError("invalid_component")
+                if not _id_composicao_bling(component["produto"].get("id")):
+                    raise ValueError("invalid_component_id")
+                quantity = component.get("quantidade")
+                if isinstance(quantity, bool):
+                    raise ValueError("invalid_component_quantity")
+                quantity = Decimal(str(quantity))
+                if not quantity.is_finite() or quantity <= 0:
+                    raise ValueError("invalid_component_quantity")
+        if format_value in {"S", "V"}:
+            if components:
+                raise ValueError("simple_product_has_components")
+            updates.update(
+                formato_bling=format_value, componentes_bling_json="[]", estrutura_bling="{}",
+            )
+        else:
+            if format_value:
+                updates["formato_bling"] = format_value
+            # A partial response without components cannot replace a valid BOM.
+            if components is not None:
+                if structure is None:
+                    try:
+                        structure = _json_composicao_bling(existente.get("estrutura_bling") or "{}", dict)
+                    except (TypeError, ValueError):
+                        structure = {}
+                structure = {**structure, "componentes": components}
+                updates["componentes_bling_json"] = json.dumps(
+                    components, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                )
+                updates["estrutura_bling"] = json.dumps(
+                    structure, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                )
+    except (TypeError, ValueError, InvalidOperation):
+        return {key: value for key, value in updates.items() if key == "id_bling"}, {"composicao_bling"}
+    return updates, set()
+
+
 def _campos_prioritarios_bling_existente(
     entries: list[dict[str, Any]],
+    existente: dict[str, Any],
+    *,
+    store_id: str = "",
 ) -> tuple[dict[str, Any], set[str]]:
     """Build the only Bling writes allowed for an SKU already in Cadastro.
 
     Empty provider values are ignored.  Conflicting values block just their
-    logical title/NCM/CEST group so an agreeing group can still be applied.
+    logical group so an agreeing group can still be applied. Composition and
+    its account-specific IDs require independent, consistent source evidence.
     """
 
     valores_por_grupo: dict[str, dict[str, Any]] = {
@@ -805,6 +931,11 @@ def _campos_prioritarios_bling_existente(
         value = next(iter(valores.values()))
         for target_name in group["targets"]:
             fields_apply[target_name] = value
+    composition_fields, composition_conflicts = _campos_composicao_bling_existente(
+        entries, existente, store_id=store_id,
+    )
+    fields_apply.update(composition_fields)
+    grupos_divergentes.update(composition_conflicts)
     return fields_apply, grupos_divergentes
 
 
@@ -957,7 +1088,9 @@ def _construir_preview(
             (
                 campos_bling_existente,
                 campos_divergentes_duplicata,
-            ) = _campos_prioritarios_bling_existente(entries)
+            ) = _campos_prioritarios_bling_existente(
+                entries, existente, store_id=str(provider_result.get("store_id") or ""),
+            )
         elif duplicata_bling:
             first = dict(first)
             (
@@ -1120,6 +1253,7 @@ def _construir_preview(
             for name, value in sorted(fields.items()):
                 current = (
                     None if fonte == "mercadolivre" and materializar_sombra and name in _ML_UNSCOPED_LEGACY_FIELDS
+                    else None if fonte == "bling" and materializar_sombra and name in _BLING_UNSCOPED_COMPOSITION_FIELDS
                     else existente.get(name)
                 )
                 if fonte == "mercadolivre" and name in {"mlb_ids", "links_ml"}:
@@ -1549,6 +1683,10 @@ def _salvar_payloads_importacao_catalogo(
     writer_options = {}
     if fonte == "mercadolivre":
         writer_options["campos_legados_ignorados"] = _ML_UNSCOPED_LEGACY_FIELDS
+    elif fonte == "bling":
+        # Materializing a generic legacy shadow cannot turn unverified Bling
+        # account metadata into canonical evidence for this store.
+        writer_options["campos_legados_ignorados"] = _BLING_UNSCOPED_COMPOSITION_FIELDS
     result = salvar_produtos_loja_em_lote(
         client_id,
         store_id,

@@ -730,7 +730,7 @@ def test_sku_duplicado_mercado_livre_preserva_bloqueio_anterior():
     assert result["items"][0]["conflicts"] == ["sku_duplicado_na_fonte"]
 
 
-def test_duplicata_bling_atualiza_titulo_e_ignora_id_no_sku_existente():
+def test_duplicata_bling_atualiza_titulo_e_preenche_id_consensual_ausente():
     result = catalogos._construir_preview(
         "bling",
         {
@@ -763,6 +763,7 @@ def test_duplicata_bling_atualiza_titulo_e_ignora_id_no_sku_existente():
     assert result["apply_rows"][0]["fields"] == {
         "produto_bling": "Nome externo",
         "nome_bling": "Nome externo",
+        "id_bling": "10",
     }
     assert result["items"][0]["conflicts"] == []
     assert {change["action"] for change in result["items"][0]["changes"]} == {
@@ -771,7 +772,7 @@ def test_duplicata_bling_atualiza_titulo_e_ignora_id_no_sku_existente():
     }
 
 
-def test_bling_existente_sobrescreve_somente_titulo_ncm_e_cest():
+def test_bling_existente_preserva_id_conflitante_e_atualiza_grupos_independentes():
     result = catalogos._construir_preview(
         "bling",
         {
@@ -824,11 +825,11 @@ def test_bling_existente_sobrescreve_somente_titulo_ncm_e_cest():
         "cest_bling": "1234567",
         "cest": "1234567",
     }
-    assert result["items"][0]["conflicts"] == []
+    assert result["items"][0]["conflicts"] == ["id_bling:valores_divergentes_na_fonte"]
     assert {change["action"] for change in result["items"][0]["changes"]} == {
         "overwrite"
     }
-    assert result["summary"]["conflitos"] == 0
+    assert result["summary"]["conflitos"] == 1
 
 
 def test_bling_existente_valores_vazios_nao_apagam_e_demais_campos_sao_ignorados():
@@ -925,6 +926,7 @@ def test_duplicata_bling_existente_bloqueia_so_grupos_logicos_divergentes():
     }
     assert result["items"][0]["conflicts"] == [
         "cest_bling:valores_divergentes_na_fonte",
+        "id_bling:valores_divergentes_na_fonte",
         "produto_bling:valores_divergentes_na_fonte",
     ]
     assert result["items"][0]["warnings"] == [
@@ -932,7 +934,7 @@ def test_duplicata_bling_existente_bloqueia_so_grupos_logicos_divergentes():
     ]
 
 
-def test_duplicata_bling_existente_aplica_grupos_concordantes_e_ignora_outros():
+def test_duplicata_bling_existente_aplica_grupos_concordantes_e_sinaliza_id_ambiguo():
     entries = [
         {
             "sku": "SKU-CONSENSO",
@@ -979,7 +981,7 @@ def test_duplicata_bling_existente_aplica_grupos_concordantes_e_ignora_outros():
         "cest_bling": "1234567",
         "cest": "1234567",
     }
-    assert result["items"][0]["conflicts"] == []
+    assert result["items"][0]["conflicts"] == ["id_bling:valores_divergentes_na_fonte"]
 
 
 def test_bling_existente_alias_de_titulo_inconsistente_bloqueia_so_titulo():

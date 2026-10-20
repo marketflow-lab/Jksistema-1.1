@@ -23,6 +23,7 @@
     const themedCharts = new Map();
     const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
     const integer = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
+    const quantity = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 8 });
     const iconPaths = {
         calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/>',
         store: '<path d="M3 10 5 3h14l2 7M4 10v11h16V10M9 21v-7h6v7M3 10c0 3 4 3 4 0 0 3 5 3 5 0 0 3 5 3 5 0 0 3 4 3 4 0"/>',
@@ -47,6 +48,7 @@
     const numeric = value => Number.isFinite(Number(value)) ? Number(value) : 0;
     const formatMoney = value => value == null || !Number.isFinite(Number(value)) ? '—' : money.format(Number(value));
     const formatInteger = value => value == null || !Number.isFinite(Number(value)) ? '—' : integer.format(Number(value));
+    const formatQuantity = value => value == null || !Number.isFinite(Number(value)) ? '—' : quantity.format(Number(value));
     const bridge = () => window.JKVendasLegacyBridge;
     const find = id => root?.querySelector(`#${id}`);
     const rows = () => Array.isArray(state.snapshot?.rows) ? state.snapshot.rows : [];
@@ -103,7 +105,7 @@
                 <div class="vn-sync-actions"><button type="button" id="vnSync" class="vn-btn vn-btn-primary">${icon('refresh')}Sincronizar</button><button type="button" id="vnPause" class="vn-btn vn-btn-pause" title="Pausar sincronização e atualização automática de todas as lojas">${icon('pause')}Pausar</button></div>
             </section>
             <section class="vn-rangebar" aria-label="Atalhos e opções do período"><div class="vn-control-group"><span class="vn-control-label">Período rápido</span>${segmented('Período rápido', [['3m', '3 meses', 'data-vn-period'], ['6m', '6 meses', 'data-vn-period'], ['1a', '1 ano', 'data-vn-period'], ['2a', '2 anos', 'data-vn-period'], ['max', 'Tudo', 'data-vn-period']])}</div><div class="vn-sync-options"><label><input type="checkbox" id="vnForce">Re-sincronizar</label><label><input type="checkbox" id="vnAuto">Atualizar automaticamente</label></div></section>
-            <div class="vn-status" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><div id="vnStatus"></div><div id="vnPersistentStatus"></div><div id="vnActionStatus"></div></div>
+            <div class="vn-status" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><div id="vnStatus"></div><div id="vnPersistentStatus"></div><div id="vnActionStatus"></div><div id="vnCompositionWarning"></div></div>
             <section class="vn-kpis" aria-label="Indicadores do período">
                 <article class="vn-kpi vn-kpi-primary"><h2>${icon('money')}Valor líquido</h2><div class="vn-kpi-value" id="vnNet">—</div><p id="vnGross">Bruto —</p></article>
                 <article class="vn-kpi"><h2>${icon('cart')}Pedidos</h2><div class="vn-kpi-value" id="vnOrders">—</div><p>No período selecionado</p></article>
@@ -333,6 +335,7 @@
     }
 
     function controls(snapshot) {
+        text('vnCompositionWarning', snapshot.compositionWarning || '');
         const filters = snapshot.filters || {};
         const options = snapshot.chartOptions || {};
         const periodLabel = filters.inicio && filters.fim ? `${formatDate(filters.inicio)} — ${formatDate(filters.fim)}` : 'Selecionar período';
@@ -378,7 +381,7 @@
         const cards = Array.isArray(snapshot.summaryCards) ? snapshot.summaryCards : [];
         const cardValue = label => cards.find(card => normalize(card.label) === normalize(label))?.valueText || '—';
         const hasTotals = totals && typeof totals === 'object' && Object.keys(totals).length > 0;
-        const value = (key, label, isMoney) => hasTotals && totals[key] != null ? (isMoney ? formatMoney(totals[key]) : formatInteger(totals[key])) : cardValue(label);
+        const value = (key, label, isMoney) => hasTotals && totals[key] != null ? (isMoney ? formatMoney(totals[key]) : key.startsWith('itens') ? formatQuantity(totals[key]) : formatInteger(totals[key])) : cardValue(label);
         text('vnNet', value('valorLiquido', 'Valor Líquido', true));
         text('vnGross', `Bruto ${value('valor', 'Valor Bruto', true)}`);
         text('vnOrders', value('pedidos', 'Pedidos'));
@@ -388,8 +391,16 @@
         text('vnReturnedMoney', `${value('valorDevolucao', 'Valor Devolvido', true)} devolvidos`);
     }
 
+    function compositionDescription(row, returns = false) {
+        const derived = numeric(returns ? row.itensDevolucaoComposicao : row.itensComposicao);
+        if (!derived) return '';
+        const direct = numeric(returns ? row.itensDevolucaoDiretos : row.itensDiretos);
+        const total = numeric(returns ? row.itensDevolucao : row.itens);
+        return `${formatQuantity(direct)} ${returns ? 'devolvidos diretamente' : 'vendidos diretamente'} + ${formatQuantity(derived)} por composição = ${formatQuantity(total)} unidades deste SKU.`;
+    }
+
     function productCard(row) {
-        return `<button type="button" class="vn-product-card" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-card-photo')}<span class="vn-product-copy"><span class="vn-product-sku">SKU ${escape(row.sku)}</span><span class="vn-product-name">${escape(row.produto || 'Produto sem descrição')}</span><span class="vn-product-price">${formatMoney(rowValue(row))}</span><span class="vn-product-meta">${formatInteger(row.pedidos)} pedidos · ${formatInteger(row.itens)} itens</span></span>${icon('arrow')}</button>`;
+        return `<button type="button" class="vn-product-card" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-card-photo')}<span class="vn-product-copy"><span class="vn-product-sku">SKU ${escape(row.sku)}</span><span class="vn-product-name">${escape(row.produto || 'Produto sem descrição')}</span><span class="vn-product-price">${formatMoney(rowValue(row))}</span><span class="vn-product-meta" title="${escape(compositionDescription(row))}">${formatInteger(row.pedidos)} pedidos · ${formatQuantity(row.itens)} itens</span></span>${icon('arrow')}</button>`;
     }
 
     function renderHighlights() {
@@ -408,7 +419,7 @@
 
     function filteredRows() {
         const query = normalize(state.query.trim());
-        let list = rows().filter(row => (!state.returnsOnly || numeric(row.devolucoes) > 0) && (!query || normalize(`${row.sku} ${row.produto}`).includes(query)));
+        let list = rows().filter(row => (!state.returnsOnly || numeric(row.devolucoes) > 0 || numeric(row.itensDevolucao) > 0) && (!query || normalize(`${row.sku} ${row.produto}`).includes(query)));
         const collator = new Intl.Collator('pt-BR', { numeric: true, sensitivity: 'base' });
         const sorts = {
             'value-desc': (a, b) => rowValue(b) - rowValue(a),
@@ -438,7 +449,7 @@
                 find('vnProductTableBody').replaceChildren();
             } else {
                 find('vnProductGrid').replaceChildren();
-                find('vnProductTableBody').innerHTML = shown.map(row => `<tr><td><button type="button" class="vn-row-product" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-row-photo')}<span class="vn-row-product-name">${escape(row.produto || 'Produto sem descrição')}</span></button></td><td class="vn-sku">${escape(row.sku)}</td><td class="vn-num">${formatInteger(row.pedidos)}</td><td class="vn-num">${formatInteger(row.itens)}</td><td class="vn-num ${numeric(row.devolucoes) > 0 ? 'vn-returns-num' : ''}">${formatInteger(row.devolucoes)}</td><td class="vn-num vn-money" title="${numeric(row.valor) > 0 ? 'Valor vendido' : numeric(row.valorDevolucao) > 0 ? 'Valor devolvido' : 'Valor'}">${formatMoney(rowValue(row))}</td></tr>`).join('');
+                find('vnProductTableBody').innerHTML = shown.map(row => `<tr><td><button type="button" class="vn-row-product" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-row-photo')}<span class="vn-row-product-name">${escape(row.produto || 'Produto sem descrição')}</span></button></td><td class="vn-sku">${escape(row.sku)}</td><td class="vn-num">${formatInteger(row.pedidos)}</td><td class="vn-num" title="${escape(compositionDescription(row))}">${formatQuantity(row.itens)}</td><td class="vn-num ${numeric(row.devolucoes) > 0 ? 'vn-returns-num' : ''}" title="${escape(compositionDescription(row, true))}">${formatInteger(row.devolucoes)}</td><td class="vn-num vn-money" title="${numeric(row.valor) > 0 ? 'Valor vendido' : numeric(row.valorDevolucao) > 0 ? 'Valor devolvido' : 'Valor'}">${formatMoney(rowValue(row))}</td></tr>`).join('');
             }
             hydratePhotos();
         }
@@ -503,7 +514,9 @@
         const key = JSON.stringify([state.context, row]);
         if (detailRenderKey === key) return;
         detailRenderKey = key;
-        find('vnProductDetail').innerHTML = `<div class="vn-detail-body">${photo(row, 'vn-detail-photo')}<div class="vn-detail-copy"><span class="vn-product-sku">SKU ${escape(row.sku)}</span><h3>${escape(row.produto || 'Produto sem descrição')}</h3><div class="vn-detail-value">${formatMoney(rowValue(row))}</div><dl class="vn-detail-metrics"><div><dt>Pedidos</dt><dd>${formatInteger(row.pedidos)}</dd></div><div><dt>Itens vendidos</dt><dd>${formatInteger(row.itens)}</dd></div><div><dt>Devoluções</dt><dd>${formatInteger(row.devolucoes)}</dd></div><div><dt>Itens devolvidos</dt><dd>${formatInteger(row.itensDevolucao)}</dd></div><div><dt>Valor devolvido</dt><dd>${formatMoney(row.valorDevolucao)}</dd></div></dl></div></div><div class="vn-dialog-actions"><button type="button" class="vn-btn vn-btn-primary" id="vnOpenSku">Abrir análise SKU${icon('arrow')}</button></div>`;
+        const composition = [compositionDescription(row), compositionDescription(row, true)].filter(Boolean);
+        const compositionNote = composition.length ? `<p class="vn-composition-note">${escape(composition.join(' '))} Pedidos, ocorrências de devolução e valores permanecem no SKU vendido originalmente. Os totais gerais contam cada unidade física uma vez.</p>` : '';
+        find('vnProductDetail').innerHTML = `<div class="vn-detail-body">${photo(row, 'vn-detail-photo')}<div class="vn-detail-copy"><span class="vn-product-sku">SKU ${escape(row.sku)}</span><h3>${escape(row.produto || 'Produto sem descrição')}</h3><div class="vn-detail-value">${formatMoney(rowValue(row))}</div><dl class="vn-detail-metrics"><div><dt>Pedidos</dt><dd>${formatInteger(row.pedidos)}</dd></div><div><dt>Itens vendidos</dt><dd>${formatQuantity(row.itens)}</dd></div><div><dt>Devoluções</dt><dd>${formatInteger(row.devolucoes)}</dd></div><div><dt>Itens devolvidos</dt><dd>${formatQuantity(row.itensDevolucao)}</dd></div><div><dt>Valor devolvido</dt><dd>${formatMoney(row.valorDevolucao)}</dd></div></dl>${compositionNote}</div></div><div class="vn-dialog-actions"><button type="button" class="vn-btn vn-btn-primary" id="vnOpenSku">Abrir análise SKU${icon('arrow')}</button></div>`;
         hydratePhotos();
     }
 

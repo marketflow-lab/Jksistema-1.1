@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 from xml.sax.saxutils import escape as xml_escape
 
+from .compositions import load_composition_catalog
 from .errors import VendasDomainError
 from .legacy import (
     _deduplicar_vendas_consolidadas,
@@ -143,7 +144,7 @@ def _is_invoiced(item: dict[str, Any]) -> bool:
 def _report_cache_paths(arguments: dict[str, Any]) -> list[str]:
     client_id = arguments["client_id"]
     paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    return vendas_source_paths(client_id, paths)
+    return vendas_source_paths(client_id, paths, include_compositions=True)
 
 
 def _read_sales_rows(
@@ -160,6 +161,7 @@ def _read_sales_rows(
         ("id_unico", "''"),
         ("data", "''"),
         ("loja_conta", "''"),
+        ("store_id", "''"),
         ("canal", "''"),
         ("numero", "''"),
         ("situacao", "''"),
@@ -365,6 +367,9 @@ def generate_pareto_report(
     source_latest = max((str(item.get("data") or "")[:10] for item in raw_rows), default=None)
 
     product_rows, fiscal_rows, counters = prepare_eligible_sales_rows(raw_rows)
+    commercial_skus = {_normalize_sku(item.get("sku")) for item in product_rows}
+    catalog = load_composition_catalog(client_id)
+    product_rows = catalog.project_rows(product_rows, store=store)
 
     rows_by_sku: dict[str, list[dict[str, Any]]] = defaultdict(list)
     display_skus: dict[str, Counter[str]] = defaultdict(Counter)
@@ -406,14 +411,24 @@ def generate_pareto_report(
                 "sku": display_sku,
                 "produto": _representative_description(items),
                 "quantidade": _number(quantity),
-                "registros": len(items),
+                "quantidade_comercial": _number(sum((
+                    _decimal(item.get("quantidade_original", item.get("quantidade")))
+                    for item in items if not item.get("__composicao")
+                ), Decimal("0"))),
+                "registros": sum(int(item.get("pedidos_contribuicao", 1)) for item in items),
                 "faturamento": _number(revenue),
                 "mercado_livre_full": _number(full_revenue),
                 "demais_canais": _number(other_revenue),
             }
         )
 
+    # Unit-only components stay out of the financial ranking and commercial mix.
+    component_rows = [item for item in sku_rows if _normalize_sku(item["sku"]) not in commercial_skus]
+    sku_rows = [item for item in sku_rows if _normalize_sku(item["sku"]) in commercial_skus]
     sku_rows.sort(key=lambda item: (-_decimal(item["faturamento"]), _normalize_sku(item["sku"])))
+    component_rows.sort(key=lambda item: _normalize_sku(item["sku"]))
+    for item in component_rows:
+        item.update(rank=None, participacao=0.0, acumulado=0.0, pareto=False)
     cumulative = Decimal("0")
     pareto_finished = total_revenue <= 0
     pareto_rows: list[dict[str, Any]] = []
@@ -524,6 +539,7 @@ def generate_pareto_report(
         "resumo": {
             "faturamento_produtos": _number(total_revenue),
             "total_skus": len(sku_rows),
+            "componentes_sem_venda_direta": len(component_rows),
             "pareto_skus": len(pareto_rows),
             "pareto_faturamento": _number(pareto_revenue),
             "pareto_participacao": _number(pareto_revenue / total_revenue)
@@ -535,7 +551,7 @@ def generate_pareto_report(
             "top_10_participacao": top_share(10),
         },
         "pareto_skus": pareto_rows,
-        "todos_skus": sku_rows,
+        "todos_skus": sku_rows + component_rows,
         "mensal": monthly,
         "canais": channels,
         "analise_executiva": {
@@ -562,7 +578,8 @@ def generate_pareto_report(
             "bases_processadas": len(processed_bases),
             "nomes_bases": processed_bases,
             "erros_leitura": read_errors,
-            "assinatura_fontes": _source_hash(source_paths),
+            "assinatura_fontes": _source_hash(vendas_source_paths(client_id, source_paths, include_compositions=True)),
+            "composicao": catalog.metadata,
         },
     }
 
@@ -889,6 +906,7 @@ def build_pareto_xlsx(report: dict[str, Any]) -> bytes:
         "Exclui devoluções, cancelamentos, EBAZAR, SKU vazio e o ajuste fiscal do Pareto.",
         "Deduplica por ID/fallback e remove o pedido não faturado quando há linha Faturado para conta + NF + SKU.",
         "Ordena por faturamento e inclui o primeiro SKU que cruza 80%.",
+        "Kits atribuem unidades aos componentes cadastrados; faturamento e registros permanecem no SKU vendido. Componentes sem venda direta ficam fora do ranking financeiro.",
     ]
     for offset, rule in enumerate(business_rules, start=1):
         rules_sheet.cell(start_rules + offset, 1, f"{offset}. {rule}")
@@ -1317,7 +1335,8 @@ def build_pareto_pdf(report: dict[str, Any]) -> bytes:
                         "2. Devoluções, cancelamentos, transferências EBAZAR e linhas sem SKU são excluídos.<br/>"
                         "3. O ajuste ESTORNO DE CRÉDITO ICMS é exibido para auditoria, mas não participa do faturamento de produtos.<br/>"
                         "4. Duplicidades são removidas por identificador/fallback e pela relação pedido não faturado versus linha Faturado da mesma conta, nota e SKU.<br/>"
-                        "5. O Pareto inclui o primeiro SKU que faz o acumulado atingir ou ultrapassar 80%.",
+                        "5. O Pareto inclui o primeiro SKU que faz o acumulado atingir ou ultrapassar 80%.<br/>"
+                        "6. As unidades dos kits são atribuídas aos componentes cadastrados; faturamento e registros permanecem no SKU vendido. Componentes sem venda direta ficam fora do ranking financeiro.",
                         body,
                     ),
                 ]

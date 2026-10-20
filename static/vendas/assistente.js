@@ -455,8 +455,8 @@ function obterChaveMesAssistenteVendas(valor) {
     return '';
 }
 
-function arredondarNumeroAssistenteVendas(valor) {
-    return Number(Number(valor || 0).toFixed(2));
+function arredondarNumeroAssistenteVendas(valor, casas = 2) {
+    return Number(Number(valor || 0).toFixed(casas));
 }
 
 function topItensAssistenteVendas(mapa, campoQtd, campoValor, limite = 5) {
@@ -471,12 +471,21 @@ function topItensAssistenteVendas(mapa, campoQtd, campoValor, limite = 5) {
         .slice(0, limite)
         .map(item => ({
             ...item,
-            [campoQtd]: arredondarNumeroAssistenteVendas(item[campoQtd]),
+            [campoQtd]: arredondarNumeroAssistenteVendas(item[campoQtd], 8),
             [campoValor]: arredondarNumeroAssistenteVendas(item[campoValor])
         }));
 }
 
 function obterDevolucoesAtivasAssistenteVendas() {
+    if (typeof dadosModoResumo !== 'undefined' && dadosModoResumo) {
+        return (Array.isArray(dadosFiltrados) ? dadosFiltrados : [])
+            .filter(row => Number(row?.itensDevolucao || 0) > 0)
+            .map(row => ({
+                sku: row.sku, descricao: row.produto, data_emissao: row.data,
+                quantidade: row.itensDevolucao, quantidade_componentes: row.itensDevolucaoComponentes ?? row.itensDevolucao,
+                valor_total: row.valorDevolucao || 0
+            }));
+    }
     const unidadeSel = unidadeNegocioSelect?.value || '__todos';
     const devolucoesPorLoja = (lojaSelecionada && lojaSelecionada !== '__todas')
         ? (devolucaoItens || []).filter(dev => mesmaLoja(dev.loja_conta, lojaSelecionada))
@@ -495,6 +504,12 @@ function obterDevolucoesAtivasAssistenteVendas() {
 }
 
 function montarAnaliseMensalAssistenteVendas() {
+    if (typeof dadosModoResumo !== 'undefined' && dadosModoResumo) {
+        const inicio = typeof getDataIniISO === 'function' ? getDataIniISO() : '';
+        const fim = typeof getDataFimISO === 'function' ? getDataFimISO() : '';
+        // O resumo agrega o intervalo inteiro; sua data final não é uma série mensal.
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(inicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fim) || inicio.slice(0, 7) !== fim.slice(0, 7)) return null;
+    }
     const meses = {};
     const garantirMes = (mes) => {
         if (!meses[mes]) {
@@ -522,8 +537,8 @@ function montarAnaliseMensalAssistenteVendas() {
         const qtd = Number(r?.itens ?? r?.quantidade ?? 0);
         const valor = Number(r?.valor || 0);
         const atual = garantirMes(mes);
-        atual.pedidos_total += Number(r?.__resumo ? (r?.pedidos || 0) : 1);
-        atual.quantidade_vendida += qtd;
+        atual.pedidos_total += Number(r?.__resumo ? (r?.pedidos || 0) : (r?.pedidos_contribuicao ?? 1));
+        atual.quantidade_vendida += Number(r?.itensComponentes ?? qtd);
         atual.valor_vendido += valor;
 
         const chaveSku = sku || 'N/D';
@@ -547,7 +562,7 @@ function montarAnaliseMensalAssistenteVendas() {
         const sku = String(dev?.sku || '').trim() || 'N/D';
         const produto = String(dev?.descricao || dev?.produto || '').trim() || '-';
         const atual = garantirMes(mes);
-        atual.quantidade_devolvida += qtd;
+        atual.quantidade_devolvida += Number(dev?.quantidade_componentes ?? qtd);
         atual.valor_devolvido += valor;
 
         if (!atual.skus_devolvidos[sku]) {
@@ -568,9 +583,9 @@ function montarAnaliseMensalAssistenteVendas() {
         .map(mes => ({
             mes_ano: mes.mes_ano,
             pedidos_total: mes.pedidos_total,
-            quantidade_vendida: arredondarNumeroAssistenteVendas(mes.quantidade_vendida),
+            quantidade_vendida: arredondarNumeroAssistenteVendas(mes.quantidade_vendida, 8),
             valor_vendido: arredondarNumeroAssistenteVendas(mes.valor_vendido),
-            quantidade_devolvida: arredondarNumeroAssistenteVendas(mes.quantidade_devolvida),
+            quantidade_devolvida: arredondarNumeroAssistenteVendas(mes.quantidade_devolvida, 8),
             valor_devolvido: arredondarNumeroAssistenteVendas(mes.valor_devolvido),
             top_skus_vendidos: topItensAssistenteVendas(mes.skus_vendidos, 'quantidade_vendida', 'valor_vendido', 5),
             top_skus_devolvidos: topItensAssistenteVendas(mes.skus_devolvidos, 'quantidade_devolvida', 'valor_devolvido', 5)
@@ -622,6 +637,8 @@ function obterResumoTelaVendas() {
         totalLinhas,
         cards,
         skus_ranking: skusRanking,
+        totais_periodo: typeof dadosModoResumo !== 'undefined' && dadosModoResumo && typeof resumoTotaisVendas !== 'undefined' ? { ...resumoTotaisVendas } : null,
+        criterio_quantidades: 'Os totais do período contam unidades físicas. O ranking por SKU inclui vendas diretas e componentes de kits; somar suas linhas duplica componentes. Pedidos e valores pertencem ao SKU original.',
         analise_mensal: montarAnaliseMensalAssistenteVendas(),
         table: ociosos
     };

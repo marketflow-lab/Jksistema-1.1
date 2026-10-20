@@ -15,6 +15,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from backend.services.estoque_historico import _estoque_historico_ambiguidade
 
+from .compositions import load_composition_catalog
 from .errors import VendasDomainError
 from .legacy import _listar_bancos_vendas_tenant
 from .performance import (
@@ -53,7 +54,7 @@ AVERAGE_MONTH_DAYS = Decimal("30.4375")
 def _general_report_cache_paths(arguments: dict[str, Any]) -> list[str]:
     client_id = arguments["client_id"]
     paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    return vendas_source_paths(client_id, paths, include_stock=True)
+    return vendas_source_paths(client_id, paths, include_stock=True, include_compositions=True)
 
 
 def _return_is_full(item: dict[str, Any]) -> bool:
@@ -80,6 +81,7 @@ def _read_return_rows(
         ("id_unico", "''"),
         ("data_emissao", "''"),
         ("loja_conta", "''"),
+        ("store_id", "''"),
         ("numero_nota", "''"),
         ("origem_codigo", "''"),
         ("sku", "''"),
@@ -335,6 +337,10 @@ def generate_general_sku_report(
     return_rows, return_bases, return_errors, return_exclusions = _read_return_rows(
         client_id, store, start_iso, end_iso
     )
+    original_return_count = len(return_rows)
+    catalog = load_composition_catalog(client_id)
+    product_sales = catalog.project_rows(product_sales, store=store)
+    return_rows = catalog.project_rows(return_rows, store=store)
     stock_snapshot = _read_current_local_stock(client_id, store)
 
     display_skus: dict[str, Counter[str]] = defaultdict(Counter)
@@ -480,6 +486,11 @@ def generate_general_sku_report(
             "produto": product,
             "vendas_mensais": monthly_units,
             "unidades_vendidas": _number(sales_units),
+            "quantidade_comercial": _number(sum((
+                _decimal(item.get("quantidade_original", item.get("quantidade")))
+                for item in sales_items if not item.get("__composicao")
+            ), Decimal("0"))),
+            "registros_vendas": sum(int(item.get("pedidos_contribuicao", 1)) for item in sales_items),
             "faturamento": _number(revenue),
             "full_unidades": _number(full_units),
             "demais_unidades": _number(sales_units - full_units),
@@ -491,7 +502,7 @@ def generate_general_sku_report(
             "cobertura_meses": coverage_months,
             "cobertura_dias": coverage_days,
             "status_cobertura": status,
-            "ocorrencias_devolucao": len(returns_items),
+            "ocorrencias_devolucao": sum(int(item.get("devolucoes_contribuicao", item.get("pedidos_contribuicao", 1))) for item in returns_items),
             "quantidade_devolvida": _number(return_units),
             "valor_devolvido": _number(return_value),
             "taxa_devolucao": _number(return_units / sales_units) if sales_units > 0 else None,
@@ -503,7 +514,7 @@ def generate_general_sku_report(
                 {
                     "sku": display_sku,
                     "produto": product,
-                    "ocorrencias": len(returns_items),
+                    "ocorrencias": sum(int(item.get("devolucoes_contribuicao", item.get("pedidos_contribuicao", 1))) for item in returns_items),
                     "quantidade": _number(return_units),
                     "valor": _number(return_value),
                     "full_quantidade": _number(full_return_units),
@@ -815,6 +826,7 @@ def generate_general_sku_report(
         client_id,
         _listar_bancos_vendas_tenant(client_id, store),
         include_stock=True,
+        include_compositions=True,
     )
     return {
         "success": True,
@@ -909,7 +921,8 @@ def generate_general_sku_report(
         },
         "auditoria": {
             "vendas": sales_audit,
-            "devolucoes_lidas": len(return_rows),
+            "devolucoes_lidas": original_return_count,
+            "composicao": catalog.metadata,
             "devolucoes_excluidas_ou_deduplicadas": return_exclusions,
             "bases_vendas": sales_bases,
             "bases_devolucoes": return_bases,
@@ -1671,6 +1684,7 @@ def build_general_sku_xlsx(report: dict[str, Any]) -> bytes:
         "Ausência no snapshot é exibida como sem registro, nunca como estoque zero presumido.",
         "A média divide as unidades vendidas por todos os meses-calendário solicitados, inclusive meses zerados.",
         "O Top 20 usa quantidade devolvida, depois valor devolvido e SKU como desempates.",
+        "Kits atribuem unidades vendidas e devolvidas aos componentes cadastrados; valores e ocorrências permanecem no SKU original. O estoque mantém o saldo consultado.",
     ]
     for offset, rule in enumerate(business_rules, start=1):
         row = rules_start + offset
@@ -2452,7 +2466,8 @@ def build_general_sku_pdf(report: dict[str, Any]) -> bytes:
                         "5. O estoque usa somente saldo_loja do último evento confirmado; Full e eventos pendentes são ignorados.<br/>"
                         "6. SKU ausente do snapshot é tratado como estoque sem registro, nunca como zero.<br/>"
                         "7. A média mensal inclui todos os meses-calendário solicitados, mesmo quando não há venda.<br/>"
-                        "8. O Top 20 é ordenado por quantidade devolvida, valor devolvido e SKU.",
+                        "8. O Top 20 é ordenado por quantidade devolvida, valor devolvido e SKU.<br/>"
+                        "9. Unidades vendidas e devolvidas de kits são atribuídas aos componentes cadastrados; valores e ocorrências permanecem no SKU original e o saldo de estoque é preservado.",
                         body,
                     ),
                 ]

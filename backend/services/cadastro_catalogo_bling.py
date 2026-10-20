@@ -361,6 +361,10 @@ def _mapear_campos_produto(
             componentes,
             serializar=True,
         )
+    elif isinstance(componentes, list):
+        # Explicitly empty is evidence. An absent field remains absent so a
+        # partial product response cannot erase an existing composition.
+        fields["componentes_bling_json"] = "[]"
     _definir_campo(fields, "consultado_em_utc_bling", consultado_em_utc)
 
     return fields

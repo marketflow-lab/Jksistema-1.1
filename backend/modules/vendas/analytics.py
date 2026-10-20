@@ -25,6 +25,7 @@ import pandas as pd
 
 from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 
+from .compositions import load_composition_catalog
 from .dependencies import get_tenant_path, get_vendas_dependencies, logger
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
@@ -43,6 +44,8 @@ from .performance import (
     append_indexable_date_filter,
     cache_vendas_response,
     cached_file_value,
+    cached_table_columns,
+    select_compatible_column,
     open_vendas_readonly,
     vendas_source_paths,
     vendas_file_signature,
@@ -51,7 +54,7 @@ from .performance import (
 def _grafico_cache_paths(arguments: dict) -> list[str]:
     client_id = arguments["client_id"]
     db_paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    return vendas_source_paths(client_id, db_paths, include_stock=True)
+    return vendas_source_paths(client_id, db_paths, include_stock=True, include_compositions=True)
 
 
 def _calcular_skus_pareto_80(rows: list[tuple]) -> tuple[list[str], dict[str, Any]]:
@@ -274,8 +277,15 @@ def grafico_vendas(
             else:
                 data_inicio_dt = hoje - timedelta(days=90)
 
+        catalog = load_composition_catalog(client_id)
+        candidates = sorted({str(value).strip().upper() for value in catalog.candidates(sku, loja)}) if sku else []
+        sale_fields = (
+            "id_unico", "data", "devolucao", "sku", "quantidade", "valor",
+            "loja_conta", "unidade_negocio", "numero", "comprador", "canal",
+            "situacao", "nota_fiscal_id", "store_id",
+        )
         query = """
-            SELECT id_unico, data, devolucao, sku, quantidade, valor, loja_conta, unidade_negocio, numero, comprador, canal, situacao, nota_fiscal_id
+            SELECT id_unico, data, devolucao, sku, quantidade, valor, loja_conta, unidade_negocio, numero, comprador, canal, situacao, nota_fiscal_id, {store_column}
             FROM vendas
         """
         conditions = ["coalesce(devolucao, 0) = 0"]
@@ -288,8 +298,8 @@ def grafico_vendas(
             data_fim_str,
         )
         if sku:
-            conditions.append("sku = ?")
-            params.append(sku)
+            conditions.append("UPPER(trim(sku)) IN (" + ",".join("?" for _ in candidates) + ")")
+            params.extend(candidates)
         if loja and loja != "__todas":
             filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja)
             if filtro_loja_sql:
@@ -310,7 +320,9 @@ def grafico_vendas(
             conn_db = open_vendas_readonly(path)
             try:
                 cur_db = conn_db.cursor()
-                cur_db.execute(query, params)
+                columns = cached_table_columns(path, "vendas", conn_db)
+                store_column = select_compatible_column(columns, "store_id")
+                cur_db.execute(query.format(store_column=store_column), params)
                 rows.extend(cur_db.fetchall())
             finally:
                 conn_db.close()
@@ -350,6 +362,14 @@ def grafico_vendas(
                 "pareto_sku_corte": None,
             }
 
+        # Project only after consolidating source rows; synthetic items keep no revenue.
+        rows_unicos = [
+            tuple(item.get(field) for field in sale_fields)
+            for item in catalog.project_rows(
+                [dict(zip(sale_fields, row)) for row in rows_unicos],
+                target_sku=sku, store=loja,
+            )
+        ]
         dados_agrupados = {}
 
         def _chave_label_intervalo(data_str):
@@ -435,17 +455,22 @@ def grafico_vendas(
             dados_agrupados[chave]["vendas_qtd"] += qtd or 0
 
         # Adicionar devoluções a partir de notas de entrada (consolidando bancos por loja)
+        returns_rows = []
         for db_path_nf in db_paths:
             if not os.path.exists(db_path_nf):
                 continue
             conn_nf = open_vendas_readonly(db_path_nf)
             try:
                 cur_nf = conn_nf.cursor()
-                query_nf = """
-                    SELECT data_emissao, quantidade, valor_total
-                    FROM notas_entrada_itens
-                    WHERE devolucao = 1
-                """
+                columns_nf = cached_table_columns(db_path_nf, "notas_entrada_itens", conn_nf)
+                fields_nf = (
+                    "data_emissao", "quantidade", "valor_total", "sku", "loja_conta",
+                    "store_id", "id_unico", "numero_nota", "origem_codigo",
+                )
+                query_nf = "SELECT " + ", ".join(
+                    select_compatible_column(columns_nf, field, "0" if field in {"quantidade", "valor_total"} else "''")
+                    for field in fields_nf
+                ) + " FROM notas_entrada_itens WHERE devolucao = 1"
                 params_nf = []
                 date_conditions_nf: list[str] = []
                 append_indexable_date_filter(
@@ -458,8 +483,8 @@ def grafico_vendas(
                 if date_conditions_nf:
                     query_nf += " AND " + " AND ".join(date_conditions_nf)
                 if sku:
-                    query_nf += " AND sku = ?"
-                    params_nf.append(sku)
+                    query_nf += " AND UPPER(trim(sku)) IN (" + ",".join("?" for _ in candidates) + ")"
+                    params_nf.extend(candidates)
                 filtro_nf_sql, filtro_nf_params = _sql_filtro_unidade_devolucao(unidade_negocio)
                 if filtro_nf_sql:
                     query_nf += filtro_nf_sql
@@ -470,30 +495,30 @@ def grafico_vendas(
                     params_nf.extend(filtro_loja_nf_params)
                 query_nf += " ORDER BY data_emissao"
                 cur_nf.execute(query_nf, params_nf)
-                rows_nf = cur_nf.fetchall()
-
-                for row in rows_nf:
-                    data_str = row[0]
-                    qtd = row[1]
-                    valor = row[2]
-                    chave, label = _chave_label_intervalo(data_str)
-
-                    if chave not in dados_agrupados:
-                        dados_agrupados[chave] = {
-                            "label": label,
-                            "vendas_valor": 0,
-                            "vendas_qtd": 0,
-                            "devol_valor": 0,
-                            "devol_qtd": 0
-                        }
-
-                    dados_agrupados[chave]["devol_valor"] += valor or 0
-                    dados_agrupados[chave]["devol_qtd"] += qtd or 0
+                returns_rows.extend(dict(zip(fields_nf, row)) for row in cur_nf.fetchall())
             except sqlite3.OperationalError:
                 # Alguns bancos podem não ter tabela de notas ainda.
                 pass
             finally:
                 conn_nf.close()
+
+        # A tenant may expose both a consolidated DB and its store mirror.
+        unique_returns = {}
+        for item in returns_rows:
+            unique_id = str(item.get("id_unico") or "").strip()
+            identity = str(item.get("store_id") or item.get("loja_conta") or "").strip().casefold()
+            key = (identity, unique_id) if unique_id else tuple(
+                str(item.get(field) or "") for field in fields_nf if field != "id_unico"
+            )
+            unique_returns.setdefault(key, item)
+        for item in catalog.project_rows(list(unique_returns.values()), target_sku=sku, store=loja):
+            chave, label = _chave_label_intervalo(item["data_emissao"])
+            bucket = dados_agrupados.setdefault(chave, {
+                "label": label, "vendas_valor": 0, "vendas_qtd": 0,
+                "devol_valor": 0, "devol_qtd": 0,
+            })
+            bucket["devol_valor"] += item.get("valor_total") or 0
+            bucket["devol_qtd"] += item.get("quantidade") or 0
 
         labels = []
         valores_vendas = []
@@ -560,7 +585,7 @@ def grafico_vendas(
 def _skus_sem_venda_cache_paths(arguments: dict) -> list[str]:
     client_id = arguments["client_id"]
     db_paths = _listar_bancos_vendas_tenant(client_id, arguments.get("loja"))
-    paths = vendas_source_paths(client_id, db_paths, include_products=True)
+    paths = vendas_source_paths(client_id, db_paths, include_products=True, include_compositions=True)
     paths.append(os.path.join(get_tenant_path(client_id), "lojas_config.json"))
     return paths
 
@@ -696,6 +721,7 @@ def skus_sem_venda(
 
         # Mapa de última data de venda por SKU
         ultima_venda_por_sku = {}
+        catalog = load_composition_catalog(client_id)
 
         for db_path in db_paths:
             if not os.path.exists(db_path):
@@ -720,11 +746,13 @@ def skus_sem_venda(
                         conditions.append(filtro_un_sql.replace(" AND ", "", 1))
                         params.extend(filtro_un_params)
 
+                columns = cached_table_columns(db_path, "vendas", conn)
+                store_column = select_compatible_column(columns, "store_id")
                 query = (
-                    "SELECT UPPER(trim(coalesce(sku,''))), MAX(data) "
+                    "SELECT UPPER(trim(coalesce(sku,''))), MAX(data), loja_conta, " + store_column + " "
                     "FROM vendas WHERE "
                     + " AND ".join(conditions)
-                    + " GROUP BY UPPER(trim(coalesce(sku,'')))"
+                    + " GROUP BY UPPER(trim(coalesce(sku,''))), loja_conta, store_id"
                 )
 
                 cur.execute(query, params)
@@ -733,9 +761,17 @@ def skus_sem_venda(
                 for row in rows:
                     sku = row[0]
                     data_venda = str(row[1])[:10] if row[1] else None
-                    # Manter a venda mais recente por SKU
-                    if sku not in ultima_venda_por_sku or (data_venda and data_venda > ultima_venda_por_sku[sku]):
-                        ultima_venda_por_sku[sku] = data_venda
+                    # The parent remains commercially sold; its leaves also moved on this date.
+                    component_skus = {sku}
+                    component_skus.update(
+                        component.sku for component in catalog.resolve(sku, row[3] or row[2] or loja)
+                    )
+                    for component_sku in component_skus:
+                        normalized = str(component_sku).strip().upper()
+                        if normalized not in ultima_venda_por_sku or (
+                            data_venda and data_venda > (ultima_venda_por_sku[normalized] or "")
+                        ):
+                            ultima_venda_por_sku[normalized] = data_venda
             except Exception as e:
                 logger.warning(f"Erro ao consultar vendas: {e}")
             finally:

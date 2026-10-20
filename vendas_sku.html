@@ -435,6 +435,7 @@
     </div>
 
     <div class="summary" id="resumo"></div>
+    <p id="composicaoResumo" class="status-bar" hidden></p>
 
     <div class="transferencia-box">
         <button id="btnTransferenciaFull" class="transferencia-btn" type="button">Trasnferencia Full (0)</button>
@@ -805,7 +806,7 @@
                     item.numero || '',
                     item.numero_nf || '-',
                     item.comprador || '-',
-                    item.quantidade || '',
+                    Number(item.quantidade || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 }),
                     formatCurrency(item.valor || 0),
                 ];
                 cells.forEach(val => {
@@ -828,23 +829,29 @@
 
     function renderResumo(lista, dev) {
         const listaSomatorio = (lista || []).filter(item => !vendaEhEbazarSomatorio(item));
-        const totalPedidos = listaSomatorio.length;
+        const totalPedidos = listaSomatorio.reduce((acc, cur) => acc + Number(cur.pedidos_contribuicao ?? 1), 0);
         const totalItens = listaSomatorio.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
         const totalValor = listaSomatorio.reduce((acc, cur) => acc + Number(cur.valor || 0), 0);
-        const totalDevolucoes = dev.length;
+        const totalDevolucoes = dev.reduce((acc, cur) => acc + Number(cur.devolucoes_contribuicao ?? 1), 0);
         const itensDevolucao = dev.reduce((acc, cur) => acc + Number(cur.quantidade || 0), 0);
         const valorDevolucao = dev.reduce((acc, cur) => acc + Number(cur.valor_total || 0), 0);
         const itensLiquidos = totalItens - itensDevolucao;
         const valorLiquido = totalValor - valorDevolucao;
         resumo.innerHTML = '';
+        const composicaoResumo = document.getElementById('composicaoResumo');
+        if (composicaoResumo) {
+            const temComposicao = [...listaSomatorio, ...dev].some(item => item.__composicao);
+            composicaoResumo.hidden = !temComposicao;
+            composicaoResumo.textContent = temComposicao ? 'As quantidades incluem componentes dos kits cadastrados. Pedidos, ocorrências de devolução e valores permanecem no SKU vendido originalmente. A coluna Tipo identifica o kit e a quantidade de origem.' : '';
+        }
         const cards = [
             { label: 'Pedidos Vendidos', value: totalPedidos },
-            { label: 'Itens Vendidos', value: totalItens },
+            { label: 'Itens Vendidos', value: totalItens.toLocaleString('pt-BR', { maximumFractionDigits: 8 }) },
             { label: 'Valor Bruto', value: formatCurrency(totalValor) },
             { label: 'Devolucoes', value: totalDevolucoes, isNegative: true },
-            { label: 'Itens Devolvidos', value: itensDevolucao, isNegative: true },
+            { label: 'Itens Devolvidos', value: itensDevolucao.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isNegative: true },
             { label: 'Valor Devolvido', value: formatCurrency(valorDevolucao), isNegative: true },
-            { label: 'Itens Liquidos', value: itensLiquidos, isLiquido: true },
+            { label: 'Itens Liquidos', value: itensLiquidos.toLocaleString('pt-BR', { maximumFractionDigits: 8 }), isLiquido: true },
             { label: 'Valor Liquido', value: formatCurrency(valorLiquido), isLiquido: true }
         ];
         cards.forEach(c => {
@@ -871,6 +878,10 @@
             div.appendChild(val);
             resumo.appendChild(div);
         });
+    }
+
+    function descricaoComposicaoSku(item, prefixo) {
+        return `${prefixo} de ${String(item.sku_original || '')} (${Number(item.quantidade_original || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 })} × ${Number(item.fator_composicao || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 })})`;
     }
 
     function renderTabela(vendas, devs) {
@@ -902,13 +913,14 @@
                 item.numero || '',
                 item.numero_nf || '-',
                 item.comprador || '-',
-                item.quantidade || '',
+                Number(item.quantidade || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 }),
                 formatCurrency(item.valor || 0),
-                'Venda'
+                item.__composicao ? descricaoComposicaoSku(item, 'Componente') : 'Venda'
             ];
             cells.forEach((val, idx) => {
                 const td = document.createElement('td');
                 td.textContent = val;
+                if (idx === 5 && item.__composicao) td.title = 'Valor contabilizado no SKU vendido originalmente.';
                 if (idx === 6) td.style.color = '#66bb6a';
                 tr.appendChild(td);
             });
@@ -923,13 +935,14 @@
                 dev.numero_nota || '',
                     dev.origem_codigo || dev.numero_nota || '-',
                 dev.fornecedor || '-',
-                dev.quantidade || '',
+                Number(dev.quantidade || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 }),
                 formatCurrency(dev.valor_total || 0),
-                tipoDevolucao
+                dev.__composicao ? descricaoComposicaoSku(dev, 'Devolução de componente') : tipoDevolucao
             ];
             cells.forEach((val, idx) => {
                 const td = document.createElement('td');
                 td.textContent = val;
+                if (idx === 5 && dev.__composicao) td.title = 'Valor contabilizado no SKU devolvido originalmente.';
                 if (idx === 6) td.style.color = '#ff5252';
                 tr.appendChild(td);
             });
@@ -1467,13 +1480,13 @@
             </div>
             <div class="sidebar-obs-card sidebar-obs-vendas">
                 <div class="sidebar-obs-label">💰 Total vendido</div>
-                <div class="sidebar-obs-valor">${Math.round(totalQtdVendas).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-valor">${totalQtdVendas.toLocaleString('pt-BR', { maximumFractionDigits: 8 })} item(ns)</div>
                 <div class="sidebar-obs-detalhe">${formatCurrency(totalValVendas)}</div>
             </div>
             ${cardsPrevisao}
             <div class="sidebar-obs-card sidebar-obs-devolucao">
                 <div class="sidebar-obs-label">📦 Total devolvido</div>
-                <div class="sidebar-obs-valor">${Math.round(totalQtdDevol).toLocaleString('pt-BR')} item(ns)</div>
+                <div class="sidebar-obs-valor">${totalQtdDevol.toLocaleString('pt-BR', { maximumFractionDigits: 8 })} item(ns)</div>
                 <div class="sidebar-obs-detalhe">${formatCurrency(totalValDevol)}</div>
             </div>
             <div class="sidebar-obs-card sidebar-obs-devolucao">
@@ -1659,7 +1672,7 @@
                             if (!valorMetrica) return;
                             const yBar = Math.min(pos.y - 6, chart.chartArea.bottom - 4);
                             const textoBarra = usandoQuantidade
-                                ? Math.round(valorMetrica).toLocaleString('pt-BR')
+                                ? valorMetrica.toLocaleString('pt-BR', { maximumFractionDigits: 8 })
                                 : ('R$ ' + valorMetrica.toFixed(2));
                             ctx.fillText(textoBarra, pos.x, yBar);
                             return;
@@ -1669,7 +1682,7 @@
                             const valor = Number((dataset.data || [])[index] || 0);
                             if (!Number.isFinite(valor)) return;
                             const texto = usandoQuantidade
-                                ? Math.round(valor).toLocaleString('pt-BR')
+                                ? valor.toLocaleString('pt-BR', { maximumFractionDigits: 8 })
                                 : ('R$ ' + valor.toFixed(2));
                             const yLinha = pos.y - 8;
                             ctx.fillText(texto, pos.x, yLinha);
@@ -1717,7 +1730,7 @@
                                     : (data.quantidades_devolucoes || []);
                                 const qtd = Number(qtdSerie[idx] || 0);
                                 if (usandoQuantidade) {
-                                    label += String(Math.round(context.parsed.y));
+                                    label += Number(context.parsed.y).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                                 } else {
                                     label += 'R$ ' + context.parsed.y.toFixed(2) + ` | Qtd: ${qtd}`;
                                 }
@@ -1742,7 +1755,7 @@
                             color: '#e5e5e5',
                             callback: function(value) {
                                 if (usandoQuantidade) {
-                                    return Number(value || 0).toLocaleString('pt-BR');
+                                    return Number(value || 0).toLocaleString('pt-BR', { maximumFractionDigits: 8 });
                                 }
                                 return 'R$ ' + value.toFixed(2);
                             }
