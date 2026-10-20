@@ -321,11 +321,12 @@
                 tabela.setAttribute('aria-rowcount', '1');
                 tabela.dataset.totalRows = '0';
                 const tr = document.createElement('tr');
-                const msgVazio = obterPesquisaSkuNormalizada()
+                const mensagemCarregamento = modo === 'ocultados' ? '' : context.modules['visao-carregamento'].obterMensagemVisaoVazia();
+                const msgVazio = mensagemCarregamento || (obterPesquisaSkuNormalizada()
                     ? 'Nenhum SKU encontrado para a pesquisa.'
                     : (modo === 'ocultados')
                     ? "Nenhum SKU ocultado."
-                    : "Nenhum SKU encontrado para o período selecionado.";
+                    : "Nenhum SKU encontrado para o período selecionado.");
                 tr.innerHTML = '<td colspan="' + headers.length + '">' + msgVazio + '</td>';
                 tbody.appendChild(tr);
             } else {

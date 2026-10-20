@@ -66,6 +66,28 @@ def test_inventory_wal_and_same_size_replacement_change_revision(tmp_path):
     assert third.assinatura != capturar_fontes(tmp_path).assinatura
 
 
+def test_empty_wal_reader_lifecycle_is_stable_but_commits_are_fenced(tmp_path):
+    path = tmp_path / "vendas_historico_a.db"
+    path.write_bytes(b"database")
+    wal = path.with_name(path.name + "-wal")
+    initial = capturar_fontes(tmp_path)
+    wal.write_bytes(b"")
+    assert capturar_fontes(tmp_path).assinatura == initial.assinatura
+    wal.unlink()
+    assert capturar_fontes(tmp_path).assinatura == initial.assinatura
+    wal.write_bytes(b"committed-frame-a")
+    committed = capturar_fontes(tmp_path)
+    assert committed.assinatura != initial.assinatura
+    wal.write_bytes(b"committed-frame-b")
+    # Force a distinct revision even on filesystems with coarse timestamps.
+    stamp = wal.stat().st_mtime_ns + 1_000_000_000
+    os.utime(wal, ns=(stamp, stamp))
+    rewritten = capturar_fontes(tmp_path)
+    assert rewritten.assinatura != committed.assinatura
+    wal.unlink()
+    assert capturar_fontes(tmp_path).assinatura != rewritten.assinatura
+
+
 def test_policy_store_and_target_are_hard_revisions_other_lists_are_not(tmp_path):
     first = capturar_fontes(tmp_path, detalhe=True, alvo=digest_lista({"id": "a", "itens": []}))
     (tmp_path / "listas_pedidos.json").write_text(json.dumps([{"id": "other"}]))

@@ -17,11 +17,11 @@ function fixture(responses) {
   context.JKMedias.modules.api = { request: async (url, options) => {
     calls.push({ url, at: now, options });
     const data = responses[Math.min(calls.length - 1, responses.length - 1)];
-    if (typeof data === 'function') return data(options);
+    if (typeof data === 'function') return data(options, now);
     return { ok: data.status < 400, status: data.status, json: async () => data.body };
   } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../static/medias_compras/resultados.js'), 'utf8'), context);
-  return { api: context.JKMedias.modules.resultados, calls, timers, policies, async run(promise) {
+  return { api: context.JKMedias.modules.resultados, calls, timers, policies, after: (delay, callback) => context.setTimeout(callback, delay), async run(promise) {
     let done = false, result, error;
     promise.then(value => { done = true; result = value; }, reason => { done = true; error = reason; });
     for (let step = 0; step < 200 && !done; step++) {
@@ -31,14 +31,15 @@ function fixture(responses) {
       if (!next) throw new Error('Promise pending without timer');
       timers.delete(next[0]); now = next[1].at; next[1].callback();
     }
-    if (error) throw error;
     assert(done, 'polling must be bounded');
     assert.strictEqual(timers.size, 0, 'no timer leaks');
+    if (error) throw error;
     return result;
   } };
 }
 const meta = (state, version = 'one') => ({ estado: state, versao: version, stale: state !== 'ready', atualizando: state !== 'ready', gerado_em: '2026-10-16T12:00:00Z' });
 const waiting = { status: 202, body: { dados: null, _cache: meta('waiting') } };
+const viewOptions = { limiteMs: 300000, avisoAposMs: 30000, limiteRequisicaoMs: 15000, recuperarFontes: true };
 
 (async () => {
   {
@@ -101,5 +102,72 @@ const waiting = { status: 202, body: { dados: null, _cache: meta('waiting') } };
     assert.strictEqual(result.atual, true);
     assert.strictEqual(painted, 2, 'same version is repainted after strong invalidation');
   }
-  console.log('medias result cache polling: 9 scenarios OK');
+  {
+    const ready = { itens: [{ sku: 'late', media_mensal: 7 }], _cache: meta('ready', 'late') };
+    const states = [], received = [];
+    const f = fixture([(_, now) => ({ ok: true, status: now >= 45000 ? 200 : 202,
+      json: async () => now >= 45000 ? ready : waiting.body })]);
+    const result = await f.run(f.api.acompanharResultado('/view?meses=3&store_id=a', { ...viewOptions,
+      receber: value => received.push(value), estado: (value, pending, tracking) => states.push({ value, pending, tracking }) }));
+    assert.strictEqual(result.atual, true, 'late completion must still arrive');
+    assert.strictEqual(received.length, 1);
+    assert.strictEqual(result.dados.itens[0].media_mensal, 7);
+    assert(f.calls.at(-1).at > 30000);
+    assert(states.some(state => state.pending && state.tracking), '30 s is a progress notice, not an abandoned query');
+    assert.strictEqual(states.at(-1).pending, false, 'late ready result removes the waiting notice');
+    assert(f.calls.every(call => call.url === '/view?meses=3&store_id=a&cache_mode=stale'));
+  }
+  {
+    const f = fixture([{ status: 503, body: { detail: { code: 'stores_snapshot_unavailable' } } }]);
+    const states = [];
+    const result = await f.run(f.api.acompanharResultado('/view', { ...viewOptions, estado: (_, pending, tracking) => states.push([pending, tracking]) }));
+    assert.strictEqual(result.pendente, true);
+    assert(f.calls.length < 45, 'persistent failure backs off instead of flooding the server');
+    assert(f.calls.at(-1).at <= 300000, 'monitoring has a finite five-minute budget');
+    assert.deepStrictEqual(states.at(-1), [true, false], 'the final state does not promise ongoing monitoring');
+  }
+  {
+    const f = fixture([() => new Promise(() => {}), { status: 200, body: { itens: [], _cache: meta('ready') } }]);
+    const result = await f.run(f.api.acompanharResultado('/view', viewOptions));
+    assert.strictEqual(result.atual, true, 'a transport timeout can recover inside the monitoring budget');
+    assert.strictEqual(f.calls[0].options.signal.aborted, true);
+    assert.strictEqual(f.calls[1].at, 20000, 'timed-out transport is followed by backoff, never parallel polling');
+  }
+  {
+    const f = fixture([() => new Promise(() => {})]);
+    const controller = new AbortController();
+    f.after(1000, () => controller.abort());
+    await assert.rejects(f.run(f.api.acompanharResultado('/view', { ...viewOptions, signal: controller.signal })), error => error.name === 'AbortError');
+    assert.strictEqual(f.calls.length, 1);
+    assert.strictEqual(f.calls[0].options.signal.aborted, true, 'leaving cancels immediately even when transport ignores abort');
+  }
+  {
+    const f = fixture([waiting]);
+    const controller = new AbortController();
+    f.after(12000, () => controller.abort());
+    await assert.rejects(f.run(f.api.acompanharResultado('/view', { ...viewOptions, signal: controller.signal })), error => error.name === 'AbortError');
+    assert(f.calls.every(call => call.at < 12000), 'no polling survives navigation during backoff');
+  }
+  {
+    const f = fixture([waiting]);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(f.run(f.api.consultarResultado('/view', undefined, controller.signal, 15000)), error => error.name === 'AbortError');
+    assert.strictEqual(f.calls.length, 0, 'an already-cancelled scope must not start transport');
+  }
+  for (const envelope of ['http', 'metadata']) {
+    const error = { code: 'sources_changing', message: 'Synthetic conflict' };
+    const first = envelope === 'http' ? { status: 409, body: { detail: error } } :
+      { status: 200, body: { itens: [{ sku: 'previous' }], _cache: { ...meta('error'), atualizando: false, erro: error, retry_after_ms: 7000 } } };
+    const f = fixture([first, { status: 200, body: { itens: [{ sku: 'current' }], _cache: meta('ready', 'current') } }]);
+    const result = await f.run(f.api.acompanharResultado('/view', viewOptions));
+    assert.strictEqual(result.atual, true);
+    assert.strictEqual(result.dados.itens[0].sku, 'current');
+    assert(f.calls[1].at >= (envelope === 'http' ? 5000 : 7000), 'source conflict respects server cooldown');
+  }
+  {
+    const f = fixture([{ status: 409, body: { detail: { code: 'sources_changing', message: 'Legacy conflict' } } }]);
+    await assert.rejects(f.run(f.api.acompanharResultado('/list')), /Legacy conflict/, 'list behavior remains unchanged');
+  }
+  console.log('medias result cache polling: bounded lists, late view completion, retries and cancellation OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

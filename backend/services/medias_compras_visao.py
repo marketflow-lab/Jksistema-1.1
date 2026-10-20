@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import unicodedata
 import time
 from datetime import datetime
 from typing import Literal
 
 import pandas as pd
-from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta, registrar_tempo
+from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta, registrar_tempo, leitura_atual
+from backend.services.medias_compras_historico import ler_historico_vendas
 from fastapi import Depends, HTTPException
 
 from backend.schemas import MediasComprasRequest
@@ -183,7 +183,6 @@ def _api_medias_compras_visao_sync(
             return titulo
 
         meses_ref = _meses_referencia(meses)
-        inicio_periodo = f"{meses_ref[0]}-01"
         fim_periodo = datetime.now().strftime("%Y-%m-%d")
 
         escopo_loja = _escopo_validado if _escopo_validado is not None else _resolver_escopo_loja_medias(
@@ -198,109 +197,20 @@ def _api_medias_compras_visao_sync(
         # Vendas por SKU e por mÃƒÂªs (somatÃƒÂ³rio de quantidade), consolidando todos os bancos do tenant.
         inicio_historico = time.perf_counter()
         db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja_sel)
-        vendas_por_sku = {}
-        titulos_vendas_por_sku = {}
-        ids_vendas_processados = set()
-
-        for db_vendas in db_paths:
-            if not (db_vendas and os.path.exists(db_vendas)):
-                continue
-
-            conn = sqlite3.connect(db_vendas)
-            try:
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_vendas_sku_data ON vendas(sku, data)")
-
-                query = (
-                    """
-                    SELECT
-                        id_unico,
-                        sku,
-                        data AS data_venda,
-                        COALESCE(produto, '') AS produto,
-                        strftime('%Y-%m', date(data)) AS mes_ref,
-                        COALESCE(quantidade, 0) AS qtd
-                    FROM vendas
-                    WHERE sku IS NOT NULL
-                      AND trim(sku) != ''
-                      AND date(data) BETWEEN ? AND ?
-                    """
-                )
-                params = [inicio_periodo, fim_periodo]
-                filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
-                if filtro_loja_sql:
-                    query += filtro_loja_sql
-                    params.extend(filtro_loja_params)
-
-                rows = cur.execute(query, params).fetchall()
-
-                for r in rows:
-                    sku_original = str(r["sku"] or "").strip()
-                    if not sku_original:
-                        continue
-
-                    id_unico = str(r["id_unico"] or "").strip()
-                    mes_ref = str(r["mes_ref"] or "").strip()
-                    qtd = float(r["qtd"] or 0)
-                    chave_unica = id_unico or f"{os.path.basename(db_vendas)}::{sku_original}::{mes_ref}::{qtd}"
-                    if chave_unica in ids_vendas_processados:
-                        continue
-                    ids_vendas_processados.add(chave_unica)
-
-                    sku_norm = _normalizar_sku_mes(sku_original)
-                    titulo_venda = _titulo_venda_valido(r["produto"])
-                    data_venda = str(r["data_venda"] or "").strip()
-                    if titulo_venda:
-                        atual = titulos_vendas_por_sku.get(sku_norm) or {}
-                        if not atual or data_venda >= str(atual.get("data", "") or ""):
-                            titulos_vendas_por_sku[sku_norm] = {
-                                "titulo": titulo_venda,
-                                "data": data_venda,
-                            }
-                    if sku_norm not in vendas_por_sku:
-                        vendas_por_sku[sku_norm] = {
-                            "sku": sku_norm,
-                            "vendas_mensais": {m: 0.0 for m in meses_ref},
-                        }
-                    if mes_ref in vendas_por_sku[sku_norm]["vendas_mensais"]:
-                        vendas_por_sku[sku_norm]["vendas_mensais"][mes_ref] += qtd
-
-                query_titulos = (
-                    """
-                    SELECT
-                        sku,
-                        data AS data_venda,
-                        COALESCE(produto, '') AS produto
-                    FROM vendas
-                    WHERE sku IS NOT NULL
-                      AND trim(sku) != ''
-                      AND trim(COALESCE(produto, '')) != ''
-                    """
-                )
-                params_titulos = []
-                filtro_titulos_sql, filtro_titulos_params = _sql_filtro_loja_vendas(loja_sel)
-                if filtro_titulos_sql:
-                    query_titulos += filtro_titulos_sql
-                    params_titulos.extend(filtro_titulos_params)
-                query_titulos += " ORDER BY date(data) DESC, data DESC"
-
-                for r in cur.execute(query_titulos, params_titulos):
-                    sku_titulo_raw = str(r["sku"] or "").strip()
-                    if not sku_titulo_raw:
-                        continue
-                    sku_titulo_norm = _normalizar_sku_mes(sku_titulo_raw)
-                    titulo_venda = _titulo_venda_valido(r["produto"])
-                    data_venda = str(r["data_venda"] or "").strip()
-                    if titulo_venda:
-                        atual = titulos_vendas_por_sku.get(sku_titulo_norm) or {}
-                        if not atual or data_venda >= str(atual.get("data", "") or ""):
-                            titulos_vendas_por_sku[sku_titulo_norm] = {
-                                "titulo": titulo_venda,
-                                "data": data_venda,
-                            }
-            finally:
-                conn.close()
+        db_paths = tuple(path for path in db_paths if path and os.path.exists(path))
+        vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = {}, {}, {}
+        if db_paths:
+            filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
+            vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = ler_historico_vendas(
+                client_id=client_id, loja=loja_sel, store_id=store_id_escopo,
+                db_paths=db_paths, meses=meses, fim_periodo=fim_periodo,
+                filtro_sql=filtro_loja_sql, filtro_params=filtro_loja_params,
+                normalizar_sku=_normalizar_sku_mes, titulo_valido=_titulo_venda_valido,
+                normalizacao_token=normalizar_texto,
+            )
+        leitura = leitura_atual()
+        if leitura is not None:
+            leitura.values[("historico_ultima_venda", client_id, loja_sel, tuple(db_paths))] = ultima_venda_snapshot
 
         registrar_tempo("historico", inicio_historico)
         # Saldo de estoque por SKU considerando a loja selecionada.

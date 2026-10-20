@@ -91,7 +91,8 @@ def test_transito_todas_as_lojas_agrega_listas_de_todas_as_lojas(monkeypatch):
     ]
 
 
-def test_visao_expoe_total_e_composicao_do_transito(monkeypatch, tmp_path):
+@pytest.mark.parametrize("inventario", ["vazio", "banco_ausente"])
+def test_visao_expoe_total_e_composicao_do_transito(monkeypatch, tmp_path, inventario):
     monkeypatch.setattr(visao, "get_tenant_path", lambda _client_id: str(tmp_path))
     monkeypatch.setattr(
         visao,
@@ -102,7 +103,13 @@ def test_visao_expoe_total_e_composicao_do_transito(monkeypatch, tmp_path):
             "scope": "store",
         },
     )
-    monkeypatch.setattr(visao, "_listar_bancos_vendas_tenant", lambda *_args: [], raising=False)
+    bancos = [] if inventario == "vazio" else [str(tmp_path / "banco_ausente.db")]
+    monkeypatch.setattr(visao, "_listar_bancos_vendas_tenant", lambda *_args: bancos, raising=False)
+    def leitura_vendas_proibida(*_args, **_kwargs):
+        pytest.fail("Sem banco de vendas, a visão deve usar estoque/cadastro/trânsito sem consultar o histórico.")
+    monkeypatch.setattr(visao, "_sql_filtro_loja_vendas", leitura_vendas_proibida, raising=False)
+    monkeypatch.setattr(visao, "ler_historico_vendas", leitura_vendas_proibida)
+    monkeypatch.delattr(visao, "normalizar_texto", raising=False)
     monkeypatch.setattr(visao, "_migrar_arquivo_legado_para_tenant", lambda *_args: "", raising=False)
     monkeypatch.setattr(visao, "_cadastro_mapa_fotos_locais", lambda *_args: {}, raising=False)
     monkeypatch.setattr(visao, "_cadastro_resolver_foto_local", lambda *_args: "", raising=False)

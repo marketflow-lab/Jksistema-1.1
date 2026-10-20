@@ -176,6 +176,13 @@ class ResultadoCache:
                         metrics["fontes"] = metrics.get("fontes", 0) + (time.perf_counter() - probe_started) * 1000
                     else:
                         before = initial
+                    # An open publication/rollback journal guarantees this
+                    # attempt cannot be published. Re-probe within the same
+                    # retry budget instead of performing a full calculation
+                    # that will necessarily be discarded.
+                    if before.pendente:
+                        logger.info("[MEDIAS_FENCE] execucao=%s tentativa=%d fontes_pendentes=1 calculo_adiado=1", execution, attempts)
+                        continue
                     receipt = []
                     token = _COMMIT.set(receipt)
                     try:

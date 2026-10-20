@@ -8,7 +8,21 @@
         let atualizacaoAdiada = null;
         let metaVisaoExibida = null;
         let ultimoStatus = '';
+        let situacaoVisao = 'inicial';
         const edicoesPorEscopo = new Map();
+
+        function obterMensagemVisaoVazia() {
+            if (situacaoVisao === 'pronto') return '';
+            if (situacaoVisao === 'erro') return 'Não foi possível carregar as médias. Selecione o período ou a loja para tentar novamente.';
+            if (situacaoVisao === 'pendente') return 'O carregamento continua pendente. Selecione o período ou a loja para acompanhar novamente.';
+            return situacaoVisao === 'demorando' ? 'Calculando as médias. Continuamos acompanhando o resultado...' : 'Carregando médias de vendas e estoque...';
+        }
+
+        function atualizarSituacaoVisao(situacao) {
+            if (situacaoVisao === situacao) return;
+            situacaoVisao = situacao;
+            if (!itensVisaoAtual.length) renderAbaAtual();
+        }
 
         function cancelarCarregamentoVisao() {
             geracaoCarregamentoVisao++;
@@ -32,6 +46,7 @@
                 if (comprasSugeridasEditadas.has(sku)) item.compra_sugerida = comprasSugeridasEditadas.get(sku);
             }
             escopoVisaoExibida = escopo;
+            situacaoVisao = !metaVisaoExibida || (metaVisaoExibida.estado === 'ready' && !metaVisaoExibida.stale && !metaVisaoExibida.atualizando && metaVisaoExibida.completo !== false) ? 'pronto' : 'carregando';
             renderAbaAtual();
             return true;
         }
@@ -71,6 +86,7 @@
                 colunasMesesAtuais = [];
                 escopoVisaoExibida = '';
                 metaVisaoExibida = null;
+                situacaoVisao = 'carregando';
                 renderAbaAtual();
             }
             escopoConsulta = escopo;
@@ -80,9 +96,11 @@
                 const lojaTexto = lojaSolicitada && lojaSolicitada !== '__todas' ? ' da loja ' + lojaSolicitada : ' de todas as lojas';
                 setStatus((escopoVisaoExibida === escopo ? 'Atualizando dados' : 'Carregando dados de vendas e estoque') + lojaTexto + '...');
                 const ativa = () => tarefa.ativa() && geracao === geracaoCarregamentoVisao;
+                atualizarSituacaoVisao('carregando');
                 try {
                     return await modules.resultados.acompanharResultado(url, {
                         headers, signal: tarefa.signal, ativa,
+                        limiteMs: 5 * 60 * 1000, avisoAposMs: 30000, limiteRequisicaoMs: 15000, recuperarFontes: true,
                         receber: data => { if (ativa()) aplicarResultado(data, escopo, geracao); },
                         indisponivel: meta => {
                             if (!ativa()) return;
@@ -94,17 +112,21 @@
                             itensVisaoAtual = [];
                             colunasMesesAtuais = [];
                             escopoVisaoExibida = '';
+                            situacaoVisao = 'carregando';
                             renderAbaAtual();
                         },
-                        estado: (meta, pendente) => {
+                        estado: (meta, pendente, acompanhando) => {
                             if (!ativa()) return;
-                            const texto = modules.resultados.textoEstadoResultado(meta, pendente);
+                            const pronta = meta?.estado === 'ready' && !meta.stale && !meta.atualizando && meta.completo !== false;
+                            atualizarSituacaoVisao(pronta ? 'pronto' : pendente ? (acompanhando ? 'demorando' : 'pendente') : meta?.erro && !meta.atualizando ? 'erro' : 'carregando');
+                            const texto = modules.resultados.textoEstadoResultado(meta, pendente, acompanhando);
                             ultimoStatus = texto;
                             setStatus(atualizacaoAdiada ? texto + ' A tabela será atualizada ao concluir a edição.' : texto);
                         },
                     });
                 } catch (erro) {
                     if (ativa()) {
+                        situacaoVisao = 'erro';
                         if ([401, 403, 404].includes(erro.status)) {
                             itensVisaoAtual = [];
                             colunasMesesAtuais = [];
@@ -112,8 +134,8 @@
                             metaVisaoExibida = null;
                             comprasSugeridasEditadas.clear();
                             edicoesPorEscopo.clear();
-                            renderAbaAtual();
                         }
+                        if (!itensVisaoAtual.length) renderAbaAtual();
                         ultimoStatus = 'Falha ao carregar dados: ' + erro.message;
                         setStatus(ultimoStatus);
                     }
@@ -137,9 +159,10 @@
             metaVisaoExibida = null;
             comprasSugeridasEditadas.clear();
             edicoesPorEscopo.clear();
+            situacaoVisao = 'erro';
             renderAbaAtual();
             setStatus('A sessão mudou. Reabra a tela para carregar os dados atuais.');
         });
-        return { carregarVisao, cancelarCarregamentoVisao, concluirEdicaoVisao, confirmarVisaoAtualizada };
+        return { carregarVisao, cancelarCarregamentoVisao, concluirEdicaoVisao, confirmarVisaoAtualizada, obterMensagemVisaoVazia };
     });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

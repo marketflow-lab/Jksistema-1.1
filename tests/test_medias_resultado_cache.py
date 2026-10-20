@@ -166,6 +166,28 @@ def test_retry_budget_includes_transaction_conflict():
     asyncio.run(scenario())
 
 
+def test_pending_sources_skip_wasted_calculation_and_recheck_before_retry():
+    service = cache.ResultadoCache()
+    pending = cache.Fontes((0,), ("policy",), pendente=True)
+    stable = replace(pending, pendente=False)
+    loaded = []
+    value, accepted = service._calculate(
+        lambda: stable, lambda source: loaded.append(source) or {"itens": [1]},
+        time.perf_counter(), pending,
+    )
+    assert value == {"itens": [1]} and accepted == stable
+    assert loaded == [stable]
+    loaded.clear()
+    with pytest.raises(HTTPException) as failure:
+        service._calculate(
+            lambda: pending, lambda source: loaded.append(source),
+            time.perf_counter(), pending,
+        )
+    assert failure.value.status_code == 409
+    assert failure.value.detail["code"] == "sources_changing"
+    assert loaded == []
+
+
 def test_stale_ttl_error_warning_and_retry_do_not_claim_freshness():
     async def scenario():
         now = [0]

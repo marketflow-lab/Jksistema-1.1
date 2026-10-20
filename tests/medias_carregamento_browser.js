@@ -43,7 +43,7 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
     let id = 0, clock = nativeNow(), inFlight = 0;
     if (timers !== 'real') Date.now = () => clock;
     const delays = [];
-    const pending = () => inFlight ? [] : [...scheduled].filter(([, timer]) => timer.delay <= 5000);
+    const pending = () => inFlight ? [] : [...scheduled].filter(([, timer]) => timer.delay <= 15000);
     const release = key => {
       const timer = scheduled.get(key);
       if (!timer) return;
@@ -78,7 +78,7 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
     window.setTimeout = (callback, delay, ...args) => {
       if (Number(delay) >= 1000) {
         if (timers === 'real') return original(() => {
-          if (delay <= 5000) delays.push(delay);
+          if (delay <= 15000) delays.push(delay);
           callback(...args);
         }, delay);
         const key = --id;
@@ -211,15 +211,19 @@ async function testBoundedRetries(browser) {
   const fixture = await openFixture(browser, { respond: () => unavailable(knownCodes[0], 'Snapshot sintético continua indisponível.') });
   try {
     await fixture.page.evaluate(() => __retryTimers.until(() => document.querySelector('#status').textContent.includes('Atualização pendente')));
-    assert(fixture.state.calls.length >= 12 && fixture.state.calls.length <= 13, 'Consultas ficam limitadas ao orçamento de 30 s, incluindo a fronteira final.');
+    assert(fixture.state.calls.length > 13 && fixture.state.calls.length < 45, 'O acompanhamento continua após 30 s e usa backoff dentro do orçamento de cinco minutos.');
     const callsAtDeadline = fixture.state.calls.length;
     assert.strictEqual(new Set(fixture.state.calls.map(call => call.url)).size, 1);
-    assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [1000, 1000, 1000, 1000, 1000, 2000, 2000, 2000, 5000, 5000, 5000, 4000]);
+    const delays = await fixture.page.evaluate(() => window.__retryTimers.delays);
+    assert.deepStrictEqual(delays.slice(0, 11), [1000, 1000, 1000, 1000, 1000, 2000, 2000, 2000, 5000, 5000, 5000]);
+    assert(delays.includes(10000) && delays.includes(15000), 'Esperas aumentam para dez e quinze segundos.');
+    assert.match(await fixture.page.locator('#tblResultado tbody').innerText(), /carregamento continua pendente/i);
+    assert.doesNotMatch(await fixture.page.locator('#tblResultado tbody').innerText(), /Nenhum SKU/);
     await releaseWaitingRetries(fixture.page);
     assert.strictEqual(fixture.state.calls.length, callsAtDeadline, 'A espera encerrada não pode reiniciar polling.');
     await assertClean(fixture);
   } finally { await fixture.context.close(); }
-  console.log('PASS limite: 503 persistente usa polling 1/2/5 s até 30 s e termina com pendência honesta, sem novas consultas.');
+  console.log('PASS limite: 503 persistente acompanha até cinco minutos com backoff 1/2/5/10/15 s e termina com pendência honesta, sem declarar zero SKUs.');
 }
 
 async function testPeriodAndStoreChanges(browser) {

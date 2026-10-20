@@ -65,6 +65,12 @@ def assinatura_arquivo(path, entry=None):
         entry = path.lstat() if entry is None or stat.S_ISDIR(entry.st_mode) else entry
         linked = stat.S_ISLNK(entry.st_mode) or bool(getattr(entry, "st_file_attributes", 0) & 0x400)
         target = path.stat() if linked else entry
+        # A read-only WAL connection can create/remove an empty sidecar. It
+        # contains no frames and changes no rows; do not invalidate a result
+        # just because another reader opens or closes the database. Non-empty
+        # WALs retain the full identity fence, including same-size rewrites.
+        if path.name.casefold().endswith(".db-wal") and target.st_size == 0:
+            return (os.path.normcase(os.path.abspath(path)), None)
         resolved = os.path.normcase(os.path.realpath(path) if linked else os.path.abspath(path))
         return (os.path.normcase(os.path.abspath(path)), entry.st_ctime_ns, entry.st_mtime_ns, entry.st_size,
                 target.st_ctime_ns, target.st_mtime_ns, target.st_size, entry.st_ino, resolved)

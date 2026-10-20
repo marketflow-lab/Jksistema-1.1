@@ -655,6 +655,11 @@ def _mensagem_sem_venda(meses_sem_vender: int) -> str:
 @etapa("historico")
 def _mapa_ultima_venda_por_sku(client_id: str, loja: str = "__todas", *, _db_paths=None) -> dict[str, str]:
     db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja)
+    from backend.services.medias_compras_leitura import leitura_atual
+    leitura = leitura_atual()
+    snapshot = leitura.values.get(("historico_ultima_venda", client_id, loja, tuple(db_paths))) if leitura else None
+    if snapshot is not None:
+        return dict(snapshot)
     resultado: dict[str, str] = {}
 
     for db_vendas in db_paths:

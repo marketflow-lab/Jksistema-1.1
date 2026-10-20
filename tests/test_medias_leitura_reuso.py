@@ -84,9 +84,9 @@ def test_detail_photo_policy_captured_once_and_closed_before_write(ambiente, mon
 def test_global_legacy_index_is_built_once_for_multiple_stores(ambiente, monkeypatch):
     calls = []
     original = produtos._indice_legado_de_tenant
-    def index(*args):
+    def index(*args, **kwargs):
         calls.append(1)
-        return original(*args)
+        return original(*args, **kwargs)
     monkeypatch.setattr(produtos, "_indice_legado_de_tenant", index)
     baseline = cadastro.visao_compatibilidade_produtos_lojas("cliente-a")
     assert len(calls) == 2

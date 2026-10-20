@@ -27,13 +27,13 @@ async function fixture(browser, name) {
     localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-view', username: 'synthetic-user' }));
     const nativeFetch = fetch.bind(window), nativeTimeout = setTimeout.bind(window), nativeClear = clearTimeout.bind(window);
     const timers = new Map(), queue = [], calls = [], pending = new Map();
-    let clock = Date.now(), id = 0;
+    let clock = Date.now(), id = 0, fallback = { body: initial };
     Date.now = () => clock;
     const tick = () => new Promise(resolve => nativeTimeout(resolve, 0));
     window.setTimeout = (callback, delay, ...args) => {
       if (Number.isFinite(delay) && delay >= 300 && delay <= 30000) {
         const key = --id;
-        timers.set(key, { delay, callback: () => callback(...args) });
+        timers.set(key, { delay, at: clock + delay, callback: () => callback(...args) });
         return key;
       }
       return nativeTimeout(callback, delay, ...args);
@@ -42,7 +42,7 @@ async function fixture(browser, name) {
     window.fetch = async (input, init = {}) => {
       const url = new URL(input, location.href);
       if (url.pathname !== '/api/medias-compras/visao') return nativeFetch(input, init);
-      const plan = queue.shift() || { body: initial };
+      const plan = queue.shift() || fallback;
       const call = { url: url.href, method: init.method || 'GET', aborted: !!init.signal?.aborted,
         headers: Object.fromEntries(new Headers(init.headers)), hasSignal: !!init.signal };
       calls.push(call);
@@ -57,14 +57,24 @@ async function fixture(browser, name) {
           reject = failure; pending.set(index, () => { pending.delete(index); resolve(plan.body); });
         }) : Promise.resolve(plan.body) };
     };
-    window.__view = { calls, plan: item => queue.push(item), pending: () => [...pending.keys()],
+    window.__view = { calls, plan: item => queue.push(item), fallback: item => { fallback = item; }, pending: () => [...pending.keys()],
       release: async index => { if (!pending.has(index)) throw new Error('No pending request ' + index); pending.get(index)(); await tick(); await tick(); }, timers: () => [...timers.values()].map(timer => timer.delay),
       run: async delay => {
         const selected = [...timers].filter(([, timer]) => timer.delay === delay);
-        if (selected.length) clock += delay;
+        if (selected.length) clock = Math.max(clock, ...selected.map(([, timer]) => timer.at));
         for (const [key, timer] of selected) { timers.delete(key); timer.callback(); }
         await tick(); await tick();
         return selected.length;
+      },
+      advance: async ms => {
+        const target = clock + ms;
+        for (let step = 0; step < 1000; step++) {
+          const next = [...timers].filter(([, timer]) => timer.at <= target).sort((a, b) => a[1].at - b[1].at)[0];
+          if (!next) { clock = target; await tick(); await tick(); return; }
+          timers.delete(next[0]); clock = Math.max(clock, next[1].at); next[1].callback();
+          await tick(); await tick();
+        }
+        throw new Error('Timer loop did not settle');
       } };
   }, payload('Inicial', 'v1'));
   await page.route('**/*', async route => {
@@ -119,16 +129,19 @@ async function testDeferredDuringEdit(browser, outcome) {
     await page.locator('.compra-sugerida-input').fill('17');
     await page.evaluate(() => { window.__input = document.querySelector('.compra-sugerida-input'); });
     await plan(page, { body: payload('Anterior novo', 'v2', { stale: true }) });
-    if (outcome === 'pending') await plan(page, { pending: true });
+    if (outcome === 'pending') {
+      await page.evaluate(() => __view.fallback({ status: 202, body: { dados: null, _cache: { estado: 'waiting', atualizando: true, completo: false } } }));
+      await plan(page, { pending: true });
+    }
     else await plan(page, { body: payload(outcome === 'fresh' ? 'Atual novo' : 'Anterior novo', outcome === 'fresh' ? 'v3' : 'v2',
       outcome === 'error' ? { stale: true, error: true } : {}) });
     await page.evaluate(() => { window.__refresh = carregarVisao(periodoAtual); });
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('concluir a edição'));
     assert.strictEqual(await page.evaluate(() => itensVisaoAtual[0].titulo_anuncio), 'Inicial');
     await run(page, 1000);
-    if (outcome === 'pending') assert.strictEqual(await run(page, 29000), 1);
-    await page.evaluate(() => window.__refresh);
-    const expected = outcome === 'pending' ? /Atualização pendente/ : outcome === 'error' ? /A atualização não terminou/ : /Dados atualizados em/;
+    if (outcome === 'pending') await page.evaluate(() => __view.advance(30000));
+    else await page.evaluate(() => window.__refresh);
+    const expected = outcome === 'pending' ? /Continuamos acompanhando/ : outcome === 'error' ? /A atualização não terminou/ : /Dados atualizados em/;
     assert.match(await page.locator('#status').innerText(), expected);
     assert.strictEqual(await page.evaluate(() => document.activeElement === window.__input), true, 'Resposta não rouba o foco da edição.');
     assert.strictEqual(await page.evaluate(() => document.querySelector('.compra-sugerida-input') === window.__input), true);
@@ -141,6 +154,7 @@ async function testDeferredDuringEdit(browser, outcome) {
     assert.strictEqual(await page.evaluate(() => obterQuantidadesSugeridasEditadas()['SKU-COMUM']), 17);
     assert.match(await page.locator('#status').innerText(), expected, 'Blur preserva pendência/erro em vez de declarar sucesso.');
     assert.doesNotMatch(await page.locator('#status').innerText(), /concluir a edição/);
+    if (outcome === 'pending') await page.evaluate(async () => { cancelarCarregamentoVisao(); await window.__refresh; });
     await clean(test);
   } finally { await test.context.close(); }
   console.log('PASS visão ' + outcome + ': resultado adiado mantém foco e valor; blur aplica dados preservando edição e status.');
@@ -275,9 +289,71 @@ async function testUnavailableAuthority(browser, invalidation, editing) {
   console.log('PASS visão 202 ' + invalidation + (editing ? '/edição-adiada' : '') + ': snapshot/fotos/edição respeitam autoridade e próxima 200 pode reutilizar versão.');
 }
 
+async function testLateCompletionAndEmpty(browser) {
+  const test = await fixture(browser, 'late-and-empty'), { page } = test;
+  try {
+    await page.evaluate(() => __view.fallback({ status: 202, body: { dados: null,
+      _cache: { estado: 'waiting', atualizando: true, completo: false } } }));
+    await page.locator('#lojaBotoes button').filter({ hasText: 'Loja B' }).click();
+    await page.waitForFunction(() => itensVisaoAtual.length === 0 && document.querySelector('#status').textContent.includes('Atualizando dados'));
+    assert.match(await page.locator('#tblResultado tbody').innerText(), /Carregando médias/);
+    assert.doesNotMatch(await page.locator('#tblResultado tbody').innerText(), /Nenhum SKU/);
+    await page.evaluate(() => { window.__late = carregarVisao(periodoAtual); });
+    await page.evaluate(() => __view.advance(35000));
+    assert.match(await page.locator('#status').innerText(), /Continuamos acompanhando/);
+    assert.match(await page.locator('#tblResultado tbody').innerText(), /Continuamos acompanhando/);
+    const late = payload('Concluído depois de 30 segundos', 'late');
+    await plan(page, { body: late });
+    await page.evaluate(() => __view.advance(10000));
+    await page.evaluate(() => window.__late);
+    assert.strictEqual(await page.evaluate(() => itensVisaoAtual[0].titulo_anuncio), late.itens[0].titulo_anuncio);
+    assert.strictEqual(await page.evaluate(() => itensVisaoAtual[0].media_mensal), late.itens[0].media_mensal);
+    assert.match(await page.locator('#status').innerText(), /^Dados atualizados em /);
+    const empty = { ...payload('', 'empty'), itens: [] };
+    await plan(page, { body: empty });
+    await page.evaluate(() => carregarVisao(3));
+    assert.match(await page.locator('#tblResultado tbody').innerText(), /^Nenhum SKU encontrado para o período selecionado\.$/);
+    assert.match(await page.locator('#status').innerText(), /^Dados atualizados em /);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS visão tardia: após 30 s continua acompanhando, recebe os valores e só declara zero SKUs quando o resultado completo está pronto.');
+}
+
+async function testLateNavigationCancellation(browser, destination) {
+  const test = await fixture(browser, 'late-cancel-' + destination), { page } = test;
+  try {
+    await page.evaluate(() => __view.fallback({ status: 202, body: { dados: null,
+      _cache: { estado: 'waiting', atualizando: true, completo: false } } }));
+    await page.locator('#lojaBotoes button').filter({ hasText: 'Loja B' }).click();
+    await page.waitForFunction(() => itensVisaoAtual.length === 0 && document.querySelector('#status').textContent.includes('Atualizando dados'));
+    await page.evaluate(() => __view.advance(35000));
+    await plan(page, { body: payload('Resposta antiga proibida', 'old-late'), pending: true, ignoreAbort: true });
+    await page.evaluate(() => __view.advance(10000));
+    const index = await page.evaluate(() => __view.pending()[0]);
+    assert(Number.isInteger(index), 'Consulta antiga está aguardando transporte depois do aviso de 30 s.');
+    if (destination === 'pagehide') await page.evaluate(() => dispatchEvent(new Event('pagehide')));
+    else {
+      await plan(page, { body: payload('Resultado do novo período', 'new-scope') });
+      await page.locator('#btnPeriodo6').click();
+      await page.waitForFunction(() => itensVisaoAtual[0]?.titulo_anuncio === 'Resultado do novo período');
+    }
+    assert.strictEqual(await page.evaluate(index => __view.calls[index].aborted, index), true);
+    await page.evaluate(index => __view.release(index), index);
+    const callsAfterCancel = await page.evaluate(() => __view.calls.length);
+    await page.evaluate(() => __view.advance(90000));
+    assert.strictEqual(await page.evaluate(() => __view.calls.length), callsAfterCancel, 'Troca de escopo/saída remove timer e não cria consultas adicionais.');
+    assert.strictEqual(await page.evaluate(() => itensVisaoAtual[0]?.titulo_anuncio || ''), destination === 'pagehide' ? '' : 'Resultado do novo período');
+    assert.doesNotMatch(await page.locator('#tblResultado tbody').innerText(), /Resposta antiga proibida/);
+    await clean(test);
+  } finally { await test.context.close(); }
+  console.log('PASS visão cancelada depois de 30 s (' + destination + '): transporte interrompido, resposta antiga descartada e nenhum polling adicional.');
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    await testLateCompletionAndEmpty(browser);
+    for (const destination of ['period', 'pagehide']) await testLateNavigationCancellation(browser, destination);
     for (const invalidation of ['same', 'authority', 'sources']) for (const editing of [false, true]) await testUnavailableAuthority(browser, invalidation, editing);
     for (const [kind, event] of [['tenant', 'none'], ['permissions', 'none'], ['token', 'none'], ['tenant', 'storage'], ['permissions', 'storage'], ['token', 'auth']]) await testSessionDuringPendingView(browser, kind, event);
     for (const kind of ['tenant', 'permissions', 'token']) await testSessionDuringPendingView(browser, kind, 'none', true);
