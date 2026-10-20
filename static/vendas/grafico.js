@@ -564,6 +564,7 @@ function alinharSerieComparativa(labelsBase, labelsComparativo, serieComparativo
 }
 
 async function carregarGrafico() {
+    if (window.JKVendasReadState?.isClosed()) return;
     const params = new URLSearchParams({ periodo: periodoGrafico, intervalo: intervaloGrafico });
     const dataInicioAtual = getDataIniISO();
     const dataFimAtual = getDataFimISO();
@@ -600,23 +601,28 @@ async function carregarGrafico() {
         }
     }
 
-    const requestKey = `${params.toString()}|compare=${paramsComp?.toString() || ''}`;
+    const requestKey = `${obterClientId()}|${params.toString()}|compare=${paramsComp?.toString() || ''}`;
     if (carregarGraficoPromise && carregarGraficoRequestKey === requestKey) return carregarGraficoPromise;
     if (carregarGraficoController) carregarGraficoController.abort();
 
     const controller = new AbortController();
+    const requestDeadline = Date.now() + 45000;
     const tokenAtual = ++carregarGraficoToken;
     carregarGraficoController = controller;
     carregarGraficoRequestKey = requestKey;
+    window.JKVendasReadState?.begin('grafico', tokenAtual);
+    const leituraAtual = () => !controller.signal.aborted && tokenAtual === carregarGraficoToken
+        && (!window.JKVendasReadState || window.JKVendasReadState.valid('grafico', tokenAtual));
     carregarGraficoPromise = (async () => {
         try {
             const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
                 headers: obterAuthHeaders(),
                 cache: 'no-store',
                 signal: controller.signal
-            });
+            }, 45000);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
+            if (!leituraAtual()) return;
 
             let dataComparativo = null;
             if (paramsComp) {
@@ -624,19 +630,23 @@ async function carregarGrafico() {
                     headers: obterAuthHeaders(),
                     cache: 'no-store',
                     signal: controller.signal
-                });
+                }, Math.max(0, requestDeadline - Date.now()));
                 if (respComp.ok) dataComparativo = await respComp.json();
             }
 
-            if (tokenAtual !== carregarGraficoToken) return;
+            if (!leituraAtual()) return;
             renderizarGrafico(data, dataComparativo);
             atualizarObservacoesGraficoVendas(data);
+            window.JKVendasReadState?.finish('grafico', tokenAtual, 'success');
             agendarSegundoPlano(() => carregarOciososSidebarVendas(), 180);
         } catch (error) {
-            if (error.name === 'AbortError') return;
+            if (!leituraAtual() || error.name === 'AbortError') return;
+            const mensagem = error.name === 'TimeoutError'
+                ? 'O gráfico excedeu o tempo de resposta. Tente novamente.' : 'Não foi possível carregar o gráfico para estes filtros.';
+            window.JKVendasReadState?.finish('grafico', tokenAtual, 'error', mensagem);
             console.error('Erro ao carregar gráfico:', error);
             if (graficoObservacoesVendas) {
-                graficoObservacoesVendas.innerHTML = '<li>Não foi possível carregar observações do gráfico.</li>';
+                exibirErroLeituraVendas(mensagem, graficoObservacoesVendas);
             }
             if (graficoRankingVendas) {
                 graficoRankingVendas.innerHTML = '<li>Não foi possível carregar o ranking de SKUs.</li>';

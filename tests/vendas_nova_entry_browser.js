@@ -70,6 +70,7 @@ const fixtureState = `
             listeners.forEach(listener => listener(structuredClone(snapshot)));
         },
         getChartInstances: () => [], resizeCharts() {},
+        retryReads() { window.__entryReadRetries = (window.__entryReadRetries || 0) + 1; return Promise.resolve(); },
     };
     window.__entrySetSnapshot = patch => {
         Object.assign(snapshot, patch);
@@ -192,6 +193,46 @@ async function verifyCase(context, fixture, embedded, width) {
     } finally {
         await page.close();
     }
+}
+
+async function verifyLoadingFailure(context, fixture) {
+    const details = { mode: 'iframe', width: 1206, feature: 'read errors during active synchronization' };
+    const { page, frame } = await loadCase(context, fixture, true, 1206);
+    try {
+        await frame.locator('#btnVersaoNovaVendas').click();
+        await frame.waitForFunction(() => JKVendasNova.isActive());
+        await frame.evaluate(() => __entrySetSnapshot({
+            loading: false, graphLoading: false,
+            loadError: 'O carregamento das vendas excedeu o tempo de resposta.',
+            graphError: 'O gráfico excedeu o tempo de resposta. Tente novamente.', graph: { data: null },
+            sync: { active: true, progress: { etapa: 'Dia', percentual: 57 }, automacao: { lojas: [] } },
+        }));
+        await frame.waitForFunction(() => document.getElementById('vnReadError')?.textContent.includes('tempo de resposta'));
+        check('summary error hides the endless spinner', await frame.locator('#vnLoading').isHidden(), details);
+        check('summary read error stays visible while synchronization remains active', /tempo de resposta/.test(await frame.locator('#vnReadError').innerText()), details);
+        check('graph timeout hides its spinner', await frame.locator('#vnChartStateSpinner').isHidden(), details);
+        check('graph timeout displays an explicit error', /tempo de resposta/.test(await frame.locator('#vnChartStateText').innerText()), details);
+        check('summary retry is available', await frame.locator('#vnReadRetry').isVisible(), details);
+        check('a failed read is not presented as an empty sales period', /Não foi possível carregar/.test(await frame.locator('#vnFeatured').innerText()), details);
+        await frame.locator('#vnReadRetry').click();
+        check('summary retry reaches the dedicated read action once', await frame.evaluate(() => __entryReadRetries === 1), details);
+        if (screenshotPath) {
+            const errorScreenshot = screenshotPath.replace(/\.png$/i, '-loading-error.png');
+            await page.screenshot({ path: errorScreenshot, fullPage: true }); report.screenshots.push(errorScreenshot);
+        }
+        await frame.evaluate(() => __entrySetSnapshot({
+            loading: false, graphLoading: false, loadError: '', graphError: '',
+            rows: [{ sku: 'TESTE-001', produto: 'Produto de demonstração isolada', pedidos: 10, itens: 12, devolucoes: 1, itensDevolucao: 1, valor: 1234.5, valorDevolucao: 34.5 }],
+            totals: { valor: 1234.5, valorLiquido: 1200, pedidos: 10, itens: 12, itensLiquidos: 11, devolucoes: 1, itensDevolucao: 1, valorDevolucao: 34.5 },
+            graph: { data: { labels: [], valores_vendas: [] } },
+        }));
+        await frame.waitForFunction(() => document.getElementById('vnReadRetry')?.hidden);
+        check('successful read removes retry and graph error', await frame.locator('#vnReadRetry').isHidden() && await frame.locator('#vnChartState').isHidden(), details);
+        if (screenshotPath) {
+            const recoveredScreenshot = screenshotPath.replace(/\.png$/i, '-loading-recovered.png');
+            await page.screenshot({ path: recoveredScreenshot, fullPage: true }); report.screenshots.push(recoveredScreenshot);
+        }
+    } finally { await page.close(); }
 }
 
 async function verifyPhotoFeedback(context, fixture) {
@@ -435,6 +476,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
             await verifyCase(context, fixture, true, width);
         }
         await verifyPhotoFeedback(context, fixture);
+        await verifyLoadingFailure(context, fixture);
         for (const width of [1206, 390]) {
             await verifySyncStatus(context, fixture, width, false);
             await verifySyncStatus(context, fixture, width, true);

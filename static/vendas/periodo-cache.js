@@ -187,8 +187,69 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
 let progressMonitorSubscribed = false;
 let progressReloadInFlight = false;
 
+function criarAtualizadorConfirmadoVendas() {
+    let context = null;
+    let confirmed = new Map();
+    let timer = null;
+    let pending = false;
+    let running = false;
+    let generation = 0;
+    function scope() {
+        return JSON.stringify([obterClientId(), getDataIniISO(), getDataFimISO(), lojaSelecionada || '__todas', (typeof unidadeNegocioSelect !== 'undefined' ? unidadeNegocioSelect?.value : '') || '__todos']);
+    }
+    function cancel() {
+        generation += 1;
+        if (timer) clearTimeout(timer);
+        timer = null; pending = false; context = null; confirmed = new Map();
+    }
+    function request() {
+        const next = scope();
+        if (context !== next) { cancel(); context = next; }
+        pending = true;
+        if (timer || running) return;
+        const expected = context;
+        const revision = generation;
+        timer = setTimeout(async () => {
+            timer = null;
+            if (revision !== generation || expected !== scope() || document.visibilityState === 'hidden') { pending = false; return; }
+            pending = false; running = true; progressReloadInFlight = true;
+            try {
+                await Promise.allSettled([carregarVendas({ retornoRapido: true }), carregarGrafico()]);
+            } finally {
+                running = false; progressReloadInFlight = false;
+                if (pending && context === scope()) request();
+            }
+        }, 5000);
+    }
+    function observe(payload) {
+        const nextContext = scope();
+        const baseline = nextContext !== context;
+        if (baseline) { cancel(); context = nextContext; }
+        const next = new Map();
+        let advanced = false;
+        for (const job of payload?.automacao?.jobs || []) {
+            if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(job.loja, lojaSelecionada)) continue;
+            if (job.data_fim < getDataIniISO() || job.data_inicio > getDataFimISO()) continue;
+            const key = String(job.id || job.job_id || `${job.store_id}|${job.data_inicio}|${job.data_fim}`);
+            const days = (Array.isArray(job.dias_concluidos) ? job.dias_concluidos : [])
+                .filter(day => day >= getDataIniISO() && day <= getDataFimISO());
+            const state = { days: new Set(days), complete: ['complete', 'concluido', 'finalizado'].includes(String(job.status || '').toLowerCase()) };
+            next.set(key, state);
+            const previous = confirmed.get(key);
+            if (!baseline && (days.some(day => !previous?.days.has(day)) || (state.complete && !previous?.complete))) advanced = true;
+        }
+        // A collected document can still be staging. Only committed days or completed jobs advance the view.
+        confirmed = next;
+        if (advanced) request();
+    }
+    return { observe, request, cancel };
+}
+const atualizadorConfirmadoVendas = criarAtualizadorConfirmadoVendas();
+function cancelarAtualizacaoConfirmadaVendas() { atualizadorConfirmadoVendas.cancel(); }
+
 function aplicarEstadoMonitorSyncVendas(data) {
     if (!data) return;
+    atualizadorConfirmadoVendas.observe(data);
     renderAutomacaoSyncVendas(data);
     const progresso = data.progress || null;
     const etapa = String(progresso?.etapa || '').toLowerCase();
@@ -197,6 +258,11 @@ function aplicarEstadoMonitorSyncVendas(data) {
     if (data.active) {
         syncEmAndamento = true;
         setSyncButtons(true);
+        const readError = window.JKVendasReadState?.get('resumo')?.error;
+        if (readError) {
+            exibirErroLeituraVendas(readError);
+            return;
+        }
         if (progresso) {
             renderProgresso(progresso, data.logs, statusEl, data.automacao?.lojas || []);
         } else {
@@ -246,20 +312,7 @@ window.addEventListener('jk:vendas-sync-finished', event => {
     const payload = event?.detail?.payload || {};
     const etapa = String(payload?.progress?.etapa || '').toLowerCase();
     if (syncController || progressReloadInFlight || etapa === 'erro' || etapa === 'cancelamento') return;
-    progressReloadInFlight = true;
-    statusEl.className = 'status-bar loading';
-    statusEl.innerHTML = `${spinnerHtml}Atualizando os dados confirmados...`;
-    void (async () => {
-        try {
-            await carregarVendas();
-            await carregarGrafico();
-            statusEl.className = 'status-bar';
-            statusEl.textContent = '';
-            aplicarEstadoMonitorSyncVendas(vendasSyncMonitor.getLastPayload() || payload);
-        } finally {
-            progressReloadInFlight = false;
-        }
-    })();
+    atualizadorConfirmadoVendas.request();
 });
 
 // Funções utilitárias
@@ -428,8 +481,10 @@ function atualizarPeriodoTexto() {
     }
 }
 
-function salvarCacheTelaVendas() {
+function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('resumo')) {
     try {
+        if (clientId !== obterClientId() || expectedScope !== window.JKVendasReadState?.scope('resumo')) return;
+        if (window.JKVendasReadState && !window.JKVendasReadState.canCache()) return;
         const dadosParaCache = Array.isArray(dados) ? dados : [];
         const devolucoesParaCache = Array.isArray(devolucaoItens) ? devolucaoItens : [];
         if ((dadosParaCache.length + devolucoesParaCache.length) > VENDAS_VIEW_CACHE_MAX_ROWS) {
@@ -439,6 +494,7 @@ function salvarCacheTelaVendas() {
 
         const payload = {
             ts: Date.now(),
+            client_id: obterClientId(),
             data_inicio: getDataIniISO(),
             data_fim: getDataFimISO(),
             lojaSelecionada,
@@ -482,12 +538,13 @@ function salvarCacheTelaVendas() {
 }
 
 function agendarSalvarCacheTelaVendas() {
+    const expectedScope = window.JKVendasReadState?.scope('resumo');
     if (cacheSaveTimer) {
         clearTimeout(cacheSaveTimer);
     }
     cacheSaveTimer = setTimeout(() => {
         cacheSaveTimer = null;
-        agendarSegundoPlano(() => salvarCacheTelaVendas(), 60);
+        agendarSegundoPlano(() => salvarCacheTelaVendas(expectedScope), 60);
     }, 180);
 }
 
@@ -496,6 +553,7 @@ async function restaurarCacheTelaVendasSeValido() {
         const raw = sessionStorage.getItem(VENDAS_VIEW_CACHE_KEY);
         if (!raw) return false;
         const payload = JSON.parse(raw);
+        if (payload?.client_id !== obterClientId()) return false;
         if (!payload || !payload.ts || (Date.now() - Number(payload.ts)) > VENDAS_VIEW_CACHE_TTL_MS) {
             sessionStorage.removeItem(VENDAS_VIEW_CACHE_KEY);
             return false;
@@ -527,6 +585,7 @@ async function restaurarCacheTelaVendasSeValido() {
         if (payload.unidadeSelecionada) {
             unidadeNegocioSelect.value = payload.unidadeSelecionada;
         }
+        window.JKVendasReadState?.captureData();
         renderBotoesLojas(lojasDisponiveis || []);
         await filtrar();
         if (!syncEmAndamento) {

@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import Future
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
@@ -33,6 +34,8 @@ _RESPONSE_CACHE: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
 _FILE_CACHE: OrderedDict[tuple, Any] = OrderedDict()
 _SCHEMA_CACHE: OrderedDict[tuple, frozenset[str]] = OrderedDict()
 _CACHE_GENERATIONS: dict[str, int] = {}
+_CACHE_EPOCH = 0
+_RESPONSE_FLIGHTS: dict[tuple, Future] = {}
 _CACHE_STATS = {"hits": 0, "misses": 0, "sets": 0, "invalidations": 0}
 
 _PREPARE_LOCK = threading.RLock()
@@ -114,13 +117,18 @@ def _cache_get(key: tuple) -> tuple[bool, Any]:
         return True, copy.deepcopy(value)
 
 
-def _cache_set(key: tuple, value: Any, ttl_seconds: float) -> None:
+def _cache_set(key: tuple, value: Any, ttl_seconds: float) -> Any:
     with _CACHE_LOCK:
-        _RESPONSE_CACHE[key] = (time.monotonic() + max(1.0, ttl_seconds), copy.deepcopy(value))
+        now = time.monotonic()
+        for expired in [key for key, (deadline, _) in _RESPONSE_CACHE.items() if deadline <= now]:
+            _RESPONSE_CACHE.pop(expired, None)
+        snapshot = copy.deepcopy(value)
+        _RESPONSE_CACHE[key] = (now + max(1.0, ttl_seconds), snapshot)
         _RESPONSE_CACHE.move_to_end(key)
         while len(_RESPONSE_CACHE) > VENDAS_CACHE_MAX_ENTRIES:
             _RESPONSE_CACHE.popitem(last=False)
         _CACHE_STATS["sets"] += 1
+        return snapshot
 
 
 def cache_vendas_response(
@@ -128,6 +136,7 @@ def cache_vendas_response(
     paths_provider: Callable[[Mapping[str, Any]], Iterable[str]],
     *,
     ttl_seconds: float = VENDAS_CACHE_TTL_SECONDS,
+    cache_if: Callable[[Any], bool] | None = None,
 ):
     """Cache a synchronous endpoint using filters and source-file signatures."""
 
@@ -149,6 +158,7 @@ def cache_vendas_response(
 
             with _CACHE_LOCK:
                 generation = _CACHE_GENERATIONS.get(client_id, 0)
+                epoch = _CACHE_EPOCH
             filters = tuple(
                 sorted(
                     (name, _freeze(value))
@@ -162,13 +172,39 @@ def cache_vendas_response(
                 generation,
                 filters,
                 vendas_sources_signature(source_paths),
+                epoch,
             )
-            found, cached = _cache_get(key)
-            if found:
-                return cached
-            result = func(*args, **kwargs)
-            _cache_set(key, result, ttl_seconds)
-            return result
+            with _CACHE_LOCK:
+                found, cached = _cache_get(key)
+                if found:
+                    return cached
+                flight = _RESPONSE_FLIGHTS.get(key)
+                owner = flight is None
+                if owner:
+                    flight = Future()
+                    _RESPONSE_FLIGHTS[key] = flight
+            if not owner:
+                # Each request owns its response, including nested rows/warnings.
+                return copy.deepcopy(flight.result())
+            try:
+                result = func(*args, **kwargs)
+                current_sources = vendas_sources_signature(source_paths)
+                with _CACHE_LOCK:
+                    if (epoch == _CACHE_EPOCH
+                            and generation == _CACHE_GENERATIONS.get(client_id, 0)
+                            and current_sources == key[4]
+                            and (cache_if is None or cache_if(result))):
+                        published = _cache_set(key, result, ttl_seconds)
+                    else:
+                        published = copy.deepcopy(result)
+                flight.set_result(published)
+                return result
+            except BaseException as error:
+                flight.set_exception(error)
+                raise
+            finally:
+                with _CACHE_LOCK:
+                    _RESPONSE_FLIGHTS.pop(key, None)
 
         return wrapper
 
@@ -178,12 +214,14 @@ def cache_vendas_response(
 def invalidate_vendas_cache(client_id: str | None = None) -> None:
     """Invalidate response caches after Vendas writes or mapping changes."""
 
+    global _CACHE_EPOCH
     with _CACHE_LOCK:
         if client_id:
             _CACHE_GENERATIONS[client_id] = _CACHE_GENERATIONS.get(client_id, 0) + 1
             for key in [key for key in _RESPONSE_CACHE if len(key) > 1 and key[1] == client_id]:
                 _RESPONSE_CACHE.pop(key, None)
         else:
+            _CACHE_EPOCH += 1
             _RESPONSE_CACHE.clear()
             _FILE_CACHE.clear()
             _SCHEMA_CACHE.clear()

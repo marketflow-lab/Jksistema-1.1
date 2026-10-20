@@ -526,6 +526,8 @@ def _preparar_payload_notas(
 def _filtrar_vendas_ja_existentes(
     cursor: sqlite3.Cursor, payload: list[tuple], loja: str, store_id: str = ""
 ) -> list[tuple]:
+    if not payload:
+        return []
     existentes_ids: set[str] = set()
     chaves_existentes: set[tuple] = set()
     for row in cursor.execute(
@@ -620,18 +622,18 @@ def _substituir_documentos_vendas(
         "FROM vendas WHERE loja_conta=? AND coalesce(store_id,'')='' AND coalesce(origem_tipo,'')=''",
         (req.loja,),
     ).fetchall() if legacy_allowed else []
-    remove_legacy: set[str] = set()
+    # Index the evidence from each observed document once. Reference strings
+    # retain the old ID normalizer, while invoice/number checks stay exact.
+    orders_by_reference: dict[str, tuple[set[str], set[str]]] = {}
+    orders_without_reference: tuple[set[str], set[str]] = (set(), set())
+    order_skus_by_invoice: dict[str, set[str]] = {}
+    invoice_documents: set[Any] = set()
+    other_document_kind = False
     for invoice_id in observed_invoices:
         cursor.execute(
             f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo='nfe_saida' AND origem_id=?",
             (*store_args, invoice_id),
         )
-    for legacy in legacy_rows:
-        legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, _channel = legacy
-        if str(invoice_id or "") in observed_invoices and str(legacy_id) == _montar_id_unico_venda(
-            req.loja, numero_nf=invoice_number, numero=number, sku=sku, quantidade=quantity, valor=amount,
-        ):
-            remove_legacy.add(str(legacy_id))
     for (kind, document_id), document_rows in documents.items():
         cursor.execute(
             f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo=? AND origem_id=?",
@@ -640,38 +642,68 @@ def _substituir_documentos_vendas(
         invoice_ids = {str(row[15]) for row in document_rows if str(row[15] or "")}
         covered_skus = {str(row[7] or "").strip().upper() for row in document_rows}
         if kind == "pedido":
+            if document_id:
+                reference = _normalizar_numero_deduplicacao_venda(
+                    str(document_id).strip() or "sem_numero"
+                )
+                numbers, invoices = orders_by_reference.setdefault(reference, (set(), set()))
+            else:
+                numbers, invoices = orders_without_reference
+            numbers.update(str(row[4] or "") for row in document_rows)
+            invoices.update(invoice_ids)
             for invoice_id in invoice_ids:
+                order_skus_by_invoice.setdefault(invoice_id, set()).update(covered_skus)
                 cursor.executemany(
                     f"DELETE FROM vendas WHERE ({store_clause}) AND origem_tipo='nfe_saida' AND origem_id=? AND upper(trim(coalesce(sku,'')))=?",
                     [(*store_args, invoice_id, sku) for sku in covered_skus],
                 )
-        for legacy in legacy_rows:
-            legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, channel = legacy
-            legacy_invoice_id = _montar_id_unico_venda(
-                req.loja, numero_nf=invoice_number, numero=number, sku=sku,
-                quantidade=quantity, valor=amount,
-            )
-            if (kind == "pedido" and str(invoice_id or "") in invoice_ids
-                    and str(sku or "").strip().upper() in covered_skus and str(legacy_id) == legacy_invoice_id):
-                remove_legacy.add(str(legacy_id))
-                continue
-            expected = _montar_id_unico_venda(
-                req.loja, id_pedido=document_id if kind == "pedido" else "",
-                numero_nf=invoice_number, numero=number, sku=sku, quantidade=quantity, valor=amount,
-            )
-            if str(legacy_id) != expected:
-                continue
-            if kind == "nfe_saida" and str(invoice_id or "") != document_id:
-                continue
-            # Same old reference could mean an order ID or an invoice number.
-            # Keep ambiguous rows rather than adopting another document.
-            if kind == "pedido" and not any(
-                str(row[4] or "") == str(number or "")
-                or (str(invoice_id or "") and str(row[15] or "") == str(invoice_id))
-                for row in document_rows
-            ):
-                continue
-            remove_legacy.add(str(legacy_id))
+        elif kind == "nfe_saida":
+            invoice_documents.add(document_id)
+        else:
+            other_document_kind = True
+
+    remove_legacy: set[str] = set()
+    prefix = (
+        _normalizar_numero_deduplicacao_venda(req.loja).replace("/", "_") or "sem_loja"
+    ) + "_"
+    for legacy in legacy_rows:
+        legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, _channel = legacy
+        legacy_id = str(legacy_id)
+        invoice = str(invoice_id or "")
+        legacy_invoice_id = _montar_id_unico_venda(
+            req.loja, numero_nf=invoice_number, numero=number, sku=sku,
+            quantidade=quantity, valor=amount,
+        )
+        invoice_identity = legacy_id == legacy_invoice_id
+        if invoice_identity and (
+            invoice in observed_invoices or invoice in invoice_documents
+            or other_document_kind
+            or str(sku or "").strip().upper() in order_skus_by_invoice.get(invoice, ())
+        ):
+            remove_legacy.add(legacy_id)
+            continue
+
+        # Split only the known prefix/suffix of this exact legacy row. SKU and
+        # reference may contain underscores; splitting on separators loses IDs.
+        suffix = (
+            "_" + (_normalizar_numero_deduplicacao_venda(sku).upper() or "sem_sku")
+            + "_" + (_normalizar_valor_deduplicacao_venda(quantity) or "0")
+            + "_" + (_normalizar_valor_deduplicacao_venda(amount) or "0")
+        )
+        reference = None
+        if (
+            legacy_id.startswith(prefix) and legacy_id.endswith(suffix)
+            and len(legacy_id) > len(prefix) + len(suffix)
+        ):
+            reference = legacy_id[len(prefix):-len(suffix)]
+        numbers, invoices = orders_by_reference.get(reference, ((), ()))
+        if str(number or "") in numbers or (invoice and invoice in invoices):
+            remove_legacy.add(legacy_id)
+        elif invoice_identity and (
+            str(number or "") in orders_without_reference[0]
+            or (invoice and invoice in orders_without_reference[1])
+        ):
+            remove_legacy.add(legacy_id)
     cursor.executemany("DELETE FROM vendas WHERE coalesce(store_id,'')='' AND loja_conta=? AND id_unico=?",
                        [(req.loja, row_id) for row_id in remove_legacy])
 

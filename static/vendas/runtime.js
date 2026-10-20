@@ -331,9 +331,57 @@ let periodoSelecionadoPeloUsuario = false;
 let carregarVendasPromise = null;
 let carregarVendasRequestKey = '';
 let carregarVendasController = null;
+let carregarVendasToken = 0;
 let tabelaRenderToken = 0;
 let filtrarToken = 0;
 let cacheSaveTimer = null;
+
+window.JKVendasReadState = (() => {
+    const states = {};
+    let closed = false;
+    let epoch = 0;
+    let dataScope = null;
+    function scope(kind) {
+        let tenant = '';
+        try { tenant = obterClientId() || ''; } catch (_error) {}
+        const filters = JSON.stringify([tenant, getDataIniISO(), getDataFimISO(), lojaSelecionada || '__todas', unidadeNegocioSelect?.value || '__todos', epoch]);
+        return kind === 'grafico' ? JSON.stringify([filters, periodoGrafico, tipoGrafico, metricaGrafico, intervaloGrafico,
+            compararAnoPassado, mostrarEstoqueGeralGrafico, mostrarEstoqueSkuGrafico, String(graficoEstoqueSkuInput?.value || '').trim()]) : filters;
+    }
+    function notify() { window.dispatchEvent(new CustomEvent('jk:vendas-read-state')); }
+    return {
+        scope,
+        get epoch() { return epoch; },
+        isClosed: () => closed,
+        captureData() { dataScope = scope('resumo'); },
+        canCache() { return !closed && dataScope === scope('resumo'); },
+        begin(kind, key) { if (!closed) { states[kind] = { key, scope: scope(kind), state: 'loading', error: '' }; notify(); } },
+        valid(kind, key) { return !closed && states[kind]?.key === key && states[kind]?.scope === scope(kind); },
+        finish(kind, key, state, error = '') {
+            if (!this.valid(kind, key)) return;
+            states[kind] = { ...states[kind], state, error }; notify();
+        },
+        get(kind) { return !closed && states[kind] && states[kind].scope === scope(kind) ? states[kind] : null; },
+        cancel(close = false) {
+            closed = close;
+            epoch += 1;
+            dataScope = null;
+            if (cacheSaveTimer) clearTimeout(cacheSaveTimer);
+            cacheSaveTimer = null;
+            carregarVendasController?.abort();
+            carregarVendasController = null; carregarVendasPromise = null; carregarVendasRequestKey = '';
+            if (typeof carregarGraficoController !== 'undefined') {
+                carregarGraficoController?.abort(); carregarGraficoController = null; carregarGraficoPromise = null;
+                carregarGraficoToken += 1;
+            }
+            filtrarToken += 1;
+            tabelaRenderToken += 1;
+            Object.keys(states).forEach(key => delete states[key]);
+            notify();
+        },
+        reopen() { closed = false; }
+    };
+})();
 
 function criarMonitorSyncVendas() {
     const listeners = new Set();
@@ -346,6 +394,13 @@ function criarMonitorSyncVendas() {
     let failures = 0;
     let lastPayload = null;
     let completionSequence = 0;
+    let requestController = null;
+    let requestSequence = 0;
+    let payloadTenant = null;
+
+    function tenant() {
+        try { return String(obterClientId() || ''); } catch (_error) { return ''; }
+    }
 
     function clearTimer() {
         if (timer) {
@@ -385,29 +440,44 @@ function criarMonitorSyncVendas() {
     }
 
     async function refresh(options = {}) {
+        const currentTenant = tenant();
+        if (payloadTenant !== currentTenant) {
+            requestController?.abort();
+            requestSequence += 1;
+            inFlight = null;
+            lastPayload = null;
+            payloadTenant = currentTenant;
+        }
         if (document.visibilityState === 'hidden') return lastPayload;
         if (inFlight) return inFlight;
         clearTimer();
-        inFlight = (async () => {
+        const sequence = ++requestSequence;
+        const controller = new AbortController();
+        requestController = controller;
+        const request = (async () => {
             try {
-                const response = await fetch('/api/vendas/sync/progress', {
+                const response = await fetchComTimeout('/api/vendas/sync/progress', {
                     headers: obterAuthHeaders(),
-                    cache: 'no-store'
+                    cache: 'no-store', signal: controller.signal
                 });
                 if (!response.ok) {
                     throw new Error(`Falha ao consultar progresso: HTTP ${response.status}`);
                 }
-                return publish(await response.json());
+                const payload = await response.json();
+                if (controller.signal.aborted || sequence !== requestSequence || currentTenant !== tenant()) return null;
+                return publish(payload);
             } catch (error) {
+                if (sequence !== requestSequence || currentTenant !== tenant() || controller.signal.aborted) return null;
                 failures += 1;
                 const retryIndex = Math.min(failures - 1, retryDelaysMs.length - 1);
                 schedule(retryDelaysMs[retryIndex]);
                 if (options.propagateError) throw error;
                 return lastPayload;
             } finally {
-                inFlight = null;
+                if (sequence === requestSequence) { inFlight = null; requestController = null; }
             }
         })();
+        inFlight = request;
         return inFlight;
     }
 
@@ -426,6 +496,11 @@ function criarMonitorSyncVendas() {
     function stop() {
         started = false;
         clearTimer();
+        requestSequence += 1;
+        requestController?.abort();
+        requestController = null;
+        inFlight = null;
+        lastPayload = null;
     }
 
     function waitForInactive(options = {}) {
@@ -482,10 +557,43 @@ function criarMonitorSyncVendas() {
         refresh,
         subscribe,
         waitForInactive,
-        getLastPayload: () => lastPayload,
+        getLastPayload: () => payloadTenant === tenant() ? lastPayload : null,
         isRequestInFlight: () => !!inFlight
     };
 }
 
 const vendasSyncMonitor = window.__jkVendasSyncMonitor || criarMonitorSyncVendas();
 window.__jkVendasSyncMonitor = vendasSyncMonitor;
+
+function cancelarLeiturasDaSessaoVendas(close = false) {
+    window.JKVendasReadState.cancel(close);
+    vendasSyncMonitor.stop();
+    if (typeof cancelarAtualizacaoConfirmadaVendas === 'function') cancelarAtualizacaoConfirmadaVendas();
+}
+function recarregarDadosDisponiveisVendas() {
+    return Promise.allSettled([carregarVendas({ retornoRapido: true }), carregarGrafico()]);
+}
+function exibirErroLeituraVendas(mensagem, painel = statusEl) {
+    painel.className = 'status-bar error';
+    const existing = painel.querySelector?.('[data-vendas-read-retry]');
+    if (existing?.dataset.readMessage === mensagem) return;
+    painel.textContent = mensagem;
+    if (typeof document.createElement !== 'function' || !painel.appendChild) return;
+    const retry = document.createElement('button');
+    retry.type = 'button'; retry.dataset.vendasReadRetry = ''; retry.dataset.readMessage = mensagem;
+    retry.textContent = 'Tentar carregar dados novamente';
+    retry.addEventListener('click', () => { void recarregarDadosDisponiveisVendas(); });
+    painel.appendChild(retry);
+}
+window.addEventListener('pagehide', () => cancelarLeiturasDaSessaoVendas(true));
+window.addEventListener('pageshow', event => {
+    window.JKVendasReadState.reopen();
+    if (event.persisted && typeof carregarVendas === 'function') {
+        void verificarSyncEmAndamentoNaEntrada();
+        void recarregarDadosDisponiveisVendas();
+    }
+});
+window.addEventListener('storage', event => {
+    if (!event.key || ['user_data', 'access_token'].includes(event.key)) cancelarLeiturasDaSessaoVendas();
+});
+['jk-auth-changed', 'jk-tenant-changed'].forEach(event => window.addEventListener(event, () => cancelarLeiturasDaSessaoVendas()));

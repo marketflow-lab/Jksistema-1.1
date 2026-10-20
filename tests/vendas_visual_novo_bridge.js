@@ -168,7 +168,7 @@ async function main() {
     assert.strictEqual(snapshot.totals.valorLiquido, 2136045.16, 'Mantém o total nativo, sem derivá-lo dos SKUs');
     assert.strictEqual(snapshot.totals.pedidos, 16460);
     assert.strictEqual(snapshot.clientId, 'cliente-a');
-    assert.strictEqual(snapshot.contextKey, JSON.stringify(['cliente-a', '2026-04-01', '2026-10-15', 'JK Peças', '__todos']));
+    assert.strictEqual(snapshot.contextKey, JSON.stringify(['cliente-a', '2026-04-01', '2026-10-15', 'JK Peças', '__todos', 0]));
     assert.strictEqual(snapshot.graph.data.valores_vendas[0], 273488.61);
     assert.strictEqual(snapshot.graph.comparison.valores_vendas[0], 222000);
     assert.strictEqual(snapshot.loading, false);
