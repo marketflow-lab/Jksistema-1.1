@@ -20,6 +20,9 @@ import unicodedata
 from typing import Any
 
 from backend.services.medias_compras_leitura import consulta_medias
+from backend.services.retired_store_names import (
+    TOMBSTONES_FILE, RetiredStoreNames, parse_retired_store_names,
+)
 from .performance import cache_vendas_response
 
 
@@ -115,6 +118,7 @@ class CompositionCatalog:
         _verified_legacy_ids: frozenset[tuple[str, str]] = frozenset(),
         _verified_legacy_compositions: frozenset[tuple[str, str]] = frozenset(),
         _require_field_proof: bool = False,
+        _retired_names: RetiredStoreNames | None = None,
     ) -> None:
         records = [dict(product) for product in products if isinstance(product, Mapping)]
         if stores is None:
@@ -129,6 +133,7 @@ class CompositionCatalog:
         store_rows = [dict(store) for store in stores if isinstance(store, Mapping)]
         counts = Counter(str(store.get("store_id") or "").strip() for store in store_rows)
         self._known_store_ids = set(counts) - {""}
+        self._retired_names = _retired_names or RetiredStoreNames()
         self._stores: dict[str, dict[str, Any]] = {}
         self._aliases: dict[str, set[str]] = defaultdict(set)
         self._products: dict[tuple[str, str], dict[str, Any]] = {}
@@ -205,11 +210,13 @@ class CompositionCatalog:
         _verified_legacy_ids: frozenset[tuple[str, str]] = frozenset(),
         _verified_legacy_compositions: frozenset[tuple[str, str]] = frozenset(),
         _require_field_proof: bool = False,
+        _retired_names: RetiredStoreNames | None = None,
     ) -> "CompositionCatalog":
         return cls(
             products, stores=stores, _verified_legacy_ids=_verified_legacy_ids,
             _verified_legacy_compositions=_verified_legacy_compositions,
             _require_field_proof=_require_field_proof,
+            _retired_names=_retired_names,
         )
 
     @staticmethod
@@ -258,6 +265,8 @@ class CompositionCatalog:
         if reference in self._stores:
             return reference
         if reference in self._known_store_ids:
+            return ""
+        if self._retired_names.blocks(reference, _name_key):
             return ""
         candidates = self._aliases.get(_name_key(reference), set())
         return next(iter(candidates)) if len(candidates) == 1 else ""
@@ -506,6 +515,7 @@ def composition_source_paths(client_id: str) -> tuple[str, ...]:
         *catalog._ARQUIVOS_LEGADOS.values(),
         "lojas_config.json",
         "lojas_config.json.bak",
+        TOMBSTONES_FILE,
     )
     return tuple(os.path.join(tenant, name) for name in dict.fromkeys(names))
 
@@ -551,7 +561,8 @@ def _store_field_proofs(products, sources, catalog, canonical_records):
         return evidence
 
     legacy_records = []
-    for raw in sources.values():
+    for filename in catalog._ARQUIVOS_LEGADOS.values():
+        raw = sources.get(filename, b"")
         records, _ = catalog._ler_csv_capturado(raw)
         legacy_records.extend(records)
     canonical = evidence_for(canonical_records)
@@ -621,6 +632,7 @@ def load_composition_catalog(client_id: str) -> CompositionCatalog:
     result = CompositionCatalog.from_products(
         products, stores=stores, _verified_legacy_ids=legacy_ids,
         _verified_legacy_compositions=legacy_compositions, _require_field_proof=True,
+        _retired_names=parse_retired_store_names(sources.get(TOMBSTONES_FILE, b"[]")),
     )
     for store_id in failures:
         result._warn("store_catalog_unavailable", store_id)

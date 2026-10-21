@@ -12,7 +12,7 @@ import pytest
 
 from backend.modules.vendas import analytics, general_report, performance, reports
 from backend.modules.vendas.compositions import CompositionCatalog
-from backend.services import bling_vendas
+from backend.services import bling_vendas, cadastro_lojas_produtos
 
 
 STORES = [{"store_id": "store-a", "nome": "Loja A"}, {"store_id": "store-b", "nome": "Loja B"}]
@@ -68,7 +68,7 @@ def sources(tmp_path, monkeypatch):
     for module in (analytics, reports, general_report):
         monkeypatch.setattr(module, "_listar_bancos_vendas_tenant", lambda *_: [str(db_path)])
         monkeypatch.setattr(module, "load_composition_catalog", lambda _: catalog)
-    for module in (analytics, general_report, performance):
+    for module in (analytics, general_report, performance, cadastro_lojas_produtos):
         monkeypatch.setattr(module, "get_tenant_path", lambda _: str(tmp_path))
     monkeypatch.setattr(reports, "_deduplicar_vendas_consolidadas", bling_vendas._deduplicar_vendas_consolidadas)
     monkeypatch.setattr(reports, "_deve_excluir_venda_ebazar", lambda *_: False)

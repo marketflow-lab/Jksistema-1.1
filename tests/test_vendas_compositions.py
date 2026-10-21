@@ -401,6 +401,7 @@ def test_source_paths_include_all_local_dependencies_without_reading_stores(monk
     assert {Path(path).name for path in paths} == {
         "cadastro_produtos_lojas.csv", "cadastro_produtos.csv", "cadastro_custos_lojas.csv",
         "produtos_compilado.csv", "lojas_config.json", "lojas_config.json.bak",
+        "lojas_sync_tombstones.json",
     }
     assert all(Path(path).parent == tmp_path / "tenant-a" for path in paths)
     assert not (tmp_path / "tenant-a").exists()
