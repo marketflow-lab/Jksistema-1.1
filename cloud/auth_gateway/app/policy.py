@@ -19,6 +19,7 @@ from .errors import AuthRejected
 
 
 AUTH_PROTOCOL_VERSION = 1
+COFRE_PERMISSION_MIN_APP_VERSION = "1.0.261"
 PERMISSION_KEYS = (
     "analise_promo",
     "renovacao_fixa",
@@ -39,6 +40,7 @@ PERMISSION_KEYS = (
     "importacoes",
     "simulador",
     "sala_reuniao",
+    "cofre",
     "admin_usuarios",
 )
 
@@ -57,6 +59,14 @@ def normalize_permissions(value: Any) -> dict[str, bool]:
     if normalized["full"]:
         normalized = {key: True for key in PERMISSION_KEYS}
     return normalized
+
+
+def signed_permissions_for_app(value: Any, app_version: str) -> dict[str, bool]:
+    permissions = normalize_permissions(value)
+    # Old desktops validate the complete permission-key set before checking its hash.
+    if version_key(app_version) < version_key(COFRE_PERMISSION_MIN_APP_VERSION):
+        permissions.pop("cofre")
+    return permissions
 
 
 def normalize_machine_ids(value: Any, primary: Any = None) -> list[str]:
@@ -242,6 +252,7 @@ class LoginRateLimiter:
 
 __all__ = [
     "AUTH_PROTOCOL_VERSION",
+    "COFRE_PERMISSION_MIN_APP_VERSION",
     "LoginRateLimiter",
     "assert_access_allowed",
     "assert_registered_machine",
@@ -252,6 +263,7 @@ __all__ = [
     "normalize_machine_ids",
     "normalize_max_machines",
     "normalize_permissions",
+    "signed_permissions_for_app",
     "password_matches",
     "password_value",
     "uid_for_username",

@@ -3,6 +3,7 @@
 from .admin_usuarios import create_admin_usuarios_router
 from .cadastro import create_cadastro_router
 from .codex_console import create_codex_console_router
+from .cofre import create_cofre_router
 from .configuracoes import ConfiguracoesRouterConfig, create_configuracoes_router
 from .context_hub import create_context_hub_router
 from .estoque import create_estoque_router
@@ -48,6 +49,7 @@ __all__ = [
     "create_cadastro_router",
     "create_codex_console_router",
     "create_configuracoes_router",
+    "create_cofre_router",
     "create_context_hub_router",
     "create_estoque_router",
     "EtiquetasRouterConfig",

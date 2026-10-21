@@ -302,7 +302,14 @@
     "static/dashboard/menu-icons.js",
     "static/dashboard/menu-motion.js",
     "static/dashboard/menu-motion.css",
-    "backend/services/cadastro_cubagem.py"
+    "backend/services/cadastro_cubagem.py",
+    "cofre.html",
+    "static/cofre.html",
+    "static/cofre/cofre.js",
+    "static/cofre/cofre.css",
+    "backend/routers/cofre.py",
+    "backend/modules/cofre/__init__.py",
+    "backend/modules/cofre/storage.py"
   ],
   "requiredSourceGlobs": [
     {
@@ -518,6 +525,10 @@
     {
       "source": "vendas_sku.html",
       "mirror": "static/vendas_sku.html"
+    },
+    {
+      "source": "cofre.html",
+      "mirror": "static/cofre.html"
     }
   ],
   "requiredExtraResources": [
@@ -921,7 +932,14 @@
     "local_app/static/medias_compras/data-pedido-lista.js",
     "local_app/static/dashboard/menu-icons.js",
     "local_app/static/dashboard/menu-motion.js",
-    "local_app/static/dashboard/menu-motion.css"
+    "local_app/static/dashboard/menu-motion.css",
+    "local_app/cofre.html",
+    "local_app/static/cofre.html",
+    "local_app/static/cofre/cofre.js",
+    "local_app/static/cofre/cofre.css",
+    "local_app/backend/routers/cofre.py",
+    "local_app/backend/modules/cofre/__init__.py",
+    "local_app/backend/modules/cofre/storage.py"
   ],
   "requiredPackagedSourceParity": [
     "backend/modules/vendas/analytics.py",
@@ -1132,7 +1150,14 @@
     "static/dashboard/menu-icons.js",
     "static/dashboard/menu-motion.js",
     "static/dashboard/menu-motion.css",
-    "backend/services/cadastro_cubagem.py"
+    "backend/services/cadastro_cubagem.py",
+    "cofre.html",
+    "static/cofre.html",
+    "static/cofre/cofre.js",
+    "static/cofre/cofre.css",
+    "backend/routers/cofre.py",
+    "backend/modules/cofre/__init__.py",
+    "backend/modules/cofre/storage.py"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",

@@ -20,6 +20,7 @@ from .policy import (
     normalize_machine_ids,
     normalize_max_machines,
     normalize_permissions,
+    signed_permissions_for_app,
     password_matches,
     password_value,
     uid_for_username,
@@ -91,7 +92,7 @@ class AuthenticationService:
         firebase_protocol: bool = False,
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
-        permissions = normalize_permissions(current.get("permissions") or current.get("permissoes"))
+        permissions = signed_permissions_for_app(current.get("permissions") or current.get("permissoes"), app_version)
         client_id = user_client_id(current)
         machine_ids = normalize_machine_ids(
             current.get("machine_ids") or current.get("maquinas") or current.get("machines"),

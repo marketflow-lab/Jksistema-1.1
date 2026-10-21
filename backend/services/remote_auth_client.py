@@ -120,7 +120,9 @@ def _attempt_remote_request(
         return RemoteAuthAttempt(
             RemoteAuthState.SUCCESS,
             user_data=validated["user_data"],
-            permissions=validated["permissions"],
+            # Extend a verified legacy map only after its original hash matched.
+            permissions={key: validated["permissions"].get(key, validated["permissions"]["full"])
+                         for key in PERMISSION_KEYS},
             policy=validated["policy"],
             central=validated.get("central", {}),
             central_migration=validated.get("central_migration", {}),

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Cofre de Informações — JK Sistema</title>
+  <link rel="stylesheet" href="/cofre/cofre.css?v=20261021-1">
+  <script src="/auth.js?v=20261016-medias-photo-cache-v1"></script>
+  <script defer src="/cofre/cofre.js?v=20261021-1"></script>
+</head>
+<body>
+  <div class="cofre-shell" id="cofreApp">
+    <nav class="server-rail" aria-label="Servidores do Cofre de Informações">
+      <a class="rail-home" href="/dashboard.html" title="Voltar ao JK Sistema" aria-label="Voltar ao JK Sistema">JK</a>
+      <span class="rail-divider" aria-hidden="true"></span>
+      <div class="server-list" id="serverList"></div>
+      <button class="rail-add" id="railImport" title="Importar servidor" aria-label="Importar servidor">+</button>
+      <span class="rail-bottom" title="Cofre de Informações">▣</span>
+    </nav>
+
+    <aside class="channel-sidebar" id="channelSidebar" aria-label="Categorias e canais">
+      <div class="server-heading">
+        <div class="server-heading-copy"><span class="eyebrow">COFRE DE INFORMAÇÕES</span><h1 id="serverName">Seus servidores</h1></div>
+        <button class="icon-button mobile-close" id="closeChannels" aria-label="Fechar canais">×</button>
+      </div>
+      <div class="archive-chip"><span class="status-dot"></span><span>Seu acervo, organizado</span></div>
+      <div class="channel-list" id="channelList"><p class="sidebar-placeholder">Os canais da sua cópia aparecem aqui.</p></div>
+      <div class="sidebar-footer"><span class="cofre-mark" aria-hidden="true">▣</span><div><strong>Cofre de Informações</strong><small>Memória do seu servidor</small></div><button class="icon-button" id="sidebarImport" title="Importar cópia" aria-label="Importar cópia">↥</button></div>
+    </aside>
+    <button class="sidebar-scrim" id="sidebarScrim" aria-label="Fechar canais" hidden></button>
+
+    <main class="conversation" id="conversation">
+      <header class="channel-header">
+        <button class="icon-button mobile-menu" id="openChannels" aria-label="Abrir canais" aria-controls="channelSidebar" aria-expanded="false">☰</button>
+        <span class="channel-hash" aria-hidden="true">#</span>
+        <div class="channel-heading-copy"><h2 id="channelName">Bem-vindo ao Cofre de Informações</h2><p id="channelTopic">As informações do Discord em um só lugar.</p></div>
+        <form class="search-form" id="searchForm" role="search"><label class="sr-only" for="messageSearch">Buscar neste canal</label><span aria-hidden="true">⌕</span><input type="search" id="messageSearch" placeholder="Buscar neste canal" autocomplete="off" disabled><kbd aria-hidden="true">↵</kbd></form>
+        <button class="header-action" id="toggleTrash" title="Ver lixeira deste canal" aria-label="Ver lixeira deste canal" aria-pressed="false" disabled>♲<span>Lixeira</span><span id="trashCount" class="trash-count" hidden></span></button>
+        <button class="icon-button" id="editChannel" title="Editar canal" aria-label="Editar canal" disabled>✎</button>
+        <button class="icon-button" id="refreshMessages" title="Atualizar canal" aria-label="Atualizar canal" disabled>↻</button>
+        <button class="icon-button details-toggle" id="toggleDetails" title="Informações do acervo" aria-label="Informações do acervo" aria-controls="archiveDetails" aria-expanded="true">ⓘ</button>
+      </header>
+      <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+      <div class="message-scroll" id="messageScroll">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-symbol" aria-hidden="true">▣</div>
+          <span class="eyebrow">SEU CONHECIMENTO, GUARDADO</span>
+          <h2>Um lugar para tudo o que importa.</h2>
+          <p id="emptyDescription">Guarde conversas, referências e arquivos do seu servidor. Navegue por canais, como no Discord.</p>
+          <button class="primary-button" id="emptyImport">Importar cópia do servidor <span aria-hidden="true">↥</span></button>
+          <span class="empty-format">Arquivo .zip ou .json do Cofre de Informações</span>
+        </div>
+        <div class="channel-intro" id="channelIntro" hidden><div class="intro-symbol" aria-hidden="true">#</div><span class="eyebrow">ACERVO DO CANAL</span><h2 id="introTitle"></h2><p id="introDescription"></p></div>
+        <div id="messages" class="messages" aria-label="Mensagens arquivadas"></div>
+        <div class="timeline-status" id="timelineStatus" role="status" aria-live="polite"></div>
+        <button class="load-more" id="loadMore" hidden>Carregar mais mensagens</button>
+      </div>
+      <footer class="conversation-footer"><span class="archive-lock" aria-hidden="true">▣</span><span id="archiveCaption">Cópia para consulta · mensagens e arquivos preservados</span><button id="footerImport">Importar cópia</button></footer>
+    </main>
+
+    <aside class="archive-details" id="archiveDetails" aria-label="Informações do acervo">
+      <div class="details-header"><h2>Sobre este acervo</h2><button class="icon-button" id="closeDetails" aria-label="Fechar informações">×</button></div>
+      <div class="details-content">
+        <div class="details-emblem" aria-hidden="true">▣</div><span class="eyebrow">GUARDADO NO COFRE DE INFORMAÇÕES</span><h3 id="detailServer">Seu servidor</h3><p class="details-summary">Conversas e referências para encontrar de novo, sempre que precisar.</p>
+        <div class="archive-stats"><div><strong id="statChannels">—</strong><span>canais</span></div><div><strong id="statMessages">—</strong><span>mensagens</span></div><div><strong id="statAttachments">—</strong><span>anexos</span></div></div>
+        <section class="detail-section"><h4>Histórico da cópia</h4><div class="coverage-badge" id="coverageBadge">Aguardando importação</div><p id="coverageDescription">Após importar, confira aqui a cobertura do histórico.</p></section>
+        <section class="detail-section"><h4>Última cópia</h4><p id="exportDate">Nenhum servidor importado.</p></section>
+        <section class="detail-section" id="channelDetails" hidden><h4>Neste canal</h4><p id="channelCoverage"></p><a id="sourceChannel" class="text-link" target="_blank" rel="noopener noreferrer" hidden>Abrir canal no Discord ↗</a></section>
+        <button class="secondary-button import-wide" id="detailImport">↥ Importar cópia</button>
+      </div>
+    </aside>
+  </div>
+  <dialog class="edit-dialog" id="editMessageDialog" aria-labelledby="editMessageTitle">
+    <form id="editMessageForm">
+      <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">✎</span><button type="button" class="icon-button" id="closeEditMessage" aria-label="Fechar edição do item">×</button></div>
+      <span class="eyebrow">EDIÇÃO NO SEU ACERVO</span><h2 id="editMessageTitle">Editar item</h2><p class="dialog-description">Altere as informações deste item. A origem importada continua preservada.</p>
+      <label class="field-label" for="editAuthor">Autor</label><input class="edit-input" id="editAuthor" autocomplete="off" required>
+      <label class="field-label" for="editContent">Texto</label><textarea class="edit-input edit-textarea" id="editContent" rows="7"></textarea>
+      <div class="editor-section-heading"><h3>Links</h3><button type="button" class="text-button" id="addMessageLink">+ Adicionar link</button></div><div id="editMessageLinks" class="editor-links"></div>
+      <div class="editor-section-heading"><h3>Cartões de referência</h3><button type="button" class="text-button" id="addMessageEmbed">+ Adicionar cartão</button></div><div id="editMessageEmbeds" class="editor-embeds"></div>
+      <a class="text-link" id="editMessageSource" target="_blank" rel="noopener noreferrer" hidden>Abrir mensagem de origem ↗</a>
+      <p class="editor-note">Os anexos importados acompanham o item. O rascunho fica guardado enquanto esta página estiver aberta.</p><p class="edit-feedback" id="editMessageFeedback" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelEditMessage">Cancelar</button><button type="submit" class="primary-button" id="saveEditMessage">Salvar alterações</button></div>
+    </form>
+  </dialog>
+  <dialog class="edit-dialog channel-edit-dialog" id="editChannelDialog" aria-labelledby="editChannelTitle">
+    <form id="editChannelForm">
+      <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">#</span><button type="button" class="icon-button" id="closeEditChannel" aria-label="Fechar edição do canal">×</button></div>
+      <span class="eyebrow">ORGANIZE SEU ACERVO</span><h2 id="editChannelTitle">Editar canal</h2>
+      <label class="field-label" for="editChannelName">Nome do canal</label><input class="edit-input" id="editChannelName" autocomplete="off" required>
+      <label class="field-label" for="editChannelCategory">Categoria</label><input class="edit-input" id="editChannelCategory" autocomplete="off">
+      <label class="field-label" for="editChannelTopic">Descrição</label><textarea class="edit-input edit-textarea" id="editChannelTopic" rows="4"></textarea>
+      <p class="editor-note">A organização é salva no Cofre de Informações. O rascunho fica guardado enquanto esta página estiver aberta.</p><p class="edit-feedback" id="editChannelFeedback" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelEditChannel">Cancelar</button><button type="submit" class="primary-button" id="saveEditChannel">Salvar canal</button></div>
+    </form>
+  </dialog>
+  <dialog class="edit-dialog delete-dialog" id="deleteMessageDialog" aria-labelledby="deleteMessageTitle">
+    <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">♲</span><button type="button" class="icon-button" id="closeDeleteMessage" aria-label="Fechar exclusão">×</button></div>
+    <h2 id="deleteMessageTitle">Mover item para a lixeira?</h2><p class="dialog-description">O item sairá do acervo ativo. Você poderá restaurá-lo pela Lixeira deste canal.</p><blockquote class="delete-preview" id="deleteMessagePreview"></blockquote>
+    <p class="edit-feedback" id="deleteMessageFeedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary-button" id="cancelDeleteMessage">Cancelar</button><button type="button" class="danger-button" id="confirmDeleteMessage">Mover para a lixeira</button></div>
+  </dialog>
+  <dialog class="media-dialog" id="mediaDialog" aria-labelledby="mediaTitle">
+    <div class="media-dialog-header"><strong id="mediaTitle"></strong><button class="icon-button" id="closeMedia" aria-label="Fechar imagem">×</button></div>
+    <img id="mediaImage" alt="">
+  </dialog>
+  <dialog class="import-dialog" id="importDialog" aria-labelledby="importTitle">
+    <form id="importForm">
+      <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">↥</span><button type="button" class="icon-button" id="closeImport" aria-label="Fechar importação">×</button></div>
+      <span class="eyebrow">TRAGA SEU CONHECIMENTO</span><h2 id="importTitle">Importar para o Cofre de Informações</h2><p class="dialog-description">Selecione uma cópia do servidor em .zip ou .json. Os canais, mensagens e anexos disponíveis serão organizados aqui.</p>
+      <label class="file-picker" for="importFile"><span class="file-picker-icon" aria-hidden="true">▤</span><strong id="fileLabel">Escolher arquivo</strong><span>.zip ou .json do Cofre de Informações</span><input type="file" id="importFile" name="arquivo" accept=".zip,.json,application/json,application/zip" required></label>
+      <p class="import-note">A cobertura depende do histórico incluído na cópia. O Cofre de Informações mostra quando há canais com histórico parcial.</p>
+      <p class="import-feedback" id="importFeedback" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="cancelImport">Voltar</button><button type="submit" class="primary-button" id="submitImport">Importar arquivo</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

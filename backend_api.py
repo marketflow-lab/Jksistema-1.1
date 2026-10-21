@@ -125,6 +125,7 @@ from backend.routers import (
     create_codex_console_router,
     create_configuracoes_router,
     create_context_hub_router,
+    create_cofre_router,
     create_estoque_router,
     EtiquetasRouterConfig,
     create_etiquetas_router,
@@ -616,7 +617,7 @@ configure_env_context(
 PERMISSION_KEYS = [
     'analise_promo', 'renovacao_fixa', 'vendas', 'estoque', 'integracao',
     'etiquetas', 'full', 'favoritos', 'avant', 'perguntas_pos_venda', 'anuncios_ml', 'medias_compras', 'mercado_full',
-    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'admin_usuarios'
+    'cadastro', 'impostos', 'configuracoes', 'importacoes', 'simulador', 'sala_reuniao', 'cofre', 'admin_usuarios'
 ]
 
 VERSAO_MINIMA_APP_PADRAO = "1.0.102"
@@ -2059,6 +2060,7 @@ _CONTEXT_HUB_RUNTIME_CONFIG = _context_hub_module.configure_context_hub(
     surface=_CONTEXT_HUB_SURFACE,
 )
 app.include_router(create_context_hub_router())
+app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_tenant_id))
 
 
 def _context_hub_clientes_iniciais() -> tuple[str, ...]:

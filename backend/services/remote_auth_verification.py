@@ -66,11 +66,13 @@ def validate_success_payload(
     if not client_id or len(client_id) > 128 or not name or len(name) > 200 or len(email) > 254:
         raise ValueError("invalid_remote_profile")
 
-    if set(permissions_source) != set(PERMISSION_KEYS):
+    permission_keys = set(PERMISSION_KEYS)
+    legacy_permission_keys = permission_keys - {"cofre"}
+    if set(permissions_source) not in (permission_keys, legacy_permission_keys):
         raise ValueError("invalid_permissions_contract")
     permissions: dict[str, bool] = {}
-    for key in PERMISSION_KEYS:
-        value = permissions_source.get(key)
+    # Keep the signed map intact: older gateways omit only the new Cofre key.
+    for key, value in permissions_source.items():
         if value is not True and value is not False:
             raise ValueError("invalid_permissions_contract")
         permissions[key] = value

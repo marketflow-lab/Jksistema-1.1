@@ -30,6 +30,7 @@ PERMISSION_KEYS = (
     "importacoes",
     "simulador",
     "sala_reuniao",
+    "cofre",
     "admin_usuarios",
 )
 

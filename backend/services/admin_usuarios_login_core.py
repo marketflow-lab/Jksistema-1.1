@@ -176,6 +176,7 @@ def extrair_permissoes(row, headers):
     headers_norm = [_norm_header(h) for h in (headers or [])]
 
     map_headers = {
+        'cofre': ['cofre'],
         'analise_promo': ['analise promocional ml', 'analise promocional ml', 'analise promo', 'promocao ml'],
         'renovacao_fixa': ['renovaÃƒÂ§ÃƒÂ£o fixa', 'renovacao fixa'],
         'vendas': ['vendas'],
@@ -202,7 +203,7 @@ def extrair_permissoes(row, headers):
         'integracao': 14, 'etiquetas': 15, 'full': 16, 'favoritos': 17,
         'avant': -1, 'perguntas_pos_venda': -1, 'anuncios_ml': 18, 'medias_compras': 19, 'mercado_full': -1,
         'cadastro': -1, 'impostos': -1, 'configuracoes': -1, 'importacoes': -1,
-        'simulador': -1, 'sala_reuniao': -1,
+        'simulador': -1, 'sala_reuniao': -1, 'cofre': -1,
     }
 
     for mod_name, candidates in map_headers.items():
