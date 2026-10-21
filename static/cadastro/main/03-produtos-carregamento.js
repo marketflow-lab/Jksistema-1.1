@@ -10,6 +10,7 @@
     const tabela = cadastro.produtosTabela;
     const secondary = cadastro.custosMlb;
     const storeTools = global.JKCadastroStore;
+    const listaCache = global.JKCadastroListaCache;
     const TIMEOUT_MS = 30000;
     let opcoes = null;
     let requestSeq = 0;
@@ -152,13 +153,44 @@
         return new Date(timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     }
 
-    function atualizarVisual() {
+    function atualizarVisual(resetarPagina = true) {
         secondary.atualizarFiltroLojasCustos();
-        tabela.renderTabela();
+        tabela.renderTabela(resetarPagina);
         secondary.renderCustos();
         secondary.montarSeletorSku();
         secondary.renderDetalhesMlbPorSku(elements.skuSelect.value || '');
     }
+
+    function visualAtual() {
+        return { filtro: elements.filtro.value, pagina: state.paginaAtual,
+            scrollX: global.scrollX || 0, scrollY: global.scrollY || 0,
+            tabelaScrollLeft: elements.tBody.closest('.table-wrap')?.scrollLeft || 0 };
+    }
+
+    function restaurarLista(value, minhaSeq) {
+        const visual = value.visual || {};
+        elements.filtro.value = typeof visual.filtro === 'string' ? visual.filtro : '';
+        state.paginaAtual = Number.isInteger(visual.pagina) && visual.pagina > 0 ? visual.pagina : 1;
+        state.produtos = value.produtos;
+        state.produtosEscopoCarregado = escopoAtual();
+        state.ultimaAtualizacaoProdutosEm = value.atualizadoEm;
+        atualizarVisual(false);
+        const restaurarScroll = () => {
+            if (minhaSeq !== requestSeq) return;
+            global.scrollTo(Number(visual.scrollX) || 0, Number(visual.scrollY) || 0);
+            const wrapper = elements.tBody.closest('.table-wrap');
+            if (wrapper) wrapper.scrollLeft = Number(visual.tabelaScrollLeft) || 0;
+        };
+        if (global.requestAnimationFrame) global.requestAnimationFrame(restaurarScroll);
+        else restaurarScroll();
+        core.setStatus(`Produtos carregados: ${state.produtos.length}. Atualizado às ${horario(value.atualizadoEm)}.`, 'success');
+    }
+
+    global.addEventListener?.('pagehide', () => {
+        if (state.produtosEscopoCarregado === escopoAtual() && !state.carregandoProdutos) {
+            listaCache?.salvarVisual(state.clientId, state.storeIdSelecionado, visualAtual());
+        }
+    });
 
     function cancelar() {
         requestSeq += 1;
@@ -169,7 +201,7 @@
         elements.painelProdutos.setAttribute('aria-busy', 'false');
     }
 
-    async function carregar() {
+    async function carregar(opcoesCarga = {}) {
         if (!opcoes) throw new Error('Carregamento de produtos não configurado.');
         if (controllerAtual) controllerAtual.abort();
         const minhaSeq = ++requestSeq;
@@ -197,6 +229,15 @@
                 global.location.href = '/frontend_index.html';
                 return false;
             }
+            await listaCache?.preparar(state.clientId);
+            if (minhaSeq !== requestSeq || escopoSolicitado !== escopoAtual()) return false;
+            const salvo = opcoesCarga.reutilizar && listaCache?.ler(state.clientId, storeId, state.lojas);
+            if (salvo) {
+                restaurarLista(salvo, minhaSeq);
+                return true;
+            }
+            listaCache?.invalidar();
+            const geracaoCache = listaCache?.geracao();
             const response = await global.fetch(urlEscopo(storeId), {
                 headers: opcoes.authHeaders(), cache: 'no-store', ...(controller ? { signal: controller.signal } : {}),
             });
@@ -210,6 +251,11 @@
             state.produtosEscopoCarregado = escopoSolicitado;
             state.ultimaAtualizacaoProdutosEm = Date.now();
             atualizarVisual();
+            if (!payload.partial && geracaoCache === listaCache?.geracao()) {
+                listaCache?.salvar(state.clientId, storeId, state.lojas, {
+                    produtos, atualizadoEm: state.ultimaAtualizacaoProdutosEm, visual: visualAtual(),
+                });
+            }
             const atualizado = horario(state.ultimaAtualizacaoProdutosEm);
             if (!storeId && payload.partial) {
                 const nomes = falhas.map(item => item.loja_sync || (opcoes.lojaPorId(item.store_id) || {}).nome || item.store_id).filter(Boolean);

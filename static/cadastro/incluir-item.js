@@ -259,6 +259,7 @@
             const payload = await response.json();
             if (!response.ok) throw new Error(payload && payload.detail || `HTTP ${response.status}`);
             setStatus(`SKU incluído com sucesso: ${payload.sku || data.sku}`, 'success');
+            global.JKCadastroListaCache?.invalidar();
             elements.form.reset();
             state.fotoDataUrl = '';
             state.fotoFilename = '';

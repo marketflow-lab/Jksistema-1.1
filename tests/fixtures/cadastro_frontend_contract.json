@@ -1,5 +1,12 @@
 {
   "schema": "jk.cadastro.frontend.contract.v1",
+  "list_reuse_baseline": {
+    "commit": "160b6dc8e76b182da897ef51a7b2f2e0a5dfd195",
+    "static/cadastro/main/03-produtos-carregamento.js": "ef37125faca6b07225ffc3cf675dae6a74251319c75ef15c1acf7ae7d16c40b7",
+    "static/cadastro/main/04-init.js": "e7e78702a29007b5c054a8ae9bd6d8d9001d297206d572e70f8f68b95984a113",
+    "static/cadastro/editar-item.js": "2d3a139cad940d174afa8b77a0eda3068e9eb3d0e54fdbf1ee2d32eb6125f0ed",
+    "static/cadastro/incluir-item.js": "da1322a6046688c0b6d2c23650a1820c6c3edd20fff03a9926e77165f69607d8"
+  },
   "legacy_sources": {
     "static/cadastro.html": {
       "lines": 1042,
@@ -168,6 +175,7 @@
   "scripts_by_page": {
     "static/cadastro.html": [
       "static/cadastro/form/00-core.js",
+      "static/cadastro/lista-cache.js",
       "static/cadastro/00-runtime.js",
       "static/cadastro/01-core.js",
       "static/cadastro/main/01-produtos.js",
@@ -186,6 +194,7 @@
     ],
     "static/cadastro_editar_item.html": [
       "static/cadastro/form/00-core.js",
+      "static/cadastro/lista-cache.js",
       "static/cadastro/form/01-mercado-livre.js",
       "static/cadastro/form/02-mlb-editor.js",
       "static/cadastro/editar-item-layout.js",
@@ -193,6 +202,7 @@
     ],
     "static/cadastro_incluir.html": [
       "static/cadastro/form/00-core.js",
+      "static/cadastro/lista-cache.js",
       "static/cadastro/form/01-mercado-livre.js",
       "static/cadastro/form/02-mlb-editor.js",
       "static/cadastro/incluir-item.js"

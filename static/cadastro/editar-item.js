@@ -244,6 +244,7 @@
         habilitarEdicao(false);
         try {
             await carregarContextoLoja();
+            await global.JKCadastroListaCache?.preparar(state.clientId);
             const params = new URLSearchParams(global.location.search);
             state.skuOriginal = String(params.get('sku') || storeTools.obterSkuCache(state.clientId, state.storeIdSelecionado) || '').trim();
             if (!state.skuOriginal) throw new Error('SKU não informado na URL.');
@@ -286,6 +287,8 @@
             const produtoAtualizado = payload && payload.produto && typeof payload.produto === 'object'
                 ? payload.produto
                 : null;
+            if (state.fotoDataUrl) global.JKCadastroListaCache?.invalidar();
+            else global.JKCadastroListaCache?.atualizarProduto(state.clientId, state.storeIdSelecionado, state.skuOriginal, produtoAtualizado);
             state.skuOriginal = String(
                 (produtoAtualizado && produtoAtualizado.sku) || payload.sku || data.sku || state.skuOriginal
             ).trim();

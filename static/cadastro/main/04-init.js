@@ -119,7 +119,7 @@
         try {
             if (await actions.inicializarLojas()) {
                 void importadorLoja.carregar();
-                await actions.carregarProdutos();
+                await actions.carregarProdutos({ reutilizar: true });
             }
         } catch (error) {
             cadastro.core.setStatus(`Erro ao carregar lojas: ${error.message}`, 'error');

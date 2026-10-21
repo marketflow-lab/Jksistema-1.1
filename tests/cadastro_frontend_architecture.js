@@ -90,7 +90,7 @@ const mainInit = read('static/cadastro/main/04-init.js');
 componentFiles.filter(file => !file.endsWith(path.join('main', '04-init.js'))).forEach(file => {
   assert(!fs.readFileSync(file, 'utf8').includes('main/04-init.js'), 'componentes não podem depender do inicializador');
 });
-assert.match(mainInit, /actions\.carregarProdutos\(\)/, 'inicializador deve carregar os produtos');
+assert.match(mainInit, /actions\.carregarProdutos\(\{ reutilizar: true \}\)/, 'inicializador deve reutilizar a lista válida da sessão');
 assert.match(read('static/cadastro/main/03-actions.js'), /global\.carregarProdutos = carregarProdutos/, 'fachada global de compatibilidade ausente');
 
 console.log(`cadastro frontend architecture: ${componentFiles.length} JS e ${cssFiles.length} CSS dentro dos limites`);
