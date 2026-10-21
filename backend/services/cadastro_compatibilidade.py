@@ -18,6 +18,10 @@ import unicodedata
 
 from fastapi import HTTPException
 from backend.services import cadastro_lojas_produtos as _store
+from backend.services.retired_store_names import (
+    TOMBSTONES_FILE, capture_retired_store_names, parse_retired_store_names,
+    read_retired_store_names,
+)
 from backend.services.cadastro_fotos import (
     _cadastro_fotos_capturar_leitura,
     _cadastro_fotos_contexto_leitura,
@@ -69,6 +73,7 @@ def resolver_loja_ativa_para_leitura(
     store_id: Any = "",
     *,
     lojas: Iterable[dict[str, Any]] | None = None,
+    _retired_names=None,
 ) -> dict[str, Any]:
     """Resolve a identidade imutavel da loja sem escolher nomes ambiguos.
 
@@ -93,10 +98,13 @@ def resolver_loja_ativa_para_leitura(
             if str(loja.get("store_id") or "").strip() == store_id_alvo
         ]
     else:
+        retired_names = (_retired_names if _retired_names is not None
+                         else read_retired_store_names(_store.get_tenant_path(client_id)))
         candidatas = [
             loja
             for loja in lojas_ativas
             if referencia_norm
+            and not retired_names.blocks(referencia, _normalizar_loja_leitura)
             and any(
                 _normalizar_loja_leitura(alias) == referencia_norm
                 for alias in _aliases_nome_loja(loja)
@@ -326,7 +334,7 @@ def _capturar_cadastro_para_leitura_sem_cache(client_id: str):
             lojas = _lojas_atuais(client_id)
             registros, _ = _ler_registros_persistidos(client_id)
             fotos = _cadastro_fotos_capturar_leitura(client_id, lojas)
-            fontes = {}
+            fontes = {TOMBSTONES_FILE: capture_retired_store_names(tenant)}
             for arquivo, path in legados.items():
                 try:
                     from backend.services.medias_compras_leitura import capturar_bytes
@@ -434,6 +442,7 @@ def visao_produtos_cadastro_contexto_loja(
                 for loja in lojas
             ) else "",
             lojas=lojas,
+            _retired_names=parse_retired_store_names(fontes[TOMBSTONES_FILE]),
         )
         if not identidade.get("loja_resolvida"):
             return {

@@ -213,12 +213,15 @@ def test_estoque_writer_serializa_exclusao_cross_process(tmp_path, monkeypatch):
     ready = threading.Event()
     release = threading.Event()
     real_publish = estoque_sync._atualizar_produtos_compilados_loja
+    committed = {}
 
     def publish_gated(*args, **kwargs):
         ready.set()
         if not release.wait(15):
             raise AssertionError("timeout aguardando liberar publicacao do estoque")
-        return real_publish(*args, **kwargs)
+        result = real_publish(*args, **kwargs)
+        committed["data"] = (tenant / "produtos_compilado.csv").read_bytes()
+        return result
 
     monkeypatch.setattr(
         estoque_sync,
@@ -250,8 +253,8 @@ def test_estoque_writer_serializa_exclusao_cross_process(tmp_path, monkeypatch):
     assert result[0]["success"] is True
     assert delete_process is not None
     delete_result = _finish_store_delete(delete_process)
-    assert delete_result["status"] == 409
-    assert delete_result["detail"]["code"] == "store_has_legacy_catalog_records"
+    assert delete_result["status"] == 200
+    assert (tenant / "produtos_compilado.csv").read_bytes() == committed["data"]
     compiled = pd.read_csv(
         tenant / "produtos_compilado.csv",
         dtype=str,
@@ -263,7 +266,9 @@ def test_estoque_writer_serializa_exclusao_cross_process(tmp_path, monkeypatch):
     stores = json.loads(
         (tenant / "lojas_config.json").read_text(encoding="utf-8-sig")
     )
-    assert [store["store_id"] for store in stores] == ["store-a"]
+    assert stores == []
+    tombstones = json.loads((tenant / "lojas_sync_tombstones.json").read_bytes())
+    assert [row["store_id"] for row in tombstones] == ["store-a"]
 
 
 def test_estoque_revalida_exclusao_cross_process_antes_do_commit(

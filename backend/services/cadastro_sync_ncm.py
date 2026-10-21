@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import Header, HTTPException, Request
 
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.retired_store_names import read_retired_store_names
 
 logger = logging.getLogger("jk_sistema")
 _runtime_get_tenant_id = None
@@ -311,6 +312,7 @@ def _sync_ncm_commit_estoque(
     store_id_alvo: str | None = None,
     permitir_fallback_nome: bool = True,
     nomes_fallback_alvo: Iterable[Any] | None = None,
+    _retired_names=None,
 ) -> pd.DataFrame:
     if not base.index.equals(desejado.index):
         raise RuntimeError("O estoque mudou de estrutura durante a sincronizacao NCM.")
@@ -393,6 +395,15 @@ def _sync_ncm_commit_estoque(
 
         if not campos:
             continue
+        if (
+            _retired_names is not None
+            and not _sync_ncm_texto(linha_desejada.get(colunas_desejado.get("store_id"), "")).strip()
+            and _retired_names.blocks(
+                linha_desejada.get(colunas_desejado.get("loja_sync"), ""),
+                _sync_ncm_nome_loja_chave,
+            )
+        ):
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
         if not chave[0] or not chave[1]:
             raise RuntimeError("Linha alterada sem chave loja/SKU no commit NCM.")
         if chave in alteracoes:
@@ -583,6 +594,9 @@ def _sync_ncm_revalidar_loja_bloqueada(
         }
         if not chaves_esperadas.issubset(chaves_atuais):
             raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
+        retired_names = read_retired_store_names(integracoes_service._tenant_path(client_id))
+        if any(retired_names.blocks(nome, _sync_ncm_nome_loja_chave) for nome in chaves_esperadas):
+            raise _SyncNcmConfiguracaoAlterada(_SYNC_NCM_CONFIG_ALTERADA)
         lojas_atuais = [
             item
             for item in (carregar_lojas(client_id) or [])
@@ -673,6 +687,7 @@ def _sync_ncm_commit_estoque_loja_revalidado(
             store_id,
             permitir_fallback_nome=permitir_fallback_nome,
             nomes_fallback_alvo=nomes_fallback_alvo,
+            _retired_names=read_retired_store_names(integracoes_service._tenant_path(client_id)),
         )
 
 
@@ -806,11 +821,13 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None 
         if "cest_bling" not in df_estoque.columns:
             df_estoque["cest_bling"] = ""
 
-        lojas = [
-            dict(loja)
-            for loja in (carregar_lojas(client_id) or [])
-            if isinstance(loja, dict)
-        ]
+        with integracoes_service.lojas_config_lock(client_id):
+            lojas = [
+                dict(loja)
+                for loja in (carregar_lojas(client_id) or [])
+                if isinstance(loja, dict)
+            ]
+            retired_names = read_retired_store_names(integracoes_service._tenant_path(client_id))
         lojas_por_id: dict[str, list[dict[str, Any]]] = {}
         lojas_por_nome: dict[str, list[dict[str, Any]]] = {}
         bling_por_store_id: dict[str, dict[str, Any]] = {}
@@ -823,7 +840,7 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None 
                 lojas_por_id.setdefault(store_id_loja, []).append(loja)
             for nome_loja in _sync_ncm_nomes_loja(loja):
                 nome_loja_chave = _sync_ncm_nome_loja_chave(nome_loja)
-                if nome_loja_chave:
+                if nome_loja_chave and not retired_names.blocks(nome_loja_chave, _sync_ncm_nome_loja_chave):
                     lojas_por_nome.setdefault(nome_loja_chave, []).append(loja)
             cfg_bling = (loja.get("integracoes") or {}).get("bling") or {}
             if (
@@ -1149,6 +1166,7 @@ def _sync_ncm_cadastro_worker(client_id: str, job_id: str, store_id: str | None 
                         df_estoque_base,
                         df_estoque,
                         permitir_fallback_nome=True,
+                        _retired_names=read_retired_store_names(integracoes_service._tenant_path(client_id)),
                     )
                 if mudou_cadastro:
                     df_cad = _sync_ncm_commit_cadastro(

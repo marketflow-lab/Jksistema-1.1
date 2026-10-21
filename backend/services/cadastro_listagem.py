@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import Header, HTTPException, Request
 
 from backend.services.runtime_bridge import bind_runtime_globals
+from backend.services.retired_store_names import read_retired_store_names
 
 logger = logging.getLogger("jk_sistema")
 _runtime_get_tenant_id = None
@@ -354,6 +355,7 @@ def _listar_produtos_cadastro_sync(
                     # MantÃ©m o sync de estoque rÃƒÂ¡pido e sÃƒÂ³ consulta detalhe do Bling quando solicitado.
                     if sync_ncm and "id_bling" in df_estoque.columns:
                         lojas = carregar_lojas(client_id)
+                        retired_names = read_retired_store_names(get_tenant_path(client_id))
                         bling_por_id = {}
                         ids_por_nome = {}
                         for loja in lojas:
@@ -375,7 +377,7 @@ def _listar_produtos_cadastro_sync(
                                         nomes_identidade.extend(loja["nomes_anteriores"])
                                     for nome_identidade in nomes_identidade:
                                         chave_nome = str(nome_identidade or "").strip().casefold()
-                                        if not chave_nome:
+                                        if not chave_nome or retired_names.blocks(chave_nome):
                                             continue
                                         candidatos_nome = ids_por_nome.setdefault(chave_nome, [])
                                         if store_id_loja not in candidatos_nome:
@@ -706,6 +708,7 @@ def _listar_produtos_cadastro_sync(
                                 df_estoque = _sync_ncm_commit_estoque(
                                     *commit_estoque_pendente,
                                     permitir_fallback_nome=True,
+                                    _retired_names=read_retired_store_names(get_tenant_path(client_id)),
                                 )
                             if fotos_preparadas:
                                 _cadastro_fotos_validar_preparadas_no_lock(

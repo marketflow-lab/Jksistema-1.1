@@ -1609,6 +1609,7 @@ def test_shared_sync_writer_store_id_serializa_exclusao_cross_process(
     release = threading.Event()
     failures = []
     writer_result = []
+    committed = {}
     if writer_kind == "custos":
         target_rel = COST_REL
         payload = _cost_csv_bytes(
@@ -1629,7 +1630,10 @@ def test_shared_sync_writer_store_id_serializa_exclusao_cross_process(
                 ready.set()
                 if not release.wait(15):
                     raise AssertionError("timeout aguardando liberar writer de custos")
-            return write_real(target_abs, dataframe)
+            result = write_real(target_abs, dataframe)
+            if Path(target_abs).name == target_rel:
+                committed["data"] = Path(target_abs).read_bytes()
+            return result
 
         monkeypatch.setattr(
             shared_sync_merge_sqlite,
@@ -1646,7 +1650,10 @@ def test_shared_sync_writer_store_id_serializa_exclusao_cross_process(
                 ready.set()
                 if not release.wait(15):
                     raise AssertionError("timeout aguardando liberar writer compilado")
-            return write_real(target_abs, data)
+            result = write_real(target_abs, data)
+            if Path(target_abs).name == target_rel:
+                committed["data"] = Path(target_abs).read_bytes()
+            return result
 
         monkeypatch.setattr(
             shared_sync_apply_scope,
@@ -1686,12 +1693,12 @@ def test_shared_sync_writer_store_id_serializa_exclusao_cross_process(
     assert writer_result[0]["files"] == [target_rel]
     assert delete_process is not None
     delete_result = _finish_store_delete(delete_process)
-    assert delete_result["status"] == 409
-    assert delete_result["detail"]["code"] == "store_has_legacy_catalog_records"
-    assert json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8-sig"))[0][
-        "store_id"
-    ] == "store-a"
+    assert delete_result["status"] == 200
+    assert json.loads((tenant / "lojas_config.json").read_text(encoding="utf-8-sig")) == []
+    assert (tenant / target_rel).read_bytes() == committed["data"]
     assert _read_rows(tenant / target_rel)[0]["store_id"] == "store-a"
+    tombstones = json.loads((tenant / "lojas_sync_tombstones.json").read_bytes())
+    assert [row["store_id"] for row in tombstones] == ["store-a"]
 
 
 @pytest.mark.parametrize("writer_kind", ["custos", "produtos_compilado"])

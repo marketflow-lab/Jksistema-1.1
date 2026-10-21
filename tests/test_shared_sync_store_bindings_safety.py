@@ -306,12 +306,11 @@ def test_even_unused_duplicate_with_backup_requires_separate_consolidation(exist
     assert backup.read_bytes() == backup_before
 
 
-@pytest.mark.parametrize("identity_side", ["remote", "local"])
 @pytest.mark.parametrize("stage", ["prepare", "cadastro"])
-def test_tombstone_on_either_binding_id_blocks_its_use(existing_account, identity_side, stage):
+def test_tombstone_on_local_binding_target_blocks_its_use(existing_account, stage):
     env, local, remote, calls = existing_account
     _, entry = _bind(env)
-    removed_id = remote["store_id"] if identity_side == "remote" else local["store_id"]
+    removed_id = local["store_id"]
     tombstones = [{
         "type": "store", "key": "store:" + removed_id + ":", "store_id": removed_id,
         "version": 2, "deleted_at": "2026-10-20T00:00:00Z",

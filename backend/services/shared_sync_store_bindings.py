@@ -124,11 +124,11 @@ def validate_source_connections(value):
     return value
 
 
-def _verify_accounts(local, remote, pairs):
+def _verify_accounts(local, remote, pairs, *, remote_keys=()):
     from backend.services.central_accounts_migration import _expected_identity, _identity
     records = {'local': {row['store_id']: row for row in local},
                'remote': {_remote_key(row): row for row in remote}}
-    selected = {'local': set(), 'remote': set()}
+    selected = {'local': set(), 'remote': set(remote_keys)}
     for remote_key, local_key in pairs:
         selected['local'].add(local_key)
         selected['remote'].add(remote_key)
@@ -190,6 +190,11 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
     removed = _shared_sync_store_ids_tombstonados(integracoes._integracoes_ler_tombstones_estrito(client_id))
     remote_keys = {_remote_key(row) for row in remote}
     previous = {key: item['local_id'] for key, item in entry['stores'].items() if key in remote_keys}
+    local_ids = {row['store_id'] for row in local}
+    # A deleted target is not authority for restoring its old ID. Rebuild
+    # only during Lojas reception, using fresh proof of an active survivor.
+    rebuild = {key for key, target in previous.items()
+               if target in removed and target not in local_ids}
     pairs = []
     for incoming in remote:
         key = _remote_key(incoming)
@@ -197,14 +202,28 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
             same_name = _shared_sync_loja_key(existing.get('nome')) == _shared_sync_loja_key(incoming.get('nome'))
             common_providers = _account_providers(existing) & _account_providers(incoming)
             if (previous.get(key) == existing['store_id']
-                    or (existing['store_id'] != key and (common_providers or same_name or _same_claim(existing, incoming)))):
+                    or ((existing['store_id'] != key or key in rebuild)
+                        and (common_providers or same_name or _same_claim(existing, incoming)))):
                 pairs.append((key, existing['store_id']))
-                if key in removed or existing['store_id'] in removed:
+                if existing['store_id'] in removed:
                     _fail('Uma das lojas foi excluída nesta máquina. Revise o vínculo antes de receber novamente.')
-    accounts = _verify_accounts(local, remote, pairs)
+    # Even an empty destination must reject a snapshot that names the same
+    # authenticated account twice. Empty/app-only configurations are not proof.
+    remote_providers = {}
+    for incoming in remote:
+        for provider in _account_providers(incoming):
+            remote_providers.setdefault(provider, set()).add(_remote_key(incoming))
+    remote_candidates = {key for keys in remote_providers.values() if len(keys) > 1 for key in keys}
+    accounts = _verify_accounts(local, remote, pairs, remote_keys=remote_candidates)
     for remote_key, local_key in pairs:
         if not (accounts['local'].get(local_key, {}).keys() & accounts['remote'].get(remote_key, {}).keys()):
             _fail('Não foi possível comprovar a conta de duas lojas com identidades diferentes.', 'shared_sync_store_account_unverifiable')
+    for key in rebuild:
+        candidates = {row['store_id'] for row in local if row['store_id'] not in removed
+                      and _relation(accounts['local'].get(row['store_id'], {}), accounts['remote'].get(key, {})) == 'match'}
+        if len(candidates) != 1:
+            _fail('A loja vinculada foi removida e não há uma única loja ativa com a mesma conta confirmada.')
+        previous[key] = next(iter(candidates))
     for incoming in remote:
         key = _remote_key(incoming)
         candidates = {row['store_id'] for row in local if row['store_id'] != key
@@ -214,8 +233,16 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
             # queued sales, purchase lists and editorial writers may still hold
             # this ID. Consolidation needs its own quiescent data transaction.
             _fail('Já existem cópias desta loja nesta máquina. A consolidação precisa ser revisada antes de retirar qualquer cópia ou importar seus dados.', 'shared_sync_store_consolidation_required')
-    plan = plan_store_reconciliation(local, remote, verified_accounts=accounts,
-                                    previous_mapping=previous)
+    try:
+        plan = plan_store_reconciliation(local, remote, verified_accounts=accounts,
+                                        previous_mapping=previous)
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict) and exc.detail.get('reason') == 'duplicate_remote_account':
+            raise HTTPException(exc.status_code, {
+                **exc.detail,
+                'message': 'O envio contém lojas com contas repetidas ou conflitantes. Revise as lojas na origem antes de receber novamente.',
+            }) from exc
+        raise
     by_id = {row['store_id']: row for row in plan['local_stores']}
     for incoming in plan['remote_stores']:
         if incoming['store_id'] in plan['matched_local_ids']:
@@ -226,13 +253,15 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
     originals = {_remote_key(row): row for row in remote}
     for key, local_id in plan['mapping'].items():
         if key == local_id:
+            records.pop(key, None)
             continue
         original = by_id[local_id]
         records[key] = {'local_id': local_id, 'local_name': original['nome'], 'remote_name': originals[key]['nome'],
                         'accounts': accounts['local'][local_id], 'connection_hash': _connection_hash(original),
                         'remote_connection_hash': _connection_hash(originals[key])}
     ledger['peers'][_hash(peer)] = {'identity': peer, 'stores': records}
-    plan['binding_bytes'] = json.dumps(ledger, sort_keys=True, ensure_ascii=False, indent=2).encode() if records else previous_bytes
+    changed = records != entry['stores']
+    plan['binding_bytes'] = json.dumps(ledger, sort_keys=True, ensure_ascii=False, indent=2).encode() if records or changed else previous_bytes
     plan['binding_preimage'] = previous_bytes
     return plan
 
@@ -257,7 +286,9 @@ def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connecti
         candidate_labels = {record['remote_name']: current['nome'] if current else record['local_name']}
         if remap_store_sources(scope, sources, candidate_ids, candidate_labels) == sources:
             continue
-        if local_id not in by_id or local_id in removed or remote_id in removed:
+        # A tombstone for the remote alias stays intact; only the active local
+        # target receives data, under the peer and source-connection proof.
+        if local_id not in by_id or local_id in removed:
             _fail('A loja vinculada foi removida. Receba Lojas e integrações novamente.')
         if (remote_id.startswith('legacy:') or not record.get('remote_connection_hash')
                 or not isinstance(source_connections, dict)

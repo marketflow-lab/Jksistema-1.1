@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.services import cadastro_lojas_produtos as _store
 from backend.services.store_coordination import coordinated_path_locks as path_locks_for
+from backend.services.retired_store_names import read_retired_store_names
 
 
 SUMMARY_FIELDS = frozenset(
@@ -108,8 +109,9 @@ def _construir_indice_legado(
     lojas: list[dict[str, Any]],
     fontes: dict[str, list[dict[str, str]]],
     colunas_fontes: dict[str, list[str]],
+    *, retired_names=None,
 ) -> dict[str, Any]:
-    ids_por_nome, nomes_ambiguos = _store._nomes_lojas_unicos(lojas)
+    ids_por_nome, nomes_ambiguos = _store._nomes_lojas_unicos(lojas, retired_names=retired_names)
     store_ids_atuais = {loja["store_id"] for loja in lojas}
     associacoes: set[tuple[str, str]] = set()
     nao_mapeados: list[dict[str, str]] = []
@@ -309,6 +311,7 @@ def _capturar_snapshot(
     ]
     with _store.integracoes.lojas_config_lock(client_id):
         lojas = _normalizar_lojas(_store._lojas_atuais(client_id))
+        retired_names = read_retired_store_names(tenant)
         selecionadas = _selecionar_lojas(lojas, store_ids)
         with path_locks_for([caminho_canonico, *caminhos_legados]):
             registros, _ = _store._ler_registros_persistidos(client_id)
@@ -321,7 +324,7 @@ def _capturar_snapshot(
     por_loja: dict[str, list[dict[str, str]]] = defaultdict(list)
     for registro in registros:
         por_loja[str(registro.get("store_id") or "")].append(registro)
-    indice = _construir_indice_legado(lojas, fontes, colunas_fontes)
+    indice = _construir_indice_legado(lojas, fontes, colunas_fontes, retired_names=retired_names)
     return selecionadas, por_loja, indice
 
 

@@ -368,7 +368,7 @@ def test_pull_falha_fechado_quando_delete_da_loja_foi_persistido_primeiro(
         "produtos_compilado.csv",
     ],
 )
-def test_merge_primeiro_faz_delete_detectar_associacao_da_loja(
+def test_merge_primeiro_permite_delete_local_sem_apagar_dados_recebidos(
     tmp_path,
     monkeypatch,
     rel,
@@ -395,14 +395,14 @@ def test_merge_primeiro_faz_delete_detectar_associacao_da_loja(
         "operador",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        integracoes.excluir_loja("cliente-a", "Loja A", store_id="store-A")
+    recebido = (tenant / rel).read_bytes()
+    removida = integracoes.excluir_loja("cliente-a", "Loja A", store_id="store-A")
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["store_id"] == "store-A"
-    assert [loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")] == [
-        "store-A"
-    ]
+    assert removida["store_id"] == "store-A"
+    assert (tenant / rel).read_bytes() == recebido
+    assert integracoes.carregar_lojas("cliente-a") == []
+    tombstones = json.loads((tenant / "lojas_sync_tombstones.json").read_bytes())
+    assert [row["store_id"] for row in tombstones] == ["store-A"]
 
 
 def test_custos_remotos_sem_store_id_nao_reassociam_alias_de_loja(tmp_path, monkeypatch):

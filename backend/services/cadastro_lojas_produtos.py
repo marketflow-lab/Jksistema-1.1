@@ -695,7 +695,7 @@ def _aliases_nome_loja(loja: dict[str, Any]) -> list[Any]:
     return aliases
 
 
-def _nomes_lojas_unicos(lojas: Iterable[dict[str, Any]]) -> tuple[dict[str, str], set[str]]:
+def _nomes_lojas_unicos(lojas: Iterable[dict[str, Any]], *, retired_names=None) -> tuple[dict[str, str], set[str]]:
     ids_por_nome: dict[str, str] = {}
     ambiguos: set[str] = set()
     for loja in lojas:
@@ -710,6 +710,8 @@ def _nomes_lojas_unicos(lojas: Iterable[dict[str, Any]]) -> tuple[dict[str, str]
                 ambiguos.add(chave_nome)
             else:
                 ids_por_nome[chave_nome] = store_id
+    if retired_names is not None:
+        ambiguos.update(nome for nome in ids_por_nome if retired_names.blocks(nome, _nome_loja_chave))
     for nome in ambiguos:
         ids_por_nome.pop(nome, None)
     return ids_por_nome, ambiguos
@@ -793,9 +795,11 @@ def _aplicar_compilado(
     return derivados
 
 
-def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas, *, sku_interessa=None):
+def _indice_legado_de_tenant(tenant, lojas, fontes_capturadas, *, sku_interessa=None, retired_names=None):
+    from backend.services.retired_store_names import read_retired_store_names
     lojas = [dict(item) for item in lojas if isinstance(item, dict)]
-    ids_por_nome, nomes_ambiguos = _nomes_lojas_unicos(lojas)
+    retired_names = retired_names if retired_names is not None else read_retired_store_names(tenant)
+    ids_por_nome, nomes_ambiguos = _nomes_lojas_unicos(lojas, retired_names=retired_names)
     store_ids_atuais = {
         str(item.get("store_id") or "").strip()
         for item in lojas
@@ -984,11 +988,17 @@ def _contexto_legado_de_tenant(
     """
 
     from backend.services.medias_compras_leitura import reutilizar, chave_arquivo, leitura_atual
+    from backend.services.retired_store_names import TOMBSTONES_FILE, parse_retired_store_names, read_retired_store_names
     lojas = [dict(item) for item in lojas if isinstance(item, dict)]
-    chave = ("indice_legado", client_id, chave_arquivo(tenant), repr(lojas), chave_filtro) if leitura_atual() else None
+    retired_names = (
+        parse_retired_store_names(fontes_capturadas[TOMBSTONES_FILE])
+        if fontes_capturadas is not None and TOMBSTONES_FILE in fontes_capturadas
+        else read_retired_store_names(tenant)
+    )
+    chave = ("indice_legado", client_id, chave_arquivo(tenant), repr(lojas), chave_filtro, retired_names) if leitura_atual() else None
     (associacoes, base_generica, base_por_loja, compilado_por_loja, custos_por_loja, nao_mapeados, resumo, colunas_fontes) = reutilizar(
         chave, lambda: _indice_legado_de_tenant(
-            tenant, lojas, fontes_capturadas, sku_interessa=sku_interessa,
+            tenant, lojas, fontes_capturadas, sku_interessa=sku_interessa, retired_names=retired_names,
         ),
     )
     campos_derivados_sombras: dict[str, set[str]] = {}

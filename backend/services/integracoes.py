@@ -1315,6 +1315,13 @@ def _integracoes_validar_tombstones_payload(payload: object) -> list[dict]:
         origem="Historico local de exclusoes",
         status_code=409,
     )
+    for item in payload:
+        if "store_names" not in item:
+            continue
+        nomes = item["store_names"]
+        if (item.get("type") != "store" or not isinstance(nomes, list)
+                or any(not isinstance(nome, str) or not nome.strip() for nome in nomes)):
+            raise HTTPException(409, "O historico local de nomes excluidos e invalido.")
     return payload
 
 
@@ -1383,6 +1390,12 @@ def _integracoes_atualizar_tombstone_payload(
         evento["restored_at"] = agora
     else:
         evento["deleted_at"] = agora
+        if tipo == "store":
+            # Keep name-only history from being reassigned to a surviving
+            # homonym. This local record never contains OAuth credentials.
+            nomes = _integracoes_nomes_loja(loja)
+            if nomes:
+                evento["store_names"] = nomes
     atualizado.append(evento)
     return atualizado
 
@@ -2273,6 +2286,7 @@ def salvar_lojas(
     espelhar_backup_final: bool = False,
     _cadastro_lock_adquirido: bool = False,
     _preservar_sync_metadata_validada: bool = False,
+    _exclusao_local_store_id: str | None = None,
 ):
     """Salva as lojas do cliente no arquivo JSON."""
     from backend.services.central_accounts_client import current, is_marker
@@ -2374,6 +2388,11 @@ def salvar_lojas(
                 lojas,
             )
             ids_removidos = ids_atuais - ids_novos
+            exclusao_local = str(_exclusao_local_store_id or "").strip()
+            if exclusao_local and (
+                ids_removidos != {exclusao_local} or ids_novos - ids_atuais
+            ):
+                raise HTTPException(409, "A exclusao local precisa retirar somente a identidade confirmada.")
             if ids_removidos and os.path.lexists(
                 os.path.join(tenant_path, "cadastro_fotos_config.json")
             ):
@@ -2432,6 +2451,10 @@ def salvar_lojas(
                         )
                     )
                 for store_id_removido in sorted(ids_removidos):
+                    if store_id_removido == exclusao_local:
+                        # Only the explicit single-store deletion may keep
+                        # operational history after removing its configuration.
+                        continue
                     if _integracoes_cadastro_tem_registros_store(
                         client_id,
                         store_id_removido,
@@ -2819,10 +2842,39 @@ def _integracoes_cadastro_tem_registros_store(client_id: str, store_id: str) -> 
         ) from exc
 
 
+def _integracoes_fotos_apos_exclusao(client_id: str, tenant_path: str, store_id: str):
+    """Detach photo-group membership without removing any image or policy."""
+    path = os.path.join(tenant_path, "cadastro_fotos_config.json")
+    if not os.path.lexists(path):
+        return None
+    from backend.services.cadastro_fotos import (
+        CADASTRO_FOTOS_CONFIG_SCHEMA, CadastroFotosConfigInvalida,
+        _cadastro_fotos_config_carregar,
+    )
+    try:
+        config = _cadastro_fotos_config_carregar(client_id)
+    except CadastroFotosConfigInvalida as exc:
+        raise HTTPException(409, {
+            "code": "cadastro_photo_config_invalid",
+            "message": "A configuracao de fotos precisa ser corrigida antes de remover a loja.",
+        }) from exc
+    groups = []
+    changed = False
+    for group in config["shared_groups"]:
+        members = [key for key in group["store_ids"] if key != store_id]
+        changed |= len(members) != len(group["store_ids"])
+        if len(members) >= 2:
+            groups.append({"group_id": group["group_id"], "store_ids": members})
+    if not changed:
+        return None
+    return {"schema": CADASTRO_FOTOS_CONFIG_SCHEMA,
+            "strict_store_scope": config["strict_store_scope"], "shared_groups": groups}
+
+
 def excluir_loja(
     client_id: str, nome_loja: str, *, store_id: str | None = None
 ) -> dict:
-    """Exclui exatamente uma identidade e publica o tombstone depois do commit."""
+    """Remove one local configuration while retaining its operational history."""
     store_id_exato = str(store_id or "").strip()
     if not store_id_exato:
         raise HTTPException(
@@ -2868,18 +2920,6 @@ def excluir_loja(
                     )
                 )
             )
-            if _integracoes_cadastro_tem_registros_store(client_id, identidade):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "store_has_catalog_records",
-                        "message": (
-                            "Exclusao bloqueada: a loja possui registros ou tombstones "
-                            "no cadastro de produtos."
-                        ),
-                        "store_id": identidade,
-                    },
-                )
             restantes = [
                 item
                 for item in lojas
@@ -2890,23 +2930,22 @@ def excluir_loja(
                     status_code=409,
                     detail="Configuracao de lojas invalida; exclusao cancelada.",
                 )
-            estados = {
-                os.path.join(tenant_path, "lojas_config.json"): (
-                    _integracoes_capturar_estado_arquivo(
-                        os.path.join(tenant_path, "lojas_config.json")
-                    )
-                ),
-                _integracoes_tombstones_path(client_id): (
-                    _integracoes_capturar_estado_arquivo(
-                        _integracoes_tombstones_path(client_id)
-                    )
-                ),
-            }
+            fotos_config_path = os.path.join(tenant_path, "cadastro_fotos_config.json")
+            fotos_config = _integracoes_fotos_apos_exclusao(client_id, tenant_path, identidade)
+            paths = [os.path.join(tenant_path, "lojas_config.json"),
+                     os.path.join(tenant_path, "lojas_config.json.bak"),
+                     _integracoes_tombstones_path(client_id)]
+            if fotos_config is not None:
+                paths.append(fotos_config_path)
+            estados = {path: _integracoes_capturar_estado_arquivo(path) for path in paths}
             try:
+                if fotos_config is not None:
+                    _integracoes_escrever_lojas_config_atomico(fotos_config_path, fotos_config)
                 salvar_lojas(
                     client_id,
                     restantes,
                     _cadastro_lock_adquirido=True,
+                    _exclusao_local_store_id=identidade,
                 )
                 registrar_tombstone_integracao(
                     client_id,

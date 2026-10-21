@@ -69,7 +69,7 @@ def test_snapshot_antigo_nao_ressuscita_loja_tombstonada(tmp_path):
     assert {item["store_id"] for item in tombstones} == {"store-a"}
 
 
-def test_loja_em_grupo_de_fotos_nao_pode_ser_removida(
+def test_exclusao_local_retira_loja_do_grupo_de_fotos_e_preserva_membros(
     tmp_path,
     monkeypatch,
 ):
@@ -103,20 +103,16 @@ def test_loja_em_grupo_de_fotos_nao_pode_ser_removida(
         ),
         encoding="utf-8",
     )
-    lojas_antes = (tenant / "lojas_config.json").read_bytes()
-    fotos_antes = config_fotos.read_bytes()
+    removida = integracoes.excluir_loja(
+        "cliente-a", "store-a", store_id="store-a",
+    )
 
-    with pytest.raises(HTTPException) as exc_info:
-        integracoes.excluir_loja(
-            "cliente-a",
-            "store-a",
-            store_id="store-a",
-        )
-
-    assert exc_info.value.detail["code"] == "store_in_shared_photo_group"
-    assert (tenant / "lojas_config.json").read_bytes() == lojas_antes
-    assert config_fotos.read_bytes() == fotos_antes
-    assert not (tenant / "lojas_sync_tombstones.json").exists()
+    assert removida["store_id"] == "store-a"
+    assert {row["store_id"] for row in integracoes.carregar_lojas("cliente-a")} == {"store-b", "store-c"}
+    config = json.loads(config_fotos.read_bytes())
+    assert config["strict_store_scope"] is True
+    assert config["shared_groups"] == [{"group_id": "abc", "store_ids": ["store-b", "store-c"]}]
+    assert [row["store_id"] for row in json.loads((tenant / "lojas_sync_tombstones.json").read_bytes())] == ["store-a"]
 
 
 def test_nome_homonimo_falha_fechado_e_store_id_e_case_sensitive(tmp_path):
@@ -835,7 +831,7 @@ def test_oauth_exige_state_e_revalida_loja_antes_do_exchange(monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize("deleted_at", ["", "2026-08-28T12:00:00Z"])
-def test_delete_bloqueia_registro_ativo_ou_tombstone_do_cadastro(tmp_path, deleted_at):
+def test_delete_preserva_registro_ativo_ou_tombstone_do_cadastro(tmp_path, deleted_at):
     tenant = _configure(tmp_path)
     integracoes.salvar_lojas("cliente-a", _homonimas())
     (tenant / "cadastro_produtos_lojas.csv").write_text(
@@ -844,18 +840,14 @@ def test_delete_bloqueia_registro_ativo_ou_tombstone_do_cadastro(tmp_path, delet
         encoding="utf-8",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        integracoes.excluir_loja(
-            "cliente-a", "Loja Igual", store_id="StoreA"
-        )
+    cadastro = tenant / "cadastro_produtos_lojas.csv"
+    antes = cadastro.read_bytes()
+    removida = integracoes.excluir_loja("cliente-a", "Loja Igual", store_id="StoreA")
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "store_has_catalog_records"
-    assert {loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")} == {
-        "StoreA",
-        "storea",
-    }
-    assert not (tenant / "lojas_sync_tombstones.json").exists()
+    assert removida["store_id"] == "StoreA"
+    assert cadastro.read_bytes() == antes
+    assert [loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")] == ["storea"]
+    assert [row["store_id"] for row in json.loads((tenant / "lojas_sync_tombstones.json").read_bytes())] == ["StoreA"]
 
 
 def test_delete_remove_uma_homonima_e_tombstone_vem_depois_da_persistencia(
@@ -945,7 +937,7 @@ def test_delete_reverte_configuracao_quando_tombstone_falha(monkeypatch, tmp_pat
     assert not (tenant / "lojas_sync_tombstones.json").exists()
 
 
-def test_delete_bloqueia_sombra_legada_mesmo_com_nome_homonimo(tmp_path):
+def test_delete_preserva_sombra_legada_e_remove_so_identidade_exata(tmp_path):
     tenant = _configure(tmp_path)
     integracoes.salvar_lojas("cliente-a", _homonimas())
     (tenant / "cadastro_produtos.csv").write_text(
@@ -953,19 +945,13 @@ def test_delete_bloqueia_sombra_legada_mesmo_com_nome_homonimo(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        integracoes.excluir_loja(
-            "cliente-a",
-            "Loja Igual",
-            store_id="StoreA",
-        )
+    cadastro = tenant / "cadastro_produtos.csv"
+    antes = cadastro.read_bytes()
+    removida = integracoes.excluir_loja("cliente-a", "Loja Igual", store_id="StoreA")
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "store_has_legacy_catalog_records"
-    assert {loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")} == {
-        "StoreA",
-        "storea",
-    }
+    assert removida["store_id"] == "StoreA"
+    assert cadastro.read_bytes() == antes
+    assert [loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")] == ["storea"]
 
 
 def test_delete_sombra_historica_usa_store_id_exato_e_ignora_nome_conflitante(
@@ -991,7 +977,7 @@ def test_delete_sombra_historica_usa_store_id_exato_e_ignora_nome_conflitante(
     ]
 
 
-def test_delete_bloqueia_store_id_exato_em_cadastro_historico(tmp_path):
+def test_delete_preserva_store_id_exato_em_cadastro_historico(tmp_path):
     tenant = _configure(tmp_path)
     integracoes.salvar_lojas("cliente-a", _homonimas())
     (tenant / "cadastro_produtos.csv").write_text(
@@ -1000,15 +986,13 @@ def test_delete_bloqueia_store_id_exato_em_cadastro_historico(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        integracoes.excluir_loja(
-            "cliente-a",
-            "Loja Igual",
-            store_id="StoreA",
-        )
+    cadastro = tenant / "cadastro_produtos.csv"
+    antes = cadastro.read_bytes()
+    removida = integracoes.excluir_loja("cliente-a", "Loja Igual", store_id="StoreA")
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "store_has_legacy_catalog_records"
+    assert removida["store_id"] == "StoreA"
+    assert cadastro.read_bytes() == antes
+    assert [loja["store_id"] for loja in integracoes.carregar_lojas("cliente-a")] == ["storea"]
 
 
 def test_reducao_confirmada_tambem_bloqueia_loja_com_cadastro(tmp_path):
@@ -1039,7 +1023,6 @@ def test_delete_mantem_lock_canonico_do_cadastro_ate_publicar_tombstone(
     _configure(tmp_path)
     integracoes.salvar_lojas("cliente-a", _homonimas())
     locks_ativos = []
-    check_real = integracoes._integracoes_cadastro_tem_registros_store
     salvar_real = integracoes.salvar_lojas
 
     @contextmanager
@@ -1049,10 +1032,6 @@ def test_delete_mantem_lock_canonico_do_cadastro_ate_publicar_tombstone(
             yield
         finally:
             locks_ativos.pop()
-
-    def check_observado(*args, **kwargs):
-        assert any(path.endswith("cadastro_produtos_lojas.csv") for path in locks_ativos)
-        return check_real(*args, **kwargs)
 
     def salvar_observado(*args, **kwargs):
         assert any(path.endswith("cadastro_produtos_lojas.csv") for path in locks_ativos)
@@ -1067,7 +1046,7 @@ def test_delete_mantem_lock_canonico_do_cadastro_ate_publicar_tombstone(
     monkeypatch.setattr(
         integracoes,
         "_integracoes_cadastro_tem_registros_store",
-        check_observado,
+        lambda *_args, **_kwargs: pytest.fail("Exclusao explicita nao deve bloquear por dados do cadastro"),
     )
     monkeypatch.setattr(integracoes, "salvar_lojas", salvar_observado)
     monkeypatch.setattr(
