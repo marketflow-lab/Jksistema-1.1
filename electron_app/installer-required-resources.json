@@ -76,6 +76,7 @@
     "backend/modules/vendas/module.py",
     "backend/modules/vendas/composition_sync.py",
     "backend/modules/vendas/photos.py",
+    "backend/modules/vendas/sync_queue.py",
     "backend/routers/__init__.py",
     "backend/routers/codex_console.py",
     "backend/routers/context_hub.py",
@@ -701,6 +702,7 @@
     "local_app/backend/modules/vendas/module.py",
     "local_app/backend/modules/vendas/composition_sync.py",
     "local_app/backend/modules/vendas/photos.py",
+    "local_app/backend/modules/vendas/sync_queue.py",
     "local_app/backend/routers/__init__.py",
     "local_app/backend/routers/codex_console.py",
     "local_app/backend/routers/context_hub.py",
@@ -918,6 +920,7 @@
     "local_app/static/dashboard/menu-motion.css"
   ],
   "requiredPackagedSourceParity": [
+    "backend/modules/vendas/sync_queue.py",
     "static/medias_compras/editor-produtos.js",
     "backend/services/medias_compras_cache.py",
     "backend/services/medias_compras_fontes.py",

@@ -2,6 +2,8 @@
 
 Day acknowledgements are written only after the caller has committed the entire
 day. Replaying an expired lease must therefore remain idempotent in the caller.
+Closed historical days can be reused across cycles for the same store, while
+recent days and explicit historical reviews continue to consult the source.
 Only counts, dates and queue metadata are stored; callers sanitize error messages.
 """
 
@@ -22,6 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 INTERVAL_SECONDS = 15 * 60
 HISTORY_INTERVAL_SECONDS = 24 * 60 * 60
+RECENT_WINDOW_DAYS = 7
 try:
     SYNC_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 except ZoneInfoNotFoundError:
@@ -156,8 +159,47 @@ class SyncQueue:
         job["checkpoint"] = json.loads(latest[0]).get("checkpoint", {}) if latest else {}
         return job
 
+    def _reuse_completed_days(self, conn, job_id, now):
+        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        today = dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date()
+        own_days = conn.execute("SELECT day, completed_at FROM days WHERE job_id = ? AND day < ?",
+                                (job_id, str(today))).fetchall()
+        # A retry on the same day retains its progress. After the day closes,
+        # a preliminary check must be collected again, including future days
+        # that an older interrupted period may have confirmed while empty.
+        expired = [(job_id, row["day"]) for row in own_days
+                   if row["day"] >= str(dt.datetime.fromtimestamp(row["completed_at"], SYNC_TIMEZONE).date())]
+        conn.executemany("DELETE FROM days WHERE job_id = ? AND day = ?", expired)
+        if job["forcar_resync"] or job["kind"] == "history":
+            return
+        historical_end = min(job["data_fim"], str(today - dt.timedelta(days=RECENT_WINDOW_DAYS)))
+        if job["data_inicio"] > historical_end:
+            return
+        rows = conn.execute("""SELECT d.day, d.result, d.completed_at FROM days d
+            JOIN jobs source ON source.id = d.job_id
+            WHERE source.store_id = ? AND d.job_id != ? AND d.day BETWEEN ? AND ?
+                AND d.completed_at <= ?
+            ORDER BY d.completed_at DESC""",
+                            (job["store_id"], job_id, job["data_inicio"], historical_end, now)).fetchall()
+        confirmed = {}
+        for row in rows:
+            if row["day"] in confirmed:
+                continue
+            checked_day = dt.datetime.fromtimestamp(row["completed_at"], SYNC_TIMEZONE).date()
+            # A day checked before it ended (including a future empty day) is
+            # not permanent coverage. Never refresh the original timestamp when
+            # inheriting, or a later cycle could legitimize incomplete coverage.
+            if row["day"] < str(checked_day):
+                confirmed[row["day"]] = (job_id, row["day"], row["result"], row["completed_at"])
+        conn.executemany("INSERT OR IGNORE INTO days VALUES (?, ?, ?, ?)", confirmed.values())
+
     def _enqueue(self, conn, store_id, loja, start, end, force, automatic, kind, now, requires_session=False):
-        signature = hashlib.sha256(json.dumps([store_id, start, end, bool(force)],
+        identity = [store_id, start, end, bool(force)]
+        if kind == "history":
+            # A historical review must not adopt an incremental job whose days
+            # were inherited. Keep existing ordinary-job signatures compatible.
+            identity.append("history")
+        signature = hashlib.sha256(json.dumps(identity,
                                              separators=(",", ":")).encode()).hexdigest()
         old = conn.execute("SELECT id, status FROM jobs WHERE signature = ? AND status != 'complete'",
                            (signature,)).fetchone()
@@ -167,6 +209,7 @@ class SyncQueue:
                     owner = NULL, lease_until = NULL, updated_at = ?, loja = ?, automatico = ?,
                     requires_session = ? WHERE id = ?""",
                              (now, now, loja, int(automatic), int(requires_session), old["id"]))
+                self._reuse_completed_days(conn, old["id"], now)
             return self._job(conn, old["id"])
         job_id = uuid.uuid4().hex
         conn.execute("""INSERT INTO jobs
@@ -175,6 +218,7 @@ class SyncQueue:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (job_id, signature, store_id, loja, start, end, int(force),
                       int(automatic), kind, now, now, now, int(requires_session)))
+        self._reuse_completed_days(conn, job_id, now)
         return self._job(conn, job_id)
 
     def enqueue(self, store_id, loja, data_inicio, data_fim, forcar_resync=False,
@@ -235,6 +279,9 @@ class SyncQueue:
             row = next((row for row in rows if row["store_id"] not in busy), None)
             if row is None:
                 return None
+            # Coverage may have improved while this period waited behind an
+            # earlier job for the store. Import before the worker takes its snapshot.
+            self._reuse_completed_days(conn, row["id"], now)
             conn.execute("""UPDATE jobs SET status = 'running', owner = ?, lease_until = ?,
                 attempts = attempts + 1, updated_at = ? WHERE id = ?""",
                          (str(owner), now + lease_seconds, now, row["id"]))
@@ -359,7 +406,7 @@ class SyncQueue:
                 start = _date(plan["data_inicio"])
                 if start > today:
                     continue
-                recent_start = max(start, today - dt.timedelta(days=6))
+                recent_start = max(start, today - dt.timedelta(days=RECENT_WINDOW_DAYS - 1))
                 if plan["next_due"] <= now:
                     gap = _date(plan["last_success_day"]) if plan["last_success_day"] else start
                     begin = max(start, min(recent_start, gap))
