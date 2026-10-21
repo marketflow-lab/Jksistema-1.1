@@ -1163,7 +1163,8 @@ def _dados_mutacao(
         if nome == "__foto_filename":
             foto_filename = str(valor or "").strip()
             continue
-        if nome in {"__legacy_snapshot_hash", "__expected_scope", "__catalog_photo_persisted"}:
+        if nome in {"__legacy_snapshot_hash", "__expected_scope", "__catalog_photo_persisted",
+                    "__catalog_bling_id_persisted"}:
             continue
         if nome in _COLUNAS_IDENTIDADE:
             continue
@@ -1748,7 +1749,13 @@ def _listar_produtos_loja_sync(
             continue
         enriquecido = _enriquecer_produto(item, loja, contexto, **opcoes_fotos)
         enriquecido.pop("__catalog_photo_persisted", None)
+        enriquecido.pop("__catalog_bling_id_persisted", None)
         if include_catalog_metadata:
+            # An inherited display value is not a persisted account identity.
+            id_persistido = str(item.get("id_bling") or "").strip()
+            enriquecido["__catalog_bling_id_persisted"] = bool(
+                id_persistido and id_persistido == str(enriquecido.get("id_bling") or "").strip()
+            )
             foto_persistida = str(item.get("foto") or "")
             enriquecido["__catalog_photo_persisted"] = bool(
                 foto_persistida.strip()
@@ -1768,8 +1775,10 @@ def _listar_produtos_loja_sync(
         if include_legacy_snapshot_hash:
             enriquecido["__legacy_snapshot_hash"] = _fingerprint_sombra_legada(sombra)
         enriquecido.pop("__catalog_photo_persisted", None)
+        enriquecido.pop("__catalog_bling_id_persisted", None)
         if include_catalog_metadata:
             enriquecido["__catalog_photo_persisted"] = False
+            enriquecido["__catalog_bling_id_persisted"] = False
         saida.append(enriquecido)
     return sorted(saida, key=lambda item: str(item.get("sku_normalizado") or ""))
 

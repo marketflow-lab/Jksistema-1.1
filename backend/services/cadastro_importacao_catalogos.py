@@ -823,7 +823,11 @@ def _campos_composicao_bling_existente(
     if _valor_preenchido(current_raw_id) and current_id != incoming_id:
         return {}, {"id_bling"}
     updates = {}
-    if not current_id or existente.get("scope_source") == "legacy_shadow":
+    if (
+        not current_id
+        or existente.get("scope_source") == "legacy_shadow"
+        or existente.get("__catalog_bling_id_persisted") is False
+    ):
         updates["id_bling"] = incoming_id
     if relevant_conflicts & _BLING_COMPOSITION_FIELDS:
         return updates, {"composicao_bling"}
@@ -1254,6 +1258,9 @@ def _construir_preview(
                 current = (
                     None if fonte == "mercadolivre" and materializar_sombra and name in _ML_UNSCOPED_LEGACY_FIELDS
                     else None if fonte == "bling" and materializar_sombra and name in _BLING_UNSCOPED_COMPOSITION_FIELDS
+                    # Matching an overlay must still materialize the verified ID.
+                    else None if fonte == "bling" and name == "id_bling"
+                    and existente.get("__catalog_bling_id_persisted") is False
                     else existente.get(name)
                 )
                 if fonte == "mercadolivre" and name in {"mlb_ids", "links_ml"}:

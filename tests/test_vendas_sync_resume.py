@@ -4,7 +4,8 @@ import asyncio
 from datetime import date
 import logging
 from pathlib import Path
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -34,6 +35,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_automation, "current", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_resolve_store", lambda req, client: req.model_copy(
         update={"store_id": req.store_id or "store-" + req.loja.replace(" ", "-")}))
+    composition_sync = ModuleType("backend.modules.vendas.composition_sync")
+    composition_sync.sincronizar_composicoes_vendas = lambda *_, **__: {"updated": 0, "pending": False}
+    monkeypatch.setitem(sys.modules, composition_sync.__name__, composition_sync)
     yield tmp_path
     for value, snapshot in zip(dictionaries, saved):
         value.clear()
@@ -212,3 +216,173 @@ def test_scheduler_uses_the_same_sao_paulo_day_as_completion(isolated, monkeypat
     sync_automation._STOP.clear()
     sync_automation.tick()
     assert captured == [date(2026, 10, 15)]
+
+
+def _composition_hook(monkeypatch, callback):
+    module = sys.modules["backend.modules.vendas.composition_sync"]
+    monkeypatch.setattr(module, "sincronizar_composicoes_vendas", callback)
+
+
+def test_compositions_run_after_committed_days_before_job_completion(isolated, monkeypatch):
+    queue = SyncQueue("tenant-a")
+    queue.enqueue("store-a", "A", "2026-10-01", "2026-10-02")
+    job = queue.claim("first")
+    _bind(job, queue, "first")
+    calls = []
+
+    async def collect(req, client, reset_estado=False):
+        calls.append(req.data_inicio)
+        return {"success": True, "total": 1, "vendas_processadas": 1}
+
+    def compositions(client_id, store_id, *, cancel_callback):
+        saved = queue.get_job(job["id"])
+        assert saved["dias_concluidos"] == ["2026-10-01", "2026-10-02"]
+        assert saved["status"] == "running"
+        assert SYNC_THREAD_CONTEXT.queue_owner == "first"
+        assert progress._sync_context_key(client_id) == job["id"]
+        stage = SYNC_PROGRESS[job["id"]]
+        assert stage["etapa"] == "Composições" and stage["concluido"] is False
+        assert stage["percentual"] == 99
+        assert stage["mensagem"] == "Conferindo as composições dos produtos vendidos."
+        cancel_callback()
+        calls.append((client_id, store_id))
+        return {"updated": 2, "pending": False}
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", collect)
+    _composition_hook(monkeypatch, compositions)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
+    result = asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
+    assert calls == ["2026-10-01", "2026-10-02", ("tenant-a", "store-a")]
+    assert result["success"] and result["total"] == result["vendas_processadas"] == 2
+    assert result["composicoes"] == {"updated": 2, "pending": False}
+    final = SYNC_PROGRESS[job["id"]]
+    assert final["result"]["composicoes"] == result["composicoes"]
+    assert final["etapa"] == "Finalizado" and final["concluido"] is True
+    assert final["percentual"] == 100 and final["mensagem"] == "Período e composições conferidos."
+    assert queue.get_job(job["id"])["status"] == "complete"
+
+
+@pytest.mark.parametrize("failure_type", ["runtime", "provider_http"])
+def test_composition_failure_preserves_sales_and_reports_safe_pending_status(
+    isolated, monkeypatch, caplog, failure_type,
+):
+    queue = SyncQueue("tenant-a")
+    queue.enqueue("store-a", "A", "2026-10-01", "2026-10-01")
+    job = queue.claim("first")
+    _bind(job, queue, "first")
+
+    async def collect(req, client, reset_estado=False):
+        return {"success": True, "total": 3, "notas_entrada_total": 2}
+
+    def unavailable(*_, **__):
+        if failure_type == "provider_http":
+            from fastapi import HTTPException
+            raise HTTPException(status_code=409, detail="fixture-private-response-never-log")
+        raise RuntimeError("fixture-private-response-never-log")
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", collect)
+    _composition_hook(monkeypatch, unavailable)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-01")
+    result = asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
+    assert result["success"] and result["total"] == 3 and result["notas_entrada_total"] == 2
+    assert result["composicoes"] == {"updated": 0, "pending": True}
+    saved = queue.get_job(job["id"])
+    assert saved["status"] == "complete" and saved["dias_concluidos"] == ["2026-10-01"]
+    final = SYNC_PROGRESS[job["id"]]
+    assert final["etapa"] == "Finalizado" and final["concluido"] is True
+    assert final["percentual"] == 100
+    assert final["mensagem"] == (
+        "Período conferido; composições pendentes serão retomadas na próxima sincronização."
+    )
+    assert "conferência de composições ficará pendente" in caplog.text
+    assert "fixture-private-response-never-log" not in caplog.text
+
+
+def test_resume_with_all_days_committed_still_retries_compositions(isolated, monkeypatch):
+    queue = SyncQueue("tenant-a")
+    queue.enqueue("store-a", "A", "2026-10-01", "2026-10-02")
+    first = queue.claim("first")
+    for day in ("2026-10-01", "2026-10-02"):
+        queue.complete_day(first["id"], "first", day, {"success": True, "total": 0})
+    queue.fail_job(first["id"], "first", "Interrupção antes de concluir o período.", retry_after=1)
+    again = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-02")
+    resumed = queue.claim("second")
+    assert again["id"] == resumed["id"] == first["id"]
+    _bind(resumed, queue, "second")
+    called = []
+
+    async def already_committed(*_, **__):
+        pytest.fail("Committed days must not be downloaded again")
+
+    def compositions(client_id, store_id, *, cancel_callback):
+        cancel_callback()
+        assert queue.get_job(resumed["id"])["status"] == "running"
+        called.append((client_id, store_id))
+        return {"updated": 1, "pending": True}
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", already_committed)
+    _composition_hook(monkeypatch, compositions)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
+    result = asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
+    assert called == [("tenant-a", "store-a")]
+    assert result["composicoes"] == {"updated": 1, "pending": True}
+    assert queue.get_job(resumed["id"])["status"] == "complete"
+
+
+@pytest.mark.parametrize("check_inside_collector", [False, True])
+def test_cancellation_during_composition_stage_prevents_job_completion(
+    isolated, monkeypatch, check_inside_collector,
+):
+    queue = SyncQueue("tenant-a")
+    queue.enqueue("store-a", "A", "2026-10-01", "2026-10-01")
+    job = queue.claim("first")
+    _bind(job, queue, "first")
+
+    async def collect(req, client, reset_estado=False):
+        return {"success": True, "total": 1}
+
+    def compositions(client_id, store_id, *, cancel_callback):
+        assert queue.get_job(job["id"])["dias_concluidos"] == ["2026-10-01"]
+        queue.pause_all()
+        if check_inside_collector:
+            cancel_callback()
+        return {"updated": 1, "pending": False}
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", collect)
+    _composition_hook(monkeypatch, compositions)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-01")
+    with pytest.raises(VendasDomainError) as exc:
+        asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
+    assert exc.value.status_code == 409
+    saved = queue.get_job(job["id"])
+    assert saved["status"] == "paused" and saved["dias_concluidos"] == ["2026-10-01"]
+    assert SYNC_PROGRESS[job["id"]].get("concluido") is not True
+
+
+def test_one_shot_job_cancellation_is_propagated_with_a_valid_lease(isolated, monkeypatch, caplog):
+    queue = SyncQueue("tenant-a")
+    queue.enqueue("store-a", "A", "2026-10-01", "2026-10-01")
+    job = queue.claim("first")
+    _bind(job, queue, "first")
+
+    async def collect(req, client, reset_estado=False):
+        return {"success": True, "total": 1}
+
+    def compositions(client_id, store_id, *, cancel_callback):
+        assert queue.get_job(job["id"])["dias_concluidos"] == ["2026-10-01"]
+        SYNC_CANCEL_FLAGS[job["id"]] = True
+        cancel_callback()
+        pytest.fail("The real callback must raise after consuming the job flag")
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", collect)
+    _composition_hook(monkeypatch, compositions)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-01")
+    with pytest.raises(VendasDomainError) as exc:
+        asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
+    assert exc.value.status_code == 409
+    assert job["id"] not in SYNC_CANCEL_FLAGS and not SYNC_CANCEL_FLAGS.get("tenant-a")
+    assert queue.owns(job["id"], "first")
+    saved = queue.get_job(job["id"])
+    assert saved["status"] == "running" and saved["dias_concluidos"] == ["2026-10-01"]
+    assert SYNC_PROGRESS[job["id"]].get("concluido") is not True
+    assert "conferência de composições ficará pendente" not in caplog.text

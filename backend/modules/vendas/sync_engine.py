@@ -212,6 +212,32 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
                     totals[key] += int(result.get(key) or 0)
             finally:
                 SYNC_DAY_CONTEXT.pop(job_context_key, None)
+        _verificar_cancelamento(client_id)
+        composition_progress = _criar_progresso(
+            "Composições", len(dias), len(dias), 99,
+            "Conferindo as composições dos produtos vendidos.",
+        )
+        composition_progress["concluido"] = False
+        _set_progresso(client_id, composition_progress)
+        try:
+            from .composition_sync import sincronizar_composicoes_vendas
+
+            # The collector owns its bounded budget and runs on this worker so
+            # cancellation keeps the same thread-local job and lease context.
+            compositions = sincronizar_composicoes_vendas(
+                client_id, req.store_id,
+                cancel_callback=lambda: _verificar_cancelamento(client_id),
+            )
+            totals["composicoes"] = {
+                "updated": max(0, int(compositions.get("updated") or 0)),
+                "pending": bool(compositions.get("pending", True)),
+            }
+        except HTTPException:
+            raise
+        except Exception:
+            totals["composicoes"] = {"updated": 0, "pending": True}
+            logger.warning("A conferência de composições ficará pendente para a próxima sincronização.")
+        _verificar_cancelamento(client_id)
         if queue is not None:
             queue.complete_job(job_key, owner)
         else:
@@ -226,7 +252,11 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
                 "ultimo_erro": _safe_failure(exc), "dias_concluidos": [d for d in dias if d in done],
             })
         raise
-    progress = _criar_progresso("Finalizado", len(dias), len(dias), 100, "Período conferido.")
+    message = (
+        "Período conferido; composições pendentes serão retomadas na próxima sincronização."
+        if totals["composicoes"]["pending"] else "Período e composições conferidos."
+    )
+    progress = _criar_progresso("Finalizado", len(dias), len(dias), 100, message)
     progress.update(concluido=True, result=totals)
     _set_progresso(client_id, progress)
     return {"success": True, **totals}

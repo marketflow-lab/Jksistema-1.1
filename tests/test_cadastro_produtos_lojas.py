@@ -1775,7 +1775,9 @@ def test_catalog_metadata_marca_foto_persistida_sem_mudar_leitura_publica(monkey
     )
 
     assert "__catalog_photo_persisted" not in publico[0]
+    assert "__catalog_bling_id_persisted" not in publico[0]
     assert privado[0].pop("__catalog_photo_persisted") is True
+    assert privado[0].pop("__catalog_bling_id_persisted") is False
     assert privado == publico
     assert arquivo.read_bytes() == antes
 

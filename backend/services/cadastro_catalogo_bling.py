@@ -12,6 +12,7 @@ import logging
 import math
 import secrets
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -503,6 +504,8 @@ def _coletar_com_token(
     cancel_event: Any,
     deadline: float,
     holder: dict[str, Any],
+    compositions_only: bool = False,
+    skip_detail_ids: frozenset[str] | Mapping[str, str] = frozenset(),
 ) -> tuple[dict[str, Any], int]:
     state = _estado_inicial(store_id, store_name)
     holder["state"] = state
@@ -689,10 +692,23 @@ def _coletar_com_token(
             return _resultado_publico(state), 200
 
         total_items = len(state["items"])
+        if compositions_only:
+            state["stats"]["composition_listing_complete"] = state["sku_coverage_complete"]
+            # Large catalogs must finish enumeration before detail repair is
+            # budgeted; restarting page one every 90s could starve them forever.
+            deadline = min(deadline, time.monotonic() + 90)
         for index, item in enumerate(state["items"], start=1):
             check_cancel()
             product_id = str(item["external_ids"].get("id_bling") or "").strip()
             if not product_id:
+                continue
+            if compositions_only and (
+                (product_id in skip_detail_ids and (
+                    not isinstance(skip_detail_ids, Mapping)
+                    or skip_detail_ids[product_id] == item["sku_normalizado"]
+                ))
+                or str(item["fields"].get("formato_bling") or "").upper() in {"S", "V"}
+            ):
                 continue
             state["stats"]["details_requested"] += 1
             _emitir_progresso(
@@ -759,6 +775,10 @@ def _coletar_com_token(
                 )
             )
             state["stats"]["details_complete"] += 1
+
+        if compositions_only:
+            # Vendas needs account identities and BOMs, not balances/categories.
+            return _resultado_publico(state), 200
 
         product_items_by_id: dict[str, list[dict[str, Any]]] = {}
         for item in state["items"]:
@@ -1054,6 +1074,20 @@ def _mesma_identidade_estavel_bling(
 ) -> bool:
     """Accept token rotation only inside one explicit Bling connection epoch."""
 
+    if anterior.get("central") is True or atual.get("central") is True:
+        # Central exposes a session/store-scoped transport marker, not a local
+        # OAuth epoch. Require its exact snapshot; never relax token rotation.
+        from backend.services.central_accounts_client import is_marker
+
+        return bool(
+            anterior.get("central") is True and atual.get("central") is True
+            and anterior.get("connected") is True and atual.get("connected") is True
+            and is_marker(anterior.get("access_token"))
+            and secrets.compare_digest(
+                configuracao_catalogo_fingerprint("bling", store_id, store_name, anterior),
+                configuracao_catalogo_fingerprint("bling", store_id, store_name, atual),
+            )
+        )
     connection_anterior = str(anterior.get("oauth_connection_id") or "").strip()
     connection_atual = str(atual.get("oauth_connection_id") or "").strip()
     if not connection_anterior or not connection_atual or not secrets.compare_digest(
@@ -1145,6 +1179,8 @@ def coletar_catalogo_bling(
     cancel_event: Any = None,
     expected_config_fingerprint: str = "",
     expected_apply_config_fingerprint: str = "",
+    compositions_only: bool = False,
+    skip_detail_ids: frozenset[str] | Mapping[str, str] = frozenset(),
 ) -> dict[str, Any]:
     """Collect a complete Bling catalog for one exact JK store.
 
@@ -1209,6 +1245,8 @@ def coletar_catalogo_bling(
             cancel_event=cancel_event,
             deadline=deadline,
             holder=holder,
+            compositions_only=compositions_only,
+            skip_detail_ids=skip_detail_ids,
         )
 
     result, status, cfg_final = _bling_executar_com_refresh(

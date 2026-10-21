@@ -1,11 +1,16 @@
 """Composition refresh through the real preview, atomic writer and CSV reader."""
 
+import asyncio
 import csv
 from decimal import Decimal
 import json
 from pathlib import Path
+import threading
+import time
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from backend.modules.vendas.compositions import load_composition_catalog
 from backend.services import cadastro_catalogo_bling as provider
@@ -47,7 +52,9 @@ def _fields(product_id, sku, *, components=None, format="E", **extra):
 
 
 def _preview(fields_by_sku, *, account="store-a", tenant="tenant-a"):
-    current = store._listar_produtos_loja_sync(tenant, account, include_legacy_snapshot_hash=True)
+    current = store._listar_produtos_loja_sync(
+        tenant, account, include_legacy_snapshot_hash=True, include_catalog_metadata=True,
+    )
     return imports._construir_preview(
         "bling", {
             "coverage_complete": True, "sku_coverage_complete": True, "store_id": account,
@@ -251,3 +258,161 @@ def test_detail_and_external_identity_must_agree_before_composition_refresh(cata
     }, current)
     assert preview["apply_rows"] == []
     assert "id_bling:valores_divergentes_na_fonte" in preview["items"][0]["conflicts"]
+
+
+
+def _compiled_ids_without_store(catalog):
+    path = catalog / "tenant-a" / "produtos_compilado.csv"
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["sku", "loja_sync", "id_bling"])
+        writer.writeheader()
+        writer.writerows([
+            {"sku": sku, "loja_sync": "Loja A", "id_bling": product_id}
+            for sku, product_id in (("BASE", 1), ("KIT", 2))
+        ])
+    return path
+
+
+def test_confirmed_overlay_ids_are_materialized_and_resolve_composition(catalog):
+    _seed()
+    _seed(account="store-b")
+    _seed(tenant="tenant-b")
+    compiled = _compiled_ids_without_store(catalog)
+    compiled_before = compiled.read_bytes()
+    canonical = catalog / "tenant-a" / "cadastro_produtos_lojas.csv"
+    other_tenant = catalog / "tenant-b" / "cadastro_produtos_lojas.csv"
+    tenant_before = other_tenant.read_bytes()
+    cost_path = catalog / "tenant-a" / "cadastro_custos_lojas.csv"
+    costs_before = cost_path.read_bytes()
+    before_rows = _read_csv(canonical)
+    assert all(not row.get("id_bling") for row in before_rows)
+    enriched = store._listar_produtos_loja_sync("tenant-a", "store-a")
+    assert {row["sku"]: row["id_bling"] for row in enriched} == {"BASE": "1", "KIT": "2"}
+    assert all(row["scope_source"] == "store_file" for row in enriched)
+
+    preview = _apply(_initial())
+    assert {row["sku"]: row["fields"].get("id_bling") for row in preview["apply_rows"]} == {
+        "BASE": "1", "KIT": "2",
+    }
+    after_rows = _read_csv(canonical)
+    for row in after_rows:
+        original = next(item for item in before_rows if (item["store_id"], item["sku"]) == (row["store_id"], row["sku"]))
+        if row["store_id"] == "store-a":
+            assert row["id_bling"] == ("1" if row["sku"] == "BASE" else "2")
+            assert int(row["row_version"]) == int(original["row_version"]) + 1
+            assert (row["nome"], row["descricao"], row["marca"]) == (
+                original["nome"], original["descricao"], original["marca"],
+            )
+        else:
+            assert {key: value for key, value in row.items() if value} == {
+                key: value for key, value in original.items() if value
+            }
+        assert not any(key.startswith("__catalog_") for key in row)
+    resolved = load_composition_catalog("tenant-a")
+    assert [(item.sku, item.fator) for item in resolved.resolve("KIT", "store-a")] == [("BASE", Decimal(2))]
+    assert not resolved.warnings
+    assert resolved.resolve("KIT", "store-b")[0].sku == "KIT"
+    assert load_composition_catalog("tenant-b").resolve("KIT", "store-a")[0].sku == "KIT"
+    projected = resolved.project_rows([
+        {"sku": "BASE", "quantidade": 20, "store_id": "store-a", "valor": 100},
+        {"sku": "KIT", "quantidade": 9, "store_id": "store-a", "valor": 90},
+    ], target_sku="BASE")
+    assert sum(row["quantidade"] for row in projected) == 38
+    assert sum(row["valor"] for row in projected) == 100
+    assert sum(row["pedidos_contribuicao"] for row in projected) == 1
+    assert compiled.read_bytes() == compiled_before
+    assert other_tenant.read_bytes() == tenant_before
+    assert cost_path.read_bytes() == costs_before
+
+    canonical_after = canonical.read_bytes()
+    assert not _apply(_initial())["apply_rows"]
+    assert canonical.read_bytes() == canonical_after
+    regular = store._listar_produtos_loja_sync("tenant-a", "store-a")
+    assert all("__catalog_bling_id_persisted" not in row for row in regular)
+
+
+@pytest.mark.parametrize("fields, expected_conflict", [
+    ({"produto_bling": "Updated title"}, None),
+    ({"id_bling": "999", "formato_bling": "S"}, "id_bling:valores_divergentes_na_fonte"),
+])
+def test_overlay_id_needs_matching_provider_confirmation(catalog, fields, expected_conflict):
+    _seed()
+    compiled = _compiled_ids_without_store(catalog)
+    compiled_before = compiled.read_bytes()
+    preview = _apply({"BASE": fields})
+    row = next(item for item in _read_csv(catalog / "tenant-a" / "cadastro_produtos_lojas.csv") if item["sku"] == "BASE")
+    assert not row.get("id_bling")
+    if expected_conflict:
+        assert expected_conflict in preview["items"][0]["conflicts"]
+        assert not preview["apply_rows"]
+    assert compiled.read_bytes() == compiled_before
+    assert load_composition_catalog("tenant-a").resolve("KIT", "store-a")[0].sku == "KIT"
+
+
+
+@pytest.mark.parametrize("changed_after_preview", [False, True])
+def test_worker_and_public_apply_materialize_confirmed_ids_with_version_guard(catalog, monkeypatch, changed_after_preview):
+    _seed()
+    _compiled_ids_without_store(catalog)
+    canonical = catalog / "tenant-a" / "cadastro_produtos_lojas.csv"
+    before = canonical.read_bytes()
+    fingerprint = "a" * 64
+    request = SimpleNamespace(state=SimpleNamespace(username="operator-a"))
+    job = {
+        "job_id": "composition-refresh", "client_id": "tenant-a", "store_id": "store-a",
+        "store_name": "Loja A", "source": "bling", "status": "queued", "can_apply": False,
+        "requester_fingerprint": imports._requester_fingerprint(request, "tenant-a"),
+        "config_fingerprint": fingerprint, "apply_config_fingerprint": fingerprint,
+        "created_at_utc": imports._agora_utc(), "updated_at_utc": imports._agora_utc(),
+        "updated_ts": time.time(), "cancel_event": threading.Event(), "preview": None,
+    }
+    monkeypatch.setattr(imports, "CATALOG_IMPORT_JOBS", {job["job_id"]: job})
+    monkeypatch.setattr(imports, "_configuracao_fingerprint", lambda *_: fingerprint)
+    monkeypatch.setattr(imports, "_configuracao_fingerprints", lambda *_: (fingerprint, fingerprint))
+    validation_calls = []
+
+    def validate(*args):
+        validation_calls.append(args)
+        return fingerprint
+
+    monkeypatch.setattr(imports, "_configuracao_aplicacao_fingerprint", validate)
+    monkeypatch.setattr(imports, "_provider_for", lambda _: lambda *_args, **_kwargs: {
+        "source": "bling", "store_id": "store-a", "coverage_complete": True,
+        "sku_coverage_complete": True, "started_config_fingerprint": fingerprint,
+        "config_fingerprint": fingerprint, "started_apply_config_fingerprint": fingerprint,
+        "apply_config_fingerprint": fingerprint,
+        "items": [{"sku": sku, "fields": fields} for sku, fields in _initial().items()],
+    })
+    imports._catalog_import_worker(job["job_id"])
+    assert job["status"] == "ready"
+    assert canonical.read_bytes() == before
+    assert {row["sku"]: row["fields"].get("id_bling") for row in job["preview"]["apply_rows"]} == {
+        "BASE": "1", "KIT": "2",
+    }
+    if changed_after_preview:
+        base = next(row for row in _read_csv(canonical) if row["sku"] == "BASE")
+        store.salvar_produto_loja("tenant-a", "store-a", {
+            "sku": "BASE", "nome": "Concurrent edit", "row_version": int(base["row_version"]),
+        })
+        after_edit = canonical.read_bytes()
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(imports.aplicar_importacao_catalogo("store-a", job["job_id"], request, "tenant-a"))
+        assert error.value.status_code == 409
+        assert job["status"] == "stale"
+        assert job["error"]["cause"] == "cadastro_changed"
+        assert canonical.read_bytes() == after_edit
+        assert all(not row.get("id_bling") for row in _read_csv(canonical))
+    else:
+        response = asyncio.run(imports.aplicar_importacao_catalogo("store-a", job["job_id"], request, "tenant-a"))
+        assert response["status"] == "applied"
+        assert response["apply_result"]["atualizados"] == 2
+        assert len(validation_calls) >= 2  # Before apply and inside the atomic writer.
+        assert "__catalog_bling_id_persisted" not in json.dumps(response)
+        assert all(not any(key.startswith("__catalog_") for key in row) for row in _read_csv(canonical))
+        resolved = load_composition_catalog("tenant-a")
+        assert [(item.sku, item.fator) for item in resolved.resolve("KIT", "store-a")] == [("BASE", Decimal(2))]
+        assert not resolved.warnings
+        after_apply = canonical.read_bytes()
+        repeated = asyncio.run(imports.aplicar_importacao_catalogo("store-a", job["job_id"], request, "tenant-a"))
+        assert repeated["status"] == "applied"
+        assert canonical.read_bytes() == after_apply
