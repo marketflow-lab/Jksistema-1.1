@@ -17,6 +17,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from .compositions import load_composition_catalog
 from .errors import VendasDomainError
+from .legacy_duplicates import is_short_legacy_sale
 from .legacy import (
     _deduplicar_vendas_consolidadas,
     _deve_excluir_venda_ebazar,
@@ -26,6 +27,7 @@ from .performance import (
     append_indexable_date_filter,
     cache_vendas_response,
     cached_table_columns,
+    legacy_store_conflicts,
     open_vendas_readonly,
     select_compatible_column,
     vendas_source_paths,
@@ -173,6 +175,8 @@ def _read_sales_rows(
         ("comprador", "''"),
         ("unidade_negocio", "''"),
         ("nota_fiscal_id", "''"),
+        ("numero_nf", "''"),
+        ("origem_tipo", "''"), ("origem_id", "''"), ("item_id", "''"),
     )
 
     for source_index, db_path in enumerate(db_paths):
@@ -210,6 +214,10 @@ def _read_sales_rows(
         finally:
             if connection is not None:
                 connection.close()
+    blocked = legacy_store_conflicts(db_paths, rows)
+    for item in rows:
+        if is_short_legacy_sale(item) and item.get("loja_conta") in blocked:
+            item["__legacy_store_ambiguous"] = True
     return rows, processed, errors
 
 

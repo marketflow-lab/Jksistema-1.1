@@ -28,6 +28,7 @@ from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_l
 from .compositions import load_composition_catalog
 from .dependencies import get_tenant_path, get_vendas_dependencies, logger
 from .errors import VendasDomainError as HTTPException
+from .legacy_duplicates import without_legacy_sale_duplicates
 from .legacy import (
     _carregar_mapeamento_lojas_virtuais_cliente,
     _deve_excluir_venda_ebazar,
@@ -45,6 +46,7 @@ from .performance import (
     cache_vendas_response,
     cached_file_value,
     cached_table_columns,
+    legacy_store_conflicts,
     select_compatible_column,
     open_vendas_readonly,
     vendas_source_paths,
@@ -283,11 +285,8 @@ def grafico_vendas(
             "id_unico", "data", "devolucao", "sku", "quantidade", "valor",
             "loja_conta", "unidade_negocio", "numero", "comprador", "canal",
             "situacao", "nota_fiscal_id", "store_id",
+            "numero_nf", "origem_tipo", "origem_id", "item_id",
         )
-        query = """
-            SELECT id_unico, data, devolucao, sku, quantidade, valor, loja_conta, unidade_negocio, numero, comprador, canal, situacao, nota_fiscal_id, {store_column}
-            FROM vendas
-        """
         conditions = ["coalesce(devolucao, 0) = 0"]
         params = []
         append_indexable_date_filter(
@@ -311,8 +310,7 @@ def grafico_vendas(
             if filtro_unidade_sql:
                 conditions.append(filtro_unidade_sql.replace(" AND ", "", 1))
                 params.extend(filtro_unidade_params)
-        query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY data"
+        where_sql = " WHERE " + " AND ".join(conditions) + " ORDER BY data"
         rows = []
         for path in db_paths:
             if not os.path.exists(path):
@@ -321,13 +319,18 @@ def grafico_vendas(
             try:
                 cur_db = conn_db.cursor()
                 columns = cached_table_columns(path, "vendas", conn_db)
-                store_column = select_compatible_column(columns, "store_id")
-                cur_db.execute(query.format(store_column=store_column), params)
+                query = "SELECT " + ", ".join(
+                    select_compatible_column(
+                        columns, field, "0" if field in {"devolucao", "quantidade", "valor"} else "''",
+                    ) for field in sale_fields
+                ) + " FROM vendas" + where_sql
+                cur_db.execute(query, params)
                 rows.extend(cur_db.fetchall())
             finally:
                 conn_db.close()
 
-        # Evita contabilizar a mesma venda duas vezes ao consolidar bancos do tenant.
+        # Keep the graph's original consolidation independent of runtime
+        # adapters, then apply the shared legacy/document identity check.
         rows_unicos = []
         vistos = set()
         for row in rows:
@@ -338,19 +341,22 @@ def grafico_vendas(
                 chave = ("id_unico", id_unico)
             else:
                 chave = (
-                    "fallback",
-                    str(row[1] or "")[:10],
-                    str(row[6] or "").strip().lower(),
-                    str(row[8] or "").strip(),
-                    str(row[3] or "").strip().upper(),
-                    float(row[4] or 0),
-                    float(row[5] or 0),
-                    str(row[9] or "").strip().lower(),
+                    "fallback", str(row[1] or "")[:10],
+                    str(row[6] or "").strip().lower(), str(row[8] or "").strip(),
+                    str(row[3] or "").strip().upper(), float(row[4] or 0),
+                    float(row[5] or 0), str(row[9] or "").strip().lower(),
                 )
             if chave in vistos:
                 continue
             vistos.add(chave)
             rows_unicos.append(row)
+        sales = [dict(zip(sale_fields, row)) for row in rows_unicos]
+        consolidated = without_legacy_sale_duplicates(
+            sales, blocked_store_names=legacy_store_conflicts(db_paths, sales),
+        )
+        rows_unicos = [
+            tuple(item.get(field) for field in sale_fields) for item in consolidated
+        ]
 
         rows_pareto = _filtrar_vendas_lojas_ativas(rows_unicos, client_id, loja)
         pareto_skus, pareto_meta = _calcular_skus_pareto_80(rows_pareto)

@@ -1647,7 +1647,11 @@ def _chave_deduplicacao_venda(item: dict) -> tuple:
     )
 
 
-def _deduplicar_vendas_consolidadas(itens: list[dict]) -> list[dict]:
+def _deduplicar_vendas_consolidadas(
+    itens: list[dict], *, blocked_store_names: set[str] | None = None,
+) -> list[dict]:
+    from backend.modules.vendas.legacy_duplicates import without_legacy_sale_duplicates
+
     mapa: dict[tuple, dict] = {}
 
     for item in itens or []:
@@ -1664,7 +1668,7 @@ def _deduplicar_vendas_consolidadas(itens: list[dict]) -> list[dict]:
         if score_novo > score_atual:
             mapa[chave] = item
 
-    return list(mapa.values())
+    return without_legacy_sale_duplicates(list(mapa.values()), blocked_store_names=blocked_store_names)
 
 
 def _deve_excluir_venda_ebazar(devolucao=0, comprador: str = "", canal: str = "") -> bool:

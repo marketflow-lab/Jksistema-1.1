@@ -9,12 +9,14 @@ import os
 import re
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from backend.schemas import VendasSyncRequest
 from backend.services.sqlite_coordination import configure_sqlite_connection, sqlite_lock_for_path
 
 from .errors import VendasDomainError as HTTPException
+from .legacy_duplicates import without_legacy_sale_duplicates
 from .legacy import (
     _bling_executar_com_refresh,
     _bling_listar_naturezas,
@@ -37,7 +39,7 @@ from .legacy import (
     _tipo_devolucao_cfop_full_estoque,
     buscar_loja,
 )
-from .performance import invalidate_vendas_cache
+from .performance import invalidate_vendas_cache, legacy_store_conflicts
 from .progress import (
     _criar_progresso,
     _set_progresso,
@@ -618,7 +620,8 @@ def _substituir_documentos_vendas(
     # Adopt it only when the exact old identity can be reconstructed. Never
     # remove records merely because buyer, amount or SKU happen to be equal.
     legacy_rows = cursor.execute(
-        "SELECT id_unico, sku, quantidade, valor, numero_nf, numero, nota_fiscal_id, canal "
+        "SELECT id_unico, sku, quantidade, valor, numero_nf, numero, nota_fiscal_id, canal, "
+        "data, comprador, origem_id, item_id "
         "FROM vendas WHERE loja_conta=? AND coalesce(store_id,'')='' AND coalesce(origem_tipo,'')=''",
         (req.loja,),
     ).fetchall() if legacy_allowed else []
@@ -667,7 +670,7 @@ def _substituir_documentos_vendas(
         _normalizar_numero_deduplicacao_venda(req.loja).replace("/", "_") or "sem_loja"
     ) + "_"
     for legacy in legacy_rows:
-        legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, _channel = legacy
+        legacy_id, sku, quantity, amount, invoice_number, number, invoice_id, _channel = legacy[:8]
         legacy_id = str(legacy_id)
         invoice = str(invoice_id or "")
         legacy_invoice_id = _montar_id_unico_venda(
@@ -704,6 +707,41 @@ def _substituir_documentos_vendas(
             or (invoice and invoice in orders_without_reference[1])
         ):
             remove_legacy.add(legacy_id)
+    # The earliest IDs contain only account, displayed order number and SKU.
+    # Migrate them using the same documentary evidence used by read endpoints;
+    # the typed item IDs still preserve every legitimate repeated line.
+    store_id = str(getattr(req, "store_id", None) or "").strip()
+    if store_id and legacy_allowed and rows:
+        legacy_fields = (
+            "id_unico", "sku", "quantidade", "valor", "numero_nf", "numero",
+            "nota_fiscal_id", "canal", "data", "comprador", "origem_id", "item_id",
+        )
+        old_rows = [dict(zip(legacy_fields, row), loja_conta=req.loja) for row in legacy_rows]
+        typed_fields = {
+            "id_unico": 0, "data": 1, "loja_conta": 2, "canal": 3, "numero": 4,
+            "devolucao": 6, "sku": 7, "quantidade": 9, "valor": 10, "numero_nf": 12,
+            "comprador": 13, "nota_fiscal_id": 15, "origem_tipo": 20, "origem_id": 21, "item_id": 22,
+        }
+        new_rows = [
+            dict(((key, row[index]) for key, index in typed_fields.items()), store_id=store_id)
+            for row in rows
+        ]
+        # A homonymous account may exist only in another historical database
+        # of this tenant. Include it before adopting a row with no store ID.
+        source_path = next((row[2] for row in cursor.execute("PRAGMA database_list") if row[1] == "main"), "")
+        identity_sources = [source_path] if source_path else []
+        if source_path:
+            identity_sources.extend(
+                str(path) for path in Path(source_path).parent.glob("vendas_historico*.db")
+                if ".backup_" not in path.name
+            )
+        blocked = legacy_store_conflicts(identity_sources, old_rows, store_id=store_id)
+        kept = {
+            row["id_unico"] for row in without_legacy_sale_duplicates(
+                old_rows + new_rows, blocked_store_names=blocked,
+            )
+        }
+        remove_legacy.update(row["id_unico"] for row in old_rows if row["id_unico"] not in kept)
     cursor.executemany("DELETE FROM vendas WHERE coalesce(store_id,'')='' AND loja_conta=? AND id_unico=?",
                        [(req.loja, row_id) for row_id in remove_legacy])
 

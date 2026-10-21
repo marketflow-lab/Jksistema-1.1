@@ -71,6 +71,7 @@ def vendas_file_signature(path: str | os.PathLike[str] | None) -> tuple:
 
 def vendas_sources_signature(paths: Iterable[str | os.PathLike[str]]) -> tuple:
     unique = {os.path.abspath(os.fspath(path)) for path in paths if path}
+    unique.update(path + "-wal" for path in tuple(unique) if path.lower().endswith(".db"))
     return tuple(vendas_file_signature(path) for path in sorted(unique))
 
 
@@ -271,7 +272,7 @@ def open_vendas_readonly(path: str, *, row_factory=None) -> sqlite3.Connection:
 def cached_table_columns(path: str, table: str, conn: sqlite3.Connection) -> frozenset[str]:
     if not _IDENTIFIER_RE.fullmatch(table):
         raise ValueError("Invalid SQLite table name")
-    key = (vendas_file_signature(path), table)
+    key = (vendas_file_signature(path), vendas_file_signature(str(path) + "-wal"), table)
     with _CACHE_LOCK:
         cached = _SCHEMA_CACHE.get(key)
         if cached is not None:
@@ -290,6 +291,55 @@ def select_compatible_column(columns: set[str] | frozenset[str], name: str, defa
     if not _IDENTIFIER_RE.fullmatch(name):
         raise ValueError("Invalid SQLite column name")
     return name if name in columns else f"{default} AS {name}"
+
+
+def legacy_store_conflicts(
+    paths: Iterable[str], rows: Iterable[dict], *, store_id: str = "",
+) -> set[str]:
+    """Resolve legacy account ambiguity outside the requested SKU/date window.
+
+    Only accounts with a short legacy ID need this check. A failed source read
+    keeps their legacy rows, rather than adopting an account without evidence.
+    The cache includes the WAL so an uncheckpointed account change is visible.
+    """
+    from .legacy_duplicates import is_short_legacy_sale
+
+    names = tuple(sorted({str(row.get("loja_conta") or "") for row in rows if is_short_legacy_sale(row)}))
+    if not names:
+        return set()
+    accounts = {name: {store_id} if store_id else set() for name in names}
+    for path in dict.fromkeys(paths):
+        if not path or not os.path.isfile(path):
+            continue
+        key = ("legacy-accounts", vendas_file_signature(path), vendas_file_signature(str(path) + "-wal"), names)
+        with _CACHE_LOCK:
+            observed = _FILE_CACHE.get(key)
+        if observed is None:
+            try:
+                conn = open_vendas_readonly(path)
+                try:
+                    found = set()
+                    placeholders = ",".join("?" for _ in names)
+                    for table in ("vendas", "notas_entrada", "notas_entrada_itens"):
+                        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                        if {"loja_conta", "store_id"} <= columns:
+                            found.update(conn.execute(
+                                f"SELECT DISTINCT loja_conta, trim(store_id) FROM {table} "
+                                f"WHERE loja_conta IN ({placeholders}) AND trim(coalesce(store_id,'')) != ''",
+                                names,
+                            ).fetchall())
+                    observed = frozenset(found)
+                finally:
+                    conn.close()
+            except (OSError, sqlite3.Error):
+                return set(names)
+            with _CACHE_LOCK:
+                _FILE_CACHE[key] = observed
+                while len(_FILE_CACHE) > VENDAS_CACHE_MAX_ENTRIES:
+                    _FILE_CACHE.popitem(last=False)
+        for name, store_id in observed:
+            accounts[name].add(store_id)
+    return {name for name, identities in accounts.items() if len(identities) > 1}
 
 
 def append_indexable_date_filter(

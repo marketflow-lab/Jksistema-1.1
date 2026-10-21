@@ -50,6 +50,7 @@ from .performance import (
     cache_vendas_response,
     cached_table_columns,
     invalidate_vendas_cache,
+    legacy_store_conflicts,
     open_vendas_readonly,
     select_compatible_column,
     vendas_source_paths,
@@ -105,6 +106,7 @@ def listar_vendas(
                     ("comprador", "''"), ("unidade_negocio", "''"),
                     ("nota_fiscal_id", "''"), ("loja_id", "''"), ("unidade_id", "''"),
                     ("intermediador_nome", "''"), ("intermediador_cnpj", "''"),
+                    ("origem_tipo", "''"), ("origem_id", "''"), ("item_id", "''"),
                 )
                 query = "SELECT " + ", ".join(
                     select_compatible_column(cols, name, default) for name, default in select_specs
@@ -172,12 +174,15 @@ def listar_vendas(
             logger.info("[VENDAS] Retornando lista vazia para evitar quebra na UI.")
             return []
 
-        dados = _deduplicar_vendas_consolidadas(dados)
+        dados = _deduplicar_vendas_consolidadas(
+            dados, blocked_store_names=legacy_store_conflicts(db_paths, dados),
+        )
         if catalog is not None:
             dados = catalog.project_rows(dados, target_sku=sku, store=loja)
         # Remove id_unico após dedup (campo interno, não deve ser exposto ao frontend)
         for item in dados:
-            item.pop("id_unico", None)
+            for field in ("id_unico", "origem_tipo", "origem_id", "item_id"):
+                item.pop(field, None)
         dados.sort(key=lambda x: str(x.get("data") or ""), reverse=True)
         return dados
 
@@ -200,6 +205,7 @@ def listar_vendas(
                 ("comprador", "''"), ("unidade_negocio", "''"),
                 ("nota_fiscal_id", "''"), ("loja_id", "''"), ("unidade_id", "''"),
                 ("intermediador_nome", "''"), ("intermediador_cnpj", "''"),
+                ("origem_tipo", "''"), ("origem_id", "''"), ("item_id", "''"),
             )
             query = "SELECT " + ", ".join(
                 select_compatible_column(cols, name, default) for name, default in select_specs
@@ -362,10 +368,6 @@ def listar_vendas(
                         write_conn.close()
                 invalidate_vendas_cache(client_id)
 
-            for item in dados:
-                if catalog is None:
-                    item.pop("id_unico", None)
-
             bancos_processados += 1
             break
         except Exception as e:
@@ -383,10 +385,14 @@ def listar_vendas(
         logger.info("[VENDAS] Retornando lista vazia para resolver_nf=true para evitar quebra na UI.")
         return []
 
+    dados = _deduplicar_vendas_consolidadas(
+        dados, blocked_store_names=legacy_store_conflicts(db_paths, dados),
+    )
     if catalog is not None:
-        dados = catalog.project_rows(_deduplicar_vendas_consolidadas(dados), target_sku=sku, store=loja)
-        for item in dados:
-            item.pop("id_unico", None)
+        dados = catalog.project_rows(dados, target_sku=sku, store=loja)
+    for item in dados:
+        for field in ("id_unico", "origem_tipo", "origem_id", "item_id"):
+            item.pop(field, None)
     return dados
 
 def _vendas_resumo_num(valor):
@@ -537,6 +543,11 @@ def resumo_vendas(
                 _vendas_resumo_col(cols, "unidade_id"),
                 _vendas_resumo_col(cols, "intermediador_nome"),
                 _vendas_resumo_col(cols, "intermediador_cnpj"),
+                _vendas_resumo_col(cols, "numero_nf"),
+                _vendas_resumo_col(cols, "nota_fiscal_id"),
+                _vendas_resumo_col(cols, "origem_tipo"),
+                _vendas_resumo_col(cols, "origem_id"),
+                _vendas_resumo_col(cols, "item_id"),
             ]
             query = "SELECT " + ", ".join(select_cols) + " FROM vendas"
             conditions = ["coalesce(devolucao, 0) = 0"] if "devolucao" in cols else []
@@ -602,7 +613,9 @@ def resumo_vendas(
             if conn:
                 conn.close()
 
-    vendas_deduplicadas = _deduplicar_vendas_consolidadas(vendas_brutas)
+    vendas_deduplicadas = _deduplicar_vendas_consolidadas(
+        vendas_brutas, blocked_store_names=legacy_store_conflicts(db_paths, vendas_brutas),
+    )
     resumo_por_sku: dict[str, dict] = {}
     totals = {
         "pedidos": 0,
