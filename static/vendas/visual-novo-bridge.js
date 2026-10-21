@@ -53,7 +53,7 @@
     }
 
     function contextKey(filters = readFilters()) {
-        return JSON.stringify([currentClientId(), filters.inicio, filters.fim, filters.loja, filters.unidade]);
+        return JSON.stringify([currentClientId(), filters.inicio, filters.fim, filters.loja, filters.unidade, window.JKVendasReadState?.epoch || 0]);
     }
 
     function readChartOptions() {
@@ -114,12 +114,19 @@
         const graphMatch = clientMatches && graphContext === chartContextKey();
         const nativeStatus = typeof statusEl !== 'undefined' ? statusEl : null;
         const persistentStatus = document.getElementById('syncPersistenteStatus');
+        const read = window.JKVendasReadState?.get('resumo');
+        const graphRead = window.JKVendasReadState?.get('grafico');
+        const nativeError = /(?:^|\s)error(?:\s|$)/.test(String(nativeStatus?.className || ''));
         return {
             revision,
             clientId: currentClientId(),
             contextKey: key,
-            loading: !rowsMatch,
-            graphLoading: !graphMatch,
+            loading: window.JKVendasReadState?.isClosed() || read?.state === 'error' || (!read && nativeError) ? false : !rowsMatch,
+            graphLoading: window.JKVendasReadState?.isClosed() || graphRead?.state === 'error' || (!graphRead && nativeError) ? false : !graphMatch,
+            updating: rowsMatch && read?.state === 'loading',
+            graphUpdating: graphMatch && graphRead?.state === 'loading',
+            loadError: read?.error || (!read && nativeError ? nativeStatus?.textContent || 'Não foi possível carregar os dados.' : ''),
+            graphError: graphRead?.error || (!graphRead && nativeError ? nativeStatus?.textContent || 'Não foi possível carregar o gráfico.' : ''),
             rows: rowsMatch ? copy(capturedRows) : [],
             totals: totalsMatch ? copy(capturedTotals) : null,
             summaryCards: totalsMatch ? copy(capturedCards) : [],
@@ -332,7 +339,8 @@
             if (!['pareto', 'general'].includes(name)) throw new RangeError('Relatório inválido.');
             return click(document.getElementById(name === 'pareto' ? 'btnPareto80' : 'btnRelatorioGeralSkus'));
         },
-        openSku, getChartInstances, resizeCharts
+        openSku, getChartInstances, resizeCharts,
+        retryReads: () => recarregarDadosDisponiveisVendas()
     };
     window.JKVendasLegacyBridge = Object.freeze(bridge);
 
@@ -350,5 +358,6 @@
     document.querySelectorAll('.grafico-btn').forEach(button => button.addEventListener('click', schedulePublish));
     window.addEventListener('jk:vendas-sync-state', schedulePublish);
     window.addEventListener('jk:vendas-sync-finished', schedulePublish);
+    window.addEventListener('jk:vendas-read-state', schedulePublish);
     window.addEventListener('storage', event => { if (event.key === 'user_data' || event.key === 'access_token') schedulePublish(); });
 }());

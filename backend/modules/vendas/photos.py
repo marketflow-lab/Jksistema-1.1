@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from urllib.parse import quote, unquote, urlsplit
 
+from backend.services.medias_compras_leitura import consulta_medias
+
 
 PHOTO_HEADER = "X-JK-Vendas-Fotos"
 _PHOTO_METADATA = {"photo_scope", "photo_store_name", "photo_ambiguous"}
@@ -254,6 +256,7 @@ def _apply_aggregate(rows: list, client_id: str, projection: dict, skus: tuple[s
             row["photo_ambiguous"] = True
 
 
+@consulta_medias
 def enrich_summary_photos(payload: object, client_id: str, loja: str | None) -> object:
     """Copy cached sales and add optional provenance without changing totals."""
     if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):

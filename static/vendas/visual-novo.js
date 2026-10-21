@@ -105,7 +105,7 @@
                 <div class="vn-sync-actions"><button type="button" id="vnSync" class="vn-btn vn-btn-primary">${icon('refresh')}Sincronizar</button><button type="button" id="vnPause" class="vn-btn vn-btn-pause" title="Pausar sincronização e atualização automática de todas as lojas">${icon('pause')}Pausar</button></div>
             </section>
             <section class="vn-rangebar" aria-label="Atalhos e opções do período"><div class="vn-control-group"><span class="vn-control-label">Período rápido</span>${segmented('Período rápido', [['3m', '3 meses', 'data-vn-period'], ['6m', '6 meses', 'data-vn-period'], ['1a', '1 ano', 'data-vn-period'], ['2a', '2 anos', 'data-vn-period'], ['max', 'Tudo', 'data-vn-period']])}</div><div class="vn-sync-options"><label><input type="checkbox" id="vnForce">Re-sincronizar</label><label><input type="checkbox" id="vnAuto">Atualizar automaticamente</label></div></section>
-            <div class="vn-status vendas-sync-bar" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><div id="vnStatus"></div><div id="vnPersistentStatus"></div><div id="vnActionStatus"></div><div id="vnCompositionWarning"></div></div>
+            <div class="vn-status vendas-sync-bar" role="status" aria-live="polite"><span id="vnLoading" class="vn-loading" hidden></span><div id="vnStatus"></div><div id="vnPersistentStatus"></div><div id="vnActionStatus"></div><div id="vnReadError" role="alert"></div><button type="button" id="vnReadRetry" class="vn-btn" hidden>Tentar carregar dados novamente</button><div id="vnCompositionWarning"></div></div>
             <section class="vn-kpis" aria-label="Indicadores do período">
                 <article class="vn-kpi vn-kpi-primary"><h2>${icon('money')}Valor líquido</h2><div class="vn-kpi-value" id="vnNet">—</div><p id="vnGross">Bruto —</p></article>
                 <article class="vn-kpi"><h2>${icon('cart')}Pedidos</h2><div class="vn-kpi-value" id="vnOrders">—</div><p>No período selecionado</p></article>
@@ -177,6 +177,7 @@
                     const options = state.snapshot?.chartOptions || {};
                     return call('setInterval', options.intervalo ?? options.intervaloGrafico ?? 'mes');
                 }
+                case 'vnReadRetry': return call('retryReads');
                 case 'vnPagePrevious': state.page = Math.max(1, state.page - 1); renderProducts(); scrollProducts(); return;
                 case 'vnPageNext': state.page += 1; renderProducts(); scrollProducts(); return;
                 case 'vnOpenSku': {
@@ -370,7 +371,9 @@
         find('vnSync').classList.toggle('vn-syncing', Boolean(snapshot.sync?.running || snapshot.sync?.emAndamento || snapshot.syncEmAndamento));
         find('vnForce').checked = Boolean(document.getElementById('forcarSync')?.checked);
         find('vnAuto').checked = Boolean(document.getElementById('syncAutomatico')?.checked);
-        find('vnLoading').hidden = !snapshot.loading;
+        find('vnLoading').hidden = !(snapshot.loading || snapshot.updating || snapshot.graphUpdating);
+        text('vnReadError', snapshot.loadError || '');
+        find('vnReadRetry').hidden = !snapshot.loadError;
         renderSyncStatus(snapshot);
         text('vnFooterContext', `${filters.loja && filters.loja !== '__todas' ? filters.loja : 'Todas as lojas'}${filters.inicio && filters.fim ? ` · ${periodLabel}` : ''}`);
         find('vnOpenReturns').disabled = !document.querySelector('#resumo .card-devolucoes button');
@@ -406,11 +409,13 @@
     function renderHighlights() {
         const ordered = [...rows()].sort((a, b) => rowValue(b) - rowValue(a));
         const relevant = ordered.slice(0, 4);
-        const key = JSON.stringify([state.context, Boolean(state.snapshot?.loading), relevant]);
+        const key = JSON.stringify([state.context, Boolean(state.snapshot?.loading), Boolean(state.snapshot?.loadError), relevant]);
         if (highlightsRenderKey === key) return;
         highlightsRenderKey = key;
         const featured = relevant[0];
-        find('vnFeatured').innerHTML = featured ? `<button type="button" class="vn-featured-product" data-vn-sku="${escape(featured.sku)}">${photo(featured, 'vn-featured-photo')}<span class="vn-product-sku">SKU ${escape(featured.sku)}</span><span class="vn-featured-name">${escape(featured.produto || 'Produto sem descrição')}</span><span class="vn-featured-value">${formatMoney(rowValue(featured))}</span><span class="vn-featured-meta">${formatInteger(featured.pedidos)} pedidos<span>Ver detalhes ${icon('arrow')}</span></span></button>` : `<div class="vn-empty vn-empty-compact">${icon('box')}<p>${state.snapshot?.loading ? 'Carregando produtos…' : 'Sem produtos para o período selecionado.'}</p></div>`;
+        const emptyText = state.snapshot?.loadError ? 'Não foi possível carregar os produtos. Tente novamente.'
+            : state.snapshot?.loading ? 'Carregando produtos…' : 'Sem produtos para o período selecionado.';
+        find('vnFeatured').innerHTML = featured ? `<button type="button" class="vn-featured-product" data-vn-sku="${escape(featured.sku)}">${photo(featured, 'vn-featured-photo')}<span class="vn-product-sku">SKU ${escape(featured.sku)}</span><span class="vn-featured-name">${escape(featured.produto || 'Produto sem descrição')}</span><span class="vn-featured-value">${formatMoney(rowValue(featured))}</span><span class="vn-featured-meta">${formatInteger(featured.pedidos)} pedidos<span>Ver detalhes ${icon('arrow')}</span></span></button>` : `<div class="vn-empty vn-empty-compact">${icon('box')}<p>${emptyText}</p></div>`;
         find('vnHighlights').innerHTML = relevant.slice(1, 4).map(productCard).join('');
         text('vnViewAll', `Ver todos os ${formatInteger(rows().length)} produtos →`);
         photoHint();
@@ -456,6 +461,8 @@
         find('vnProductGrid').hidden = state.view !== 'cards' || list.length === 0;
         find('vnProductTableWrap').hidden = state.view !== 'table' || list.length === 0;
         find('vnProductEmpty').hidden = list.length > 0;
+        find('vnProductEmpty').querySelector('h3').textContent = state.snapshot?.loadError
+            ? 'Não foi possível carregar os produtos' : state.snapshot?.loading ? 'Carregando produtos…' : 'Nenhum produto encontrado';
         text('vnProductsCount', `${formatInteger(rows().length)} produtos`);
         text('vnProductsContext', state.query || state.returnsOnly ? `${formatInteger(list.length)} de ${formatInteger(rows().length)} produtos correspondem aos filtros da lista` : 'Todos os produtos carregados do período');
         text('vnPageLabel', list.length ? `${formatInteger(start + 1)}–${formatInteger(start + shown.length)} de ${formatInteger(list.length)} produtos` : '0 produtos');
@@ -550,7 +557,7 @@
             state.graphSignature = signature;
             state.graphError = false;
         }
-        const ready = !snapshot.graphLoading && snapshot.graph?.data != null;
+        const ready = !snapshot.graphError && !snapshot.graphLoading && snapshot.graph?.data != null;
         const wasHidden = find('vnChartSlot').hidden;
         // Only the presentation slots are hidden. Native canvas state and wrapper visibility remain owned by the engine.
         find('vnChartSlot').hidden = !ready;
@@ -561,9 +568,9 @@
             if (wasHidden) resizeCharts();
             return;
         }
-        find('vnChartStateSpinner').hidden = state.graphError || !snapshot.graphLoading;
-        text('vnChartStateText', state.graphError ? 'Não foi possível carregar o gráfico para estes filtros.'
-            : snapshot.graphLoading ? 'Carregando gráfico para estes filtros…' : 'Gráfico indisponível para estes filtros.');
+        find('vnChartStateSpinner').hidden = Boolean(snapshot.graphError) || state.graphError || !snapshot.graphLoading;
+        text('vnChartStateText', snapshot.graphError || (state.graphError ? 'Não foi possível carregar o gráfico para estes filtros.'
+            : snapshot.graphLoading ? 'Carregando gráfico para estes filtros…' : 'Gráfico indisponível para estes filtros.'));
     }
 
     function acceptSnapshot(snapshot) {

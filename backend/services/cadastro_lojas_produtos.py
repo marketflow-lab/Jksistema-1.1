@@ -1065,6 +1065,7 @@ def _enriquecer_produto(
     contexto: dict[str, Any],
     *,
     scope_source: str = "store_file",
+    incluir_fotos: bool = True,
 ) -> dict[str, Any]:
     produto = _normalizar_registro_persistido(registro)
     for destino, fontes in {
@@ -1082,33 +1083,35 @@ def _enriquecer_produto(
     sku = produto["sku_normalizado"]
     client_id = loja.get("client_id") or contexto.get("client_id") or ""
     store_id = loja.get("store_id") or ""
-    foto_local = _cadastro_resolver_foto_local(
-        contexto.get("fotos", {}), produto.get("sku") or sku
-    )
-    foto_local_store_id = (
-        _cadastro_foto_store_id_referencia(client_id, foto_local)
-        if foto_local
-        else ""
-    )
-    if foto_local and foto_local_store_id == store_id:
-        produto["foto"] = foto_local
-    elif not _cadastro_foto_referencia_pertence_loja(
-        client_id,
-        store_id,
-        produto.get("foto") or "",
-    ):
-        produto["foto"] = ""
-    if not str(produto.get("foto") or "").strip() and foto_local:
-        produto["foto"] = foto_local
+    if incluir_fotos:
+        foto_local = _cadastro_resolver_foto_local(
+            contexto.get("fotos", {}), produto.get("sku") or sku
+        )
+        foto_local_store_id = (
+            _cadastro_foto_store_id_referencia(client_id, foto_local)
+            if foto_local
+            else ""
+        )
+        if foto_local and foto_local_store_id == store_id:
+            produto["foto"] = foto_local
+        elif not _cadastro_foto_referencia_pertence_loja(
+            client_id,
+            store_id,
+            produto.get("foto") or "",
+        ):
+            produto["foto"] = ""
+        if not str(produto.get("foto") or "").strip() and foto_local:
+            produto["foto"] = foto_local
     _aplicar_compilado(produto, contexto.get("compilado", {}).get(sku, {}))
-    for campo in _cadastro_foto_referencias_invalidas_loja(
-        client_id,
-        store_id,
-        produto,
-    ):
-        produto[campo] = ""
-    if not str(produto.get("foto") or "").strip() and foto_local:
-        produto["foto"] = foto_local
+    if incluir_fotos:
+        for campo in _cadastro_foto_referencias_invalidas_loja(
+            client_id,
+            store_id,
+            produto,
+        ):
+            produto[campo] = ""
+        if not str(produto.get("foto") or "").strip() and foto_local:
+            produto["foto"] = foto_local
     custo = contexto.get("custos", {}).get(sku)
     if isinstance(custo, dict):
         for campo in ("custo", "preco", "imposto"):
@@ -1693,6 +1696,7 @@ def _listar_produtos_loja_sync(
     _normalizar_sku_consulta: Callable[[Any], str] | None = None,
     _lojas_capturadas: list[dict[str, Any]] | None = None,
     _fontes_capturadas: dict[str, bytes] | None = None,
+    _incluir_fotos: bool = True,
 ) -> list[dict[str, Any]]:
     if skus is None:
         chaves_skus = None
@@ -1730,6 +1734,8 @@ def _listar_produtos_loja_sync(
     )
     saida: list[dict[str, Any]] = []
     chaves_explicitadas: set[str] = set()
+    # Keep the default call compatible with legacy readers/instrumentation.
+    opcoes_fotos = {} if _incluir_fotos else {"incluir_fotos": False}
     for item in registros:
         if item.get("store_id") != loja["store_id"]:
             continue
@@ -1740,7 +1746,7 @@ def _listar_produtos_loja_sync(
         apagado = bool(str(item.get("deleted_at_utc") or "").strip())
         if apagado and not include_deleted:
             continue
-        enriquecido = _enriquecer_produto(item, loja, contexto)
+        enriquecido = _enriquecer_produto(item, loja, contexto, **opcoes_fotos)
         enriquecido.pop("__catalog_photo_persisted", None)
         if include_catalog_metadata:
             foto_persistida = str(item.get("foto") or "")
@@ -1757,6 +1763,7 @@ def _listar_produtos_loja_sync(
             loja,
             contexto,
             scope_source="legacy_shadow",
+            **opcoes_fotos,
         )
         if include_legacy_snapshot_hash:
             enriquecido["__legacy_snapshot_hash"] = _fingerprint_sombra_legada(sombra)

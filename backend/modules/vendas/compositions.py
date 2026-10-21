@@ -19,6 +19,9 @@ import re
 import unicodedata
 from typing import Any
 
+from backend.services.medias_compras_leitura import consulta_medias
+from .performance import cache_vendas_response
+
 
 def _sku(value: Any) -> str:
     from backend.services.cadastro_common import _normalizar_sku_mes
@@ -576,6 +579,13 @@ def _store_field_proofs(products, sources, catalog, canonical_records):
     return frozenset(verified_ids), frozenset(verified_compositions)
 
 
+@cache_vendas_response(
+    "composition_catalog", lambda args: composition_source_paths(args["client_id"]),
+    cache_if=lambda catalog: not any(warning["code"] in {
+        "catalog_unavailable", "store_catalog_unavailable",
+    } for warning in catalog.warnings),
+)
+@consulta_medias
 def load_composition_catalog(client_id: str) -> CompositionCatalog:
     """Reuse Cadastro's coherent local snapshot and legacy store safeguards."""
     from backend.services import cadastro_compatibilidade as compatibility
@@ -599,6 +609,7 @@ def load_composition_catalog(client_id: str) -> CompositionCatalog:
                 products.extend(catalog._listar_produtos_loja_sync(
                     client_id, store_id, _registros_persistidos=records,
                     _lojas_capturadas=stores, _fontes_capturadas=sources,
+                    _incluir_fotos=False,
                 ))
             except Exception:
                 failures.append(store_id)

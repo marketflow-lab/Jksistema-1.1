@@ -65,6 +65,7 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(runtimeSource, context, { filename: 'runtime.js' });
+vm.runInContext(syncSource.slice(0, syncSource.indexOf('function aguardarProximoFrame()')), context, { filename: 'sync.js#fetch' });
 
 const monitor = windowMock.__jkVendasSyncMonitor;
 assert.ok(monitor, 'monitor compartilhado deve ser publicado no window');

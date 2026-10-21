@@ -14,7 +14,6 @@ const dadosSource = fs.readFileSync(path.join(root, 'static', 'vendas', 'dados-r
 const canonicalHtml = fs.readFileSync(path.join(root, 'static', 'vendas.html'), 'utf8');
 const mirrorHtml = fs.readFileSync(path.join(root, 'vendas.html'), 'utf8');
 
-const cacheKey = '20260831-vendas-lojas-visiveis-v1';
 const lojaRule = cssSource.match(/\.loja-group\s*\{([^}]+)\}/);
 
 assert.ok(lojaRule, 'a regra CSS da faixa de lojas deve existir');
@@ -29,13 +28,13 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const asset of ['styles.css', 'runtime.js', 'periodo-cache.js', 'sync.js', 'dados-render.js']) {
   const expectedCacheKey = asset === 'styles.css'
     ? '20261020-vendas-status-compacto-v2'
-    : (['sync.js', 'periodo-cache.js'].includes(asset) ? '20261020-devolucoes-loja-v1' : cacheKey);
+    : '20261020-vendas-carregamento-v1';
   assert.ok(
     canonicalHtml.includes(`/vendas/${asset}?v=${expectedCacheKey}`),
     `o cache-buster de ${asset} deve refletir a correcao`,
   );
 }
-assert.match(canonicalHtml, /\/vendas\/init\.js\?v=20260819-vendas-meses-completos-v1/);
+assert.match(canonicalHtml, /\/vendas\/init\.js\?v=20261020-vendas-carregamento-v1/);
 
 assert.match(runtimeSource, /let carregarLojasPromise = null;/);
 assert.match(dadosSource, /if \(carregarLojasPromise\) return carregarLojasPromise;/);

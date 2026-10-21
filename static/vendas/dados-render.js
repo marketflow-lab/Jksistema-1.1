@@ -293,10 +293,12 @@ function aplicarResumoVendas(payload, dataIniIso, dataFimIso) {
 }
 
 async function carregarVendas(opcoes = {}) {
+    if (window.JKVendasReadState?.isClosed()) return;
     const retornoRapido = !!opcoes.retornoRapido;
     const dataIniIso = getDataIniISO();
     const dataFimIso = getDataFimISO();
     const requestKey = JSON.stringify({
+        tenant: obterClientId(),
         dataIniIso,
         dataFimIso,
         loja: lojaSelecionada || '__todas',
@@ -309,9 +311,15 @@ async function carregarVendas(opcoes = {}) {
     carregarVendasController = new AbortController();
     carregarVendasRequestKey = requestKey;
     const requestController = carregarVendasController;
+    const stateKey = typeof carregarVendasToken === 'number' ? ++carregarVendasToken : requestController;
+    window.JKVendasReadState?.begin('resumo', stateKey);
+    if (typeof filtrarToken === 'number') filtrarToken += 1;
+    const leituraAtual = () => !requestController.signal.aborted && carregarVendasRequestKey === requestKey
+        && (!window.JKVendasReadState || window.JKVendasReadState.valid('resumo', stateKey));
 
     carregarVendasPromise = (async () => {
     if (!dataIniIso || !dataFimIso) {
+        window.JKVendasReadState?.finish('resumo', stateKey, 'idle');
         statusEl.className = 'status-bar';
         statusEl.textContent = '';
         return;
@@ -320,7 +328,7 @@ async function carregarVendas(opcoes = {}) {
     statusEl.className = 'status-bar loading';
     statusEl.innerHTML = `${spinnerHtml}Carregando vendas...`;
     try {
-        clientId = clientId || obterClientId();
+        clientId = obterClientId();
         if (!clientId) {
             console.warn('ClientId vazio - tentando carregar de localStorage novamente');
             const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
@@ -334,6 +342,7 @@ async function carregarVendas(opcoes = {}) {
             statusEl.className = 'status-bar error';
             statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
             console.warn('ClientId ainda vazio após nova tentativa');
+            window.JKVendasReadState?.finish('resumo', stateKey, 'error', 'Sessão expirada. Faça login novamente.');
             return;
         }
         const paramsResumo = new URLSearchParams();
@@ -351,13 +360,17 @@ async function carregarVendas(opcoes = {}) {
         }, 45000);
         if (!respResumo.ok) throw new Error(`HTTP ${respResumo.status}`);
         const payloadResumo = await respResumo.json();
-        if (requestController.signal.aborted || carregarVendasRequestKey !== requestKey) return;
+        if (!leituraAtual()) return;
         aplicarResumoVendas(payloadResumo, dataIniIso, dataFimIso);
+        window.JKVendasReadState?.captureData();
 
         statusEl.innerHTML = `${spinnerHtml}Renderizando resumo...`;
         await aguardarProximoFrame();
+        if (!leituraAtual()) return;
         atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
         await filtrar();
+        if (!leituraAtual()) return;
+        window.JKVendasReadState?.finish('resumo', stateKey, 'success');
         if (!syncEmAndamento) {
             statusEl.className = 'status-bar';
             statusEl.textContent = '';
@@ -415,16 +428,17 @@ async function carregarVendas(opcoes = {}) {
             statusEl.textContent = '';
         }
     } catch (e) {
-        if (e.name === 'AbortError' && carregarVendasRequestKey !== requestKey) return;
-        statusEl.className = 'status-bar error';
-        statusEl.textContent = `Erro ao carregar vendas: ${e.name === 'AbortError' ? 'tempo de resposta excedido' : e.message}`;
+        if (!leituraAtual() || e.name === 'AbortError') return;
+        const mensagem = `Erro ao carregar vendas: ${e.name === 'TimeoutError' ? 'tempo de resposta excedido. Tente carregar o período novamente.' : e.message}`;
+        window.JKVendasReadState?.finish('resumo', stateKey, 'error', mensagem);
+        exibirErroLeituraVendas(mensagem);
     }
     })();
 
     try {
         return await carregarVendasPromise;
     } finally {
-        if (carregarVendasRequestKey === requestKey) {
+        if (carregarVendasController === requestController) {
             carregarVendasPromise = null;
             carregarVendasController = null;
         }

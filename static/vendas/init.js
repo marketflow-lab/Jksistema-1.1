@@ -21,36 +21,26 @@ carregarLojas()
         if (retornoDoSku) {
             statusEl.className = 'status-bar loading';
             statusEl.innerHTML = `${spinnerHtml}Retornando da visão SKU...`;
-            setTimeout(async () => {
-                try {
-                    const restaurouCache = await restaurarCacheTelaVendasSeValido();
-                    if (restaurouCache) {
-                        agendarSegundoPlano(() => carregarGrafico(), 250);
-                        return;
-                    }
-                    const syncAtivo = await verificarSyncEmAndamentoNaEntrada();
-                    if (!syncAtivo && getDataIniISO() && getDataFimISO()) {
-                        await carregarVendas({ retornoRapido: true });
-                        agendarSegundoPlano(() => carregarGrafico(), 300);
-                    }
-                    if (!syncEmAndamento) {
-                        statusEl.className = 'status-bar';
-                        statusEl.textContent = '';
-                    }
-                } catch (_e) {
-                    statusEl.className = 'status-bar';
-                    statusEl.textContent = 'Retorno concluído. Clique em Atualizar período para recarregar os dados.';
-                }
-            }, 180);
-            return null;
+            void verificarSyncEmAndamentoNaEntrada();
+            const restaurouCache = await restaurarCacheTelaVendasSeValido();
+            if (restaurouCache) {
+                agendarSegundoPlano(() => carregarGrafico(), 100);
+                return null;
+            }
+        } else {
+            void verificarSyncEmAndamentoNaEntrada();
         }
 
-        await verificarSyncEmAndamentoNaEntrada();
         if (getDataIniISO() && getDataFimISO()) {
-            return carregarVendas().then(() => agendarSegundoPlano(() => carregarGrafico(), 300));
+            // Reads of confirmed data do not depend on synchronization status or each other.
+            agendarSegundoPlano(() => carregarGrafico(), 100);
+            return carregarVendas({ retornoRapido: retornoDoSku });
         }
         statusEl.className = 'status-bar';
         statusEl.textContent = '';
         return null;
     })
-    .catch(e => console.error('Erro ao carregar dados:', e));
+    .catch(e => {
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = `Erro ao carregar dados: ${e.message}`;
+    });

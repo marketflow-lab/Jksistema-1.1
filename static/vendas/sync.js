@@ -6,18 +6,42 @@ function obterClientId() {
 async function fetchComTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
     const externalSignal = options.signal;
-    const abortFromExternal = () => controller.abort(externalSignal?.reason);
-    if (externalSignal) {
-        if (externalSignal.aborted) abortFromExternal();
-        else externalSignal.addEventListener('abort', abortFromExternal, { once: true });
-    }
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        return await fetch(url, { ...options, signal: controller.signal });
-    } finally {
-        clearTimeout(timeoutId);
-        if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal);
-    }
+    const deadline = Date.now() + timeoutMs;
+    const executar = async operacao => {
+        const cancelar = () => controller.abort(new DOMException('Operação cancelada.', 'AbortError'));
+        if (externalSignal?.aborted) cancelar();
+        if (controller.signal.aborted) throw controller.signal.reason;
+        const restante = deadline - Date.now();
+        if (restante <= 0) {
+            controller.abort(new DOMException('Tempo de resposta excedido.', 'TimeoutError'));
+            throw controller.signal.reason;
+        }
+        let timeoutId;
+        let rejeitarCancelamento;
+        const cancelamento = new Promise((_resolve, reject) => {
+            rejeitarCancelamento = () => reject(controller.signal.reason);
+            controller.signal.addEventListener('abort', rejeitarCancelamento, { once: true });
+            externalSignal?.addEventListener('abort', cancelar, { once: true });
+            timeoutId = setTimeout(() => controller.abort(new DOMException('Tempo de resposta excedido.', 'TimeoutError')), restante);
+        });
+        try {
+            return await Promise.race([operacao(), cancelamento]);
+        } finally {
+            clearTimeout(timeoutId);
+            controller.signal.removeEventListener('abort', rejeitarCancelamento);
+            externalSignal?.removeEventListener('abort', cancelar);
+        }
+    };
+    const response = await executar(() => fetch(url, { ...options, signal: controller.signal }));
+    // Preserve Response consumers and the original absolute deadline, including a stalled body.
+    const leitores = new Set(['json', 'text', 'blob', 'arrayBuffer', 'formData', 'bytes']);
+    return new Proxy(response, {
+        get(target, property) {
+            const value = Reflect.get(target, property, target);
+            if (typeof value !== 'function') return value;
+            return leitores.has(property) ? (...args) => executar(() => value.apply(target, args)) : value.bind(target);
+        }
+    });
 }
 
 function aguardarProximoFrame() {
@@ -546,7 +570,7 @@ function pedidoSyncVendasConfirmado(job, pedido) {
 
 async function recuperarSyncLojaAposFalhaFetch(pedido, erroOriginal) {
     const mensagem = String(erroOriginal?.message || erroOriginal || '').toLowerCase();
-    if (!mensagem.includes('failed to fetch') && erroOriginal?.name !== 'TypeError' && erroOriginal?.name !== 'AbortError') {
+    if (!mensagem.includes('failed to fetch') && !['TypeError', 'AbortError', 'TimeoutError'].includes(erroOriginal?.name)) {
         return null;
     }
     for (let tentativa = 1; tentativa <= 3; tentativa++) {
