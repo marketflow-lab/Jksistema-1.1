@@ -319,6 +319,245 @@ def test_failed_job_can_resume_unless_a_new_job_is_active(store):
     assert error.value.status_code == 409
 
 
+def recovery_job(store):
+    root = scope_category("MLB100", "Pecas", "https://lista.mercadolivre.com.br/ciclismo/pecas/")
+    done = scope_category("MLB101", "Freios", root["url"] + "freios/")
+    failed = scope_category("MLB102", "Pastilhas", root["url"] + "pastilhas/")
+    job = store.start("cliente-a", "alice", category=root)
+    publish(store, job, [ad(categoria=done["nome"], categoria_key=done["key"])])
+    checkpoint = {**job["checkpoint"], "categories": [root, done, failed], "categoryIndex": 3,
+                  "currentCategory": failed, "page": None, "seenSellerKeys": ["id:123"],
+                  "incompleteCategories": [{**failed, "motivo": "Categoria indisponivel."}],
+                  "officialTaxonomy": {"updatedAt": "2026-10-22T12:00:00Z", "ancestry": [root],
+                                       "children": {root["key"]: [done, failed], done["key"]: [], failed["key"]: []}}}
+    for key, category, status in [("consulted-seed", failed, "consulted"), ("failed-a", failed, "failed"),
+                                   ("failed-b", failed, "failed"), ("outside-failure", done, "failed")]:
+        store.checkpoint(job["id"], "cliente-a", "alice", checkpoint={**checkpoint, "discoveredSeed": {
+            "key": key, "id": "MLB9", "url": ad(9)["url"], "category_key": category["key"], "status": status}})
+    return store.checkpoint(job["id"], "cliente-a", "alice", checkpoint=checkpoint,
+                            status="completed_partial", counters={"categories": 3, "pages": 1})
+
+
+def test_recover_incomplete_preserves_scope_publications_discovery_and_original_cursor(store):
+    job = recovery_job(store)
+    ranking = store.ranking(job["id"], "cliente-a", "alice")["items"]
+    sellers = store.sellers(job["id"], "cliente-a", "alice")
+    recovered = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    assert recovered["id"] == job["id"]
+    assert recovered["status"] == "running"
+    assert recovered["generation"] == 1
+    assert recovered["revision"] == job["revision"] + 1
+    assert recovered["counters"] == job["counters"]
+    assert recovered["checkpoint"]["recovery"] == {"version": 1, "generation": 1, "categoryKeys": ["MLB102"], "index": 0}
+    for key in ("scope", "categories", "categoryIndex", "officialTaxonomy", "seenSellerKeys", "incompleteCategories"):
+        assert recovered["checkpoint"][key] == job["checkpoint"][key]
+    assert store.ranking(job["id"], "cliente-a", "alice")["items"] == ranking
+    assert store.sellers(job["id"], "cliente-a", "alice") == sellers
+    assert store.discovery(job["id"], "consulted-seed", "cliente-a", "alice", include_status=True) == {"seen": True, "status": "consulted"}
+    assert store.discovery(job["id"], "failed-a", "cliente-a", "alice") == {"seen": True}
+    restarted = PesquisaMercadoStore(store.info_root)
+    assert restarted.get(job["id"], "cliente-a", "alice") == recovered
+
+
+def test_failed_total_discovery_can_recover_its_pending_categories(store):
+    job = recovery_job(store)
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET status='failed',counters=json_set(counters,'$.pages',0) WHERE id=?", (job["id"],))
+    recovered = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    assert recovered["status"] == "running"
+    assert recovered["checkpoint"]["recovery"]["categoryKeys"] == ["MLB102"]
+
+
+@pytest.mark.parametrize("pending", ["Pastilhas", {"nome": "Pastilhas", "motivo": "Categoria indisponivel."}])
+def test_recover_incomplete_accepts_unique_legacy_category_without_detailed_cause(store, pending):
+    job = recovery_job(store)
+    # Simulate the stored legacy representation, before terminal write guards apply.
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=json_set(checkpoint,'$.incompleteCategories',json(?)) WHERE id=?",
+                     (pesquisa_mercado._json([pending], 10000), job["id"]))
+    recovered = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    assert recovered["checkpoint"]["recovery"]["categoryKeys"] == ["MLB102"]
+
+
+def test_recovery_rejects_ambiguous_legacy_identity_without_mutating_job(store):
+    job = recovery_job(store)
+    checkpoint = job["checkpoint"]
+    checkpoint["categories"].append(scope_category("MLB103", "Pastilhas", "https://lista.mercadolivre.com.br/ciclismo/outras-pastilhas/"))
+    checkpoint["incompleteCategories"] = ["Pastilhas"]
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=? WHERE id=?", (pesquisa_mercado._json(checkpoint, 100000), job["id"]))
+    before = store.get(job["id"], "cliente-a", "alice")
+    with pytest.raises(HTTPException) as error:
+        store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    assert error.value.status_code == 409
+    assert store.get(job["id"], "cliente-a", "alice") == before
+
+
+def test_recovery_is_atomic_and_rejects_stale_revision_other_owner_and_active_job(store):
+    job = recovery_job(store)
+    for tenant, username in (("cliente-b", "alice"), ("cliente-a", "bob")):
+        with pytest.raises(HTTPException) as error:
+            store.recover_incomplete(job["id"], tenant, username, expected_revision=job["revision"])
+        assert error.value.status_code == 404
+    with pytest.raises(HTTPException) as error:
+        store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"] - 1)
+    assert error.value.status_code == 409
+    barrier = threading.Barrier(2)
+
+    def recover(_):
+        barrier.wait()
+        try:
+            return store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])["generation"]
+        except HTTPException as error:
+            return error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        assert sorted(workers.map(recover, range(2))) == [1, 409]
+    active = store.get(job["id"], "cliente-a", "alice")
+    store.checkpoint(job["id"], "cliente-a", "alice", status="completed_partial", generation=1)
+    latest = store.get(job["id"], "cliente-a", "alice")
+    other = store.start("cliente-a", "alice")
+    with pytest.raises(HTTPException) as error:
+        store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=latest["revision"])
+    assert error.value.status_code == 409
+    assert store.get(job["id"], "cliente-a", "alice")["generation"] == active["generation"]
+    assert store.get(other["id"], "cliente-a", "alice")["status"] == "running"
+
+
+def test_recovery_generation_rejects_late_checkpoint_publication_and_queue_mutation(store):
+    job = recovery_job(store)
+    recovered = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    for generation in (None, 0, 2):
+        with pytest.raises(HTTPException) as error:
+            store.checkpoint(job["id"], "cliente-a", "alice", status="completed", checkpoint={}, generation=generation)
+        assert error.value.status_code == 409
+        with pytest.raises(HTTPException) as error:
+            store.publish(job["id"], "id:123", "cliente-a", "alice", seller(), [ad(titulo="Late replacement")], generation=generation)
+        assert error.value.status_code == 409
+    altered = {**recovered["checkpoint"], "recovery": {**recovered["checkpoint"]["recovery"], "categoryKeys": ["MLB101"]}}
+    with pytest.raises(HTTPException) as error:
+        store.checkpoint(job["id"], "cliente-a", "alice", checkpoint=altered, generation=1)
+    assert error.value.status_code == 422
+    boolean_generation = {**recovered["checkpoint"], "recovery": {**recovered["checkpoint"]["recovery"], "generation": True}}
+    with pytest.raises(HTTPException) as error:
+        store.checkpoint(job["id"], "cliente-a", "alice", checkpoint=boolean_generation, generation=1)
+    assert error.value.status_code == 422
+    assert store.get(job["id"], "cliente-a", "alice") == recovered
+    store.checkpoint(job["id"], "cliente-a", "alice", status="completed_partial", generation=1)
+    closed = store.get(job["id"], "cliente-a", "alice")
+    second = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=closed["revision"])
+    assert second["generation"] == 2
+    with pytest.raises(HTTPException):
+        store.checkpoint(job["id"], "cliente-a", "alice", status="completed", generation=1)
+
+
+def test_recovery_and_new_start_cannot_create_two_active_jobs(store):
+    job = recovery_job(store)
+    barrier = threading.Barrier(2)
+
+    def run(action):
+        barrier.wait()
+        try:
+            if action == "start":
+                return store.start("cliente-a", "alice")["id"]
+            return store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])["id"]
+        except HTTPException as error:
+            assert error.status_code == 409
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        outcomes = list(workers.map(run, ("start", "recover")))
+    with store._connection("cliente-a") as conn:
+        active = conn.execute("SELECT id FROM pm_jobs WHERE tenant='cliente-a' AND username='alice' AND status IN ('running','paused','waiting_login')").fetchall()
+    assert len(active) == 1
+    assert {result for result in outcomes if result} == {active[0]["id"]}
+
+
+def test_failed_seed_recovery_preserves_consulted_and_keyset_pagination_while_resolving(store):
+    job = recovery_job(store)
+    recovered = store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    first = store.failed_seeds(job["id"], "cliente-a", "alice", category_key="MLB102", limit=1)
+    assert first == {"items": [{"key": "failed-a", "id": "MLB9", "url": ad(9)["url"], "category_key": "MLB102"}], "total": 2, "generation": 1}
+    checkpoint = {**recovered["checkpoint"], "discoveredSeed": {**first["items"][0], "status": "consulted"}}
+    updated = store.checkpoint(job["id"], "cliente-a", "alice", checkpoint=checkpoint, generation=1)
+    second = store.failed_seeds(job["id"], "cliente-a", "alice", category_key="MLB102", after_key=first["items"][0]["key"], limit=1)
+    assert [item["key"] for item in second["items"]] == ["failed-b"]
+    assert second["total"] == 1
+    assert updated["counters"]["pending"] == job["counters"]["pending"] - 1
+    assert store.discovery(job["id"], "failed-a", "cliente-a", "alice", include_status=True) == {"seen": True, "status": "consulted"}
+    assert store.discovery(job["id"], "outside-failure", "cliente-a", "alice", include_status=True)["status"] == "failed"
+    with pytest.raises(HTTPException):
+        store.failed_seeds(job["id"], "cliente-a", "alice", category_key="MLB101")
+
+
+def test_http_recovery_has_closed_request_generation_and_owner_checks(client, store):
+    job = recovery_job(store)
+    base = f"/api/pesquisa-mercado/jobs/{job['id']}"
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    for body in ({}, {"expected_revision": True}, {"expected_revision": str(job["revision"])}, {"expected_revision": job["revision"], "categoryKeys": ["outside"]}):
+        assert client.post(base + "/recover-incomplete", json=body, headers=headers).status_code == 422
+    assert client.post(base + "/recover-incomplete", json={"expected_revision": job["revision"]}, headers={"Authorization": "Bearer cliente-a:bob"}).status_code == 404
+    recovered = client.post(base + "/recover-incomplete", json={"expected_revision": job["revision"]}, headers=headers)
+    assert recovered.status_code == 200
+    assert recovered.json()["job"]["generation"] == 1
+    assert client.patch(base + "/checkpoint", json={"status": "paused"}, headers=headers).status_code == 409
+    assert client.patch(base + "/checkpoint", json={"status": "paused", "generation": True}, headers=headers).status_code == 422
+    assert client.patch(base + "/checkpoint", json={"status": "paused", "generation": 1}, headers=headers).status_code == 200
+    assert client.get(base + "/failed-seeds?category_key=MLB102&limit=1", headers=headers).json()["total"] == 2
+    assert client.get(base + "/failed-seeds?category_key=MLB102", headers={"Authorization": "Bearer cliente-b:alice"}).status_code == 404
+    assert client.get(base + "/descoberta?seed_key=failed-a", headers=headers).json() == {"seen": True}
+    assert client.get(base + "/descoberta?seed_key=failed-a&include_status=true", headers=headers).json() == {"seen": True, "status": "failed"}
+
+
+def test_recovery_diagnostic_is_compact_closed_and_owner_scoped(client, store):
+    job = recovery_job(store)
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=json_set(checkpoint,'$.private_cursor',?,'$.incompleteCategories[0].code',?,'$.incompleteCategories[0].stage',?,'$.incompleteCategories[0].dependency_key',?) WHERE id=?",
+                     ("x" * 100000, "category_link_missing", "navigation", "MLB100", job["id"]))
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    endpoint = f"/api/pesquisa-mercado/jobs/{job['id']}/diagnostico"
+    response = client.get(endpoint, headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"scopePath", "incompleteCategories", "incompleteCategoriesTotal", "salesRecoveryPending", "recovery"}
+    assert body["incompleteCategoriesTotal"] == 1
+    assert body["salesRecoveryPending"] is False
+    assert body["scopePath"] == [job["checkpoint"]["scope"]["category"]]
+    assert body["recovery"] is None
+    assert body["incompleteCategories"] == [{"key": "MLB102", "nome": "Pastilhas", "code": "category_link_missing", "motivo": "O link oficial desta categoria nao foi localizado.", "stage": "navigation", "dependency_key": "MLB100"}]
+    assert len(response.content) < 3000
+    assert client.get(endpoint, headers={"Authorization": "Bearer cliente-a:bob"}).status_code == 404
+    store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
+    assert client.get(endpoint, headers=headers).json()["recovery"] == {"generation": 1, "index": 0, "total": 1}
+
+
+def test_recovery_diagnostic_caps_legacy_items_and_reports_the_full_total(store):
+    job = recovery_job(store)
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=json_set(checkpoint,'$.incompleteCategories',json(?)) WHERE id=?",
+                     (pesquisa_mercado._json(["Pastilhas"] * 1005, 100000), job["id"]))
+    diagnostic = store.diagnostic(job["id"], "cliente-a", "alice")
+    assert diagnostic["incompleteCategoriesTotal"] == 1005
+    assert len(diagnostic["incompleteCategories"]) == 1000
+    assert {item["code"] for item in diagnostic["incompleteCategories"]} == {"legacy_unknown"}
+    assert {item["motivo"] for item in diagnostic["incompleteCategories"]} == {"Motivo anterior desconhecido."}
+
+
+def test_diagnostic_exposes_metrics_only_pending_and_allows_another_recovery(client, store):
+    job = recovery_job(store)
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=json_set(checkpoint,'$.incompleteCategories',json('[]'),'$.salesRecoveryPending',json('true')) WHERE id=?", (job["id"],))
+    base = f"/api/pesquisa-mercado/jobs/{job['id']}"
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    diagnostic = client.get(base + "/diagnostico", headers=headers).json()
+    assert diagnostic["salesRecoveryPending"] is True
+    assert diagnostic["incompleteCategoriesTotal"] == 0
+    assert diagnostic["incompleteCategories"] == []
+    recovered = client.post(base + "/recover-incomplete", json={"expected_revision": job["revision"]}, headers=headers)
+    assert recovered.status_code == 200
+    assert recovered.json()["job"]["checkpoint"]["recovery"] == {"version": 1, "generation": 1, "categoryKeys": [], "index": 0}
+
+
 def test_idempotent_atomic_seller_publication_and_authoritative_counters(store):
     job = store.start("cliente-a", "alice")
     first = publish(store, job, [ad(), ad(), ad(2, monthly=None)])

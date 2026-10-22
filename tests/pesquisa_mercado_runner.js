@@ -8,27 +8,54 @@ const base = 'https://www.mercadolivre.com.br';
 function harness(pages, collect) {
     let saved = { id: 'run-1', status: 'running', revision: 0, checkpoint: {}, counters: { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0 } };
     const vendors = new Map();
-    const discovery = new Set();
+    const discovery = new Map();
+    const calls = [];
     const visited = [];
     const events = [];
     let url = '';
     let stopped = 0;
     const api = async (method, path, body) => {
-        if (method === 'GET' && path.includes('/descoberta?')) return { seen: discovery.has(new URL(path, base).searchParams.get('seed_key')) };
+        calls.push({ method, path, body: body && copy(body) });
+        if (method === 'GET' && path.includes('/descoberta?')) {
+            const query = new URL(path, base).searchParams, seed = discovery.get(query.get('seed_key'));
+            return { seen: !!seed, ...(query.has('include_status') ? { status: seed?.status || null } : {}) };
+        }
+        if (method === 'GET' && path.includes('/failed-seeds?')) {
+            const query = new URL(path, base).searchParams;
+            return { generation: saved.generation || 0, items: [...discovery.values()].filter(seed => seed.status === 'failed'
+                && seed.category_key === query.get('category_key') && seed.key > (query.get('after_key') || '')).slice(0, 100) };
+        }
         if (method === 'GET' && path.includes('/vendedores?')) {
             const sellerKey = new URL(path, base).searchParams.get('seller_key');
             return { items: vendors.has(sellerKey) ? [{ seller_key: sellerKey }] : [] };
         }
         if (method === 'POST') {
+            if (path.endsWith('/recover-incomplete')) {
+                assert.equal(body.expected_revision, saved.revision);
+                const keys = saved.checkpoint.incompleteCategories.map(item => {
+                    if (item && item.key) return item.key;
+                    const name = typeof item === 'string' ? item : item && (item.nome || item.categoria);
+                    const matches = saved.checkpoint.categories.filter(category => category.nome.toLowerCase() === String(name || '').toLowerCase());
+                    if (matches.length !== 1) { const error = new Error('Ambiguous legacy category'); error.status = 409; throw error; }
+                    return matches[0].key;
+                });
+                saved.generation = (saved.generation || 0) + 1;
+                saved.status = 'running'; saved.revision += 1;
+                saved.checkpoint.recovery = { version: 1, generation: saved.generation,
+                    categoryKeys: [...new Set(keys)], index: 0 };
+                return { job: copy(saved) };
+            }
             if (body.category) saved.checkpoint = { scope: { category: copy(body.category) }, categories: [copy(body.category)], categoryIndex: 0, discoveryInitialized: true };
             return { job: copy(saved) };
         }
         if (method === 'GET') return { job: copy(saved) };
         if (method === 'PATCH') {
-            if (body.checkpoint.discoveredSeed) discovery.add(body.checkpoint.discoveredSeed.key);
+            if (saved.generation) assert.equal(body.generation, saved.generation);
+            if (body.checkpoint.discoveredSeed) discovery.set(body.checkpoint.discoveredSeed.key, copy(body.checkpoint.discoveredSeed));
             saved = { ...saved, ...copy(body), revision: saved.revision + 1 };
         }
         if (method === 'PUT') {
+            if (saved.generation) assert.equal(body.generation, saved.generation);
             vendors.set(body.seller.key, copy(body));
             saved.counters.sellers = vendors.size;
             saved.counters.ads = [...vendors.values()].reduce((n, value) => n + value.anuncios.length, 0);
@@ -57,7 +84,7 @@ function harness(pages, collect) {
         collector: { collectFirstPage: collect || (async ({ seller }) => ({ anuncios: [{ id: 'MLB1000000001', rankable: true, seller_id: seller.id, vendas: 40, vendasFonte: 'avantpro', media_vendas_mensal: 10 }] })) },
         emit: event => events.push(copy(event))
     });
-    return { runner, vendors, visited, events, saved: () => copy(saved), stopped: () => stopped,
+    return { runner, vendors, visited, events, calls, discovery, saved: () => copy(saved), stopped: () => stopped,
         restoreCheckpoint(job) { saved = copy(job); discovery.clear(); } };
 }
 
@@ -334,7 +361,7 @@ async function categoryRedirectScope() {
             [sibling.url]: { empty: true }
         });
         await h.runner.start(selected); await h.runner.task;
-        assert.strictEqual(h.saved().status, 'completed_partial', 'redirecionamento que amplia escopo vira pendencia');
+        assert.strictEqual(h.saved().status, 'failed', 'nenhuma listagem consultada exige falha com pendencia');
         assert.deepStrictEqual(h.visited, [selected.url], 'nao enfileirar nem consultar categorias da pagina redirecionada');
         assert.deepStrictEqual(h.saved().checkpoint.categories, [selected]);
         assert.deepStrictEqual(h.saved().checkpoint.scope.category, selected);
@@ -484,9 +511,9 @@ async function officialTaxonomyScope() {
     for(const evidence of [{},{effectiveCategoryId:outside.key},{effectiveCategoryId:leaf.key,categoryIdentityConflict:true}]) {
         const blocked=harness({[leaf.url]:{url:native,empty:true,categories:[outside],...evidence}}); attach(blocked);
         await blocked.runner.start(root); await blocked.runner.task;
-        assert.equal(blocked.saved().status,'completed_partial','redirect requires nonconflicting exact category evidence');
-        assert.equal(blocked.saved().checkpoint.progress.phase,'completed_partial');
-        assert.match(blocked.saved().checkpoint.progress.warning,/Categoria indisponivel/,'scope failure remains a secondary warning');
+        assert.equal(blocked.saved().status,'failed','redirect requires nonconflicting exact category evidence');
+        assert.equal(blocked.saved().checkpoint.progress.phase,'failed');
+        assert.equal(blocked.saved().checkpoint.incompleteCategories[0].code,'category_scope_mismatch','scope failure keeps its safe typed reason');
         assert.equal(blocked.saved().counters.pages,0);
         assert.deepEqual(blocked.saved().checkpoint.categories.map(c=>c.key),[root.key,branch.key,leaf.key]);
     }
@@ -601,13 +628,13 @@ async function nauticalOfficialNavigation() {
     ]) {
         const blocked=make({empty:true},page); blocked.runner.taxonomy=taxonomy();
         await blocked.runner.start(scope); await blocked.runner.task;
-        assert.equal(blocked.saved().status,'completed_partial','unconfirmed category cannot be reported as an empty completed leaf');
+        assert.equal(blocked.saved().status,'failed','unconfirmed category cannot be reported as an empty completed leaf');
         assert.equal(blocked.saved().counters.pages,0);
         assert(!blocked.visited.includes(leafUrl));
     }
     const notFound=make({empty:true,categoryNotFound:true}); notFound.runner.taxonomy=taxonomy();
     await notFound.runner.start(scope); await notFound.runner.task;
-    assert.equal(notFound.saved().status,'completed_partial');
+    assert.equal(notFound.saved().status,'failed');
     assert.equal(notFound.saved().counters.pages,0);
     assert.equal(notFound.visited.filter(url=>url===leafUrl).length,1,'not-found is not retried as a loading page');
 
@@ -653,7 +680,7 @@ async function officialDirectoryAndRescueSettles() {
         [native]: { empty: true } });
     wrongDestination.runner.taxonomy = taxonomy();
     await wrongDestination.runner.start(scope); await wrongDestination.runner.task;
-    assert.equal(wrongDestination.saved().status, 'completed_partial', 'a directory tree from another destination is never consumed');
+    assert.equal(wrongDestination.saved().status, 'failed', 'a directory tree from another destination is never consumed');
     assert.deepEqual(wrongDestination.visited, [index], 'wrong document links must never become category navigation');
     assert.equal(wrongDestination.saved().counters.pages, 0);
     assert.deepEqual(wrongDestination.saved().checkpoint.scope.category, scope);
@@ -1683,7 +1710,213 @@ async function interruptedUnpublishedSellerFailurePreservesItsCheckpoint() {
     assert.equal(h.saved().status, 'completed');
 }
 
+async function lateCategoryFiltersAndSharedFailure() {
+    const index = base + '/categorias';
+    const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({ key, nome, url });
+    const root = node('MLB100', 'Esportes e Fitness'), cycling = node('MLB101', 'Ciclismo'), scope = node('MLB102', 'Peças');
+    const a = node('MLB103', 'Pastilhas de Freio V-Brake'), b = node('MLB104', 'Cabos');
+    const rootUrl = base + '/c/esportes-fitness', cyclingUrl = 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/';
+    const scopeUrl = cyclingUrl + 'pecas/', aUrl = scopeUrl + 'pastilhas-freio-v-brake/', bUrl = scopeUrl + 'cabos/';
+    const link = (item, url) => ({ ...item, key: url, url });
+    const taxonomy = { load: async () => ({ complete: true, updatedAt: '2026-10-22T10:00:00Z',
+        get: key => [root, cycling, scope, a, b].find(item => item.key === key),
+        children: key => key === scope.key ? [a, b] : [], pathFromRoot: () => [root, cycling, scope] }) };
+    let reads = 0;
+    const pages = {
+        [index]: { categoryTree: [{ ...link(root, rootUrl), children: [link(cycling, cyclingUrl)] }] },
+        [cyclingUrl]: { categories: [link(scope, scopeUrl)] },
+        [scopeUrl]: () => ({ url: scopeUrl, readyState: 'complete', anuncios: [{ id: 'early-card' }],
+            categories: ++reads <= 5 ? [] : reads <= 7 ? [link(a, aUrl)] : [link(a, aUrl), link(b, bUrl)] }),
+        [aUrl]: { empty: true }, [bUrl]: { empty: true }
+    };
+    const h = harness(pages); h.runner.taxonomy = taxonomy;
+    await h.runner.start(scope); await h.runner.task;
+    assert.equal(h.saved().status, 'completed');
+    assert.equal(h.saved().counters.pages, 2, 'ancestry pages and early advertisements do not count as discovery');
+    assert.equal(h.visited.filter(url => url === scopeUrl).length, 2, 'partial cached links refresh for the next expected child');
+    assert.deepEqual(h.saved().checkpoint.scope.category, scope);
+    assert.deepEqual(h.saved().checkpoint.officialTaxonomy.ancestry.map(item => item.nome), ['Esportes e Fitness', 'Ciclismo', 'Peças']);
+    assert(!h.visited.some(url => /_CatId_/.test(url)));
+
+    const blocked = harness({ ...pages, [scopeUrl]: { empty: true, anuncios: [{ id: 'early-card' }] } });
+    blocked.runner.taxonomy = taxonomy;
+    await blocked.runner.start(scope); await blocked.runner.task;
+    assert.equal(blocked.saved().status, 'failed');
+    assert.equal(blocked.saved().checkpoint.categoryIndex, 1, 'shared ancestor failure preserves the first leaf for recovery');
+    assert.equal(blocked.saved().checkpoint.incompleteCategories.length, 1, 'one failed dependency does not fabricate independent leaf failures');
+    assert.equal(blocked.saved().checkpoint.incompleteCategories[0].code, 'category_filters_unavailable');
+    assert.equal(blocked.saved().checkpoint.incompleteCategories[0].dependency_key, scope.key);
+    assert.equal(blocked.visited.filter(url => url === scopeUrl).length, 2, 'shared loading failures get at most one explicit navigation retry');
+    assert(!blocked.visited.includes(aUrl) && !blocked.visited.includes(bUrl));
+
+    const denied = harness({ [index]: { readyState: 'complete', categories: [] } });
+    denied.runner.taxonomy = taxonomy;
+    denied.runner.browser.getNavigationStatus = () => ({ statusCode: 403, url: index });
+    await denied.runner.start(scope); await denied.runner.task;
+    assert.equal(denied.saved().status, 'failed', 'a server block without a login document is not waiting_login');
+    assert.equal(denied.saved().checkpoint.incompleteCategories[0].code, 'category_access_denied');
+}
+
+async function recoverOnlyIncompleteAndFailedSeeds() {
+    const a = { key: 'a', nome: 'A', url: 'https://lista.mercadolivre.com.br/pecas/a/' };
+    const b = { key: 'b', nome: 'B', url: 'https://lista.mercadolivre.com.br/pecas/b/' };
+    const failedSeed = { key: 'failed-seed', id: 'failed-seed', url: base + '/product-new', category_key: a.key, status: 'failed' };
+    const consultedSeed = { key: 'consulted-seed', id: 'consulted-seed', url: base + '/product-old', category_key: a.key, status: 'consulted' };
+    const h = harness({ [a.url]: { anuncios: [failedSeed, consultedSeed] },
+        [failedSeed.url]: seller('222'), [base + '/perfil/222']: seller('222'), [base + '/anuncios/222']: {} });
+    h.restoreCheckpoint({ ...h.saved(), status: 'completed_partial', revision: 7,
+        counters: { categories: 2, pages: 2, sellers: 1, ads: 1, pending: 0 },
+        checkpoint: { categories: [a, b], categoryIndex: 2, discoveryInitialized: true, currentCategory: b,
+            incompleteCategories: [{ ...a, motivo: 'Categoria indisponivel: A.' }], seenSellerKeys: ['id:111'],
+            seenSeedIds: [], salesCollectionVersion: 2 } });
+    h.vendors.set('id:111', { seller: { key: 'id:111' }, anuncios: [{ id: 'old-ad', titulo: 'Preservado' }] });
+    h.discovery.set(failedSeed.key, failedSeed); h.discovery.set(consultedSeed.key, consultedSeed);
+    const original = copy(h.vendors.get('id:111'));
+    await h.runner.recoverIncomplete('run-1', 7); await h.runner.task;
+    assert.equal(h.saved().id, 'run-1');
+    assert.equal(h.saved().status, 'completed');
+    assert.equal(h.saved().checkpoint.categoryIndex, 2, 'recovery does not replace the original category cursor');
+    assert.deepEqual(h.saved().checkpoint.categories, [a, b]);
+    assert.equal(h.saved().counters.categories, 2, 'retrying a counted category cannot count it twice');
+    assert.deepEqual(h.saved().checkpoint.incompleteCategories, []);
+    assert.equal(h.saved().checkpoint.recovery.index, 1);
+    assert.deepEqual(h.vendors.get('id:111'), original);
+    assert.equal(h.discovery.get(failedSeed.key).status, 'consulted');
+    assert.equal(h.discovery.get(consultedSeed.key).status, 'consulted');
+    assert(!h.visited.includes(consultedSeed.url) && !h.visited.includes(b.url));
+    assert.equal(h.visited.filter(url => url === failedSeed.url).length, 1, 'failed seed retry precedes collection and subsequent discovery skips it');
+    const writes = h.calls.filter(call => call.method === 'PATCH' || call.method === 'PUT');
+    assert(writes.length && writes.every(call => call.body.generation === 1), 'every recovered checkpoint and seller publication carries its generation');
+    assert(h.calls.some(call => call.path.includes('/descoberta?') && call.path.includes('include_status=true')));
+}
+
+async function pauseAndResumeIncompleteRecovery() {
+    const category = { key: 'a', nome: 'A', url: 'https://lista.mercadolivre.com.br/pecas/a/' };
+    const seed = { key: 'failed-seed', id: 'failed-seed', url: base + '/product-new', category_key: category.key, status: 'failed' };
+    let entered, collections = 0;
+    const started = new Promise(resolve => { entered = resolve; });
+    const h = harness({ [category.url]: { empty: true }, [seed.url]: seller('222'),
+        [base + '/perfil/222']: seller('222'), [base + '/anuncios/222']: {} }, async ({ signal }) => {
+        collections += 1;
+        if (collections === 1) {
+            entered();
+            await new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+                const error = new Error('interrupted'); error.name = 'AbortError'; reject(error);
+            }, { once: true }));
+        }
+        return { anuncios: [{ id: 'MLB1000000001', rankable: true }] };
+    });
+    h.restoreCheckpoint({ ...h.saved(), status: 'failed', revision: 4, counters: { categories: 1, pages: 0, sellers: 0, ads: 0 },
+        checkpoint: { categories: [category], categoryIndex: 1, discoveryInitialized: true,
+            incompleteCategories: [{ ...category, motivo: 'Categoria indisponivel: A.' }], salesCollectionVersion: 2 } });
+    h.discovery.set(seed.key, seed);
+    const api = h.runner.api;
+    let latestReads = 0;
+    const newer = { ...h.saved(), id: 'newer-closed', status: 'completed', created_at: '2026-10-22T12:00:00Z' };
+    h.runner.api = async (method, path, body) => {
+        if (method === 'GET' && path.endsWith('/latest')) { latestReads += 1; return { job: copy(newer) }; }
+        if (method === 'GET' && path.endsWith('/newer-closed')) return { job: copy(newer) };
+        return api(method, path, body);
+    };
+    await h.runner.recoverIncomplete('run-1', 4); await started;
+    assert.equal((await h.runner.status()).job.id, 'run-1', 'recovering older research stays active even when a newer closed job exists');
+    assert.equal(latestReads, 0);
+    assert.equal((await h.runner.status('newer-closed')).job.id, 'newer-closed', 'an explicit history query still addresses its requested research');
+    await h.runner.stop('paused'); await h.runner.task;
+    assert.equal(h.saved().status, 'paused');
+    assert.equal(h.saved().checkpoint.recovery.index, 0);
+    assert.equal(h.discovery.get(seed.key).status, 'failed', 'interruption cannot mark the seed as consulted');
+    assert.equal(h.saved().checkpoint.categoryIndex, 1);
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(h.saved().status, 'completed');
+    assert.equal(h.saved().generation, 1);
+    assert.equal(h.saved().checkpoint.recovery.index, 1);
+    assert.equal(h.saved().counters.categories, 1);
+    assert.equal(h.discovery.get(seed.key).status, 'consulted');
+    assert.equal(collections, 2);
+}
+
+async function recoveryPreservesInterruptedSellerCollection() {
+    const a = { key: 'a', nome: 'A', url: 'https://lista.mercadolivre.com.br/pecas/a/' };
+    const b = { key: 'b', nome: 'B', url: 'https://lista.mercadolivre.com.br/pecas/b/' };
+    const seed = { id: 'interrupted-seed', url: base + '/product-interrupted' };
+    const listingUrl = base + '/anuncios/222';
+    const ads = [salesListing('MLB1000000001', { seller_id: '222', seller_perfil_url: base + '/perfil/222', vendas: 40, media_mensal: 10, rankable: true }),
+        salesListing('MLB1000000002', { seller_id: '222', seller_perfil_url: base + '/perfil/222', vendas: 20 })];
+    for (const proven of [true, false]) {
+        let firstPages = 0;
+        const details = [];
+        const h = harness({ [a.url]: { empty: true }, [seed.url]: seller('222'),
+            [base + '/perfil/222']: seller('222'), [listingUrl]: {} }, async () => { firstPages += 1; return { anuncios: [] }; });
+        withDetailCollector(h, async options => {
+            details.push(options.expectedItem.id);
+            await options.browser.navigate(options.url);
+            return { anuncios: [salesListing(options.expectedItem.id, { seller_id: '222', seller_perfil_url: base + '/perfil/222', vendas: 20, media_mensal: 5, rankable: true })] };
+        });
+        const collection = { sellerKey: 'id:222', url: listingUrl, index: 1,
+            result: { anuncios: copy(ads), incomplete: true, reason: 'avant_data_incomplete' },
+            ...(proven ? { categoryKey: a.key, seedKey: seed.id, seed: copy(seed) } : {}) };
+        h.restoreCheckpoint({ ...h.saved(), status: 'failed', revision: 9, counters: { categories: 2, pages: 0, sellers: 0, ads: 0 },
+            checkpoint: { categories: [a, b], categoryIndex: 2, discoveryInitialized: true, salesCollectionVersion: 2,
+                currentCategory: b, page: { categoryKey: b.key, url: b.url, anuncios: [{ id: 'unrelated-seed', url: base + '/unrelated' }], index: 0 },
+                sellerCollection: collection, incompleteCategories: [{ ...a, motivo: 'Categoria indisponivel: A.' }] } });
+        await h.runner.recoverIncomplete('run-1', 9); await h.runner.task;
+        assert.equal(firstPages, 0, 'recovery cannot replace a preserved list with a freshly collected first page');
+        if (proven) {
+            assert.equal(h.saved().status, 'completed');
+            assert.deepEqual(details, ['MLB1000000002'], 'a confirmed owner resumes only the missing saved advertisement');
+            assert.equal(h.vendors.get('id:222').anuncios.length, 2);
+            assert.equal(h.vendors.get('id:222').anuncios[0].vendas, 40);
+            assert.equal(h.vendors.get('id:222').anuncios[0].categoria_key, a.key);
+            assert.equal(h.saved().checkpoint.preservedSellerCollection, undefined);
+        } else {
+            assert.equal(h.saved().status, 'completed_partial');
+            assert.deepEqual(details, []);
+            assert.equal(h.vendors.size, 0);
+            assert.deepEqual(h.saved().checkpoint.preservedSellerCollection.collection, collection);
+            assert.equal(h.saved().checkpoint.preservedSellerCollection.categoryKey, '', 'the final currentCategory is not proof of the legacy collection owner');
+            assert.match(h.saved().checkpoint.progress.warning, /sem vinculo confirmado/);
+        }
+    }
+}
+
+async function legacyIncompleteCategoryIdentity() {
+    const category = { key: 'a', nome: 'Pastilhas', url: 'https://lista.mercadolivre.com.br/pecas/pastilhas/' };
+    for (const pending of ['Pastilhas', { nome: 'Pastilhas', motivo: 'Categoria indisponivel.' }]) {
+        const h = harness({ [category.url]: { empty: true } });
+        h.restoreCheckpoint({ ...h.saved(), status: 'completed_partial', revision: 3, counters: { categories: 1, pages: 0, sellers: 0, ads: 0 },
+            checkpoint: { categories: [category], categoryIndex: 1, discoveryInitialized: true, salesCollectionVersion: 2, incompleteCategories: [pending] } });
+        const before = await h.runner.status('run-1');
+        assert.equal(before.job.checkpoint.incompleteCategories[0].key, category.key);
+        assert.equal(before.job.checkpoint.incompleteCategories[0].nome, category.nome);
+        await h.runner.recoverIncomplete('run-1', 3); await h.runner.task;
+        assert.equal(h.saved().status, 'completed', 'uniquely identified legacy warnings resolve after the category succeeds');
+        assert.deepEqual(h.saved().checkpoint.incompleteCategories, []);
+        assert.equal(h.saved().counters.categories, 1);
+    }
+    const other = { key: 'b', nome: category.nome, url: 'https://lista.mercadolivre.com.br/outro-ramo/pastilhas/' };
+    const ambiguous = harness({});
+    ambiguous.restoreCheckpoint({ ...ambiguous.saved(), status: 'completed_partial', revision: 3,
+        checkpoint: { categories: [category, other], categoryIndex: 2, discoveryInitialized: true, incompleteCategories: ['Pastilhas'] } });
+    const before = await ambiguous.runner.status('run-1');
+    assert.equal(before.job.checkpoint.incompleteCategories[0].key, undefined);
+    assert.equal(before.job.checkpoint.incompleteCategories[0].nome, 'Pastilhas');
+    ambiguous.runner.job = before.job; ambiguous.runner.checkpoint = before.job.checkpoint;
+    assert.equal(ambiguous.runner.snapshot().job.incompleteCategories[0].nome, 'Pastilhas');
+    await assert.rejects(ambiguous.runner.recoverIncomplete('run-1', 3), error => error.status === 409);
+    assert.equal(ambiguous.saved().status, 'completed_partial');
+    assert.deepEqual(ambiguous.saved().checkpoint.incompleteCategories, ['Pastilhas'], 'ambiguous legacy identity remains unassigned');
+    assert.deepEqual(ambiguous.visited, []);
+    ambiguous.runner.checkpoint.incompleteCategories = [null];
+    assert.doesNotThrow(() => ambiguous.runner.snapshot(), 'malformed legacy entries cannot crash progress events');
+}
+
 (async () => {
+    await lateCategoryFiltersAndSharedFailure();
+    await recoverOnlyIncompleteAndFailedSeeds();
+    await pauseAndResumeIncompleteRecovery();
+    await recoveryPreservesInterruptedSellerCollection();
+    await legacyIncompleteCategoryIdentity();
     await categoryAndSellerFlow(); await pauseAndResume(); await waitingLoginAndRetries(); await recoveredJob(); await landingAndJavaScriptPagination(); await atomicPublicationRecovery();
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
     await categoryNavigationSettles();

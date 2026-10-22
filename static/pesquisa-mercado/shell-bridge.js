@@ -7,7 +7,7 @@
     const allowed = Object.freeze({
         start: 'startPesquisaMercadoJob', status: 'getPesquisaMercadoJobStatus', pause: 'pausePesquisaMercadoJob',
         resume: 'resumePesquisaMercadoJob', cancel: 'cancelPesquisaMercadoJob', browser: 'showPesquisaMercadoBrowser',
-        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames'
+        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames', 'recover-incomplete': 'recoverPesquisaMercadoIncomplete'
     });
     const subscribers = new Set();
     const appOrigin = new URL(context.appUrl).origin;
@@ -70,7 +70,8 @@
         const input = data.payload;
         const fields = { start: ['authToken', 'category', 'avantLoginEmail'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
             status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId', 'avantLoginEmail'],
-            cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId', 'avantLoginEmail'], browser: ['authToken', 'jobId', 'purpose'] };
+            cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId', 'avantLoginEmail'],
+            'recover-incomplete': ['authToken', 'jobId', 'expectedRevision', 'avantLoginEmail'], browser: ['authToken', 'jobId', 'purpose'] };
         if (!input || typeof input !== 'object' || Array.isArray(input)
             || Object.keys(input).some(key => !fields[data.action].includes(key))) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Argumentos do comando da pesquisa inválidos.' });
@@ -81,6 +82,13 @@
             return;
         }
         const payload = { authToken: input.authToken };
+        if (data.action === 'recover-incomplete') {
+            if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+                reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Atualize a pesquisa antes de tentar novamente.' });
+                return;
+            }
+            payload.expectedRevision = input.expectedRevision;
+        }
         if (Object.prototype.hasOwnProperty.call(input, 'avantLoginEmail')) {
             if (!validAvantEmail(input.avantLoginEmail)) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'E-mail do Avant Pro inválido.' });
@@ -111,14 +119,14 @@
             }
             payload.purpose = input.purpose;
         }
-        if (['pause', 'resume', 'cancel', 'browser', 'refresh-names'].includes(data.action) && input.jobId != null && payload.purpose !== 'categories') {
+        if (['pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete'].includes(data.action) && input.jobId != null && payload.purpose !== 'categories') {
             if (typeof input.jobId !== 'string' || !input.jobId || input.jobId.length > 128) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Pesquisa inválida.' });
                 return;
             }
             payload.jobId = input.jobId;
         }
-        if ((['resume', 'cancel', 'refresh-names'].includes(data.action) || data.action === 'browser' && payload.purpose === 'names') && !payload.jobId) {
+        if ((['resume', 'cancel', 'refresh-names', 'recover-incomplete'].includes(data.action) || data.action === 'browser' && payload.purpose === 'names') && !payload.jobId) {
             reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Pesquisa inválida.' });
             return;
         }

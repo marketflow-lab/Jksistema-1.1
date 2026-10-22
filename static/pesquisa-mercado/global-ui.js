@@ -30,7 +30,7 @@
     const avantEmailStoragePrefix = 'jkPesquisaMercadoAvantEmail:v1:';
     let avantIdentity = avantConfigurationIdentity(sessionToken);
     const elements = {};
-    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
+    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete', 'incomplete', 'incomplete-list', 'incomplete-count', 'recovery-progress', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
@@ -193,7 +193,43 @@
     function userErrorMessage(error) {
         const message = typeof error === 'string' ? error : error && typeof error.message === 'string'
             ? error.message : 'Não foi possível concluir a operação.';
-        return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser|refresh-names)['"]:\s*(?:Error:\s*)?/, '');
+        return message.replace(/^Error invoking remote method ['"]pesquisa-mercado:(?:categories|start|status|resume|pause|cancel|show-browser|refresh-names|recover-incomplete)['"]:\s*(?:Error:\s*)?/, '');
+    }
+    const incompleteCategories = job => Array.isArray(job && job.incompleteCategories) ? job.incompleteCategories
+        : Array.isArray(job && job.checkpoint && job.checkpoint.incompleteCategories) ? job.checkpoint.incompleteCategories : [];
+    const salesRecoveryPending = job => !!job && (job.salesRecoveryPending === true || !!job.checkpoint && job.checkpoint.salesRecoveryPending === true);
+    const canRecover = job => !!job && ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    function scopeName(job) {
+        const checkpoint = job && job.checkpoint || {};
+        const path = job && job.scopePath || checkpoint.officialTaxonomy && checkpoint.officialTaxonomy.ancestry || checkpoint.scope && checkpoint.scope.path;
+        const names = Array.isArray(path) ? path.map(item => safeText(typeof item === 'string' ? item : item && (item.nome || item.name)).trim()).filter(Boolean) : [];
+        return names.length ? names.join(' → ') : safeText(state.scopeCategory && state.scopeCategory.nome);
+    }
+    function incompleteReason(item) {
+        const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
+            category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
+            category_not_found: 'Categoria não encontrada.', category_load_timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            category_read_failed: 'Não foi possível ler a categoria.', category_pagination_failed: 'Não foi possível consultar a próxima página da categoria.',
+            category_access_denied: 'O Mercado Livre bloqueou o acesso à categoria.',
+            category_mismatch: 'A página aberta não corresponde à categoria.', category_unavailable: 'Categoria indisponível.',
+            navigation_timeout: 'O carregamento da categoria excedeu o tempo limite.', timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            login_required: 'Login necessário no Mercado Livre.', waiting_login: 'Login necessário no Mercado Livre.',
+            blocked: 'O Mercado Livre bloqueou o acesso à página.', ancestor_unavailable: 'Uma categoria anterior do caminho ficou indisponível.',
+            listing_unrecognized: 'A listagem não pôde ser confirmada.', legacy_unknown: 'Motivo anterior desconhecido.' };
+        const code = item && typeof item === 'object' && (item.code || item.reasonCode || item.motivo);
+        return reasons[code] || 'Motivo anterior desconhecido.';
+    }
+    function renderIncomplete(job) {
+        const items = incompleteCategories(job);
+        if (elements['incomplete-count']) elements['incomplete-count'].textContent = number(Number.isSafeInteger(job && job.incompleteCount) ? job.incompleteCount : items.length);
+        if (elements.incomplete) elements.incomplete.hidden = !items.length;
+        if (elements['incomplete-list']) elements['incomplete-list'].innerHTML = items.map(item => `<li><strong>${escaped(typeof item === 'string' ? item : item && (item.nome || item.key) || 'Categoria')}</strong>: ${escaped(incompleteReason(item))}</li>`).join('');
+        const recovery = job && (job.recovery || job.checkpoint && job.checkpoint.recovery);
+        if (elements['recovery-progress']) {
+            const total = recovery && (Array.isArray(recovery.categoryKeys) ? recovery.categoryKeys.length : recovery.total);
+            elements['recovery-progress'].hidden = !Number.isSafeInteger(total);
+            elements['recovery-progress'].textContent = Number.isSafeInteger(total) ? `Recuperação das categorias: ${number(Math.min(total, Math.max(0, Number(recovery.index) || 0)))} de ${number(total)} verificadas nesta tentativa.` : '';
+        }
     }
     function categoryChoice(value) {
         if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -238,6 +274,7 @@
             renderSellers();
             renderRanking();
             renderControls();
+            renderIncomplete(null);
             showMessage(current ? 'Recuperando a pesquisa desta sessão.' : 'Entre no JK Sistema para consultar a pesquisa.', !current);
         }
         return current;
@@ -257,7 +294,7 @@
     const methods = {
         start: 'startPesquisaMercadoJob', status: 'getPesquisaMercadoJobStatus', pause: 'pausePesquisaMercadoJob',
         resume: 'resumePesquisaMercadoJob', cancel: 'cancelPesquisaMercadoJob', browser: 'showPesquisaMercadoBrowser',
-        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames'
+        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames', 'recover-incomplete': 'recoverPesquisaMercadoIncomplete'
     };
     async function invoke(action, extras = {}) {
         const authToken = currentSession();
@@ -265,12 +302,13 @@
         const payload = { authToken };
         if (state.activeJob && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.activeJob.id;
         if (extras.jobId) payload.jobId = extras.jobId;
+        if (action === 'recover-incomplete') payload.expectedRevision = extras.expectedRevision;
         if (action === 'refresh-names' && !payload.jobId && state.activeJob) payload.jobId = state.activeJob.id;
         if (action === 'start') payload.category = categoryChoice(extras.category);
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
         if (action === 'browser' && ['categories', 'names'].includes(extras.purpose)) payload.purpose = extras.purpose;
-        if (['start', 'resume', 'refresh-names'].includes(action)) {
+        if (['start', 'resume', 'refresh-names', 'recover-incomplete'].includes(action)) {
             const email = saveAvantConfiguration();
             if (email) payload.avantLoginEmail = email;
         }
@@ -322,14 +360,15 @@
             waiting_login: 'Conclua o login solicitado no navegador e clique em Retomar.', interrupted: 'O progresso foi preservado. Clique em Retomar para continuar.',
             completed: 'A pesquisa terminou. Os resultados estão disponíveis nos rankings abaixo.',
             completed_partial: 'A pesquisa terminou. Consulte as pendências e as categorias incompletas nos resultados.',
-            cancelled: 'Os resultados já consultados permanecem disponíveis.', failed: 'O progresso foi preservado. Clique em Retomar para tentar continuar.' };
+            cancelled: 'Os resultados já consultados permanecem disponíveis.', failed: 'O progresso foi preservado. Consulte os motivos e tente as categorias incompletas novamente.' };
         const checkpoint = job.checkpoint || {};
         const progress = job.progress || checkpoint.progress || {};
         const active = ['running', 'queued', 'pausing'].includes(job.status);
         const message = safeText(job.message);
         const legacyWarning = active && /^Alguns an[uú]ncios ficaram sem dados suficientes do Avant/i.test(message);
         let warning = safeText(progress.warning || (legacyWarning ? message : ''));
-        if (!warning && Number((job.counters || {}).pending) > 0) warning = 'Existem pendências de dados ou falhas de consulta.';
+        if (!warning && Number((job.counters || {}).pending) > 0) warning = 'Existem anúncios sem dados suficientes ou com falhas de consulta.';
+        if (!warning && salesRecoveryPending(job)) warning = 'Existem dados de vendas pendentes de uma nova consulta ao Avant Pro.';
         if (warning && job.status === 'running') warning += ' A pesquisa continua.';
         const detail = active ? safeText(progress.detail || (legacyWarning ? '' : message))
             : progress.phase === job.status ? safeText(progress.detail) : '';
@@ -341,6 +380,7 @@
         elements['status-warning'].textContent = warning;
         elements['status-warning'].hidden = !warning;
         elements['status-warning'].classList.remove('error');
+        renderIncomplete(job);
     }
     function isActive(job) {
         return !!job && ['queued', 'running', 'pausing', 'paused', 'waiting_login'].includes(job.status);
@@ -349,13 +389,19 @@
         const deleting = window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy;
         const status = state.activeJob ? state.activeJob.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
-        const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status);
+        const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status) && !canRecover(state.activeJob);
         if (elements['avant-email']) elements['avant-email'].disabled = !sessionToken || state.busy || running;
         elements.start.disabled = !sessionToken || state.busy || isActive(state.activeJob) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !!deleting || !resumable;
         elements.cancel.disabled = state.busy || !!deleting || !(isActive(state.activeJob) || resumable);
-        elements.browser.disabled = state.busy || !(isActive(state.activeJob) || resumable || state.namesLogin);
+        elements.browser.disabled = !sessionToken || state.busy || !!deleting || !(isActive(state.activeJob) || resumable || ['completed_partial', 'failed'].includes(status) || state.namesLogin);
+        if (elements['recover-incomplete']) {
+            elements['recover-incomplete'].hidden = !canRecover(state.activeJob);
+            elements['recover-incomplete'].disabled = !sessionToken || state.busy || !!deleting || !canRecover(state.activeJob);
+            elements['recover-incomplete'].textContent = incompleteCategories(state.activeJob).length || Number(state.activeJob && state.activeJob.incompleteCount) > 0
+                ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+        }
         if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !!deleting || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
         const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.activeJob);
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
@@ -365,7 +411,7 @@
         window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-operation-change'));
     }
     function renderScope() {
-        elements.scope.textContent = state.scopeCategory ? `Escopo da pesquisa: ${state.scopeCategory.nome}`
+        elements.scope.textContent = state.scopeCategory ? `Escopo da pesquisa: ${scopeName(state.activeJob)}`
             : state.activeJob ? 'Escopo da pesquisa: execução anterior.' : 'Nenhuma pesquisa iniciada.';
     }
     function renderTaxonomy() {
@@ -504,7 +550,7 @@
         const labels = { paused: 'Pesquisa pausada', waiting_login: 'Pesquisa aguardando login' };
         document.getElementById('pm-active-research-label').textContent = labels[job.status] || 'Pesquisa em andamento';
         document.getElementById('pm-active-research-detail').textContent =
-            `${state.scopeCategory ? state.scopeCategory.nome : 'Pesquisa geral no ML'} · ${number(job.counters && job.counters.ads || 0)} anúncios salvos`;
+            `${scopeName(job) || 'Pesquisa geral no ML'} · ${number(job.counters && job.counters.ads || 0)} anúncios salvos`;
     }
     function clearJob() {
         state.activeJob = null; state.namesLogin = false; state.scopeCategory = null;
@@ -514,6 +560,7 @@
         for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = '0';
         elements['category-current'].textContent = 'Aguardando categoria';
         renderScope(); renderActiveResearch(); renderSellers(); renderRanking(); renderControls();
+        renderIncomplete(null);
         showMessage('Escolha uma categoria para iniciar uma pesquisa.');
     }
     const onJobDeleted = event => {
@@ -681,9 +728,29 @@
     }
     window.__jkPesquisaMercadoRefreshNames = refreshNames;
     window.__jkPesquisaMercadoNamesBrowser = jobId => invoke('browser', { jobId, purpose: 'names' });
+    async function recoverIncomplete(jobId, expectedRevision) {
+        if (state.busy || state.disposed || window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy) throw new Error('Aguarde a operação atual.');
+        if (!jobId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error('Atualize a pesquisa antes de tentar novamente.');
+        state.busy = true; renderControls();
+        try {
+            const result = await invoke('recover-incomplete', { jobId, expectedRevision });
+            if (state.disposed) return result;
+            updateJob(result); await refresh();
+            window.dispatchEvent(new window.CustomEvent('jk-pesquisa-mercado-recovered', { detail: { jobId } }));
+            return result;
+        } finally { state.busy = false; if (!state.disposed) renderControls(); }
+    }
+    window.__jkPesquisaMercadoRecoverIncomplete = recoverIncomplete;
+    window.__jkPesquisaMercadoDiagnosticBrowser = jobId => invoke('browser', { jobId });
     async function command(action) {
         if (state.busy || state.disposed || window.__jkPesquisaMercadoHistory && window.__jkPesquisaMercadoHistory.state.history.deleteBusy) return;
         currentSession();
+        if (action === 'recover-incomplete') {
+            if (!canRecover(state.activeJob)) return;
+            try { await recoverIncomplete(state.activeJob.id, state.activeJob.revision); }
+            catch (error) { if (!state.disposed) showMessage(userErrorMessage(error), true); }
+            return;
+        }
         if (action === 'refresh-names') {
             showMessage('Consultando os nomes das lojas…');
             try {
@@ -777,7 +844,7 @@
         window.clearTimeout(debounce);
         debounce = window.setTimeout(refresh, 250);
     }
-    for (const action of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names']) elements[action].addEventListener('click', () => command(action));
+    for (const action of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete']) if (elements[action]) elements[action].addEventListener('click', () => command(action));
     elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail, true));
     elements['taxonomy-browser'].addEventListener('click', async () => {
         if (state.busy || isActive(state.activeJob) || state.disposed) return;
@@ -855,6 +922,7 @@
         state.disposed = true;
         if (window.__jkPesquisaMercadoChangeMode === changeMode) delete window.__jkPesquisaMercadoChangeMode;
         if (window.__jkPesquisaMercadoRefreshNames === refreshNames) { delete window.__jkPesquisaMercadoRefreshNames; delete window.__jkPesquisaMercadoNamesBrowser; }
+        if (window.__jkPesquisaMercadoRecoverIncomplete === recoverIncomplete) { delete window.__jkPesquisaMercadoRecoverIncomplete; delete window.__jkPesquisaMercadoDiagnosticBrowser; }
         if (typeof unsubscribe === 'function') unsubscribe();
         window.clearInterval(polling);
         window.clearTimeout(debounce);

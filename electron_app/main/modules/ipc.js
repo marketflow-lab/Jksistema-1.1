@@ -1240,7 +1240,7 @@ app.whenReady().then(async () => {
             message: 'Favoritos rodando em segundo plano.'
         });
     });
-    for (const action of ['start', 'status', 'pause', 'resume', 'cancel', 'show-browser', 'categories', 'refresh-names']) {
+    for (const action of ['start', 'status', 'pause', 'resume', 'cancel', 'show-browser', 'categories', 'refresh-names', 'recover-incomplete']) {
         ipcMain.handle(`pesquisa-mercado:${action}`, (event, payload) => pesquisaMercadoCommand(event, action, payload || {}));
     }
     ipcMain.handle('favoritos-job-browser-stop', async (event) => {

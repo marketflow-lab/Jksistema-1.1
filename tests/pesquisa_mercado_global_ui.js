@@ -45,6 +45,8 @@ async function main() {
             commands.push(action);
             if (action === 'pause') job = { ...job, status: 'paused', revision: job.revision + 1 };
             if (action === 'resume') job = { ...job, status: 'running', revision: job.revision + 1 };
+            if (action === 'recover-incomplete') job = { ...job, status: 'running', revision: job.revision + 1,
+                checkpoint: { ...job.checkpoint, recovery: { categoryKeys: ['MLB1', 'MLB2'], index: 0 } } };
             if (action === 'cancel') job = { ...job, status: 'cancelled', revision: job.revision + 1 };
             json({ job }); return;
         }
@@ -82,6 +84,7 @@ async function main() {
                 startPesquisaMercadoJob: command('start'), getPesquisaMercadoJobStatus: command('status'),
                 pausePesquisaMercadoJob: command('pause'), resumePesquisaMercadoJob: command('resume'),
                 cancelPesquisaMercadoJob: command('cancel'), showPesquisaMercadoBrowser: command('browser'),
+                recoverPesquisaMercadoIncomplete: command('recover-incomplete'),
                 onPesquisaMercadoProgress(callback) { window.__pmProgress = callback; return () => { window.__pmUnsubscribed = true; }; }
             };
         });
@@ -192,6 +195,40 @@ async function main() {
         assert.deepStrictEqual(errors, []);
         await page.setViewportSize({ width: 640, height: 900 });
         assert.strictEqual(await page.locator('#pm-global-start').isVisible(), true);
+        job = { ...job, revision: job.revision + 1, status: 'completed_partial', counters: { ...job.counters, pending: 0 },
+            checkpoint: { officialTaxonomy: { ancestry: [{ nome: 'Esportes e Fitness' }, { nome: 'Ciclismo' }, { nome: 'Peças' }] },
+                incompleteCategories: [{ key: 'MLB1', nome: 'Freios', code: 'category_access_denied', motivo: 'private raw details' }, 'Categoria legada'] } };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.match(await page.locator('#pm-global-scope').textContent(), /Esportes e Fitness → Ciclismo → Peças/);
+        assert.strictEqual(await page.locator('#pm-global-incomplete-count').textContent(), '2', 'falhas de categorias independem dos anúncios pendentes');
+        assert.strictEqual(await page.locator('#pm-global-pending-count').textContent(), '0');
+        assert.match(await page.locator('#pm-global-incomplete-list').textContent(), /bloqueou.*Motivo anterior desconhecido/s);
+        assert.doesNotMatch(await page.locator('#pm-global-incomplete-list').textContent(), /private raw details/);
+        assert.strictEqual(await page.locator('#pm-global-browser').isEnabled(), true, 'pesquisa parcial permite diagnóstico');
+        assert.strictEqual(await page.locator('#pm-global-resume').isDisabled(), true, 'recuperação usa ação explícita');
+        const recoveryRevision = job.revision;
+        await page.locator('#pm-global-recover-incomplete').click();
+        await page.waitForFunction(() => document.querySelector('#pm-global-recovery-progress').textContent.includes('0 de 2'));
+        assert.deepStrictEqual(await page.evaluate(() => ({ jobId: window.__lastCommandPayload.jobId, expectedRevision: window.__lastCommandPayload.expectedRevision })),
+            { jobId: job.id, expectedRevision: recoveryRevision }, 'recuperação envia a revisão da pesquisa exibida');
+        assert.strictEqual(commands.filter(action => action === 'recover-incomplete').length, 1);
+        await page.evaluate(value => window.__pmProgress({ job: { ...value, checkpoint: undefined, scopePath: value.checkpoint.officialTaxonomy.ancestry,
+            incompleteCategories: value.checkpoint.incompleteCategories, incompleteCount: 2, recovery: { index: 1, total: 2 }, status: 'failed', revision: value.revision + 2 } }), job);
+        assert.strictEqual(await page.locator('#pm-global-recover-incomplete').isVisible(), true, 'falha também permite recuperar as categorias incompletas');
+        assert.strictEqual(await page.locator('#pm-global-incomplete-count').textContent(), '2', 'eventos compactos atualizam incompletas sem checkpoint');
+        assert.match(await page.locator('#pm-global-recovery-progress').textContent(), /1 de 2/);
+        job = { ...job, revision: job.revision + 3, status: 'completed_partial', incompleteCategories: [], incompleteCount: 0, salesRecoveryPending: true,
+            checkpoint: { incompleteCategories: [], salesRecoveryPending: true } };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.strictEqual(await page.locator('#pm-global-incomplete-count').textContent(), '0');
+        assert.strictEqual(await page.locator('#pm-global-recover-incomplete').textContent(), 'Tentar dados pendentes novamente');
+        assert.strictEqual(await page.locator('#pm-global-recover-incomplete').isEnabled(), true, 'métricas pendentes permitem recuperação mesmo sem categoria incompleta');
+        const salesRecoveryRevision = job.revision;
+        await page.locator('#pm-global-recover-incomplete').click();
+        await page.waitForFunction(() => document.querySelector('#pm-global-recover-incomplete').hidden);
+        assert.deepStrictEqual(await page.evaluate(() => ({ jobId: window.__lastCommandPayload.jobId, expectedRevision: window.__lastCommandPayload.expectedRevision })),
+            { jobId: job.id, expectedRevision: salesRecoveryRevision });
+        assert.strictEqual(commands.filter(action => action === 'recover-incomplete').length, 2);
         await page.evaluate(() => {
             localStorage.removeItem('access_token');
             dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));
@@ -200,6 +237,8 @@ async function main() {
         assert.strictEqual(await page.locator('#pm-global-ads-count').textContent(), '0', 'logout limpa dados da sessão anterior');
         assert.strictEqual(await page.locator('#pm-global-status-detail').textContent(), '', 'logout limpa a etapa da sessão anterior');
         assert.strictEqual(await page.locator('#pm-global-status-warning').textContent(), '', 'logout limpa o aviso da sessão anterior');
+        assert.strictEqual(await page.locator('#pm-global-incomplete-count').textContent(), '0', 'logout limpa categorias incompletas');
+        assert.strictEqual(await page.locator('#pm-global-incomplete').isVisible(), false);
         assert.strictEqual(await page.locator('#pm-global-start').isDisabled(), true);
         await page.evaluate(() => window.__pmProgress({ job: { id: 'job-test', status: 'running', revision: 999 } }));
         assert.strictEqual(await page.locator('#pm-global-body tr').count(), 0, 'evento antigo após logout não repõe dados');

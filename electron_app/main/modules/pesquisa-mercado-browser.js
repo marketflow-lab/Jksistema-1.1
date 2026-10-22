@@ -17,6 +17,7 @@ let pesquisaMercadoCategoriesToken = '';
 let pesquisaMercadoCategoryChoices = new Map();
 let pesquisaMercadoCategoryChildren = new Map();
 let pesquisaMercadoCategoryLastUrl = '';
+let pesquisaMercadoNavigationStatus = null;
 
 function rememberPesquisaMercadoCategories(items) {
     const result = [];
@@ -109,7 +110,10 @@ function ensurePesquisaMercadoBrowser() {
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // Closing the auxiliary window only hides it, preserving the active job.
     worker.on('close', event => { if (!pesquisaMercadoQuitting) { event.preventDefault(); worker.hide(); } });
-    worker.on('closed', () => { if (pesquisaMercadoWindow === worker) { pesquisaMercadoWindow = null; pesquisaMercadoBrowserJobId = ''; } });
+    worker.on('closed', () => { if (pesquisaMercadoWindow === worker) { pesquisaMercadoWindow = null; pesquisaMercadoBrowserJobId = ''; pesquisaMercadoNavigationStatus = null; } });
+    worker.webContents.on('did-navigate', (_event, url, statusCode) => {
+        pesquisaMercadoNavigationStatus = Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { url, statusCode } : null;
+    });
     worker.webContents.on('will-navigate', (event, url) => {
         if (!isAllowedFavoritosWorkerUrl(url)) event.preventDefault();
     });
@@ -132,6 +136,10 @@ function pesquisaMercadoBrowserAdapter() {
         getURL() {
             return pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents.getURL() : '';
         },
+        getNavigationStatus() {
+            const current = pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents.getURL() : '';
+            return pesquisaMercadoNavigationStatus && pesquisaMercadoNavigationStatus.url === current ? { ...pesquisaMercadoNavigationStatus } : null;
+        },
         isLoading() {
             return !!(pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() && pesquisaMercadoWindow.webContents.isLoadingMainFrame());
         },
@@ -139,6 +147,7 @@ function pesquisaMercadoBrowserAdapter() {
             if (!pesquisaMercadoRunnerModule.allowedUrl(url)) throw new Error('Link fora do Mercado Livre.');
             const worker = ensurePesquisaMercadoBrowser();
             if (signal && signal.aborted) { const err = new Error('Pesquisa interrompida.'); err.name = 'AbortError'; throw err; }
+            pesquisaMercadoNavigationStatus = null;
             let timer;
             let abort;
             const interrupted = new Promise((_resolve, reject) => {
@@ -213,8 +222,11 @@ function pesquisaMercadoCommand(event, action, payload = {}) {
 
 async function executePesquisaMercadoCommand(action, payload) {
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando; a pesquisa sera preservada.');
-    if (!['start', 'status', 'resume', 'pause', 'cancel', 'show-browser', 'categories', 'refresh-names'].includes(action)) throw new Error('Comando de pesquisa desconhecido.');
-    const configAction = ['start', 'resume', 'refresh-names'].includes(action);
+    if (!['start', 'status', 'resume', 'pause', 'cancel', 'show-browser', 'categories', 'refresh-names', 'recover-incomplete'].includes(action)) throw new Error('Comando de pesquisa desconhecido.');
+    if (action === 'recover-incomplete' && (Object.keys(payload).some(key => !['authToken', 'jobId', 'expectedRevision', 'avantLoginEmail'].includes(key))
+        || typeof payload.jobId !== 'string' || !payload.jobId || payload.jobId.length > 128
+        || !Number.isSafeInteger(payload.expectedRevision) || payload.expectedRevision < 0)) throw new Error('Atualize a pesquisa antes de tentar novamente.');
+    const configAction = ['start', 'resume', 'refresh-names', 'recover-incomplete'].includes(action);
     const hasAvantEmail = Object.prototype.hasOwnProperty.call(payload, 'avantLoginEmail');
     const avantEmail = hasAvantEmail ? pesquisaMercadoAvantModule.normalizeEmail(payload.avantLoginEmail) : '';
     if (hasAvantEmail && (!configAction || !avantEmail)) throw new Error('E-mail do Avant Pro invalido.');
@@ -231,6 +243,7 @@ async function executePesquisaMercadoCommand(action, payload) {
     } else {
         authorizedLatest = await pesquisaMercadoBackendRequest('GET', '/api/pesquisa-mercado/jobs/latest', undefined, token);
     }
+    if (action === 'recover-incomplete') await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`, undefined, token);
     if (pesquisaMercadoAuthToken !== token && !runner.task && !runner.namesTask) {
         pesquisaMercadoAvantEmail = '';
         pesquisaMercadoAvantContext += 1;
@@ -254,6 +267,7 @@ async function executePesquisaMercadoCommand(action, payload) {
     if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
     if (action === 'status') return runner.status(payload.jobId || '');
     if (action === 'resume') return runner.resume(jobId);
+    if (action === 'recover-incomplete') return runner.recoverIncomplete(jobId, payload.expectedRevision);
     if (action === 'refresh-names') return runner.refreshNames(jobId);
     if (action === 'pause' || action === 'cancel') {
         if (!jobId) return { job: null };
@@ -275,7 +289,7 @@ async function executePesquisaMercadoCommand(action, payload) {
             return { success: true };
         }
         const response = jobId ? await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`) : authorizedLatest;
-        if (!response || !response.job || payload.purpose !== 'names' && !['running', 'paused', 'waiting_login', 'failed'].includes(response.job.status)) throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
+        if (!response || !response.job || payload.purpose !== 'names' && !['running', 'paused', 'waiting_login', 'interrupted', 'completed_partial', 'failed'].includes(response.job.status)) throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
         if (payload.purpose === 'names') {
             if (runner.task || runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
             await runner.browser.prepare();
@@ -284,23 +298,23 @@ async function executePesquisaMercadoCommand(action, payload) {
             worker.show(); worker.focus();
             return { success: true };
         }
-        if (!runner.task) {
-            runner.job = response.job;
-            runner.checkpoint = response.job.checkpoint || {};
-        }
+        if (runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
         const hadBrowser = pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed();
         const changedJob = pesquisaMercadoBrowserJobId !== response.job.id;
         if (!hadBrowser) await runner.browser.prepare();
         const worker = ensurePesquisaMercadoBrowser();
         if (!hadBrowser || changedJob || !worker.webContents.getURL()) {
-            const checkpoint = runner.checkpoint || {};
+            const checkpoint = response.job.checkpoint || {};
             const page = checkpoint.page || {};
             const seed = (page.anuncios || [])[Number(page.index || 0)];
-            const target = seed && seed.url || page.url || checkpoint.currentCategory && checkpoint.currentCategory.url || 'https://www.mercadolivre.com.br/';
-            await runner.browser.navigate(pesquisaMercadoRunnerModule.allowedUrl(target) ? target : 'https://www.mercadolivre.com.br/');
+            const candidates = [seed && seed.url, page.url, checkpoint.currentCategory && checkpoint.currentCategory.url];
+            const target = candidates.find(value => pesquisaMercadoRunnerModule.allowedUrl(value) && !/_CatId_|[?&]category_id=/i.test(value));
+            await runner.browser.navigate(target || 'https://www.mercadolivre.com.br/categorias');
         }
+        pesquisaMercadoBrowserJobId = response.job.id;
         worker.show(); worker.focus();
-        return runner.snapshot();
+        const { id, status, revision, counters, message, created_at, updated_at } = response.job;
+        return { job: { id, status, revision, counters, message, created_at, updated_at } };
     }
     throw new Error('Comando de pesquisa desconhecido.');
 }

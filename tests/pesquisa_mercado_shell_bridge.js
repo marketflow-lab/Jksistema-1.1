@@ -10,6 +10,7 @@ async function main() {
     const categoryCalls = [];
     const browserCalls = [];
     const namesCalls = [];
+    const recoveryCalls = [];
     const resumeCalls = [];
     const statusCalls = [];
     const pauseCalls = [];
@@ -28,6 +29,7 @@ async function main() {
             getPesquisaMercadoJobStatus: async payload => { statusCalls.push(payload); return { job: null }; },
             pausePesquisaMercadoJob: async payload => { pauseCalls.push(payload); return { success: true }; },
             refreshPesquisaMercadoNames: async payload => { namesCalls.push(payload); return { updated: 1, pending: 0 }; },
+            recoverPesquisaMercadoIncomplete: async payload => { recoveryCalls.push(payload); return { job: { id: payload.jobId } }; },
             startPesquisaMercadoJob: async payload => { commands.push(payload); return { job: { id: 'job-1' } }; },
             getPesquisaMercadoCategories: async payload => { categoryCalls.push(payload); return { items: [], parentCategory: payload.parentCategory || null }; },
             showPesquisaMercadoBrowser: async payload => { browserCalls.push(payload); return { success: true }; },
@@ -82,6 +84,17 @@ async function main() {
     assert.strictEqual(namesCalls.length, 0, 'recuperacao exige origem, modulo, job e schema fechado');
     await send('refresh-names', { authToken: 'fixture-token', jobId: 'saved-job' });
     assert.deepStrictEqual(namesCalls, [{ authToken: 'fixture-token', jobId: 'saved-job' }]);
+    for (const payload of [
+        { authToken: 'fixture-token', expectedRevision: 4 },
+        { authToken: 'fixture-token', jobId: 'saved-job' },
+        { authToken: 'fixture-token', jobId: 'saved-job', expectedRevision: '4' },
+        { authToken: 'fixture-token', jobId: 'saved-job', expectedRevision: -1 },
+        { authToken: 'fixture-token', jobId: 'saved-job', expectedRevision: 4, checkpoint: {} }
+    ]) await send('recover-incomplete', payload);
+    await send('recover-incomplete', { authToken: 'fixture-token', jobId: 'saved-job', expectedRevision: 4 }, 'https://evil.example');
+    assert.strictEqual(recoveryCalls.length, 0, 'recuperação exige origem, pesquisa, revisão inteira e schema fechado');
+    await send('recover-incomplete', { authToken: 'fixture-token', jobId: 'saved-job', expectedRevision: 4, avantLoginEmail: 'operator@example.test' });
+    assert.deepStrictEqual(recoveryCalls, [{ authToken: 'fixture-token', expectedRevision: 4, avantLoginEmail: 'operator@example.test', jobId: 'saved-job' }]);
     await send('browser', { authToken: 'fixture-token', purpose: 'names' });
     assert.strictEqual(browserCalls.length, 1, 'login de nomes exige pesquisa explicita');
     await send('browser', { authToken: 'fixture-token', purpose: 'names', jobId: 'saved-job' });

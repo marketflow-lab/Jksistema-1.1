@@ -6,7 +6,26 @@ const ROOT = '/api/pesquisa-mercado/jobs';
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
-const { OfficialCategoryNavigation, unsupportedCategoryAlias } = require('./pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel } = require('./pesquisa-mercado-category-navigation');
+const CATEGORY_FAILURES = Object.freeze({
+    category_link_missing: 'O link oficial da categoria nao foi localizado.',
+    category_link_ambiguous: 'O Mercado Livre apresentou mais de um link para a categoria.',
+    category_filters_unavailable: 'Os filtros de categorias nao terminaram de carregar.',
+    category_scope_mismatch: 'O Mercado Livre abriu outra categoria; o escopo foi preservado.',
+    category_not_found: 'O Mercado Livre nao reconheceu o endereco da categoria.',
+    category_load_timeout: 'A pagina da categoria nao terminou de carregar.',
+    category_access_denied: 'O Mercado Livre bloqueou temporariamente o acesso a pagina. Abra o navegador e tente novamente.',
+    category_read_failed: 'Nao foi possivel consultar a categoria.',
+    category_pagination_failed: 'Nao foi possivel abrir a proxima pagina da categoria.'
+});
+
+function categoryFailure(error, stage = 'category') {
+    const code = Object.prototype.hasOwnProperty.call(CATEGORY_FAILURES, error && error.code) ? error.code
+        : error && error.categoryScopeMismatch ? 'category_scope_mismatch' : 'category_read_failed';
+    return { code, stage: ['category', 'navigation', 'pagination'].includes(stage) ? stage : 'category',
+        dependency_key: /^MLB\d+$/.test(error && error.navigationDependencyKey || '') ? error.navigationDependencyKey : '',
+        motivo: CATEGORY_FAILURES[code] };
+}
 
 function allowedUrl(value) {
     try {
@@ -229,6 +248,34 @@ function progressState(value) {
     return { phase: PROGRESS_PHASES.has(source.phase) ? source.phase : '', detail: text(source.detail), warning: text(source.warning) };
 }
 
+function normalizedIncompleteCategories(checkpoint) {
+    if (!Array.isArray(checkpoint.incompleteCategories || [])) throw new Error('As pendencias preservadas desta pesquisa estao indisponiveis.');
+    const records = new Map(), ambiguous = new Set(), names = new Map();
+    const clean = value => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+    for (const raw of checkpoint.categories || []) {
+        const category = normalizeCategory(raw);
+        if (!category) continue;
+        const previous = records.get(category.key);
+        if (previous && (previous.nome !== category.nome || previous.url !== category.url)) ambiguous.add(category.key);
+        records.set(category.key, category);
+    }
+    for (const category of records.values()) {
+        const name = category.nome.toLowerCase();
+        if (!names.has(name)) names.set(name, []);
+        names.get(name).push(category);
+    }
+    return (checkpoint.incompleteCategories || []).map(raw => {
+        const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : { nome: clean(raw) };
+        const name = clean(item.nome || item.categoria);
+        const matches = item.key ? [records.get(item.key)].filter(Boolean) : names.get(name.toLowerCase()) || [];
+        const category = matches.length === 1 && !ambiguous.has(matches[0].key) ? matches[0] : null;
+        // A unique record in the frozen queue supplies identity. Homonyms and
+        // unknown legacy warnings remain unassigned until evidence exists.
+        return { ...item, ...(category || { nome: name }),
+            motivo: typeof item.motivo === 'string' ? item.motivo : 'Motivo anterior desconhecido.' };
+    });
+}
+
 function initialCheckpoint(saved) {
     const checkpoint = {
         version: 1, phase: 'categories', categories: [], categoryIndex: 0,
@@ -237,6 +284,8 @@ function initialCheckpoint(saved) {
         ...clone(saved || {})
     };
     checkpoint.progress = progressState(checkpoint.progress);
+    checkpoint.incompleteCategories = normalizedIncompleteCategories(checkpoint);
+    if (!Array.isArray(checkpoint.countedCategoryKeys)) checkpoint.countedCategoryKeys = checkpoint.categories.slice(0, checkpoint.categoryIndex).map(item => item.key);
     if (!checkpoint.progress.warning) {
         const previous = Array.isArray(checkpoint.incompleteCategories) ? checkpoint.incompleteCategories.at(-1) : null;
         checkpoint.progress.warning = progressState({ warning: previous && previous.motivo }).warning;
@@ -323,9 +372,22 @@ class PesquisaMercadoRunner {
         if (!this.job) return { job: null };
         // No authentication context or raw checkpoint is sent as a progress event.
         const { id, status, revision, counters, message, created_at, updated_at } = this.job;
-        return { job: { id, status, revision, counters, message, created_at, updated_at,
+        const incompleteCategories = (this.checkpoint && this.checkpoint.incompleteCategories || []).map(raw => {
+            const item = raw && typeof raw === 'object' ? raw : { nome: typeof raw === 'string' ? raw : '' };
+            const known = Object.prototype.hasOwnProperty.call(CATEGORY_FAILURES, item.code);
+            return { key: String(item.key || '').slice(0, 500), nome: String(item.nome || '').slice(0, 400),
+                code: known ? item.code : 'legacy_unknown', motivo: known ? CATEGORY_FAILURES[item.code] : 'Motivo anterior desconhecido.',
+                stage: ['category', 'navigation', 'pagination'].includes(item.stage) ? item.stage : 'category',
+                dependency_key: /^MLB\d+$/.test(item.dependency_key || '') ? item.dependency_key : '' };
+        });
+        const recovery = this.checkpoint && this.checkpoint.recovery;
+        return { job: { id, status, revision, counters, message, created_at, updated_at, generation: this.job.generation || 0,
             scopeCategory: this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category || null,
+            scopePath: this.checkpoint && this.checkpoint.officialTaxonomy && this.checkpoint.officialTaxonomy.ancestry || [],
             currentCategory: this.checkpoint && this.checkpoint.currentCategory || null,
+            incompleteCategories, incompleteCount: incompleteCategories.length,
+            salesRecoveryPending: !!(this.checkpoint && this.checkpoint.salesRecoveryPending),
+            recovery: recovery ? { generation: recovery.generation, index: recovery.index, total: recovery.categoryKeys.length } : null,
             progress: progressState(this.checkpoint && this.checkpoint.progress) } };
     }
 
@@ -378,14 +440,18 @@ class PesquisaMercadoRunner {
     }
 
     async status(jobId = '') {
+        if (!jobId && this.task && this.job) return this.snapshot();
         const response = await this.api('GET', jobId ? `${ROOT}/${encodeURIComponent(jobId)}` : `${ROOT}/latest`);
         if (this.task && this.job && response.job && this.job.id === response.job.id) return this.snapshot();
+        if (response.job && response.job.checkpoint && Object.prototype.hasOwnProperty.call(response.job.checkpoint, 'incompleteCategories')) {
+            response.job.checkpoint.incompleteCategories = normalizedIncompleteCategories(response.job.checkpoint);
+        }
         if (response.job && response.job.status === 'running' && !this.task) {
             const message = 'Pesquisa recuperada. Clique em Retomar para continuar.';
             const checkpoint = clone(response.job.checkpoint || {});
             checkpoint.progress = progressState({ ...initialCheckpoint(checkpoint).progress, phase: 'paused', detail: message });
             return this.api('PATCH', `${ROOT}/${encodeURIComponent(response.job.id)}/checkpoint`, {
-                checkpoint, counters: response.job.counters, status: 'paused', message
+                checkpoint, counters: response.job.counters, status: 'paused', message, generation: response.job.generation || 0
             });
         }
         return response;
@@ -583,6 +649,19 @@ class PesquisaMercadoRunner {
         return this.attach(response.job);
     }
 
+    async recoverIncomplete(jobId, expectedRevision) {
+        if (this.task || this.namesTask) throw new Error('Pause a pesquisa e aguarde a operacao atual antes de recuperar as pendencias.');
+        if (!jobId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error('Atualize a pesquisa antes de recuperar as pendencias.');
+        await this.saveQueue.catch(() => {});
+        const current = await this.api('GET', `${ROOT}/${encodeURIComponent(jobId)}`);
+        if (!current.job || current.job.id !== jobId) throw new Error('Atualize a pesquisa antes de recuperar as pendencias.');
+        // Validate the frozen selection before the backend atomically starts a
+        // new generation. The revision check below still rejects concurrent edits.
+        validateCheckpointTaxonomy(initialCheckpoint(current.job.checkpoint));
+        const response = await this.api('POST', `${ROOT}/${encodeURIComponent(jobId)}/recover-incomplete`, { expected_revision: expectedRevision });
+        return this.attach(response.job);
+    }
+
     async stop(status = 'paused') {
         if (!this.job) return this.snapshot();
         if (!ACTIVE.has(this.job.status) && !this.task) return this.snapshot();
@@ -596,13 +675,15 @@ class PesquisaMercadoRunner {
     }
 
     async save() {
+        this.checkMutationGeneration();
         const checkpoint = clone(this.checkpoint);
+        const jobId = this.job.id, generation = Number(this.job.generation || 0);
         const status = this.stopStatus || this.job.status;
         const counters = clone(this.job.counters || {});
         const message = this.job.message || '';
         this.saveQueue = this.saveQueue.catch(() => {}).then(async () => {
-            const response = await this.api('PATCH', `${ROOT}/${encodeURIComponent(this.job.id)}/checkpoint`, {
-                checkpoint, status: this.stopStatus || status, counters, message
+            const response = await this.api('PATCH', `${ROOT}/${encodeURIComponent(jobId)}/checkpoint`, {
+                checkpoint, status: this.stopStatus || status, counters, message, generation
             });
             this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status, message: this.checkpoint.progress.detail };
             if (checkpoint.discoveredSeed && this.checkpoint.discoveredSeed && checkpoint.discoveredSeed.key === this.checkpoint.discoveredSeed.key) {
@@ -619,6 +700,11 @@ class PesquisaMercadoRunner {
             err.name = 'AbortError';
             throw err;
         }
+    }
+
+    checkMutationGeneration() {
+        const recovery = this.checkpoint && this.checkpoint.recovery;
+        if (recovery && recovery.generation !== Number(this.job.generation || 0)) throw new Error('A pesquisa foi atualizada. Reabra o progresso salvo.');
     }
 
     async attempt(operation, signal = this.controller.signal) {
@@ -645,7 +731,7 @@ class PesquisaMercadoRunner {
         throw last;
     }
 
-    async read(url, purpose = 'category', navigationCategoryId = '') {
+    async read(url, purpose = 'category', navigationCategoryId = '', expectedChild = null) {
         if (!allowedUrl(url)) throw new Error('Link de pesquisa fora do Mercado Livre.');
         return this.attempt(async avantState => {
             this.check();
@@ -667,6 +753,13 @@ class PesquisaMercadoRunner {
                     if (verifyDestination) destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
                 }
+                const navigationStatus = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
+                if (navigationStatus && [403, 429].includes(navigationStatus.statusCode)
+                    && canonicalUrl(navigationStatus.url) === canonicalUrl(page.url || this.browser.getURL())) {
+                    const error = new CategoryNavigationError('category_access_denied', navigationCategoryId);
+                    error.sharedCategoryFailure = true;
+                    throw error;
+                }
                 const listings = (page.anuncios || []).length > 0;
                 if (purpose === 'first-page' && page.readyState !== 'loading' && !(typeof this.browser.isLoading === 'function' && this.browser.isLoading())
                     && (!page.url || canonicalUrl(page.url) === canonicalUrl(this.browser.getURL()))) {
@@ -674,7 +767,9 @@ class PesquisaMercadoRunner {
                     await this.ensureAvantSession(this.controller.signal, avantState);
                     if (!attemptedBefore && avantState.attempted) { poll -= 1; continue; }
                 }
-                const ready = purpose === 'seller' ? !!page.allAdsUrl
+                const ready = purpose === 'navigation' && expectedChild ? page.categoryNotFound || (page.categories || []).some(child =>
+                    child.key === expectedChild.key || categoryLabel(child.nome) === categoryLabel(expectedChild.nome))
+                    : purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
                     : purpose === 'first-page' ? true // The collector owns settling and scrolling this page.
                     : isOfficialIndex ? (page.categoryTree || []).length > 0 || (page.categories || []).length > 0
@@ -684,6 +779,7 @@ class PesquisaMercadoRunner {
                     if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) {
                         if (page.categoryNotFound && !listings) {
                             const error = new Error('O Mercado Livre nao reconheceu o endereco da categoria.');
+                            error.code = 'category_not_found';
                             error.categoryUnavailable = true;
                             throw error;
                         }
@@ -693,11 +789,18 @@ class PesquisaMercadoRunner {
             }
             if (verifyDestination && destination.mismatch) {
                 const error = new Error('O Mercado Livre abriu outra categoria. O escopo selecionado foi preservado.');
+                error.code = 'category_scope_mismatch';
                 error.categoryScopeMismatch = true;
                 throw error;
             }
             if (purpose === 'index' && !isOfficialIndex && !page.authRequired && !page.avantAuthRequired) return page; // The homepage can link to the full category index instead.
-            throw new Error('A pagina ainda nao apresentou os dados para continuar a pesquisa.');
+            if (purpose === 'navigation' && expectedChild) {
+                throw new CategoryNavigationError((page && page.categories || []).length ? 'category_link_missing' : 'category_filters_unavailable',
+                    (page && page.categories || []).length ? expectedChild.key : navigationCategoryId);
+            }
+            const error = new Error('A pagina ainda nao apresentou os dados para continuar a pesquisa.');
+            error.code = 'category_load_timeout';
+            throw error;
         });
     }
 
@@ -771,7 +874,7 @@ class PesquisaMercadoRunner {
         if (!this.officialNavigation) {
             this.officialNavigation = new OfficialCategoryNavigation({
                 ancestry: tree.ancestry, children: tree.children,
-                normalize: normalizeCategory, read: (url, purpose, key) => this.read(url, purpose, key)
+                normalize: normalizeCategory, read: (url, purpose, key, expected) => this.read(url, purpose, key, expected)
             });
         }
         return this.officialNavigation.resolve(category.key);
@@ -852,11 +955,13 @@ class PesquisaMercadoRunner {
         });
     }
 
-    incomplete(message) {
+    incomplete(message, failure = null) {
+        this.checkpoint.categoryAttemptFailed = true;
         const category = this.checkpoint.currentCategory;
         if (category) {
             const previous = this.checkpoint.incompleteCategories.find(item => item.key === category.key);
-            if (!previous) this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.') });
+            if (!previous) this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.'), ...(failure || {}) });
+            else if (failure) Object.assign(previous, failure);
             else if (SALES_PENDING_WARNINGS.has(previous.motivo) && !SALES_PENDING_WARNINGS.has(message)) {
                 previous.motivo = String(message || 'Coleta incompleta.');
             }
@@ -864,11 +969,13 @@ class PesquisaMercadoRunner {
         this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
 
-    async complementSellerListings(seller, result, allAdsUrl) {
+    async complementSellerListings(seller, result, allAdsUrl, discoverySeed = null) {
         if (typeof this.collector.collectDetail !== 'function' || typeof this.collector.isComplete !== 'function') return result;
         const saved = this.checkpoint.sellerCollection;
         const collection = saved && saved.sellerKey === seller.key && saved.url === allAdsUrl
-            ? saved : { sellerKey: seller.key, url: allAdsUrl, result: clone(result), index: 0 };
+            ? saved : { sellerKey: seller.key, url: allAdsUrl, result: clone(result), index: 0,
+                ...(discoverySeed ? { categoryKey: this.checkpoint.currentCategory.key,
+                    seedKey: String(discoverySeed.id || canonicalUrl(discoverySeed.url)), seed: clone(discoverySeed) } : {}) };
         if (!Array.isArray(collection.result.anuncios)) return result;
         this.checkpoint.sellerCollection = collection;
         await this.save();
@@ -1117,6 +1224,7 @@ class PesquisaMercadoRunner {
     }
 
     async publishSeller(seller, result, preserveCategories = false) {
+        this.checkMutationGeneration();
         seller = enrichSellerName(seller, result.anuncios);
         const category = this.checkpoint.currentCategory;
         const anuncios = (result.anuncios || []).map((item, index) => ({
@@ -1126,7 +1234,8 @@ class PesquisaMercadoRunner {
             ordem_coleta: preserveCategories ? item.ordem_coleta ?? index : Number(this.job.counters && this.job.counters.ads || 0) + index
         }));
         const response = await this.api('PUT', `${ROOT}/${encodeURIComponent(this.job.id)}/vendedores/${encodeURIComponent(seller.key)}`, {
-            seller: { ...seller, categoria: preserveCategories ? seller.categoria || '' : category && category.nome || '' }, anuncios
+            seller: { ...seller, categoria: preserveCategories ? seller.categoria || '' : category && category.nome || '' }, anuncios,
+            generation: Number(this.job.generation || 0)
         });
         this.job = { ...this.job, ...response.job, status: this.stopStatus || response.job.status, message: this.checkpoint.progress.detail };
         this.rememberSeller(seller.key);
@@ -1149,11 +1258,11 @@ class PesquisaMercadoRunner {
         return found;
     }
 
-    async processSeed(seed) {
-        const key = String(seed.id || canonicalUrl(seed.url));
-        if (!key || this.seenSeeds.has(key)) return;
-        const history = await this.api('GET', `${ROOT}/${encodeURIComponent(this.job.id)}/descoberta?seed_key=${encodeURIComponent(key)}`);
-        if (history.seen) { this.seenSeeds.add(key); return; }
+    async processSeed(seed, retryFailed = false) {
+        const key = String(retryFailed ? seed.key || seed.id || canonicalUrl(seed.url) : seed.id || canonicalUrl(seed.url));
+        if (!key || !retryFailed && this.seenSeeds.has(key)) return;
+        const history = await this.api('GET', `${ROOT}/${encodeURIComponent(this.job.id)}/descoberta?seed_key=${encodeURIComponent(key)}${retryFailed ? '&include_status=true' : ''}`);
+        if (history.seen && (!retryFailed || history.status !== 'failed')) { this.seenSeeds.add(key); return; }
         this.setProgress('discovery', `Consultando anuncio${seed.id ? ' ' + seed.id : ''} para identificar o vendedor...`);
         const page = await this.read(seed.url, 'item');
         let seller = sellerFromPage(page);
@@ -1177,6 +1286,10 @@ class PesquisaMercadoRunner {
                 seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
             if (!(await this.sellerPublished(seller.key))) {
                 this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
+                const preserved = this.checkpoint.preservedSellerCollection;
+                const restore = preserved && preserved.categoryKey === this.checkpoint.currentCategory.key
+                    && preserved.collection.sellerKey === seller.key && preserved.collection.url === allAdsUrl;
+                if (restore) this.checkpoint.sellerCollection = clone(preserved.collection);
                 const pending = this.checkpoint.sellerCollection;
                 const result = pending && pending.sellerKey === seller.key && pending.url === allAdsUrl
                     ? clone(pending.result) : await this.attempt(async avantState => {
@@ -1196,10 +1309,11 @@ class PesquisaMercadoRunner {
                     });
                 });
                 this.check();
-                const complete = await this.complementSellerListings(seller, result, allAdsUrl);
+                const complete = await this.complementSellerListings(seller, result, allAdsUrl, seed);
                 this.check();
                 await this.publishSeller(seller, complete);
                 delete this.checkpoint.sellerCollection;
+                if (restore) delete this.checkpoint.preservedSellerCollection;
             }
             this.rememberSeller(discoveredKey);
         }
@@ -1217,6 +1331,28 @@ class PesquisaMercadoRunner {
             this.check();
             await this.save();
             await this.prepareOfficialTaxonomy();
+            const recovery = this.checkpoint.recovery;
+            if (recovery && !recovery.started) {
+                const collection = this.checkpoint.sellerCollection;
+                if (collection && !(await this.sellerPublished(collection.sellerKey))) {
+                    const previous = this.checkpoint.preservedSellerCollection;
+                    if (previous && (previous.collection.sellerKey !== collection.sellerKey || previous.collection.url !== collection.url)) {
+                        throw new Error('As coletas interrompidas foram preservadas. Retome o progresso anterior antes de recuperar outras categorias.');
+                    }
+                    const owner = this.checkpoint.categories.find(item => item.key === collection.categoryKey);
+                    const seed = collection.seed;
+                    const confirmed = owner && seed && allowedUrl(seed.url) && collection.seedKey === String(seed.id || canonicalUrl(seed.url));
+                    this.checkpoint.preservedSellerCollection = previous || { categoryKey: confirmed ? owner.key : '',
+                        seed: confirmed ? clone(seed) : null, collection: clone(collection) };
+                    delete this.checkpoint.sellerCollection;
+                }
+                recovery.started = true;
+                this.checkpoint.page = null;
+                this.checkpoint.categorySeenPages = [];
+                this.checkpoint.currentCategory = null;
+                this.checkpoint.attemptCategoryKey = '';
+                await this.save();
+            }
             await this.recoverPublishedSales();
             if (!this.checkpoint.discoveryInitialized) {
                 this.setProgress('categories', 'Carregando as categorias do Mercado Livre...');
@@ -1230,10 +1366,36 @@ class PesquisaMercadoRunner {
                 this.checkpoint.discoveryInitialized = true;
                 await this.save();
             }
-            while (this.checkpoint.categoryIndex < this.checkpoint.categories.length) {
+            while (this.hasNextCategory()) {
                 this.check();
-                const category = this.checkpoint.categories[this.checkpoint.categoryIndex];
+                const recovery = this.activeRecovery();
+                const category = recovery ? this.checkpoint.categories.find(item => item.key === recovery.categoryKeys[recovery.index])
+                    : this.checkpoint.categories[this.checkpoint.categoryIndex];
+                if (!category) throw new Error('A fila preservada da pesquisa esta incompleta.');
+                if (!recovery && (this.checkpoint.recovery && this.checkpoint.recovery.recoveredCategoryKeys || []).includes(category.key)) {
+                    this.checkpoint.categoryIndex += 1;
+                    await this.save();
+                    continue;
+                }
                 this.checkpoint.currentCategory = category;
+                if (this.checkpoint.attemptCategoryKey !== category.key) {
+                    this.checkpoint.attemptCategoryKey = category.key;
+                    this.checkpoint.categoryAttemptFailed = false;
+                }
+                if (recovery && recovery.failedSeedsCategoryKey !== category.key) {
+                    const preserved = this.checkpoint.preservedSellerCollection;
+                    if (preserved && preserved.categoryKey === category.key && preserved.seed) {
+                        try { await this.processSeed(preserved.seed, true); }
+                        catch (error) {
+                            if (error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                            this.incomplete('A coleta interrompida foi preservada e continua pendente.');
+                        }
+                        await this.save();
+                    }
+                    await this.retryFailedSeeds(category);
+                    recovery.failedSeedsCategoryKey = category.key;
+                    await this.save();
+                }
                 // Old aliases can contain a saved empty page. Reopen this same
                 // category without discarding completed sellers or seed IDs.
                 if (this.checkpoint.officialTaxonomy && this.checkpoint.page && unsupportedCategoryAlias(this.checkpoint.page.url)
@@ -1248,9 +1410,7 @@ class PesquisaMercadoRunner {
                         let page = await this.readCategory(category);
                         this.enqueueCategories(page.categories);
                         if (page.hasChildren && page.categories && page.categories.length) {
-                            this.checkpoint.categoryIndex += 1;
-                            this.job.counters.categories = Number(this.job.counters.categories || 0) + 1;
-                            await this.save();
+                            await this.finishCategory();
                             continue;
                         }
                         if (page.listingUrl && canonicalUrl(page.listingUrl) !== canonicalUrl(page.url || category.url)) {
@@ -1267,7 +1427,9 @@ class PesquisaMercadoRunner {
                         await this.save();
                     } catch (err) {
                         if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
-                        this.incomplete(`Categoria indisponivel: ${category.nome}.`);
+                        const failure = categoryFailure(err, err.navigationDependencyKey ? 'navigation' : 'category');
+                        this.incomplete(failure.motivo, failure);
+                        if (err.sharedCategoryFailure) throw err;
                         await this.finishCategory();
                         continue;
                     }
@@ -1329,15 +1491,25 @@ class PesquisaMercadoRunner {
                         await this.save();
                     } catch (err) {
                         if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
-                        this.incomplete('Nao foi possivel abrir a proxima pagina da categoria.');
+                        const failure = categoryFailure({ ...err, code: err.code || 'category_pagination_failed' }, 'pagination');
+                        this.incomplete(failure.motivo, failure);
                         break;
                     }
                 }
                 await this.finishCategory();
             }
             this.setProgress('finalizing', 'Finalizando a pesquisa e salvando os resultados...');
-            this.job.status = this.checkpoint.incompleteCategories.length || this.checkpoint.salesRecoveryPending ? 'completed_partial' : 'completed';
-            this.setProgress(this.job.status, this.job.status === 'completed' ? 'Pesquisa concluida.' : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
+            const preserved = this.checkpoint.preservedSellerCollection;
+            if (preserved) this.checkpoint.progress.warning = preserved.categoryKey
+                ? 'A coleta interrompida foi preservada e continua pendente.'
+                : 'Uma coleta interrompida foi preservada sem vinculo confirmado a categoria.';
+            const pending = this.checkpoint.incompleteCategories.length || this.checkpoint.salesRecoveryPending || preserved;
+            const navigationFailed = this.checkpoint.incompleteCategories.some(item => Object.prototype.hasOwnProperty.call(CATEGORY_FAILURES, item.code));
+            this.job.status = pending ? navigationFailed && !Number(this.job.counters.pages || 0) && !Number(this.job.counters.ads || 0)
+                ? 'failed' : 'completed_partial' : 'completed';
+            this.setProgress(this.job.status, this.job.status === 'completed' ? 'Pesquisa concluida.'
+                : this.job.status === 'failed' ? 'Nenhuma listagem foi consultada; recupere as categorias pendentes.'
+                : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
             await this.save();
         } catch (err) {
             this.job.status = this.stopStatus || (err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
@@ -1351,13 +1523,58 @@ class PesquisaMercadoRunner {
 
     async finishCategory() {
         this.setProgress('finalizing', `Finalizando a categoria ${this.checkpoint.currentCategory.nome} e salvando os resultados...`);
-        this.checkpoint.categoryIndex += 1;
+        const key = this.checkpoint.currentCategory.key;
+        if (!this.checkpoint.categoryAttemptFailed) {
+            this.checkpoint.incompleteCategories = this.checkpoint.incompleteCategories.filter(item => item.key !== key);
+            this.checkpoint.progress.warning = this.checkpoint.incompleteCategories.at(-1)?.motivo || '';
+        }
+        const recovery = this.activeRecovery();
+        if (recovery) {
+            recovery.index += 1;
+            recovery.recoveredCategoryKeys = [...new Set([...(recovery.recoveredCategoryKeys || []), key])];
+            delete recovery.failedSeedsAfterKey;
+        } else this.checkpoint.categoryIndex += 1;
         this.checkpoint.page = null;
         this.checkpoint.categorySeenPages = [];
         this.checkpoint.seenSeedIds = [];
         this.seenSeeds.clear();
-        this.job.counters.categories = Number(this.job.counters.categories || 0) + 1;
+        if (!this.checkpoint.countedCategoryKeys.includes(key)) {
+            this.checkpoint.countedCategoryKeys.push(key);
+            this.job.counters.categories = Number(this.job.counters.categories || 0) + 1;
+        }
         await this.save();
+    }
+
+    activeRecovery() {
+        const recovery = this.checkpoint.recovery;
+        return recovery && recovery.index < recovery.categoryKeys.length ? recovery : null;
+    }
+
+    hasNextCategory() {
+        return !!this.activeRecovery() || this.checkpoint.categoryIndex < this.checkpoint.categories.length;
+    }
+
+    async retryFailedSeeds(category) {
+        const recovery = this.activeRecovery();
+        while (recovery) {
+            this.check();
+            const response = await this.api('GET', `${ROOT}/${encodeURIComponent(this.job.id)}/failed-seeds?category_key=${encodeURIComponent(category.key)}&limit=100&after_key=${encodeURIComponent(recovery.failedSeedsAfterKey || '')}`);
+            if (response.generation !== Number(this.job.generation || 0)) throw new Error('A pesquisa foi atualizada. Reabra o progresso salvo.');
+            const items = response.items || [];
+            if (!items.length) break;
+            for (const seed of items) {
+                this.check();
+                if (typeof seed.key !== 'string' || seed.key <= (recovery.failedSeedsAfterKey || '')
+                    || seed.category_key !== category.key || !allowedUrl(seed.url)) throw new Error('A fila preservada da pesquisa esta incompleta.');
+                try { await this.processSeed(seed, true); }
+                catch (error) {
+                    if (error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                    this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
+                }
+                recovery.failedSeedsAfterKey = seed.key;
+                await this.save();
+            }
+        }
     }
 }
 

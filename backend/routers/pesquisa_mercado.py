@@ -5,6 +5,9 @@ from typing import Literal
 
 from backend.schemas.pesquisa_mercado import (
     PesquisaMercadoCheckpointRequest,
+    PesquisaMercadoRecoverRequest,
+    PesquisaMercadoFailedSeedsResponse,
+    PesquisaMercadoDiagnosticResponse,
     PesquisaMercadoSellerRequest,
     PesquisaMercadoNamesRequest,
     PesquisaMercadoStartRequest,
@@ -66,6 +69,18 @@ def create_pesquisa_mercado_router() -> APIRouter:
     def get(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
         return {"job": get_pesquisa_mercado_store().get(job_id, client_id, _username(request))}
 
+    @router.post("/jobs/{job_id}/recover-incomplete")
+    def recover_incomplete(job_id: str, req: PesquisaMercadoRecoverRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return {"job": get_pesquisa_mercado_store().recover_incomplete(job_id, client_id, _username(request), expected_revision=req.expected_revision)}
+
+    @router.get("/jobs/{job_id}/diagnostico", response_model=PesquisaMercadoDiagnosticResponse)
+    def diagnostic(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return get_pesquisa_mercado_store().diagnostic(job_id, client_id, _username(request))
+
+    @router.get("/jobs/{job_id}/failed-seeds", response_model=PesquisaMercadoFailedSeedsResponse)
+    def failed_seeds(job_id: str, request: Request, category_key: str = Query(min_length=1, max_length=500), offset: int = Query(default=0, ge=0, le=2**53 - 1), limit: int = Query(default=100, ge=1, le=100), after_key: str = Query(default="", max_length=4000), client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return get_pesquisa_mercado_store().failed_seeds(job_id, client_id, _username(request), category_key=category_key, offset=offset, limit=limit, after_key=after_key)
+
     @router.delete("/jobs/{job_id}", response_model=PesquisaMercadoDeleteResponse)
     def delete(job_id: str, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
         return get_pesquisa_mercado_store().delete(job_id, client_id, _username(request))
@@ -76,7 +91,7 @@ def create_pesquisa_mercado_router() -> APIRouter:
 
     @router.patch("/jobs/{job_id}/checkpoint")
     def checkpoint(job_id: str, req: PesquisaMercadoCheckpointRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-        return {"job": get_pesquisa_mercado_store().checkpoint(job_id, client_id, _username(request), checkpoint=req.checkpoint, status=req.status, counters=req.counters, message=req.message)}
+        return {"job": get_pesquisa_mercado_store().checkpoint(job_id, client_id, _username(request), checkpoint=req.checkpoint, status=req.status, counters=req.counters, message=req.message, generation=req.generation)}
 
     @router.put("/jobs/{job_id}/nomes")
     def update_names(job_id: str, req: PesquisaMercadoNamesRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
@@ -84,7 +99,7 @@ def create_pesquisa_mercado_router() -> APIRouter:
 
     @router.put("/jobs/{job_id}/vendedores/{seller_key:path}")
     def publish(job_id: str, seller_key: str, req: PesquisaMercadoSellerRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-        return {"job": get_pesquisa_mercado_store().publish(job_id, seller_key, client_id, _username(request), req.seller, req.anuncios)}
+        return {"job": get_pesquisa_mercado_store().publish(job_id, seller_key, client_id, _username(request), req.seller, req.anuncios, generation=req.generation)}
 
     @router.get("/jobs/{job_id}/ranking")
     def ranking(job_id: str, request: Request, offset: int = Query(default=0, ge=0, le=2**53 - 1), limit: int = Query(default=100, ge=1, le=100), q: str = Query(default="", max_length=200), category: str = Query(default="", max_length=400), seller_key: str = Query(default="", max_length=500), client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
@@ -99,7 +114,7 @@ def create_pesquisa_mercado_router() -> APIRouter:
         return get_pesquisa_mercado_store().categories(job_id, client_id, _username(request))
 
     @router.get("/jobs/{job_id}/descoberta")
-    def discovery(job_id: str, request: Request, seed_key: str = Query(min_length=1, max_length=4000), client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-        return get_pesquisa_mercado_store().discovery(job_id, seed_key, client_id, _username(request))
+    def discovery(job_id: str, request: Request, seed_key: str = Query(min_length=1, max_length=4000), include_status: bool = False, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
+        return get_pesquisa_mercado_store().discovery(job_id, seed_key, client_id, _username(request), include_status=include_status)
 
     return router
