@@ -31,7 +31,7 @@ from backend.services import medias_compras_common as medias_common
 from backend.services.medias_compras_common import *
 from backend.services.medias_compras_excel import *
 from backend.services.medias_compras_fiscal import *
-from backend.services.medias_compras_fiscal import _ContextoCadastroLista
+from backend.services.medias_compras_fiscal import _ContextoCadastroLista, _pick_cadastro_link
 from backend.services.runtime_bridge import bind_runtime_globals
 
 
@@ -1626,8 +1626,67 @@ def _api_medias_compras_lista_pedido_excluir_sync(
     }
 
 
+def _lista_pedido_com_links_atuais(lista: dict, client_id: str) -> dict:
+    """Refresh only export links from the current, exact store's Cadastro.
+
+    Work on copies so downloading never rewrites the saved order or its
+    quantities, prices and approvals. The refreshed links also enter the
+    existing content-based XLSX cache key.
+    """
+    itens = lista.get("itens") or []
+    referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
+    if not client_id or not itens or not _loja_lista_definida(referencia):
+        return lista
+
+    def chave_sku(valor):
+        return _normalizar_sku_mes(str(valor or "").strip()).upper()
+
+    def chave_item(item):
+        return chave_sku(medias_common._primeiro_texto_item(item, ("SKU", "sku")))
+
+    skus = tuple(sorted({chave_item(item) for item in itens
+                         if isinstance(item, dict) and chave_item(item)}))
+    if not skus:
+        return lista
+    from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
+
+    try:
+        contexto = visao_produtos_cadastro_contexto_loja(client_id, referencia, skus=skus)
+    except (RuntimeError, OSError, HTTPException):
+        return lista
+    store_id = str(contexto.get("store_id") or "").strip()
+    esperado = str(lista.get("store_id") or "").strip()
+    if (contexto.get("scope") != "store" or not contexto.get("loja_resolvida")
+            or not store_id or (esperado and store_id != esperado)):
+        return lista
+
+    links = {}
+    for produto in contexto.get("produtos") or []:
+        if (not isinstance(produto, dict)
+                or str(produto.get("store_id") or "").strip() != store_id
+                or produto.get("deleted_at_utc")):
+            continue
+        # The canonical field takes precedence over historical link aliases.
+        link = _pick_cadastro_link({"link": produto.get("link")}) or _pick_cadastro_link(produto)
+        if link:
+            links[chave_sku(produto.get("sku") or produto.get("sku_normalizado"))] = link
+
+    exportacao = dict(lista)
+    exportacao["itens"] = []
+    for item in itens:
+        if isinstance(item, dict):
+            item = dict(item)
+            link = links.get(chave_item(item))
+            if link:
+                # The renderer indexes normalized names in insertion order.
+                # A legacy "link"/"LINK" must not precede the refreshed field.
+                item = {"Link": link, **{key: value for key, value in item.items() if key != "Link"}}
+        exportacao["itens"].append(item)
+    return exportacao
+
+
 def _versao_cache_lista_pedido(lista: dict) -> str:
-    """Distinguish list edits made within the same updated_at second."""
+    """Distinguish list edits and refreshed links, even within the same second."""
     import hashlib
 
     payload = json.dumps(lista, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1648,6 +1707,7 @@ def _api_medias_compras_lista_pedido_download_sync(lista_id: str, client_id: str
     if not lista:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
+    lista = _lista_pedido_com_links_atuais(lista, client_id)
     nome_lista = str(lista.get("nome_lista", "lista_pedido") or "lista_pedido").strip()
     nome_base = re.sub(r"[^A-Za-z0-9_-]+", "_", nome_lista).strip("_") or "lista_pedido"
     nome_arquivo = f"{nome_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -1762,6 +1822,7 @@ def _api_medias_compras_lista_pedido_gerar_download_sync(lista_id: str, client_i
     if not lista:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
+    lista = _lista_pedido_com_links_atuais(lista, client_id)
     nome_lista = str(lista.get("nome_lista", "lista_pedido") or "lista_pedido").strip()
     nome_base = re.sub(r"[^A-Za-z0-9_-]+", "_", nome_lista).strip("_") or "lista_pedido"
     nome_arquivo = f"{nome_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
