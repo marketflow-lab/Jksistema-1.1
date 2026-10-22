@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from backend.modules.vendas import analytics, performance
 from backend.modules.vendas.router import create_vendas_router
+from backend.services import cadastro_lojas_produtos
 from backend.services.bling_vendas import _sql_filtro_loja_vendas
 
 
@@ -59,6 +60,7 @@ def scoped_endpoint(tmp_path, monkeypatch):
         db.commit()
         db.close()
     tenant_path = lambda client: str(tmp_path / client)
+    monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", tenant_path)
     monkeypatch.setattr(analytics, "get_tenant_path", tenant_path)
     monkeypatch.setattr(performance, "get_tenant_path", tenant_path)
     monkeypatch.setattr(analytics, "datetime", _FixedDatetime)
