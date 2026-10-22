@@ -61,6 +61,9 @@ async function scenario(browser, options = {}) {
     if (url.pathname === '/cofre/cofre.js' || url.pathname === '/cofre/cofre.css') {
       return route.fulfill({ contentType: url.pathname.endsWith('.js') ? 'application/javascript' : 'text/css', body: source('static' + url.pathname) });
     }
+    if (['/cofre/assets/cofre-cover.png', '/cofre/assets/cofre-library.png'].includes(url.pathname)) {
+      return route.fulfill({ contentType: 'image/png', body: fs.readFileSync(path.join(root, 'static', url.pathname)) });
+    }
     if (url.pathname.startsWith('/api/cofre/')) {
       state.api.push({ path: url.pathname, authorization: request.headers().authorization, method: request.method() });
       assert.equal(request.headers().authorization, 'Bearer ' + token, 'A API preserva Authorization de sessão.');

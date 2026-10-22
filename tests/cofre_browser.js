@@ -81,6 +81,7 @@ async function scenario(browser, options = {}) {
       if (url.pathname === '/dashboard.html') return route.fulfill({ contentType: 'text/html', body: '<main>Dashboard fixture</main>' });
       if (url.pathname === '/auth.js') return route.fulfill({ contentType: 'application/javascript', body: `window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:'Bearer '+localStorage.getItem('access_token')});` });
       if (url.pathname === '/cofre/cofre.js' || url.pathname === '/cofre/cofre.css') return route.fulfill({ contentType: url.pathname.endsWith('.js') ? 'application/javascript; charset=utf-8' : 'text/css; charset=utf-8', body: fs.readFileSync(path.join(root, 'static', url.pathname), 'utf8') });
+      if (['/cofre/assets/cofre-cover.png', '/cofre/assets/cofre-library.png'].includes(url.pathname)) return route.fulfill({ contentType: 'image/png', body: fs.readFileSync(path.join(root, 'static', url.pathname)) });
       if (url.pathname === assetPath) { state.assetCalls += 1; return route.fulfill({ contentType: 'image/png', body: png }); }
       if (url.pathname === '/api/cofre/compartilhamento') {
         if (state.failSharingStatus) return json(route, { detail: 'Estado temporariamente indisponível.' }, 503);
