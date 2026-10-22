@@ -117,7 +117,11 @@ def _verificar_conexao_bling(req, client_id):
         response = _bling_get_with_adaptive_limit(
             "https://api.bling.com.br/Api/v3/pedidos/vendas",
             headers={"Authorization": f"Bearer {token}"},
-            params={"pagina": 1, "limite": 1, "dataInicial": req.data_inicio, "dataFinal": req.data_fim},
+            # Verify access independently of the queued historical window. The
+            # batch may combine years of pending work, which Bling rejects as
+            # one date-filtered query even when this account is connected.
+            # Collection keeps its own daily filters and durable checkpoints.
+            params={"pagina": 1, "limite": 1},
             timeout=(3.05, 8), max_attempts=1, total_timeout=12,
             cancel_callback=lambda: _verificar_cancelamento(client_id),
         )

@@ -78,8 +78,7 @@ def test_minimal_get_confirms_empty_account_without_collecting(context):
     state["responses"] = [response(body={"data": []})]
     sync_engine._verificar_conexao_bling(req, "tenant-a")
     assert len(state["calls"]) == 1
-    assert state["calls"][0]["params"] == {"pagina": 1, "limite": 1,
-        "dataInicial": req.data_inicio, "dataFinal": req.data_fim}
+    assert state["calls"][0]["params"] == {"pagina": 1, "limite": 1}
     assert state["calls"][0]["max_attempts"] == 1
     assert not state["refreshes"] and not state["marked"]
 
