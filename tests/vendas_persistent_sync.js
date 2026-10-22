@@ -154,6 +154,16 @@ function setup(options = {}) {
     assert.doesNotMatch(attentionSummary, /atualizada|sincronizando|aguardando/,
         'uma lista contendo apenas lojas bloqueadas não pode informar atividade ou sucesso');
     assert.match(attentionOnly, /Verifique a integração da loja para continuar/);
+    reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [
+        { loja: 'Loja pausada', status: 'paused', ultimo_erro: '<falha antiga>' },
+        { loja: 'Loja com acesso pendente', status: 'paused', ultimo_erro: 'Reconecte o Bling da loja.' }
+    ] } });
+    const pausedWarnings = reopened.elements.syncPersistenteStatus.innerHTML;
+    assert.match(pausedWarnings, /2 avisos anteriores/);
+    assert.doesNotMatch(pausedWarnings, /2 alertas/);
+    assert.match(pausedWarnings, /Última tentativa antes da pausa: &lt;falha antiga&gt;/);
+    assert.match(pausedWarnings, /Última tentativa antes da pausa: Reconecte o Bling da loja/);
+    assert.equal((pausedWarnings.match(/data-sync-state="paused">Pausada/g) || []).length, 2);
     const mixed = {
         active: true, progress: { percentual: 43, mensagem: 'Coletando página 2' }, logs: ['<registro técnico>'],
         automacao: { pendentes: 9, habilitadas: 6, lojas: [

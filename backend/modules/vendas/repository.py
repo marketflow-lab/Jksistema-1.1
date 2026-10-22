@@ -501,6 +501,21 @@ def resumo_vendas(
 
     catalog = load_composition_catalog(client_id)
     mapa_lojas_cliente = _carregar_mapeamento_lojas_virtuais_cliente(client_id)
+
+    @functools.lru_cache(maxsize=4096, typed=True)
+    def resolver_unidade_resumo(loja_id, unidade_id, nome_oficial, intermediador_nome, intermediador_cnpj, canal):
+        # This invocation owns the tenant map; no aliases survive into another read.
+        unidade = _resolver_nome_loja_virtual(
+            mapa_lojas_cliente,
+            loja_id=loja_id,
+            unidade_id=unidade_id,
+            nome_oficial=nome_oficial,
+            intermediador_nome=intermediador_nome,
+            intermediador_cnpj=intermediador_cnpj,
+            canal=canal,
+        )
+        return _normalizar_unidade_negocio_ml(unidade or nome_oficial, canal, prefer_full=False)
+
     unidade_sql = ""
     unidade_params: list = []
     if unidade_negocio and unidade_negocio != "__todos":
@@ -583,19 +598,13 @@ def resumo_vendas(
                 ):
                     continue
 
-                unidade_resolvida = _resolver_nome_loja_virtual(
-                    mapa_lojas_cliente,
-                    loja_id=item.get("loja_id"),
-                    unidade_id=item.get("unidade_id"),
-                    nome_oficial=item.get("unidade_negocio"),
-                    intermediador_nome=item.get("intermediador_nome"),
-                    intermediador_cnpj=item.get("intermediador_cnpj"),
-                    canal=item.get("canal"),
-                )
-                unidade_resolvida = _normalizar_unidade_negocio_ml(
-                    unidade_resolvida or item.get("unidade_negocio"),
+                unidade_resolvida = resolver_unidade_resumo(
+                    item.get("loja_id"),
+                    item.get("unidade_id"),
+                    item.get("unidade_negocio"),
+                    item.get("intermediador_nome"),
+                    item.get("intermediador_cnpj"),
                     item.get("canal"),
-                    prefer_full=False,
                 )
                 if unidade_resolvida:
                     item["unidade_negocio"] = unidade_resolvida

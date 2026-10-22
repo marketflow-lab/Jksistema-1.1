@@ -3,6 +3,19 @@ function obterClientId() {
     return user && user.client_id ? user.client_id : null;
 }
 
+function obterPrazoLeituraVendasMs(dataInicioIso, dataFimIso, loja) {
+    const prazoPadrao = 45000;
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    if (loja !== '__todas' || !iso.test(dataInicioIso) || !iso.test(dataFimIso)) return prazoPadrao;
+    const inicio = Date.parse(`${dataInicioIso}T00:00:00.000Z`);
+    const fim = Date.parse(`${dataFimIso}T00:00:00.000Z`);
+    if (!Number.isFinite(inicio) || !Number.isFinite(fim) || fim < inicio
+        || new Date(inicio).toISOString().slice(0, 10) !== dataInicioIso
+        || new Date(fim).toISOString().slice(0, 10) !== dataFimIso) return prazoPadrao;
+    const dias = (fim - inicio) / 86400000 + 1;
+    return dias > 60 ? 120000 : prazoPadrao;
+}
+
 async function fetchComTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
     const externalSignal = options.signal;

@@ -74,7 +74,8 @@
     function chartContextKey() {
         const options = readChartOptions();
         return JSON.stringify([contextKey(), options.periodo, options.tipo, options.metrica, options.intervalo, options.compararAnoPassado,
-            options.mostrarEstoqueGeralGrafico, options.mostrarEstoqueSkuGrafico, options.skuAtualGrafico]);
+            options.mostrarEstoqueGeralGrafico, options.mostrarEstoqueSkuGrafico,
+            options.mostrarEstoqueSkuGrafico ? options.skuAtualGrafico : null]);
     }
 
     function number(value) {

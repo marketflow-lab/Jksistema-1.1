@@ -32,9 +32,24 @@ function harness() {
     const node = id => {
         if (!nodes.has(id)) nodes.set(id, {
             value: '', textContent: '', innerHTML: '', className: '', disabled: false, children: [], options: [], dataset: {}, listeners: {},
-            addEventListener(type, listener) { this.listeners[type] = listener; },
+            addEventListener(type, listener) {
+                const previous = this.listeners[type];
+                this.listeners[type] = previous ? function(event) { previous.call(this, event); listener.call(this, event); } : listener;
+            },
             appendChild(child) { this.children.push(child); },
             querySelector() { return this.children.find(child => 'vendasReadRetry' in (child.dataset || {})) || null; }, querySelectorAll: () => [],
+            getContext() { return { canvas: this }; },
+            classList: {
+                toggle(name, enabled) {
+                    const classes = new Set(node(id).className.split(/\s+/).filter(Boolean));
+                    const active = enabled ?? !classes.has(name);
+                    if (active) classes.add(name); else classes.delete(name);
+                    node(id).className = [...classes].join(' ');
+                    return active;
+                },
+                add(...names) { names.forEach(name => this.toggle(name, true)); },
+                remove(...names) { names.forEach(name => this.toggle(name, false)); },
+            },
         });
         return nodes.get(id);
     };
@@ -54,6 +69,10 @@ function harness() {
         sessionStorage: { getItem: () => null, removeItem() {}, setItem() {} },
         fetch: (url, options) => { fixture.calls.push({ url, options }); return fixture.fetch(url, options); },
         obterAuthHeaders: () => ({}),
+        Chart: class {
+            constructor(ctx, config) { this.canvas = ctx.canvas; this.config = config; this.destroyed = false; }
+            destroy() { this.destroyed = true; }
+        },
     });
     vm.runInContext(runtime, context);
     vm.runInContext(sync.slice(0, sync.indexOf('function aguardarProximoFrame()')), context);
@@ -66,14 +85,24 @@ function harness() {
         function renderBotoesLojas(){} function obterValorExibicaoSku(row){return Number(row.valor || 0);}
         function renderTabelaAgrupada(rows){fixture.rows.push(JSON.parse(JSON.stringify(rows)));}
         async function filtrar(){renderTabelaAgrupada(dados);}
-        function renderizarGrafico(payload){fixture.graphs.push(payload);}
+        function renderizarGrafico(payload){
+            fixture.graphs.push(payload);
+            renderizarGraficoEstoque(payload.labels, payload.estoque_geral, payload.estoque_sku,
+                payload.quantidades_vendas, false, payload.estoque_meta);
+            renderizarGraficoSkusComEstoque(payload.labels, payload.estoque_skus_com_saldo,
+                payload.estoque_skus_pareto_com_saldo, false, payload.estoque_meta);
+        }
+        function formatarLabelDataGrafico(label){return label;}
         function atualizarObservacoesGraficoVendas(){} function carregarOciososSidebarVendas(){}
+        function salvarPreferenciaGrafico(){}
         function periodoGraficoIncluiMesAtual(){return false;}
         function mesmaLoja(a,b){return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();}
         function formatDate(value){return value;}
     `, context);
     vm.runInContext(data.slice(data.indexOf('function aplicarResumoVendas('), data.indexOf("filtroTexto.addEventListener('input'")), context);
     vm.runInContext(graph.slice(graph.indexOf('async function carregarGrafico()'), graph.indexOf('function compactarDadosGrafico(')), context);
+    vm.runInContext(graph.slice(graph.indexOf('function renderizarGraficoEstoque('), graph.indexOf('async function obterLimitesComVendasServidor(')), context);
+    vm.runInContext(graph.slice(graph.indexOf('function atualizarSkuGraficoPeloInput()')), context);
     vm.runInContext(graph.slice(graph.indexOf('function deslocarAnoIso('), graph.indexOf('function alinharSerieComparativa(')), context);
     vm.runInContext(period.slice(period.indexOf('function setSyncButtons('), period.indexOf('// Funções utilitárias')), context);
     vm.runInContext(bridge, context);
@@ -179,6 +208,107 @@ async function main() {
         assert.equal(h.snapshot().graphLoading, false); assert.match(h.snapshot().graphError, /tempo de resposta/);
         assert.match(h.node('graficoObservacoesVendas').textContent, /tempo de resposta/);
     });
+    const stockPayload = value => ({
+        labels: ['2026-10-01'], valores_vendas: [12.34], quantidades_vendas: [2],
+        estoque_geral: [value], estoque_skus_com_saldo: [3],
+        estoque_skus_pareto_com_saldo: [2], estoque_meta: { lojas: 2, lojas_com_historico: 1 },
+    });
+    for (const failure of ['timeout', 'http', 'json']) {
+        await check('stock and coverage end ' + failure + ' and recover on a successful retry', async () => {
+            const h = harness();
+            for (const id of ['graficoEstoqueResumo', 'graficoSkusEstoqueResumo']) h.node(id).textContent = 'Carregando...';
+            h.fixture.fetch = async () => failure === 'http' ? { ok: false, status: 503 }
+                : { ok: true, json: failure === 'timeout' ? () => new Promise(() => {}) : async () => { throw new SyntaxError('bad JSON'); } };
+            const request = h.evaluate('carregarGrafico()'); await flush();
+            if (failure === 'timeout') await h.clock.tick(45000);
+            await request;
+            assert.equal(h.snapshot().graphLoading, false); assert(h.snapshot().graphError);
+            for (const [summary, state, canvas] of [
+                ['graficoEstoqueResumo', 'graficoEstoqueEstado', 'graficoEstoque'],
+                ['graficoSkusEstoqueResumo', 'graficoSkusEstoqueEstado', 'graficoSkusEstoque'],
+            ]) {
+                assert.doesNotMatch(h.node(summary).textContent, /Carregando/);
+                assert.equal(h.node(state).hidden, false); assert.match(h.node(state).textContent, /gráfico/);
+                assert.equal(h.node(canvas).hidden, true);
+            }
+            h.fixture.fetch = async () => response(stockPayload(12));
+            await h.evaluate('carregarGrafico()');
+            assert.equal(h.snapshot().graphError, ''); assert.equal(h.snapshot().graphLoading, false);
+            assert.match(h.node('graficoEstoqueResumo').textContent, /Atual 12 un\./);
+            assert.match(h.node('graficoSkusEstoqueResumo').textContent, /Atual 3 SKU/);
+            for (const id of ['graficoEstoqueEstado', 'graficoSkusEstoqueEstado']) assert.equal(h.node(id).hidden, true);
+            for (const id of ['graficoEstoque', 'graficoSkusEstoque']) assert.equal(h.node(id).hidden, false);
+            assert.equal(h.clock.timers.size, 0);
+        });
+    }
+    await check('failed refresh preserves confirmed stock only in the same filter context', async () => {
+        const h = harness(); h.fixture.fetch = async () => response(stockPayload(17));
+        await h.evaluate('carregarGrafico()');
+        const previous = h.evaluate('[chartEstoqueInstance, chartSkusEstoqueInstance]');
+        const summary = h.node('graficoEstoqueResumo').textContent;
+        h.fixture.fetch = async () => ({ ok: false, status: 503 });
+        for (let attempt = 0; attempt < 2; attempt++) {
+            await h.evaluate('carregarGrafico()');
+            assert.equal(h.node('graficoEstoqueResumo').textContent, summary);
+            assert(previous.every(chart => !chart.destroyed));
+            assert.match(h.node('graficoEstoqueEstado').textContent, /confirmados.*mantidos/);
+            assert.equal(h.node('graficoEstoque').hidden, false);
+        }
+        h.evaluate("lojaSelecionada='Loja B'");
+        await h.evaluate('carregarGrafico()');
+        assert(previous.every(chart => chart.destroyed));
+        assert.doesNotMatch(h.node('graficoEstoqueResumo').textContent, /Atual 17/);
+        assert.equal(h.node('graficoEstoque').hidden, true);
+        assert.equal(h.snapshot().graph.data, null);
+        h.fixture.fetch = async () => response(stockPayload(25));
+        await h.evaluate('carregarGrafico()');
+        assert.match(h.node('graficoEstoqueResumo').textContent, /Atual 25 un\./);
+        assert.equal(h.node('graficoEstoque').hidden, false);
+        assert.equal(h.node('graficoEstoqueEstado').hidden, true);
+    });
+    for (const change of ['metricaGrafico = "quantidade"', 'tipoGrafico = "barra"']) {
+        await check('changing ' + change + ' replaces the pending read and reaches a terminal state', async () => {
+            const h = harness(), old = deferred(), current = deferred();
+            h.fixture.fetch = () => h.fixture.calls.length === 1 ? old.promise : current.promise;
+            const first = h.evaluate('carregarGrafico()'); await flush();
+            h.evaluate(change); const second = h.evaluate('carregarGrafico()'); await flush();
+            assert.equal(h.fixture.calls.length, 2); assert(h.fixture.calls[0].options.signal.aborted);
+            old.resolve(response(stockPayload(999))); current.resolve(response(stockPayload(23)));
+            await Promise.all([first, second]); await h.clock.tick(50000);
+            assert.equal(h.fixture.graphs.length, 1);
+            assert.match(h.node('graficoEstoqueResumo').textContent, /Atual 23 un\./);
+            assert.equal(h.snapshot().graphLoading, false); assert.equal(h.snapshot().graphError, '');
+            assert.equal(h.evaluate('carregarGraficoPromise'), null); assert.equal(h.clock.timers.size, 0);
+        });
+    }
+    await check('editing an inactive stock SKU keeps pending and confirmed graph data without another request', async () => {
+        const h = harness(), pending = deferred(); h.fixture.fetch = () => pending.promise;
+        const request = h.evaluate('carregarGrafico()'); await flush();
+        const input = h.node('graficoEstoqueSkuInput'); input.value = '0001'; input.listeners.change.call(input);
+        assert.equal(h.fixture.calls.length, 1); assert.equal(h.evaluate('mostrarEstoqueSkuGrafico'), false);
+        pending.resolve(response(stockPayload(19))); await request; await h.clock.tick(50000);
+        assert.equal(h.fixture.graphs.length, 1); assert.equal(h.snapshot().graphLoading, false);
+        assert.equal(h.snapshot().graph.data.estoque_geral[0], 19); assert.equal(h.snapshot().graphError, '');
+        assert.equal(h.snapshot().chartOptions.skuAtualGrafico, '0001'); assert.equal(input.value, '0001');
+        input.value = '0002'; input.listeners.change.call(input); await flush();
+        assert.equal(h.snapshot().graph.data.estoque_geral[0], 19); assert.equal(h.snapshot().graphLoading, false);
+        assert.equal(h.snapshot().chartOptions.skuAtualGrafico, '0002');
+        assert.equal(h.fixture.calls.length, 1); assert.equal(h.clock.timers.size, 0);
+    });
+    await check('editing an enabled stock SKU replaces the pending request and confirms the new SKU', async () => {
+        const h = harness(), old = deferred(), current = deferred();
+        h.evaluate('mostrarEstoqueSkuGrafico = true'); h.node('graficoEstoqueSkuInput').value = '0001';
+        h.fixture.fetch = () => h.fixture.calls.length === 1 ? old.promise : current.promise;
+        const first = h.evaluate('carregarGrafico()'); await flush();
+        const input = h.node('graficoEstoqueSkuInput'); input.value = '0002'; input.listeners.change.call(input); await flush();
+        assert.equal(h.fixture.calls.length, 2); assert(h.fixture.calls[0].options.signal.aborted);
+        assert.equal(new URLSearchParams(h.fixture.calls[1].url.split('?')[1]).get('sku'), '0002');
+        old.resolve(response(stockPayload(999))); current.resolve(response(stockPayload(29)));
+        await first; await flush(); await h.clock.tick(50000);
+        assert.equal(h.fixture.graphs.length, 1); assert.equal(h.snapshot().graphLoading, false);
+        assert.equal(h.snapshot().graph.data.estoque_geral[0], 29); assert.equal(h.snapshot().graphError, '');
+        assert.equal(h.snapshot().chartOptions.skuAtualGrafico, '0002'); assert.equal(h.clock.timers.size, 0);
+    });
     await check('the graph accepts a valid 21 second response within its 45 second budget', async () => {
         const h = harness(), wait = deferred(); h.fixture.fetch = () => wait.promise;
         const request = h.evaluate('carregarGrafico()'); await h.clock.tick(21300);
@@ -192,6 +322,82 @@ async function main() {
         first.resolve(response({ labels: [], valores_vendas: [] })); await flush();
         await h.clock.tick(14999); assert.equal(h.snapshot().graphLoading, true);
         await h.clock.tick(1); await request; assert.equal(h.snapshot().graphLoading, false); assert(h.snapshot().graphError);
+    });
+    for (const method of ['carregarVendas', 'carregarGrafico']) {
+        await check('a 205 day all-store ' + method + ' read accepts valid headers after 65 seconds', async () => {
+            const h = harness(), pending = deferred();
+            h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
+            h.fixture.fetch = () => pending.promise;
+            const request = h.evaluate(method + '()'); await h.clock.tick(65000);
+            pending.resolve(response(method === 'carregarVendas'
+                ? { rows: [{ sku: 'confirmed', quantidade: 2, valor: 12.34 }], totals: { valor: 12.34 } } : stockPayload(31)));
+            await request;
+            const snapshot = h.snapshot();
+            if (method === 'carregarVendas') {
+                assert.equal(h.fixture.rows.length, 1); assert.equal(snapshot.loading, false); assert.equal(snapshot.loadError, '');
+            } else {
+                assert.equal(h.fixture.graphs.length, 1); assert.equal(snapshot.graphLoading, false); assert.equal(snapshot.graphError, '');
+            }
+            assert.equal(h.fixture.calls.length, 1); assert.equal(h.clock.timers.size, 0);
+        });
+    }
+    await check('205 day all-store bodies stop at 120 seconds and manual retry recovers without automatic loops', async () => {
+        const h = harness(); h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
+        h.fixture.fetch = async () => ({ ok: true, json: () => new Promise(() => {}) });
+        const requests = [h.evaluate('carregarVendas()'), h.evaluate('carregarGrafico()')]; await flush();
+        await h.clock.tick(119999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+        await h.clock.tick(1); await Promise.all(requests);
+        assert.equal(h.snapshot().loading, false); assert.match(h.snapshot().loadError, /tempo de resposta/);
+        assert.equal(h.snapshot().graphLoading, false); assert.match(h.snapshot().graphError, /tempo de resposta/);
+        assert.equal(h.clock.timers.size, 0); await h.clock.tick(600000); assert.equal(h.fixture.calls.length, 2);
+        h.fixture.fetch = async url => response(url.includes('/resumo')
+            ? { rows: [{ sku: 'retry-confirmed', quantidade: 1, valor: 5 }], totals: { valor: 5 } } : stockPayload(37));
+        await h.window.JKVendasLegacyBridge.retryReads();
+        assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, false);
+        assert.equal(h.snapshot().loadError, ''); assert.equal(h.snapshot().graphError, '');
+        assert.equal(h.snapshot().rows[0].sku, 'retry-confirmed');
+        assert.equal(h.snapshot().graph.data.estoque_geral[0], 37);
+        assert.equal(h.fixture.calls.length, 4); await h.clock.tick(120000); assert.equal(h.fixture.calls.length, 4);
+        assert(h.fixture.calls.every(call => !call.options.method || call.options.method === 'GET'));
+        assert.equal(h.clock.timers.size, 0);
+    });
+    await check('a long all-store graph shares its 120 second deadline with the year comparison body', async () => {
+        const h = harness(), first = deferred(); h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
+        h.evaluate('compararAnoPassado = true');
+        h.fixture.fetch = url => url.includes('data_inicio=2026') ? first.promise
+            : Promise.resolve({ ok: true, json: () => new Promise(() => {}) });
+        const request = h.evaluate('carregarGrafico()'); await h.clock.tick(65000);
+        first.resolve(response(stockPayload(41))); await flush(); assert.equal(h.fixture.calls.length, 2);
+        await h.clock.tick(54999); assert.equal(h.snapshot().graphLoading, true);
+        await h.clock.tick(1); await request;
+        assert.equal(h.snapshot().graphLoading, false); assert.match(h.snapshot().graphError, /tempo de resposta/);
+        assert.equal(h.fixture.graphs.length, 0); assert.equal(h.clock.timers.size, 0);
+    });
+    for (const scope of ['one-store-long', 'all-stores-short']) {
+        await check(scope + ' summary and graph reads keep their 45 second deadline', async () => {
+            const h = harness();
+            if (scope === 'one-store-long') {
+                h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22'; h.evaluate("lojaSelecionada = 'Loja A'");
+            }
+            h.fixture.fetch = () => new Promise(() => {});
+            const requests = [h.evaluate('carregarVendas()'), h.evaluate('carregarGrafico()')];
+            await h.clock.tick(44999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+            await h.clock.tick(1); await Promise.all(requests);
+            assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, false);
+            assert.match(h.snapshot().loadError, /tempo de resposta/); assert.match(h.snapshot().graphError, /tempo de resposta/);
+            assert.equal(h.clock.timers.size, 0);
+        });
+    }
+    await check('read budgets use explicit valid ISO dates and the inclusive 60 day boundary', async () => {
+        const h = harness();
+        for (const [start, end, store, expected] of [
+            ['2026-04-01', '2026-05-30', '__todas', 45000],
+            ['2026-04-01', '2026-05-31', '__todas', 120000],
+            ['2026-04-01', '2026-10-22', 'Loja A', 45000],
+            ['2026-04-31', '2026-10-22', '__todas', 45000],
+            ['2026-10-22', '2026-04-01', '__todas', 45000],
+            ['', '2026-10-22', '__todas', 45000],
+        ]) assert.equal(h.evaluate(`obterPrazoLeituraVendasMs(${JSON.stringify(start)},${JSON.stringify(end)},${JSON.stringify(store)})`), expected);
     });
     await check('retry actions in both layouts only read data and preserve the retry during active sync', async () => {
         for (const legacy of [false, true]) {

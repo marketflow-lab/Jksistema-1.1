@@ -97,10 +97,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Contagens verificadas no commit base 36741ae (v1.0.230).
+        # Contagens verificadas na base ca1292a4 (v1.0.262), incluindo o Cofre.
         # O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 507,
-        "pairs": 505,
+        "routes": 516,
+        "pairs": 514,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }

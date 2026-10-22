@@ -346,7 +346,8 @@ window.JKVendasReadState = (() => {
         try { tenant = obterClientId() || ''; } catch (_error) {}
         const filters = JSON.stringify([tenant, getDataIniISO(), getDataFimISO(), lojaSelecionada || '__todas', unidadeNegocioSelect?.value || '__todos', epoch]);
         return kind === 'grafico' ? JSON.stringify([filters, periodoGrafico, tipoGrafico, metricaGrafico, intervaloGrafico,
-            compararAnoPassado, mostrarEstoqueGeralGrafico, mostrarEstoqueSkuGrafico, String(graficoEstoqueSkuInput?.value || '').trim()]) : filters;
+            compararAnoPassado, mostrarEstoqueGeralGrafico, mostrarEstoqueSkuGrafico,
+            mostrarEstoqueSkuGrafico ? String(graficoEstoqueSkuInput?.value || '').trim() : '']) : filters;
     }
     function notify() { window.dispatchEvent(new CustomEvent('jk:vendas-read-state')); }
     return {

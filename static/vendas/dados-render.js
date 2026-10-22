@@ -297,6 +297,7 @@ async function carregarVendas(opcoes = {}) {
     const retornoRapido = !!opcoes.retornoRapido;
     const dataIniIso = getDataIniISO();
     const dataFimIso = getDataFimISO();
+    const prazoLeituraMs = obterPrazoLeituraVendasMs(dataIniIso, dataFimIso, lojaSelecionada || '__todas');
     const requestKey = JSON.stringify({
         tenant: obterClientId(),
         dataIniIso,
@@ -357,7 +358,7 @@ async function carregarVendas(opcoes = {}) {
         const respResumo = await fetchComTimeout(urlResumo, {
             headers: obterAuthHeaders(),
             signal: requestController.signal
-        }, 45000);
+        }, prazoLeituraMs);
         if (!respResumo.ok) throw new Error(`HTTP ${respResumo.status}`);
         const payloadResumo = await respResumo.json();
         if (!leituraAtual()) return;

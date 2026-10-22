@@ -13,6 +13,7 @@ let carregarGraficoToken = 0;
 let carregarGraficoController = null;
 let carregarGraficoPromise = null;
 let carregarGraficoRequestKey = '';
+let graficoConfirmadoRequestKey = null;
 let periodoGraficoSelecaoToken = 0;
 let periodoGraficoAtalhoPendente = null;
 const PERIODOS_GRAFICO_COM_MES_ATUAL = Object.freeze(['3m', '6m', '1a', '2a']);
@@ -601,12 +602,15 @@ async function carregarGrafico() {
         }
     }
 
-    const requestKey = `${obterClientId()}|${params.toString()}|compare=${paramsComp?.toString() || ''}`;
+    const presentationScope = window.JKVendasReadState?.scope('grafico')
+        || JSON.stringify([tipoGrafico, metricaGrafico, mostrarEstoqueSkuGrafico ? skuAtualGrafico : null]);
+    const requestKey = `${obterClientId()}|${params.toString()}|compare=${paramsComp?.toString() || ''}|view=${presentationScope}`;
     if (carregarGraficoPromise && carregarGraficoRequestKey === requestKey) return carregarGraficoPromise;
     if (carregarGraficoController) carregarGraficoController.abort();
 
     const controller = new AbortController();
-    const requestDeadline = Date.now() + 45000;
+    const requestDeadline = Date.now()
+        + obterPrazoLeituraVendasMs(dataInicioAtual, dataFimAtual, lojaSelecionada || '__todas');
     const tokenAtual = ++carregarGraficoToken;
     carregarGraficoController = controller;
     carregarGraficoRequestKey = requestKey;
@@ -619,7 +623,7 @@ async function carregarGrafico() {
                 headers: obterAuthHeaders(),
                 cache: 'no-store',
                 signal: controller.signal
-            }, 45000);
+            }, Math.max(0, requestDeadline - Date.now()));
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             if (!leituraAtual()) return;
@@ -637,12 +641,43 @@ async function carregarGrafico() {
             if (!leituraAtual()) return;
             renderizarGrafico(data, dataComparativo);
             atualizarObservacoesGraficoVendas(data);
+            graficoConfirmadoRequestKey = requestKey;
             window.JKVendasReadState?.finish('grafico', tokenAtual, 'success');
             agendarSegundoPlano(() => carregarOciososSidebarVendas(), 180);
         } catch (error) {
             if (!leituraAtual() || error.name === 'AbortError') return;
             const mensagem = error.name === 'TimeoutError'
                 ? 'O gráfico excedeu o tempo de resposta. Tente novamente.' : 'Não foi possível carregar o gráfico para estes filtros.';
+            const preservarDados = graficoConfirmadoRequestKey === requestKey;
+            if (!preservarDados) {
+                chartEstoqueInstance?.destroy();
+                chartEstoqueInstance = null;
+                chartSkusEstoqueInstance?.destroy();
+                chartSkusEstoqueInstance = null;
+                graficoConfirmadoRequestKey = null;
+            }
+            for (const [id, titulo] of [
+                ['graficoEstoque', 'Estoque indisponível'],
+                ['graficoSkusEstoque', 'Cobertura indisponível']
+            ]) {
+                const wrapper = document.getElementById(`${id}Wrapper`);
+                const canvas = document.getElementById(id);
+                const resumoEl = document.getElementById(`${id}Resumo`);
+                const estadoEl = document.getElementById(`${id}Estado`);
+                if (wrapper) {
+                    wrapper.hidden = !(mostrarEstoqueGeralGrafico || mostrarEstoqueSkuGrafico);
+                    if (!preservarDados) wrapper.classList.add('is-empty');
+                }
+                if (!preservarDados) {
+                    if (canvas) canvas.hidden = true;
+                    if (resumoEl) resumoEl.textContent = titulo;
+                }
+                if (estadoEl) {
+                    estadoEl.textContent = preservarDados
+                        ? `${mensagem} Os últimos dados confirmados para estes filtros foram mantidos.` : mensagem;
+                    estadoEl.hidden = false;
+                }
+            }
             window.JKVendasReadState?.finish('grafico', tokenAtual, 'error', mensagem);
             console.error('Erro ao carregar gráfico:', error);
             if (graficoObservacoesVendas) {
@@ -1080,6 +1115,7 @@ function renderizarGraficoEstoque(
     const resumoEl = typeof graficoEstoqueResumo !== 'undefined' ? graficoEstoqueResumo : document.getElementById('graficoEstoqueResumo');
     const estadoEl = typeof graficoEstoqueEstado !== 'undefined' ? graficoEstoqueEstado : document.getElementById('graficoEstoqueEstado');
     if (!wrapper || !canvas || typeof Chart === 'undefined') return;
+    canvas.hidden = false;
 
     if (chartEstoqueInstance) {
         chartEstoqueInstance.destroy();
@@ -1277,6 +1313,7 @@ function renderizarGraficoSkusComEstoque(
     const resumoEl = document.getElementById('graficoSkusEstoqueResumo');
     const estadoEl = document.getElementById('graficoSkusEstoqueEstado');
     if (!wrapper || !canvas || typeof Chart === 'undefined') return;
+    canvas.hidden = false;
 
     if (chartSkusEstoqueInstance) {
         chartSkusEstoqueInstance.destroy();

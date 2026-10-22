@@ -358,9 +358,10 @@ def grafico_vendas(
             tuple(item.get(field) for field in sale_fields) for item in consolidated
         ]
 
-        rows_pareto = _filtrar_vendas_lojas_ativas(rows_unicos, client_id, loja)
-        pareto_skus, pareto_meta = _calcular_skus_pareto_80(rows_pareto)
-        if not mostrar_estoque_geral or sku:
+        if mostrar_estoque_geral and not sku:
+            rows_pareto = _filtrar_vendas_lojas_ativas(rows_unicos, client_id, loja)
+            pareto_skus, pareto_meta = _calcular_skus_pareto_80(rows_pareto)
+        else:
             pareto_skus = []
             pareto_meta = {
                 "pareto_skus_total": 0,

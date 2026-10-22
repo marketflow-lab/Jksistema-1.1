@@ -125,10 +125,16 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         return total ? `${total} ${total === 1 ? singular : plural || singular}` : '';
     }).filter(Boolean).join(' · ');
     const lojasComAlerta = estados.filter(item => item.loja?.ultimo_erro || item.estado[0] === 'attention');
+    const avisosPausados = lojasComAlerta.filter(item => item.estado[0] === 'paused').length;
+    const alertasAtivos = lojasComAlerta.length - avisosPausados;
+    const rotuloAlertas = [
+        alertasAtivos ? `${alertasAtivos} ${alertasAtivos === 1 ? 'alerta' : 'alertas'}` : '',
+        avisosPausados ? `${avisosPausados} ${avisosPausados === 1 ? 'aviso anterior' : 'avisos anteriores'}` : ''
+    ].filter(Boolean).join(' · ');
     const indicadorAlertas = lojasComAlerta.length
-        ? `<span class="vendas-sync-attention">⚠ ${lojasComAlerta.length} ${lojasComAlerta.length === 1 ? 'alerta' : 'alertas'}</span>` : '';
+        ? `<span class="vendas-sync-attention">⚠ ${rotuloAlertas}</span>` : '';
     const alertas = lojasComAlerta
-        .map(({ loja }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
+        .map(({ loja, estado }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${estado[0] === 'paused' ? 'Última tentativa antes da pausa: ' : ''}${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
     const linhas = estados.map(({ loja, estado: [chave, rotulo] }) =>
         `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong><span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`
     ).join('');

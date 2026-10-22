@@ -105,6 +105,29 @@ def graph(**kwargs):
     )
 
 
+@pytest.mark.parametrize("general_stock,sku,expect_pareto", [
+    (False, None, False), (False, "479", False),
+    (True, None, True), (True, "479", False),
+])
+def test_graph_only_computes_coverage_pareto_when_requested(
+    sources, monkeypatch, general_stock, sku, expect_pareto,
+):
+    sources.insert([sale("direct", "479", 2, 20)])
+    observed = []
+    original = analytics._calcular_skus_pareto_80
+
+    def calculate(rows):
+        observed.append(len(rows))
+        return original(rows)
+
+    monkeypatch.setattr(analytics, "_calcular_skus_pareto_80", calculate)
+    payload = graph(loja="Loja A", sku=sku, mostrar_estoque_geral=general_stock)
+    assert sum(payload["valores_vendas"]) == 20
+    assert sum(payload["quantidades_vendas"]) == 2
+    assert observed == ([1] if expect_pareto else [])
+    assert payload["estoque_meta"]["pareto_skus_total"] == int(expect_pareto)
+
+
 def general():
     return general_report.generate_general_sku_report.__wrapped__(
         client_id="fixture", loja="Loja A", periodo="personalizado",
