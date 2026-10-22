@@ -378,6 +378,12 @@ def progresso_sincronizacao_vendas(client_id: str):
             progress["concluido"] = True
         elif not progress:
             progress = _criar_progresso("Fila", 0, 0, 0, "Períodos salvos; aguardando processamento.")
+    if automacao.get("verificando_conexoes") is True:
+        active = True
+        progress = _criar_progresso(
+            "Conexões", 0, 0, 0, "Verificando conexões Bling antes da coleta...",
+        )
+        progress["concluido"] = False
     return {
         "success": True,
         "automacao": automacao,

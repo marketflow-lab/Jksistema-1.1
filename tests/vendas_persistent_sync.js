@@ -177,6 +177,74 @@ function setup(options = {}) {
     assert.match(pausedWarnings, /Última tentativa antes da pausa: &lt;falha antiga&gt;/);
     assert.match(pausedWarnings, /Última tentativa antes da pausa: Reconecte o Bling da loja/);
     assert.equal((pausedWarnings.match(/data-sync-state="paused">Pausada/g) || []).length, 2);
+
+    for (const active of [false, true]) {
+        const checkingPayload = {
+            active, active_count: 0,
+            progress: { etapa: 'Finalizado', percentual: 100, concluido: true, mensagem: 'Período anterior conferido.' },
+            automacao: {
+                verificando_conexoes: true, pendentes: 1, habilitadas: 0, jobs: [],
+                lojas: [
+                    { ...persisted.automacao.lojas[0], status: 'paused', ultimo_erro: '<falha anterior>' },
+                    { loja: 'Loja com período anterior', status: 'complete', pendentes: 0 }
+                ]
+            }
+        };
+        const unchanged = JSON.stringify(checkingPayload);
+        const checking = setup({ payload: checkingPayload });
+        checking.context.window.JKVendasReadState = { get: () => ({ error: new Error('Falha de leitura anterior') }) };
+        checking.context.exibirErroLeituraVendas = () => { throw new Error('O fallback não deve substituir a etapa de verificação.'); };
+        checking.context.aplicarEstadoMonitorSyncVendas(checkingPayload);
+        assert.equal(checking.context.syncEmAndamento, true);
+        assert.equal(checking.elements.btnSync.disabled, true);
+        assert.equal(checking.elements.btnCancel.disabled, false, 'a verificação global deve poder ser pausada sem coleta ativa');
+        assert.match(checking.elements.status.innerHTML, /Verificando conexões Bling antes da coleta\.\.\./);
+        assert.doesNotMatch(checking.elements.status.innerHTML, /Sincronizando|Aguardando|100%|concluído|conferido/i,
+            'a verificação tem prioridade sobre progresso antigo e não comprova coleta');
+        const checkingHtml = checking.elements.syncPersistenteStatus.innerHTML;
+        const checkingSummary = checkingHtml.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
+        assert.match(checkingSummary, /Verificando conexões Bling antes da coleta/);
+        assert.doesNotMatch(checkingSummary, /sincronizando|atualizada|concluída|conferida/i);
+        assert.match(checkingHtml, /&lt;falha anterior&gt;/, 'a verificação não apaga o erro histórico');
+        assert.match(checkingHtml, /1 tarefa pendente/);
+        assert.match(checkingHtml, /3\/15 dia/);
+        assert.match(checkingHtml, /Último documento coletado: Pedido #123/);
+        assert.equal(JSON.stringify(checkingPayload), unchanged, 'a apresentação não altera o estado persistido');
+
+        checking.setPayload({
+            active: false,
+            progress: { etapa: 'Pausado', concluido: false, mensagem: 'Sincronização pausada; progresso preservado.' },
+            automacao: { ...checkingPayload.automacao, verificando_conexoes: false, pendentes: 0 }
+        });
+        await checking.elements.btnCancel.listeners.click();
+        assert.equal(checking.calls[0].url, '/api/vendas/sync/cancel');
+        assert.equal(checking.elements.syncAutomatico.checked, false);
+        assert.equal(checking.context.syncEmAndamento, false);
+        assert.match(checking.elements.status.textContent, /pausada/);
+    }
+
+    const checkingWithoutStores = setup({ payload: {
+        active: false, active_count: 0,
+        automacao: { verificando_conexoes: true, lojas: [], jobs: [], pendentes: 0, habilitadas: 0 }
+    } });
+    checkingWithoutStores.context.aplicarEstadoMonitorSyncVendas(checkingWithoutStores.context.vendasSyncMonitor.getLastPayload());
+    checkingWithoutStores.context.setSyncButtons(false);
+    assert.equal(checkingWithoutStores.elements.btnSync.disabled, true);
+    assert.equal(checkingWithoutStores.elements.btnCancel.disabled, false);
+    assert.match(checkingWithoutStores.elements.status.innerHTML, /Verificando conexões Bling antes da coleta/);
+    assert.match(checkingWithoutStores.elements.syncPersistenteStatus.innerHTML, /Verificando conexões Bling antes da coleta/);
+    const verificationFailed = {
+        active: false, progress: { etapa: 'Pendente', concluido: false, mensagem: 'Conexão Bling requer nova autorização.' },
+        automacao: { verificando_conexoes: false, lojas: [{ loja: 'Loja A', status: 'retry', ultimo_erro: 'Reconecte a loja.' }], jobs: [], pendentes: 1, habilitadas: 0 }
+    };
+    checkingWithoutStores.setPayload(verificationFailed);
+    checkingWithoutStores.context.aplicarEstadoMonitorSyncVendas(verificationFailed);
+    assert.equal(checkingWithoutStores.elements.btnSync.disabled, false);
+    assert.equal(checkingWithoutStores.context.syncEmAndamento, false);
+    assert.match(checkingWithoutStores.elements.status.textContent, /requer nova autorização/);
+    assert.doesNotMatch(checkingWithoutStores.elements.status.className, /loading/);
+    assert.match(checkingWithoutStores.elements.syncPersistenteStatus.innerHTML, /Reconecte a loja/);
+
     const mixed = {
         active: true, progress: { percentual: 43, mensagem: 'Coletando página 2' }, logs: ['<registro técnico>'],
         automacao: { pendentes: 9, habilitadas: 6, lojas: [

@@ -120,6 +120,24 @@ class SyncQueue:
                 raise ValueError("A fila pertence a outro cliente.")
             if tenant is None:
                 conn.execute("INSERT INTO tenant VALUES (?)", (self.client_id,))
+            conn.execute("""CREATE TABLE IF NOT EXISTS connection_check_state (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                requested_generation INTEGER NOT NULL DEFAULT 0,
+                completed_generation INTEGER NOT NULL DEFAULT 0,
+                claimed_generation INTEGER NOT NULL DEFAULT 0,
+                requires_session INTEGER NOT NULL DEFAULT 0,
+                owner TEXT, lease_until REAL
+            )""")
+            if conn.execute("SELECT 1 FROM connection_check_state").fetchone() is None:
+                pending = conn.execute("""SELECT 1 FROM jobs
+                    WHERE status NOT IN ('complete', 'paused') LIMIT 1""").fetchone()
+                generation = int(bool(pending) and self._has_connection_alerts(conn))
+                requires_session = bool(generation and conn.execute("""SELECT 1 FROM jobs
+                    WHERE status != 'complete' AND requires_session = 1
+                    AND (status != 'paused' OR last_error IS NOT NULL) LIMIT 1""").fetchone())
+                conn.execute("""INSERT INTO connection_check_state
+                    (singleton, requested_generation, requires_session) VALUES (1, ?, ?)""",
+                             (generation, int(requires_session)))
             conn.commit()
 
     @contextmanager
@@ -226,7 +244,8 @@ class SyncQueue:
         return self._job(conn, job_id)
 
     def enqueue(self, store_id, loja, data_inicio, data_fim, forcar_resync=False,
-                automatico=False, kind="manual", now=None, requires_session=False):
+                automatico=False, kind="manual", now=None, requires_session=False,
+                verify_connections=False):
         """Update this store's plan and enqueue without discarding earlier jobs.
 
         An explicit automatico=False disables its plan and pauses automatic jobs;
@@ -263,14 +282,19 @@ class SyncQueue:
             else:
                 conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?, updated_at = ?
                     WHERE store_id = ? AND automatico = 1 AND status = 'paused'""", (now, now, store_id))
-            return self._enqueue(conn, store_id, loja, str(start), str(end),
-                                 forcar_resync, automatico, kind, now, requires_session)
+            job = self._enqueue(conn, store_id, loja, str(start), str(end),
+                                forcar_resync, automatico, kind, now, requires_session)
+            if verify_connections:
+                self._request_connection_check(conn, requires_session=requires_session)
+            return job
 
     def claim(self, owner, now=None, lease_seconds=120, limit=2, exclude_store_ids=()):
         if not str(owner or "").strip() or lease_seconds <= 0:
             raise ValueError("Executor e duracao de concessao validos sao obrigatorios.")
-        now = _time(now)
         with self._transaction() as conn:
+            now = _time(now)
+            if self._connection_check_pending(conn):
+                return None
             active = conn.execute("SELECT store_id FROM jobs WHERE status = 'running' AND lease_until > ?",
                                   (now,)).fetchall()
             if len(active) >= min(2, max(0, int(limit))):
@@ -286,10 +310,21 @@ class SyncQueue:
             # Coverage may have improved while this period waited behind an
             # earlier job for the store. Import before the worker takes its snapshot.
             self._reuse_completed_days(conn, row["id"], now)
+            previous = conn.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone()
+            acknowledged = conn.execute("SELECT error_signature FROM connection_alert_ack WHERE job_id = ?",
+                                        (row["id"],)).fetchone()
+            transfer_ack = bool(previous["last_error"] and acknowledged and
+                                acknowledged[0] == self._error_signature(previous))
             conn.execute("""UPDATE jobs SET status = 'running', owner = ?, lease_until = ?,
                 attempts = attempts + 1, updated_at = ? WHERE id = ?""",
                          (str(owner), now + lease_seconds, now, row["id"]))
-            return self._job(conn, row["id"])
+            job = self._job(conn, row["id"])
+            if transfer_ack:
+                # Starting collection does not create another provider error.
+                # fail_job deletes this acknowledgement on every new failure.
+                conn.execute("UPDATE connection_alert_ack SET error_signature = ? WHERE job_id = ?",
+                             (self._error_signature(job), job["id"]))
+            return job
 
     @staticmethod
     def _owns(conn, job_id, owner, now):
@@ -298,13 +333,16 @@ class SyncQueue:
 
     def owns(self, job_id, owner, now=None):
         with self._connection() as conn:
-            return self._owns(conn, job_id, owner, _time(now))
+            row = conn.execute("SELECT owner, status, lease_until FROM jobs WHERE id = ?",
+                               (job_id,)).fetchone()
+            return bool(row and row["owner"] == owner and row["status"] == "running"
+                        and (row["lease_until"] or 0) > _time(now))
 
     def heartbeat(self, job_id, owner, now=None, lease_seconds=120):
         if lease_seconds <= 0:
             raise ValueError("Duracao de concessao invalida.")
-        now = _time(now)
         with self._transaction() as conn:
+            now = _time(now)
             if not self._owns(conn, job_id, owner, now):
                 return False
             conn.execute("UPDATE jobs SET lease_until = ?, updated_at = ? WHERE id = ?",
@@ -317,7 +355,7 @@ class SyncQueue:
         return self._job(conn, job_id)
 
     def complete_day(self, job_id, owner, day, result, now=None):
-        day, now = str(_date(day)), _time(now)
+        day = str(_date(day))
         # Never persist source payloads, credentials or arbitrary tool results.
         counts = {key: int(value) for key, value in (result or {}).items()
                   if key in {"vendas", "notas", "itens", "devolucoes"}
@@ -326,6 +364,7 @@ class SyncQueue:
         if checkpoint:
             counts["checkpoint"] = checkpoint
         with self._transaction() as conn:
+            now = _time(now)
             job = self._require_owner(conn, job_id, owner, now)
             if not job["data_inicio"] <= day <= job["data_fim"]:
                 raise ValueError("Dia fora do periodo da sincronizacao.")
@@ -335,9 +374,9 @@ class SyncQueue:
             return self._job(conn, job_id)
 
     def complete_job(self, job_id, owner, now=None, today=None):
-        now = _time(now)
-        today = _date(today) if today is not None else dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date()
         with self._transaction() as conn:
+            now = _time(now)
+            today = _date(today) if today is not None else dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date()
             job = self._require_owner(conn, job_id, owner, now)
             if len(job["dias_concluidos"]) != job["dias_total"]:
                 raise ValueError("Ainda existem dias sem conferencia concluida.")
@@ -364,8 +403,8 @@ class SyncQueue:
 
     def fail_job(self, job_id, owner, message, retryable=True, retry_after=None, now=None):
         """message must be a sanitized operational label; retry_after is seconds."""
-        now = _time(now)
         with self._transaction() as conn:
+            now = _time(now)
             job = self._require_owner(conn, job_id, owner, now)
             delay = min(INTERVAL_SECONDS, 15 * 2 ** min(6, max(0, job["attempts"] - 1)))
             if retry_after is not None:
@@ -393,6 +432,131 @@ class SyncQueue:
                                 (store_id,)).fetchall()
             return [{"id": row["id"], "signature": self._error_signature(row)}
                     for row in rows if row["acknowledged_error"] != self._error_signature(row)]
+
+    def _connection_alert_rows(self, conn):
+        rows = conn.execute("""SELECT j.*, a.error_signature AS acknowledged_error
+            FROM jobs j LEFT JOIN connection_alert_ack a ON a.job_id = j.id
+            WHERE j.status != 'complete' AND j.last_error IS NOT NULL
+            ORDER BY j.store_id, j.created_at, j.rowid""").fetchall()
+        return [row for row in rows if row["acknowledged_error"] != self._error_signature(row)]
+
+    def _has_connection_alerts(self, conn):
+        return bool(self._connection_alert_rows(conn))
+
+    @staticmethod
+    def _connection_check_pending(conn):
+        row = conn.execute("""SELECT requested_generation, completed_generation
+            FROM connection_check_state WHERE singleton = 1""").fetchone()
+        return bool(row and row["requested_generation"] > row["completed_generation"])
+
+    def _request_connection_check(self, conn, requires_session=False):
+        pending = self._connection_check_pending(conn)
+        if pending or self._has_connection_alerts(conn):
+            conn.execute("""UPDATE connection_check_state
+                SET requested_generation = requested_generation + 1,
+                    requires_session = CASE WHEN ? OR (requested_generation > completed_generation
+                        AND requires_session = 1) THEN 1 ELSE 0 END
+                WHERE singleton = 1""", (int(bool(requires_session)),))
+
+    def connection_check_pending(self):
+        with self._connection() as conn:
+            return self._connection_check_pending(conn)
+
+    @staticmethod
+    def _owns_connection_check(conn, owner, generation, now):
+        return conn.execute("""SELECT 1 FROM connection_check_state WHERE singleton = 1
+            AND owner = ? AND claimed_generation = ? AND lease_until > ?
+            AND completed_generation < claimed_generation""",
+                            (owner, generation, now)).fetchone() is not None
+
+    def claim_connection_check(self, owner, now=None, lease_seconds=120):
+        if not str(owner or "").strip() or lease_seconds <= 0:
+            raise ValueError("Executor e duracao de concessao validos sao obrigatorios.")
+        with self._transaction() as conn:
+            now = _time(now)
+            if not self._connection_check_pending(conn):
+                return None
+            state = conn.execute("SELECT * FROM connection_check_state WHERE singleton = 1").fetchone()
+            if state["owner"] is not None and (state["lease_until"] or 0) > now:
+                return None
+            if conn.execute("""SELECT 1 FROM jobs WHERE status = 'running'
+                AND lease_until > ? LIMIT 1""", (now,)).fetchone():
+                return None
+            generation = max(state["requested_generation"], state["claimed_generation"] + 1)
+            # Fence an expired attempt even if a caller reuses the same owner.
+            conn.execute("""UPDATE connection_check_state SET requested_generation = ?,
+                claimed_generation = ?, owner = ?, lease_until = ? WHERE singleton = 1""",
+                         (generation, generation, str(owner), now + lease_seconds))
+            stores = {}
+            for row in self._connection_alert_rows(conn):
+                store = stores.setdefault(row["store_id"], {
+                    "store_id": row["store_id"], "loja": row["loja"],
+                    "data_inicio": row["data_inicio"], "data_fim": row["data_fim"],
+                    "requires_session": False, "alerts": [],
+                })
+                store["data_inicio"] = min(store["data_inicio"], row["data_inicio"])
+                store["data_fim"] = max(store["data_fim"], row["data_fim"])
+                store["requires_session"] |= bool(row["requires_session"])
+                store["alerts"].append({"id": row["id"], "signature": self._error_signature(row)})
+            return {"generation": generation, "requires_session": bool(state["requires_session"]),
+                    "stores": list(stores.values())}
+
+    def owns_connection_check(self, owner, generation, now=None):
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM connection_check_state WHERE singleton = 1").fetchone()
+            return bool(row and row["owner"] == owner and row["claimed_generation"] == generation
+                        and row["completed_generation"] < generation
+                        and (row["lease_until"] or 0) > _time(now))
+
+    def heartbeat_connection_check(self, owner, generation, now=None, lease_seconds=120):
+        if lease_seconds <= 0:
+            raise ValueError("Duracao de concessao invalida.")
+        with self._transaction() as conn:
+            now = _time(now)
+            if not self._owns_connection_check(conn, owner, generation, now):
+                return False
+            conn.execute("UPDATE connection_check_state SET lease_until = ? WHERE singleton = 1",
+                         (now + lease_seconds,))
+            return True
+
+    def acknowledge_checked_connection(self, owner, generation, store_id, alerts, now=None):
+        """Recognize observed errors under the batch lease, including paused jobs."""
+        count = 0
+        with self._transaction() as conn:
+            now = _time(now)
+            if not self._owns_connection_check(conn, owner, generation, now):
+                return 0
+            for alert in alerts:
+                row = conn.execute("""SELECT * FROM jobs WHERE id = ? AND store_id = ?
+                    AND status != 'complete' AND last_error IS NOT NULL""",
+                                   (alert["id"], store_id)).fetchone()
+                if row is None or self._error_signature(row) != alert["signature"]:
+                    continue
+                conn.execute("""INSERT INTO connection_alert_ack VALUES (?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET error_signature = excluded.error_signature,
+                        verified_at = excluded.verified_at""", (row["id"], alert["signature"], now))
+                count += 1
+        return count
+
+    def complete_connection_check(self, owner, generation, now=None):
+        with self._transaction() as conn:
+            now = _time(now)
+            if not self._owns_connection_check(conn, owner, generation, now):
+                return False
+            conn.execute("""UPDATE connection_check_state SET completed_generation = ?,
+                requires_session = CASE WHEN requested_generation = ? THEN 0 ELSE requires_session END,
+                owner = NULL, lease_until = NULL WHERE singleton = 1""", (generation, generation))
+            return True
+
+    def abandon_connection_check(self, owner, generation, now=None):
+        """Release only this live grant; its requested generation stays pending."""
+        with self._transaction() as conn:
+            now = _time(now)
+            if not self._owns_connection_check(conn, owner, generation, now):
+                return False
+            conn.execute("""UPDATE connection_check_state SET owner = NULL, lease_until = NULL
+                WHERE singleton = 1""")
+            return True
 
     def acknowledge_connection_alerts(self, job_id, owner, store_id, alerts, *, expected_attempts, now=None):
         """Dismiss only observed warnings after a real provider check, keeping history.
@@ -427,6 +591,10 @@ class SyncQueue:
             conn.execute("""UPDATE jobs SET status = 'paused', owner = NULL, lease_until = NULL,
                 updated_at = ? WHERE status != 'complete'""", (_time(now),))
             conn.execute("UPDATE plans SET enabled = 0")
+            conn.execute("""UPDATE connection_check_state
+                SET completed_generation = requested_generation, requires_session = 0,
+                    owner = NULL, lease_until = NULL
+                WHERE singleton = 1""")
 
     def list_jobs(self):
         with self._connection() as conn:
@@ -470,6 +638,9 @@ class SyncQueue:
                     end = min(history_end, cursor + dt.timedelta(days=6))
                     scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
                         str(cursor), str(end), False, True, "history", now, plan["requires_session"]))
+            if scheduled:
+                self._request_connection_check(conn, requires_session=any(
+                    job["requires_session"] for job in scheduled))
             return scheduled
 
     def summary(self, now=None):
@@ -517,6 +688,7 @@ class SyncQueue:
                     "job_id": job["id"] if job else None,
                     "forcar_resync": job["forcar_resync"] if job else bool(plan["forcar_resync"])})
             return {"lojas": stores, "jobs": jobs,
+                    "verificando_conexoes": self._connection_check_pending(conn),
                     "pendentes": sum(job["status"] not in {"complete", "paused"} for job in jobs),
                     "pausados": sum(job["status"] == "paused" for job in jobs),
                     "habilitadas": sum(bool(plan["enabled"]) for plan in plans)}

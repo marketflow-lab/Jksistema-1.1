@@ -54,6 +54,7 @@ def sincronizar_vendas(req: VendasSyncRequest, client_id: str):
         req.store_id, req.loja, req.data_inicio, req.data_fim,
         forcar_resync=req.forcar_resync, automatico=req.automatico,
         requires_session=current(client_id) is not None,
+        verify_connections=True,
     )
     sync_automation.remember_authorization(client_id, req.store_id)
     try:

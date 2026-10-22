@@ -64,9 +64,12 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false, preferen
 
 function setSyncButtons(isSyncing) {
     const automacao = vendasSyncMonitor.getLastPayload()?.automacao;
-    btnSync.disabled = isSyncing;
-    btnCancel.disabled = !isSyncing && !automacao?.habilitadas && !automacao?.pendentes;
+    const verificandoConexoes = automacao?.verificando_conexoes === true;
+    btnSync.disabled = isSyncing || verificandoConexoes;
+    btnCancel.disabled = !isSyncing && !verificandoConexoes && !automacao?.habilitadas && !automacao?.pendentes;
 }
+
+const mensagemVerificacaoConexoesVendas = 'Verificando conexões Bling antes da coleta...';
 
 function formatarMomentoSyncVendas(valor) {
     if (!valor) return '';
@@ -113,8 +116,9 @@ function logsSyncVendas(logs) {
 function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncPersistenteStatus')) {
     if (!painel) return;
     const automacao = data?.automacao;
+    const verificandoConexoes = automacao?.verificando_conexoes === true;
     const lojas = Array.isArray(automacao?.lojas) ? automacao.lojas : [];
-    if (!lojas.length) {
+    if (!lojas.length && !verificandoConexoes) {
         painel.innerHTML = '';
         return;
     }
@@ -165,10 +169,13 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         return `<div class="vendas-sync-technical-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong> · ${escaparHtmlVendas(rotulo + periodo + dias)}${coleta}${ultima}${proxima}</div>`;
     }).join('');
     const logs = logsSyncVendas(data?.logs);
-    const etapa = data?.progress?.mensagem ? `<div>${escaparHtmlVendas(data.progress.mensagem)}</div>` : '';
+    const mensagemEtapa = verificandoConexoes ? mensagemVerificacaoConexoesVendas : data?.progress?.mensagem;
+    const etapa = mensagemEtapa ? `<div>${escaparHtmlVendas(mensagemEtapa)}</div>` : '';
+    const resumo = verificandoConexoes ? mensagemVerificacaoConexoesVendas
+        : contagens ? `Lojas: ${contagens}` : 'Sincronização das lojas';
     painel.className = 'status-bar vendas-sync-status';
     substituirConteudoSyncVendas(painel, '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
-        + `<summary><span class="vendas-sync-counts">${contagens ? `Lojas: ${contagens}` : 'Sincronização das lojas'}</span>${indicadorAlertas}<span class="vendas-sync-toggle">Detalhes</span></summary>`
+        + `<summary><span class="vendas-sync-counts">${escaparHtmlVendas(resumo)}</span>${indicadorAlertas}<span class="vendas-sync-toggle">Detalhes</span></summary>`
         + `<div class="vendas-sync-content">${alertas}${linhas}`
         + '<strong class="vendas-sync-technical-title">Detalhes técnicos</strong>'
         + `<div class="vendas-sync-muted">${pendentes} ${pendentes === 1 ? 'tarefa pendente' : 'tarefas pendentes'} · Atualização automática em ${habilitadas} ${habilitadas === 1 ? 'loja' : 'lojas'}.</div>`
@@ -178,6 +185,11 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
 
 function renderProgresso(p, logs, painel = statusEl, lojas = []) {
     if (!p || !painel) return;
+    if (['conexões', 'conexoes'].includes(String(p.etapa || '').toLowerCase())) {
+        painel.className = 'status-bar loading';
+        substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${mensagemVerificacaoConexoesVendas}</strong></div>`);
+        return;
+    }
     const valor = Number(p.percentual || 0);
     const percent = Number.isFinite(valor) ? Math.max(0, Math.min(100, valor)) : 0;
     const listaLojas = Array.isArray(lojas) ? lojas : [];
@@ -196,6 +208,7 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
 
 let progressMonitorSubscribed = false;
 let progressReloadInFlight = false;
+let verificandoConexoesMonitor = false;
 
 function criarAtualizadorConfirmadoVendas() {
     let context = null;
@@ -264,6 +277,15 @@ function aplicarEstadoMonitorSyncVendas(data) {
     const progresso = data.progress || null;
     const etapa = String(progresso?.etapa || '').toLowerCase();
     const loteLocalAtivo = !!syncController;
+    const estavaVerificandoConexoes = verificandoConexoesMonitor;
+    verificandoConexoesMonitor = data.automacao?.verificando_conexoes === true;
+
+    if (verificandoConexoesMonitor) {
+        syncEmAndamento = true;
+        setSyncButtons(true);
+        renderProgresso({ etapa: 'Conexões', concluido: false }, data.logs, statusEl);
+        return;
+    }
 
     if (data.active) {
         syncEmAndamento = true;
@@ -292,6 +314,9 @@ function aplicarEstadoMonitorSyncVendas(data) {
     } else if (etapa === 'cancelamento' && !loteLocalAtivo) {
         statusEl.className = 'status-bar';
         statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Sincronização pausada.');
+    } else if (estavaVerificandoConexoes && !loteLocalAtivo) {
+        statusEl.className = 'status-bar';
+        statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Verificação encerrada. Acompanhe as pendências das lojas.');
     }
 }
 
