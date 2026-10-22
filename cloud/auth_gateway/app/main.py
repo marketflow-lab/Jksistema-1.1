@@ -19,7 +19,8 @@ from .domain import (
     GatewayUnavailable,
     LoginRateLimiter,
 )
-from .firebase_adapter import FirebaseIdentityTokenIssuer, FirestoreUserRepository
+from .firebase_adapter import FirebaseIdentityTokenIssuer, FirestoreUserRepository, firebase_app
+from .cofre_capability import GoogleCofreCapabilityIssuer
 from .central_http import build_central, install_central_routes
 from .firebase_sessions import build_firebase_sessions
 
@@ -79,6 +80,7 @@ def create_app(
                     gateway_settings.minimum_app_version,
                     central=resolve_central(),
                     firebase_sessions=build_firebase_sessions(gateway_settings),
+                    cofre_capabilities=GoogleCofreCapabilityIssuer(firebase_app(gateway_settings.project_id)),
                 )
                 application.state.auth_service = configured
             return configured
@@ -133,6 +135,10 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-cofre-protocol") == "1":
+                return resolve_service().authenticate(payload, cofre_protocol=True,
+                    firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-firebase-protocol") == "1":
                 return resolve_service().authenticate(payload, firebase_protocol=True,
                     central_protocol=request.headers.get("x-jk-central-protocol") == "1")
@@ -175,6 +181,10 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
+            if request.headers.get("x-jk-cofre-protocol") == "1":
+                return resolve_service().change_password(payload, cofre_protocol=True,
+                    firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-firebase-protocol") == "1":
                 return resolve_service().change_password(payload, firebase_protocol=True,
                     central_protocol=request.headers.get("x-jk-central-protocol") == "1")

@@ -40,11 +40,12 @@ async function scenario(browser, options = {}) {
   const context = await browser.newContext({ viewport: options.viewport || { width: 1440, height: 920 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
-  const state = { requests: [], errors: [], unexpected: [], imported: false, assetCalls: 0, failMessages: !!options.failMessages, slowStarted: deferred(), slowRelease: deferred(), overrides: new Map(), deleted: new Set(), channelOverrides: new Map(), failMutation: false, holdEdit: false, editStarted: deferred(), editRelease: deferred(), lastEditPayload: null, lastAppliedEdit: null };
+  if (options.clock) await page.clock.install({ time: new Date('2026-10-22T12:00:00Z') });
+  const state = { requests: [], errors: [], unexpected: [], imported: false, assetCalls: 0, failMessages: !!options.failMessages, slowStarted: deferred(), slowRelease: deferred(), overrides: new Map(), deleted: new Set(), channelOverrides: new Map(), failMutation: false, holdEdit: false, editStarted: deferred(), editRelease: deferred(), lastEditPayload: null, lastAppliedEdit: null, sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null, ...(options.sharing || {}) }, syncCalls: 0, publishCalls: 0, syncChanged: false, failSharingSync: !!options.failSharingSync, failSharingStatus: !!options.failSharingStatus, conflictPublish: !!options.conflictPublish, holdSharingSync: false, sharingSyncStarted: deferred(), sharingSyncRelease: deferred(), remoteContent: null };
   const manyMessages = Array.from({ length: 150 }, (_, index) => ({ id: 'many' + (index + 1), author: 'Pessoa Exemplo', timestamp: '2026-10-21T14:00:00Z', content: 'Item ' + (index + 1) + ' preservado.' }));
   function allMessages(channelId) {
     const base = channelId === 'references' ? [{ id: 'ref1', author: 'Pessoa Exemplo', timestamp: '2026-10-21T16:00:00Z', content: 'Referência do segundo canal.' }] : channelId === 'empty' ? [] : options.manyMessages ? manyMessages : messages;
-    return base.map(message => ({ ...message, ...(state.overrides.get(message.id) || {}), edited: state.overrides.has(message.id), deleted: state.deleted.has(message.id) }));
+    return base.map(message => ({ ...message, ...(message.id === 'm1' && state.remoteContent ? { content: state.remoteContent } : {}), ...(state.overrides.get(message.id) || {}), edited: state.overrides.has(message.id), deleted: state.deleted.has(message.id) }));
   }
   function counts(channelId) {
     const all = allMessages(channelId);
@@ -81,6 +82,29 @@ async function scenario(browser, options = {}) {
       if (url.pathname === '/auth.js') return route.fulfill({ contentType: 'application/javascript', body: `window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:'Bearer '+localStorage.getItem('access_token')});` });
       if (url.pathname === '/cofre/cofre.js' || url.pathname === '/cofre/cofre.css') return route.fulfill({ contentType: url.pathname.endsWith('.js') ? 'application/javascript; charset=utf-8' : 'text/css; charset=utf-8', body: fs.readFileSync(path.join(root, 'static', url.pathname), 'utf8') });
       if (url.pathname === assetPath) { state.assetCalls += 1; return route.fulfill({ contentType: 'image/png', body: png }); }
+      if (url.pathname === '/api/cofre/compartilhamento') {
+        if (state.failSharingStatus) return json(route, { detail: 'Estado temporariamente indisponível.' }, 503);
+        return json(route, state.sharing);
+      }
+      if (url.pathname === '/api/cofre/compartilhamento/sincronizar') {
+        assert.strictEqual(request.method(), 'POST');
+        state.syncCalls += 1;
+        if (state.holdSharingSync) { state.sharingSyncStarted.resolve(); await state.sharingSyncRelease.promise; }
+        if (state.failSharingSync) return route.abort('internetdisconnected');
+        const changed = state.syncChanged;
+        state.syncChanged = false;
+        return json(route, { success: true, changed, ...state.sharing });
+      }
+      if (url.pathname === '/api/cofre/compartilhamento/publicar') {
+        assert.strictEqual(request.method(), 'POST');
+        state.publishCalls += 1;
+        if (state.conflictPublish) return json(route, { detail: 'Sincronize antes de publicar' }, 409);
+        assert(state.sharing.can_publish, 'Leitor não publica acervo.');
+        state.sharing.enabled = true;
+        state.sharing.revision = Number(state.sharing.revision || 0) + 1;
+        return json(route, { success: true, changed: true, ...state.sharing });
+      }
+      if (url.pathname === '/api/cofre/servidores' && options.failViewAfterPublish && state.publishCalls) return json(route, { detail: 'Visualização temporariamente indisponível.' }, 503);
       if (url.pathname === '/api/cofre/servidores') return json(route, { servidores: options.empty && !state.imported ? [] : [serverData()] });
       if (url.pathname === '/api/cofre/servidores/fixture-guild/canais') return json(route, { servidor: serverData(), canais: channels.map(channelData) });
       if (url.pathname === '/api/cofre/importar') {
@@ -399,10 +423,137 @@ async function clean(result) {
     await failure.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
     await clean(failure);
 
+    const reader = await scenario(browser, { sharing: { configured: true, enabled: true, can_publish: false, revision: 7, last_sync: '2026-10-22T11:00:00Z' } });
+    const rp = reader.page;
+    await rp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await rp.locator('#sharingLabel').textContent(), 'Compartilhado com a empresa');
+    assert((await rp.locator('#sharingDescription').textContent()).includes('Somente leitura'));
+    for (const id of ['railImport', 'sidebarImport', 'emptyImport', 'detailImport', 'footerImport', 'editChannel', 'publishSharing']) assert(await rp.locator('#' + id).isHidden(), 'Leitor não vê mutação: ' + id);
+    assert.strictEqual(await rp.locator('.message-action').count(), 0);
+    await rp.evaluate(() => document.querySelector('#importForm').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    assert.strictEqual(reader.state.requests.filter(item => /PATCH|DELETE/.test(item.method)).length, 0);
+    assert.strictEqual(reader.state.imported, false, 'Leitor também é bloqueado na entrada de importação.');
+    const initialOrder = reader.state.requests.map(item => new URL(item.url).pathname);
+    assert(initialOrder.indexOf('/api/cofre/compartilhamento/sincronizar') < initialOrder.indexOf('/api/cofre/servidores'), 'Sincronização antecede primeira leitura.');
+    await screenshot(rp, 'cofre-compartilhado-leitor');
+    await clean(reader);
+
+    const localReader = await scenario(browser, { sharing: { configured: true, enabled: false, can_publish: false, revision: 0 } });
+    await localReader.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await localReader.page.locator('#sharingLabel').textContent(), 'Cópia local');
+    assert.strictEqual(await localReader.page.locator('.message-action').count(), 0, 'Empresa configurada bloqueia escrita de leitor antes da primeira publicação.');
+    for (const id of ['railImport', 'editChannel', 'publishSharing']) assert(await localReader.page.locator('#' + id).isHidden());
+    await clean(localReader);
+
+    const offline = await scenario(browser, { sharing: { configured: true, enabled: true, can_publish: false, revision: 7 }, failSharingSync: true });
+    await offline.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await offline.page.locator('#sharingLabel').textContent(), 'Compartilhado com a empresa');
+    assert((await offline.page.locator('#sharingDescription').textContent()).includes('cópia disponível foi mantida'));
+    assert((await offline.page.locator('.message[data-message-id="m1"] .message-text').textContent()).includes('Bem-vindos ao acervo'));
+    assert.strictEqual(await offline.page.locator('.message-action').count(), 0, 'Falha de rede não promove leitor a escritor.');
+    await clean(offline);
+
+    const unavailableStatus = await scenario(browser, { failSharingStatus: true });
+    await unavailableStatus.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await unavailableStatus.page.locator('.message-action').count(), 0, 'Estado desconhecido não libera escrita.');
+    assert(await unavailableStatus.page.locator('#syncSharing').isVisible());
+    await clean(unavailableStatus);
+
+    const publishing = await scenario(browser, { viewport: { width: 390, height: 844 }, sharing: { configured: true, enabled: false, can_publish: true, revision: 0 } });
+    const pp = publishing.page;
+    await pp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await pp.locator('#sharingLabel').textContent(), 'Cópia local');
+    assert(await pp.locator('#publishSharing').isVisible());
+    assert(await pp.locator('#railImport').isVisible());
+    await noOverflow(pp);
+    await pp.locator('#publishSharing').click();
+    assert(await pp.locator('#publishSharingDialog').isVisible());
+    assert((await pp.locator('#publishSharingDialog').textContent()).includes('pessoas da sua empresa'));
+    await noOverflow(pp);
+    await pp.locator('#cancelPublishSharing').click();
+    assert.strictEqual(publishing.state.publishCalls, 0, 'Cancelar confirmação não publica.');
+    await pp.locator('#publishSharing').click();
+    await pp.locator('#confirmPublishSharing').click();
+    await pp.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Compartilhado com a empresa' && !document.querySelector('#publishSharingDialog').open);
+    assert.strictEqual(publishing.state.publishCalls, 1);
+    assert(await pp.locator('.message[data-message-id="m1"] [data-action="edit-message"]').isVisible());
+    await clean(publishing);
+
+    const publishedWithViewError = await scenario(browser, { failViewAfterPublish: true, sharing: { configured: true, enabled: false, can_publish: true, revision: 0 } });
+    await publishedWithViewError.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    await publishedWithViewError.page.locator('#publishSharing').click();
+    await publishedWithViewError.page.locator('#confirmPublishSharing').click();
+    await publishedWithViewError.page.waitForFunction(() => document.querySelector('#notice').textContent.includes('Não foi possível atualizar a visualização'));
+    assert(publishedWithViewError.state.sharing.enabled, 'Publicação concluída continua marcada mesmo se atualizar a visualização falhar.');
+    assert(await publishedWithViewError.page.locator('#publishSharingDialog').isHidden());
+    assert((await publishedWithViewError.page.locator('#notice').textContent()).startsWith('Acervo compartilhado com a empresa.'));
+    await clean(publishedWithViewError);
+
+    const conflict = await scenario(browser, { sharing: { configured: true, enabled: false, can_publish: true, revision: 1 }, conflictPublish: true });
+    await conflict.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    await conflict.page.locator('#publishSharing').click();
+    await conflict.page.locator('#confirmPublishSharing').click();
+    await conflict.page.waitForFunction(() => document.querySelector('#publishSharingFeedback').textContent.includes('Sincronize antes de publicar'));
+    assert((await conflict.page.locator('.message[data-message-id="m1"] .message-text').textContent()).includes('Bem-vindos ao acervo'), 'Conflito mantém acervo disponível.');
+    await conflict.page.locator('#syncBeforePublish').click();
+    await conflict.page.waitForFunction(() => !document.querySelector('#publishSharingDialog').open && !document.querySelector('#syncSharing').disabled);
+    assert.strictEqual(conflict.state.syncCalls, 2);
+    assert.strictEqual(conflict.state.publishCalls, 1, 'Sincronizar conflito não publica automaticamente.');
+    await clean(conflict);
+
+    const focusSharing = await scenario(browser, { clock: true, sharing: { configured: true, enabled: true, can_publish: true, revision: 7 } });
+    const sp = focusSharing.page;
+    const ss = focusSharing.state;
+    await sp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(ss.syncCalls, 1);
+    await sp.clock.fastForward(5000);
+    assert.strictEqual(ss.syncCalls, 1, 'Não existe polling a cada5segundos.');
+    await sp.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await sp.locator('#refreshMessages').click();
+    assert.strictEqual(ss.syncCalls, 1, 'Foco e Atualizar respeitam intervalo mínimo.');
+    await sp.locator('.message[data-message-id="m1"] [data-action="edit-message"]').click();
+    await sp.locator('#editContent').fill('Meu rascunho permanece durante a sincronização.');
+    await sp.locator('#cancelEditMessage').click();
+    await sp.clock.fastForward(60000);
+    ss.remoteContent = 'Revisão nova recebida da empresa.';
+    ss.syncChanged = true;
+    ss.sharing.revision = 8;
+    await sp.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await sp.waitForFunction(() => document.querySelector('.message[data-message-id="m1"] .message-text')?.textContent === 'Revisão nova recebida da empresa.');
+    assert.strictEqual(ss.syncCalls, 2);
+    await sp.locator('.message[data-message-id="m1"] [data-action="edit-message"]').click();
+    assert.strictEqual(await sp.locator('#editContent').inputValue(), 'Meu rascunho permanece durante a sincronização.');
+    await sp.locator('#cancelEditMessage').click();
+    await sp.clock.fastForward(5000);
+    assert.strictEqual(ss.syncCalls, 2);
+    await clean(focusSharing);
+
+    const changedCompany = await scenario(browser, { sharing: { configured: true, enabled: true, can_publish: true, revision: 7 } });
+    const cp = changedCompany.page;
+    const cs = changedCompany.state;
+    await cp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    cs.holdSharingSync = true;
+    await cp.locator('#syncSharing').click();
+    await cs.sharingSyncStarted.promise;
+    await cp.evaluate(() => {
+      // Company change is rejected even if a client keeps the same token/client id.
+      const user = JSON.parse(localStorage.getItem('user_data'));
+      user.company_id = 'fixture-company-b';
+      localStorage.setItem('user_data', JSON.stringify(user));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await cp.waitForFunction(() => document.querySelector('#notice').textContent.includes('Sua sessão mudou'));
+    cs.sharingSyncRelease.resolve();
+    await cp.waitForTimeout(80);
+    assert.strictEqual(await cp.locator('.message').count(), 0, 'Sincronização da empresa anterior não preenche contexto novo.');
+    assert(await cp.locator('#syncSharing').isHidden());
+    assert(await cp.locator('#publishSharing').isHidden());
+    await clean(changedCompany);
+
     const denied = await scenario(browser, { allowed: false });
     await denied.page.waitForURL(origin + '/dashboard.html');
     assert.strictEqual(denied.state.requests.filter(item => item.url.includes('/api/cofre/')).length, 0, 'Sem permissão não consulta acervo.');
     await clean(denied);
-    console.log('PASS cofre_browser: navigation, categories, pagination, stale search, XSS, authenticated media/downloads, object URL cleanup, import, edit/search, delete/trash/restore, channel edits, draft recovery, concurrent saves, 150-message pagination/scroll, cross-session isolation, retry, permissions and mobile layout. Fictional fixtures only.');
+    console.log('PASS cofre_browser: navigation, categories, pagination, stale search, XSS, authenticated media/downloads, object URL cleanup, import, edit/search, delete/trash/restore, channel edits, draft recovery, concurrent saves, 150-message pagination/scroll, cross-session/company isolation, sharing/offline/reader access, publication/CAS conflict, focus throttling without polling, retry, permissions and mobile layout. Fictional fixtures only.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

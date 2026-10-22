@@ -53,6 +53,8 @@ def _salvar_perfil_autenticado_remoto(username: str, remote_attempt) -> dict:
 
 def _conectar_firebase_apos_login(response, remote_attempt):
     """Keep user credentials in the backend session; expose only verified status."""
+    from backend.services.cofre_auth import register_login as register_cofre_login
+    register_cofre_login(response.access_token, remote_attempt)
     if not remote_attempt.firebase_access:
         response.user_data["firebase"] = {"ready": False, "code": "server_setup_required"}
         return response
@@ -102,6 +104,8 @@ def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Option
             if remote_attempt.firebase_access:
                 from backend.services.firebase_user_session import register_login
                 register_login(str(authorization)[7:].strip(), remote_attempt)
+            from backend.services.cofre_auth import register_login as register_cofre_login
+            register_cofre_login(str(authorization)[7:].strip(), remote_attempt)
             return {"success": True, "message": "Senha alterada com sucesso."}
         if remote_attempt.state is RemoteAuthState.REJECTED:
             raise HTTPException(status_code=400, detail=remote_attempt.message)

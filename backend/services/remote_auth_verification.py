@@ -87,6 +87,14 @@ def validate_success_payload(
         raise ValueError("invalid_remote_policy")
 
     extension = {}
+    if "cofre_access" in payload:
+        cofre = payload["cofre_access"]
+        if (not isinstance(cofre, dict) or set(cofre) != {"protocol", "capability"}
+                or type(cofre["protocol"]) is not int or cofre["protocol"] != 1
+                or not isinstance(cofre["capability"], str)
+                or not 1 <= len(cofre["capability"]) <= 16384):
+            raise ValueError("invalid_cofre_access")
+        extension["cofre_access"] = dict(cofre)
     if "firebase_access" in payload:
         access = payload["firebase_access"]
         fields = {"protocol", "project_id", "grant_id", "id_token", "refresh_token",
@@ -199,6 +207,8 @@ def verify_signed_response(
         signed_payload["central_migration"] = validated["central_migration"]
         if not now < validated["central_migration"]["expires_at"] <= now + 31 * 60:
             raise ValueError("invalid_central_migration_expiry")
+    if "cofre_access" in validated:
+        signed_payload["cofre_access"] = validated["cofre_access"]
     if str(claims.get("jk_response_hash") or "") != canonical_hash(signed_payload):
         raise ValueError("invalid_response_claim")
     firebase_claim = claims.get("firebase")
@@ -210,6 +220,18 @@ def verify_signed_response(
         raise ValueError("invalid_auth_time") from exc
     if auth_time <= 0 or abs(now - auth_time) > 300:
         raise ValueError("stale_auth_token")
+    if "cofre_access" in validated:
+        from backend.services.cofre_auth import verify_capability
+        user = validated["user_data"]
+        principal = verify_capability(
+            validated["cofre_access"]["capability"], username=user["username"],
+            client_id=user["client_id"], machine_id=user["machine_id"],
+            permissions=validated["permissions"], valid_until=validated["policy"]["valid_until"],
+            session=session, now=now)
+        if "firebase_access" in validated and principal["exp"] > validated["firebase_access"]["session_expires_at"]:
+            raise ValueError("invalid_cofre_session_expiry")
+        if "central" in validated and principal["exp"] > validated["central"]["expires_at"]:
+            raise ValueError("invalid_cofre_session_expiry")
 
 
 __all__ = [

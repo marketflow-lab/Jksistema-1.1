@@ -54,6 +54,7 @@ class RemoteAuthAttempt:
     central: dict[str, Any] = field(default_factory=dict, repr=False)
     central_migration: dict[str, Any] = field(default_factory=dict, repr=False)
     firebase_access: dict[str, Any] = field(default_factory=dict, repr=False)
+    cofre_access: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def success(self) -> bool:

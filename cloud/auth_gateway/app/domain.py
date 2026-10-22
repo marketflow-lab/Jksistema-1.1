@@ -72,12 +72,14 @@ class AuthenticationService:
         minimum_app_version: str,
         central=None,
         firebase_sessions=None,
+        cofre_capabilities=None,
     ) -> None:
         self._repository = repository
         self._token_issuer = token_issuer
         self._minimum_app_version = minimum_app_version
         self._central = central
         self._firebase_sessions = firebase_sessions
+        self._cofre_capabilities = cofre_capabilities
 
     def _signed_response(
         self,
@@ -90,9 +92,12 @@ class AuthenticationService:
         central_protocol: bool = False,
         app_version: str = "",
         firebase_protocol: bool = False,
+        cofre_protocol: bool = False,
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
-        permissions = signed_permissions_for_app(current.get("permissions") or current.get("permissoes"), app_version)
+        raw_permissions = current.get("permissions") or current.get("permissoes")
+        permissions = (normalize_permissions(raw_permissions) if cofre_protocol else
+                       signed_permissions_for_app(raw_permissions, app_version))
         client_id = user_client_id(current)
         machine_ids = normalize_machine_ids(
             current.get("machine_ids") or current.get("maquinas") or current.get("machines"),
@@ -134,6 +139,15 @@ class AuthenticationService:
                 raise GatewayUnavailable("firebase_session_unavailable")
             signed_payload["firebase_access"] = self._firebase_sessions.bootstrap_session(
                 current, username, machine_id)
+        if cofre_protocol and self._cofre_capabilities is not None:
+            deadlines = ([signed_payload["firebase_access"]["session_expires_at"]]
+                         if "firebase_access" in signed_payload else [])
+            if "central" in signed_payload:
+                deadlines.append(signed_payload["central"]["expires_at"])
+            capability = self._cofre_capabilities.issue(
+                current, username, machine_id, expires_at=min(deadlines) if deadlines else None)
+            if capability is not None:
+                signed_payload["cofre_access"] = capability
         claims = {
             "jk_auth_v": AUTH_PROTOCOL_VERSION,
             "jk_username": username,
@@ -151,7 +165,7 @@ class AuthenticationService:
             "registered_machines": len(machine_ids),
         }
 
-    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False, firebase_protocol=False) -> dict[str, Any]:
+    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         supplied_password = request.password.get_secret_value()
@@ -173,10 +187,11 @@ class AuthenticationService:
             code="authenticated",
             central_protocol=central_protocol,
             firebase_protocol=firebase_protocol,
+            cofre_protocol=cofre_protocol,
             app_version=request.app_version,
         )
 
-    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False, firebase_protocol=False) -> dict[str, Any]:
+    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         current_password = request.current_password.get_secret_value()
@@ -210,6 +225,7 @@ class AuthenticationService:
             code="password_changed",
             central_protocol=central_protocol,
             firebase_protocol=firebase_protocol,
+            cofre_protocol=cofre_protocol,
             app_version=request.app_version,
         )
 

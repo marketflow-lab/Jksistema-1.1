@@ -11,11 +11,15 @@
     totalActive: 0, totalDeleted: 0, summaryRevision: 0,
     messageDrafts: new Map(), channelDrafts: new Map(), mutations: new Map(),
     editor: null, channelEditor: null, deleteTarget: null, deleting: false,
-    session: null, sessionInvalidated: false
+    session: null, sessionInvalidated: false, archiveReady: false, accessReady: false,
+    sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null },
+    sharingKnown: false, sharingError: false, sharingBusy: false, sharingRequest: null,
+    lastSharingAttempt: 0, publishing: false, publishSession: null
   };
   const dateFormat = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' });
   const timeFormat = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' });
   const numberFormat = new Intl.NumberFormat('pt-BR');
+  const SHARING_MIN_INTERVAL_MS = 60 * 1000;
 
   function node(tag, className, text) {
     const item = document.createElement(tag);
@@ -86,7 +90,7 @@
     try { user = JSON.parse(localStorage.getItem('user_data') || '{}'); } catch (_error) {}
     const headerValues = Object.keys(headers).sort().map(key => [key.toLowerCase(), String(headers[key])]);
     // Identity and credentials stay in this page's memory, never URLs or persistence.
-    const key = JSON.stringify([headerValues, localStorage.getItem('access_token'), user.client_id || '', user.tenant_id || '', user.user_id || user.id || '', user.username || '']);
+    const key = JSON.stringify([headerValues, localStorage.getItem('access_token'), user.client_id || '', user.tenant_id || '', user.user_id || user.id || '', user.username || '', user.company_id || user.empresa_id || user.company?.id || '']);
     return { key, headers: { ...headers } };
   }
 
@@ -97,6 +101,11 @@
     state.summaryRevision += 1;
     cancelMessages();
     state.session = null;
+    state.archiveReady = false;
+    state.accessReady = false;
+    state.sharingKnown = false;
+    state.publishSession = null;
+    renderSharing();
     state.totalDeleted = 0;
     updateTrashCount();
     state.messageDrafts.clear();
@@ -109,7 +118,7 @@
     state.server = null;
     state.channels = [];
     state.channel = null;
-    for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'importDialog']) $(id).close();
+    for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'importDialog', 'publishSharingDialog']) $(id).close();
     for (const id of ['editAuthor', 'editContent', 'editChannelName', 'editChannelCategory', 'editChannelTopic']) $(id).value = '';
     $('editMessageLinks').replaceChildren();
     $('editMessageEmbeds').replaceChildren();
@@ -152,7 +161,9 @@
     ensureSession(session);
     if (!response.ok) {
       const fallback = response.status === 403 ? 'Sua conta não tem acesso ao Cofre de Informações.' : 'Não foi possível carregar o Cofre de Informações. Tente novamente.';
-      throw new Error(errorMessage(data, fallback));
+      const error = new Error(errorMessage(data, fallback));
+      error.status = response.status;
+      throw error;
     }
     return data;
   }
@@ -161,6 +172,194 @@
     $('notice').hidden = !message;
     $('notice').textContent = message || '';
     $('notice').classList.toggle('error', !!isError);
+  }
+
+  function canEditArchive() {
+    return state.accessReady && state.sharingKnown && !state.sessionInvalidated &&
+      (!state.sharing.configured || state.sharing.can_publish);
+  }
+
+  function requireWriteAccess() {
+    if (!canEditArchive()) {
+      notice(state.sharingKnown ? 'Este acervo está disponível para consulta na sua conta.' : 'Confira o estado do acervo antes de fazer alterações.', true);
+      return false;
+    }
+    if (state.sharingBusy) { notice('Aguarde a sincronização em andamento.'); return false; }
+    return true;
+  }
+
+  function renderSharing() {
+    const sharing = state.sharing;
+    const invalid = state.sessionInvalidated;
+    const editable = canEditArchive();
+    $('cofreApp').classList.toggle('sharing-ready', state.accessReady && state.sharingKnown);
+    $('sharingStrip').classList.toggle('sharing-company', sharing.enabled && !invalid);
+    $('sharingStrip').classList.toggle('sharing-error', state.sharingError && !invalid);
+    $('sharingStrip').classList.toggle('sharing-busy', state.sharingBusy && !invalid);
+    $('sharingLabel').textContent = invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
+    const synced = formatDate(sharing.last_sync);
+    $('sharingDescription').textContent = invalid ? 'Reabra o módulo para carregar a conta atual.'
+      : state.sharingBusy ? state.publishing ? 'Publicando acervo…' : 'Sincronizando acervo…'
+      : state.sharingError ? 'Não foi possível sincronizar agora. A cópia disponível foi mantida.'
+      : !state.sharingKnown ? 'Confira o acervo para continuar.'
+      : sharing.enabled ? (sharing.can_publish ? 'As alterações são compartilhadas.' : 'Somente leitura.') + (synced ? ' Atualizado às ' + timeFormat.format(synced) + '.' : '')
+      : sharing.configured && sharing.can_publish ? 'Publique para compartilhar com a empresa.' : 'Disponível neste computador.';
+    $('syncSharing').hidden = invalid || (state.sharingKnown && !sharing.configured);
+    $('syncSharing').disabled = state.sharingBusy || !state.accessReady;
+    $('publishSharing').hidden = invalid || !state.sharingKnown || !sharing.configured || !sharing.can_publish;
+    $('publishSharing').disabled = state.sharingBusy || !state.accessReady;
+    for (const control of document.querySelectorAll('[data-cofre-write]')) {
+      control.hidden = !editable;
+      control.disabled = !editable || state.sharingBusy || (control.id === 'editChannel' && !state.channel);
+    }
+    if (!editable) {
+      $('messages').querySelectorAll('.message-actions').forEach(actions => actions.remove());
+      if (state.accessReady && state.sharingKnown && sharing.configured) {
+        for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'importDialog']) $(id).close();
+      }
+    }
+    if (!sharing.can_publish && !state.publishing) $('publishSharingDialog').close();
+  }
+
+  function applySharingStatus(data) {
+    const wasEditable = canEditArchive();
+    const wasEnabled = state.sharing.enabled;
+    for (const field of ['configured', 'enabled', 'can_publish']) {
+      if (typeof data[field] === 'boolean') state.sharing[field] = data[field];
+    }
+    for (const field of ['revision', 'last_sync']) {
+      if (Object.prototype.hasOwnProperty.call(data, field)) state.sharing[field] = data[field];
+    }
+    state.sharingKnown = true;
+    state.sharingError = !!data.error;
+    renderSharing();
+    return wasEditable !== canEditArchive() || wasEnabled !== state.sharing.enabled;
+  }
+
+  async function refreshSharedArchive() {
+    if (!state.archiveReady || state.sessionInvalidated) return;
+    const navigation = state.serverRevision;
+    const serverId = state.server?.id;
+    const channelId = state.channel?.id;
+    const data = await request('/servidores');
+    if (navigation !== state.serverRevision) return;
+    const servers = Array.isArray(data.servidores) ? data.servidores : [];
+    if (!servers.length) { await loadServers(); return; }
+    const selected = servers.find(server => server.id === serverId);
+    if (!selected) {
+      state.servers = servers;
+      await selectServer(servers[0]);
+      return;
+    }
+    const result = await request('/servidores/' + encodeURIComponent(selected.id) + '/canais');
+    if (navigation !== state.serverRevision) return;
+    state.servers = servers;
+    state.server = result.servidor || selected;
+    state.channels = Array.isArray(result.canais) ? result.canais : [];
+    renderServers();
+    const channel = state.channels.find(item => item.id === channelId);
+    if (!channel) {
+      if (state.channels.length) await selectChannel(state.channels[0]);
+      else await selectServer(state.server);
+      return;
+    }
+    state.channel = channel;
+    state.query = $('messageSearch').value.trim();
+    updateChannelHeading();
+    renderChannels();
+    renderDetails();
+    await loadMessages(true, true);
+  }
+
+  async function synchronizeSharing({ initial = false, manual = false, reload = true } = {}) {
+    if (state.sessionInvalidated) return { changed: false };
+    if (state.sharingRequest) return state.sharingRequest;
+    if (state.publishing || state.importing || state.mutations.size) {
+      if (manual) notice('Aguarde a alteração em andamento para sincronizar.');
+      return { changed: false };
+    }
+    const now = Date.now();
+    if (!initial && !manual && now >= state.lastSharingAttempt && now - state.lastSharingAttempt < SHARING_MIN_INTERVAL_MS) return { changed: false };
+    state.lastSharingAttempt = now;
+    state.sharingBusy = true;
+    renderSharing();
+    const task = (async () => {
+      try {
+        const status = await request('/compartilhamento');
+        let accessChanged = applySharingStatus(status);
+        let result = { changed: false, ...status };
+        if (initial || state.sharing.configured) {
+          result = await request('/compartilhamento/sincronizar', { method: 'POST' });
+          accessChanged = applySharingStatus(result) || accessChanged;
+          if (result.success === false) {
+            state.sharingError = true;
+            renderSharing();
+            return { ...result, changed: false, failed: true };
+          }
+        }
+        if (reload && (result.changed || accessChanged)) await refreshSharedArchive();
+        return { ...result, refreshed: reload && !!(result.changed || accessChanged) };
+      } catch (_error) {
+        if (!state.sessionInvalidated) { state.sharingError = true; renderSharing(); }
+        return { changed: false, failed: true };
+      } finally {
+        state.sharingBusy = false;
+        state.sharingRequest = null;
+        renderSharing();
+      }
+    })();
+    state.sharingRequest = task;
+    return task;
+  }
+
+  async function refreshArchive() {
+    const result = await synchronizeSharing();
+    if (!state.sessionInvalidated && !result.refreshed && state.channel) await loadMessages(true, true);
+  }
+
+  function openPublishSharing() {
+    if (!state.sharingKnown || !state.sharing.configured || !state.sharing.can_publish || state.sessionInvalidated || state.sharingBusy) return;
+    if (state.importing || state.mutations.size) { notice('Aguarde a alteração em andamento para publicar.'); return; }
+    try { state.publishSession = ensureSession(); } catch (_error) { return; }
+    feedback('publishSharingFeedback', '');
+    $('syncBeforePublish').hidden = true;
+    $('publishSharingDialog').showModal();
+    $('cancelPublishSharing').focus();
+  }
+
+  async function publishSharing() {
+    if (state.publishing || !state.publishSession || !state.sharing.can_publish || state.sessionInvalidated) return;
+    state.publishing = true;
+    state.sharingBusy = true;
+    for (const id of ['confirmPublishSharing', 'cancelPublishSharing', 'closePublishSharing']) $(id).disabled = true;
+    feedback('publishSharingFeedback', 'Publicando acervo para a empresa…');
+    renderSharing();
+    try {
+      const result = await request('/compartilhamento/publicar', { method: 'POST' }, state.publishSession);
+      if (result.success === false) throw new Error('Publicação não concluída.');
+      applySharingStatus(result);
+      $('publishSharingDialog').close();
+      try { await refreshSharedArchive(); }
+      catch (_error) {
+        if (!state.sessionInvalidated) {
+          state.sharingError = true;
+          notice('Acervo compartilhado com a empresa. Não foi possível atualizar a visualização agora.', true);
+        }
+        return;
+      }
+      notice('Acervo compartilhado com a empresa.');
+    } catch (error) {
+      if (!state.sessionInvalidated) {
+        state.sharingError = true;
+        $('syncBeforePublish').hidden = error.status !== 409;
+        feedback('publishSharingFeedback', error.status === 409 ? 'Sincronize antes de publicar. Sua cópia foi mantida.' : 'Não foi possível publicar agora. Sua cópia foi mantida.', true);
+      }
+    } finally {
+      state.publishing = false;
+      state.sharingBusy = false;
+      for (const id of ['confirmPublishSharing', 'cancelPublishSharing', 'closePublishSharing']) $(id).disabled = false;
+      renderSharing();
+    }
   }
 
   function initials(name) {
@@ -303,6 +502,10 @@
       renderDetails();
       $('emptyState').hidden = false;
       $('channelIntro').hidden = true;
+      $('messageSearch').disabled = true;
+      $('refreshMessages').disabled = true;
+      $('editChannel').disabled = true;
+      $('toggleTrash').disabled = true;
       return;
     }
     const selected = state.servers.find((server) => server.id === preferredId) || state.servers[0];
@@ -708,6 +911,7 @@
     if (message.edited) meta.appendChild(node('span', 'message-state', 'Editado'));
     const deleted = message.deleted === true || state.trashMode;
     if (deleted) meta.appendChild(node('span', 'message-state deleted-state', 'Na lixeira'));
+    if (!canEditArchive()) return;
     const actions = node('div', 'message-actions');
     if (deleted) {
       const restore = node('button', 'message-action restore-action', '↶ Restaurar');
@@ -805,6 +1009,7 @@
   }
 
   function openMessageEditor(message, context) {
+    if (!requireWriteAccess()) return;
     if (state.mutations.has(context.key) && !state.messageDrafts.has(context.key)) {
       notice('Este item tem uma alteração em andamento. Aguarde a conclusão.');
       return;
@@ -863,12 +1068,14 @@
       state.server = state.servers.find(server => server.id === state.server?.id) || state.server;
       renderServers();
       renderDetails();
+      if (state.sharing.configured) applySharingStatus(await request('/compartilhamento', {}, context.session));
     } catch (_error) { /* The mutation is already saved; the next refresh updates summary. */ }
   }
 
   async function saveMessage(event) {
     event.preventDefault();
     const session = state.editor;
+    if (!requireWriteAccess()) return;
     if (!session || state.mutations.has(session.context.key)) return;
     const { context, draft } = session;
     const revision = draft.revision;
@@ -906,6 +1113,7 @@
   }
 
   function openDeleteMessage(message, context) {
+    if (!requireWriteAccess()) return;
     if (state.mutations.has(context.key)) { notice('Este item tem uma alteração em andamento. Aguarde a conclusão.'); return; }
     try { ensureSession(context.session); } catch (_error) { return; }
     state.deleteTarget = context;
@@ -917,6 +1125,7 @@
 
   async function deleteMessage() {
     const context = state.deleteTarget;
+    if (!requireWriteAccess()) return;
     if (!context || state.deleting || state.mutations.has(context.key)) return;
     state.deleting = true;
     state.mutations.set(context.key, 'delete');
@@ -936,6 +1145,7 @@
   }
 
   async function restoreMessage(context, button) {
+    if (!requireWriteAccess()) return;
     if (state.mutations.has(context.key)) return;
     state.mutations.set(context.key, 'restore');
     button.disabled = true;
@@ -958,6 +1168,7 @@
   }
 
   function openChannelEditor() {
+    if (!requireWriteAccess()) return;
     if (!state.channel || !state.server) return;
     let session;
     try { session = ensureSession(); } catch (_error) { return; }
@@ -983,6 +1194,7 @@
   async function saveChannel(event) {
     event.preventDefault();
     const session = state.channelEditor;
+    if (!requireWriteAccess()) return;
     if (!session || state.mutations.has(session.context.key)) return;
     const { context, draft } = session;
     const revision = draft.revision;
@@ -1045,6 +1257,7 @@
   }
 
   function openImport() {
+    if (!requireWriteAccess()) return;
     if (state.sessionInvalidated) return;
     try { ensureSession(); } catch (_error) { return; }
     if (!$('importDialog').open) $('importDialog').showModal();
@@ -1056,6 +1269,7 @@
 
   async function importArchive(event) {
     event.preventDefault();
+    if (!requireWriteAccess()) return;
     if (state.importing) return;
     const file = $('importFile').files[0];
     if (!file) { $('importFile').focus(); return; }
@@ -1105,10 +1319,11 @@
       return;
     }
     state.session = captureSession();
-    const checkIdentity = () => { try { ensureSession(); } catch (_error) {} };
+    const checkIdentity = () => { try { ensureSession(); return true; } catch (_error) { return false; } };
     window.addEventListener('storage', event => { if (!event.key || ['access_token', 'user_data', 'permissions'].includes(event.key)) checkIdentity(); });
-    window.addEventListener('focus', checkIdentity);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkIdentity(); });
+    const focusSync = () => { if (checkIdentity() && state.archiveReady) synchronizeSharing(); };
+    window.addEventListener('focus', focusSync);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') focusSync(); });
     if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     for (const id of ['railImport', 'sidebarImport', 'emptyImport', 'detailImport', 'footerImport']) $(id).addEventListener('click', openImport);
     $('closeMedia').addEventListener('click', () => $('mediaDialog').close());
@@ -1126,7 +1341,13 @@
     $('openChannels').addEventListener('click', () => setChannelsOpen(true));
     $('closeChannels').addEventListener('click', () => { setChannelsOpen(false); $('openChannels').focus(); });
     $('sidebarScrim').addEventListener('click', () => setChannelsOpen(false));
-    $('refreshMessages').addEventListener('click', () => loadMessages(true));
+    $('refreshMessages').addEventListener('click', refreshArchive);
+    $('syncSharing').addEventListener('click', () => synchronizeSharing({ manual: true }));
+    $('publishSharing').addEventListener('click', openPublishSharing);
+    $('confirmPublishSharing').addEventListener('click', publishSharing);
+    $('syncBeforePublish').addEventListener('click', () => { if (!state.publishing) { $('publishSharingDialog').close(); synchronizeSharing({ manual: true }); } });
+    for (const id of ['closePublishSharing', 'cancelPublishSharing']) $(id).addEventListener('click', () => { if (!state.publishing) $('publishSharingDialog').close(); });
+    $('publishSharingDialog').addEventListener('cancel', event => { if (state.publishing) event.preventDefault(); });
     bindEditors();
     $('toggleTrash').addEventListener('click', () => {
       state.trashMode = !state.trashMode;
@@ -1149,7 +1370,11 @@
       if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     });
     window.addEventListener('pagehide', () => { state.request?.abort(); clearMedia(); });
-    try { await loadServers(); }
+    await synchronizeSharing({ initial: true, reload: false });
+    if (state.sessionInvalidated) return;
+    state.accessReady = true;
+    renderSharing();
+    try { await loadServers(); state.archiveReady = true; }
     catch (error) { notice(error.message, true); $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; }
   }
 

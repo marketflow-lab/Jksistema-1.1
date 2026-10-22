@@ -56,6 +56,30 @@ python -m pytest -q tests/test_remote_auth_client.py tests/test_auth_gateway_dom
 O container usa `cloud/auth_gateway/Dockerfile`. O arquivo `.env.example` é apenas um modelo e não deve
 ser renomeado para um arquivo versionado com valores de produção.
 
+## Autorização do Cofre por empresa (protocolo 1)
+
+Clientes compatíveis enviam `X-JK-Cofre-Protocol: 1` no login e na troca de senha.
+O gateway acrescenta `cofre_access: {protocol: 1, capability: <JWT>}` ao envelope
+assinado somente para usuários com `full` ou `cofre`. Clientes sem esse cabeçalho
+mantêm o hash e o contrato anteriores. O cabeçalho negocia também a chave de
+permissão `cofre`, mesmo quando a versão declarada é anterior.
+
+A capability RS256 usa a identidade e a permissão IAM `signBlob` já utilizadas
+na autenticação, sem criar grant, consultar usuário novamente ou executar outro
+sign-in Firebase. Claims: `iss` (email público da conta de serviço), `aud=jk-cofre`,
+`sub`, `client_id`, `machine_hash`, `scope`, `iat`, `exp`. A validade termina em até
+oito horas, limitada pela validade da conta e pelas sessões existentes. A leitura
+requer `full || cofre`; a escrita requer também `full || admin_usuarios`.
+
+O backend valida a assinatura e associa a capability ao token local apenas em
+memória. As rotas Cofre usam essa sessão, sem consultar permissões, grants ou
+presença no Firebase. A chave pública vem exclusivamente do endpoint JWK Google
+da identidade confiável, com cache; ela nunca é escolhida por uma URL no JWT.
+IAM pode emitir sem `kid`, caso em que o verificador tenta até dez chaves RSA do
+conjunto confiável. Não se distribui chave privada nem refresh token ao Cofre.
+O refresh Firebase existente não estende a capability; expiração e reinício do
+backend encerram a autorização, e a revogação remota não é imediata nesse modelo.
+
 ## Conexão Firebase restrita após login (protocolo 1)
 
 Clientes novos enviam `X-JK-Firebase-Protocol: 1` no login e na troca de senha.

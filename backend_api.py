@@ -2060,7 +2060,12 @@ _CONTEXT_HUB_RUNTIME_CONFIG = _context_hub_module.configure_context_hub(
     surface=_CONTEXT_HUB_SURFACE,
 )
 app.include_router(create_context_hub_router())
-app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_tenant_id))
+async def get_cofre_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
+    from backend.services.cofre_auth import bind_request
+    return bind_request(request, authorization)
+
+
+app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_cofre_tenant_id, sharing=True))
 
 
 def _context_hub_clientes_iniciais() -> tuple[str, ...]:

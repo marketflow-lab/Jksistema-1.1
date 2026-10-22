@@ -1,0 +1,24 @@
+name = "jk-cofre-gateway"
+main = "src/index.ts"
+compatibility_date = "2026-10-22"
+workers_dev = true
+preview_urls = false
+logpush = false
+send_metrics = false
+
+# Workers Free enforces its own 10 ms CPU limit. Custom CPU limits require Paid.
+
+[observability]
+enabled = false
+
+[vars]
+COFRE_ISSUER_EMAIL = "jk-auth-gateway@jkjkjk-485920.iam.gserviceaccount.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jk-cofre-company"
+database_id = "REPLACE_WITH_SEPARATE_COFRE_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# COFRE_ISSUER_EMAIL is the public, pinned signing identity, not a private key.
+# No private signing key, Firebase key, WhatsApp binding, or scheduled trigger.
