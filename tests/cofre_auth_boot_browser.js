@@ -30,6 +30,7 @@ async function scenario(browser, options = {}) {
   const state = { requests: [], chunks: [], forbidden: [], errors: [], api: [] };
   page.on('pageerror', error => state.errors.push(error.message));
   await page.addInitScript(({ token, permissions, identity }) => {
+    if (location.pathname !== '/cofre.html') return;
     if (identity) {
       localStorage.setItem('access_token', token);
       localStorage.setItem('user_data', JSON.stringify({ client_id: 'fixture-company', username: 'fixture-user' }));
@@ -41,8 +42,9 @@ async function scenario(browser, options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     state.requests.push(url.pathname);
-    const reply = body => route.fulfill({ status: options.backendDenied ? 403 : 200,
-      contentType: 'application/json', body: JSON.stringify(options.backendDenied ? { detail: 'Acesso ao Cofre negado pela API.' } : body) });
+    const reply = body => route.fulfill({ status: options.backendDenied ? 403 : options.backendUnauthorized || state.backendUnauthorized ? 401 : 200,
+      contentType: 'application/json', body: JSON.stringify(options.backendDenied ? { detail: 'Acesso ao Cofre negado pela API.' }
+        : options.backendUnauthorized || state.backendUnauthorized ? { detail: 'A autorização do Cofre expirou ou não está disponível nesta sessão.' } : body) });
     if (url.origin !== origin) { state.forbidden.push(url.origin + url.pathname); return route.abort(); }
     if (url.pathname === '/cofre.html') {
       let html = source(options.mirror ? 'static/cofre.html' : 'cofre.html');
@@ -67,8 +69,11 @@ async function scenario(browser, options = {}) {
       if (url.pathname === '/api/cofre/servidores') return reply({ servidores: [server] });
       if (url.pathname === '/api/cofre/servidores/fixture-guild/canais') return reply({ servidor: server, canais: [channel] });
       if (url.pathname === '/api/cofre/canais/fixture-channel/mensagens') return reply({
-        mensagens: [{ id: 'fixture-message', author: 'Fixture', content, timestamp: '2026-10-22T12:00:00Z' }],
+        mensagens: [{ id: 'fixture-message', author: 'Fixture', content, timestamp: '2026-10-22T12:00:00Z',
+          attachments: options.backendAssetUnauthorized ? [{ filename: 'fixture.png', content_type: 'image/png',
+            local_url: '/api/cofre/arquivos/fixture-guild/' + 'a'.repeat(64) + '/fixture.png' }] : [] }],
         total: 1, offset: 0, limit: 100, total_ativos: 1, total_excluidos: 0, has_more: false });
+      if (options.backendAssetUnauthorized && url.pathname.startsWith('/api/cofre/arquivos/')) return route.fulfill({ status: 401, body: '' });
     }
     if (['/dashboard.html', '/frontend_index.html'].includes(url.pathname)) return route.fulfill({ contentType: 'text/html', body: '<main>Destino fictício</main>' });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
@@ -145,8 +150,46 @@ async function normalFacade(browser, dynamic) {
     assert.equal(await denied.page.getByText(content, { exact: true }).count(), 0, 'Permissão local não contorna a decisão da API.');
     await assertQuiet(denied);
     await denied.context.close();
+    const restored = await scenario(browser, { backendUnauthorized: true });
+    await restored.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
+    assert.equal(await restored.page.locator('#sharingLabel').textContent(), 'Login necessário');
+    assert.equal(await restored.page.locator('#coverageBadge').textContent(), 'Aguardando login');
+    assert.equal(await restored.page.locator('#syncSharing').isVisible(), false);
+    assert.equal(await restored.page.locator('#emptyImport').isVisible(), false);
+    assert.equal(await restored.page.evaluate(() => localStorage.getItem('access_token')), token,
+      'A tela não encerra a sessão do JK sem uma ação da pessoa.');
+    await assertQuiet(restored);
+    assert.deepEqual(restored.state.api.map(request => request.path), ['/api/cofre/compartilhamento'],
+      'Uma sessão sem capability encerra a consulta sem repetir pedidos ou declarar acervo vazio.');
+    await restored.page.evaluate(() => localStorage.setItem('fixture-preserved', 'saved'));
+    await restored.page.getByRole('button', { name: 'Entrar novamente', exact: true }).click();
+    await restored.page.waitForURL(origin + '/frontend_index.html');
+    assert.deepEqual(await restored.page.evaluate(() => ['access_token', 'user_data', 'permissions'].map(key => localStorage.getItem(key))), [null, null, null]);
+    assert.equal(await restored.page.evaluate(() => localStorage.getItem('fixture-preserved')), 'saved');
+    await restored.context.close();
+    const expired = await scenario(browser);
+    await expired.page.getByText(content, { exact: true }).waitFor();
+    expired.state.backendUnauthorized = true;
+    await expired.page.locator('#syncSharing').click();
+    await expired.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
+    assert.equal(await expired.page.locator('#messages').textContent(), '', 'O acervo sai da tela quando a autorização expira.');
+    assert.equal(await expired.page.locator('#emptyTitle').textContent(), 'Entre novamente para abrir o Cofre');
+    assert.equal(await expired.page.locator('#sharingLabel').textContent(), 'Login necessário');
+    const expiredRequests = expired.state.api.length;
+    await assertQuiet(expired);
+    assert.equal(expired.state.api.length, expiredRequests, 'Foco e timers não repetem consultas após 401.');
+    await expired.context.close();
+    const assetExpired = await scenario(browser, { backendAssetUnauthorized: true });
+    await assetExpired.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
+    assert.equal(await assetExpired.page.locator('#messages').textContent(), '', 'Anexo sem autorização também encerra a visualização do acervo.');
+    assert.equal(await assetExpired.page.locator('#sharingLabel').textContent(), 'Login necessário');
+    const assetRequests = assetExpired.state.api.length;
+    assert.equal(assetExpired.state.api.filter(request => request.path.startsWith('/api/cofre/arquivos/')).length, 1);
+    await assertQuiet(assetExpired);
+    assert.equal(assetExpired.state.api.length, assetRequests, 'Um anexo com 401 não inicia novas tentativas.');
+    await assetExpired.context.close();
     await normalFacade(browser, false);
     await normalFacade(browser, true);
-    console.log('Cofre auth boot: 8 browser scenarios passed; zero Firebase/global boot requests.');
+    console.log('Cofre auth boot: 11 browser scenarios passed; zero Firebase/global boot requests.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

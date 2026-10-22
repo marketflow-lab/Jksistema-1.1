@@ -7,7 +7,7 @@
   <title>Cofre de Informações — JK Sistema</title>
   <link rel="stylesheet" href="/cofre/cofre.css?v=20261022-company-1">
   <script src="/auth.js?v=20261022-cofre-auth-1"></script>
-  <script defer src="/cofre/cofre.js?v=20261022-company-1"></script>
+  <script defer src="/cofre/cofre.js?v=20261022-session-recovery-1"></script>
 </head>
 <body>
   <div class="cofre-shell" id="cofreApp">
@@ -50,10 +50,11 @@
         <div class="empty-state" id="emptyState">
           <div class="empty-symbol" aria-hidden="true">▣</div>
           <span class="eyebrow">SEU CONHECIMENTO, GUARDADO</span>
-          <h2>Um lugar para tudo o que importa.</h2>
+          <h2 id="emptyTitle">Um lugar para tudo o que importa.</h2>
           <p id="emptyDescription">Guarde conversas, referências e arquivos do seu servidor. Navegue por canais, como no Discord.</p>
           <button class="primary-button" id="emptyImport" data-cofre-write>Importar cópia do servidor <span aria-hidden="true">↥</span></button>
-          <span class="empty-format">Arquivo .zip ou .json do Cofre de Informações</span>
+          <button type="button" class="primary-button" id="reauthenticateCofre" hidden>Entrar novamente</button>
+          <span class="empty-format" id="emptyFormat">Arquivo .zip ou .json do Cofre de Informações</span>
         </div>
         <div class="channel-intro" id="channelIntro" hidden><div class="intro-symbol" aria-hidden="true">#</div><span class="eyebrow">ACERVO DO CANAL</span><h2 id="introTitle"></h2><p id="introDescription"></p></div>
         <div id="messages" class="messages" aria-label="Mensagens arquivadas"></div>

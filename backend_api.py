@@ -568,6 +568,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("jk_sistema")
 load_dotenv()
+from backend.services.remote_auth_bootstrap import public_remote_auth_defaults
+os.environ.update(public_remote_auth_defaults(BASE_DIR, os.environ))
 
 # --- CONFIGURAÃƒÆ’Ã¢â‚¬Â¡ÃƒÆ’Ã¢â‚¬Â¢ES ---
 PASTA_IMG = os.path.join(BASE_DIR, "img")
