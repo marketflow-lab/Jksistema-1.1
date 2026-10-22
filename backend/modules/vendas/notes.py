@@ -161,38 +161,57 @@ def listar_itens_devolucoes(client_id: str, data_inicio: str = None, data_fim: s
         raise HTTPException(status_code=500, detail=f"Erro ao ler itens de devoluÃ§Ãµes: {str(e)}")
 
 def listar_notas_entrada_por_sku(sku: str, client_id: str, data_inicio: str = None, data_fim: str = None, unidade_negocio: str = None, loja: str = None):
-    db_path = _get_vendas_db_path(client_id, loja)
-    if not (db_path and os.path.exists(db_path)):
+    db_paths = _listar_bancos_vendas_tenant(client_id, loja)
+    if not db_paths:
         return []
 
-    conn = None
     try:
-        conn = open_vendas_readonly(db_path, row_factory=sqlite3.Row)
-        cur = conn.cursor()
-
         catalog = load_composition_catalog(client_id)
         candidates = sorted({str(value).strip().upper() for value in catalog.candidates(sku, loja)}) or [str(sku).strip().upper()]
-        columns = cached_table_columns(db_path, "notas_entrada_itens", conn)
-        identity = ", ".join(select_compatible_column(columns, name, "''") for name in ("id_unico", "store_id"))
-        query = "SELECT " + identity + ", numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE UPPER(trim(coalesce(sku,''))) IN (" + ",".join("?" for _ in candidates) + ") AND sku != '' AND devolucao = 1"
-        params = list(candidates)
+        unique_returns = {}
+        identity_fields = (
+            "data_emissao", "quantidade", "valor_total", "sku", "loja_conta",
+            "store_id", "numero_nota", "origem_codigo",
+        )
+        for db_path in db_paths:
+            if not (db_path and os.path.exists(db_path)):
+                continue
+            conn = open_vendas_readonly(db_path, row_factory=sqlite3.Row)
+            try:
+                cur = conn.cursor()
+                columns = cached_table_columns(db_path, "notas_entrada_itens", conn)
+                if not columns:
+                    continue
+                identity = ", ".join(select_compatible_column(columns, name, "''") for name in ("id_unico", "store_id"))
+                query = "SELECT " + identity + ", numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE UPPER(trim(coalesce(sku,''))) IN (" + ",".join("?" for _ in candidates) + ") AND sku != '' AND devolucao = 1"
+                params = list(candidates)
 
-        date_conditions: list[str] = []
-        append_indexable_date_filter(date_conditions, params, "data_emissao", data_inicio, data_fim)
-        if date_conditions:
-            query += " AND " + " AND ".join(date_conditions)
-        filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
-        if filtro_sql:
-            query += filtro_sql
-            params.extend(filtro_params)
-        filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_notas_entrada(cur, loja)
-        if filtro_loja_sql:
-            query += filtro_loja_sql
-            params.extend(filtro_loja_params)
+                date_conditions: list[str] = []
+                append_indexable_date_filter(date_conditions, params, "data_emissao", data_inicio, data_fim)
+                if date_conditions:
+                    query += " AND " + " AND ".join(date_conditions)
+                filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
+                if filtro_sql:
+                    query += filtro_sql
+                    params.extend(filtro_params)
+                filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_notas_entrada(cur, loja)
+                if filtro_loja_sql:
+                    query += filtro_loja_sql
+                    params.extend(filtro_loja_params)
 
-        query += " ORDER BY date(data_emissao) DESC"
-        rows = cur.execute(query, params).fetchall()
-        dados = [dict(r) for r in rows]
+                query += " ORDER BY date(data_emissao) DESC"
+                for row in cur.execute(query, params).fetchall():
+                    item = dict(row)
+                    unique_id = str(item.get("id_unico") or "").strip()
+                    owner = str(item.get("store_id") or item.get("loja_conta") or "").strip().casefold()
+                    key = (owner, unique_id) if unique_id else tuple(
+                        str(item.get(field) or "") for field in identity_fields
+                    )
+                    unique_returns.setdefault(key, item)
+            finally:
+                conn.close()
+
+        dados = sorted(unique_returns.values(), key=lambda item: str(item.get("data_emissao") or ""), reverse=True)
         for item in dados:
             item["unidade_negocio_virtual"] = _classificar_unidade_virtual_devolucao(
                 item.get("unidade_negocio_virtual"),
@@ -202,9 +221,6 @@ def listar_notas_entrada_por_sku(sku: str, client_id: str, data_inicio: str = No
         return catalog.project_rows(dados, target_sku=sku, store=loja)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler notas de entrada: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
 
 
 __all__ = [
