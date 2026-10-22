@@ -54,7 +54,7 @@ from .entities import (
 
 
 
-from .python_scanner import _path_is_excluded
+from .python_scanner import _path_is_excluded, _source_files
 
 
 
@@ -185,7 +185,7 @@ def _scan_frontend(
             )
         )
 
-    for script in sorted(static_root.rglob("*.js")):
+    for script in _source_files(static_root, "*.js"):
         if _path_is_excluded(script, static_root):
             continue
         resolved = _safe_resolve(script, static_root)
@@ -247,14 +247,13 @@ def _test_files(base: Path) -> list[Path]:
     candidates: set[Path] = set()
     tests_root = base / "tests"
     if tests_root.is_dir():
-        candidates.update(tests_root.rglob("test_*.py"))
-        candidates.update(tests_root.rglob("*.test.js"))
-        candidates.update(tests_root.rglob("*.spec.js"))
+        candidates.update(path for path in _source_files(tests_root)
+                          if path.match("test_*.py") or path.match("*.test.js") or path.match("*.spec.js"))
     for root_rel in ("scripts", "cloudflare"):
         root = base / root_rel
         if root.is_dir():
-            candidates.update(path for path in root.rglob("test*.js") if not _path_is_excluded(path, root))
-            candidates.update(path for path in root.rglob("*.test.js") if not _path_is_excluded(path, root))
+            candidates.update(path for path in _source_files(root)
+                              if path.match("test*.js") or path.match("*.test.js"))
     return sorted(
         (path for path in candidates if not _path_is_excluded(path, base)),
         key=lambda item: _relative_ref(item, base),
@@ -311,8 +310,8 @@ def _iter_infra_files(root: Path) -> list[Path]:
     files: list[Path] = []
     if not root.is_dir():
         return files
-    for path in root.rglob("*"):
-        if not path.is_file() or _path_is_excluded(path, root):
+    for path in _source_files(root):
+        if _path_is_excluded(path, root):
             continue
         if path.suffix.lower() in _INFRA_SUFFIXES or path.name in {"Dockerfile", "package.json"}:
             files.append(path)
@@ -340,7 +339,7 @@ def _integration_specs(base: Path) -> list[tuple[str, str, list[Path]]]:
             elif path.is_dir():
                 files.extend(
                     item
-                    for item in path.rglob("*.py")
+                    for item in _source_files(path, "*.py")
                     if item.is_file() and not _path_is_excluded(item, path)
                 )
         if files:

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 
 import ast
+import fnmatch
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import (
 from .contracts import (
     _PYTHON_SOURCE_ROOTS,
     _EXCLUDED_DIR_NAMES,
+    _EXCLUDED_DIR_PREFIXES,
     _BLOCKED_FILE_NAME_PARTS,
 )
 
@@ -49,6 +52,7 @@ from .entities import (
     _entity,
 )
 
+_EXCLUDED_DIRECTORY_KEYS = frozenset(name.casefold() for name in _EXCLUDED_DIR_NAMES)
 
 
 def _literal_string(node: ast.AST | None, constants: Mapping[str, str] | None = None) -> str:
@@ -113,12 +117,52 @@ def _parse_python(path: Path, findings: list[dict[str, str]], source_ref: str) -
         )
         return None
 
+def _directory_is_excluded(name: str) -> bool:
+    lowered = name.casefold()
+    return lowered in _EXCLUDED_DIRECTORY_KEYS or lowered.startswith(_EXCLUDED_DIR_PREFIXES)
+
+
+def _source_is_redirect(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(os.path, "isjunction", lambda _p: False)(path))
+
+
+def _source_files(root: Path, pattern: str = "*", *, excluded_dirs: tuple[str, ...] = ()) -> list[Path]:
+    """Prune generated trees before enumeration and never follow source redirects."""
+    if _source_is_redirect(root):
+        raise ValueError("Inventory sources must not contain links or junctions.")
+    if not root.is_dir():
+        return []
+    files = []
+    extra = {name.casefold() for name in excluded_dirs}
+
+    def failed(error: OSError) -> None:
+        raise error
+
+    for folder, directories, filenames in os.walk(root, topdown=True, onerror=failed, followlinks=False):
+        current = Path(folder)
+        kept = []
+        for name in directories:
+            if _directory_is_excluded(name) or name.casefold() in extra:
+                continue
+            if _source_is_redirect(current / name):
+                raise ValueError("Inventory sources must not contain links or junctions.")
+            kept.append(name)
+        directories[:] = kept
+        for name in filenames:
+            if fnmatch.fnmatch(name, pattern):
+                path = current / name
+                if _source_is_redirect(path):
+                    raise ValueError("Inventory sources must not contain links or junctions.")
+                files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
+
+
 def _python_files(base: Path) -> list[Path]:
     files: set[Path] = set()
     for rel_root in _PYTHON_SOURCE_ROOTS:
         root = base / rel_root
         if root.is_dir():
-            files.update(path for path in root.rglob("*.py") if not _path_is_excluded(path, root))
+            files.update(path for path in _source_files(root, "*.py") if not _path_is_excluded(path, root))
     lifecycle = base / "backend" / "lifecycle.py"
     if lifecycle.is_file():
         files.add(lifecycle)
@@ -129,7 +173,7 @@ def _path_is_excluded(path: Path, root: Path) -> bool:
         parts = path.relative_to(root).parts
     except ValueError:
         return True
-    if any(part in _EXCLUDED_DIR_NAMES or part.startswith(".venv") for part in parts[:-1]):
+    if any(_directory_is_excluded(part) for part in parts[:-1]):
         return True
     lowered = path.name.lower()
     return any(part in lowered for part in _BLOCKED_FILE_NAME_PARTS)
@@ -145,7 +189,7 @@ def _scan_schemas(
     for root in roots:
         if not root.is_dir():
             continue
-        for path in sorted(root.rglob("*.py")):
+        for path in _source_files(root, "*.py"):
             if _path_is_excluded(path, root):
                 continue
             ref = _relative_ref(path, base)

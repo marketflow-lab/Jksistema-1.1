@@ -51,6 +51,7 @@ from .python_scanner import (
     _domain_from_source_path,
     _parse_python,
     _path_is_excluded,
+    _source_files,
 )
 
 
@@ -102,10 +103,10 @@ def _route_files(base: Path) -> list[Path]:
         files.append(backend_api)
     router_root = base / "backend" / "routers"
     if router_root.is_dir():
-        files.extend(sorted(router_root.rglob("*.py")))
+        files.extend(_source_files(router_root, "*.py"))
     modules_root = base / "backend" / "modules"
     if modules_root.is_dir():
-        files.extend(sorted(modules_root.rglob("router*.py")))
+        files.extend(_source_files(modules_root, "router*.py"))
     return files
 
 

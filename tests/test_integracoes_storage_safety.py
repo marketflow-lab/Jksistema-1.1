@@ -1875,3 +1875,66 @@ def test_invalid_grant_obsoleto_nao_invalida_token_reconectado(tmp_path, monkeyp
     assert resultado["refresh_token"] == "refresh-reconnected"
     assert resultado["connected"] is True
     assert resultado.get("oauth_invalid") is False
+
+
+@pytest.mark.parametrize("invalid_state", [
+    {"oauth_invalid": True},
+    {"status": "reautenticacao_necessaria"},
+])
+def test_refresh_invalidado_nao_repete_post_e_aceita_reconexao_atual(tmp_path, monkeypatch, invalid_state):
+    arquivo = _configure(tmp_path)
+    lojas = _bling_lojas()
+    lojas[0]["integracoes"]["bling"].update(invalid_state)
+    integracoes.salvar_lojas("000002", lojas)
+    snapshot = dict(lojas[0]["integracoes"]["bling"])
+    original = arquivo.read_bytes()
+    calls = []
+
+    def exchange(*_args):
+        calls.append(True)
+        return {"access_token": "access-rotated", "refresh_token": "refresh-rotated"}
+
+    monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
+    for _attempt in range(2):
+        with pytest.raises(HTTPException) as error:
+            integracoes.renovar_token_bling_loja("000002", "Loja A", snapshot, store_id=lojas[0]["store_id"])
+        assert error.value.status_code == 401
+        assert error.value.code == "bling_reconnect_required"
+    assert calls == []
+    assert arquivo.read_bytes() == original
+
+    integracoes.atualizar_api_loja("000002", "Loja A", "bling", {
+        "access_token": "access-reconnected", "refresh_token": "refresh-reconnected",
+        "connected": True, "oauth_invalid": False, "status": "conectado",
+    }, store_id=lojas[0]["store_id"])
+    current, disposition = integracoes.renovar_token_bling_loja(
+        "000002", "Loja A", snapshot, store_id=lojas[0]["store_id"], return_disposition=True)
+    assert current["access_token"] == "access-reconnected"
+    assert disposition == "reused_concurrent"
+    assert calls == []
+    renewed = integracoes.renovar_token_bling_loja(
+        "000002", "Loja A", current, store_id=lojas[0]["store_id"])
+    assert renewed["refresh_token"] == "refresh-rotated"
+    assert calls == [True]
+    assert integracoes.buscar_loja("000002", "Loja B")["integracoes"]["bling"]["refresh_token"] == "refresh-b-old"
+
+
+def test_troca_de_codigo_bling_usa_host_api_e_authorize_mantem_www(monkeypatch):
+    calls = []
+
+    class Session:
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return type("Response", (), {"status_code": 200, "json": lambda self: {"access_token": "new"}})()
+
+    monkeypatch.setattr(integracoes, "_bling_session", Session())
+    monkeypatch.setattr(integracoes, "_resolver_redirect_uri_bling", lambda **_kwargs: "https://callback.test")
+    monkeypatch.setattr(integracoes, "_resolver_redirect_uri_publica", lambda **_kwargs: "https://callback.test")
+
+    ok, payload = integracoes.auth_bling_exchange("app", "secret", "code-fixture")
+
+    assert ok and payload == {"access_token": "new"}
+    assert calls[0][0] == "https://api.bling.com.br/Api/v3/oauth/token"
+    assert calls[0][1]["data"]["grant_type"] == "authorization_code"
+    assert calls[0][1]["headers"]["enable-jwt"] == "1"
+    assert integracoes.auth_bling_get_link("app", "state").startswith("https://www.bling.com.br/Api/v3/oauth/authorize?")

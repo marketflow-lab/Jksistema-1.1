@@ -306,6 +306,23 @@ def test_provider_refresh_errors_keep_distinct_meanings(status, expected, monkey
     assert error.value.code == expected
 
 
+def test_bling_cloud_refresh_uses_official_api_host_and_keeps_jwt(monkeypatch):
+    transport = ProviderTransport()
+    calls = []
+
+    def http(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return 200, {}, b'{"access_token":"new","refresh_token":"rotated","expires_in":3600}'
+
+    monkeypatch.setattr(transport, "_http", http)
+    value = transport._token("bling", "app", "secret", {"grant_type": "refresh_token"})
+
+    assert value["refresh_token"] == "rotated"
+    assert len(calls) == 1
+    assert calls[0][:2] == ("POST", "https://api.bling.com.br/Api/v3/oauth/token")
+    assert calls[0][2]["headers"] == {"enable-jwt": "1"}
+
+
 def test_mutation_not_replayed_on_retry_or_401(central):
     owner, identity, _ = connected(central)
     central.provider.status = 401

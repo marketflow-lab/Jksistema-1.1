@@ -227,6 +227,57 @@ def test_refresh_post_unico_preserva_status(monkeypatch, response, expected_stat
     assert fake.post_calls[0][1]["timeout"] == (5, 20)
 
 
+def test_refresh_usa_endpoint_oficial_e_mantem_jwt_sem_repetir_post(monkeypatch):
+    fake = FakeSession(post_results=[FakeResponse(200, {"access_token": "new", "refresh_token": "rotated"})])
+    monkeypatch.setattr(bling_oauth, "BLING_SESSION", fake)
+
+    result = bling_oauth.exchange_bling_refresh_token("cliente", "segredo", "refresh-fixture")
+
+    assert result["refresh_token"] == "rotated"
+    assert len(fake.post_calls) == 1
+    url, options = fake.post_calls[0]
+    assert url == "https://api.bling.com.br/Api/v3/oauth/token"
+    assert options["headers"]["enable-jwt"] == "1"
+    assert options["headers"]["Authorization"].startswith("Basic ")
+    assert options["data"] == {"grant_type": "refresh_token", "refresh_token": "refresh-fixture"}
+
+
+@pytest.mark.parametrize("response", [
+    FakeResponse(400, {"error": "invalid_grant"}),
+    FakeResponse(400, {"error": {"description": "Invalid refresh token"}}),
+    FakeResponse(401, {"error": "unauthorized"}),
+])
+def test_refresh_invalido_identifica_bling_sem_alterar_detail_publico(monkeypatch, response):
+    fake = FakeSession(post_results=[response])
+    monkeypatch.setattr(bling_oauth, "BLING_SESSION", fake)
+
+    with pytest.raises(bling_oauth.BlingAuthenticationError) as error:
+        bling_oauth.exchange_bling_refresh_token("cliente", "segredo", "refresh-fixture")
+
+    assert error.value.status_code == 401
+    assert error.value.code == "bling_reconnect_required"
+    assert isinstance(error.value.detail, str)
+    assert len(fake.post_calls) == 1
+
+
+@pytest.mark.parametrize("response, expected", [
+    (FakeResponse(200, {"data": {"numero": "123"}}), ("123", 200)),
+    (FakeResponse(403), ("", 403)),
+    (None, ("", 503)),
+])
+def test_numero_nf_usa_so_host_oficial_inclusive_na_falha(monkeypatch, response, expected):
+    calls = []
+
+    def get(url, **_kwargs):
+        calls.append(url)
+        return response
+
+    monkeypatch.setattr(bling_vendas, "_bling_get_with_adaptive_limit", get)
+
+    assert bling_vendas._bling_obter_numero_nf("fixture-token", "1234") == expected
+    assert calls == ["https://api.bling.com.br/Api/v3/nfe/1234"]
+
+
 def _patch_sales_enrichments(monkeypatch):
     monkeypatch.setattr(bling_vendas, "_bling_map_canais_venda_basico", lambda token: ({}, 200))
     monkeypatch.setattr(bling_vendas, "_bling_map_lojas_virtuais", lambda token: ({}, 200))

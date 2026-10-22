@@ -1206,7 +1206,6 @@ def _bling_obter_numero_nf(access_token: str, nota_fiscal_id: str):
     headers = {"Authorization": f"Bearer {access_token}"}
     urls = [
         f"https://api.bling.com.br/Api/v3/nfe/{nota_fiscal_id}",
-        f"https://www.bling.com.br/Api/v3/nfe/{nota_fiscal_id}",
     ]
 
     def _extrair_numero_nf(obj):

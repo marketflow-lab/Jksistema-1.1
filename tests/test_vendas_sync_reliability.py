@@ -531,3 +531,95 @@ def test_legacy_exports_delegate_through_installed_adapter(monkeypatch) -> None:
 
     assert legacy._bling_listar_naturezas("token") == "delegated"
     assert calls == [("_bling_listar_naturezas", ("token",), {})]
+
+
+def test_legacy_adapter_preserva_origem_bling_do_erro_de_autorizacao(monkeypatch):
+    from backend.modules.vendas.sync_engine import _safe_failure
+    from backend.services.bling_oauth import BlingAuthenticationError
+
+    def fail(*_args, **_kwargs):
+        raise BlingAuthenticationError("Token Bling expirado.")
+
+    monkeypatch.setattr(bling_vendas, "_bling_listar_vendas", fail)
+    with pytest.raises(VendasDomainError) as error:
+        LegacyBlingVendasAdapter().call("_bling_listar_vendas", "token")
+
+    assert error.value.code == "bling_reconnect_required"
+    assert error.value.detail == "Token Bling expirado."
+    assert "Reconecte a loja em Lojas e APIs" in _safe_failure(error.value)
+    assert "login novamente" not in _safe_failure(error.value)
+    assert "Sessão da Central expirada" in _safe_failure(
+        FastAPIHTTPException(401, "Sessão da central expirada. Faça o login novamente."))
+    assert "Sessão expirada" in _safe_failure(VendasDomainError(401, "Sessão necessária."))
+
+
+def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from backend.modules.vendas import composition_sync, sync_engine, sync_queue
+    from backend.modules.vendas.sync_queue import SyncQueue
+
+    clock = [100.0]
+    original_time = sync_queue._time
+    monkeypatch.setattr(sync_queue, "_time", lambda value=None: clock[0] if value is None else original_time(value))
+    queue = SyncQueue("tenant-test", tenant_path=tmp_path)
+    cfg = {"access_token": "access-old", "refresh_token": "refresh-old", "id": "app", "secret": "secret",
+           "connected": False, "oauth_invalid": True, "status": "reautenticacao_necessaria"}
+    store = {"store_id": "store-a", "nome": "Loja A", "integracoes": {"bling": cfg}}
+    for module in (sync_engine, sync_period):
+        monkeypatch.setattr(module, "buscar_loja", lambda *_args, **_kwargs: store)
+        monkeypatch.setattr(module, "_verificar_cancelamento", lambda *_args: None)
+        monkeypatch.setattr(module, "_set_progresso", lambda *_args: None)
+        monkeypatch.setattr(module, "_criar_progresso", lambda *_args: {})
+        monkeypatch.setattr(module, "invalidate_vendas_cache", lambda *_args: None)
+    monkeypatch.setattr(sync_engine, "SyncQueue", lambda _tenant: queue)
+    monkeypatch.setattr(sync_engine, "_sync_context_key", lambda _tenant: "oauth-recovery-test")
+    monkeypatch.setattr(sync_engine, "_sync_unregister_active", lambda *_args: None)
+    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", lambda *_args: [])
+    monkeypatch.setattr(sync_engine, "collection_checkpoint", lambda *_args: nullcontext())
+    monkeypatch.setattr(sync_engine, "collection_day_summary", lambda *_args: {})
+    monkeypatch.setattr(sync_engine, "finish_collection_day", lambda *_args: None)
+    monkeypatch.setattr(sync_engine, "SYNC_META", {})
+    monkeypatch.setattr(sync_engine, "SYNC_DAY_CONTEXT", {})
+    monkeypatch.setattr(composition_sync, "sincronizar_composicoes_vendas", lambda *_args, **_kwargs: {"pending": False})
+    monkeypatch.setattr(sync_period, "_sync_log", lambda *_args: None)
+    monkeypatch.setattr(sync_period, "_carregar_mapeamento_unidades", lambda: {})
+    monkeypatch.setattr(sync_period, "_carregar_mapeamento_lojas_virtuais_cliente", lambda *_args: {})
+    monkeypatch.setattr(sync_period, "_get_vendas_db_path", lambda *_args: str(tmp_path / "sales.db"))
+    monkeypatch.setattr(sync_period, "_persistir_periodo_atomico", lambda *_args, **_kwargs: {"vendas": 0, "notas": 0, "itens": 0})
+    calls = []
+
+    def execute(_tenant, _store, config, call, **_kwargs):
+        calls.append(config["access_token"])
+        result, status = call(config["access_token"])
+        return result, status, config
+
+    monkeypatch.setattr(sync_period, "_bling_executar_com_refresh", execute)
+    monkeypatch.setattr(sync_period, "_bling_listar_vendas", lambda *_args: ([], 200))
+    monkeypatch.setattr(sync_period, "_bling_listar_vendas_fallback_nf_saida", lambda *_args: ([], 200))
+    monkeypatch.setattr(sync_period, "_bling_listar_naturezas", lambda *_args: ({}, 200))
+    monkeypatch.setattr(sync_period, "_bling_listar_notas_entrada", lambda *_args: ([], [], 200))
+    job = queue.enqueue("store-a", "Loja A", "2026-10-01", "2026-10-02", now=100)
+    queue.claim("initial", now=100)
+    queue.complete_day(job["id"], "initial", "2026-10-01", {"vendas": 2}, now=100)
+    req = VendasSyncRequest(loja="Loja A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
+
+    sync_engine._sincronizar_vendas_thread_worker(req, "tenant-test", job["id"], "initial")
+
+    failed = queue.get_job(job["id"])
+    assert failed["status"] == "retry"
+    assert failed["dias_concluidos"] == ["2026-10-01"]
+    assert failed["resultados_dias"]["2026-10-01"] == {"vendas": 2}
+    assert "Reconecte a loja em Lojas e APIs" in failed["last_error"]
+    assert calls == []
+
+    cfg.update(connected=True, oauth_invalid=False, status="conectado", access_token="access-reconnected")
+    clock[0] = failed["next_attempt"]
+    resumed = queue.claim("automatic-retry")
+    assert resumed["id"] == job["id"]
+    sync_engine._sincronizar_vendas_thread_worker(req, "tenant-test", job["id"], "automatic-retry")
+
+    completed = queue.get_job(job["id"])
+    assert completed["status"] == "complete"
+    assert completed["dias_concluidos"] == ["2026-10-01", "2026-10-02"]
+    assert completed["resultados_dias"]["2026-10-01"] == {"vendas": 2}
+    assert calls == ["access-reconnected"] * 4

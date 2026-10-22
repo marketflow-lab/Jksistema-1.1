@@ -27,7 +27,10 @@ from urllib.parse import quote, quote_plus, urlencode
 import requests
 from fastapi import HTTPException
 
-from backend.services.bling_oauth import exchange_bling_refresh_token
+from backend.services.bling_oauth import (
+    BLING_TOKEN_URL, BlingAuthenticationError, exchange_bling_refresh_token,
+    requires_bling_reauthorization,
+)
 from backend.services.cadastro_fotos_coordenacao import (
     CadastroFotosCoordenacaoErro,
     bloquear_transicao_fotos_tenant,
@@ -3211,6 +3214,10 @@ def renovar_token_bling_loja(
         _tenant_path(client_id), store_id_exato, "bling"
     ):
         atual = _bling_config_atual(client_id, nome_loja, store_id_exato)
+        if requires_bling_reauthorization(atual):
+            raise BlingAuthenticationError(
+                "A conexao Bling desta loja precisa ser refeita em Lojas e APIs."
+            )
         refresh_atual = str(atual.get("refresh_token") or "").strip()
         access_atual = str(atual.get("access_token") or "").strip()
         updated_at_atual = str(atual.get("updated_at") or "").strip()
@@ -3234,9 +3241,8 @@ def renovar_token_bling_loja(
         updated_at_usado = str(base.get("updated_at") or "").strip()
         sync_version_usada = base.get("_sync_version")
         if not (client_oauth_id and client_secret and refresh_usado):
-            raise HTTPException(
-                status_code=401,
-                detail="Credenciais Bling incompletas. Refaca a conexao em Integracoes.",
+            raise BlingAuthenticationError(
+                "Credenciais Bling incompletas. Refaca a conexao em Integracoes.",
             )
 
         try:
@@ -3558,7 +3564,7 @@ def auth_bling_get_link(client_id, state, redirect_uri=None):
 
 
 def auth_bling_exchange(client_id, client_secret, code, redirect_uri=None):
-    url = "https://www.bling.com.br/Api/v3/oauth/token"
+    url = BLING_TOKEN_URL
     credential = f"{client_id}:{client_secret}"
     headers = {
         "Authorization": f"Basic {base64.b64encode(credential.encode()).decode()}",

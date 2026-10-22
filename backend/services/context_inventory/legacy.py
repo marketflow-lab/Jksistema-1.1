@@ -44,7 +44,7 @@ from .entities import (
     _entity,
 )
 
-from .python_scanner import _path_is_excluded
+from .python_scanner import _path_is_excluded, _source_files
 
 
 
@@ -52,7 +52,7 @@ def _legacy_files(base: Path) -> list[Path]:
     paths: set[Path] = set(base.glob("*.md"))
     docs = base / "docs"
     if docs.is_dir():
-        paths.update(path for path in docs.rglob("*.md") if "knowledge" not in path.relative_to(docs).parts)
+        paths.update(_source_files(docs, "*.md", excluded_dirs=("knowledge",)))
     return sorted(paths, key=lambda item: _relative_ref(item, base))
 
 

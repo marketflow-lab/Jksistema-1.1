@@ -11,6 +11,22 @@ from fastapi import HTTPException
 from backend.services.bling import BLING_SESSION
 
 
+BLING_TOKEN_URL = "https://api.bling.com.br/Api/v3/oauth/token"
+
+
+class BlingAuthenticationError(HTTPException):
+    """Keep the public detail while identifying provider authorization internally."""
+
+    code = "bling_reconnect_required"
+
+    def __init__(self, detail: str):
+        super().__init__(status_code=401, detail=detail)
+
+
+def requires_bling_reauthorization(config: dict) -> bool:
+    return bool(config.get("oauth_invalid")) or config.get("status") == "reautenticacao_necessaria"
+
+
 def _oauth_error_fields(response) -> tuple[str, str, str]:
     try:
         payload = response.json() or {}
@@ -39,7 +55,7 @@ def _retry_after_headers(response) -> dict[str, str] | None:
 
 def exchange_bling_refresh_token(client_id: str, client_secret: str, refresh_token: str) -> dict[str, Any]:
     """Executa exatamente um POST de refresh e preserva a classe do erro HTTP."""
-    url = "https://www.bling.com.br/Api/v3/oauth/token"
+    url = BLING_TOKEN_URL
     credential = f"{client_id}:{client_secret}"
     headers = {
         "Authorization": f"Basic {base64.b64encode(credential.encode()).decode()}",
@@ -71,12 +87,11 @@ def exchange_bling_refresh_token(client_id: str, client_secret: str, refresh_tok
         or error_message == "invalid_grant"
         or "invalid refresh token" in error_description
     ):
-        raise HTTPException(
-            status_code=401,
-            detail="Token Bling expirado para esta loja. Refaca a conexao em Integracoes para continuar.",
+        raise BlingAuthenticationError(
+            "Token Bling expirado para esta loja. Refaca a conexao em Integracoes para continuar.",
         )
     if response.status_code == 401:
-        raise HTTPException(status_code=401, detail="Credenciais Bling invalidas. Refaca a conexao em Integracoes.")
+        raise BlingAuthenticationError("Credenciais Bling invalidas. Refaca a conexao em Integracoes.")
     if response.status_code == 429:
         raise HTTPException(
             status_code=429,
@@ -91,4 +106,4 @@ def exchange_bling_refresh_token(client_id: str, client_secret: str, refresh_tok
     )
 
 
-__all__ = ["exchange_bling_refresh_token"]
+__all__ = ["BLING_TOKEN_URL", "BlingAuthenticationError", "requires_bling_reauthorization", "exchange_bling_refresh_token"]

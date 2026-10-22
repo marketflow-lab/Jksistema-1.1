@@ -117,8 +117,9 @@ class ProviderTransport:
 
     def _token(self, provider, app_id, app_secret, form):
         if provider == "bling":
-            url = "https://www.bling.com.br/Api/v3/oauth/token"
-            kwargs = {"auth": (app_id, app_secret), "data": form}
+            url = "https://api.bling.com.br/Api/v3/oauth/token"
+            kwargs = {"auth": (app_id, app_secret), "data": form,
+                      "headers": {"enable-jwt": "1"}}
         else:
             url = BASES[provider] + "/oauth/token"
             kwargs = {"data": {**form, "client_id": app_id, "client_secret": app_secret}}

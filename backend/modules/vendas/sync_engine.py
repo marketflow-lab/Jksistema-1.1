@@ -77,6 +77,10 @@ def sincronizar_vendas(req: VendasSyncRequest, client_id: str):
 
 def _safe_failure(exc):
     status = getattr(exc, "status_code", 500)
+    if status == 401 and getattr(exc, "code", None) == "bling_reconnect_required":
+        return "A conexão Bling precisa de nova autorização. Reconecte a loja em Lojas e APIs para retomar as pendências."
+    if status == 401 and "central" in str(getattr(exc, "detail", "")).lower():
+        return "Sessão da Central expirada. Faça login novamente para continuar as pendências."
     messages = {
         400: "Configuração da integração incompleta. Verifique a conexão da loja.",
         401: "Sessão expirada. Faça login novamente para continuar as pendências.",

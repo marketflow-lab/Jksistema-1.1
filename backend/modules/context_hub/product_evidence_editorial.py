@@ -35,6 +35,7 @@ from backend.modules.context_hub.product_evidence_model import (
     _registrable_domain,
     _reject_sensitive,
     _source_fingerprint,
+    normalize_product_evidence_value,
 )
 from backend.modules.context_hub.product_evidence_rendering import (
     PRODUCT_EVIDENCE_EDITORIAL_ROOT,
@@ -183,7 +184,15 @@ def _new_fact(row: Mapping[str, Any], key: tuple[str, str, str, str]) -> dict[st
 def _merge_fact_row(fact: dict[str, Any], row: Mapping[str, Any]) -> None:
     value = _safe_short_text(row.get("normalized_value"), label="Valor", maximum=256)
     if value != fact["value"]:
-        raise ContextHubValidationError("Afirmacoes equivalentes divergiram na projecao editorial.")
+        # The persisted comparison key intentionally ignores case and accents.
+        # Equivalent display forms from separate batches must share their
+        # evidence, while a forged key must still fail closed.
+        expected = (fact["normalized_key"], fact["unit"])
+        for display in (fact["value"], value):
+            normalized = normalize_product_evidence_value(display, unit=fact["unit"])
+            if (normalized.key, normalized.unit) != expected:
+                raise ContextHubValidationError("Afirmacoes equivalentes divergiram na projecao editorial.")
+        fact["value"] = min(fact["value"], value)
     source = _normalized_source(row)
     if source is not None:
         source_key = (

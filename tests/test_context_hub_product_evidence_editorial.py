@@ -250,6 +250,48 @@ def test_snapshot_and_paths_ignore_row_ids_and_insertion_order() -> None:
     assert all(path.startswith(PRODUCT_EVIDENCE_EDITORIAL_ROOT + "/") for path in first_files)
 
 
+def test_equivalent_display_forms_merge_sources_without_changing_claims() -> None:
+    results = []
+    for values in (("Alumínio", "aluminio"), ("aluminio", "Alumínio")):
+        connection = _database()
+        for value in values:
+            seed = "accented" if value == "Alumínio" else "plain"
+            batch_id = _batch(connection, seed)
+            source_id = _source(connection, batch_id, seed)
+            _claim(connection, batch_id, seed, [source_id],
+                   field_name="construction.material", value=value)
+        connection.execute("UPDATE product_evidence_claims SET normalized_key='aluminio'")
+        connection.commit()
+        before = connection.serialize()
+        snapshot, (_documents, files, findings) = _render(connection)
+        fact = snapshot["identities"][0]["facts"][0]
+        assert fact["value"] == "Alumínio"
+        assert fact["state"] == "verified"
+        assert len(fact["sources"]) == 2
+        assert len(fact["supporting_sources"]) == 2
+        assert findings == []
+        assert connection.serialize() == before
+        results.append((snapshot["snapshot_hash"], snapshot["projection_hash"], files))
+        connection.close()
+    assert results[0] == results[1]
+
+
+def test_different_measurements_with_a_forged_comparison_key_still_fail_closed() -> None:
+    connection = _database()
+    for seed, value in (("low", "12"), ("high", "24")):
+        batch_id = _batch(connection, seed)
+        source_id = _source(connection, batch_id, seed)
+        _claim(connection, batch_id, seed, [source_id],
+               field_name="electrical.voltage", value=value, unit="V")
+    connection.execute("UPDATE product_evidence_claims SET normalized_key='12'")
+    connection.commit()
+    before = connection.serialize()
+    with pytest.raises(ContextHubValidationError, match="divergiram"):
+        _render(connection)
+    assert connection.serialize() == before
+    connection.close()
+
+
 def test_two_independent_sources_set_valid_from_at_second_origin_and_copy_is_ignored() -> None:
     connection = _database()
     batch_id = _batch(connection, "technical")

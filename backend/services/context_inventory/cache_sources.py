@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from .legacy import _legacy_files, _source_version
-from .python_scanner import _path_is_excluded, _python_files
+from .python_scanner import _path_is_excluded, _python_files, _source_files
 from .route_scanner import _route_files
 from .security import _read_text, _safe_resolve
 from .surface_scanner import (
@@ -48,10 +48,7 @@ def _static_source_files(base: Path) -> dict[Path, bool]:
     files.update({path: True for path in _route_files(base) if not _path_is_excluded(path, base)})
     schemas = base / "backend" / "schemas"
     if schemas.is_dir():
-        files.update({p: True for p in schemas.rglob("*.py") if not _path_is_excluded(p, schemas)})
-    modules = base / "backend" / "modules"
-    if modules.is_dir():
-        files.update({p: True for p in modules.rglob("*.py") if not _path_is_excluded(p, modules)})
+        files.update({p: True for p in _source_files(schemas, "*.py") if not _path_is_excluded(p, schemas)})
     static = base / "static"
     if static.is_dir():
         for page in static.glob("*.html"):
@@ -63,7 +60,7 @@ def _static_source_files(base: Path) -> dict[Path, bool]:
                 if script is not None and script.suffix.lower() == ".js":
                     _validate_source_path(original_script, base)
                     files[script] = True
-        files.update({p: True for p in static.rglob("*.js") if not _path_is_excluded(p, static)})
+        files.update({p: True for p in _source_files(static, "*.js") if not _path_is_excluded(p, static)})
     files.update({p: True for p in _test_files(base)})
     for _slug, _title, paths in _integration_specs(base):
         files.update({p: True for p in paths})

@@ -273,6 +273,37 @@ def test_ready_generation_cannot_publish_after_evidence_changes(
     assert active is None
 
 
+def test_equivalent_material_research_can_publish_and_ack_pending_revision(generation_env: Path) -> None:
+    for seed, value in (("material-accented", "Alumínio"), ("material-plain", "aluminio")):
+        _seed_verified_fact(generation_env, field_name="construction.material", value=value, seed=seed)
+    paths = _tenant_paths(CLIENT_ID, info_root=generation_env)
+    with storage._connect(paths) as connection:
+        claims_before = [tuple(row) for row in connection.execute(
+            "SELECT claim_id, normalized_value, normalized_key, state FROM product_evidence_claims ORDER BY claim_id"
+        )]
+    ready = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    assert ready["success"] and ready["status"] == "ready"
+    repeated = context_hub.rebuild_context(CLIENT_ID, info_root=generation_env)
+    assert repeated["success"] and repeated["idempotent"]
+    assert repeated["generation_id"] == ready["generation_id"]
+    published = context_hub.publish_generation(CLIENT_ID, ready["generation_id"], info_root=generation_env)
+    assert published["status"] == "active"
+    with storage._connect(paths) as connection:
+        outbox = connection.execute(
+            "SELECT requested_revision, completed_revision, completed_generation_id, last_error_code "
+            "FROM context_hub_product_evidence_outbox WHERE singleton_id=1"
+        ).fetchone()
+        claims_after = [tuple(row) for row in connection.execute(
+            "SELECT claim_id, normalized_value, normalized_key, state FROM product_evidence_claims ORDER BY claim_id"
+        )]
+        failed = connection.execute("SELECT count(*) FROM context_hub_generations WHERE status='failed'").fetchone()[0]
+    assert outbox["completed_revision"] == outbox["requested_revision"] > 0
+    assert outbox["completed_generation_id"] == ready["generation_id"]
+    assert outbox["last_error_code"] == ""
+    assert claims_after == claims_before
+    assert failed == 0
+
+
 def test_product_facts_require_exact_store_seller_site_item_and_variation(
     generation_env: Path,
 ) -> None:

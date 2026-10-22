@@ -942,6 +942,18 @@
     "local_app/backend/modules/cofre/storage.py"
   ],
   "requiredPackagedSourceParity": [
+    "backend/modules/context_hub/product_evidence_editorial.py",
+    "backend/modules/vendas/dependencies.py",
+    "backend/modules/vendas/errors.py",
+    "backend/modules/vendas/sync_engine.py",
+    "backend/services/bling_oauth.py",
+    "backend/services/context_inventory/cache_sources.py",
+    "backend/services/context_inventory/contracts.py",
+    "backend/services/context_inventory/legacy.py",
+    "backend/services/context_inventory/python_scanner.py",
+    "backend/services/context_inventory/route_scanner.py",
+    "backend/services/context_inventory/surface_scanner.py",
+    "backend/services/integracoes.py",
     "backend/modules/vendas/analytics.py",
     "backend/modules/vendas/legacy_duplicates.py",
     "backend/modules/vendas/performance.py",

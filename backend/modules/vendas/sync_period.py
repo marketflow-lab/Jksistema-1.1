@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.schemas import VendasSyncRequest
+from backend.services.bling_oauth import requires_bling_reauthorization
 from backend.services.sqlite_coordination import configure_sqlite_connection, sqlite_lock_for_path
 
 from .errors import VendasDomainError as HTTPException
@@ -282,6 +283,7 @@ def _raise_for_bling_status(status: Any, contexto: str) -> None:
         raise HTTPException(
             status_code=401,
             detail="Token Bling expirado. Refaça a conexão em Integrações.",
+            code="bling_reconnect_required",
         )
     if status_code == 429:
         raise HTTPException(
@@ -1027,6 +1029,12 @@ async def _sincronizar_vendas_periodo_impl(
     bling_cfg = loja.get("integracoes", {}).get("bling")
     if not bling_cfg:
         raise HTTPException(status_code=400, detail="Loja não possui integração Bling conectada.")
+    if requires_bling_reauthorization(bling_cfg):
+        raise HTTPException(
+            status_code=401,
+            detail="A conexão Bling desta loja precisa ser refeita em Lojas e APIs.",
+            code="bling_reconnect_required",
+        )
     if not (
         bling_cfg.get("access_token")
         and (bling_cfg.get("central") or (bling_cfg.get("id") and bling_cfg.get("secret")))

@@ -10,6 +10,28 @@ from backend.services import central_accounts_migration as migration
 from backend.services import integracoes
 
 
+def test_legacy_bling_refresh_uses_official_host_and_preserves_jwt(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "new", "refresh_token": "rotated", "expires_in": 3600}
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(migration, "_request", request)
+    value = migration._refresh("bling", {"app_id": "app", "app_secret": "secret", "refresh_token": "old"})
+
+    assert value["refresh_token"] == "rotated"
+    assert len(calls) == 1
+    assert calls[0][:2] == ("POST", "https://api.bling.com.br/Api/v3/oauth/token")
+    assert calls[0][2]["headers"]["enable-jwt"] == "1"
+
+
 def stores_fixture(count=11):
     stores = []
     for index in range(count):

@@ -59,20 +59,29 @@ _INFRA_SUFFIXES = {
 }
 
 _EXCLUDED_DIR_NAMES = {
+    ".cache",
+    ".gradle",
     ".git",
     ".obsidian",
+    ".pytest_cache",
     ".venv",
+    ".worktrees",
     "__pycache__",
     "build",
     "coverage",
     "dist",
+    "dist-client",
     "dist-client-setup",
     "logs",
     "node_modules",
+    "private-release",
+    "release-artifacts",
     "test-results",
     "context_hub",
     "ContextVault",
 }
+
+_EXCLUDED_DIR_PREFIXES = (".venv", "dist-client-", ".pytest_tmp", ".pytest-tmp")
 
 _BLOCKED_FILE_NAME_PARTS = (
     ".env",

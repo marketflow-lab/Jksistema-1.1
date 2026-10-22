@@ -205,7 +205,7 @@ def _refresh(provider: str, values: dict) -> dict:
             "client_secret": values["app_secret"], "refresh_token": values["refresh_token"]}}
     else:
         from requests.auth import HTTPBasicAuth
-        url = "https://www.bling.com.br/Api/v3/oauth/token"
+        url = "https://api.bling.com.br/Api/v3/oauth/token"
         kwargs = {"auth": HTTPBasicAuth(values["app_id"], values["app_secret"]),
                   "headers": {"Accept": "application/json", "enable-jwt": "1"},
                   "data": {"grant_type": "refresh_token", "refresh_token": values["refresh_token"]}}

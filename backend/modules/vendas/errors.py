@@ -6,11 +6,13 @@ from typing import Any
 
 
 class VendasDomainError(Exception):
-    def __init__(self, status_code: int, detail: Any, headers: dict[str, str] | None = None):
+    def __init__(self, status_code: int, detail: Any, headers: dict[str, str] | None = None,
+                 *, code: str | None = None):
         super().__init__(str(detail))
         self.status_code = int(status_code)
         self.detail = detail
         self.headers = headers
+        self.code = code
 
 
 __all__ = ["VendasDomainError"]

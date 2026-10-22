@@ -188,6 +188,73 @@ def test_inventory_source_root_is_validated_before_resolving_a_junction(tmp_path
     _static_source_signature(tmp_path)
 
 
+@pytest.mark.parametrize("relative", [
+    "backend/services/node_modules", "backend/modules/build", "backend/schemas/.cache",
+    "backend/routers/dist", "static/node_modules", "tests/.pytest_cache", "scripts/.cache",
+    "docs/dist-client-update", "electron_app/dist-client-update", "electron_app/dist-client-final",
+    "electron_app/dist-client-staging-release", "electron_app/dist-client-setup-next",
+    "android_app/.gradle", "cloudflare/.cache", "cloudflare_workers/node_modules",
+    "infra/release-artifacts",
+])
+def test_inventory_prunes_generated_trees_before_scanning(inventory_env, monkeypatch, relative):
+    base, info, _cache, builds = inventory_env
+    expected = _build(base, info)
+    signature = _static_source_signature(base)
+    artifact = base / relative
+    artifact.mkdir(parents=True)
+    for filename in ("router_fake.py", "test_fake.py", "fake.js", "fake.md", "fake.json"):
+        (artifact / filename).write_text("generated artifact", encoding="utf-8")
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        if Path(path).is_relative_to(artifact):
+            pytest.fail("Excluded artifact tree was traversed.")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    assert _static_source_signature(base) == signature
+    assert _build(base, info) == expected
+    assert len(builds) == 1
+    # Exercise scanners as well as the signature of an already cached inventory.
+    with _inventory_cache_bypass(True):
+        assert _build(base, info) == expected
+    assert len(builds) == 2
+
+
+@pytest.mark.parametrize("kind", ["directory", "file"])
+@pytest.mark.parametrize("redirect_type", ["symlink", "junction"])
+def test_inventory_rejects_nested_redirects_without_entering_or_reading_them(tmp_path, monkeypatch, kind, redirect_type):
+    root = tmp_path / "electron_app"
+    root.mkdir()
+    redirect = root / ("redirect" if kind == "directory" else "redirect.js")
+    if kind == "directory":
+        redirect.mkdir()
+        (redirect / "main.js").write_text("outside content", encoding="utf-8")
+    else:
+        redirect.write_text("outside content", encoding="utf-8")
+    if redirect_type == "junction":
+        monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == redirect, raising=False)
+    else:
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(Path, "is_symlink", lambda path: path == redirect or original_is_symlink(path))
+    original_scandir, original_open = os.scandir, Path.open
+
+    def guarded_scandir(path):
+        if Path(path).is_relative_to(redirect):
+            pytest.fail("Redirected source tree was traversed.")
+        return original_scandir(path)
+
+    def guarded_open(path, *args, **kwargs):
+        if path.is_relative_to(redirect):
+            pytest.fail("Redirected source content was read.")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    with pytest.raises(ValueError, match="links or junctions"):
+        _static_source_signature(tmp_path)
+
+
 def test_rebuild_force_recomputes_static_inventory_without_changing_public_signature(inventory_env):
     from backend.modules.context_hub import generations
     from backend.modules.context_hub.state import CONTEXT_HUB_STATE

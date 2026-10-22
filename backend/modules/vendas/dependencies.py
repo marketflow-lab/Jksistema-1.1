@@ -70,6 +70,7 @@ def _translate_fastapi_http_exception(exc: Exception) -> None:
         status_code=getattr(exc, "status_code", 500),
         detail=getattr(exc, "detail", str(exc)),
         headers=getattr(exc, "headers", None),
+        code=getattr(exc, "code", None),
     ) from exc
 
 
