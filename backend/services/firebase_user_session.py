@@ -257,7 +257,7 @@ class FirebaseUserSession:
         finally:
             # Retain a pending bootstrap only in memory while a transient
             # certificate/connection failure prevents Credentials creation.
-            # A status retry revalidates the original signed expiry deadlines.
+            # A profile retry revalidates the original signed expiry deadlines.
             if self._credentials is not None or self._code != "connection_failed":
                 self._access = {}
 
@@ -273,6 +273,14 @@ class FirebaseUserSession:
         return self._db
 
     def profile(self):
+        # Permission checks must recover a pending bootstrap too: normal app
+        # operations do not visit the Firebase status page. Retry once under
+        # the same lock used by login/revocation, with the original signed access.
+        # _connect's nested profile call already has credentials, so it cannot
+        # start a second bootstrap attempt.
+        with self._lock:
+            if self._code == "connection_failed" and self._credentials is None and self._access:
+                self._connect()
         self._check()
         try:
             snapshot = self._db.collection("jk_sistema_firebase_grants").document(self._credentials._grant_id).get(timeout=_TIMEOUT, retry=None)
@@ -293,9 +301,6 @@ class FirebaseUserSession:
             raise FirebaseSessionError(self._code) from None
 
     def status(self):
-        with self._lock:
-            if self._code == "connection_failed" and self._credentials is None and self._access:
-                self._connect()
         try:
             self.profile()
         except FirebaseSessionError:

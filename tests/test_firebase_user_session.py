@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context
+from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -222,6 +224,84 @@ def test_status_retries_initial_certificate_outage_and_erases_pending_copy(setup
     assert session._access == {}
     assert setup.verify.call_count == 2
     assert "private" not in repr(result)
+
+
+def test_permission_profile_recovers_pending_connection_without_status_page(setup):
+    setup.verify.side_effect = [TimeoutError("certificates unavailable"), setup.claims]
+    session = login(setup)
+    assert session._code == "connection_failed"
+    assert session._credentials is None
+    profile = session.profile()
+    assert profile["client_id"] == IDENTITY["client_id"]
+    assert profile["permissions"] == {"cadastro": True}
+    assert session._code == "ready"
+    assert setup.verify.call_count == 2
+    assert session._access == {}
+
+
+def test_permission_retry_still_unavailable_is_bounded_and_preserves_pending_access(setup):
+    setup.verify.side_effect = TimeoutError("private connection details")
+    session = login(setup)
+    with pytest.raises(service.FirebaseSessionError) as exc:
+        session.profile()
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "connection_failed"
+    assert setup.verify.call_count == 2
+    assert session._access == setup.access
+    setup.getter.assert_not_called()
+    assert "private" not in str(exc.value)
+
+
+def test_concurrent_permission_checks_share_one_successful_bootstrap(setup):
+    setup.verify.side_effect = [TimeoutError("certificates unavailable"), setup.claims]
+    session = login(setup)
+    barrier = Barrier(4)
+
+    def permission_check(_):
+        barrier.wait(timeout=5)
+        return session.profile()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        profiles = list(executor.map(permission_check, range(4)))
+    assert all(profile["client_id"] == IDENTITY["client_id"] for profile in profiles)
+    assert setup.verify.call_count == 2
+    assert session._code == "ready"
+    assert session._access == {}
+
+
+@pytest.mark.parametrize("deadline", ["expires_at", "session_expires_at"])
+def test_permission_retry_never_extends_original_signed_deadline(setup, deadline):
+    setup.verify.side_effect = TimeoutError("certificates unavailable")
+    session = login(setup)
+    session._access[deadline] = int(service.time.time()) - 1
+    with pytest.raises(service.FirebaseSessionError) as exc:
+        session.profile()
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "session_expired"
+    assert setup.verify.call_count == 1
+    assert session._access == {}
+    setup.getter.assert_not_called()
+
+
+@pytest.mark.parametrize("invalid", ["token", "grant", "revoked"])
+def test_permission_recovery_does_not_accept_invalid_identity_or_revocation(setup, invalid):
+    setup.verify.side_effect = [TimeoutError("certificates unavailable"), setup.claims]
+    session = login(setup)
+    if invalid == "token":
+        setup.claims["jk_client_id"] = "another-tenant"
+    elif invalid == "grant":
+        setup.grant["profile"]["machine_ids"] = ["another-machine"]
+    else:
+        session.revoke()
+    with pytest.raises(service.FirebaseSessionError) as exc:
+        session.profile()
+    assert exc.value.status_code == 401
+    assert session._access == {}
+    assert session._code == "session_expired"
+    if invalid != "grant":
+        setup.getter.assert_not_called()
+    if invalid == "revoked":
+        assert setup.verify.call_count == 1
 
 
 @pytest.mark.parametrize("replace_login", [False, True])

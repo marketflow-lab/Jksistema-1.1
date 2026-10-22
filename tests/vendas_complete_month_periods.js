@@ -261,7 +261,7 @@ assert.strictEqual(dadosCompactados.series[0].at(-1), 319, 'séries devem preser
 
 assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
 assert.match(htmlStatic, /periodo-cache\.js\?v=20261022-vendas-bling-lote-v1/);
-assert.match(htmlStatic, /sync\.js\?v=20261022-vendas-bling-lote-v1/);
+assert.match(htmlStatic, /sync\.js\?v=20261022-vendas-firebase-sessao-v1/);
 assert.match(htmlStatic, /dados-render\.js\?v=20261022-vendas-bling-lote-v1/);
 assert.match(htmlStatic, /grafico\.js\?v=20261022-vendas-bling-lote-v1/);
 assert.match(htmlStatic, /init\.js\?v=20261022-vendas-bling-lote-v1/);

@@ -209,3 +209,147 @@ def test_scoped_password_change_refreshes_credentials_under_same_local_token(run
     register.assert_called_once_with(token, remote)
     assert change_password.call_args.kwargs["machine_id"] == "pc:um"
     assert "private" not in repr(response)
+
+
+@pytest.fixture
+def pending_firebase_sales_sync(runtime, monkeypatch, tmp_path):
+    from backend.modules.vendas import sync_automation, sync_engine
+    from backend.modules.vendas.router import create_vendas_router
+    from backend.modules.vendas.state import VendasSyncState
+    from backend.modules.vendas.sync_queue import SyncQueue
+    from backend.modules.vendas.sync_service import VendasSyncService
+
+    now = int(sessions.time.time())
+    access = {"protocol": 1, "project_id": "project-safe", "grant_id": "a" * 64,
+              "id_token": "synthetic-id-token", "refresh_token": "synthetic-refresh-token",
+              "api_key": "synthetic-api-key", "expires_at": now + 3500,
+              "session_expires_at": now + 28000}
+    claims = {"aud": access["project_id"], "iss": "https://securetoken.google.com/project-safe",
+              "sub": sessions.expected_uid(IDENTITY["username"]), "jk_firebase_v": 1,
+              "jk_firebase_grant": access["grant_id"], "jk_client_id": IDENTITY["client_id"],
+              "jk_username": IDENTITY["username"],
+              "jk_machine_hash": sessions.machine_hash(IDENTITY["machine_id"]), "exp": now + 3600}
+    grant = {**IDENTITY, "uid": claims["sub"], "profile": {
+        **IDENTITY, "permissions": {"vendas": True}, "active": True,
+        "machine_ids": [IDENTITY["machine_id"]]}}
+    verifier = Mock(side_effect=TimeoutError("synthetic certificate outage"))
+    monkeypatch.setattr(sessions, "_verify_token", verifier)
+    db = Mock()
+    db.collection.return_value.document.return_value.get.return_value = SimpleNamespace(
+        exists=True, to_dict=lambda: grant)
+    monkeypatch.setattr(sessions, "UserFirestoreClient", Mock(return_value=db))
+    token = runtime["criar_access_token"]("usuario", "empresa-a", "pc:um", firebase_user=True)
+    session = sessions.register_login(token, SimpleNamespace(success=True, user_data=IDENTITY,
+                                                           firebase_access=access))
+    assert session._code == "connection_failed"
+    assert session._credentials is None
+
+    def deny_fallback(*args, **kwargs):
+        pytest.fail("Firebase user authorization must not fall back to Admin or cached permissions")
+
+    monkeypatch.setattr(common, "_firebase_deve_usar", firebase._firebase_deve_usar, raising=False)
+    monkeypatch.setattr(common, "_firebase_obter_usuario", firebase._firebase_obter_usuario, raising=False)
+    monkeypatch.setattr(common, "_normalizar_permissoes", lambda value: dict(value), raising=False)
+    for name in ("carregar_usuarios_sheets", "_carregar_usuarios_sql", "_carregar_cache_usuarios",
+                 "_carregar_usuarios_local"):
+        monkeypatch.setattr(common, name, deny_fallback, raising=False)
+    for name in ("_firebase_collection", "_firebase_credencial"):
+        monkeypatch.setattr(firebase, name, deny_fallback)
+    auth_scope = backend_functions("get_tenant_id", namespace={
+        **runtime, "asyncio": asyncio, "Header": Header, "logger": Mock(),
+        "_permissao_exigida_por_rota": common._permissao_exigida_por_rota,
+        "_carregar_permissoes_usuario": common._carregar_permissoes_usuario,
+        "_permissoes_autorizam_rota": common._permissoes_autorizam_rota,
+        "_normalizar_permissoes_exigidas": common._normalizar_permissoes_exigidas,
+        "_machine_presence_auto_touch": Mock(),
+    })
+    queue = SyncQueue(IDENTITY["client_id"], tenant_path=tmp_path / IDENTITY["client_id"])
+    enqueue = Mock(wraps=queue.enqueue)
+    monkeypatch.setattr(queue, "enqueue", enqueue)
+    queue_factory = Mock(return_value=queue)
+    monkeypatch.setattr(sync_engine, "SyncQueue", queue_factory)
+
+    def find_store(client_id, name, *, store_id):
+        assert client_id == IDENTITY["client_id"]
+        return {"nome": name, "store_id": store_id}
+
+    store_lookup = Mock(side_effect=find_store)
+    monkeypatch.setattr(sync_engine, "buscar_loja", store_lookup)
+    for name in ("start", "stop", "remember_authorization", "dispatch"):
+        monkeypatch.setattr(sync_automation, name, Mock())
+    app = app_with_production_middleware(runtime)
+    app.include_router(create_vendas_router(Mock(), VendasSyncService(VendasSyncState()),
+                                            SimpleNamespace(get_tenant_id=auth_scope["get_tenant_id"])))
+    with TestClient(app) as client:
+        yield SimpleNamespace(client=client, session=session, verifier=verifier, claims=claims,
+                              grant=grant, headers={"Authorization": f"Bearer {token}"},
+                              queue=queue, enqueue=enqueue, queue_factory=queue_factory,
+                              store_lookup=store_lookup, db=db)
+
+
+def sales_sync_request(number=0):
+    return {"loja": f"Loja {number:02}", "store_id": f"store-{number:02}",
+            "data_inicio": "2026-10-01", "data_fim": "2026-10-02", "automatico": True}
+
+
+def test_sales_sync_recovers_firebase_before_registering_one_durable_job(pending_firebase_sales_sync):
+    state = pending_firebase_sales_sync
+    for number in range(11):
+        response = state.client.post("/api/vendas/sync", headers=state.headers,
+                                     json=sales_sync_request(number))
+        assert response.status_code == 503
+        assert response.json() == {"detail": "connection_failed"}
+    state.enqueue.assert_not_called()
+    state.queue_factory.assert_not_called()
+    state.store_lookup.assert_not_called()
+    assert state.queue.list_jobs() == []
+
+    state.verifier.side_effect = None
+    state.verifier.return_value = state.claims
+    response = state.client.post("/api/vendas/sync", headers=state.headers, json=sales_sync_request())
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+    state.enqueue.assert_called_once()
+    state.queue_factory.assert_called_once_with(IDENTITY["client_id"])
+    assert state.session._code == "ready"
+    assert state.session._access == {}
+    jobs = state.queue.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["store_id"] == "store-00"
+    assert jobs[0]["status"] == "queued"
+
+    duplicate = state.client.post("/api/vendas/sync", headers=state.headers, json=sales_sync_request())
+    assert duplicate.status_code == 200
+    assert duplicate.json()["job_id"] == response.json()["job_id"]
+    assert len(state.queue.list_jobs()) == 1
+    assert sessions.current() is None
+
+
+def test_sales_sync_recovery_still_requires_sales_permission(pending_firebase_sales_sync):
+    state = pending_firebase_sales_sync
+    state.grant["profile"]["permissions"] = {"cadastro": True, "vendas": False}
+    state.verifier.side_effect = None
+    state.verifier.return_value = state.claims
+    response = state.client.post("/api/vendas/sync", headers=state.headers, json=sales_sync_request())
+    assert response.status_code == 403
+    assert state.session._code == "ready"
+    state.enqueue.assert_not_called()
+    state.queue_factory.assert_not_called()
+    state.store_lookup.assert_not_called()
+    assert state.queue.list_jobs() == []
+
+
+def test_sales_sync_cannot_revive_expired_pending_firebase_grant(pending_firebase_sales_sync):
+    state = pending_firebase_sales_sync
+    state.session._access["session_expires_at"] = int(sessions.time.time()) - 1
+    before = state.verifier.call_count
+    state.verifier.side_effect = None
+    state.verifier.return_value = state.claims
+    response = state.client.post("/api/vendas/sync", headers=state.headers, json=sales_sync_request())
+    assert response.status_code == 401
+    assert response.json() == {"detail": "session_expired"}
+    assert state.verifier.call_count == before
+    state.enqueue.assert_not_called()
+    state.queue_factory.assert_not_called()
+    state.store_lookup.assert_not_called()
+    assert state.queue.list_jobs() == []

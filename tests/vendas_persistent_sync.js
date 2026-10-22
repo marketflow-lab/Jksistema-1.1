@@ -22,6 +22,7 @@ function setup(options = {}) {
     elements.syncAutomatico.checked = true;
     const calls = [];
     const events = {};
+    let refreshCount = 0;
     let payload = options.payload || { active: false, automacao: { lojas: [], jobs: [], pendentes: 0, habilitadas: 0 } };
     const context = {
         console, AbortController, DOMException, setTimeout, clearTimeout, URLSearchParams,
@@ -51,12 +52,12 @@ function setup(options = {}) {
         carregarVendas: async () => {}, carregarGrafico: async () => {},
         vendasSyncMonitor: {
             getLastPayload: () => payload,
-            refresh: async () => payload,
+            refresh: async () => { refreshCount += 1; return payload; },
             subscribe() {}, start() {},
             waitForInactive: () => { throw new Error('O navegador não deve administrar a fila de execução.'); }
         },
         fetch: async (url, request = {}) => {
-            const call = { url, body: request.body ? JSON.parse(request.body) : null };
+            const call = { url, method: request.method || 'GET', body: request.body ? JSON.parse(request.body) : null };
             calls.push(call);
             if (options.fetch) return options.fetch(call, calls);
             return { ok: true, json: async () => ({ queued: true, job_id: 'job-' + calls.length }) };
@@ -66,7 +67,15 @@ function setup(options = {}) {
     vm.runInContext(syncSource, context, { filename: 'sync.js' });
     vm.runInContext(periodoSource.slice(periodoSource.indexOf('function setSyncButtons('), periodoSource.indexOf('// Funções utilitárias')), context, { filename: 'periodo-cache.js#monitor' });
     context.aguardar = async () => {};
-    return { context, elements, calls, events, setPayload(value) { payload = value; } };
+    return { context, elements, calls, events, getRefreshCount: () => refreshCount, setPayload(value) { payload = value; } };
+}
+
+function freezeState(value) {
+    if (value && typeof value === 'object') {
+        Object.values(value).forEach(freezeState);
+        Object.freeze(value);
+    }
+    return value;
 }
 
 (async () => {
@@ -91,6 +100,103 @@ function setup(options = {}) {
     assert.equal(failedStore.calls.length, 2, 'uma falha não deve impedir o registro das outras lojas');
     assert.match(failedStore.elements.status.innerHTML, /registrado em 1 loja/);
     assert.match(failedStore.elements.status.innerHTML, /Loja A: Sem conexão da loja/);
+
+    const allStores = Array.from({ length: 11 }, (_, index) => ({ nome: `Loja ${index}`, store_id: `id-${index}` }));
+    for (const [status, detail] of [[503, 'connection_failed'], [503, 'server_setup_required'], [401, 'session_expired'],
+        [503, { code: 'connection_failed', message: 'Falha técnica interna' }]]) {
+        const savedQueue = freezeState({
+            active: false,
+            automacao: {
+                habilitadas: 1, pendentes: 1,
+                lojas: [{ loja: 'Loja anterior', store_id: 'anterior', status: 'blocked', pendentes: 1,
+                    dias_concluidos: 3, dias_total: 15, ultimo_erro: 'Aviso anterior preservado' }],
+                jobs: [{ id: 'job-anterior', store_id: 'anterior', status: 'blocked',
+                    data_inicio: '2026-10-01', data_fim: '2026-10-15', dias_concluidos: ['2026-10-01'],
+                    last_error: 'Aviso anterior preservado' }]
+            }
+        });
+        const savedState = JSON.stringify(savedQueue);
+        const globalFailure = setup({ payload: savedQueue,
+            fetch: async () => ({ ok: false, status, json: async () => ({ detail }) }) });
+        globalFailure.context.lojasDisponiveis = allStores;
+
+        await globalFailure.context.executarSync();
+
+        assert.equal(globalFailure.calls.length, 1, 'uma falha global não deve gerar onze POSTs nem tentar novamente sem autorização');
+        assert.equal(globalFailure.calls[0].url, '/api/vendas/sync');
+        assert.equal(globalFailure.calls[0].method, 'POST');
+        assert.equal(globalFailure.getRefreshCount(), 1, 'não deve consultar novamente o monitor após a falha global de autorização');
+        assert.equal(JSON.stringify(savedQueue), savedState, 'falha de autorização preserva integralmente o estado e os avisos anteriores');
+        assert.equal(globalFailure.context.syncEmAndamento, false);
+        assert.equal(globalFailure.context.syncController, null);
+        assert.equal(globalFailure.elements.btnSync.disabled, false, 'uma nova tentativa deve poder ser iniciada pelo usuário');
+        assert.equal(globalFailure.elements.btnCancel.disabled, false, 'as pendências anteriores continuam disponíveis para pausa explícita');
+        assert.match(globalFailure.elements.status.innerHTML, /Registro do período interrompido/);
+        assert.match(globalFailure.elements.status.innerHTML, /sessão do sistema/);
+        assert.match(globalFailure.elements.status.innerHTML, /pendências e os registros já confirmados foram preservados/);
+        const expectedAction = status === 401 ? /login novamente/
+            : detail === 'server_setup_required' ? /Firebase.*configuração.*administrador/ : /Firebase.*Atualizar/;
+        assert.match(globalFailure.elements.status.innerHTML, expectedAction);
+        if (detail === 'server_setup_required') assert.doesNotMatch(globalFailure.elements.status.innerHTML, /Atualizar|login novamente/);
+        assert.doesNotMatch(globalFailure.elements.status.innerHTML, /Bling|connection_failed|server_setup_required|session_expired|Loja 0:/);
+    }
+
+    for (const [status, detail] of [[502, 'connection_failed'], [401, 'connection_failed'],
+        [503, 'session_expired'], [400, 'server_setup_required'], [503, 'connection_failed extra'],
+        [503, 'CONNECTION_FAILED'], [503, { message: 'connection_failed' }]]) {
+        const individualFailure = setup({ fetch: async () => ({ ok: false, status, json: async () => ({ detail }) }) });
+        await individualFailure.context.executarSync();
+        assert.equal(individualFailure.calls.length, 2, 'somente a combinação HTTP/código exata pode interromper as demais lojas');
+        assert.match(individualFailure.elements.status.innerHTML, /Loja A:/);
+        assert.match(individualFailure.elements.status.innerHTML, /Loja B:/);
+    }
+
+    let recoveredSession = false;
+    const serverJobs = new Map();
+    const jobKey = body => JSON.stringify([body.store_id, body.data_inicio, body.data_fim, body.forcar_resync]);
+    const partialAuthFailure = setup({ fetch: async call => {
+        if (!recoveredSession && call.body.store_id === 'id-1') {
+            return { ok: false, status: 503, json: async () => ({ detail: 'connection_failed' }) };
+        }
+        const key = jobKey(call.body);
+        if (!serverJobs.has(key)) serverJobs.set(key, { id: `persisted-${serverJobs.size}`, ...call.body });
+        return { ok: true, status: 200, json: async () => ({ accepted: true, job_id: serverJobs.get(key).id }) };
+    } });
+    partialAuthFailure.context.lojasDisponiveis = allStores;
+    await partialAuthFailure.context.executarSync();
+    assert.deepEqual(partialAuthFailure.calls.map(call => call.body.store_id), ['id-0', 'id-1']);
+    assert.equal(serverJobs.size, 1);
+    const originalKey = jobKey(partialAuthFailure.calls[0].body);
+    const originalJob = serverJobs.get(originalKey);
+    assert.match(partialAuthFailure.elements.status.innerHTML, /registrado em 1 loja/);
+    assert.match(partialAuthFailure.elements.status.innerHTML, /sessão do sistema no Firebase/);
+
+    recoveredSession = true;
+    await partialAuthFailure.context.executarSync();
+    assert.equal(partialAuthFailure.calls.length, 13, 'a nova tentativa só ocorre no segundo clique e envia uma vez por loja');
+    assert(partialAuthFailure.calls.every(call => call.url === '/api/vendas/sync' && call.method === 'POST'));
+    assert.equal(serverJobs.size, 11, 'o pedido idêntico reutiliza o job pendente aceito antes da falha');
+    assert.strictEqual(serverJobs.get(originalKey), originalJob, 'a retentativa mantém a identidade e o conteúdo do registro aceito');
+    assert.deepEqual(partialAuthFailure.calls[0].body, partialAuthFailure.calls[2].body);
+    assert.match(partialAuthFailure.elements.status.textContent, /registrado em 11 loja/);
+    assert.equal(partialAuthFailure.context.syncEmAndamento, false);
+
+    const mixedAuthFailure = setup({ fetch: async call => {
+        if (call.body.store_id === 'id-0') {
+            return { ok: false, status: 503, json: async () => ({ detail: 'Falha individual <Loja 0>' }) };
+        }
+        if (call.body.store_id === 'id-2') {
+            return { ok: false, status: 503, json: async () => ({ detail: 'connection_failed' }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ accepted: true, job_id: 'registro-confirmado' }) };
+    } });
+    mixedAuthFailure.context.lojasDisponiveis = allStores;
+    await mixedAuthFailure.context.executarSync();
+    assert.deepEqual(mixedAuthFailure.calls.map(call => call.body.store_id), ['id-0', 'id-1', 'id-2']);
+    assert.match(mixedAuthFailure.elements.status.innerHTML, /registrado em 1 loja/);
+    assert.match(mixedAuthFailure.elements.status.innerHTML, /sessão do sistema no Firebase/);
+    assert.match(mixedAuthFailure.elements.status.innerHTML, /Loja 0: Falha individual &lt;Loja 0&gt;/);
+    assert.doesNotMatch(mixedAuthFailure.elements.status.innerHTML, /<Loja 0>|Loja 2:|connection_failed/);
 
     const quickCompletion = setup({ fetch: async () => ({ ok: true, json: async () => ({ accepted: true, started: false, queued: false, status: 'complete' }) }) });
     await quickCompletion.context.executarSync();

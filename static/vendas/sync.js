@@ -613,6 +613,24 @@ async function recuperarSyncLojaAposFalhaFetch(pedido, erroOriginal) {
     return null;
 }
 
+function criarErroRegistroSyncVendas(status, result) {
+    const detalhe = result.detail?.message || result.detail;
+    const codigo = typeof result.detail === 'string' ? result.detail : result.detail?.code;
+    const falhaConexao = status === 503 && codigo === 'connection_failed';
+    const configuracaoNecessaria = status === 503 && codigo === 'server_setup_required';
+    const sessaoExpirada = status === 401 && codigo === 'session_expired';
+    const mensagem = sessaoExpirada
+        ? 'A sessão do sistema expirou. Faça login novamente para continuar.'
+        : configuracaoNecessaria
+            ? 'A sessão do sistema no Firebase precisa de configuração. Solicite a configuração ao administrador.'
+            : falhaConexao
+                ? 'Não foi possível validar a sessão do sistema no Firebase. Clique em Atualizar para tentar novamente.'
+                : typeof detalhe === 'string' ? detalhe : 'Erro ao registrar a sincronização.';
+    const erro = new Error(mensagem);
+    erro.falhaSessaoSistema = falhaConexao || configuracaoNecessaria || sessaoExpirada;
+    return erro;
+}
+
 async function iniciarSyncLoja(lojaNome, periodo = null, opcoes = {}) {
     const loja = (lojasDisponiveis || []).find(item => mesmaLoja(item?.nome, lojaNome));
     const pedido = {
@@ -640,8 +658,7 @@ async function iniciarSyncLoja(lojaNome, periodo = null, opcoes = {}) {
 
     const result = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-        const detalhe = result.detail?.message || result.detail;
-        throw new Error(typeof detalhe === 'string' ? detalhe : 'Erro ao registrar a sincronização.');
+        throw criarErroRegistroSyncVendas(resp.status, result);
     }
     if (!result.accepted && !result.started && !result.queued) {
         throw new Error('O servidor não confirmou o registro deste período. Tente atualizar novamente.');
@@ -741,6 +758,7 @@ async function executarSync(opcoes = {}) {
     }
 
     const falhas = [];
+    let falhaSessaoSistema = null;
     let registradas = 0;
     try {
         // Registrar todas as lojas antes de acompanhar a execução: a fila pertence
@@ -756,6 +774,10 @@ async function executarSync(opcoes = {}) {
                 registradas += 1;
             } catch (erro) {
                 if (cancelSolicitado) break;
+                if (erro.falhaSessaoSistema) {
+                    falhaSessaoSistema = erro;
+                    break;
+                }
                 falhas.push({ loja: lojaAtual, mensagem: erro.message || 'Falha de comunicação.' });
             } finally {
                 envioSyncVendasPromise = null;
@@ -767,9 +789,19 @@ async function executarSync(opcoes = {}) {
         cancelSolicitado = false;
         syncEmAndamento = false;
         setSyncButtons(false);
-        const estado = await vendasSyncMonitor.refresh();
+        const estado = falhaSessaoSistema
+            ? vendasSyncMonitor.getLastPayload()
+            : await vendasSyncMonitor.refresh();
         aplicarEstadoMonitorSyncVendas(estado);
-        if (falhas.length) {
+        if (falhaSessaoSistema) {
+            statusEl.className = 'status-bar error';
+            statusEl.innerHTML = `<strong>${registradas
+                ? `Período registrado em ${registradas} loja(s).`
+                : 'Registro do período interrompido.'}</strong><br>`
+                + escaparHtmlVendas(falhaSessaoSistema.message)
+                + '<br>As pendências e os registros já confirmados foram preservados.'
+                + (falhas.length ? '<br>' + falhas.map(falha => `${escaparHtmlVendas(falha.loja)}: ${escaparHtmlVendas(falha.mensagem)}`).join('<br>') : '');
+        } else if (falhas.length) {
             statusEl.className = 'status-bar error';
             statusEl.innerHTML = `<strong>Período registrado em ${registradas} loja(s).</strong><br>`
                 + falhas.map(falha => `${escaparHtmlVendas(falha.loja)}: ${escaparHtmlVendas(falha.mensagem)}`).join('<br>')

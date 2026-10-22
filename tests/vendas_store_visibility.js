@@ -28,7 +28,7 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const asset of ['styles.css', 'runtime.js', 'periodo-cache.js', 'sync.js', 'dados-render.js']) {
   const expectedCacheKey = asset === 'styles.css'
     ? '20261020-vendas-status-compacto-v2'
-    : '20261022-vendas-bling-lote-v1';
+    : asset === 'sync.js' ? '20261022-vendas-firebase-sessao-v1' : '20261022-vendas-bling-lote-v1';
   assert.ok(
     canonicalHtml.includes(`/vendas/${asset}?v=${expectedCacheKey}`),
     `o cache-buster de ${asset} deve refletir a correcao`,
