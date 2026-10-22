@@ -354,6 +354,7 @@
                     <button class="btn btn-danger" type="button" id="pm-global-cancel" disabled>Cancelar</button>
                     <button class="btn" type="button" id="pm-global-browser" disabled>Mostrar navegador</button>
                     <button class="btn" type="button" id="pm-global-refresh-names" disabled title="Pause a coleta para atualizar os nomes">Atualizar nomes das lojas</button>
+                    <button class="btn" type="button" id="pm-global-recover-incomplete" disabled hidden>Tentar categorias incompletas novamente</button>
                 </div>
                 <div id="pm-global-status-panel" class="pm-global-status" data-state="idle" aria-live="polite">
                     <div id="pm-global-scope" class="pm-global-scope">Nenhuma pesquisa iniciada.</div>
@@ -364,13 +365,16 @@
                     <div id="pm-global-status-detail" class="pm-global-status-detail">Escolha uma categoria e clique em pesquisar em todo ML.</div>
                     <span id="pm-global-category-current" class="section-note">Aguardando categoria</span>
                     <div id="pm-global-status-warning" class="pm-global-status-warning" hidden></div>
+                    <p id="pm-global-recovery-progress" class="pm-global-note" hidden></p>
+                    <details id="pm-global-incomplete" class="pm-category-incomplete" hidden><summary>Categorias incompletas e motivos</summary><ul id="pm-global-incomplete-list"></ul></details>
                 </div>
                 <div class="pm-global-stats" aria-label="Progresso da pesquisa em todo ML">
                     <article class="stat-card"><div class="stat-label">Categorias</div><div id="pm-global-categories-count" class="stat-value">0</div><div class="stat-detail">percorridas</div></article>
                     <article class="stat-card"><div class="stat-label">P&aacute;ginas</div><div id="pm-global-pages-count" class="stat-value">0</div><div class="stat-detail">consultadas</div></article>
                     <article class="stat-card"><div class="stat-label">Vendedores</div><div id="pm-global-sellers-count" class="stat-value">0</div><div class="stat-detail">conclu&iacute;dos</div></article>
                     <article class="stat-card"><div class="stat-label">An&uacute;ncios</div><div id="pm-global-ads-count" class="stat-value">0</div><div class="stat-detail">consultados</div></article>
-                    <article class="stat-card"><div class="stat-label">Pend&ecirc;ncias</div><div id="pm-global-pending-count" class="stat-value">0</div><div class="stat-detail">dados ou falhas</div></article>
+                    <article class="stat-card"><div class="stat-label">An&uacute;ncios pendentes</div><div id="pm-global-pending-count" class="stat-value">0</div><div class="stat-detail">sem dados ou com falha</div></article>
+                    <article class="stat-card"><div class="stat-label">Categorias incompletas</div><div id="pm-global-incomplete-count" class="stat-value">0</div><div class="stat-detail">aguardando nova tentativa</div></article>
                 </div>
                 <div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa">
                     <button class="pm-global-tab" type="button" role="tab" aria-selected="true" aria-controls="pm-global-ranking-panel" id="pm-global-tab-geral">Ranking geral</button>

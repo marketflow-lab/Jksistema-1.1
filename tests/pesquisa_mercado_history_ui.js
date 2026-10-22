@@ -52,6 +52,13 @@ async function main() {
         if (suffix === '/consolidado/categorias') { json({ items: scopes.slice(offset, offset + limit), total: scopes.length, owner_revision: revision }); return; }
         const detail = suffix.match(/^\/jobs\/(old-[AB])\/resumo$/);
         if (detail) { json({ job: detail[1] === oldA.id ? oldA : oldB }, 200, detail[1] === oldA.id ? 300 : 0); return; }
+        const diagnostic = suffix.match(/^\/jobs\/(old-[AB])\/diagnostico$/);
+        if (diagnostic) { json(diagnostic[1] === oldA.id ? {
+            scopePath: [{ ...scopes[0], nome: 'Ciclismo' }, { ...scopes[0], nome: 'Freios' }],
+            incompleteCategories: oldA.salesRecoveryPending ? [] : [{ key: 'MLB1', nome: 'Pastilhas', code: 'category_access_denied', motivo: 'private raw details' }, { key: 'MLB2', nome: 'Legado', code: 'legacy_unknown' }],
+            salesRecoveryPending: oldA.salesRecoveryPending === true,
+            recovery: oldA.status === 'running' ? { generation: 1, index: 0, total: 2 } : null
+        } : { scopePath: [], incompleteCategories: [], recovery: null }); return; }
         if (/^\/jobs\/[^/]+\/vendedores$/.test(suffix)) { json({ items: [{ seller_key: 'id:1', vendedor: 'Loja A' }, { seller_key: 'id:2', vendedor: 'Loja B' }] }); return; }
         if (/^\/jobs\/[^/]+\/categorias$/.test(suffix)) { json({ items: [{ categoria: 'Freios', status: 'incomplete' }] }); return; }
         if (/^\/jobs\/[^/]+\/ranking$/.test(suffix)) {
@@ -196,6 +203,43 @@ async function main() {
         assert.ok(requests.filter(request => request.path.endsWith('/ranking')).every(request => request.params.get('limit') === '100'));
         assert.ok(requests.filter(request => request.path.endsWith('/jobs')).every(request => request.params.get('limit') === '25'));
         assert.ok(!requests.some(request => /\/jobs\/old-[AB]$/.test(request.path)), 'history must not download crawl checkpoints');
+
+        await page.evaluate(() => window.__jkPesquisaMercadoHistory.openDetail('old-A'));
+        await page.waitForFunction(() => window.__jkPesquisaMercadoHistory.state.history.detailId === 'old-A' && !window.__jkPesquisaMercadoHistory.state.history.detailBusy);
+        assert.match(await page.locator('#pm-history-detail-heading').textContent(), /Ciclismo → Freios/);
+        assert.match(await page.locator('#pm-history-incomplete-summary').textContent(), /2 categorias incompletas/);
+        assert.match(await page.locator('#pm-history-incomplete-list').textContent(), /bloqueou.*Motivo anterior desconhecido/s);
+        assert.doesNotMatch(await page.locator('#pm-history-incomplete-list').textContent(), /private raw details/);
+        await page.evaluate(() => {
+            window.__recoveryCalls = [];
+            window.__jkPesquisaMercadoRecoverIncomplete = async (jobId, expectedRevision) => {
+                window.__recoveryCalls.push({ jobId, expectedRevision });
+                await new Promise(resolve => { window.__releaseRecovery = resolve; });
+                return { job: { id: jobId, status: 'running', revision: expectedRevision + 1 } };
+            };
+            window.__diagnosticCalls = [];
+            window.__jkPesquisaMercadoDiagnosticBrowser = async jobId => { window.__diagnosticCalls.push(jobId); };
+        });
+        await page.locator('#pm-history-diagnostic-browser').click();
+        assert.deepStrictEqual(await page.evaluate(() => window.__diagnosticCalls), ['old-A'], 'diagnóstico usa a pesquisa selecionada');
+        await page.locator('#pm-history-recover-incomplete').click();
+        await page.locator('#pm-history-recover-incomplete').dispatchEvent('click');
+        assert.deepStrictEqual(await page.evaluate(() => window.__recoveryCalls), [{ jobId: 'old-A', expectedRevision: 4 }], 'recuperação explícita usa revisão histórica e evita duplicidade');
+        assert.strictEqual(await page.locator('[data-delete-job="old-A"]').isDisabled(), true, 'exclusão aguarda recuperação em curso');
+        oldA.status = 'running';
+        await page.evaluate(() => window.__releaseRecovery());
+        await page.waitForFunction(() => !window.__jkPesquisaMercadoHistory.state.history.recoverBusy && document.querySelector('#pm-history-recovery-progress').textContent.includes('0 de 2'));
+        assert.strictEqual(await page.locator('#pm-history-recover-incomplete').isVisible(), false);
+        oldA.status = 'completed_partial'; oldA.salesRecoveryPending = true;
+        await page.evaluate(() => window.__jkPesquisaMercadoHistory.openDetail('old-A'));
+        await page.waitForFunction(() => !window.__jkPesquisaMercadoHistory.state.history.detailBusy && document.querySelector('#pm-history-recover-incomplete').textContent === 'Tentar dados pendentes novamente');
+        assert.strictEqual(await page.locator('#pm-history-recover-incomplete').isEnabled(), true, 'histórico permite recuperar apenas métricas pendentes');
+        assert.strictEqual(await page.locator('#pm-history-incomplete').isVisible(), false);
+        await page.locator('#pm-history-recover-incomplete').click();
+        assert.strictEqual(await page.evaluate(() => window.__recoveryCalls.length), 2);
+        oldA.status = 'running';
+        await page.evaluate(() => window.__releaseRecovery());
+        await page.waitForFunction(() => !window.__jkPesquisaMercadoHistory.state.history.recoverBusy);
 
         // An in-flight request from a previous user must not repopulate any saved results.
         await page.locator('#pm-history-search').fill('slow');

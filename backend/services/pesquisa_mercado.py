@@ -34,6 +34,18 @@ STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024
 MAX_PUBLICATION_BYTES = 64 * 1024 * 1024
 COUNTER_KEYS = ("categories", "pages", "sellers", "ads", "pending")
+DIAGNOSTIC_REASONS = {
+    "legacy_unknown": "Motivo anterior desconhecido.",
+    "category_link_missing": "O link oficial desta categoria nao foi localizado.",
+    "category_link_ambiguous": "O Mercado Livre apresentou mais de um link para esta categoria.",
+    "category_filters_unavailable": "O filtro de categorias nao ficou disponivel para continuar.",
+    "category_scope_mismatch": "O Mercado Livre abriu outra categoria. O escopo foi preservado.",
+    "category_not_found": "O Mercado Livre nao reconheceu o endereco desta categoria.",
+    "category_load_timeout": "A categoria nao apresentou os dados dentro do tempo de consulta.",
+    "category_access_denied": "O Mercado Livre nao permitiu consultar esta categoria.",
+    "category_read_failed": "A consulta desta categoria ficou incompleta.",
+    "category_pagination_failed": "Nao foi possivel continuar a paginacao desta categoria.",
+}
 CATEGORY_LISTING_HOSTS = {
     "lista.mercadolivre.com.br",
     "imoveis.mercadolivre.com.br",
@@ -459,6 +471,8 @@ class PesquisaMercadoStore:
         conn.execute("BEGIN IMMEDIATE")
         try:
             job_columns = {row[1] for row in conn.execute("PRAGMA table_info(pm_jobs)")}
+            if "generation" not in job_columns:
+                conn.execute("ALTER TABLE pm_jobs ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
             for name in ("scope_key", "scope_name", "scope_url", "scope_search"):
                 if name not in job_columns:
                     conn.execute(f"ALTER TABLE pm_jobs ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
@@ -531,11 +545,79 @@ class PesquisaMercadoStore:
 
     @staticmethod
     def _public(row) -> dict:
-        return {
+        result = {
             "id": row["id"], "status": row["status"], "revision": row["revision"],
             "checkpoint": json.loads(row["checkpoint"]), "counters": json.loads(row["counters"]),
             "message": row["message"], "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
+        if row["generation"]:
+            result["generation"] = row["generation"]
+        return result
+
+    @staticmethod
+    def _check_generation(row, generation):
+        current = row["generation"]
+        if generation is not None and (isinstance(generation, bool) or not isinstance(generation, int) or not 0 <= generation <= 2**53 - 1):
+            raise HTTPException(422, "Geracao de pesquisa invalida.")
+        if (current and generation != current) or (not current and generation not in (None, 0)):
+            raise HTTPException(409, "Esta tentativa da pesquisa foi substituida. Atualize a consulta.")
+
+    @staticmethod
+    def _recovery_categories(checkpoint):
+        """Resolve old generic warnings against the frozen queue, never a new scope."""
+        if not isinstance(checkpoint.get("categories", []), list) or not isinstance(checkpoint.get("incompleteCategories", []), list):
+            raise HTTPException(409, "A fila preservada desta pesquisa esta indisponivel. Inicie uma nova pesquisa nesse escopo.")
+        records, ambiguous = {}, set()
+        for raw in checkpoint.get("categories") or []:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                category = normalize_scope_category({field: raw.get(field) for field in ("key", "nome", "url")})
+            except HTTPException:
+                continue
+            previous = records.get(category["key"])
+            if previous is not None and previous != category:
+                ambiguous.add(category["key"])
+            records[category["key"]] = category
+        names = {}
+        for category in records.values():
+            names.setdefault(category["nome"].casefold(), []).append(category["key"])
+        keys = []
+        for pending in checkpoint.get("incompleteCategories") or []:
+            key = pending.get("key") if isinstance(pending, dict) else None
+            if not key:
+                name = _text(pending.get("nome") or pending.get("categoria"), 400) if isinstance(pending, dict) else _text(pending, 400)
+                matches = names.get(name.casefold(), [])
+                key = matches[0] if len(matches) == 1 else None
+            if not isinstance(key, str) or not key or key not in records or key in ambiguous:
+                raise HTTPException(409, "O historico nao identifica uma categoria pendente com seguranca. Inicie uma nova pesquisa nesse escopo.")
+            if key not in keys:
+                keys.append(key)
+        return keys
+
+    def recover_incomplete(self, job_id: str, client_id: str, username: str, *, expected_revision: int) -> dict:
+        tenant, user = self._owner(client_id, username)
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or not 0 <= expected_revision <= 2**53 - 1:
+            raise HTTPException(422, "Revisao de pesquisa invalida.")
+        with self._connection(tenant, write=True) as conn:
+            row = self._job(conn, job_id, tenant, user)
+            if row["revision"] != expected_revision:
+                raise HTTPException(409, "A pesquisa foi atualizada. Atualize a consulta antes de reprocessar.")
+            if row["status"] not in {"completed_partial", "failed"}:
+                raise HTTPException(409, "Somente uma pesquisa encerrada com pendencias pode ser reprocessada.")
+            other = conn.execute("SELECT id FROM pm_jobs WHERE tenant=? AND username=? AND status IN ('running','paused','waiting_login') AND id<>?", (tenant, user, job_id)).fetchone()
+            if other is not None:
+                raise HTTPException(409, "Outra pesquisa ja esta ativa para este usuario.")
+            checkpoint = json.loads(row["checkpoint"])
+            keys = self._recovery_categories(checkpoint)
+            if not keys and not checkpoint.get("salesRecoveryPending"):
+                raise HTTPException(409, "Esta pesquisa nao possui categorias ou dados pendentes para reprocessar.")
+            generation = row["generation"] + 1
+            checkpoint["recovery"] = {"version": 1, "generation": generation, "categoryKeys": keys, "index": 0}
+            checkpoint["progress"] = {"phase": "preparing", "detail": "Preparando a recuperacao das categorias pendentes.", "warning": ""}
+            conn.execute("UPDATE pm_jobs SET status='running',generation=?,checkpoint=?,message=?,revision=revision+1,updated_at=? WHERE id=?", (generation, _json(checkpoint, MAX_CHECKPOINT_BYTES), checkpoint["progress"]["detail"], _now(), job_id))
+            self._bump_owner_revision(conn, tenant, user)
+            return self._public(self._job(conn, job_id, tenant, user))
 
     @staticmethod
     def _pending(conn, job_id: str) -> int:
@@ -575,6 +657,44 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             return self._public(self._job(conn, job_id, tenant, user))
 
+    def diagnostic(self, job_id: str, client_id: str, username: str) -> dict:
+        tenant, user = self._owner(client_id, username)
+        with self._connection(tenant) as conn:
+            row = self._job(conn, job_id, tenant, user)
+            checkpoint = json.loads(row["checkpoint"])
+            tree = checkpoint.get("officialTaxonomy")
+            ancestry = tree.get("ancestry") if isinstance(tree, dict) else None
+            scope = checkpoint.get("scope")
+            if not isinstance(ancestry, list) or not ancestry:
+                ancestry = [scope.get("category")] if isinstance(scope, dict) else []
+            path = []
+            for raw in ancestry[:32]:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    path.append(normalize_scope_category({field: raw.get(field) for field in ("key", "nome", "url")}))
+                except HTTPException:
+                    continue
+            incomplete = []
+            pending = checkpoint.get("incompleteCategories")
+            pending = pending if isinstance(pending, list) else []
+            for raw in pending[:1000]:
+                item = raw if isinstance(raw, dict) else {"nome": raw}
+                code = item.get("code")
+                if not isinstance(code, str) or code not in DIAGNOSTIC_REASONS:
+                    code = "legacy_unknown"
+                stage = item.get("stage")
+                incomplete.append({"key": _text(item.get("key"), 500), "nome": _text(item.get("nome") or item.get("categoria") or item.get("key"), 400),
+                                   "code": code, "motivo": DIAGNOSTIC_REASONS[code], "stage": stage if stage in ("category", "navigation", "pagination") else "category",
+                                   "dependency_key": _text(item.get("dependency_key"), 500)})
+            recovery = checkpoint.get("recovery")
+            progress = None
+            if isinstance(recovery, dict) and isinstance(recovery.get("categoryKeys"), list):
+                index = recovery.get("index")
+                progress = {"generation": row["generation"], "index": index if type(index) is int and 0 <= index <= len(recovery["categoryKeys"]) else 0, "total": len(recovery["categoryKeys"])}
+            return {"scopePath": path, "incompleteCategories": incomplete, "incompleteCategoriesTotal": len(pending),
+                    "salesRecoveryPending": bool(checkpoint.get("salesRecoveryPending")), "recovery": progress}
+
     def delete(self, job_id: str, client_id: str, username: str) -> dict:
         """Remove a closed research and its observations in one owner-scoped write."""
         tenant, user = self._owner(client_id, username)
@@ -589,7 +709,7 @@ class PesquisaMercadoStore:
             self._bump_owner_revision(conn, tenant, user)
             return {"deleted": True, "job_id": job_id, "revision": self._owner_revision(conn, tenant, user)}
 
-    def checkpoint(self, job_id: str, client_id: str, username: str, *, checkpoint=None, status=None, counters=None, message=None) -> dict:
+    def checkpoint(self, job_id: str, client_id: str, username: str, *, checkpoint=None, status=None, counters=None, message=None, generation=None) -> dict:
         tenant, user = self._owner(client_id, username)
         if status is not None and status not in STATUSES:
             raise HTTPException(422, "Estado de pesquisa invalido.")
@@ -607,6 +727,7 @@ class PesquisaMercadoStore:
         encoded_checkpoint = _json(checkpoint, MAX_CHECKPOINT_BYTES) if checkpoint is not None else None
         with self._connection(tenant, write=True) as conn:
             row = self._job(conn, job_id, tenant, user)
+            self._check_generation(row, generation)
             # Cancellation is terminal even if an in-flight collector writes late.
             if row["status"] == "cancelled":
                 return self._public(row)
@@ -620,6 +741,14 @@ class PesquisaMercadoStore:
                 raise HTTPException(409, "Pesquisa encerrada. Inicie uma nova execucao.")
             if checkpoint is not None:
                 previous_checkpoint = json.loads(row["checkpoint"])
+                if row["generation"]:
+                    recovery = checkpoint.get("recovery")
+                    previous_recovery = previous_checkpoint.get("recovery") or {}
+                    if not isinstance(recovery, dict) or type(recovery.get("generation")) is not int or recovery.get("generation") != row["generation"] or type(recovery.get("version")) is not int or recovery.get("version") != 1 or recovery.get("categoryKeys") != previous_recovery.get("categoryKeys"):
+                        raise HTTPException(422, "A fila de recuperacao da pesquisa nao pode ser alterada.")
+                    index = recovery.get("index")
+                    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= len(recovery["categoryKeys"]):
+                        raise HTTPException(422, "Cursor de recuperacao invalido.")
                 original_scope = previous_checkpoint.get("scope")
                 if "scope" in checkpoint and checkpoint["scope"] != original_scope:
                     raise HTTPException(422, "O escopo da pesquisa nao pode ser alterado.")
@@ -656,15 +785,34 @@ class PesquisaMercadoStore:
             raise HTTPException(422, "Link de descoberta invalido.")
         return value
 
-    def discovery(self, job_id: str, seed_key: str, client_id: str, username: str) -> dict:
+    def discovery(self, job_id: str, seed_key: str, client_id: str, username: str, *, include_status=False) -> dict:
         tenant, user = self._owner(client_id, username)
         key = self._seed_key(seed_key)
         with self._connection(tenant) as conn:
             self._job(conn, job_id, tenant, user)
-            seen = conn.execute("SELECT 1 FROM pm_discovery WHERE job_id=? AND seed_key=?", (job_id, key)).fetchone() is not None
-            return {"seen": seen}
+            row = conn.execute("SELECT status FROM pm_discovery WHERE job_id=? AND seed_key=?", (job_id, key)).fetchone()
+            result = {"seen": row is not None}
+            if include_status:
+                result["status"] = row["status"] if row else None
+            return result
 
-    def publish(self, job_id: str, seller_key: str, client_id: str, username: str, seller: dict, anuncios: list[dict]) -> dict:
+    def failed_seeds(self, job_id: str, client_id: str, username: str, *, category_key: str, offset=0, limit=100, after_key="") -> dict:
+        tenant, user = self._owner(client_id, username)
+        if not isinstance(category_key, str) or not category_key or len(category_key) > 500 or isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 2**53 - 1 or isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise HTTPException(422, "Consulta de descobertas pendentes invalida.")
+        if after_key:
+            self._seed_key(after_key)
+        with self._connection(tenant) as conn:
+            row = self._job(conn, job_id, tenant, user)
+            recovery = json.loads(row["checkpoint"]).get("recovery") or {}
+            if category_key not in recovery.get("categoryKeys", []):
+                raise HTTPException(422, "Categoria fora da fila de recuperacao.")
+            args = (job_id, category_key)
+            total = conn.execute("SELECT COUNT(*) FROM pm_discovery WHERE job_id=? AND category_key=? AND status='failed'", args).fetchone()[0]
+            rows = conn.execute("SELECT seed_key AS key,item_id AS id,url,category_key FROM pm_discovery WHERE job_id=? AND category_key=? AND status='failed' AND seed_key>? ORDER BY seed_key LIMIT ? OFFSET ?", (*args, after_key, limit, offset)).fetchall()
+            return {"items": [dict(seed) for seed in rows], "total": total, "generation": row["generation"]}
+
+    def publish(self, job_id: str, seller_key: str, client_id: str, username: str, seller: dict, anuncios: list[dict], *, generation=None) -> dict:
         tenant, user = self._owner(client_id, username)
         key = _text(seller_key, 500)
         if not key or key != str(seller_key) or str(seller.get("key") or key) != key:
@@ -678,6 +826,7 @@ class PesquisaMercadoStore:
         digest = hashlib.sha256(publication.encode("utf-8")).hexdigest()
         with self._connection(tenant, write=True) as conn:
             row = self._job(conn, job_id, tenant, user)
+            self._check_generation(row, generation)
             if row["status"] not in ACTIVE_STATUSES:
                 raise HTTPException(409, "Pesquisa encerrada. Coleta tardia descartada.")
             previous = conn.execute("SELECT digest,payload FROM pm_sellers WHERE job_id=? AND seller_key=?", (job_id, key)).fetchone()

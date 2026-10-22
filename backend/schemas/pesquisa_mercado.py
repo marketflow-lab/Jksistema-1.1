@@ -32,6 +32,13 @@ class PesquisaMercadoCheckpointRequest(BaseModel):
     status: PesquisaMercadoStatus | None = None
     counters: dict[str, int] | None = None
     message: str | None = Field(default=None, max_length=600)
+    generation: int | None = Field(default=None, ge=0, le=2**53 - 1, strict=True)
+
+
+class PesquisaMercadoRecoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=0, le=2**53 - 1, strict=True)
 
 
 class PesquisaMercadoSellerRequest(BaseModel):
@@ -39,6 +46,7 @@ class PesquisaMercadoSellerRequest(BaseModel):
 
     seller: dict[str, Any]
     anuncios: list[dict[str, Any]]
+    generation: int | None = Field(default=None, ge=0, le=2**53 - 1, strict=True)
 
 
 class PesquisaMercadoNameUpdate(BaseModel):
@@ -60,6 +68,42 @@ class PesquisaMercadoNamesRequest(BaseModel):
 
 class PesquisaMercadoClosedResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class PesquisaMercadoFailedSeed(PesquisaMercadoClosedResponse):
+    key: str
+    id: str
+    url: str
+    category_key: str
+
+
+class PesquisaMercadoFailedSeedsResponse(PesquisaMercadoClosedResponse):
+    items: list[PesquisaMercadoFailedSeed]
+    total: int
+    generation: int
+
+
+class PesquisaMercadoIncompleteCategory(PesquisaMercadoClosedResponse):
+    key: str
+    nome: str
+    code: str
+    motivo: str
+    stage: Literal["category", "navigation", "pagination"]
+    dependency_key: str
+
+
+class PesquisaMercadoRecoveryProgress(PesquisaMercadoClosedResponse):
+    generation: int
+    index: int
+    total: int
+
+
+class PesquisaMercadoDiagnosticResponse(PesquisaMercadoClosedResponse):
+    scopePath: list[PesquisaMercadoCategory]
+    incompleteCategories: list[PesquisaMercadoIncompleteCategory]
+    incompleteCategoriesTotal: int
+    salesRecoveryPending: bool
+    recovery: PesquisaMercadoRecoveryProgress | None
 
 
 class PesquisaMercadoDeleteResponse(PesquisaMercadoClosedResponse):

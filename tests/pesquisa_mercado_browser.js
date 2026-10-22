@@ -139,9 +139,17 @@ function harness(saved = [], options = {}) {
             jobs.set(job.id, job);
             return { status: 200, data: { job: clone(job) } };
         }
-        const match = options.path.match(/^\/api\/pesquisa-mercado\/jobs\/([^/]+)(\/(?:checkpoint|vendedores|nomes))?$/);
+        const match = options.path.match(/^\/api\/pesquisa-mercado\/jobs\/([^/]+)(\/(?:checkpoint|vendedores|nomes|recover-incomplete))?$/);
         const job = match && jobs.get(decodeURIComponent(match[1]));
         if (!job || job.owner !== owner) return { status: 404, data: { detail: 'Pesquisa não encontrada.' } };
+        if (options.method === 'POST' && match[2] === '/recover-incomplete') {
+            const body = JSON.parse(payload);
+            if (body.expected_revision !== job.revision || !['failed', 'completed_partial'].includes(job.status)) return { status: 409, data: { detail: 'Atualize a pesquisa.' } };
+            const generation = Number(job.generation || 0) + 1;
+            Object.assign(job, { status: 'running', revision: job.revision + 1, generation,
+                checkpoint: { ...job.checkpoint, recovery: { version: 1, generation, categoryKeys: [category.key], index: 0 } } });
+            return { status: 200, data: { job: clone(job) } };
+        }
         if (options.method === 'GET' && match[2] === '/vendedores') return { status: 200, data: { items: clone(fixtureNameSellers) } };
         if (options.method === 'PUT' && match[2] === '/nomes') {
             const body = JSON.parse(payload);
@@ -254,6 +262,8 @@ async function testBrowserIsolationAndNavigation() {
     await assert.rejects(adapter.navigate('https://login.avantprocloud.com.br/'), /fora do Mercado Livre/);
     assert.strictEqual(win.loads.length, 0, 'URLs de partida só podem ser ML');
     await adapter.navigate('https://produto.mercadolivre.com.br/MLB-1234567890-item');
+    win.webContents.emit('did-navigate', {}, win.webContents.getURL(), 403);
+    assert.deepStrictEqual(clone(adapter.getNavigationStatus()), { url: win.webContents.getURL(), statusCode: 403 }, 'status HTTP é da navegação principal confirmada');
     for (const eventName of ['will-navigate', 'will-redirect']) {
         for (const [url, allowed] of [
             ['https://www.mercadolivre.com.br/login', true],
@@ -270,6 +280,7 @@ async function testBrowserIsolationAndNavigation() {
     const result = await adapter.executeJavaScript('document.title');
     assert.strictEqual(result.title, 'fixture result');
     win.webContents.url = 'https://evil.example/';
+    assert.strictEqual(adapter.getNavigationStatus(), null, 'status anterior não caracteriza outra URL');
     await assert.rejects(adapter.executeJavaScript('document.title'), /nao permitida/);
     assert.strictEqual(win.webContents.scripts.length, 1);
     win.blockLoads = true;
@@ -386,10 +397,10 @@ async function testSwitchingPausedJobsShowsOwnedCursor() {
     assert.strictEqual(h.windows[0].webContents.getURL(), first);
     await h.command('show-browser', 'two', 'paused-two');
     assert.strictEqual(h.windows.length, 1, 'uma execução pausada reutiliza a janela exclusiva');
-    assert.strictEqual(h.api.coordinator().job.id, 'paused-two');
+    assert.strictEqual(h.api.coordinator().job, null, 'mostrar navegador não altera a pesquisa do coordenador');
     assert.strictEqual(h.windows[0].webContents.getURL(), second, 'trocar pesquisa pausada precisa carregar o cursor do proprietário autorizado');
     await h.command('show-browser', 'two', 'paused-three');
-    assert.strictEqual(h.windows[0].webContents.getURL(), 'https://www.mercadolivre.com.br/', 'cursor persistido externo usa a página inicial permitida');
+    assert.strictEqual(h.windows[0].webContents.getURL(), 'https://www.mercadolivre.com.br/categorias', 'cursor persistido externo usa o diretório permitido');
     await h.api.quit();
 }
 
@@ -577,7 +588,7 @@ async function testPublicVehicleUrlsPreserveTrailingSlash() {
         const started = await redirected.command('start', 'one', null, { category: legacy });
         await redirected.api.coordinator().task;
         const saved = redirected.jobs.get(started.job.id);
-        assert.strictEqual(saved.status, 'completed_partial', 'executor rejeita perda real de /veiculos');
+        assert.strictEqual(saved.status, 'failed', 'executor sem página válida registra falha ao perder /veiculos');
         assert.strictEqual(saved.counters.pages, 0, 'busca genérica não pode ser contada como categoria');
         assert.strictEqual(redirected.windows[0].webContents.getURL(), 'https://lista.mercadolivre.com.br/caminhoes');
         assert.strictEqual(redirected.windows[0].loads.filter(url => url === legacy.url).length, 1, 'divergência confirmada de escopo interrompe sem repetir navegador');
@@ -665,7 +676,54 @@ async function testNamesLoginContextOwnership() {
     } finally { runner.namesTask = null; await h.api.quit(); }
 }
 
+async function testIncompleteRecoveryAndTerminalDiagnostics() {
+    for (const status of ['failed', 'completed_partial']) {
+        const checkpoint = { categories: [category], incompleteCategories: [{ ...category, code: 'category_load_timeout' }],
+            currentCategory: { key: 'MLB123', nome: 'Antiga', url: 'https://lista.mercadolivre.com.br/_CatId_MLB123' } };
+        const h = harness([{ id: 'pending-job', owner: 'one', status, revision: 4, counters: { pages: 3, ads: 40 }, checkpoint }]);
+        try {
+            const runner = h.api.coordinator();
+            const before = clone(h.jobs.get('pending-job'));
+            await assert.rejects(h.command('show-browser', 'two', 'pending-job'), /Pesquisa n[aã]o encontrada/);
+            assert.strictEqual(h.windows.length, 0, 'diagnóstico exige proprietário antes de preparar janela');
+            const diagnostic = await h.command('show-browser', 'one', 'pending-job');
+            assert.strictEqual(Object.hasOwn(diagnostic.job, 'checkpoint'), false, 'diagnóstico não envia checkpoint pelo IPC');
+            assert.deepStrictEqual(h.windows[0].loads, ['https://www.mercadolivre.com.br/categorias'], 'diagnóstico antigo nunca navega alias sintético');
+            assert.strictEqual(runner.task, null, 'diagnóstico terminal não inicia coleta');
+            assert.strictEqual(runner.job, null, 'diagnóstico não altera coordenador');
+            assert.deepStrictEqual(h.jobs.get('pending-job'), before, 'diagnóstico preserva pesquisa e revisão');
+            await assert.rejects(h.command('recover-incomplete', 'two', 'pending-job', { expectedRevision: 4 }), /Pesquisa n[aã]o encontrada/);
+            assert.strictEqual(h.api.peek().token, 'fixture-owner-one', 'recuperação negada preserva contexto autenticado');
+            await assert.rejects(h.command('recover-incomplete', 'one', 'pending-job', { expectedRevision: '4' }), /Atualize/);
+            await assert.rejects(h.command('recover-incomplete', 'one', 'pending-job', { expectedRevision: 4, checkpoint: {} }), /Atualize/);
+            await assert.rejects(h.command('recover-incomplete', 'one', 'pending-job', { expectedRevision: 3 }), /Atualize/);
+            const response = await h.command('recover-incomplete', 'one', 'pending-job', { expectedRevision: 4 });
+            const post = h.requests.filter(request => request.path.endsWith('/recover-incomplete')).at(-1);
+            assert.deepStrictEqual(post.body, { expected_revision: 4 }, 'IPC materializa revisão esperada no backend');
+            assert.strictEqual(response.job.id, 'pending-job');
+            assert.strictEqual(response.job.generation, 1);
+            assert.strictEqual(response.job.status, 'running');
+            assert.strictEqual(response.job.counters.ads, 40, 'recuperação preserva resultados');
+            assert.ok(runner.task, 'comando de recuperação inicia coordenador');
+            await assert.rejects(h.command('recover-incomplete', 'one', 'pending-job', { expectedRevision: response.job.revision }), /Pause/);
+        } finally { await h.api.quit(); }
+    }
+    for (const relative of ['preload.js', 'electron_app/preload.js']) {
+        let exposed;
+        const calls = [];
+        vm.runInNewContext(fs.readFileSync(path.join(root, relative), 'utf8'), {
+            require: () => ({ contextBridge: { exposeInMainWorld(_name, api) { exposed = api; } }, ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve({ success: true }); } } }),
+            window: { addEventListener() {} }, URL
+        });
+        const payload = { authToken: 'fixture', jobId: 'pending-job', expectedRevision: 4 };
+        await exposed.recoverPesquisaMercadoIncomplete(payload);
+        assert.strictEqual(calls[0][0], 'pesquisa-mercado:recover-incomplete', `${relative} expõe recuperação`);
+        assert.strictEqual(calls[0][1], payload);
+    }
+}
+
 async function main() {
+    await testIncompleteRecoveryAndTerminalDiagnostics();
     await testNamesLoginContextOwnership();
     await testAvantConfigurationOwnership();
     await testNamesCommandOwnershipAndRecovery();

@@ -616,6 +616,7 @@
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
         return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
+            categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16
         };

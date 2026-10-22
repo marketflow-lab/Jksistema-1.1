@@ -29,11 +29,34 @@
         } catch (_error) { return ''; }
     }
     const scope = job => job && (job.scope_category || job.scopeCategory || job.checkpoint && job.checkpoint.scope && job.checkpoint.scope.category);
-    const scopeName = job => text(scope(job) && scope(job).nome) || 'Todo o Mercado Livre';
+    const scopeName = job => {
+        const checkpoint = job && job.checkpoint || {};
+        const path = job && job.scopePath || checkpoint.officialTaxonomy && checkpoint.officialTaxonomy.ancestry || checkpoint.scope && checkpoint.scope.path;
+        const names = Array.isArray(path) ? path.map(item => text(typeof item === 'string' ? item : item && (item.nome || item.name)).trim()).filter(Boolean) : [];
+        return names.length ? names.join(' → ') : text(scope(job) && scope(job).nome) || 'Todo o Mercado Livre';
+    };
+    const incompleteCategories = job => Array.isArray(job && job.incompleteCategories) ? job.incompleteCategories
+        : Array.isArray(job && job.checkpoint && job.checkpoint.incompleteCategories) ? job.checkpoint.incompleteCategories : [];
+    const salesRecoveryPending = job => !!job && (job.salesRecoveryPending === true || !!job.checkpoint && job.checkpoint.salesRecoveryPending === true);
+    const canRecover = job => !!job && ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    function incompleteReason(item) {
+        const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
+            category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
+            category_not_found: 'Categoria não encontrada.', category_load_timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            category_read_failed: 'Não foi possível ler a categoria.', category_pagination_failed: 'Não foi possível consultar a próxima página da categoria.',
+            category_access_denied: 'O Mercado Livre bloqueou o acesso à categoria.',
+            category_mismatch: 'A página aberta não corresponde à categoria.', category_unavailable: 'Categoria indisponível.',
+            navigation_timeout: 'O carregamento da categoria excedeu o tempo limite.', timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            login_required: 'Login necessário no Mercado Livre.', waiting_login: 'Login necessário no Mercado Livre.',
+            blocked: 'O Mercado Livre bloqueou o acesso à página.', ancestor_unavailable: 'Uma categoria anterior do caminho ficou indisponível.',
+            listing_unrecognized: 'A listagem não pôde ser confirmada.', legacy_unknown: 'Motivo anterior desconhecido.' };
+        const code = item && typeof item === 'object' && (item.code || item.reasonCode || item.motivo);
+        return reasons[code] || 'Motivo anterior desconhecido.';
+    }
     const freshHistory = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', status: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0,
         deleteId: '', deleteBusy: '', detail: null, detailId: '', detailTab: 'geral', detailQuery: '', detailCategory: '', detailSeller: '',
-        detailSellers: [], detailCategories: [], detailItems: [], detailTotal: 0, detailOffset: 0, detailBusy: false, namesBusy: false, namesLogin: false, detailNeedsRefresh: false, detailGeneration: 0 });
+        detailSellers: [], detailCategories: [], detailItems: [], detailTotal: 0, detailOffset: 0, detailBusy: false, namesBusy: false, recoverBusy: false, namesLogin: false, detailNeedsRefresh: false, detailGeneration: 0 });
     const freshConsolidated = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', evidence: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0, summary: null,
         origin: null, originItems: [], originTotal: 0, originOffset: 0, originBusy: false, originGeneration: 0 });
@@ -87,6 +110,13 @@
             return data;
         } finally { controllers.delete(controller); }
     }
+    async function requestDiagnostic(base) {
+        try { return await request(`${base}/diagnostico`, {}, 'history-detail'); }
+        catch (error) {
+            if (error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+            return { scopePath: [], incompleteCategories: [], incompleteCategoriesTotal: 0, salesRecoveryPending: false, recovery: null, unavailable: true };
+        }
+    }
     const statusChip = status => `<span class="status-chip${['cancelled', 'failed', 'completed_partial', 'interrupted'].includes(status) ? ' warning' : ''}">${escaped(statuses[status] || status || '—')}</span>`;
     const scopeField = (panel, label) => `<div class="pm-saved-field"><label for="pm-${panel}-scope">${label}</label><select id="pm-${panel}-scope"><option value="">Todos os escopos</option></select><button type="button" class="pm-saved-more" id="pm-${panel}-scope-more" hidden>Carregar mais escopos</button></div>`;
     const pager = (prefix, label) => `<div class="pm-saved-pagination" aria-label="${label}"><button type="button" class="btn" id="pm-${prefix}-previous" disabled>Anterior</button><span id="pm-${prefix}-page">Página 1 de 1</span><button type="button" class="btn" id="pm-${prefix}-next" disabled>Próxima</button></div>`;
@@ -96,7 +126,7 @@
         <div class="pm-saved-field"><label for="pm-history-status">Situação da pesquisa</label><select id="pm-history-status"><option value="">Todas as situações</option>${Object.entries(statuses).filter(([key]) => !['queued', 'pausing', 'interrupted'].includes(key)).map(([key, value]) => `<option value="${key}">${value}</option>`).join('')}</select></div></div>
         <p class="pm-saved-message" id="pm-history-message" role="status"></p><div class="pm-saved-grid"><div><p class="pm-saved-note" id="pm-history-count">0 pesquisas</p><div class="pm-saved-list" id="pm-history-list"></div>${pager('history', 'Páginas do histórico')}</div>
         <section class="pm-saved-detail" aria-label="Resultado da pesquisa escolhida"><div class="pm-saved-detail-heading" id="pm-history-detail-heading"><span class="pm-saved-eyebrow">Consulta de pesquisa salva</span><h3>Selecione uma pesquisa</h3></div>
-        <div class="pm-saved-detail-body" id="pm-history-detail-body" hidden><div class="pm-global-actions"><button type="button" class="btn" id="pm-history-refresh-names">Atualizar nomes das lojas</button><button type="button" class="btn" id="pm-history-names-browser" hidden>Mostrar navegador</button></div><div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa salva"><button type="button" class="pm-global-tab" role="tab" aria-selected="true" aria-controls="pm-history-ranking-panel" id="pm-history-tab-geral">Ranking geral</button><button type="button" class="pm-global-tab" role="tab" aria-selected="false" aria-controls="pm-history-ranking-panel" tabindex="-1" id="pm-history-tab-vendedor">Ranking por vendedor</button></div>
+        <div class="pm-saved-detail-body" id="pm-history-detail-body" hidden><div class="pm-global-actions"><button type="button" class="btn" id="pm-history-refresh-names">Atualizar nomes das lojas</button><button type="button" class="btn" id="pm-history-names-browser" hidden>Mostrar navegador</button><button type="button" class="btn" id="pm-history-recover-incomplete" hidden>Tentar categorias incompletas novamente</button><button type="button" class="btn" id="pm-history-diagnostic-browser" hidden>Mostrar navegador para diagnóstico</button></div><p id="pm-history-diagnostic-message" class="pm-saved-note" hidden>Os resultados estão disponíveis. Atualize para consultar as pendências desta pesquisa.</p><p id="pm-history-recovery-progress" class="pm-saved-note" hidden></p><details id="pm-history-incomplete" class="pm-category-incomplete" hidden><summary id="pm-history-incomplete-summary">Categorias incompletas e motivos</summary><ul id="pm-history-incomplete-list"></ul></details><div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa salva"><button type="button" class="pm-global-tab" role="tab" aria-selected="true" aria-controls="pm-history-ranking-panel" id="pm-history-tab-geral">Ranking geral</button><button type="button" class="pm-global-tab" role="tab" aria-selected="false" aria-controls="pm-history-ranking-panel" tabindex="-1" id="pm-history-tab-vendedor">Ranking por vendedor</button></div>
         <div class="pm-saved-detail-filters"><input type="search" id="pm-history-detail-search" maxlength="200" aria-label="Buscar anúncios da pesquisa salva" placeholder="Título, MLB ou vendedor"><select id="pm-history-detail-category" aria-label="Escopo dos resultados"><option value="">Todos os escopos dos resultados</option></select><select id="pm-history-detail-seller" aria-label="Vendedor da pesquisa salva" hidden></select></div>
         <div id="pm-history-ranking-panel" role="tabpanel" aria-labelledby="pm-history-tab-geral"><p class="pm-saved-message" id="pm-history-detail-message" role="status"></p><div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Média mensal</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-history-detail-rows"></tbody></table></div>${pager('history-detail', 'Páginas da pesquisa escolhida')}</div></div></section></div>
         <p class="pm-saved-note" style="margin-top:16px">Consultas manuais por vendedor feitas anteriormente não foram gravadas e não aparecem neste histórico.</p>`;
@@ -153,7 +183,7 @@
     }
     function canDelete(job) {
         const h = state.history;
-        return !!job && !h.deleteBusy && !h.busy && !h.namesBusy
+        return !!job && !h.deleteBusy && !h.busy && !h.namesBusy && !h.recoverBusy
             && ['completed', 'completed_partial', 'cancelled', 'failed'].includes(job.status)
             && (typeof window.__jkPesquisaMercadoCanDeleteJob !== 'function' || window.__jkPesquisaMercadoCanDeleteJob(job.id));
     }
@@ -215,9 +245,25 @@
     function renderDetail() {
         const h = state.history;
         el('history-detail-body').hidden = !h.detail;
-        el('history-refresh-names').disabled = !!h.deleteBusy || h.namesBusy || h.detailBusy || !h.detail || ['running', 'waiting_login', 'queued', 'pausing'].includes(h.detail.status);
+        el('history-diagnostic-message').hidden = !h.detail || !h.detail.diagnosticUnavailable;
+        const operationBusy = !!h.deleteBusy || h.namesBusy || h.recoverBusy || h.detailBusy || (typeof window.__jkPesquisaMercadoCanDeleteJob === 'function' && !window.__jkPesquisaMercadoCanDeleteJob());
+        el('history-refresh-names').disabled = operationBusy || !h.detail || ['running', 'waiting_login', 'queued', 'pausing'].includes(h.detail.status);
         el('history-names-browser').hidden = !h.namesLogin;
         el('history-names-browser').disabled = h.namesBusy;
+        el('history-recover-incomplete').hidden = !canRecover(h.detail);
+        el('history-recover-incomplete').disabled = operationBusy || !canRecover(h.detail);
+        el('history-recover-incomplete').textContent = incompleteCategories(h.detail).length || Number(h.detail && h.detail.incompleteCount) > 0
+            ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+        el('history-diagnostic-browser').hidden = !h.detail || !['completed_partial', 'failed'].includes(h.detail.status);
+        el('history-diagnostic-browser').disabled = operationBusy;
+        const incomplete = incompleteCategories(h.detail), recovery = h.detail && h.detail.checkpoint && h.detail.checkpoint.recovery;
+        el('history-incomplete').hidden = !incomplete.length;
+        const incompleteTotal = Number.isSafeInteger(h.detail && h.detail.incompleteCount) ? h.detail.incompleteCount : incomplete.length;
+        el('history-incomplete-summary').textContent = `${number(incompleteTotal)} categorias incompletas e motivos${incompleteTotal > incomplete.length ? ` (exibindo ${number(incomplete.length)})` : ''}`;
+        el('history-incomplete-list').innerHTML = incomplete.map(item => `<li><strong>${escaped(typeof item === 'string' ? item : item && (item.nome || item.key) || 'Categoria')}</strong>: ${escaped(incompleteReason(item))}</li>`).join('');
+        const recoveryTotal = recovery && (Array.isArray(recovery.categoryKeys) ? recovery.categoryKeys.length : recovery.total);
+        el('history-recovery-progress').hidden = !Number.isSafeInteger(recoveryTotal);
+        el('history-recovery-progress').textContent = Number.isSafeInteger(recoveryTotal) ? `Recuperação das categorias: ${number(Math.min(recoveryTotal, Math.max(0, Number(recovery.index) || 0)))} de ${number(recoveryTotal)} verificadas nesta tentativa.` : '';
         const heading = el('history-detail-heading');
         heading.innerHTML = `<span class="pm-saved-eyebrow">Consulta de pesquisa salva</span><h3>${h.detail ? escaped(scopeName(h.detail)) : h.detailBusy ? 'Carregando pesquisa…' : 'Selecione uma pesquisa'}</h3>${h.detail ? `<p class="pm-saved-note">${escaped(date(h.detail.created_at))} · ${escaped(statuses[h.detail.status] || h.detail.status)} · ${number(h.detail.counters && h.detail.counters.ads || 0)} anúncios</p>` : ''}`;
         for (const tab of ['geral', 'vendedor']) { el(`history-tab-${tab}`).setAttribute('aria-selected', text(tab === h.detailTab)); el(`history-tab-${tab}`).tabIndex = tab === h.detailTab ? 0 : -1; }
@@ -299,11 +345,13 @@
         const generation = ++h.detailGeneration;
         cancelReads('history-detail'); h.detailBusy = true; renderHistory(); renderDetail();
         try {
-            const result = await request(`/jobs/${encodeURIComponent(jobId)}/resumo`, {}, 'history-detail');
             const base = `/jobs/${encodeURIComponent(jobId)}`;
-            const [sellers, categories] = await Promise.all([request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')]);
+            const [result, diagnostic, sellers, categories] = await Promise.all([
+                request(`${base}/resumo`, {}, 'history-detail'), requestDiagnostic(base),
+                request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')]);
             if (state.history !== h || h.detailGeneration !== generation || state.disposed) return;
-            h.detail = result.job; h.detailSellers = sellers.items || []; h.detailCategories = categories.items || []; h.detailSeller = h.detailSellers.length ? h.detailSellers[0].seller_key : '';
+            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
+            h.detailSellers = sellers.items || []; h.detailCategories = categories.items || []; h.detailSeller = h.detailSellers.length ? h.detailSellers[0].seller_key : '';
             await loadDetailRanking();
         } catch (error) {
             if (state.history === h && h.detailGeneration === generation && !state.disposed && error.name !== 'AbortError') { message('history', error.message, true); h.detailBusy = false; renderDetail(); }
@@ -316,11 +364,12 @@
         cancelReads('history-detail'); h.detailBusy = true; renderDetail(); message('history-detail', 'Atualizando os resultados salvos…');
         try {
             const base = `/jobs/${encodeURIComponent(h.detailId)}`;
-            const [result, sellers, categories] = await Promise.all([
-                request(`${base}/resumo`, {}, 'history-detail'), request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')
+            const [result, diagnostic, sellers, categories] = await Promise.all([
+                request(`${base}/resumo`, {}, 'history-detail'), requestDiagnostic(base),
+                request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')
             ]);
             if (state.history !== h || h.detailGeneration !== generation || state.disposed) return;
-            h.detail = result.job;
+            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
             const selectedSeller = h.detailSellers.find(item => item.seller_key === h.detailSeller);
             h.detailSellers = sellers.items || [];
             if (h.detailSeller && !h.detailSellers.some(item => item.seller_key === h.detailSeller)) h.detailSellers.push(selectedSeller || { seller_key: h.detailSeller, vendedor: h.detailSeller });
@@ -436,7 +485,11 @@
         }
     }
     for (const panel of ['history', 'consolidated']) {
-        listen(el(`${panel}-refresh`), 'click', () => panel === 'history' ? loadHistory(true) : loadConsolidated(true));
+        listen(el(`${panel}-refresh`), 'click', () => {
+            if (panel !== 'history') { loadConsolidated(true); return; }
+            loadHistory(true);
+            if (state.history.detailId && !state.history.namesBusy && !state.history.recoverBusy && !state.history.deleteBusy) refreshDetail();
+        });
         listen(el(`${panel}-search`), 'input', () => filtersChanged(panel));
         listen(el(`${panel}-scope`), 'change', () => filtersChanged(panel));
         listen(el(`${panel}-scope-more`), 'click', () => loadScopes(panel));
@@ -464,6 +517,30 @@
         try { await window.__jkPesquisaMercadoNamesBrowser(state.history.detailId); }
         catch (error) { message('history-detail', error.message, true); }
     });
+    listen(el('history-recover-incomplete'), 'click', async () => {
+        currentSession();
+        const h = state.history, jobId = h.detailId, revision = h.detail && h.detail.revision;
+        if (!jobId || h.deleteBusy || h.namesBusy || h.recoverBusy || h.detailBusy || !canRecover(h.detail)) return;
+        h.recoverBusy = true; renderHistory(); renderDetail(); message('history-detail', 'Preparando uma nova tentativa para as categorias incompletas…');
+        try {
+            if (typeof window.__jkPesquisaMercadoRecoverIncomplete !== 'function') throw new Error('Abra a pesquisa no aplicativo JK Sistema.');
+            const result = await window.__jkPesquisaMercadoRecoverIncomplete(jobId, revision);
+            if (state.disposed || state.history !== h || h.detailId !== jobId) return;
+            if (result && result.job && result.job.id === jobId) h.detail = result.job;
+            h.loaded = state.consolidated.loaded = false; h.revision = state.consolidated.revision = null;
+            await refreshDetail();
+            if (state.history === h && h.detailId === jobId && !state.disposed) message('history-detail', 'A recuperação foi iniciada. Acompanhe o progresso na pesquisa geral.');
+        } catch (error) { if (!state.disposed && state.history === h && h.detailId === jobId) message('history-detail', error.message, true); }
+        finally { h.recoverBusy = false; if (!state.disposed) { renderHistory(); renderDetail(); } }
+    });
+    listen(el('history-diagnostic-browser'), 'click', async () => {
+        const jobId = state.history.detailId;
+        if (!jobId || state.history.deleteBusy || state.history.recoverBusy) return;
+        try {
+            if (typeof window.__jkPesquisaMercadoDiagnosticBrowser !== 'function') throw new Error('Abra a pesquisa no aplicativo JK Sistema.');
+            await window.__jkPesquisaMercadoDiagnosticBrowser(jobId);
+        } catch (error) { if (state.history.detailId === jobId) message('history-detail', error.message, true); }
+    });
     listen(window, 'jk-pesquisa-mercado-names-updated', event => {
         state.history.loaded = state.consolidated.loaded = false;
         state.history.revision = state.consolidated.revision = null;
@@ -472,7 +549,7 @@
     });
     listen(el('history-status'), 'change', () => filtersChanged('history'));
     listen(el('consolidated-evidence'), 'change', () => filtersChanged('consolidated'));
-    listen(window, 'jk-pesquisa-mercado-operation-change', () => renderHistory());
+    listen(window, 'jk-pesquisa-mercado-operation-change', () => { renderHistory(); renderDetail(); });
     listen(historyRoot, 'click', event => {
         const action = event.target.closest('[data-delete-job], [data-confirm-delete-job], [data-cancel-delete-job]');
         if (!action || !historyRoot.contains(action) || action.disabled) return;

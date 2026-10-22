@@ -12,7 +12,7 @@ async function main() {
     const category = {key:'MLB1', nome:'Ferramentas', url:'https://www.mercadolivre.com.br/c/ferramentas'};
     const original = {id:'delete-me', status:'completed', revision:1, scope_category:category, scopeCategory:category,
         created_at:'2026-10-07T12:00:00Z', counters:{ads:7,sellers:1,pending:0}};
-    let job = {...original}, revision = 1, deleteStatus = 200, holdDelete = false, holdLatest = false;
+    let job = {...original}, revision = 1, deleteStatus = 200, diagnosticStatus = 500, holdDelete = false, holdLatest = false;
     let pendingDelete, pendingLatest, pendingNames;
     const mutations = [], errors = [];
     const ad = {id:'MLB12345678', ad_key:'id:MLB12345678', seller_key:'id:1', titulo:'Produto da pesquisa', vendedor:'Loja A', rank:1};
@@ -46,6 +46,7 @@ async function main() {
         if(suffix==='/consolidado/resumo'){json(res,{researches:job?1:0,unique_ads:job?1:0,owner_revision:revision});return;}
         if(suffix==='/consolidado/ranking'){json(res,{items:job?[ad]:[],total:job?1:0,owner_revision:revision});return;}
         if(!job){json(res,{detail:'Not found'},404);return;}
+        if(suffix.endsWith('/diagnostico')){json(res,{scopePath:[category],incompleteCategories:[],incompleteCategoriesTotal:0,salesRecoveryPending:false,recovery:null},diagnosticStatus);return;}
         if(suffix.endsWith('/resumo')){json(res,{job});return;}
         if(suffix.endsWith('/vendedores')){json(res,{items:[{seller_key:'id:1',vendedor:'Loja A'}]});return;}
         if(suffix.endsWith('/categorias')){json(res,{items:[]});return;}
@@ -71,6 +72,13 @@ async function main() {
         await page.locator('#pm-mode-history').click();
         await page.locator('[data-consult-job="delete-me"]').click();
         await page.waitForFunction(()=>!window.__jkPesquisaMercadoHistory.state.history.detailBusy);
+        assert.equal(await page.locator('#pm-history-detail-rows tr').count(),1,'diagnostic failure preserves saved ranking');
+        assert.equal(await page.locator('#pm-history-diagnostic-message').isVisible(),true,'diagnostic failure offers refresh without hiding results');
+        diagnosticStatus=200;
+        await page.locator('#pm-history-refresh').click();
+        await page.waitForFunction(()=>!window.__jkPesquisaMercadoHistory.state.history.detailBusy&&!window.__jkPesquisaMercadoHistory.state.history.busy);
+        assert.equal(await page.locator('#pm-history-diagnostic-message').isVisible(),false,'refresh retries the selected diagnostic');
+        assert.equal(await page.locator('#pm-history-detail-rows tr').count(),1,'refresh preserves saved results');
         const waitPending=async value=>{for(let n=0;n<100;n++){if(value())return;await new Promise(resolve=>setTimeout(resolve,20));}throw Error('Fixture did not receive held request');};
         await page.evaluate(()=>{window.__namesTask=window.__jkPesquisaMercadoRefreshNames('delete-me');});
         await waitPending(()=>pendingNames);
