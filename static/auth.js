@@ -6,7 +6,8 @@
   'use strict';
 
   const VERSION = '20261016-medias-photo-cache-v1';
-  const CHUNKS = [
+  const COFRE_CHUNKS = ['session.js', 'navigation.js', 'guards.js'];
+  const CHUNKS = document.documentElement?.getAttribute('data-jk-module') === 'cofre' ? COFRE_CHUNKS : [
     "session.js",
     "navigation.js",
     "shared-sync-boot.js",
