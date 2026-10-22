@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -34,6 +35,9 @@ _FIELDS = {
         "id", "numero", "data_emissao", "natureza_operacao", "finalidade_operacao",
         "devolucao", "valor", "fornecedor", "origem_codigo", "unidade_negocio",
         "unidade_negocio_virtual", "_detalhe_validado",
+        "_return_reason_order_id", "_return_reason_bling_order_id",
+        "_return_reason_original_invoice_id", "_return_reason_original_invoice_number",
+        "_return_reason_bling_order_number", "_return_reason_reference_conflict",
     },
     "items": {
         "id_nota", "numero_nota", "origem_codigo", "data_emissao", "sku", "descricao",
@@ -115,6 +119,13 @@ def _valid_payload(payload: Any, kind: str, document_id: str, day: str) -> bool:
                 return False
             if any(isinstance(value, (dict, list)) for value in row.values()):
                 return False
+            for key, value in row.items():
+                if key == "_return_reason_reference_conflict":
+                    if value is not True:
+                        return False
+                elif key.startswith("_return_reason_"):
+                    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,31}", value):
+                        return False
             if any(isinstance(value, float) and not math.isfinite(value) for value in row.values()):
                 return False
             if str(row.get("data" if group == "sales" else "data_emissao") or "")[:10] != day:

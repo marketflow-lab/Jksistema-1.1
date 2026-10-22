@@ -14,6 +14,7 @@ from typing import Any
 
 from backend.schemas import VendasSyncRequest
 from backend.services.bling_oauth import requires_bling_reauthorization
+from backend.services.bling_return_references import reference_from_note, store_reference
 from backend.services.sqlite_coordination import configure_sqlite_connection, sqlite_lock_for_path
 
 from .errors import VendasDomainError as HTTPException
@@ -757,6 +758,7 @@ def _persistir_periodo_atomico(
     client_id: str,
     *,
     notas_saida_observadas: set[str] | None = None,
+    return_references: dict | None = None,
 ) -> dict[str, int]:
     """Persist all commercial tables in one SQLite transaction."""
 
@@ -838,6 +840,10 @@ def _persistir_periodo_atomico(
 
             if payload_itens:
                 cursor.executemany(_insert_com_store_id(_SQL_INSERT_ITENS), [(*row, store_id) for row in payload_itens])
+            if store_id:
+                from .return_reason_queue import enqueue
+                enqueue(conn, store_id, req.loja, payload_notas, payload_itens,
+                        references_by_note=return_references)
             _verificar_cancelamento(client_id)
 
             conn.commit()
@@ -965,6 +971,7 @@ def _aplicar_detalhe_nota(
             "unidade_negocio_virtual": unidade_virtual,
         }
     )
+    store_reference(nota, detalhe)
 
     resultado: list[dict] = []
     for item in itens:
@@ -1300,6 +1307,8 @@ async def _sincronizar_vendas_periodo_impl(
             str(item.get("nota_fiscal_id") or "").strip()
             for item in registros_nf if str(item.get("nota_fiscal_id") or "").strip()
         },
+        return_references={str(nota.get("id")): reference_from_note(nota)
+                           for nota in notas if isinstance(nota, dict) and nota.get("id") is not None},
     )
 
     # O banco ja foi confirmado neste ponto. Invalide por dia para que um

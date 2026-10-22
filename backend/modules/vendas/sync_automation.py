@@ -51,6 +51,8 @@ def remember_authorization(client_id: str, store_id: str | None = None):
             _STORE_CHECK_AUTH[(client_id, store)] = with_request_context(_check_store_connection)
         for store in stores:
             _AUTH[(client_id, store)] = with_request_context(_run_job)
+            from .return_reason_worker import remember_authorization as remember_reason_authorization
+            remember_reason_authorization(client_id, store)
     wake()
 
 
@@ -229,6 +231,11 @@ def tick():
         except Exception:
             # A failed queue is never converted to an empty/successful queue.
             logger.warning("Não foi possível processar uma fila de vendas; nova tentativa pendente.")
+        try:
+            from .return_reason_worker import dispatch as dispatch_return_reasons
+            dispatch_return_reasons(client_id)
+        except Exception:
+            logger.warning("A identificação dos motivos de devolução aguardará nova tentativa.")
 
 
 def _loop():
@@ -253,12 +260,16 @@ def start():
         if _THREAD is not None and _THREAD.is_alive():
             return
         _STOP.clear()
+        from .return_reason_worker import start as start_return_reasons
+        start_return_reasons()
         _THREAD = threading.Thread(target=_loop, name="vendas-fila", daemon=True)
         _THREAD.start()
 
 
 def stop():
     _STOP.set()
+    from .return_reason_worker import stop as stop_return_reasons
+    stop_return_reasons()
     with _LOCK:
         for _, job_id in _RUNNING:
             SYNC_CANCEL_FLAGS[job_id] = True

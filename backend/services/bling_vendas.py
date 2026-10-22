@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from backend.services.bling import BLING_SESSION, _BlingAdaptiveLimiter, _bling_get_with_adaptive_limit
 from backend.services.bling_oauth import exchange_bling_refresh_token
+from backend.services.bling_return_references import store_reference
 from backend.services.sqlite_coordination import sqlite_lock_for_path
 from backend.services.vendas_collection_checkpoint import load_collected_document, save_collected_document
 
@@ -2538,6 +2539,7 @@ def _bling_listar_notas_entrada(
                             "unidade_negocio_virtual": unidade_virtual,
                             "_detalhe_validado": True,
                         })
+                        store_reference(registros[-1], detalhe_nf)
             devolucao_cfop = _eh_devolucao_por_cfop_itens(nota_itens)
             if devolucao_cfop:
                 devolucao = 1
