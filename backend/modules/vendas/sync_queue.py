@@ -96,6 +96,10 @@ class SyncQueue:
                 CREATE INDEX IF NOT EXISTS jobs_status_created ON jobs(status, created_at);
                 CREATE UNIQUE INDEX IF NOT EXISTS jobs_pending_signature
                     ON jobs(signature) WHERE status != 'complete';
+                CREATE TABLE IF NOT EXISTS connection_alert_ack (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(id),
+                    error_signature TEXT NOT NULL, verified_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS days (
                     job_id TEXT NOT NULL REFERENCES jobs(id), day TEXT NOT NULL,
                     result TEXT NOT NULL, completed_at REAL NOT NULL,
@@ -205,7 +209,7 @@ class SyncQueue:
                            (signature,)).fetchone()
         if old:
             if old["status"] != "running":
-                conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?, last_error = NULL,
+                conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?,
                     owner = NULL, lease_until = NULL, updated_at = ?, loja = ?, automatico = ?,
                     requires_session = ? WHERE id = ?""",
                              (now, now, loja, int(automatic), int(requires_session), old["id"]))
@@ -366,11 +370,57 @@ class SyncQueue:
             delay = min(INTERVAL_SECONDS, 15 * 2 ** min(6, max(0, job["attempts"] - 1)))
             if retry_after is not None:
                 delay = max(1, float(retry_after))
+            conn.execute("DELETE FROM connection_alert_ack WHERE job_id = ?", (job_id,))
             conn.execute("""UPDATE jobs SET status = ?, last_error = ?, next_attempt = ?,
                 owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ?""",
                          ("retry" if retryable else "blocked", str(message)[:240],
                           now + delay if retryable else None, now, job_id))
             return self._job(conn, job_id)
+
+    @staticmethod
+    def _error_signature(job):
+        # Heartbeats update updated_at. Only the error and attempt identify the
+        # warning; fail_job explicitly invalidates acknowledgements even when a
+        # later failure repeats the exact same message in this attempt.
+        values = [job["id"], job["attempts"], job["last_error"]]
+        return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+    def connection_alerts(self, store_id):
+        with self._connection() as conn:
+            rows = conn.execute("""SELECT j.*, a.error_signature AS acknowledged_error
+                FROM jobs j LEFT JOIN connection_alert_ack a ON a.job_id = j.id
+                WHERE j.store_id = ? AND j.status != 'complete' AND j.last_error IS NOT NULL""",
+                                (store_id,)).fetchall()
+            return [{"id": row["id"], "signature": self._error_signature(row)}
+                    for row in rows if row["acknowledged_error"] != self._error_signature(row)]
+
+    def acknowledge_connection_alerts(self, job_id, owner, store_id, alerts, *, expected_attempts, now=None):
+        """Dismiss only observed warnings after a real provider check, keeping history.
+
+        This never completes work, changes scheduling or edits checkpoints. A
+        lost lease or an error from a newer attempt cannot be acknowledged.
+        """
+        count = 0
+        with self._transaction() as conn:
+            # BEGIN IMMEDIATE may wait. Evaluate the clock after the lock, not
+            # before it, so an expired lease cannot acknowledge an old reply.
+            now = _time(now)
+            if not self._owns(conn, job_id, owner, now):
+                return 0
+            running = self._job(conn, job_id, detailed=False)
+            if running["store_id"] != store_id or running["attempts"] != expected_attempts:
+                return 0
+            for alert in alerts:
+                row = conn.execute("""SELECT * FROM jobs WHERE id = ? AND store_id = ?
+                    AND status != 'complete' AND last_error IS NOT NULL""",
+                                   (alert["id"], store_id)).fetchone()
+                if row is None or self._error_signature(row) != alert["signature"]:
+                    continue
+                conn.execute("""INSERT INTO connection_alert_ack VALUES (?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET error_signature = excluded.error_signature,
+                        verified_at = excluded.verified_at""", (row["id"], alert["signature"], now))
+                count += 1
+        return count
 
     def pause_all(self, now=None):
         with self._transaction() as conn:
@@ -432,7 +482,11 @@ class SyncQueue:
                     ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1))
                 ORDER BY created_at DESC, rowid DESC""").fetchall()
             jobs = [self._job(conn, row[0], detailed=False) for row in rows]
+            acknowledgements = {row["job_id"]: row["error_signature"] for row in
+                                conn.execute("SELECT job_id, error_signature FROM connection_alert_ack")}
             for job in jobs:
+                job["aviso_conexao_verificado"] = bool(job["last_error"] and
+                    acknowledgements.get(job["id"]) == self._error_signature(job))
                 for private in ("owner", "signature", "requires_session"):
                     job.pop(private, None)
             plans = conn.execute("SELECT * FROM plans ORDER BY loja, store_id").fetchall()
@@ -457,7 +511,8 @@ class SyncQueue:
                     "pendentes": len(operational), "pausados": len(pending) - len(operational),
                     "checkpoint": job["checkpoint"] if job else {},
                     "proxima_execucao": _iso(due),
-                    "ultimo_erro": job["last_error"] if job else None,
+                    "ultimo_erro": job["last_error"] if job and not job["aviso_conexao_verificado"] else None,
+                    "aviso_conexao_verificado": bool(job and job["aviso_conexao_verificado"]),
                     "ultima_conferencia": _iso(plan["last_success"]),
                     "job_id": job["id"] if job else None,
                     "forcar_resync": job["forcar_resync"] if job else bool(plan["forcar_resync"])})

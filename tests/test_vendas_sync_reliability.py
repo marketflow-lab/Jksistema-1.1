@@ -594,6 +594,14 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
         return result, status, config
 
     monkeypatch.setattr(sync_period, "_bling_executar_com_refresh", execute)
+    from types import SimpleNamespace
+    preflight_calls = []
+    def probe(url, **kwargs):
+        preflight_calls.append((url, kwargs["headers"]["Authorization"], kwargs["params"]))
+        return SimpleNamespace(status_code=200, url=url, headers={}, json=lambda: {"data": []})
+    monkeypatch.setattr(sync_engine, "_bling_executar_com_refresh", execute)
+    monkeypatch.setattr(sync_engine, "_bling_get_with_adaptive_limit", probe)
+
     monkeypatch.setattr(sync_period, "_bling_listar_vendas", lambda *_args: ([], 200))
     monkeypatch.setattr(sync_period, "_bling_listar_vendas_fallback_nf_saida", lambda *_args: ([], 200))
     monkeypatch.setattr(sync_period, "_bling_listar_naturezas", lambda *_args: ({}, 200))
@@ -622,4 +630,7 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     assert completed["status"] == "complete"
     assert completed["dias_concluidos"] == ["2026-10-01", "2026-10-02"]
     assert completed["resultados_dias"]["2026-10-01"] == {"vendas": 2}
-    assert calls == ["access-reconnected"] * 4
+    assert calls == ["access-reconnected"] * 5
+    assert len(preflight_calls) == 1
+    assert preflight_calls[0][1] == "Bearer access-reconnected"
+    assert preflight_calls[0][2]["limite"] == 1

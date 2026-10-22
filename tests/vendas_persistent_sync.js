@@ -155,6 +155,19 @@ function setup(options = {}) {
         'uma lista contendo apenas lojas bloqueadas não pode informar atividade ou sucesso');
     assert.match(attentionOnly, /Verifique a integração da loja para continuar/);
     reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [
+        { loja: 'Coleta anterior bloqueada', status: 'blocked', aviso_conexao_verificado: true, ultimo_erro: null }
+    ] } });
+    const confirmedConnection = reopened.elements.syncPersistenteStatus.innerHTML;
+    assert.doesNotMatch(confirmedConnection, /vendas-sync-attention|Verifique a integração|Atualizada/,
+        'conexão confirmada retira o alerta antigo e preserva a pendência sem declarar coleta concluída');
+    assert.match(confirmedConnection, /Pendências preservadas/);
+    reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [
+        { loja: 'Falha nova', status: 'retry', aviso_conexao_verificado: true, ultimo_erro: 'Falha na coleta atual' }
+    ] } });
+    assert.match(reopened.elements.syncPersistenteStatus.innerHTML, /vendas-sync-attention/,
+        'uma nova falha continua visível mesmo se a conexão havia sido confirmada');
+
+    reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [
         { loja: 'Loja pausada', status: 'paused', ultimo_erro: '<falha antiga>' },
         { loja: 'Loja com acesso pendente', status: 'paused', ultimo_erro: 'Reconecte o Bling da loja.' }
     ] } });

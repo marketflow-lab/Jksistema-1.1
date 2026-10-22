@@ -223,7 +223,7 @@ def test_history_wraps_and_no_new_source_payload_is_stored(queue):
     assert next(job for job in third if job["kind"] == "history")["data_inicio"] == "2026-10-01"
     with sqlite3.connect(queue.path) as conn:
         assert {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {
-            "tenant", "jobs", "plans", "days"}
+            "tenant", "jobs", "plans", "days", "connection_alert_ack"}
 
 
 def test_future_empty_days_do_not_hide_gap_after_long_downtime(queue):

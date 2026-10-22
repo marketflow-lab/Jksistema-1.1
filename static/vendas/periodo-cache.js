@@ -92,7 +92,11 @@ function estadoSyncLojaVendas(loja) {
     const status = String(loja?.status || '').toLowerCase();
     if (['paused', 'pausado', 'cancelado'].includes(status)) return ['paused', 'Pausada'];
     if (['running', 'executando', 'em_execucao'].includes(status)) return ['running', 'Sincronizando'];
-    if (loja?.ultimo_erro || ['blocked', 'erro'].includes(status)) return ['attention', 'Requer atenção'];
+    if (loja?.ultimo_erro) return ['attention', 'Requer atenção'];
+    if (['blocked', 'erro'].includes(status)) {
+        return loja?.aviso_conexao_verificado
+            ? ['pending', 'Pendências preservadas'] : ['attention', 'Requer atenção'];
+    }
     if (['complete', 'concluido', 'finalizado'].includes(status) && !(Number(loja?.pendentes) > 0)) {
         return ['complete', 'Atualizada'];
     }
@@ -119,7 +123,7 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
     const estados = lojas.map(loja => ({ loja, estado: estadoSyncLojaVendas(loja) }));
     const contagens = [
         ['running', 'sincronizando'], ['queued', 'aguardando'], ['complete', 'atualizada', 'atualizadas'],
-        ['paused', 'pausada', 'pausadas'], ['idle', 'sem sincronização']
+        ['paused', 'pausada', 'pausadas'], ['pending', 'com pendências'], ['idle', 'sem sincronização']
     ].map(([chave, singular, plural]) => {
         const total = estados.filter(item => item.estado[0] === chave).length;
         return total ? `${total} ${total === 1 ? singular : plural || singular}` : '';
