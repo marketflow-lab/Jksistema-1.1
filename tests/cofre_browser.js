@@ -474,8 +474,12 @@ async function clean(result) {
     assert.strictEqual(publishing.state.publishCalls, 0, 'Cancelar confirmação não publica.');
     await pp.locator('#publishSharing').click();
     await pp.locator('#confirmPublishSharing').click();
-    await pp.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Compartilhado com a empresa' && !document.querySelector('#publishSharingDialog').open);
+    await pp.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Compartilhado com a empresa'
+      && !document.querySelector('#publishSharingDialog').open
+      && document.querySelector('#notice').textContent === 'Acervo compartilhado com a empresa.'
+      && !document.querySelector('#publishSharing').disabled);
     assert.strictEqual(publishing.state.publishCalls, 1);
+    await pp.locator('.message[data-message-id="m1"] [data-action="edit-message"]').waitFor();
     assert(await pp.locator('.message[data-message-id="m1"] [data-action="edit-message"]').isVisible());
     await clean(publishing);
 

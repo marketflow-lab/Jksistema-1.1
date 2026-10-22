@@ -11,7 +11,7 @@
     totalActive: 0, totalDeleted: 0, summaryRevision: 0,
     messageDrafts: new Map(), channelDrafts: new Map(), mutations: new Map(),
     editor: null, channelEditor: null, deleteTarget: null, deleting: false,
-    session: null, sessionInvalidated: false, archiveReady: false, accessReady: false,
+    session: null, sessionInvalidated: false, authRequired: false, archiveReady: false, accessReady: false,
     sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null },
     sharingKnown: false, sharingError: false, sharingBusy: false, sharingRequest: null,
     lastSharingAttempt: 0, publishing: false, publishSession: null
@@ -94,9 +94,10 @@
     return { key, headers: { ...headers } };
   }
 
-  function invalidateSession() {
+  function invalidateSession(reauthenticate = false) {
     if (state.sessionInvalidated) return;
     state.sessionInvalidated = true;
+    state.authRequired = reauthenticate;
     state.serverRevision += 1;
     state.summaryRevision += 1;
     cancelMessages();
@@ -132,14 +133,26 @@
     $('messageSearch').value = '';
     $('channelIntro').hidden = true;
     $('emptyState').hidden = false;
-    $('emptyDescription').textContent = 'Sua sessão mudou. Reabra o Cofre de Informações para carregar o acervo da conta atual.';
-    $('channelName').textContent = 'Sessão alterada';
-    $('channelTopic').textContent = 'Reabra este módulo para continuar.';
+    $('emptyDescription').textContent = reauthenticate
+      ? 'Entre novamente no JK Sistema para autorizar o Cofre e carregar as informações da sua empresa.'
+      : 'Sua sessão mudou. Reabra o Cofre de Informações para carregar o acervo da conta atual.';
+    $('emptyTitle').textContent = reauthenticate ? 'Entre novamente para abrir o Cofre' : 'Um lugar para tudo o que importa.';
+    $('reauthenticateCofre').hidden = !reauthenticate;
+    $('emptyFormat').hidden = reauthenticate;
+    $('channelName').textContent = reauthenticate ? 'Autorize seu acesso ao Cofre' : 'Sessão alterada';
+    $('channelTopic').textContent = reauthenticate ? 'Entre novamente no JK Sistema para continuar.' : 'Reabra este módulo para continuar.';
     setChannelsOpen(false);
     renderServers();
     renderChannels();
     renderDetails();
-    notice('Sua sessão mudou. O contexto anterior foi encerrado. Reabra o Cofre de Informações para continuar.');
+    if (reauthenticate) {
+      $('detailServer').textContent = 'Acesso pendente';
+      $('coverageBadge').textContent = 'Aguardando login';
+      $('coverageDescription').textContent = 'Entre novamente para consultar o acervo da sua empresa.';
+      $('exportDate').textContent = 'As informações serão carregadas após o login.';
+    }
+    notice(reauthenticate ? 'Sua sessão do Cofre precisa ser autorizada. Entre novamente no JK Sistema.'
+      : 'Sua sessão mudou. O contexto anterior foi encerrado. Reabra o Cofre de Informações para continuar.');
   }
 
   function ensureSession(session = state.session) {
@@ -160,6 +173,7 @@
     const data = await response.json().catch(() => ({}));
     ensureSession(session);
     if (!response.ok) {
+      if (response.status === 401) invalidateSession(true);
       const fallback = response.status === 403 ? 'Sua conta não tem acesso ao Cofre de Informações.' : 'Não foi possível carregar o Cofre de Informações. Tente novamente.';
       const error = new Error(errorMessage(data, fallback));
       error.status = response.status;
@@ -169,6 +183,7 @@
   }
 
   function notice(message, isError) {
+    if (state.authRequired) { message = 'Sua sessão do Cofre precisa ser autorizada. Entre novamente no JK Sistema.'; isError = false; }
     $('notice').hidden = !message;
     $('notice').textContent = message || '';
     $('notice').classList.toggle('error', !!isError);
@@ -196,9 +211,10 @@
     $('sharingStrip').classList.toggle('sharing-company', sharing.enabled && !invalid);
     $('sharingStrip').classList.toggle('sharing-error', state.sharingError && !invalid);
     $('sharingStrip').classList.toggle('sharing-busy', state.sharingBusy && !invalid);
-    $('sharingLabel').textContent = invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
+    $('sharingLabel').textContent = state.authRequired ? 'Login necessário' : invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
     const synced = formatDate(sharing.last_sync);
-    $('sharingDescription').textContent = invalid ? 'Reabra o módulo para carregar a conta atual.'
+    $('sharingDescription').textContent = state.authRequired ? 'Entre novamente para autorizar o acesso ao Cofre.'
+      : invalid ? 'Reabra o módulo para carregar a conta atual.'
       : state.sharingBusy ? state.publishing ? 'Publicando acervo…' : 'Sincronizando acervo…'
       : state.sharingError ? 'Não foi possível sincronizar agora. A cópia disponível foi mantida.'
       : !state.sharingKnown ? 'Confira o acervo para continuar.'
@@ -585,7 +601,11 @@
     const session = ensureSession();
     const promise = (async () => {
       const response = await fetch(path, { headers: session.headers, cache: 'no-store', credentials: 'same-origin', signal: state.mediaController.signal });
-      if (!response.ok) throw new Error('Arquivo indisponível nesta cópia.');
+      ensureSession(session);
+      if (!response.ok) {
+        if (response.status === 401) invalidateSession(true);
+        throw new Error('Arquivo indisponível nesta cópia.');
+      }
       const blob = await response.blob();
       ensureSession(session);
       if (revision !== state.revision) return null;
@@ -1326,6 +1346,7 @@
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') focusSync(); });
     if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     for (const id of ['railImport', 'sidebarImport', 'emptyImport', 'detailImport', 'footerImport']) $(id).addEventListener('click', openImport);
+    $('reauthenticateCofre').addEventListener('click', () => { if (state.authRequired) encerrarSessao(); });
     $('closeMedia').addEventListener('click', () => $('mediaDialog').close());
     $('closeImport').addEventListener('click', closeImport);
     $('cancelImport').addEventListener('click', closeImport);
@@ -1375,7 +1396,7 @@
     state.accessReady = true;
     renderSharing();
     try { await loadServers(); state.archiveReady = true; }
-    catch (error) { notice(error.message, true); $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; }
+    catch (error) { if (!state.sessionInvalidated) { notice(error.message, true); $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; } }
   }
 
   init().catch(() => { notice('Não foi possível iniciar o Cofre de Informações. Atualize a página ou entre novamente.', true); });
