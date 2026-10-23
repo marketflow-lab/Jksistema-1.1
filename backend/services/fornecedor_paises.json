@@ -1,0 +1,1745 @@
+{
+  "AD": {
+    "name": "ANDORRA",
+    "aliases": [
+      "Andorra",
+      "Andorra"
+    ]
+  },
+  "AE": {
+    "name": "UNITED ARAB EMIRATES",
+    "aliases": [
+      "United Arab Emirates",
+      "Emirados Árabes Unidos"
+    ]
+  },
+  "AF": {
+    "name": "AFGHANISTAN",
+    "aliases": [
+      "Afghanistan",
+      "Afeganistão"
+    ]
+  },
+  "AG": {
+    "name": "ANTIGUA & BARBUDA",
+    "aliases": [
+      "Antigua & Barbuda",
+      "Antígua e Barbuda"
+    ]
+  },
+  "AI": {
+    "name": "ANGUILLA",
+    "aliases": [
+      "Anguilla",
+      "Anguila"
+    ]
+  },
+  "AL": {
+    "name": "ALBANIA",
+    "aliases": [
+      "Albania",
+      "Albânia"
+    ]
+  },
+  "AM": {
+    "name": "ARMENIA",
+    "aliases": [
+      "Armenia",
+      "Armênia"
+    ]
+  },
+  "AO": {
+    "name": "ANGOLA",
+    "aliases": [
+      "Angola",
+      "Angola"
+    ]
+  },
+  "AQ": {
+    "name": "ANTARCTICA",
+    "aliases": [
+      "Antarctica",
+      "Antártida"
+    ]
+  },
+  "AR": {
+    "name": "ARGENTINA",
+    "aliases": [
+      "Argentina",
+      "Argentina"
+    ]
+  },
+  "AS": {
+    "name": "AMERICAN SAMOA",
+    "aliases": [
+      "American Samoa",
+      "Samoa Americana"
+    ]
+  },
+  "AT": {
+    "name": "AUSTRIA",
+    "aliases": [
+      "Austria",
+      "Áustria"
+    ]
+  },
+  "AU": {
+    "name": "AUSTRALIA",
+    "aliases": [
+      "Australia",
+      "Austrália"
+    ]
+  },
+  "AW": {
+    "name": "ARUBA",
+    "aliases": [
+      "Aruba",
+      "Aruba"
+    ]
+  },
+  "AX": {
+    "name": "ÅLAND ISLANDS",
+    "aliases": [
+      "Åland Islands",
+      "Ilhas Aland"
+    ]
+  },
+  "AZ": {
+    "name": "AZERBAIJAN",
+    "aliases": [
+      "Azerbaijan",
+      "Azerbaijão"
+    ]
+  },
+  "BA": {
+    "name": "BOSNIA & HERZEGOVINA",
+    "aliases": [
+      "Bosnia & Herzegovina",
+      "Bósnia e Herzegovina"
+    ]
+  },
+  "BB": {
+    "name": "BARBADOS",
+    "aliases": [
+      "Barbados",
+      "Barbados"
+    ]
+  },
+  "BD": {
+    "name": "BANGLADESH",
+    "aliases": [
+      "Bangladesh",
+      "Bangladesh"
+    ]
+  },
+  "BE": {
+    "name": "BELGIUM",
+    "aliases": [
+      "Belgium",
+      "Bélgica"
+    ]
+  },
+  "BF": {
+    "name": "BURKINA FASO",
+    "aliases": [
+      "Burkina Faso",
+      "Burquina Faso"
+    ]
+  },
+  "BG": {
+    "name": "BULGARIA",
+    "aliases": [
+      "Bulgaria",
+      "Bulgária"
+    ]
+  },
+  "BH": {
+    "name": "BAHRAIN",
+    "aliases": [
+      "Bahrain",
+      "Barein"
+    ]
+  },
+  "BI": {
+    "name": "BURUNDI",
+    "aliases": [
+      "Burundi",
+      "Burundi"
+    ]
+  },
+  "BJ": {
+    "name": "BENIN",
+    "aliases": [
+      "Benin",
+      "Benin"
+    ]
+  },
+  "BL": {
+    "name": "ST. BARTHÉLEMY",
+    "aliases": [
+      "St. Barthélemy",
+      "São Bartolomeu"
+    ]
+  },
+  "BM": {
+    "name": "BERMUDA",
+    "aliases": [
+      "Bermuda",
+      "Bermudas"
+    ]
+  },
+  "BN": {
+    "name": "BRUNEI",
+    "aliases": [
+      "Brunei",
+      "Brunei"
+    ]
+  },
+  "BO": {
+    "name": "BOLIVIA",
+    "aliases": [
+      "Bolivia",
+      "Bolívia"
+    ]
+  },
+  "BQ": {
+    "name": "CARIBBEAN NETHERLANDS",
+    "aliases": [
+      "Caribbean Netherlands",
+      "Países Baixos Caribenhos"
+    ]
+  },
+  "BR": {
+    "name": "BRAZIL",
+    "aliases": [
+      "Brazil",
+      "Brasil"
+    ]
+  },
+  "BS": {
+    "name": "BAHAMAS",
+    "aliases": [
+      "Bahamas",
+      "Bahamas"
+    ]
+  },
+  "BT": {
+    "name": "BHUTAN",
+    "aliases": [
+      "Bhutan",
+      "Butão"
+    ]
+  },
+  "BV": {
+    "name": "BOUVET ISLAND",
+    "aliases": [
+      "Bouvet Island",
+      "Ilha Bouvet"
+    ]
+  },
+  "BW": {
+    "name": "BOTSWANA",
+    "aliases": [
+      "Botswana",
+      "Botsuana"
+    ]
+  },
+  "BY": {
+    "name": "BELARUS",
+    "aliases": [
+      "Belarus",
+      "Bielorrússia"
+    ]
+  },
+  "BZ": {
+    "name": "BELIZE",
+    "aliases": [
+      "Belize",
+      "Belize"
+    ]
+  },
+  "CA": {
+    "name": "CANADA",
+    "aliases": [
+      "Canada",
+      "Canadá"
+    ]
+  },
+  "CC": {
+    "name": "COCOS (KEELING) ISLANDS",
+    "aliases": [
+      "Cocos (Keeling) Islands",
+      "Ilhas Cocos (Keeling)"
+    ]
+  },
+  "CD": {
+    "name": "CONGO - KINSHASA",
+    "aliases": [
+      "Congo - Kinshasa",
+      "Congo - Kinshasa"
+    ]
+  },
+  "CF": {
+    "name": "CENTRAL AFRICAN REPUBLIC",
+    "aliases": [
+      "Central African Republic",
+      "República Centro-Africana"
+    ]
+  },
+  "CG": {
+    "name": "CONGO - BRAZZAVILLE",
+    "aliases": [
+      "Congo - Brazzaville",
+      "República do Congo"
+    ]
+  },
+  "CH": {
+    "name": "SWITZERLAND",
+    "aliases": [
+      "Switzerland",
+      "Suíça"
+    ]
+  },
+  "CI": {
+    "name": "CÔTE D’IVOIRE",
+    "aliases": [
+      "Côte d’Ivoire",
+      "Costa do Marfim"
+    ]
+  },
+  "CK": {
+    "name": "COOK ISLANDS",
+    "aliases": [
+      "Cook Islands",
+      "Ilhas Cook"
+    ]
+  },
+  "CL": {
+    "name": "CHILE",
+    "aliases": [
+      "Chile",
+      "Chile"
+    ]
+  },
+  "CM": {
+    "name": "CAMEROON",
+    "aliases": [
+      "Cameroon",
+      "Camarões"
+    ]
+  },
+  "CN": {
+    "name": "CHINA",
+    "aliases": [
+      "China",
+      "China"
+    ]
+  },
+  "CO": {
+    "name": "COLOMBIA",
+    "aliases": [
+      "Colombia",
+      "Colômbia"
+    ]
+  },
+  "CR": {
+    "name": "COSTA RICA",
+    "aliases": [
+      "Costa Rica",
+      "Costa Rica"
+    ]
+  },
+  "CU": {
+    "name": "CUBA",
+    "aliases": [
+      "Cuba",
+      "Cuba"
+    ]
+  },
+  "CV": {
+    "name": "CAPE VERDE",
+    "aliases": [
+      "Cape Verde",
+      "Cabo Verde"
+    ]
+  },
+  "CW": {
+    "name": "CURAÇAO",
+    "aliases": [
+      "Curaçao",
+      "Curaçao"
+    ]
+  },
+  "CX": {
+    "name": "CHRISTMAS ISLAND",
+    "aliases": [
+      "Christmas Island",
+      "Ilha Christmas"
+    ]
+  },
+  "CY": {
+    "name": "CYPRUS",
+    "aliases": [
+      "Cyprus",
+      "Chipre"
+    ]
+  },
+  "CZ": {
+    "name": "CZECHIA",
+    "aliases": [
+      "Czechia",
+      "Tchéquia"
+    ]
+  },
+  "DE": {
+    "name": "GERMANY",
+    "aliases": [
+      "Germany",
+      "Alemanha"
+    ]
+  },
+  "DJ": {
+    "name": "DJIBOUTI",
+    "aliases": [
+      "Djibouti",
+      "Djibuti"
+    ]
+  },
+  "DK": {
+    "name": "DENMARK",
+    "aliases": [
+      "Denmark",
+      "Dinamarca"
+    ]
+  },
+  "DM": {
+    "name": "DOMINICA",
+    "aliases": [
+      "Dominica",
+      "Dominica"
+    ]
+  },
+  "DO": {
+    "name": "DOMINICAN REPUBLIC",
+    "aliases": [
+      "Dominican Republic",
+      "República Dominicana"
+    ]
+  },
+  "DZ": {
+    "name": "ALGERIA",
+    "aliases": [
+      "Algeria",
+      "Argélia"
+    ]
+  },
+  "EC": {
+    "name": "ECUADOR",
+    "aliases": [
+      "Ecuador",
+      "Equador"
+    ]
+  },
+  "EE": {
+    "name": "ESTONIA",
+    "aliases": [
+      "Estonia",
+      "Estônia"
+    ]
+  },
+  "EG": {
+    "name": "EGYPT",
+    "aliases": [
+      "Egypt",
+      "Egito"
+    ]
+  },
+  "EH": {
+    "name": "WESTERN SAHARA",
+    "aliases": [
+      "Western Sahara",
+      "Saara Ocidental"
+    ]
+  },
+  "ER": {
+    "name": "ERITREA",
+    "aliases": [
+      "Eritrea",
+      "Eritreia"
+    ]
+  },
+  "ES": {
+    "name": "SPAIN",
+    "aliases": [
+      "Spain",
+      "Espanha"
+    ]
+  },
+  "ET": {
+    "name": "ETHIOPIA",
+    "aliases": [
+      "Ethiopia",
+      "Etiópia"
+    ]
+  },
+  "FI": {
+    "name": "FINLAND",
+    "aliases": [
+      "Finland",
+      "Finlândia"
+    ]
+  },
+  "FJ": {
+    "name": "FIJI",
+    "aliases": [
+      "Fiji",
+      "Fiji"
+    ]
+  },
+  "FK": {
+    "name": "FALKLAND ISLANDS",
+    "aliases": [
+      "Falkland Islands",
+      "Ilhas Malvinas"
+    ]
+  },
+  "FM": {
+    "name": "MICRONESIA",
+    "aliases": [
+      "Micronesia",
+      "Micronésia"
+    ]
+  },
+  "FO": {
+    "name": "FAROE ISLANDS",
+    "aliases": [
+      "Faroe Islands",
+      "Ilhas Faroé"
+    ]
+  },
+  "FR": {
+    "name": "FRANCE",
+    "aliases": [
+      "France",
+      "França"
+    ]
+  },
+  "GA": {
+    "name": "GABON",
+    "aliases": [
+      "Gabon",
+      "Gabão"
+    ]
+  },
+  "GB": {
+    "name": "UNITED KINGDOM",
+    "aliases": [
+      "United Kingdom",
+      "Reino Unido"
+    ]
+  },
+  "GD": {
+    "name": "GRENADA",
+    "aliases": [
+      "Grenada",
+      "Granada"
+    ]
+  },
+  "GE": {
+    "name": "GEORGIA",
+    "aliases": [
+      "Georgia",
+      "Geórgia"
+    ]
+  },
+  "GF": {
+    "name": "FRENCH GUIANA",
+    "aliases": [
+      "French Guiana",
+      "Guiana Francesa"
+    ]
+  },
+  "GG": {
+    "name": "GUERNSEY",
+    "aliases": [
+      "Guernsey",
+      "Guernsey"
+    ]
+  },
+  "GH": {
+    "name": "GHANA",
+    "aliases": [
+      "Ghana",
+      "Gana"
+    ]
+  },
+  "GI": {
+    "name": "GIBRALTAR",
+    "aliases": [
+      "Gibraltar",
+      "Gibraltar"
+    ]
+  },
+  "GL": {
+    "name": "GREENLAND",
+    "aliases": [
+      "Greenland",
+      "Groenlândia"
+    ]
+  },
+  "GM": {
+    "name": "GAMBIA",
+    "aliases": [
+      "Gambia",
+      "Gâmbia"
+    ]
+  },
+  "GN": {
+    "name": "GUINEA",
+    "aliases": [
+      "Guinea",
+      "Guiné"
+    ]
+  },
+  "GP": {
+    "name": "GUADELOUPE",
+    "aliases": [
+      "Guadeloupe",
+      "Guadalupe"
+    ]
+  },
+  "GQ": {
+    "name": "EQUATORIAL GUINEA",
+    "aliases": [
+      "Equatorial Guinea",
+      "Guiné Equatorial"
+    ]
+  },
+  "GR": {
+    "name": "GREECE",
+    "aliases": [
+      "Greece",
+      "Grécia"
+    ]
+  },
+  "GS": {
+    "name": "SOUTH GEORGIA & SOUTH SANDWICH ISLANDS",
+    "aliases": [
+      "South Georgia & South Sandwich Islands",
+      "Ilhas Geórgia do Sul e Sandwich do Sul"
+    ]
+  },
+  "GT": {
+    "name": "GUATEMALA",
+    "aliases": [
+      "Guatemala",
+      "Guatemala"
+    ]
+  },
+  "GU": {
+    "name": "GUAM",
+    "aliases": [
+      "Guam",
+      "Guam"
+    ]
+  },
+  "GW": {
+    "name": "GUINEA-BISSAU",
+    "aliases": [
+      "Guinea-Bissau",
+      "Guiné-Bissau"
+    ]
+  },
+  "GY": {
+    "name": "GUYANA",
+    "aliases": [
+      "Guyana",
+      "Guiana"
+    ]
+  },
+  "HK": {
+    "name": "HONG KONG SAR CHINA",
+    "aliases": [
+      "Hong Kong SAR China",
+      "Hong Kong, RAE da China"
+    ]
+  },
+  "HM": {
+    "name": "HEARD & MCDONALD ISLANDS",
+    "aliases": [
+      "Heard & McDonald Islands",
+      "Ilhas Heard e McDonald"
+    ]
+  },
+  "HN": {
+    "name": "HONDURAS",
+    "aliases": [
+      "Honduras",
+      "Honduras"
+    ]
+  },
+  "HR": {
+    "name": "CROATIA",
+    "aliases": [
+      "Croatia",
+      "Croácia"
+    ]
+  },
+  "HT": {
+    "name": "HAITI",
+    "aliases": [
+      "Haiti",
+      "Haiti"
+    ]
+  },
+  "HU": {
+    "name": "HUNGARY",
+    "aliases": [
+      "Hungary",
+      "Hungria"
+    ]
+  },
+  "ID": {
+    "name": "INDONESIA",
+    "aliases": [
+      "Indonesia",
+      "Indonésia"
+    ]
+  },
+  "IE": {
+    "name": "IRELAND",
+    "aliases": [
+      "Ireland",
+      "Irlanda"
+    ]
+  },
+  "IL": {
+    "name": "ISRAEL",
+    "aliases": [
+      "Israel",
+      "Israel"
+    ]
+  },
+  "IM": {
+    "name": "ISLE OF MAN",
+    "aliases": [
+      "Isle of Man",
+      "Ilha de Man"
+    ]
+  },
+  "IN": {
+    "name": "INDIA",
+    "aliases": [
+      "India",
+      "Índia"
+    ]
+  },
+  "IO": {
+    "name": "BRITISH INDIAN OCEAN TERRITORY",
+    "aliases": [
+      "British Indian Ocean Territory",
+      "Território Britânico do Oceano Índico"
+    ]
+  },
+  "IQ": {
+    "name": "IRAQ",
+    "aliases": [
+      "Iraq",
+      "Iraque"
+    ]
+  },
+  "IR": {
+    "name": "IRAN",
+    "aliases": [
+      "Iran",
+      "Irã"
+    ]
+  },
+  "IS": {
+    "name": "ICELAND",
+    "aliases": [
+      "Iceland",
+      "Islândia"
+    ]
+  },
+  "IT": {
+    "name": "ITALY",
+    "aliases": [
+      "Italy",
+      "Itália"
+    ]
+  },
+  "JE": {
+    "name": "JERSEY",
+    "aliases": [
+      "Jersey",
+      "Jersey"
+    ]
+  },
+  "JM": {
+    "name": "JAMAICA",
+    "aliases": [
+      "Jamaica",
+      "Jamaica"
+    ]
+  },
+  "JO": {
+    "name": "JORDAN",
+    "aliases": [
+      "Jordan",
+      "Jordânia"
+    ]
+  },
+  "JP": {
+    "name": "JAPAN",
+    "aliases": [
+      "Japan",
+      "Japão"
+    ]
+  },
+  "KE": {
+    "name": "KENYA",
+    "aliases": [
+      "Kenya",
+      "Quênia"
+    ]
+  },
+  "KG": {
+    "name": "KYRGYZSTAN",
+    "aliases": [
+      "Kyrgyzstan",
+      "Quirguistão"
+    ]
+  },
+  "KH": {
+    "name": "CAMBODIA",
+    "aliases": [
+      "Cambodia",
+      "Camboja"
+    ]
+  },
+  "KI": {
+    "name": "KIRIBATI",
+    "aliases": [
+      "Kiribati",
+      "Quiribati"
+    ]
+  },
+  "KM": {
+    "name": "COMOROS",
+    "aliases": [
+      "Comoros",
+      "Comores"
+    ]
+  },
+  "KN": {
+    "name": "ST. KITTS & NEVIS",
+    "aliases": [
+      "St. Kitts & Nevis",
+      "São Cristóvão e Névis"
+    ]
+  },
+  "KP": {
+    "name": "NORTH KOREA",
+    "aliases": [
+      "North Korea",
+      "Coreia do Norte"
+    ]
+  },
+  "KR": {
+    "name": "SOUTH KOREA",
+    "aliases": [
+      "South Korea",
+      "Coreia do Sul"
+    ]
+  },
+  "KW": {
+    "name": "KUWAIT",
+    "aliases": [
+      "Kuwait",
+      "Kuwait"
+    ]
+  },
+  "KY": {
+    "name": "CAYMAN ISLANDS",
+    "aliases": [
+      "Cayman Islands",
+      "Ilhas Cayman"
+    ]
+  },
+  "KZ": {
+    "name": "KAZAKHSTAN",
+    "aliases": [
+      "Kazakhstan",
+      "Cazaquistão"
+    ]
+  },
+  "LA": {
+    "name": "LAOS",
+    "aliases": [
+      "Laos",
+      "Laos"
+    ]
+  },
+  "LB": {
+    "name": "LEBANON",
+    "aliases": [
+      "Lebanon",
+      "Líbano"
+    ]
+  },
+  "LC": {
+    "name": "ST. LUCIA",
+    "aliases": [
+      "St. Lucia",
+      "Santa Lúcia"
+    ]
+  },
+  "LI": {
+    "name": "LIECHTENSTEIN",
+    "aliases": [
+      "Liechtenstein",
+      "Liechtenstein"
+    ]
+  },
+  "LK": {
+    "name": "SRI LANKA",
+    "aliases": [
+      "Sri Lanka",
+      "Sri Lanka"
+    ]
+  },
+  "LR": {
+    "name": "LIBERIA",
+    "aliases": [
+      "Liberia",
+      "Libéria"
+    ]
+  },
+  "LS": {
+    "name": "LESOTHO",
+    "aliases": [
+      "Lesotho",
+      "Lesoto"
+    ]
+  },
+  "LT": {
+    "name": "LITHUANIA",
+    "aliases": [
+      "Lithuania",
+      "Lituânia"
+    ]
+  },
+  "LU": {
+    "name": "LUXEMBOURG",
+    "aliases": [
+      "Luxembourg",
+      "Luxemburgo"
+    ]
+  },
+  "LV": {
+    "name": "LATVIA",
+    "aliases": [
+      "Latvia",
+      "Letônia"
+    ]
+  },
+  "LY": {
+    "name": "LIBYA",
+    "aliases": [
+      "Libya",
+      "Líbia"
+    ]
+  },
+  "MA": {
+    "name": "MOROCCO",
+    "aliases": [
+      "Morocco",
+      "Marrocos"
+    ]
+  },
+  "MC": {
+    "name": "MONACO",
+    "aliases": [
+      "Monaco",
+      "Mônaco"
+    ]
+  },
+  "MD": {
+    "name": "MOLDOVA",
+    "aliases": [
+      "Moldova",
+      "Moldávia"
+    ]
+  },
+  "ME": {
+    "name": "MONTENEGRO",
+    "aliases": [
+      "Montenegro",
+      "Montenegro"
+    ]
+  },
+  "MF": {
+    "name": "ST. MARTIN",
+    "aliases": [
+      "St. Martin",
+      "São Martinho"
+    ]
+  },
+  "MG": {
+    "name": "MADAGASCAR",
+    "aliases": [
+      "Madagascar",
+      "Madagascar"
+    ]
+  },
+  "MH": {
+    "name": "MARSHALL ISLANDS",
+    "aliases": [
+      "Marshall Islands",
+      "Ilhas Marshall"
+    ]
+  },
+  "MK": {
+    "name": "NORTH MACEDONIA",
+    "aliases": [
+      "North Macedonia",
+      "Macedônia do Norte"
+    ]
+  },
+  "ML": {
+    "name": "MALI",
+    "aliases": [
+      "Mali",
+      "Mali"
+    ]
+  },
+  "MM": {
+    "name": "MYANMAR (BURMA)",
+    "aliases": [
+      "Myanmar (Burma)",
+      "Mianmar (Birmânia)"
+    ]
+  },
+  "MN": {
+    "name": "MONGOLIA",
+    "aliases": [
+      "Mongolia",
+      "Mongólia"
+    ]
+  },
+  "MO": {
+    "name": "MACAO SAR CHINA",
+    "aliases": [
+      "Macao SAR China",
+      "Macau, RAE da China"
+    ]
+  },
+  "MP": {
+    "name": "NORTHERN MARIANA ISLANDS",
+    "aliases": [
+      "Northern Mariana Islands",
+      "Ilhas Marianas do Norte"
+    ]
+  },
+  "MQ": {
+    "name": "MARTINIQUE",
+    "aliases": [
+      "Martinique",
+      "Martinica"
+    ]
+  },
+  "MR": {
+    "name": "MAURITANIA",
+    "aliases": [
+      "Mauritania",
+      "Mauritânia"
+    ]
+  },
+  "MS": {
+    "name": "MONTSERRAT",
+    "aliases": [
+      "Montserrat",
+      "Montserrat"
+    ]
+  },
+  "MT": {
+    "name": "MALTA",
+    "aliases": [
+      "Malta",
+      "Malta"
+    ]
+  },
+  "MU": {
+    "name": "MAURITIUS",
+    "aliases": [
+      "Mauritius",
+      "Maurício"
+    ]
+  },
+  "MV": {
+    "name": "MALDIVES",
+    "aliases": [
+      "Maldives",
+      "Maldivas"
+    ]
+  },
+  "MW": {
+    "name": "MALAWI",
+    "aliases": [
+      "Malawi",
+      "Malaui"
+    ]
+  },
+  "MX": {
+    "name": "MEXICO",
+    "aliases": [
+      "Mexico",
+      "México"
+    ]
+  },
+  "MY": {
+    "name": "MALAYSIA",
+    "aliases": [
+      "Malaysia",
+      "Malásia"
+    ]
+  },
+  "MZ": {
+    "name": "MOZAMBIQUE",
+    "aliases": [
+      "Mozambique",
+      "Moçambique"
+    ]
+  },
+  "NA": {
+    "name": "NAMIBIA",
+    "aliases": [
+      "Namibia",
+      "Namíbia"
+    ]
+  },
+  "NC": {
+    "name": "NEW CALEDONIA",
+    "aliases": [
+      "New Caledonia",
+      "Nova Caledônia"
+    ]
+  },
+  "NE": {
+    "name": "NIGER",
+    "aliases": [
+      "Niger",
+      "Níger"
+    ]
+  },
+  "NF": {
+    "name": "NORFOLK ISLAND",
+    "aliases": [
+      "Norfolk Island",
+      "Ilha Norfolk"
+    ]
+  },
+  "NG": {
+    "name": "NIGERIA",
+    "aliases": [
+      "Nigeria",
+      "Nigéria"
+    ]
+  },
+  "NI": {
+    "name": "NICARAGUA",
+    "aliases": [
+      "Nicaragua",
+      "Nicarágua"
+    ]
+  },
+  "NL": {
+    "name": "NETHERLANDS",
+    "aliases": [
+      "Netherlands",
+      "Países Baixos"
+    ]
+  },
+  "NO": {
+    "name": "NORWAY",
+    "aliases": [
+      "Norway",
+      "Noruega"
+    ]
+  },
+  "NP": {
+    "name": "NEPAL",
+    "aliases": [
+      "Nepal",
+      "Nepal"
+    ]
+  },
+  "NR": {
+    "name": "NAURU",
+    "aliases": [
+      "Nauru",
+      "Nauru"
+    ]
+  },
+  "NU": {
+    "name": "NIUE",
+    "aliases": [
+      "Niue",
+      "Niue"
+    ]
+  },
+  "NZ": {
+    "name": "NEW ZEALAND",
+    "aliases": [
+      "New Zealand",
+      "Nova Zelândia"
+    ]
+  },
+  "OM": {
+    "name": "OMAN",
+    "aliases": [
+      "Oman",
+      "Omã"
+    ]
+  },
+  "PA": {
+    "name": "PANAMA",
+    "aliases": [
+      "Panama",
+      "Panamá"
+    ]
+  },
+  "PE": {
+    "name": "PERU",
+    "aliases": [
+      "Peru",
+      "Peru"
+    ]
+  },
+  "PF": {
+    "name": "FRENCH POLYNESIA",
+    "aliases": [
+      "French Polynesia",
+      "Polinésia Francesa"
+    ]
+  },
+  "PG": {
+    "name": "PAPUA NEW GUINEA",
+    "aliases": [
+      "Papua New Guinea",
+      "Papua-Nova Guiné"
+    ]
+  },
+  "PH": {
+    "name": "PHILIPPINES",
+    "aliases": [
+      "Philippines",
+      "Filipinas"
+    ]
+  },
+  "PK": {
+    "name": "PAKISTAN",
+    "aliases": [
+      "Pakistan",
+      "Paquistão"
+    ]
+  },
+  "PL": {
+    "name": "POLAND",
+    "aliases": [
+      "Poland",
+      "Polônia"
+    ]
+  },
+  "PM": {
+    "name": "ST. PIERRE & MIQUELON",
+    "aliases": [
+      "St. Pierre & Miquelon",
+      "São Pedro e Miquelão"
+    ]
+  },
+  "PN": {
+    "name": "PITCAIRN ISLANDS",
+    "aliases": [
+      "Pitcairn Islands",
+      "Ilhas Pitcairn"
+    ]
+  },
+  "PR": {
+    "name": "PUERTO RICO",
+    "aliases": [
+      "Puerto Rico",
+      "Porto Rico"
+    ]
+  },
+  "PS": {
+    "name": "PALESTINIAN TERRITORIES",
+    "aliases": [
+      "Palestinian Territories",
+      "Territórios palestinos"
+    ]
+  },
+  "PT": {
+    "name": "PORTUGAL",
+    "aliases": [
+      "Portugal",
+      "Portugal"
+    ]
+  },
+  "PW": {
+    "name": "PALAU",
+    "aliases": [
+      "Palau",
+      "Palau"
+    ]
+  },
+  "PY": {
+    "name": "PARAGUAY",
+    "aliases": [
+      "Paraguay",
+      "Paraguai"
+    ]
+  },
+  "QA": {
+    "name": "QATAR",
+    "aliases": [
+      "Qatar",
+      "Catar"
+    ]
+  },
+  "RE": {
+    "name": "RÉUNION",
+    "aliases": [
+      "Réunion",
+      "Reunião"
+    ]
+  },
+  "RO": {
+    "name": "ROMANIA",
+    "aliases": [
+      "Romania",
+      "Romênia"
+    ]
+  },
+  "RS": {
+    "name": "SERBIA",
+    "aliases": [
+      "Serbia",
+      "Sérvia"
+    ]
+  },
+  "RU": {
+    "name": "RUSSIA",
+    "aliases": [
+      "Russia",
+      "Rússia"
+    ]
+  },
+  "RW": {
+    "name": "RWANDA",
+    "aliases": [
+      "Rwanda",
+      "Ruanda"
+    ]
+  },
+  "SA": {
+    "name": "SAUDI ARABIA",
+    "aliases": [
+      "Saudi Arabia",
+      "Arábia Saudita"
+    ]
+  },
+  "SB": {
+    "name": "SOLOMON ISLANDS",
+    "aliases": [
+      "Solomon Islands",
+      "Ilhas Salomão"
+    ]
+  },
+  "SC": {
+    "name": "SEYCHELLES",
+    "aliases": [
+      "Seychelles",
+      "Seicheles"
+    ]
+  },
+  "SD": {
+    "name": "SUDAN",
+    "aliases": [
+      "Sudan",
+      "Sudão"
+    ]
+  },
+  "SE": {
+    "name": "SWEDEN",
+    "aliases": [
+      "Sweden",
+      "Suécia"
+    ]
+  },
+  "SG": {
+    "name": "SINGAPORE",
+    "aliases": [
+      "Singapore",
+      "Singapura"
+    ]
+  },
+  "SH": {
+    "name": "ST. HELENA",
+    "aliases": [
+      "St. Helena",
+      "Santa Helena"
+    ]
+  },
+  "SI": {
+    "name": "SLOVENIA",
+    "aliases": [
+      "Slovenia",
+      "Eslovênia"
+    ]
+  },
+  "SJ": {
+    "name": "SVALBARD & JAN MAYEN",
+    "aliases": [
+      "Svalbard & Jan Mayen",
+      "Svalbard e Jan Mayen"
+    ]
+  },
+  "SK": {
+    "name": "SLOVAKIA",
+    "aliases": [
+      "Slovakia",
+      "Eslováquia"
+    ]
+  },
+  "SL": {
+    "name": "SIERRA LEONE",
+    "aliases": [
+      "Sierra Leone",
+      "Serra Leoa"
+    ]
+  },
+  "SM": {
+    "name": "SAN MARINO",
+    "aliases": [
+      "San Marino",
+      "San Marino"
+    ]
+  },
+  "SN": {
+    "name": "SENEGAL",
+    "aliases": [
+      "Senegal",
+      "Senegal"
+    ]
+  },
+  "SO": {
+    "name": "SOMALIA",
+    "aliases": [
+      "Somalia",
+      "Somália"
+    ]
+  },
+  "SR": {
+    "name": "SURINAME",
+    "aliases": [
+      "Suriname",
+      "Suriname"
+    ]
+  },
+  "SS": {
+    "name": "SOUTH SUDAN",
+    "aliases": [
+      "South Sudan",
+      "Sudão do Sul"
+    ]
+  },
+  "ST": {
+    "name": "SÃO TOMÉ & PRÍNCIPE",
+    "aliases": [
+      "São Tomé & Príncipe",
+      "São Tomé e Príncipe"
+    ]
+  },
+  "SV": {
+    "name": "EL SALVADOR",
+    "aliases": [
+      "El Salvador",
+      "El Salvador"
+    ]
+  },
+  "SX": {
+    "name": "SINT MAARTEN",
+    "aliases": [
+      "Sint Maarten",
+      "Sint Maarten"
+    ]
+  },
+  "SY": {
+    "name": "SYRIA",
+    "aliases": [
+      "Syria",
+      "Síria"
+    ]
+  },
+  "SZ": {
+    "name": "ESWATINI",
+    "aliases": [
+      "Eswatini",
+      "Essuatíni"
+    ]
+  },
+  "TC": {
+    "name": "TURKS & CAICOS ISLANDS",
+    "aliases": [
+      "Turks & Caicos Islands",
+      "Ilhas Turcas e Caicos"
+    ]
+  },
+  "TD": {
+    "name": "CHAD",
+    "aliases": [
+      "Chad",
+      "Chade"
+    ]
+  },
+  "TF": {
+    "name": "FRENCH SOUTHERN TERRITORIES",
+    "aliases": [
+      "French Southern Territories",
+      "Territórios Franceses do Sul"
+    ]
+  },
+  "TG": {
+    "name": "TOGO",
+    "aliases": [
+      "Togo",
+      "Togo"
+    ]
+  },
+  "TH": {
+    "name": "THAILAND",
+    "aliases": [
+      "Thailand",
+      "Tailândia"
+    ]
+  },
+  "TJ": {
+    "name": "TAJIKISTAN",
+    "aliases": [
+      "Tajikistan",
+      "Tadjiquistão"
+    ]
+  },
+  "TK": {
+    "name": "TOKELAU",
+    "aliases": [
+      "Tokelau",
+      "Tokelau"
+    ]
+  },
+  "TL": {
+    "name": "TIMOR-LESTE",
+    "aliases": [
+      "Timor-Leste",
+      "Timor-Leste"
+    ]
+  },
+  "TM": {
+    "name": "TURKMENISTAN",
+    "aliases": [
+      "Turkmenistan",
+      "Turcomenistão"
+    ]
+  },
+  "TN": {
+    "name": "TUNISIA",
+    "aliases": [
+      "Tunisia",
+      "Tunísia"
+    ]
+  },
+  "TO": {
+    "name": "TONGA",
+    "aliases": [
+      "Tonga",
+      "Tonga"
+    ]
+  },
+  "TR": {
+    "name": "TÜRKIYE",
+    "aliases": [
+      "Türkiye",
+      "Turquia"
+    ]
+  },
+  "TT": {
+    "name": "TRINIDAD & TOBAGO",
+    "aliases": [
+      "Trinidad & Tobago",
+      "Trinidad e Tobago"
+    ]
+  },
+  "TV": {
+    "name": "TUVALU",
+    "aliases": [
+      "Tuvalu",
+      "Tuvalu"
+    ]
+  },
+  "TW": {
+    "name": "TAIWAN",
+    "aliases": [
+      "Taiwan",
+      "Taiwan"
+    ]
+  },
+  "TZ": {
+    "name": "TANZANIA",
+    "aliases": [
+      "Tanzania",
+      "Tanzânia"
+    ]
+  },
+  "UA": {
+    "name": "UKRAINE",
+    "aliases": [
+      "Ukraine",
+      "Ucrânia"
+    ]
+  },
+  "UG": {
+    "name": "UGANDA",
+    "aliases": [
+      "Uganda",
+      "Uganda"
+    ]
+  },
+  "UM": {
+    "name": "U.S. OUTLYING ISLANDS",
+    "aliases": [
+      "U.S. Outlying Islands",
+      "Ilhas Menores Distantes dos EUA"
+    ]
+  },
+  "US": {
+    "name": "UNITED STATES",
+    "aliases": [
+      "United States",
+      "Estados Unidos"
+    ]
+  },
+  "UY": {
+    "name": "URUGUAY",
+    "aliases": [
+      "Uruguay",
+      "Uruguai"
+    ]
+  },
+  "UZ": {
+    "name": "UZBEKISTAN",
+    "aliases": [
+      "Uzbekistan",
+      "Uzbequistão"
+    ]
+  },
+  "VA": {
+    "name": "VATICAN CITY",
+    "aliases": [
+      "Vatican City",
+      "Cidade do Vaticano"
+    ]
+  },
+  "VC": {
+    "name": "ST. VINCENT & GRENADINES",
+    "aliases": [
+      "St. Vincent & Grenadines",
+      "São Vicente e Granadinas"
+    ]
+  },
+  "VE": {
+    "name": "VENEZUELA",
+    "aliases": [
+      "Venezuela",
+      "Venezuela"
+    ]
+  },
+  "VG": {
+    "name": "BRITISH VIRGIN ISLANDS",
+    "aliases": [
+      "British Virgin Islands",
+      "Ilhas Virgens Britânicas"
+    ]
+  },
+  "VI": {
+    "name": "U.S. VIRGIN ISLANDS",
+    "aliases": [
+      "U.S. Virgin Islands",
+      "Ilhas Virgens Americanas"
+    ]
+  },
+  "VN": {
+    "name": "VIETNAM",
+    "aliases": [
+      "Vietnam",
+      "Vietnã"
+    ]
+  },
+  "VU": {
+    "name": "VANUATU",
+    "aliases": [
+      "Vanuatu",
+      "Vanuatu"
+    ]
+  },
+  "WF": {
+    "name": "WALLIS & FUTUNA",
+    "aliases": [
+      "Wallis & Futuna",
+      "Wallis e Futuna"
+    ]
+  },
+  "WS": {
+    "name": "SAMOA",
+    "aliases": [
+      "Samoa",
+      "Samoa"
+    ]
+  },
+  "YE": {
+    "name": "YEMEN",
+    "aliases": [
+      "Yemen",
+      "Iêmen"
+    ]
+  },
+  "YT": {
+    "name": "MAYOTTE",
+    "aliases": [
+      "Mayotte",
+      "Mayotte"
+    ]
+  },
+  "ZA": {
+    "name": "SOUTH AFRICA",
+    "aliases": [
+      "South Africa",
+      "África do Sul"
+    ]
+  },
+  "ZM": {
+    "name": "ZAMBIA",
+    "aliases": [
+      "Zambia",
+      "Zâmbia"
+    ]
+  },
+  "ZW": {
+    "name": "ZIMBABWE",
+    "aliases": [
+      "Zimbabwe",
+      "Zimbábue"
+    ]
+  }
+}

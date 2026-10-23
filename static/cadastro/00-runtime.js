@@ -69,7 +69,6 @@
         fornecedorNomeEmpresa: byId('fornecedorNomeEmpresa'),
         fornecedorNomeContato: byId('fornecedorNomeContato'),
         fornecedorEnderecoEmpresa: byId('fornecedorEnderecoEmpresa'),
-        fornecedorPaisOrigem: byId('fornecedorPaisOrigem'),
         fornecedorTelefone: byId('fornecedorTelefone'),
         fornecedorEmail: byId('fornecedorEmail'),
         fornecedorMoedaPagamento: byId('fornecedorMoedaPagamento'),

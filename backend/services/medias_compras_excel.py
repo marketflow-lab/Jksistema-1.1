@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 from backend.services import medias_compras_common as medias_common
+from backend.services.fornecedor_origem import identificar_pais_fornecedor
 from backend.services.medias_compras_common import *
 from backend.services.runtime_bridge import bind_runtime_globals
 
@@ -452,7 +453,7 @@ def _gerar_commercial_invoice_bytes(
     data_invoice = str(lista.get("order_date") or "").strip() or data_aprovacao
     _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_invoice))
     _atribuir_texto_excel(ws["F3"], "FROM:")
-    _atribuir_texto_excel(ws["H3"], cadastro_fornecedor.get("pais_origem") or "")
+    _atribuir_texto_excel(ws["H3"], identificar_pais_fornecedor(cadastro_fornecedor))
     _atribuir_texto_excel(ws["A4"], texto_nacionalizador or (f"LIST: {nome_lista}" if nome_lista else ""))
     _atribuir_texto_excel(ws["F4"], texto_comprador)
     _atribuir_texto_excel(ws["A7"], "Descriptions")

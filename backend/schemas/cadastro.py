@@ -62,7 +62,6 @@ class CadastroFornecedorRequest(BaseModel):
     nome_empresa: str
     nome_contato: str = ""
     endereco_empresa: str = ""
-    pais_origem: str = ""
     telefone: str = ""
     email: str = ""
     moeda_pagamento: str = ""
