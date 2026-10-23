@@ -16,6 +16,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlencode, urlparse
 
@@ -158,6 +159,55 @@ def _obter_perfil_autenticado_remoto_sql(username: str) -> dict:
         "machine_ids": machine_ids,
         "source": str(row["source"] or "").strip(),
     }
+
+
+def _obter_politica_local_cofre_sql(username: str) -> dict:
+    """Read cached restrictions; signed Cofre proof remains the authority.
+
+    Normal user refreshes can replace a remote profile's source.  Any cached
+    policy may restrict an already authenticated session, but cannot establish
+    a Cofre capability or protected session ticket.  This SELECT neither seeds
+    nor initializes the database, and reads no credential columns.
+    """
+    username_norm = str(username or "").strip().lower()
+    if not username_norm:
+        return {}
+    try:
+        conn = sqlite3.connect(Path(ARQUIVO_AUTH_DB).resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT username, client_id, permissions_json, active, valid_until,
+                       machine_id, machine_ids_json
+                FROM usuarios_auth
+                WHERE username = ?
+                LIMIT 1
+                """,
+                (username_norm,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return {}
+        permissions_raw = json.loads(str(row["permissions_json"] or "{}"))
+        if not isinstance(permissions_raw, dict):
+            return {}
+        client_id = str(row["client_id"] or "").strip()
+        if not client_id:
+            return {}
+        machine_id = str(row["machine_id"] or "").strip()
+        return {
+            "username": str(row["username"] or "").strip().lower(),
+            "client_id": client_id,
+            "permissions": _normalizar_permissoes(permissions_raw),
+            "active": bool(int(row["active"] or 0)),
+            "valid_until": _normalizar_data_sistema(row["valid_until"]),
+            "machine_id": machine_id,
+            "machine_ids": _normalizar_lista_maquinas(row["machine_ids_json"], machine_id),
+        }
+    except Exception:
+        return {}
 
 
 def _require_admin_firebase_recovery(
@@ -810,6 +860,7 @@ __all__ = [
     "_init_auth_db",
     "_auth_db_tem_usuarios",
     "_obter_perfil_autenticado_remoto_sql",
+    "_obter_politica_local_cofre_sql",
     "_require_admin_firebase_recovery",
     "_require_admin_firebase_status",
     "_require_full_admin_firebase_recovery",

@@ -167,7 +167,11 @@ def minha_sessao_auth(
     except Exception as exc:
         logger.warning("[LOGIN] Nao foi possivel atualizar presenca da sessao para %s: %s", sessao["username"], exc)
 
-    return _montar_resposta_login_sucesso(sessao["username"], usuario, permissoes, client_usuario, machine_final)
+    response = _montar_resposta_login_sucesso(sessao["username"], usuario, permissoes, client_usuario, machine_final)
+    # The JWT carries the already validated identity, not permissions or expiry.
+    # Keep its service bindings and markers when refreshing the profile.
+    response.access_token = str(authorization)[len("Bearer "):].strip()
+    return response
 
 def google_auth_config(request: Request):
     client_id = _google_login_client_id()
