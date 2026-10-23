@@ -45,10 +45,10 @@ async function fixture(browser, options = {}) {
             const headers = new Headers(init.headers);
             if(headers.get('authorization')!=='Bearer synthetic-token'||headers.get('x-client-id')!==tenant)throw new Error('Synthetic tenant/auth missing');
             const method=init.method||'GET', payload=init.body?JSON.parse(init.body):null;
-            const matched=url.pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)(?:\/(adicionar-sku))?$/);
+            const matched=url.pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)(?:\/(adicionar-sku|status))?$/);
             const id=matched&&decodeURIComponent(matched[1]);
             let key;
-            if(matched)key=(method==='PUT'?'save:':method==='POST'?'add:':'detail:')+id;
+            if(matched)key=(method==='PATCH'&&matched[2]==='status'?'status:':method==='PUT'?'save:':method==='POST'?'add:':'detail:')+id;
             else if(url.pathname==='/api/lojas')key='stores';
             else if(url.pathname.endsWith('/preferencias-skus-ocultos'))key='prefs';
             else if(url.pathname.endsWith('/visao'))key='view';
@@ -71,6 +71,7 @@ async function fixture(browser, options = {}) {
             else if(key.startsWith('sku:')) {const sku=url.searchParams.get('sku');if(sku==='MISSING'){status=404;body={detail:'SKU not found'};}else body={produto:product(sku)};}
             else if(key.startsWith('detail:'))body={lista:clone(lists[id])};
             else if(key.startsWith('save:')) {assertList(id);lists[id]={...lists[id],...clone(payload)};body={lista:clone(lists[id])};}
+            else if(key.startsWith('status:')) {assertList(id);lists[id].status=payload.status;body={lista:clone(lists[id])};}
             else if(key.startsWith('add:')) {assertList(id);const row=item(selected.canonicalSku||payload.sku);row.Quantidade=payload.quantidade;row['Valor unidade']=payload.valor_unitario;row['Valor total']=row.Quantidade*row['Valor unidade'];Object.assign(row,clone(selected.item||{}));const at=lists[id].itens.findIndex(it=>it.SKU===row.SKU);if(at<0)lists[id].itens.push(row);else lists[id].itens[at]=row;body={lista:clone(lists[id]),sku:row.SKU,acao:at<0?'adicionado':'atualizado'};}
             if(selected.body)body=clone(selected.body);
             call.done=true;call.response=clone(body);

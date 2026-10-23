@@ -441,8 +441,7 @@ def fornecedores_rodape_invoice(tmp_path, monkeypatch):
         "id": "fornecedor-a",
         "nome_empresa": "Fornecedor Atual Co., Ltd.",
         "nome_contato": "Contato A",
-        "endereco_empresa": "Endereco da empresa",
-        "pais_origem": "CHINA",
+        "endereco_empresa": "Industrial Park, Hubei Province, Tianmen City",
         "moeda_pagamento": "EUR",
         "conta_beneficiario": "000123456000",
         "swift": "TESTSGSG",
@@ -458,7 +457,7 @@ def fornecedores_rodape_invoice(tmp_path, monkeypatch):
     registros = {
         "tenant-a": [fornecedor, {"id": "fornecedor-b", "nome_empresa": "Fornecedor B"}],
         "tenant-b": [{**fornecedor, "nome_empresa": "Fornecedor do cliente B",
-                      "pais_origem": "CANADA",
+                      "endereco_empresa": "Toronto, Canada",
                       "moeda_pagamento": "GBP", "conta_beneficiario": "00009999",
                       "nome_beneficiario": "Beneficiario do cliente B"}],
     }
@@ -671,7 +670,7 @@ def test_commercial_invoice_cabecalho_e_rodape_usam_uma_leitura_sem_mutacao(forn
     sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
     assert chamadas == [("tenant-a", "fornecedor-a", str(raiz / "tenant-a"))]
     assert sheet["A1"].value.startswith(registro["nome_empresa"])
-    assert sheet["H3"].value == registro["pais_origem"]
+    assert sheet["H3"].value == "CHINA"
     assert "Beneficiary account number: " + registro["conta_beneficiario"] in sheet["E13"].value
     assert registro == registro_original
     assert lista == lista_original
@@ -696,16 +695,18 @@ def test_commercial_invoice_origem_usa_fornecedor_exato_do_cliente(
         assert "Beneficiary country/region: Singapore" in sheet["E13"].value
 
 
-def test_commercial_invoice_origem_atualizada_literal_sem_inferir_pais_bancario(fornecedores_rodape_invoice):
+def test_commercial_invoice_origem_acompanha_endereco_sem_usar_campo_manual_ou_bancario(fornecedores_rodape_invoice):
     raiz, registro = fornecedores_rodape_invoice
     arquivo = raiz / "tenant-a" / "cadastro_fornecedores.json"
     lista = {"fornecedor_id": "fornecedor-a", "itens": []}
-    for pais in ("CHINA", "JAPAN", "=1+1", ""):
-        registro["pais_origem"] = pais
+    for endereco, pais in (("Industrial Park, Hubei Province", "CHINA"), ("Tokyo, Japan", "JAPAN"),
+                            ("China / Vietnam", None), ("=1+1", None), ("", None)):
+        registro["endereco_empresa"] = endereco
+        registro["pais_origem"] = "VIETNAM"  # Deprecated field from the previous release is ignored.
         arquivo.write_text(json.dumps({"fornecedores": [registro]}), encoding="utf-8")
         original = arquivo.read_bytes()
         sheet = _carregar_commercial_invoice(excel_service._gerar_commercial_invoice_bytes(lista, client_id="tenant-a"))
-        assert sheet["H3"].value == (pais or None)
+        assert sheet["H3"].value == pais
         if pais:
             assert sheet["H3"].data_type == "s"
         assert "Beneficiary country/region: Singapore" in sheet["E13"].value
