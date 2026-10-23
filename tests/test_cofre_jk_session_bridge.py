@@ -42,6 +42,22 @@ def test_bridge_uses_existing_verified_session_and_local_policy_only():
     assert identity["permissions"] == {"cofre": True}
 
 
+def test_bridge_resolves_canonical_lookup_from_actual_backend_imports(monkeypatch):
+    from backend.services import admin_usuarios_store
+    lookup = Mock(return_value={"client_id": "example-company", "permissions": {"cofre": True},
+        "active": True, "valid_until": None, "machine_ids": ["example-pc"]})
+    monkeypatch.setattr(admin_usuarios_store, "_obter_perfil_autenticado_remoto_sql", lookup)
+    function = bridge()
+    scope = function.__globals__
+    del scope["_obter_perfil_autenticado_remoto_sql"]
+    tree = ast.parse((ROOT / "backend_api.py").read_text(encoding="utf-8-sig"))
+    imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)
+               and node.module == "backend.services.admin_usuarios_store"]
+    exec(compile(ast.Module(body=imports, type_ignores=[]), "backend-store-imports", "exec"), scope)
+    assert function("signed-jk-session")["client_id"] == "example-company"
+    lookup.assert_called_once_with("example")
+
+
 @pytest.mark.parametrize("profile", [
     {"client_id": "other-company"}, {"permissions": {"cofre": False}},
     {"active": False}, {"valid_until": "expired"}, {"machine_ids": []},
@@ -173,4 +189,3 @@ def test_cofre_refresh_secret_is_server_only_and_hidden_from_settings_repr():
                     {"JK_COFRE_SESSION_SECRET": current, "JK_COFRE_SESSION_PREVIOUS_SECRET": "invalid"}):
         with pytest.raises(GatewayConfigurationError):
             GatewaySettings.from_environment({**env, **updates})
-

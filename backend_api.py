@@ -1962,6 +1962,7 @@ app.include_router(create_admin_usuarios_router())
 from backend.routers.firebase_provisioning import FirebaseProvisioningRouterConfig, create_firebase_provisioning_router
 from backend.services.admin_usuarios_store import (
     _authorize_full_admin_firebase_provisioning, _authorize_admin_firebase_provisioning_status,
+    _obter_perfil_autenticado_remoto_sql,
 )
 app.include_router(create_firebase_provisioning_router(FirebaseProvisioningRouterConfig(
     base_dir=BASE_DIR, info_dir=PASTA_INFO,

@@ -541,4 +541,3 @@ def test_missing_server_secret_preserves_v1_login_but_renewal_is_unavailable(mat
 def test_session_secret_never_uses_weak_or_implicit_material(material, secret):
     with pytest.raises(ValueError):
         CofreCapabilityIssuer(RSASigner.from_string(material.pem), ISSUER, session_secret=secret)
-
