@@ -46,6 +46,7 @@ _PACKING_TOTALS_CACHE_LOCK = RLock()
 _PACKING_TOTALS_READ_LOCKS = tuple(RLock() for _ in range(16))
 _PACKING_TOTALS_CACHE_MAX = 256
 _PACKING_TOTALS_TENANT_MAX = 32
+MAX_ETIQUETAS_PACKING = 5000
 
 
 def _numero_packing(valor, *, obrigatorio=False):
@@ -724,7 +725,8 @@ async def api_medias_compras_lista_pedido_packing_list_importar(
                            filename=file.filename or "", client_id=client_id)
 
 
-def _baixar_packing_list_sync(lista_id, client_id):
+def _carregar_packing_lista_validado(lista_id, client_id):
+    """Resolve the canonical original without modifying the list or document."""
     listas = common._carregar_listas_pedidos(client_id)
     lista = next((row for row in listas if str(row.get("id", "")) == str(lista_id)), None)
     if lista is None:
@@ -740,7 +742,11 @@ def _baixar_packing_list_sync(lista_id, client_id):
         raise HTTPException(404, "Nenhum Packing List adicionado nesta lista.") from None
     if hashlib.sha256(conteudo).hexdigest() != metadata.get("sha256"):
         raise HTTPException(409, "O documento de Packing List está inválido. Verifique o arquivo enviado.")
-    dados = _ler_packing_list_bytes(conteudo)
+    return lista, _ler_packing_list_bytes(conteudo)
+
+
+def _baixar_packing_list_sync(lista_id, client_id):
+    lista, dados = _carregar_packing_lista_validado(lista_id, client_id)
     output = _gerar_packing_list_bytes(lista, dados, client_id=client_id)
     nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
     nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
@@ -753,6 +759,183 @@ async def api_medias_compras_lista_pedido_packing_list(lista_id: str, client_id:
     return await run_heavy(_baixar_packing_list_sync, lista_id=lista_id, client_id=client_id)
 
 
+def _caixas_etiquetas_packing(dados):
+    """Expand only explicit carton numbers, retaining mixed-carton contents."""
+    caixas = {}
+    origens = {}
+    for indice, grupo in enumerate(dados.get("grupos") or []):
+        try:
+            quantidade = _numero_packing(grupo.get("ctns"), obrigatorio=True)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        if quantidade <= 0 or quantidade != int(quantidade):
+            raise HTTPException(400, "Informe uma quantidade inteira e positiva de volumes no Packing List.")
+        if quantidade > MAX_ETIQUETAS_PACKING:
+            raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+        tipo = grupo.get("tipo_embalagem", "ctns")
+        if tipo not in {"ctns", "trays"}:
+            raise HTTPException(400, "O Packing List contém um tipo de embalagem inválido.")
+        numeros = []
+        for trecho in str(grupo.get("caixas") or "").split(","):
+            intervalo = re.fullmatch(r"\s*([0-9]+)(?:\s*[-\u2013\u2014]\s*([0-9]+))?\s*", trecho)
+            if not intervalo:
+                raise HTTPException(400, "Preencha Carton No com números ou intervalos explícitos, como 1 ou 2-10.")
+            if any(len(valor.lstrip("0")) > 4 for valor in intervalo.groups() if valor):
+                raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+            inicio = int(intervalo.group(1).lstrip("0") or "0")
+            fim = int(intervalo.group(2).lstrip("0") or "0") if intervalo.group(2) else inicio
+            if inicio <= 0 or fim < inicio:
+                raise HTTPException(400, "O Packing List contém uma numeração de volumes inválida.")
+            if fim > MAX_ETIQUETAS_PACKING or len(numeros) + fim - inicio + 1 > MAX_ETIQUETAS_PACKING:
+                raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+            numeros.extend(range(inicio, fim + 1))
+        if len(set(numeros)) != len(numeros):
+            raise HTTPException(400, "O Packing List repete números de volumes no mesmo intervalo.")
+        if len(numeros) != quantidade:
+            raise HTTPException(400, "A numeração de Carton No não corresponde à quantidade de caixas ou Trays.")
+        skus = []
+        for item in grupo.get("itens") or []:
+            sku = re.sub(r"(?i)^sku(?:[\s:]+|$)", "", str(item.get("sku") or "").strip()).strip()
+            if not sku:
+                raise HTTPException(400, "Todos os volumes precisam ter um Item No preenchido para gerar etiquetas.")
+            if sku not in skus:
+                skus.append(sku)
+        if not skus:
+            raise HTTPException(400, "Todos os volumes precisam conter produtos para gerar etiquetas.")
+        origem = str(grupo.get("ctns_origem") or f"grupo-{indice}")
+        identidade = (tuple(sorted(numeros)), tipo)
+        if origem in origens and origens[origem] != identidade:
+            raise HTTPException(400, "Uma mesma quantidade mesclada possui numerações ou tipos de embalagem diferentes.")
+        origens[origem] = identidade
+        for numero in numeros:
+            if numero in caixas and caixas[numero]["origem"] != origem:
+                raise HTTPException(400, "O Packing List repete números de volumes em grupos diferentes.")
+            caixa = caixas.setdefault(numero, {"origem": origem, "skus": []})
+            caixa["skus"].extend(sku for sku in skus if sku not in caixa["skus"])
+    if not caixas:
+        raise HTTPException(400, "Inclua volumes numerados no Packing List para gerar etiquetas.")
+    numeros = sorted(caixas)
+    if numeros != list(range(1, len(numeros) + 1)):
+        raise HTTPException(400, "A numeração de volumes deve começar em 1 e seguir sem lacunas.")
+    return [{"numero": numero, "skus": caixas[numero]["skus"]} for numero in numeros]
+
+
+def _desenhar_bloco_etiqueta_packing(pdf, texto, box, fonte, tamanho, minimo, *, alinhar="center"):
+    """Fit every character inside its block, or fail instead of clipping."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    x, y, largura, altura = box
+    largura -= 16
+    altura -= 12
+    for passo in range(int((tamanho - minimo) * 2) + 1):
+        fonte_tamanho = tamanho - passo / 2
+        linhas = []
+        for paragrafo in str(texto or "").splitlines():
+            atual = ""
+            for palavra in paragrafo.split():
+                tentativa = f"{atual} {palavra}" if atual else palavra
+                if stringWidth(tentativa, fonte, fonte_tamanho) <= largura:
+                    atual = tentativa
+                    continue
+                if atual:
+                    linhas.append(atual)
+                atual = ""
+                for letra in palavra:
+                    if atual and stringWidth(atual + letra, fonte, fonte_tamanho) > largura:
+                        linhas.append(atual)
+                        atual = ""
+                    atual += letra
+            linhas.append(atual)
+        altura_linha = fonte_tamanho * 1.18
+        if len(linhas) * altura_linha <= altura and all(
+            stringWidth(linha, fonte, fonte_tamanho) <= largura for linha in linhas
+        ):
+            pdf.setFont(fonte, fonte_tamanho)
+            linha_y = y + 6 + (altura + len(linhas) * altura_linha) / 2 - fonte_tamanho
+            for linha in linhas:
+                if alinhar == "left":
+                    pdf.drawString(x + 8, linha_y, linha)
+                else:
+                    pdf.drawCentredString(x + (largura + 16) / 2, linha_y, linha)
+                linha_y -= altura_linha
+            return
+    raise HTTPException(400, "O texto cadastrado excede o espaço da etiqueta. Revise os dados antes de gerar o PDF.")
+
+
+def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None):
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+    from backend.services.etiquetas_pdf_common import _fontes_etiqueta_avulsa
+    from backend.services.fornecedor_origem import identificar_pais_fornecedor
+
+    caixas = _caixas_etiquetas_packing(dados)
+    fornecedor = excel._cadastro_fornecedor_commercial_invoice(lista, client_id)
+    cabecalho, _altura = excel._cabecalho_fornecedor_commercial_invoice(lista, client_id, cadastro=fornecedor)
+    importador, _altura = excel._bloco_nacionalizador_commercial_invoice(lista, client_id)
+    comprador = _texto_comprador_packing(lista, client_id)
+    origem = identificar_pais_fornecedor(fornecedor)
+    invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
+    data = _data_packing(lista)
+    _, fonte_fornecedor = _fontes_etiqueta_avulsa()
+    largura_pagina, altura_pagina = landscape(A4)
+    margem = 10 * mm
+    largura = largura_pagina - 2 * margem
+    topo = altura_pagina - margem
+    fornecedor_y = topo - 140
+    faixa_y = fornecedor_y - 42
+    centro_altura = 90
+    dados_y = faixa_y - centro_altura
+    base = dados_y - 200
+    output = io.BytesIO()
+    pdf = canvas.Canvas(output, pagesize=(largura_pagina, altura_pagina))
+    pdf.setTitle(f"Etiquetas externas {invoice}".strip())
+    for caixa in caixas:
+        pdf.setLineWidth(0.8)
+        pdf.rect(margem, base, largura, topo - base)
+        for posicao in (fornecedor_y, faixa_y, dados_y):
+            pdf.line(margem, posicao, margem + largura, posicao)
+        pdf.line(margem + largura / 2, base, margem + largura / 2, dados_y)
+        faixa_invoice = largura * 0.48
+        faixa_data = largura * 0.29
+        for posicao in (margem + faixa_invoice, margem + faixa_invoice + faixa_data):
+            pdf.line(posicao, faixa_y, posicao, fornecedor_y)
+        _desenhar_bloco_etiqueta_packing(pdf, str(cabecalho),
+                                        (margem, fornecedor_y, largura, 140), fonte_fornecedor, 17, 9)
+        for texto, x, bloco_largura in (
+            (f"INV. No.: {invoice}", margem, faixa_invoice),
+            (f"Date: {data}", margem + faixa_invoice, faixa_data),
+            (f"FROM: {origem}", margem + faixa_invoice + faixa_data, largura - faixa_invoice - faixa_data),
+        ):
+            _desenhar_bloco_etiqueta_packing(pdf, texto, (x, faixa_y, bloco_largura, 42), "Times-Bold", 14, 8)
+        _desenhar_bloco_etiqueta_packing(pdf, f'{caixa["numero"]}/{len(caixas)}',
+                                        (margem, dados_y + centro_altura * 0.45, largura, centro_altura * 0.55),
+                                        "Times-Bold", 30, 22)
+        _desenhar_bloco_etiqueta_packing(pdf, "SKU " + ", ".join(caixa["skus"]),
+                                        (margem, dados_y, largura, centro_altura * 0.45), "Times-Bold", 18, 10)
+        _desenhar_bloco_etiqueta_packing(pdf, importador, (margem, base, largura / 2, 200),
+                                        "Times-Bold", 14, 8)
+        _desenhar_bloco_etiqueta_packing(pdf, comprador, (margem + largura / 2, base, largura / 2, 200),
+                                        "Times-Bold", 13, 8)
+        pdf.showPage()
+    pdf.save()
+    return output.getvalue()
+
+
+def _baixar_etiquetas_packing_sync(lista_id, client_id):
+    lista, dados = _carregar_packing_lista_validado(lista_id, client_id)
+    output = _gerar_etiquetas_packing_bytes(lista, dados, client_id=client_id)
+    nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
+    nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
+    return Response(content=output, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="Etiquetas_Externas_{nome}.pdf"'})
+
+
+async def api_medias_compras_lista_pedido_etiquetas(lista_id: str, client_id: str = Depends(common.get_tenant_id)):
+    from backend.services.blocking_workers import run_heavy
+    return await run_heavy(_baixar_etiquetas_packing_sync, lista_id=lista_id, client_id=client_id)
+
+
 def limpar_documento_packing_lista(client_id, lista):
     metadata = lista.get("packing_list") or {}
     if _documento_packing_existe(client_id, metadata):
@@ -763,4 +946,5 @@ def limpar_documento_packing_lista(client_id, lista):
             pass
 
 
-__all__ = ["api_medias_compras_lista_pedido_packing_list", "api_medias_compras_lista_pedido_packing_list_importar"]
+__all__ = ["api_medias_compras_lista_pedido_packing_list", "api_medias_compras_lista_pedido_packing_list_importar",
+           "api_medias_compras_lista_pedido_etiquetas"]

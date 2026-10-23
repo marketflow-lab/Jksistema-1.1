@@ -2771,7 +2771,7 @@
             });
         }
 
-        function abrirInclusaoPackingList(lista, botaoOrigem) {
+        function abrirInclusaoPackingList(lista, botaoOrigem, documentoDestino = 'Packing List') {
             const listaId = String(lista && lista.id || '').trim();
             if (dialogoPackingList && dialogoPackingList.listaId === listaId) {
                 dialogoPackingList.elemento.querySelector('input').focus();
@@ -2787,7 +2787,7 @@
                 '<p class="packing-list-dialog-status" data-packing-list-status role="status" aria-live="polite"></p>' +
                 '<div class="packing-list-dialog-acoes"><button type="button" data-packing-list-cancelar>Cancelar</button>' +
                 '<button type="submit" data-packing-list-enviar disabled>Enviar</button></div></form>';
-            dialogo.querySelector('[data-packing-list-contexto]').textContent = 'Selecione o Packing List da lista ' + String(lista.nome_lista || '') + '.';
+            dialogo.querySelector('[data-packing-list-contexto]').textContent = 'Selecione o Packing List da lista ' + String(lista.nome_lista || '') + (documentoDestino === 'Etiquetas' ? ' para gerar as etiquetas.' : '.');
             const formulario = dialogo.querySelector('form');
             const arquivoInput = dialogo.querySelector('input');
             const enviar = dialogo.querySelector('[data-packing-list-enviar]');
@@ -2843,7 +2843,7 @@
                     controleEnvio = null;
                     atualizarEstadoPackingList(lista, true);
                     atualizarTotaisPackingList(lista, resultado.lista);
-                    setStatus('Packing List incluído. Clique em Packing List para baixar.');
+                    setStatus('Packing List incluído. Clique em ' + documentoDestino + ' para baixar.');
                     fechar();
                 } catch (erro) {
                     if (!controle.signal.aborted && dialogo.isConnected) status.textContent = erro.message || 'Erro ao importar o Packing List.';
@@ -2911,6 +2911,63 @@
             } finally {
                 packingListEmExecucao.delete(listaId);
                 if (btn) { btn.disabled = false; btn.textContent = textoOriginal || 'Packing List'; btn.removeAttribute('aria-busy'); }
+            }
+        }
+
+        const etiquetasEmExecucao = new Set();
+
+        async function baixarEtiquetasLista(lista, btn) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (!listaId) { setStatus('Não foi possível identificar a lista para gerar as etiquetas.'); return; }
+            if (etiquetasEmExecucao.has(listaId)) return;
+            if (dialogoPackingList && dialogoPackingList.listaId === listaId) {
+                abrirInclusaoPackingList(lista, btn, 'Etiquetas');
+                return;
+            }
+            etiquetasEmExecucao.add(listaId);
+            const textoOriginal = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'Verificando...'; btn.setAttribute('aria-busy', 'true'); }
+            try {
+                const salvamento = invoicesPendentes.get(listaId);
+                if (salvamento && !(await salvamento)) throw new Error('Salve o número da Invoice antes de gerar as etiquetas.');
+                if (!(await window.JKDataPedidoLista.aguardarSalvamento(listaId))) throw new Error('Salve a data do pedido antes de gerar as etiquetas.');
+                const listaAtualizada = { ...(lista || {}), ...(await carregarListaCommercialInvoice(listaId)) };
+                const invoice = await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId) || obterInvoiceLista(listaAtualizada, listaId);
+                if (btn) btn.textContent = 'Gerando...';
+                setStatus('Gerando etiquetas da lista ' + String(listaAtualizada.nome_lista || '') + '...');
+                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/etiquetas', {
+                    method: 'GET', headers: { ...obterAuthHeaders() }
+                });
+                if (resposta.status === 404) {
+                    atualizarEstadoPackingList(lista, false);
+                    abrirInclusaoPackingList(lista, btn, 'Etiquetas');
+                    return;
+                }
+                if (!resposta.ok) {
+                    const erro = await resposta.json().catch(() => ({}));
+                    throw new Error(erro.detail || 'Não foi possível gerar as etiquetas.');
+                }
+                const blob = await resposta.blob();
+                if (!blob || !blob.size) throw new Error('O PDF de etiquetas foi gerado vazio.');
+                if (!/^application\/pdf(?:;|$)/i.test(blob.type)) throw new Error('O servidor não retornou um PDF de etiquetas válido.');
+                const nomeSeguro = String(invoice || listaAtualizada.nome_lista || listaId).trim().replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'lista';
+                const objectUrl = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = objectUrl;
+                link.download = nomeArquivoCommercialInvoice(resposta, 'Etiquetas_Externas_' + nomeSeguro + '.pdf');
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+                atualizarEstadoPackingList(lista, true);
+                setStatus('Etiquetas geradas com sucesso.');
+            } catch (erro) {
+                const mensagem = erro.message || 'Erro ao gerar as etiquetas.';
+                setStatus(mensagem);
+                window.alert(mensagem);
+            } finally {
+                etiquetasEmExecucao.delete(listaId);
+                if (btn) { btn.disabled = false; btn.textContent = textoOriginal || 'Etiquetas'; btn.removeAttribute('aria-busy'); }
             }
         }
 
@@ -3505,6 +3562,16 @@
                         evento.preventDefault();
                         evento.stopPropagation();
                         baixarPackingList(todasListasCache.find(item => String(item.id) === listaId) || l, btnPackingList);
+                    });
+                }
+                const btnEtiquetas = el.querySelector('[data-etiquetas]');
+                if (btnEtiquetas) {
+                    btnEtiquetas.dataset.etiquetasListaId = listaId;
+                    btnEtiquetas.title = 'Gerar etiquetas em PDF a partir do Packing List';
+                    btnEtiquetas.addEventListener('click', evento => {
+                        evento.preventDefault();
+                        evento.stopPropagation();
+                        baixarEtiquetasLista(todasListasCache.find(item => String(item.id) === listaId) || l, btnEtiquetas);
                     });
                 }
                 const btnCommercialInvoice = el.querySelector('[data-commercial-invoice]');

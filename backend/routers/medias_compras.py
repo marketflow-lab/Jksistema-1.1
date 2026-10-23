@@ -194,6 +194,12 @@ def create_medias_compras_router() -> APIRouter:
         methods=["POST"],
         name="api_medias_compras_lista_pedido_packing_list_importar",
     )
+    medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/etiquetas",
+        medias_compras.api_medias_compras_lista_pedido_etiquetas,
+        methods=["GET"],
+        name="api_medias_compras_lista_pedido_etiquetas",
+    )
 
     return medias_router
 
