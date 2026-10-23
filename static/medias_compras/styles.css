@@ -1213,6 +1213,21 @@
             margin-bottom: 6px;
             border: 1px solid transparent;
         }
+        .status-editavel { cursor: pointer; user-select: none; }
+        .status-editavel:focus-visible { outline: 2px solid #4da8ff; outline-offset: 2px; }
+        .status-lista-select {
+            width: 180px;
+            max-width: 100%;
+            padding: 4px 6px;
+            margin-bottom: 6px;
+            border: 1px solid #4da8ff;
+            border-radius: 6px;
+            background: #0e1117;
+            color: #e5e5e5;
+            font: inherit;
+            font-size: 0.8rem;
+        }
+        .status-lista-select:disabled { opacity: 0.65; cursor: wait; }
         .status-lista-gerada { background: #1f2b3a; color: #9bd1ff; border-color: #355172; }
         .status-em-orcamento { background: #3f360b; color: #ffe58f; border-color: #a58a17; }
         .status-analisando-orcamento { background: #4a2f1a; color: #ffd2a8; border-color: #c9833f; }

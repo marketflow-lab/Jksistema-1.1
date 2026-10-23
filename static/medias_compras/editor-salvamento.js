@@ -210,6 +210,10 @@
 
         function executarMutacaoListaPedido(registro, executar) {
             if (!registro) return Promise.reject(new Error('Selecione uma lista.'));
+            if (typeof registro === 'string') {
+                const identidadeAtual = identidade();
+                registro = { id: registro, identidade: identidadeAtual, chave: JSON.stringify([identidadeAtual, registro]) };
+            }
             return enfileirar(registro, { executar });
         }
 
