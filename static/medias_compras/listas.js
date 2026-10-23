@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('listas', ['core', 'state', 'api', 'editor', 'editor-salvamento', 'importacao', 'listas-carregamento'], (context) => {
+    app.defineModule('listas', ['core', 'state', 'api', 'resultados', 'editor', 'editor-salvamento', 'importacao', 'listas-carregamento'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
 
@@ -13,9 +13,67 @@
 
         function renderStatusListaPedidoVisual(status) {
             const el = document.getElementById('statusListaPedidoEdit');
-            if (!el) return;
+            if (!el || el.querySelector('.status-lista-select')?.dataset.listaId === String(listaPedidoAtual?.id)) return;
             const statusNormalizado = normalizarStatusListaPedido(status);
             el.innerHTML = '<span class="status-badge ' + classeStatusListaPedido(statusNormalizado) + '">' + escaparHtml(statusNormalizado) + '</span>';
+            if (listaPedidoAtual?.id) configurarEdicaoStatusListaPedido(el.firstElementChild, listaPedidoAtual.id, statusNormalizado);
+        }
+
+        function configurarEdicaoStatusListaPedido(badge, listaId, status) {
+            const sessao = context.modules.resultados.identidadeSessao();
+            badge.classList.add('status-editavel');
+            badge.title = 'Clique duas vezes para editar o status';
+            badge.setAttribute('role', 'button');
+            badge.setAttribute('tabindex', '0');
+            badge.setAttribute('aria-label', 'Editar status: ' + status);
+            badge.setAttribute('aria-haspopup', 'listbox');
+            badge.addEventListener('click', ev => ev.stopPropagation());
+            const editar = ev => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (!badge.isConnected) return;
+                const select = document.createElement('select');
+                select.className = 'status-lista-select';
+                select.dataset.listaId = String(listaId);
+                select.setAttribute('aria-label', 'Status da lista de pedidos');
+                STATUS_LISTA_OPCOES.forEach(opcao => select.add(new Option(opcao === 'Lista gerada' ? 'Sem orçamento' : opcao, opcao)));
+                select.value = status;
+                let encerrado = false;
+                const fechar = () => {
+                    if (encerrado || !select.isConnected) return;
+                    encerrado = true;
+                    select.replaceWith(badge);
+                    renderListaPedidosResumo();
+                    if (String(listaPedidoAtual?.id) === String(listaId)) renderStatusListaPedidoVisual(listaPedidoAtual.status);
+                };
+                const salvar = async () => {
+                    if (select.disabled || !select.isConnected) return;
+                    if (select.value === status) { fechar(); return; }
+                    select.disabled = true;
+                    try {
+                        context.modules.resultados.exigirSessao(sessao);
+                        setStatusListaPedido('Salvando status da lista...');
+                        await atualizarStatusListaPedido(listaId, select.value);
+                        context.modules.resultados.exigirSessao(sessao);
+                        setStatusListaPedido('Status da lista atualizado.');
+                    } catch (erro) {
+                        setStatusListaPedido(erro.message || 'Não foi possível atualizar o status. Tente novamente.');
+                    } finally { fechar(); }
+                };
+                select.addEventListener('click', evento => evento.stopPropagation());
+                select.addEventListener('dblclick', evento => evento.stopPropagation());
+                select.addEventListener('change', salvar);
+                select.addEventListener('blur', () => { if (!select.disabled) fechar(); });
+                select.addEventListener('keydown', evento => {
+                    evento.stopPropagation();
+                    if (evento.key === 'Escape') { evento.preventDefault(); if (!select.disabled) fechar(); }
+                    else if (evento.key === 'Enter') { evento.preventDefault(); void salvar(); }
+                });
+                badge.replaceWith(select);
+                select.focus();
+            };
+            badge.addEventListener('dblclick', editar);
+            badge.addEventListener('keydown', ev => { if (['Enter', ' '].includes(ev.key)) editar(ev); });
         }
 
         function exibirOverlayDownload(ativo) {
@@ -86,6 +144,8 @@
         function renderListaPedidosResumo() {
             const box = document.getElementById('listasPedidosLista');
             if (!box) return;
+            const select = box.querySelector('.status-lista-select');
+            if (select && (listasPedidosResumo || []).some(l => String(l.id) === select.dataset.listaId && listaPedidoResumoContemPesquisaSku(l))) return;
             box.innerHTML = '';
             const listasFiltradas = (listasPedidosResumo || []).filter(listaPedidoResumoContemPesquisaSku);
             const pesquisaAtiva = Boolean(obterPesquisaSkuNormalizada());
@@ -155,6 +215,7 @@
                     '<div class="lista-item-meta">Fornecedor: ' + escaparHtml(global.JKFornecedorListas.nome(l)) + '</div>' +
                     avisoCancelada +
                     avisoImportacoes;
+                configurarEdicaoStatusListaPedido(div.querySelector('.status-badge'), l.id, status);
                 div.addEventListener('click', () => abrirListaPedidoPorId(l.id));
                 const btnExcluir = div.querySelector('button[data-action="excluir"]');
                 const btnBaixar = div.querySelector('button[data-action="baixar"]');
@@ -257,32 +318,31 @@
 
         async function atualizarStatusListaPedido(listaId, novoStatus) {
             if (!listaId || !novoStatus) return;
-            const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/status', {
-                method: 'PATCH',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...obterAuthHeaders()
-                },
-                body: JSON.stringify({ status: novoStatus })
-            });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Falha ao atualizar status da lista.');
-            }
-            const data = await resp.json();
-            const listaAtualizada = data.lista || null;
-            if (listaAtualizada && listaAtualizada.id) {
-                listasPedidosResumo = (listasPedidosResumo || []).map(l => {
-                    if (String(l.id) !== String(listaAtualizada.id)) return l;
-                    return { ...l, ...listaAtualizada };
+            if (!STATUS_LISTA_OPCOES.includes(novoStatus)) throw new Error('Selecione um status válido.');
+            const sessao = context.modules.resultados.identidadeSessao();
+            const headers = { 'Content-Type': 'application/json', ...obterAuthHeaders() };
+            const registro = String(listaPedidoAtual?.id) === String(listaId) ? obterContextoEdicaoListaPedido() : null;
+            const executar = async () => {
+                context.modules.resultados.exigirSessao(sessao);
+                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/status', {
+                    method: 'PATCH', headers, body: JSON.stringify({ status: novoStatus })
                 });
-                if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaAtualizada.id)) {
-                    listaPedidoAtual = { ...listaPedidoAtual, ...listaAtualizada };
+                const data = await resp.json();
+                context.modules.resultados.exigirSessao(sessao);
+                if (!resp.ok) throw new Error(data.detail || 'Falha ao atualizar status da lista.');
+                const atualizada = data.lista;
+                if (String(atualizada?.id) !== String(listaId)) throw new Error('A resposta não contém a lista solicitada.');
+                const alteracoes = { status: normalizarStatusListaPedido(atualizada.status), updated_at: atualizada.updated_at };
+                limparStatusCanceladoLocal(listaId);
+                listasPedidosResumo = (listasPedidosResumo || []).map(l => String(l.id) === String(listaId) ? { ...l, ...alteracoes } : l);
+                if (String(listaPedidoAtual?.id) === String(listaId)) {
+                    Object.assign(listaPedidoAtual, alteracoes);
+                    renderStatusListaPedidoVisual(listaPedidoAtual.status);
                 }
                 renderListaPedidosResumo();
-                renderEditorListaPedido();
-            }
-            await atualizarResumoAposMutacao();
+                await atualizarResumoAposMutacao();
+            };
+            return executarMutacaoListaPedido(registro || String(listaId), executar);
         }
 
         async function excluirListaPedido(listaId, nomeLista, statusLista) {
