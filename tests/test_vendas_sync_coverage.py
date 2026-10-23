@@ -28,14 +28,15 @@ def queue(tmp_path):
 
 def acknowledged_job(queue, *, start="2026-10-01", end="2026-10-04",
                      days=("2026-10-01", "2026-10-03"), status="paused",
-                     confirmed_at=CONFIRMED_AT, store_id="store-a", kind="manual"):
+                     confirmed_at=CONFIRMED_AT, store_id="store-a", kind="manual", database_name=None):
     job = queue.enqueue(store_id, "Loja antiga", start, end, kind=kind,
                         now=confirmed_at - 10)
     claimed = queue.claim("source-worker", now=confirmed_at - 9)
     assert claimed["id"] == job["id"]
     for index, day in enumerate(days):
         queue.complete_day(job["id"], "source-worker", day,
-                           {"vendas": index, "notas": 0}, now=confirmed_at)
+                           {"vendas": index, "notas": 0}, now=confirmed_at,
+                           collection_started_at=confirmed_at, database_name=database_name)
     if status == "complete":
         queue.complete_job(job["id"], "source-worker", now=confirmed_at + 1)
     elif status == "retry":
@@ -79,17 +80,17 @@ def test_inheritance_is_limited_to_the_overlap_of_requested_days(queue):
     assert requested["dias_concluidos"] == ["2026-10-02", "2026-10-03"]
 
 
-def test_new_cycle_rechecks_the_last_seven_sao_paulo_days(queue):
+def test_new_cycle_reuses_every_closed_day_including_yesterday(queue):
     days = tuple(str(dt.date(2026, 10, 14) + dt.timedelta(days=i)) for i in range(8))
     acknowledged_job(queue, start=days[0], end=days[-1], days=days, status="complete",
                      confirmed_at=NOW - 60)
     requested = queue.enqueue("store-a", "Loja A", "2026-10-14", "2026-10-21", now=NOW)
 
-    assert requested["dias_concluidos"] == ["2026-10-14"]
+    assert requested["dias_concluidos"] == list(days[:-1])
     assert requested["status"] == "queued"
 
 
-def test_recent_boundary_uses_local_day_instead_of_utc_day(queue):
+def test_closed_coverage_uses_local_day_instead_of_utc_day(queue):
     local_october_20 = stamp("2026-10-21T01:00:00+00:00")
     acknowledged_job(queue, start="2026-10-13", end="2026-10-14",
                      days=("2026-10-13", "2026-10-14"), status="complete",
@@ -97,7 +98,7 @@ def test_recent_boundary_uses_local_day_instead_of_utc_day(queue):
     requested = queue.enqueue("store-a", "Loja A", "2026-10-13", "2026-10-15",
                               now=local_october_20)
 
-    assert requested["dias_concluidos"] == ["2026-10-13"]
+    assert requested["dias_concluidos"] == ["2026-10-13", "2026-10-14"]
 
 
 @pytest.mark.parametrize("confirmed_at, expected", [
@@ -115,17 +116,19 @@ def test_only_a_confirmation_after_local_day_end_can_cover_a_later_job(
     assert requested["dias_concluidos"] == expected
 
 
-@pytest.mark.parametrize("options", [{"forcar_resync": True}, {"kind": "history"}])
-def test_forced_and_historical_rechecks_receive_no_inherited_days(queue, options):
+@pytest.mark.parametrize("options, expected", [
+    ({"forcar_resync": True}, []), ({"kind": "history"}, ["2026-10-01"]),
+])
+def test_only_explicit_forced_review_ignores_inherited_days(queue, options, expected):
     acknowledged_job(queue, start="2026-10-01", end="2026-10-01",
                      days=("2026-10-01",), status="complete")
     requested = queue.enqueue("store-a", "Loja A", "2026-10-01", "2026-10-02",
                               now=NOW, **options)
 
-    assert requested["dias_concluidos"] == []
+    assert requested["dias_concluidos"] == expected
     claimed = queue.claim("recheck-worker", now=NOW)
     assert claimed["id"] == requested["id"]
-    assert claimed["dias_concluidos"] == []
+    assert claimed["dias_concluidos"] == expected
 
 
 def test_history_window_cannot_reuse_a_pending_manual_job(queue):
@@ -243,16 +246,16 @@ def test_running_replay_keeps_its_lease_and_snapshot_when_more_coverage_becomes_
     claimed = queue.claim("active-worker", now=CONFIRMED_AT + 11,
                           lease_seconds=3 * 86400)
     assert claimed["id"] == requested["id"]
-    assert claimed["dias_concluidos"] == []
+    assert claimed["dias_concluidos"] == ["2026-10-14"]
     queue.complete_day(claimed["id"], "active-worker", "2026-10-15", {"vendas": 1},
                        now=CONFIRMED_AT + 12)
     snapshot = queue.get_job(claimed["id"])
     rows = persisted_days(queue, claimed["id"])
 
-    # On October 21, October 14 has left the recent seven-day window. A new
-    # period can now inherit it, while the active worker retains its snapshot.
+    # A different period inherits the saved coverage while a replay of the
+    # active job must preserve that worker's lease and complete snapshot.
     other_period = queue.enqueue("store-a", "Loja A", "2026-10-14", "2026-10-16", now=NOW)
-    assert other_period["dias_concluidos"] == ["2026-10-14"]
+    assert other_period["dias_concluidos"] == ["2026-10-14", "2026-10-15"]
     replay = queue.enqueue("store-a", "Loja A", "2026-10-14", "2026-10-15", now=NOW + 1)
 
     assert replay == snapshot
@@ -278,9 +281,10 @@ def test_daily_runner_downloads_only_gaps_after_the_period_changes(queue, monkey
     monkeypatch.setattr(sync_engine, "SYNC_DAY_CONTEXT", {})
     monkeypatch.setattr(sync_engine, "_set_progresso", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_verificar_cancelamento", lambda *_: None)
-    monkeypatch.setattr(sync_engine, "collection_checkpoint", lambda *_: nullcontext())
+    monkeypatch.setattr(sync_engine, "_get_vendas_db_path", lambda *_: str(queue.path.parent / "vendas_fixture.db"))
+    monkeypatch.setattr(sync_engine, "collection_checkpoint", lambda *_, **__: nullcontext())
     monkeypatch.setattr(sync_engine, "collection_day_summary", lambda *_: {})
-    monkeypatch.setattr(sync_engine, "finish_collection_day", lambda *_: None)
+    monkeypatch.setattr(sync_engine, "finish_collection_day", lambda *_, **__: None)
     for name, value in {"job_id": claimed["id"], "queue_job": claimed,
                         "queue_owner": "next-worker"}.items():
         monkeypatch.setattr(SYNC_THREAD_CONTEXT, name, value, raising=False)
@@ -305,3 +309,216 @@ def test_daily_runner_downloads_only_gaps_after_the_period_changes(queue, monkey
     assert result["success"]
     assert downloaded == ["2026-10-02", "2026-10-04", "2026-10-05"]
     assert queue.get_job(claimed["id"])["status"] == "complete"
+
+
+def test_collection_crossing_midnight_is_not_permanent_coverage(queue):
+    started = stamp("2026-10-21T02:59:00+00:00")
+    ended = started + 90
+    source = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-20", now=started)
+    queue.claim("worker", now=started, lease_seconds=300)
+    queue.complete_day(source["id"], "worker", "2026-10-20", {}, now=ended,
+                       collection_started_at=started)
+    queue.complete_job(source["id"], "worker", now=ended + 1)
+
+    later = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-21", now=NOW)
+    assert later["dias_concluidos"] == []
+
+
+@pytest.mark.parametrize("created, expected", [
+    ("2026-10-02T02:59:00+00:00", []),
+    ("2026-10-02T03:00:00+00:00", ["2026-10-01"]),
+])
+def test_old_days_schema_migrates_using_conservative_job_creation(queue, created, expected):
+    created_at = stamp(created)
+    source = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-01", now=created_at)
+    queue.claim("old-worker", now=created_at, lease_seconds=300)
+    queue.complete_day(source["id"], "old-worker", "2026-10-01", {}, now=created_at + 90)
+    queue.complete_job(source["id"], "old-worker", now=created_at + 91)
+    # Reproduce the exact schema left by the released queue without editing
+    # operational fixtures or inventing a completion from sales-row counts.
+    with sqlite3.connect(queue.path) as conn:
+        conn.execute("ALTER TABLE days RENAME TO original_days")
+        conn.execute("""CREATE TABLE days (
+            job_id TEXT NOT NULL REFERENCES jobs(id), day TEXT NOT NULL,
+            result TEXT NOT NULL, completed_at REAL NOT NULL, PRIMARY KEY(job_id, day))""")
+        conn.execute("INSERT INTO days SELECT job_id, day, result, completed_at FROM original_days")
+        conn.execute("DROP TABLE original_days")
+    migrated = SyncQueue("tenant-a", tenant_path=queue.path.parent)
+    later = migrated.enqueue("store-a", "A", "2026-10-01", "2026-10-02", now=NOW)
+    assert later["dias_concluidos"] == expected
+    if expected:
+        with sqlite3.connect(migrated.path) as conn:
+            inherited = conn.execute("SELECT collection_started_at FROM days WHERE job_id = ?",
+                                     (later["id"],)).fetchone()[0]
+        assert inherited == created_at
+
+
+def test_forced_job_retries_its_own_days_and_new_forced_job_reviews_again(queue):
+    acknowledged_job(queue, start="2026-10-19", end="2026-10-20",
+                     days=("2026-10-19", "2026-10-20"), status="complete",
+                     confirmed_at=NOW - 60)
+    forced = queue.enqueue("store-a", "A", "2026-10-19", "2026-10-20",
+                           forcar_resync=True, now=NOW)
+    assert forced["dias_concluidos"] == []
+    queue.claim("forced", now=NOW)
+    queue.complete_day(forced["id"], "forced", "2026-10-19", {}, now=NOW + 1,
+                       collection_started_at=NOW)
+    queue.fail_job(forced["id"], "forced", "Interrompido.", retry_after=1, now=NOW + 2)
+    resumed = queue.claim("retry", now=NOW + 3)
+    assert resumed["id"] == forced["id"]
+    assert resumed["dias_concluidos"] == ["2026-10-19"]
+    queue.complete_day(forced["id"], "retry", "2026-10-20", {}, now=NOW + 4,
+                       collection_started_at=NOW + 3)
+    queue.complete_job(forced["id"], "retry", now=NOW + 5)
+    again = queue.enqueue("store-a", "A", "2026-10-19", "2026-10-20",
+                          forcar_resync=True, now=NOW + 6)
+    assert again["id"] != forced["id"]
+    assert again["dias_concluidos"] == []
+
+
+def test_invalidation_removes_all_copies_in_range_and_refreshes_active_snapshot(queue):
+    first = acknowledged_job(queue, start="2026-10-01", end="2026-10-02",
+                             days=("2026-10-01", "2026-10-02"), status="complete")
+    other = acknowledged_job(queue, start="2026-10-01", end="2026-10-02",
+                             days=("2026-10-01", "2026-10-02"), status="complete", store_id="store-b")
+    requested = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-03", now=NOW)
+    running = queue.claim("current", now=NOW)
+    assert running["id"] == requested["id"]
+    assert queue.invalidate_store_days("store-a", "2026-10-02", "2026-10-02", now=NOW + 1) == 2
+    refreshed = queue.refresh_job_coverage(running["id"], "current", now=NOW + 2)
+    assert refreshed["dias_concluidos"] == ["2026-10-01"]
+    assert refreshed["lease_until"] == running["lease_until"]
+    assert queue.get_job(first["id"])["dias_concluidos"] == ["2026-10-01"]
+    assert queue.get_job(other["id"])["dias_concluidos"] == ["2026-10-01", "2026-10-02"]
+    with pytest.raises(RuntimeError):
+        queue.refresh_job_coverage(running["id"], "expired-worker", now=NOW + 2)
+    assert queue.invalidate_store_days("store-a", now=NOW + 3) == 2
+    assert queue.refresh_job_coverage(running["id"], "current", now=NOW + 4)["dias_concluidos"] == []
+
+
+def test_connection_binding_invalidates_only_known_account_changes_for_this_store(queue, tmp_path):
+    source = acknowledged_job(queue, start="2026-10-01", end="2026-10-01",
+                              days=("2026-10-01",), status="complete")
+    other = acknowledged_job(queue, start="2026-10-01", end="2026-10-01",
+                             days=("2026-10-01",), status="complete", store_id="store-b")
+    other_queue = SyncQueue("tenant-b", tenant_path=tmp_path / "tenant-b")
+    other_tenant = acknowledged_job(other_queue, start="2026-10-01", end="2026-10-01",
+                                    days=("2026-10-01",), status="complete")
+    assert not queue.bind_store_source("store-a", "", now=NOW)
+    assert not queue.bind_store_source("store-a", "a" * 64, now=NOW)
+    assert not queue.bind_store_source("store-a", "a" * 64, now=NOW + 1)
+    assert not queue.bind_store_source("store-a", None, now=NOW + 2)
+    assert queue.get_job(source["id"])["dias_concluidos"] == ["2026-10-01"]
+    assert queue.bind_store_source("store-a", "b" * 64, now=NOW + 3)
+    assert queue.get_job(source["id"])["dias_concluidos"] == []
+    assert queue.get_job(other["id"])["dias_concluidos"] == ["2026-10-01"]
+    assert other_queue.get_job(other_tenant["id"])["dias_concluidos"] == ["2026-10-01"]
+    with sqlite3.connect(queue.path) as conn:
+        assert conn.execute("SELECT last_success_day FROM plans WHERE store_id = 'store-a'").fetchone()[0] is None
+        assert conn.execute("SELECT count(*) FROM store_sources").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("started", [float("nan"), float("inf"), NOW + 1])
+def test_invalid_collection_start_never_confirms_a_day(queue, started):
+    requested = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-20", now=NOW)
+    queue.claim("current", now=NOW)
+    with pytest.raises(ValueError):
+        queue.complete_day(requested["id"], "current", "2026-10-20", {}, now=NOW,
+                           collection_started_at=started)
+    assert queue.get_job(requested["id"])["dias_concluidos"] == []
+
+
+def test_period_including_future_finishes_only_executable_days(queue):
+    requested = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-25", now=NOW)
+    queue.claim("current", now=NOW)
+    queue.complete_day(requested["id"], "current", "2026-10-20", {}, now=NOW + 1)
+    with pytest.raises(ValueError, match="dias"):
+        queue.complete_job(requested["id"], "current", now=NOW + 2)
+    queue.complete_day(requested["id"], "current", "2026-10-21", {}, now=NOW + 3)
+    completed = queue.complete_job(requested["id"], "current", now=NOW + 4)
+    assert completed["status"] == "complete"
+    assert completed["dias_concluidos"] == ["2026-10-20", "2026-10-21"]
+
+
+def test_claim_discards_legacy_future_acknowledgements_immediately(queue):
+    requested = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-25", now=NOW)
+    queue.claim("old-worker", now=NOW)
+    with sqlite3.connect(queue.path) as conn:
+        conn.execute("""INSERT INTO days (job_id, day, result, completed_at)
+            VALUES (?, '2026-10-25', '{}', ?)""", (requested["id"], NOW + 1))
+    queue.fail_job(requested["id"], "old-worker", "Interrompido.", now=NOW + 2, retry_after=1)
+    resumed = queue.claim("new-worker", now=NOW + 3)
+    assert resumed["dias_concluidos"] == []
+    assert persisted_days(queue, requested["id"]) == []
+
+
+@pytest.mark.parametrize("invalid", ["broken", float("inf"), 1e99])
+def test_corrupt_timestamp_does_not_abort_or_confirm_a_day(queue, invalid):
+    requested = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-21", now=NOW)
+    queue.claim("old-worker", now=NOW)
+    queue.complete_day(requested["id"], "old-worker", "2026-10-20", {}, now=NOW + 1)
+    with sqlite3.connect(queue.path) as conn:
+        conn.execute("UPDATE days SET collection_started_at = ? WHERE job_id = ?",
+                     (invalid, requested["id"]))
+    queue.fail_job(requested["id"], "old-worker", "Interrompido.", now=NOW + 2, retry_after=1)
+    resumed = queue.claim("new-worker", now=NOW + 3)
+    assert resumed["dias_concluidos"] == []
+
+
+def test_database_evidence_survives_inheritance_and_store_rename(queue):
+    acknowledged_job(queue, start="2026-10-01", end="2026-10-02",
+                     days=("2026-10-01", "2026-10-02"), status="complete",
+                     database_name="vendas_loja_antiga.db")
+    later = queue.enqueue("store-a", "Loja renomeada", "2026-10-01", "2026-10-03", now=NOW)
+    assert later["dias_concluidos"] == ["2026-10-01", "2026-10-02"]
+    with sqlite3.connect(queue.path) as conn:
+        names = conn.execute("SELECT database_name FROM days WHERE job_id = ?", (later["id"],)).fetchall()
+    assert names == [("vendas_loja_antiga.db",), ("vendas_loja_antiga.db",)]
+    assert queue.missing_database_days("store-a", ["VENDAS_LOJA_ANTIGA.DB"], now=NOW) == []
+    assert queue.missing_database_days("store-a", [], now=NOW) == ["2026-10-01", "2026-10-02"]
+    assert queue.missing_database_days("store-b", [], now=NOW) == []
+
+
+def test_newer_present_database_prevents_an_old_missing_file_invalidating_coverage(queue):
+    acknowledged_job(queue, start="2026-10-01", end="2026-10-01",
+                     days=("2026-10-01",), status="complete", database_name="old.db")
+    forced = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-02",
+                           forcar_resync=True, now=NOW)
+    queue.claim("new", now=NOW)
+    queue.complete_day(forced["id"], "new", "2026-10-01", {}, now=NOW + 1,
+                       database_name="new.db")
+    queue.complete_day(forced["id"], "new", "2026-10-02", {}, now=NOW + 2)
+    assert queue.missing_database_days("store-a", ["new.db"], now=NOW + 3) == []
+    assert queue.missing_database_days("store-a", [], now=NOW + 3) == ["2026-10-01"]
+
+
+@pytest.mark.parametrize("name", ["../vendas.db", "C:\\private\\vendas.db", "vendas/loja.db",
+                                  "vendas.json", " vendas.db", "vendas.db:secret", ".db"])
+def test_database_evidence_accepts_only_a_basename_without_private_paths(queue, name):
+    requested = queue.enqueue("store-a", "A", "2026-10-20", "2026-10-20", now=NOW)
+    queue.claim("current", now=NOW)
+    with pytest.raises(ValueError):
+        queue.complete_day(requested["id"], "current", "2026-10-20", {}, now=NOW + 1,
+                           database_name=name)
+    assert queue.get_job(requested["id"])["dias_concluidos"] == []
+
+
+def test_history_reset_stops_leases_but_keeps_enabled_automation(queue):
+    automatic = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-03",
+                              automatico=True, now=NOW)
+    queue.claim("running", now=NOW)
+    queue.complete_day(automatic["id"], "running", "2026-10-01", {}, now=NOW + 1)
+    manual = queue.enqueue("store-b", "B", "2026-10-01", "2026-10-03", now=NOW + 2)
+    queue.claim("manual", now=NOW + 2)
+    queue.complete_day(manual["id"], "manual", "2026-10-01", {}, now=NOW + 3)
+    queue.reset_history(now=NOW + 4)
+    assert not queue.owns(automatic["id"], "running", now=NOW + 5)
+    assert not queue.owns(manual["id"], "manual", now=NOW + 5)
+    assert all(job["dias_concluidos"] == [] and job["status"] == "paused" for job in queue.list_jobs())
+    with sqlite3.connect(queue.path) as conn:
+        plans = conn.execute("SELECT store_id, enabled, last_success_day, next_due FROM plans ORDER BY store_id").fetchall()
+    assert plans == [("store-a", 1, None, NOW + 4), ("store-b", 0, None, NOW + 4)]
+    scheduled = queue.schedule_due("2026-10-21", now=NOW + 5)
+    assert len(scheduled) == 1 and scheduled[0]["store_id"] == "store-a"
+    assert scheduled[0]["data_inicio"] == "2026-10-01"
+    assert scheduled[0]["dias_concluidos"] == []

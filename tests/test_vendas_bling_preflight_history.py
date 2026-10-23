@@ -23,6 +23,7 @@ from backend.modules.vendas.state import (
     SYNC_META, SYNC_PROGRESS, SYNC_THREAD_CONTEXT,
 )
 from backend.modules.vendas.sync_queue import SyncQueue
+from backend.modules.vendas.sync_period import _ensure_sync_schema
 from backend.schemas import VendasSyncRequest
 from backend.services import bling, bling_vendas, integracoes
 
@@ -92,7 +93,7 @@ def history_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_automation, "_STOP", threading.Event())
     monkeypatch.setattr(sync_automation, "start", lambda: None)
     monkeypatch.setattr(sync_automation, "current", lambda *_: None)
-    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", lambda *_: [])
+    monkeypatch.setattr(bling_vendas, "get_tenant_path", paths.tenant_path)
     monkeypatch.setattr(bling, "_BLING_ACCOUNT_NEXT_CALL", {})
     monkeypatch.setattr(bling, "BLING_ACCOUNT_MIN_INTERVAL_SECONDS", 0)
     adapter, session = HistoryLimitedBlingAdapter(), requests.Session()
@@ -140,6 +141,15 @@ def history_environment(tmp_path, monkeypatch):
         job = queue.enqueue(req.store_id, req.loja, START, END, automatico=True)
         claimed = queue.claim("history-seed")
         assert claimed["id"] == job["id"]
+        # A day acknowledgement represents an actual commercial commit. Keep
+        # that database so the worker's recovery guard can verify the evidence.
+        database = bling_vendas._get_vendas_db_path(TENANT, req.loja)
+        with sqlite3.connect(database) as conn:
+            _ensure_sync_schema(conn.cursor())
+            conn.executemany("""INSERT INTO vendas
+                (id_unico, data, store_id, loja_conta, sku, quantidade, valor)
+                VALUES (?, ?, ?, ?, 'fixture-sku', 1, 10)""",
+                [(f"fixture-{index}", START, req.store_id, req.loja) for index in range(3)])
         queue.complete_day(job["id"], "history-seed", START, {
             "vendas": 3,
             "checkpoint": {"documentos_salvos": 3, "ultimo_tipo": "pedido", "ultimo_id": "fixture-123"},

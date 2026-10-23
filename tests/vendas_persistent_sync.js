@@ -383,6 +383,9 @@ function freezeState(value) {
     assert.match(reopened.elements.status.innerHTML, /Sincronizando · 43%/);
     assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página|Loja [A-F]|em andamento/);
     assert.match(reopened.elements.status.innerHTML, /role="progressbar"[^>]*aria-valuenow="43"/);
+    reopened.context.renderProgresso({ etapa: 'Dia', percentual: 75, dias_aproveitados: 15, dias_pendentes: 2 }, []);
+    assert.match(reopened.elements.status.innerHTML, /15 dia\(s\) já concluído\(s\).*2 dia\(s\) pendente\(s\)/,
+        'dias aproveitados devem aparecer separados do trabalho pendente');
     reopened.context.renderProgresso({ etapa: 'Fila', percentual: 0 }, [], reopened.elements.status, [{ status: 'queued' }]);
     assert.match(reopened.elements.status.innerHTML, /Aguardando início/);
     assert.doesNotMatch(reopened.elements.status.innerHTML, />Sincronizando/, 'a fila ativa não comprova coleta em andamento');

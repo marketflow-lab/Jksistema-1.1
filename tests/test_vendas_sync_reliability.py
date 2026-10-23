@@ -558,9 +558,11 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     from backend.modules.vendas import composition_sync, sync_engine, sync_queue
     from backend.modules.vendas.sync_queue import SyncQueue
 
-    clock = [100.0]
+    import time
+    clock = [time.time()]
     original_time = sync_queue._time
     monkeypatch.setattr(sync_queue, "_time", lambda value=None: clock[0] if value is None else original_time(value))
+    monkeypatch.setattr(sync_engine.time, "time", lambda: clock[0])
     queue = SyncQueue("tenant-test", tenant_path=tmp_path)
     cfg = {"access_token": "access-old", "refresh_token": "refresh-old", "id": "app", "secret": "secret",
            "connected": False, "oauth_invalid": True, "status": "reautenticacao_necessaria"}
@@ -575,9 +577,9 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     monkeypatch.setattr(sync_engine, "_sync_context_key", lambda _tenant: "oauth-recovery-test")
     monkeypatch.setattr(sync_engine, "_sync_unregister_active", lambda *_args: None)
     monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", lambda *_args: [])
-    monkeypatch.setattr(sync_engine, "collection_checkpoint", lambda *_args: nullcontext())
+    monkeypatch.setattr(sync_engine, "collection_checkpoint", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(sync_engine, "collection_day_summary", lambda *_args: {})
-    monkeypatch.setattr(sync_engine, "finish_collection_day", lambda *_args: None)
+    monkeypatch.setattr(sync_engine, "finish_collection_day", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(sync_engine, "SYNC_META", {})
     monkeypatch.setattr(sync_engine, "SYNC_DAY_CONTEXT", {})
     monkeypatch.setattr(composition_sync, "sincronizar_composicoes_vendas", lambda *_args, **_kwargs: {"pending": False})
@@ -585,6 +587,8 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_unidades", lambda: {})
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_lojas_virtuais_cliente", lambda *_args: {})
     monkeypatch.setattr(sync_period, "_get_vendas_db_path", lambda *_args: str(tmp_path / "sales.db"))
+    monkeypatch.setattr(sync_engine, "_get_vendas_db_path", lambda *_args: str(tmp_path / "sales.db"))
+    (tmp_path / "sales.db").touch()
     monkeypatch.setattr(sync_period, "_persistir_periodo_atomico", lambda *_args, **_kwargs: {"vendas": 0, "notas": 0, "itens": 0})
     calls = []
 
@@ -606,9 +610,9 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     monkeypatch.setattr(sync_period, "_bling_listar_vendas_fallback_nf_saida", lambda *_args: ([], 200))
     monkeypatch.setattr(sync_period, "_bling_listar_naturezas", lambda *_args: ({}, 200))
     monkeypatch.setattr(sync_period, "_bling_listar_notas_entrada", lambda *_args: ([], [], 200))
-    job = queue.enqueue("store-a", "Loja A", "2026-10-01", "2026-10-02", now=100)
-    queue.claim("initial", now=100)
-    queue.complete_day(job["id"], "initial", "2026-10-01", {"vendas": 2}, now=100)
+    job = queue.enqueue("store-a", "Loja A", "2026-10-01", "2026-10-02", now=clock[0])
+    queue.claim("initial", now=clock[0])
+    queue.complete_day(job["id"], "initial", "2026-10-01", {"vendas": 2}, now=clock[0])
     req = VendasSyncRequest(loja="Loja A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
 
     sync_engine._sincronizar_vendas_thread_worker(req, "tenant-test", job["id"], "initial")

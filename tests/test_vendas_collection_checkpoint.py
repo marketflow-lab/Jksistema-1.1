@@ -55,7 +55,7 @@ def collect_sales():
     return bling_vendas._bling_listar_vendas("SECRET-NEVER-PERSIST", DAY, DAY, "Loja")
 
 
-def test_restart_relists_pages_and_reuses_only_confirmed_documents(tmp_path, sales_api):
+def test_restart_reuses_complete_manifest_and_only_fetches_pending_documents(tmp_path, sales_api):
     scope = ("tenant", "store", "cycle", DAY)
     with checkpoint.collection_checkpoint(*scope, tenant_path=tmp_path):
         with pytest.raises(HTTPException):
@@ -67,7 +67,7 @@ def test_restart_relists_pages_and_reuses_only_confirmed_documents(tmp_path, sal
         rows, status = collect_sales()
     assert status == 200
     assert len(rows) == 4
-    assert sales_api["pages"] == [1, 1, 2]
+    assert sales_api["pages"] == [1, 2]
     assert sales_api["details"] == [10, 20, 20]
     assert len({(row["origem_id"], row["item_id"]) for row in rows}) == 4
     summary = checkpoint.collection_day_summary(*scope, tenant_path=tmp_path)
@@ -76,16 +76,20 @@ def test_restart_relists_pages_and_reuses_only_confirmed_documents(tmp_path, sal
     assert b"SECRET-NEVER-PERSIST" not in (tmp_path / "vendas_collection_checkpoint.db").read_bytes()
 
 
-def test_new_cycle_and_changed_listing_fetch_fresh_details(tmp_path, sales_api):
+def test_new_period_reuses_day_and_explicit_resync_fetches_fresh_details(tmp_path, sales_api):
     sales_api["fail"] = False
     for cycle in ("one", "two"):
         with checkpoint.collection_checkpoint("tenant", "store", cycle, DAY, tenant_path=tmp_path):
             collect_sales()
-    assert sales_api["details"] == [10, 20, 10, 20]
+    assert sales_api["details"] == [10, 20]
     sales_api["revision"] = 2
-    with checkpoint.collection_checkpoint("tenant", "store", "two", DAY, tenant_path=tmp_path):
+    with checkpoint.collection_checkpoint("tenant", "store", "refresh", DAY, tenant_path=tmp_path, force=True):
         collect_sales()
-    assert sales_api["details"] == [10, 20, 10, 20, 10]
+    assert sales_api["details"] == [10, 20, 10, 20]
+    with checkpoint.collection_checkpoint("tenant", "store", "refresh", DAY, tenant_path=tmp_path, force=True):
+        collect_sales()
+    assert sales_api["details"] == [10, 20, 10, 20]
+    assert sales_api["pages"] == [1, 2, 1, 2]
 
 
 @pytest.mark.parametrize("corrupt", ["checksum", "shape"])
@@ -117,7 +121,7 @@ def test_checkpoint_isolates_tenants_stores_cycles_and_threads(tmp_path):
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(lambda args: worker(*args), [("a", "s", "c"), ("b", "s", "c"), ("a", "t", "c")]))
     assert len(results) == 3 and all(result == payload() for result in results)
-    with checkpoint.collection_checkpoint("a", "s", "other-cycle", DAY, tenant_path=tmp_path):
+    with checkpoint.collection_checkpoint("a", "s", "other-cycle", DAY, tenant_path=tmp_path, force=True):
         assert checkpoint.load_collected_document("pedido", "1", {"id": 1}) is None
     checkpoint.finish_collection_day("a", "s", "c", DAY, tenant_path=tmp_path)
     assert checkpoint.collection_day_summary("a", "s", "c", DAY, tenant_path=tmp_path)["documentos_salvos"] == 0

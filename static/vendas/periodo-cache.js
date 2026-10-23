@@ -201,9 +201,13 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
         ? `<div class="vendas-sync-alert">${escaparHtmlVendas(p.mensagem || 'Falha na sincronização.')}</div>` : '';
     const detalhes = !listaLojas.length && (registros || p.mensagem)
         ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
+    const diasAproveitados = Number(p.dias_aproveitados);
+    const diasPendentes = Number(p.dias_pendentes);
+    const cobertura = Number.isFinite(diasAproveitados) && Number.isFinite(diasPendentes)
+        ? `<div class="vendas-sync-muted">${Math.max(0, diasAproveitados)} dia(s) já concluído(s) · ${Math.max(0, diasPendentes)} dia(s) pendente(s)</div>` : '';
     painel.className = 'status-bar loading';
     substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${aguardando ? 'Aguardando início' : 'Sincronizando'} · ${percent}%</strong>`
-        + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${erro}${detalhes}`);
+        + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${cobertura}${erro}${detalhes}`);
 }
 
 let progressMonitorSubscribed = false;

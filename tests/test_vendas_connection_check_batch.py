@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import sqlite3
 import threading
 from types import SimpleNamespace
 
@@ -15,7 +16,9 @@ from backend.modules.vendas.state import (
     SYNC_META, SYNC_PROGRESS, SYNC_THREAD_CONTEXT,
 )
 from backend.modules.vendas.sync_queue import SyncQueue
+from backend.modules.vendas.sync_period import _ensure_sync_schema
 from backend.schemas import VendasSyncRequest
+from backend.services import bling_vendas
 
 
 @pytest.fixture
@@ -28,7 +31,9 @@ def environment(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_automation, "start", lambda: None)
     monkeypatch.setattr(sync_automation, "current", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_resolve_store", lambda req, _client: req)
-    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", lambda *_: [])
+    monkeypatch.setattr(bling_vendas, "get_tenant_path", paths.tenant_path)
+    monkeypatch.setattr(sync_engine, "_get_vendas_db_path", bling_vendas._get_vendas_db_path)
+    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", bling_vendas._listar_bancos_vendas_tenant)
     values = [SYNC_ACTIVE, SYNC_CANCEL_FLAGS, SYNC_DAY_CONTEXT, SYNC_LOGS, SYNC_META, SYNC_PROGRESS]
     previous = [dict(value) for value in values]
     for value in values:
@@ -40,9 +45,26 @@ def environment(tmp_path, monkeypatch):
                                data_inicio="2026-10-01", data_fim="2026-10-02", automatico=True)
         job = queue.enqueue(req.store_id, req.loja, req.data_inicio, req.data_fim, automatico=True)
         queue.claim("seed")
+        database = bling_vendas._get_vendas_db_path("tenant-a", req.loja)
+        with sqlite3.connect(database) as conn:
+            _ensure_sync_schema(conn.cursor())
+            conn.executemany("""INSERT INTO vendas
+                (id_unico, data, store_id, loja_conta, sku, quantidade, valor)
+                VALUES (?, ?, ?, ?, 'fixture-sku', 1, 10)""",
+                [(f"fixture-{index}", req.data_inicio, req.store_id, req.loja) for index in range(2)])
         queue.complete_day(job["id"], "seed", req.data_inicio, {"vendas": 2})
         queue.fail_job(job["id"], "seed", "Aviso antigo preservado.", retryable=False)
         requests.append(req)
+    def store(client, name, *, store_id):
+        assert client == "tenant-a"
+        req = next(req for req in requests if req.store_id == store_id)
+        assert name == req.loja
+        return {"nome": name, "store_id": store_id, "integracoes": {"bling": {
+            "id": "fixture-app", "secret": "fixture-secret", "connected": True,
+            "access_token": "fixture-access-" + store_id,
+            "oauth_connection_id": "fixture-connection-" + store_id,
+        }}}
+    monkeypatch.setattr(sync_engine, "buscar_loja", store)
     queue.pause_all()
     release = threading.Event()
     state = SimpleNamespace(queue=queue, requests=requests, events=[], release=release)

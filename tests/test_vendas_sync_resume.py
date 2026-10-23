@@ -39,6 +39,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_automation, "current", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_resolve_store", lambda req, client: req.model_copy(
         update={"store_id": req.store_id or "store-" + req.loja.replace(" ", "-")}))
+    monkeypatch.setattr(sync_engine, "_get_vendas_db_path", lambda client, name:
+                        str(tmp_path / "info" / client / ("vendas_historico_" + str(name) + ".db")))
     composition_sync = ModuleType("backend.modules.vendas.composition_sync")
     composition_sync.sincronizar_composicoes_vendas = lambda *_, **__: {"updated": 0, "pending": False}
     monkeypatch.setitem(sys.modules, composition_sync.__name__, composition_sync)
@@ -46,7 +48,8 @@ def isolated(tmp_path, monkeypatch):
     for value, snapshot in zip(dictionaries, saved):
         value.clear()
         value.update(snapshot)
-    for attr in ("job_id", "loja", "queue_job", "queue_owner", "lease_check"):
+    for attr in ("job_id", "loja", "queue_job", "queue_owner", "lease_check",
+                 "collection_identity", "collection_validate"):
         if hasattr(SYNC_THREAD_CONTEXT, attr):
             delattr(SYNC_THREAD_CONTEXT, attr)
 
@@ -163,8 +166,8 @@ def test_failed_job_is_not_displayed_as_complete_between_attempts(isolated):
 
 def test_local_checkpoints_cannot_cross_shared_sync():
     from backend.services.shared_sync_common import _shared_sync_path_permanently_excluded
-    for name in ("vendas_sync_queue.db", "vendas_collection_checkpoint.db"):
-        for suffix in ("", "-wal", "-shm", ".backup"):
+    for name in ("vendas_sync_queue.db", "vendas_collection_checkpoint.db", "vendas_history_gate.db"):
+        for suffix in ("", "-wal", "-shm", "-journal", ".backup"):
             assert _shared_sync_path_permanently_excluded(name + suffix)
     assert not _shared_sync_path_permanently_excluded("vendas_historico_loja.db")
 

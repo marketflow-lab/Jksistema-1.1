@@ -809,23 +809,31 @@ def limpar_todos_bancos_vendas(client_id: str):
     if not os.path.exists(tenant_path):
         return {"success": True, "arquivos_removidos": []}
 
+    from .sync_queue import SyncQueue
+    from backend.services.vendas_collection_checkpoint import purge_client_collection
+    queue = SyncQueue(client_id)
     removidos = []
-    bases = [
-        os.path.join(tenant_path, nome)
-        for nome in os.listdir(tenant_path)
-        if nome.startswith("vendas_historico") and nome.endswith(".db")
-    ]
-    with sqlite_locks_for_paths(bases):
-        for base in bases:
-            candidatos = [base, f"{base}-wal", f"{base}-shm"]
-            for arq in candidatos:
-                if not os.path.exists(arq):
-                    continue
-                try:
-                    os.remove(arq)
-                    removidos.append(os.path.basename(arq))
-                except Exception:
-                    logger.exception(f"Falha ao remover arquivo de vendas: {arq}")
+    # Block new claims while revoked workers can still check their lease and
+    # release business locks. Never wait for those locks holding the queue DB.
+    with queue.history_reset_guard():
+        queue.reset_history()
+        purge_client_collection(client_id)
+        bases = [
+            os.path.join(tenant_path, nome)
+            for nome in os.listdir(tenant_path)
+            if nome.startswith("vendas_historico") and nome.endswith(".db")
+        ]
+        with sqlite_locks_for_paths(bases):
+            for base in bases:
+                candidatos = [base, f"{base}-wal", f"{base}-shm"]
+                for arq in candidatos:
+                    if not os.path.exists(arq):
+                        continue
+                    try:
+                        os.remove(arq)
+                        removidos.append(os.path.basename(arq))
+                    except Exception:
+                        logger.exception(f"Falha ao remover arquivo de vendas: {arq}")
 
     invalidate_vendas_cache(client_id)
     return {

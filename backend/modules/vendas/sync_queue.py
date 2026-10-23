@@ -2,8 +2,8 @@
 
 Day acknowledgements are written only after the caller has committed the entire
 day. Replaying an expired lease must therefore remain idempotent in the caller.
-Closed historical days can be reused across cycles for the same store, while
-recent days and explicit historical reviews continue to consult the source.
+Closed days are reused across cycles for the same store. Only an explicit
+resynchronization starts a new review of already confirmed historical days.
 Only counts, dates and queue metadata are stored; callers sanitize error messages.
 """
 
@@ -24,7 +24,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 INTERVAL_SECONDS = 15 * 60
 HISTORY_INTERVAL_SECONDS = 24 * 60 * 60
-RECENT_WINDOW_DAYS = 7
 try:
     SYNC_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 except ZoneInfoNotFoundError:
@@ -81,6 +80,9 @@ class SyncQueue:
         with self._connection() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS tenant (client_id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS store_sources (
+                    store_id TEXT PRIMARY KEY, connection_identity TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY, signature TEXT NOT NULL, store_id TEXT NOT NULL,
                     loja TEXT NOT NULL, data_inicio TEXT NOT NULL, data_fim TEXT NOT NULL,
@@ -103,6 +105,8 @@ class SyncQueue:
                 CREATE TABLE IF NOT EXISTS days (
                     job_id TEXT NOT NULL REFERENCES jobs(id), day TEXT NOT NULL,
                     result TEXT NOT NULL, completed_at REAL NOT NULL,
+                    collection_started_at REAL,
+                    database_name TEXT,
                     PRIMARY KEY(job_id, day)
                 );
                 CREATE TABLE IF NOT EXISTS plans (
@@ -115,6 +119,11 @@ class SyncQueue:
                 );
             """)
             conn.execute("BEGIN IMMEDIATE")
+            day_columns = {row["name"] for row in conn.execute("PRAGMA table_info(days)")}
+            if "collection_started_at" not in day_columns:
+                conn.execute("ALTER TABLE days ADD COLUMN collection_started_at REAL")
+            if "database_name" not in day_columns:
+                conn.execute("ALTER TABLE days ADD COLUMN database_name TEXT")
             tenant = conn.execute("SELECT client_id FROM tenant").fetchone()
             if tenant is not None and tenant[0] != self.client_id:
                 raise ValueError("A fila pertence a outro cliente.")
@@ -161,6 +170,33 @@ class SyncQueue:
             yield conn
             conn.commit()
 
+    @contextmanager
+    def _history_gate(self, *, timeout):
+        # This separate SQLite lock is released by the OS after a crash. It
+        # must always precede queue transactions, and must never be acquired
+        # by ownership checks while a collector holds business/checkpoint locks.
+        conn = sqlite3.connect(self.path.with_name("vendas_history_gate.db"),
+                               timeout=timeout, isolation_level=None)
+        try:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as exc:
+                code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+                if timeout == 0 and code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    yield False
+                    return
+                raise
+            yield True
+        finally:
+            conn.rollback()
+            conn.close()
+
+    @contextmanager
+    def history_reset_guard(self):
+        """Exclude new collection leases until history cleanup has finished."""
+        with self._history_gate(timeout=30):
+            yield
+
     def _job(self, conn, job_id, detailed=True):
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row is None:
@@ -181,45 +217,166 @@ class SyncQueue:
         job["checkpoint"] = json.loads(latest[0]).get("checkpoint", {}) if latest else {}
         return job
 
-    def _reuse_completed_days(self, conn, job_id, now):
-        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        today = dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date()
-        own_days = conn.execute("SELECT day, completed_at FROM days WHERE job_id = ? AND day < ?",
-                                (job_id, str(today))).fetchall()
-        # A retry on the same day retains its progress. After the day closes,
-        # a preliminary check must be collected again, including future days
-        # that an older interrupted period may have confirmed while empty.
-        expired = [(job_id, row["day"]) for row in own_days
-                   if row["day"] >= str(dt.datetime.fromtimestamp(row["completed_at"], SYNC_TIMEZONE).date())]
-        conn.executemany("DELETE FROM days WHERE job_id = ? AND day = ?", expired)
-        if job["forcar_resync"] or job["kind"] == "history":
-            return
-        historical_end = min(job["data_fim"], str(today - dt.timedelta(days=RECENT_WINDOW_DAYS)))
-        if job["data_inicio"] > historical_end:
-            return
-        rows = conn.execute("""SELECT d.day, d.result, d.completed_at FROM days d
-            JOIN jobs source ON source.id = d.job_id
-            WHERE source.store_id = ? AND d.job_id != ? AND d.day BETWEEN ? AND ?
-                AND d.completed_at <= ?
-            ORDER BY d.completed_at DESC""",
-                            (job["store_id"], job_id, job["data_inicio"], historical_end, now)).fetchall()
+    @staticmethod
+    def _closed_day(row, now):
+        # Old records did not record the collection start. A job created after
+        # the day ended is the only conservative evidence available for them.
+        try:
+            started = row["collection_started_at"]
+            completed = row["completed_at"]
+            if not (math.isfinite(started) and math.isfinite(completed)
+                    and started <= completed <= now):
+                return False
+            return row["day"] < str(dt.datetime.fromtimestamp(started, SYNC_TIMEZONE).date())
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+
+    @staticmethod
+    def _current_day_attempt(row, today, now):
+        try:
+            started, completed = row["collection_started_at"], row["completed_at"]
+            return (row["day"] == today and math.isfinite(started) and math.isfinite(completed)
+                    and started <= completed <= now
+                    and str(dt.datetime.fromtimestamp(started, SYNC_TIMEZONE).date()) == today)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return False
+
+    def _confirmed_days(self, conn, store_id, start, end, now):
+        rows = conn.execute("""SELECT d.day, d.result, d.completed_at, d.database_name,
+                COALESCE(d.collection_started_at, source.created_at) AS collection_started_at
+            FROM days d JOIN jobs source ON source.id = d.job_id
+            WHERE source.store_id = ? AND d.day BETWEEN ? AND ? AND d.completed_at <= ?
+            ORDER BY d.completed_at DESC""", (store_id, start, end, now)).fetchall()
         confirmed = {}
         for row in rows:
-            if row["day"] in confirmed:
+            if row["day"] not in confirmed and self._closed_day(row, now):
+                confirmed[row["day"]] = row
+        return confirmed
+
+    def _reuse_completed_days(self, conn, job_id, now):
+        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        today = str(dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date())
+        own_days = conn.execute("""SELECT day, completed_at,
+                COALESCE(collection_started_at, ?) AS collection_started_at
+            FROM days WHERE job_id = ?""", (job["created_at"], job_id)).fetchall()
+        # An attempt may retain its provisional acknowledgement for today.
+        # Once that date closes, a collection started during it is incomplete.
+        expired = [(job_id, row["day"]) for row in own_days
+                   if not self._closed_day(row, now)
+                   and not self._current_day_attempt(row, today, now)]
+        conn.executemany("DELETE FROM days WHERE job_id = ? AND day = ?", expired)
+        if job["forcar_resync"]:
+            return
+        confirmed = self._confirmed_days(
+            conn, job["store_id"], job["data_inicio"], min(job["data_fim"], today), now,
+        )
+        # Preserve original evidence across every inheritance, including the
+        # start of enumeration; neither a later job nor midnight can renew it.
+        conn.executemany("""INSERT OR IGNORE INTO days
+            (job_id, day, result, completed_at, collection_started_at, database_name)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            [(job_id, row["day"], row["result"], row["completed_at"], row["collection_started_at"], row["database_name"])
+             for row in confirmed.values()])
+
+    def refresh_job_coverage(self, job_id, owner, *, now=None):
+        """Refresh a worker snapshot after local business data was checked."""
+        with self._transaction() as conn:
+            now = _time(now)
+            self._require_owner(conn, job_id, owner, now)
+            self._reuse_completed_days(conn, job_id, now)
+            return self._job(conn, job_id)
+
+    def invalidate_store_days(self, store_id, data_inicio=None, data_fim=None, *, now=None):
+        """Forget coverage when the caller removes or loses committed data.
+
+        The caller coordinates business-data deletion and running workers. This
+        method retains jobs and leases so the current worker can fill the gaps.
+        """
+        store_id = str(store_id or "").strip()
+        if not store_id:
+            raise ValueError("Identificador estavel da loja e obrigatorio.")
+        start = str(_date(data_inicio)) if data_inicio is not None else "0001-01-01"
+        end = str(_date(data_fim)) if data_fim is not None else "9999-12-31"
+        if start > end:
+            raise ValueError("Data inicial nao pode ser maior que a data final.")
+        with self._transaction() as conn:
+            now = _time(now)
+            return self._invalidate_store_days(conn, store_id, start, end, now)
+
+    @staticmethod
+    def _invalidate_store_days(conn, store_id, start, end, now):
+        deleted = conn.execute("""DELETE FROM days WHERE day BETWEEN ? AND ?
+            AND job_id IN (SELECT id FROM jobs WHERE store_id = ?)""", (start, end, store_id)).rowcount
+        conn.execute("""UPDATE plans SET last_success_day = NULL, next_due = MIN(next_due, ?)
+            WHERE store_id = ?""", (now, store_id))
+        return deleted
+
+    def bind_store_source(self, store_id, connection_identity, *, now=None):
+        """Invalidate coverage on a known connection change, not token rotation.
+
+        The first binding retains the store's legacy confirmations. An absent
+        identity cannot prove an account change and does not create a binding.
+        """
+        store_id = str(store_id or "").strip()
+        identity = str(connection_identity or "").strip()
+        if not store_id:
+            raise ValueError("Identificador estavel da loja e obrigatorio.")
+        if not identity:
+            return False
+        if not re.fullmatch(r"[0-9a-f]{64}", identity):
+            raise ValueError("Identidade publica da conexao invalida.")
+        with self._transaction() as conn:
+            row = conn.execute("SELECT connection_identity FROM store_sources WHERE store_id = ?",
+                               (store_id,)).fetchone()
+            changed = row is not None and row[0] != identity
+            if changed:
+                self._invalidate_store_days(conn, store_id, "0001-01-01", "9999-12-31", _time(now))
+            conn.execute("""INSERT INTO store_sources VALUES (?, ?) ON CONFLICT(store_id)
+                DO UPDATE SET connection_identity = excluded.connection_identity""", (store_id, identity))
+            return changed
+
+    @staticmethod
+    def _database_name(value):
+        if value is None:
+            return None
+        if (not isinstance(value, str) or value != value.strip() or len(value) <= 3
+                or not value.lower().endswith(".db")
+                or re.search(r'[\\/:<>"|?*\x00-\x1f]', value)):
+            raise ValueError("Nome do banco deve ser apenas o arquivo .db, sem caminho.")
+        return value
+
+    def missing_database_days(self, store_id, available_names, *, now=None):
+        """Return days whose latest known committed database no longer exists."""
+        store_id = str(store_id or "").strip()
+        if not store_id:
+            raise ValueError("Identificador estavel da loja e obrigatorio.")
+        available = {self._database_name(name).casefold() for name in available_names}
+        with self._connection() as conn:
+            rows = conn.execute("""SELECT d.day, d.database_name FROM days d
+                JOIN jobs source ON source.id = d.job_id
+                WHERE source.store_id = ? AND d.completed_at <= ?
+                ORDER BY d.completed_at DESC, source.created_at DESC""", (store_id, _time(now))).fetchall()
+        latest = {}
+        for row in rows:
+            latest.setdefault(row["day"], row["database_name"])
+        missing = []
+        for day, database in latest.items():
+            if database is None:
                 continue
-            checked_day = dt.datetime.fromtimestamp(row["completed_at"], SYNC_TIMEZONE).date()
-            # A day checked before it ended (including a future empty day) is
-            # not permanent coverage. Never refresh the original timestamp when
-            # inheriting, or a later cycle could legitimize incomplete coverage.
-            if row["day"] < str(checked_day):
-                confirmed[row["day"]] = (job_id, row["day"], row["result"], row["completed_at"])
-        conn.executemany("INSERT OR IGNORE INTO days VALUES (?, ?, ?, ?)", confirmed.values())
+            try:
+                name = self._database_name(database)
+            except ValueError:
+                # Invalid local metadata cannot prove that committed data exists.
+                missing.append(day)
+                continue
+            if name.casefold() not in available:
+                missing.append(day)
+        return sorted(missing)
 
     def _enqueue(self, conn, store_id, loja, start, end, force, automatic, kind, now, requires_session=False):
         identity = [store_id, start, end, bool(force)]
         if kind == "history":
-            # A historical review must not adopt an incremental job whose days
-            # were inherited. Keep existing ordinary-job signatures compatible.
+            # Preserve existing signatures for queued jobs from older versions.
             identity.append("history")
         signature = hashlib.sha256(json.dumps(identity,
                                              separators=(",", ":")).encode()).hexdigest()
@@ -291,6 +448,12 @@ class SyncQueue:
     def claim(self, owner, now=None, lease_seconds=120, limit=2, exclude_store_ids=()):
         if not str(owner or "").strip() or lease_seconds <= 0:
             raise ValueError("Executor e duracao de concessao validos sao obrigatorios.")
+        with self._history_gate(timeout=0) as acquired:
+            if not acquired:
+                return None
+            return self._claim(owner, now, lease_seconds, limit, exclude_store_ids)
+
+    def _claim(self, owner, now, lease_seconds, limit, exclude_store_ids):
         with self._transaction() as conn:
             now = _time(now)
             if self._connection_check_pending(conn):
@@ -354,8 +517,10 @@ class SyncQueue:
             raise RuntimeError("A sincronizacao foi pausada ou a concessao expirou.")
         return self._job(conn, job_id)
 
-    def complete_day(self, job_id, owner, day, result, now=None):
+    def complete_day(self, job_id, owner, day, result, now=None, *, collection_started_at=None,
+                     database_name=None):
         day = str(_date(day))
+        database_name = self._database_name(database_name)
         # Never persist source payloads, credentials or arbitrary tool results.
         counts = {key: int(value) for key, value in (result or {}).items()
                   if key in {"vendas", "notas", "itens", "devolucoes"}
@@ -368,8 +533,12 @@ class SyncQueue:
             job = self._require_owner(conn, job_id, owner, now)
             if not job["data_inicio"] <= day <= job["data_fim"]:
                 raise ValueError("Dia fora do periodo da sincronizacao.")
-            conn.execute("INSERT OR IGNORE INTO days VALUES (?, ?, ?, ?)",
-                         (job_id, day, json.dumps(counts), now))
+            started = job["created_at"] if collection_started_at is None else _time(collection_started_at)
+            if not math.isfinite(started) or started > now:
+                raise ValueError("Inicio da coleta invalido para confirmar o dia.")
+            conn.execute("""INSERT OR IGNORE INTO days
+                (job_id, day, result, completed_at, collection_started_at, database_name)
+                VALUES (?, ?, ?, ?, ?, ?)""", (job_id, day, json.dumps(counts), now, started, database_name))
             conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
             return self._job(conn, job_id)
 
@@ -378,7 +547,10 @@ class SyncQueue:
             now = _time(now)
             today = _date(today) if today is not None else dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date()
             job = self._require_owner(conn, job_id, owner, now)
-            if len(job["dias_concluidos"]) != job["dias_total"]:
+            eligible_end = min(_date(job["data_fim"]), today)
+            eligible_count = (eligible_end - _date(job["data_inicio"])).days + 1
+            if (eligible_count <= 0 or len([day for day in job["dias_concluidos"]
+                                           if day <= str(eligible_end)]) != eligible_count):
                 raise ValueError("Ainda existem dias sem conferencia concluida.")
             conn.execute("""UPDATE jobs SET status = 'complete', owner = NULL, lease_until = NULL,
                 last_error = NULL, next_attempt = NULL, updated_at = ?, completed_at = ? WHERE id = ?""",
@@ -596,6 +768,20 @@ class SyncQueue:
                     owner = NULL, lease_until = NULL
                 WHERE singleton = 1""")
 
+    def reset_history(self, *, now=None):
+        """Stop current leases and forget removed data, retaining automatic plans."""
+        with self._transaction() as conn:
+            now = _time(now)
+            conn.execute("""UPDATE jobs SET status = 'paused', owner = NULL, lease_until = NULL,
+                updated_at = ? WHERE status != 'complete'""", (now,))
+            conn.execute("DELETE FROM days")
+            conn.execute("DELETE FROM connection_alert_ack")
+            conn.execute("""UPDATE plans SET last_success = NULL, last_success_day = NULL,
+                next_due = ?, history_cursor = data_inicio, history_next_due = ?""", (now, now))
+            conn.execute("""UPDATE connection_check_state
+                SET completed_generation = requested_generation, requires_session = 0,
+                    owner = NULL, lease_until = NULL WHERE singleton = 1""")
+
     def list_jobs(self):
         with self._connection() as conn:
             return [self._job(conn, row[0]) for row in
@@ -608,10 +794,10 @@ class SyncQueue:
             return self._job(conn, job_id)
 
     def schedule_due(self, today, now=None):
-        """Fill recent gaps and rotate older seven-day windows once a day.
+        """Schedule only uncovered dates and today's open collection.
 
-        Historical cursors advance only on completion, so retries and interrupted
-        runs never skip a window. No scheduler thread is started by this module.
+        Historical jobs left by older versions remain resumable. New automatic
+        jobs do not periodically review completed historical dates.
         """
         today, now = _date(today), _time(now)
         scheduled = []
@@ -624,20 +810,13 @@ class SyncQueue:
                 start = _date(plan["data_inicio"])
                 if start > today:
                     continue
-                recent_start = max(start, today - dt.timedelta(days=RECENT_WINDOW_DAYS - 1))
                 if plan["next_due"] <= now:
-                    gap = _date(plan["last_success_day"]) if plan["last_success_day"] else start
-                    begin = max(start, min(recent_start, gap))
+                    covered = self._confirmed_days(conn, plan["store_id"], str(start), str(today), now)
+                    begin = start
+                    while begin < today and str(begin) in covered:
+                        begin += dt.timedelta(days=1)
                     scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
                         str(begin), str(today), False, True, "recent", now, plan["requires_session"]))
-                history_end = recent_start - dt.timedelta(days=1)
-                if plan["history_next_due"] <= now and start <= history_end:
-                    cursor = _date(plan["history_cursor"])
-                    if cursor < start or cursor > history_end:
-                        cursor = start
-                    end = min(history_end, cursor + dt.timedelta(days=6))
-                    scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
-                        str(cursor), str(end), False, True, "history", now, plan["requires_session"]))
             if scheduled:
                 self._request_connection_check(conn, requires_session=any(
                     job["requires_session"] for job in scheduled))
