@@ -27,6 +27,8 @@ const registro = {
   id: 'fornecedor-1',
   nome_empresa: 'Fornecedor Exemplo Ltd.',
   nome_contato: 'Contato Exemplo',
+  pais_origem: 'CHINA',
+  pais_regiao_beneficiario: 'SINGAPORE',
   email: 'contato@example.com',
   moeda_pagamento: 'USD',
   conta_beneficiario: '123456789',
@@ -78,22 +80,49 @@ for (const sourcePath of [
   assert.strictEqual(fornecedores.editar('fornecedor-1'), true);
   assert.strictEqual(elements.get('fornecedorNomeEmpresa').value, registro.nome_empresa);
   assert.strictEqual(elements.get('fornecedorContaBeneficiario').value, registro.conta_beneficiario);
+  assert.strictEqual(elements.get('fornecedorPaisOrigem').value, registro.pais_origem);
+  assert.strictEqual(elements.get('fornecedorPaisRegiao').value, registro.pais_regiao_beneficiario);
+
+  const legado = { ...registro, id: 'fornecedor-legado' };
+  delete legado.pais_origem;
+  context.JKCadastro.runtime.state.fornecedores.push(legado);
+  assert.strictEqual(fornecedores.editar(legado.id), true);
+  assert.strictEqual(elements.get('fornecedorPaisOrigem').value, '', 'origem ausente não pode reutilizar país bancário ou da edição anterior');
+  assert.strictEqual(elements.get('fornecedorPaisRegiao').value, registro.pais_regiao_beneficiario);
+  assert.strictEqual(fornecedores.editar(registro.id), true);
+  elements.get('fornecedorPaisOrigem').value = ' VIETNAM ';
 
   assert.strictEqual(await fornecedores.salvar({ preventDefault() {} }), true);
   const put = calls.find(call => call.options.method === 'PUT');
   assert(put, 'edição deve usar PUT');
   assert.strictEqual(put.url, '/api/cadastro/fornecedores/fornecedor-1');
-  assert.strictEqual(JSON.parse(put.options.body).nome_empresa, registro.nome_empresa);
+  const payloadEdicao = JSON.parse(put.options.body);
+  assert.strictEqual(payloadEdicao.nome_empresa, registro.nome_empresa);
+  assert.strictEqual(payloadEdicao.pais_origem, 'VIETNAM');
+  assert.strictEqual(payloadEdicao.pais_regiao_beneficiario, 'SINGAPORE');
 
   assert.strictEqual(await fornecedores.excluir('fornecedor-1'), true);
   const deletion = calls.find(call => call.options.method === 'DELETE');
   assert(deletion, 'exclusão deve usar DELETE');
   assert.strictEqual(deletion.url, '/api/cadastro/fornecedores/fornecedor-1');
 
+  elements.get('fornecedorNomeEmpresa').value = 'Novo fornecedor';
+  elements.get('fornecedorPaisOrigem').value = 'CHINA';
+  elements.get('fornecedorPaisRegiao').value = 'UNITED STATES';
+  assert.strictEqual(await fornecedores.salvar({ preventDefault() {} }), true);
+  const post = calls.find(call => call.options.method === 'POST');
+  assert(post, 'criação deve usar POST');
+  assert.strictEqual(post.url, '/api/cadastro/fornecedores');
+  const payloadCriacao = JSON.parse(post.options.body);
+  assert.strictEqual(payloadCriacao.pais_origem, 'CHINA');
+  assert.strictEqual(payloadCriacao.pais_regiao_beneficiario, 'UNITED STATES');
+
   context.JKCadastro.runtime.state.storeIdSelecionado = '';
   fornecedores.atualizarEstadoMutacoes();
   assert.strictEqual(elements.get('btnSalvarFornecedor').disabled, true);
   assert.strictEqual(elements.get('fornecedorNomeEmpresa').disabled, true);
+  assert.strictEqual(elements.get('fornecedorPaisOrigem').disabled, true);
+  assert.strictEqual(elements.get('fornecedorPaisRegiao').disabled, true);
   assert.doesNotMatch(elements.get('listaFornecedores').innerHTML, /data-action="editar"/);
   assert.doesNotMatch(elements.get('listaFornecedores').innerHTML, /data-action="excluir"/);
   assert.match(elements.get('fornecedorStatus').textContent, /Visualização consolidada/);

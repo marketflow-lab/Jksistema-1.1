@@ -14,6 +14,7 @@
         ['nome_empresa', 'fornecedorNomeEmpresa'],
         ['nome_contato', 'fornecedorNomeContato'],
         ['endereco_empresa', 'fornecedorEnderecoEmpresa'],
+        ['pais_origem', 'fornecedorPaisOrigem'],
         ['telefone', 'fornecedorTelefone'],
         ['email', 'fornecedorEmail'],
         ['moeda_pagamento', 'fornecedorMoedaPagamento'],

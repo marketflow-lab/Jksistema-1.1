@@ -452,7 +452,7 @@ def _gerar_commercial_invoice_bytes(
     data_invoice = str(lista.get("order_date") or "").strip() or data_aprovacao
     _atribuir_texto_excel(ws["E3"], _formatar_data_commercial_invoice(data_invoice))
     _atribuir_texto_excel(ws["F3"], "FROM:")
-    _atribuir_texto_excel(ws["H3"], "")
+    _atribuir_texto_excel(ws["H3"], cadastro_fornecedor.get("pais_origem") or "")
     _atribuir_texto_excel(ws["A4"], texto_nacionalizador or (f"LIST: {nome_lista}" if nome_lista else ""))
     _atribuir_texto_excel(ws["F4"], texto_comprador)
     _atribuir_texto_excel(ws["A7"], "Descriptions")

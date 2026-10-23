@@ -23,6 +23,7 @@ def _request(**overrides):
         "nome_empresa": "Fornecedor Exemplo Ltd.",
         "nome_contato": "Contato Exemplo",
         "endereco_empresa": "Rua de Exemplo, 100",
+        "pais_origem": "CHINA",
         "telefone": "+00 0000-0000",
         "email": "contato@example.com",
         "moeda_pagamento": "USD",
@@ -57,16 +58,19 @@ def test_fornecedores_crud_isolado_por_cliente(monkeypatch, tmp_path):
     payload = json.loads(arquivo.read_text(encoding="utf-8"))
     assert payload["schema"] == "jk.cadastro.fornecedores.v1"
     assert payload["fornecedores"][0]["conta_beneficiario"] == "123456789"
+    assert payload["fornecedores"][0]["pais_origem"] == "CHINA"
     assert not list(arquivo.parent.glob("*.tmp"))
 
     atualizado = asyncio.run(
         cadastro_fornecedores.atualizar_fornecedor_cadastro(
             fornecedor_id,
-            _request(nome_contato="Contato Atualizado"),
+            _request(nome_contato="Contato Atualizado", pais_origem="JAPAN"),
             "cliente-a",
         )
     )
     assert atualizado["fornecedor"]["nome_contato"] == "Contato Atualizado"
+    assert atualizado["fornecedor"]["pais_origem"] == "JAPAN"
+    assert atualizado["fornecedor"]["pais_regiao_beneficiario"] == "País Exemplo"
     assert atualizado["fornecedor"]["id"] == fornecedor_id
 
     excluido = asyncio.run(cadastro_fornecedores.excluir_fornecedor_cadastro(fornecedor_id, "cliente-a"))
@@ -190,6 +194,30 @@ def test_resolver_fornecedor_preserva_erros(monkeypatch, fornecedor_id, registro
         cadastro_fornecedores.resolver_fornecedor_lista("cliente-a", fornecedor_id)
     assert erro.value.status_code == status
     assert erro.value.detail == detail
+
+
+@pytest.mark.parametrize("limpar_explicitamente,esperado", [(False, "CHINA"), (True, "")])
+def test_edicao_legada_preserva_pais_origem_e_permite_limpeza(monkeypatch, tmp_path, limpar_explicitamente, esperado):
+    _configure_root(monkeypatch, tmp_path)
+    criado = cadastro_fornecedores._criar_fornecedor_cadastro_sync(_request(), "cliente-a")
+    fornecedor_id = criado["fornecedor"]["id"]
+    dados = {"nome_empresa": "Fornecedor Exemplo Ltd."}
+    if limpar_explicitamente:
+        dados["pais_origem"] = ""
+    cadastro_fornecedores._atualizar_fornecedor_cadastro_sync(
+        fornecedor_id, CadastroFornecedorRequest(**dados), "cliente-a",
+    )
+    assert cadastro_fornecedores.ler_fornecedor_por_id("cliente-a", fornecedor_id)["pais_origem"] == esperado
+
+
+def test_pais_origem_respeita_limite_sem_gravar_fornecedor_invalido(monkeypatch, tmp_path):
+    info_root = _configure_root(monkeypatch, tmp_path)
+    with pytest.raises(HTTPException) as erro:
+        cadastro_fornecedores._criar_fornecedor_cadastro_sync(_request(pais_origem="X" * 121), "cliente-a")
+    assert erro.value.status_code == 400
+    assert not (info_root / "cliente-a" / "cadastro_fornecedores.json").exists()
+    criado = cadastro_fornecedores._criar_fornecedor_cadastro_sync(_request(pais_origem="X" * 120), "cliente-a")
+    assert criado["fornecedor"]["pais_origem"] == "X" * 120
 
 
 def test_router_expoe_crud_de_fornecedores():

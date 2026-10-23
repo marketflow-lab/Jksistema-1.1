@@ -62,6 +62,7 @@ FORNECEDOR_CAMPOS = (
     "nome_empresa",
     "nome_contato",
     "endereco_empresa",
+    "pais_origem",
     "telefone",
     "email",
     "moeda_pagamento",
@@ -80,6 +81,7 @@ FORNECEDOR_LIMITES = {
     "nome_empresa": 240,
     "nome_contato": 160,
     "endereco_empresa": 1200,
+    "pais_origem": 120,
     "telefone": 80,
     "email": 254,
     "moeda_pagamento": 12,
@@ -264,8 +266,11 @@ def _atualizar_fornecedor_cadastro_sync(
         if indice is None:
             raise HTTPException(status_code=404, detail="Fornecedor não encontrado.")
         atual = fornecedores[indice]
+        dados = _dados_request(req)
+        if "pais_origem" not in req.model_fields_set:
+            dados["pais_origem"] = atual.get("pais_origem", "")
         atualizado = _normalizar_fornecedor(
-            _dados_request(req),
+            dados,
             fornecedor_id=fornecedor_id,
             criado_em=str(atual.get("criado_em", "")),
         )
