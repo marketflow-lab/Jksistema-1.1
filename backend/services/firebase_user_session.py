@@ -180,6 +180,40 @@ class _FirebaseRestInterceptor(FirestoreRestInterceptor):
         return self._stream(response)
 
 
+def _normalize_firebase_rest_error(response, **_kwargs):
+    # Firestore streaming RPCs return errors inside a one-element JSON array.
+    # google-api-core expects an object and otherwise masks the HTTP error with
+    # AttributeError. Adapt only this session's validated error envelope; keep
+    # status/headers/body intact so AuthorizedSession can still refresh a 401.
+    if not 400 <= response.status_code < 600:
+        return response
+    try:
+        payload = response.json()
+    except (ValueError, requests.exceptions.RequestException):
+        # A broken error body must not prevent the normal status-driven refresh.
+        return response
+    if (not isinstance(payload, list) or len(payload) != 1
+            or not isinstance(payload[0], dict) or set(payload[0]) != {"error"}):
+        return response
+    error = payload[0]["error"]
+    if (not isinstance(error, dict) or type(error.get("code")) is not int
+            or error["code"] != response.status_code
+            or not isinstance(error.get("message"), str)
+            or not isinstance(error.get("status"), str) or not error["status"]
+            or any(key in error and (not isinstance(error[key], list)
+                   or not all(isinstance(item, dict) for item in error[key]))
+                   for key in ("details", "errors"))):
+        return response
+    original_json = response.json
+
+    def error_json(*args, **kwargs):
+        value = original_json(*args, **kwargs)
+        return value[0] if value == payload else value
+
+    response.json = error_json
+    return response
+
+
 class UserFirestoreClient(Client):
     @property
     def _firestore_api(self):
@@ -192,6 +226,7 @@ class UserFirestoreClient(Client):
             )
             configure_requests_session(api.transport._session)
             api.transport._session.max_redirects = 0
+            api.transport._session.hooks["response"].append(_normalize_firebase_rest_error)
             self._firestore_api_internal = api
         return self._firestore_api_internal
 
