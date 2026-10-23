@@ -437,7 +437,7 @@ def _api_medias_compras_listas_pedidos_sync(
     resumos = []
     for lista in listas:
         referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
-        resumos.append(_resumo_lista_pedido(lista, mapas_m3.get(referencia, {})))
+        resumos.append(_resumo_lista_pedido(lista, mapas_m3.get(referencia, {}), client_id=client_id))
     return {"success": True, "listas": resumos}
 
 
@@ -711,8 +711,16 @@ async def api_medias_compras_lista_pedido_detalhe(
         target = next((row for row in snapshot if str(row.get("id", "")) == str(lista_id)), None)
         if target is None:
             raise HTTPException(404, "Lista de pedidos nao encontrada")
+        extras = list(extras_runtime(sys.modules[__name__]))
+        if isinstance(target.get("packing_list"), dict):
+            from backend.services.medias_compras_packing import _arquivo_packing, PACKING_SCHEMA
+            if target["packing_list"].get("schema") == PACKING_SCHEMA:
+                try:
+                    extras.append(_arquivo_packing(client_id, target["packing_list"].get("documento_id")))
+                except HTTPException:
+                    pass
         return capturar_fontes(
-            tenant, detalhe=True, extras=extras_runtime(sys.modules[__name__]),
+            tenant, detalhe=True, extras=extras,
             alvo=digest_lista(target), snapshot=snapshot,
             escopo=(str(lista_id),),
         )
@@ -814,7 +822,7 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
         return {
             "success": True,
             "lista": {
-                **_resumo_lista_pedido({**alvo, "itens": itens_salvos}),
+                **_resumo_lista_pedido({**alvo, "itens": itens_salvos}, client_id=client_id),
                 "itens": itens_salvos,
             },
         }
@@ -900,7 +908,7 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
         _limpar_cache_lista_pedido(client_id, str(alvo.get("id", "") or ""), manter_versao=alvo.get("updated_at"))
 
     with medir_etapa("resumo"):
-        resumo = _resumo_lista_pedido(alvo)
+        resumo = _resumo_lista_pedido(alvo, client_id=client_id)
     return {
         "success": True,
         "lista": {
@@ -1133,7 +1141,7 @@ def _api_medias_compras_lista_pedido_editar_sync(
     return {
         "success": True,
         "lista": {
-            **_resumo_lista_pedido(lista),
+            **_resumo_lista_pedido(lista, client_id=client_id),
             "itens": lista.get("itens") or [],
         }
     }
@@ -1195,7 +1203,7 @@ def _api_medias_compras_lista_pedido_atualizar_aprovacao_sku_sync(
         "compra_aprovada": bool(req.aprovada),
         "item": item,
         "lista": {
-            **_resumo_lista_pedido(lista),
+            **_resumo_lista_pedido(lista, client_id=client_id),
             "itens": itens,
         },
     }
@@ -1347,7 +1355,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         "analise_concorrentes": analise_concorrentes,
         "item": item_atual,
         "lista": {
-            **_resumo_lista_pedido(lista_atual),
+            **_resumo_lista_pedido(lista_atual, client_id=client_id),
             "itens": itens_atuais,
         },
     }
@@ -1535,7 +1543,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         "acao": acao,
         "sku": sku_final,
         "lista": {
-            **_resumo_lista_pedido(lista),
+            **_resumo_lista_pedido(lista, client_id=client_id),
             "itens": lista.get("itens") or [],
         },
     }
@@ -1572,7 +1580,7 @@ def _api_medias_compras_lista_pedido_atualizar_status_sync(
     return {
         "success": True,
         "lista": {
-            **_resumo_lista_pedido(lista),
+            **_resumo_lista_pedido(lista, client_id=client_id),
             "itens": lista.get("itens") or [],
         }
     }

@@ -191,6 +191,8 @@ def _sync_build_aggregate_progress(client_id: str, active_jobs: dict | None = No
     progresso = _criar_progresso("Sincronizando", len(active_jobs), SYNC_MAX_ACTIVE_VENDAS, percentual, mensagem)
     progresso["active_count"] = len(active_jobs)
     progresso["jobs"] = itens
+    for field in ("dias_aproveitados", "dias_pendentes"):
+        progresso[field] = sum(max(0, int((item.get("progress") or {}).get(field) or 0)) for item in itens)
     return progresso
 
 def _set_progresso(client_id: str, data: dict):
@@ -215,6 +217,11 @@ def _set_progresso(client_id: str, data: dict):
         except Exception:
             pass
     if isinstance(data, dict):
+        data = dict(data)
+        meta = SYNC_META.get(key) or {}
+        for field in ("dias_aproveitados", "dias_pendentes"):
+            if field in meta:
+                data.setdefault(field, meta[field])
         loja = _sync_context_loja()
         if loja:
             data = dict(data)

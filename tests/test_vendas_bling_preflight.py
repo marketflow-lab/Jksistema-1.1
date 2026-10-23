@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from backend.core import AppPaths
 from backend.modules.vendas import dependencies, sync_automation, sync_engine
 from backend.modules.vendas.errors import VendasDomainError
 from backend.modules.vendas.sync_queue import SyncQueue
+from backend.modules.vendas.sync_period import _ensure_sync_schema
 from backend.schemas import VendasSyncRequest
 from backend.services import bling_vendas
 
@@ -49,7 +51,9 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_engine, "_verificar_cancelamento", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_set_progresso", lambda *_: None)
     monkeypatch.setattr(sync_engine, "_sync_unregister_active", lambda *_: None)
-    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", lambda *_: [])
+    monkeypatch.setattr(bling_vendas, "get_tenant_path", paths.tenant_path)
+    monkeypatch.setattr(sync_engine, "_get_vendas_db_path", bling_vendas._get_vendas_db_path)
+    monkeypatch.setattr(sync_engine, "_listar_bancos_vendas_tenant", bling_vendas._listar_bancos_vendas_tenant)
     monkeypatch.setattr(sync_automation, "wake", lambda: None)
     yield req, state
 
@@ -66,6 +70,13 @@ def pending(req):
     queue = SyncQueue("tenant-a")
     job = queue.enqueue(req.store_id, req.loja, req.data_inicio, req.data_fim)
     queue.claim("first")
+    database = bling_vendas._get_vendas_db_path("tenant-a", req.loja)
+    with sqlite3.connect(database) as conn:
+        _ensure_sync_schema(conn.cursor())
+        conn.executemany("""INSERT INTO vendas
+            (id_unico, data, store_id, loja_conta, sku, quantidade, valor)
+            VALUES (?, ?, ?, ?, 'fixture-sku', 1, 10)""",
+            [(f"fixture-{index}", req.data_inicio, req.store_id, req.loja) for index in range(3)])
     queue.complete_day(job["id"], "first", req.data_inicio, {"vendas": 3})
     queue.fail_job(job["id"], "first", "A integração está indisponível. A sincronização tentará novamente.")
     queue.enqueue(req.store_id, req.loja, req.data_inicio, req.data_fim)

@@ -18,7 +18,16 @@ from backend.services.bling import BLING_SESSION, _BlingAdaptiveLimiter, _bling_
 from backend.services.bling_oauth import exchange_bling_refresh_token
 from backend.services.bling_return_references import store_reference
 from backend.services.sqlite_coordination import sqlite_lock_for_path
-from backend.services.vendas_collection_checkpoint import load_collected_document, save_collected_document
+from backend.services.vendas_collection_checkpoint import (
+    collection_listing_hash,
+    current_collection_checkpoint,
+    load_collection_manifest,
+    load_collected_document,
+    load_prepared_source,
+    save_collection_manifest,
+    save_collected_document,
+    validate_collection_context,
+)
 
 logger = logging.getLogger("jk_sistema")
 PASTA_INFO = os.path.join(os.getcwd(), "info")
@@ -40,6 +49,144 @@ def _documento_ja_coletado(seen: dict, document_id: Any, listing: dict) -> bool:
         raise HTTPException(status_code=502, detail="Documento mudou durante a paginacao; repita a coleta do dia.")
     seen[key] = revision
     return previous is not None
+
+
+def _normalizar_manifesto_bling(kind: str, listing: dict) -> dict:
+    """Keep only the scalar commercial fields required to resume detailing."""
+    document_id = listing.get("id")
+    if document_id is None or not str(document_id).strip():
+        raise HTTPException(status_code=502, detail="Documento sem identificador na listagem da Bling.")
+    normalized = {"id": str(document_id)}
+    if kind == "pedido":
+        normalized["data"] = listing.get("data")
+        return normalized
+    def obj(name, parent=listing):
+        value = parent.get(name)
+        return value if isinstance(value, dict) else {}
+    store = obj("loja")
+    unit = obj("unidadeNegocio", store)
+    normalized.update(
+        numero=listing.get("numero"),
+        data_emissao=listing.get("dataEmissao") or listing.get("data"),
+        origem_codigo=_extrair_codigo_origem_nf(listing),
+        loja_id=store.get("id"), loja_descricao=store.get("descricao"),
+        unidade_id=unit.get("id"),
+    )
+    if kind == "nfe_saida":
+        normalized.update(comprador=obj("contato").get("nome"), numero_pedido_loja=listing.get("numeroPedidoLoja"))
+    else:
+        purpose = listing.get("finalidade") or listing.get("finalidadeOperacao") or {}
+        if isinstance(purpose, dict):
+            purpose = purpose.get("descricao") or purpose.get("nome") or purpose.get("label") or purpose.get("valor") or ""
+        normalized.update(
+            valor=listing.get("valorTotal") or listing.get("total") or 0,
+            fornecedor=obj("contato").get("nome"),
+            natureza_id=obj("naturezaOperacao").get("id"),
+            natureza_descricao=obj("naturezaOperacao").get("descricao"),
+            finalidade_descricao=str(purpose or "").strip(),
+            unidade_descricao=unit.get("nome") or unit.get("descricao"),
+            intermediador_nome=obj("intermediador").get("nomeUsuario"),
+            intermediador_cnpj=obj("intermediador").get("cnpj"),
+        )
+    if any(isinstance(value, (dict, list)) for value in normalized.values()):
+        raise HTTPException(status_code=502, detail="Metadados invalidos na listagem da Bling.")
+    return normalized
+
+
+def _restaurar_manifesto_bling(kind: str, entry: dict) -> dict:
+    """Adapt normalized metadata to the existing commercial transformation."""
+    fields = entry["listing"]
+    if kind == "pedido":
+        return {"id": fields["id"], "data": fields.get("data")}
+    result = {
+        "id": fields["id"], "numero": fields.get("numero"), "dataEmissao": fields.get("data_emissao"),
+        "origem": fields.get("origem_codigo"),
+        "loja": {"id": fields.get("loja_id"), "descricao": fields.get("loja_descricao"),
+                 "unidadeNegocio": {"id": fields.get("unidade_id"), "nome": fields.get("unidade_descricao")}},
+    }
+    if kind == "nfe_saida":
+        result.update(contato={"nome": fields.get("comprador")}, numeroPedidoLoja=fields.get("numero_pedido_loja"))
+    else:
+        result.update(
+            valorTotal=fields.get("valor"), contato={"nome": fields.get("fornecedor")},
+            naturezaOperacao={"id": fields.get("natureza_id"), "descricao": fields.get("natureza_descricao")},
+            finalidade=fields.get("finalidade_descricao"),
+            intermediador={"nomeUsuario": fields.get("intermediador_nome"), "cnpj": fields.get("intermediador_cnpj")},
+        )
+    return result
+
+
+def _preparar_manifesto_coleta_bling(kind, access_token, data_inicio, data_fim, client_id=None, progress_callback=None):
+    """Enumerate a scoped day completely before any detail is requested.
+
+    A partial enumeration has no resumable cursor: restart discovery while the
+    independently confirmed document payloads remain available by original hash.
+    Calls outside the daily checkpoint retain the existing collector flow.
+    """
+    scope = current_collection_checkpoint()
+    if scope is None or str(data_inicio) != scope.day or str(data_fim) != scope.day:
+        return None, 200
+    manifest = load_collection_manifest(kind)
+    if manifest is not None:
+        return manifest["entries"], 200
+    started_at = scope.started_at
+    entries = []
+    seen_documents = {}
+    signatures = set()
+    max_pages = {"pedido": 200, "nfe_saida": 400, "nfe_entrada": 10000}[kind]
+    action = {"pedido": "listar pedidos de venda", "nfe_entrada": "listar NFe de entrada", "nfe_saida": "listar NFe de saida"}[kind]
+    url = "https://api.bling.com.br/Api/v3/" + ("pedidos/vendas" if kind == "pedido" else "nfe")
+    limiter = _BlingAdaptiveLimiter(start_interval=0.08)
+    for page in range(1, max_pages + 1):
+        validate_collection_context()
+        if client_id:
+            _verificar_cancelamento(client_id)
+        if progress_callback:
+            progress_callback(page)
+        if kind == "pedido":
+            params = {"dataInicial": data_inicio, "dataFinal": data_fim, "pagina": page, "limite": 100}
+        else:
+            params = {"tipo": 0 if kind == "nfe_entrada" else 1,
+                      "dataEmissaoInicial": f"{data_inicio} 00:00:00",
+                      "dataEmissaoFinal": f"{data_fim} 23:59:59", "pagina": page, "limite": 100}
+        response = _bling_get_with_adaptive_limit(
+            url, headers={"Authorization": f"Bearer {access_token}"}, params=params, timeout=25,
+            limiter=limiter, max_attempts=3, cancel_callback=_bling_cancel_callback(client_id),
+        )
+        if response is None:
+            raise HTTPException(status_code=503, detail=f"Servico Bling indisponivel ao {action}.")
+        if response.status_code == 401 or (kind == "nfe_saida" and response.status_code == 403):
+            return None, response.status_code
+        if response.status_code != 200:
+            _bling_raise_required_response(response, action)
+        documents = _bling_json_data(response, action=action, default=[], expected_type=list)
+        if not documents:
+            validate_collection_context()
+            save_collection_manifest(kind, entries, started_at=started_at)
+            return entries, 200
+        documents = [_bling_required_dict(document, action) for document in documents]
+        signature = tuple(str(document.get("id")) for document in documents)
+        if signature in signatures:
+            raise HTTPException(status_code=502, detail=f"Paginacao repetida ao {action}.")
+        signatures.add(signature)
+        for document in documents:
+            normalized = _normalizar_manifesto_bling(kind, document)
+            if _documento_ja_coletado(seen_documents, normalized["id"], document):
+                continue
+            entries.append({"document_id": normalized["id"], "listing_hash": collection_listing_hash(document), "listing": normalized})
+    raise HTTPException(status_code=502, detail=f"Listagem excedeu {max_pages} paginas ao {action}.")
+
+
+def _pagina_manifesto_bling(kind, entries, page):
+    return [_restaurar_manifesto_bling(kind, entry) for entry in entries[(page - 1) * 100:page * 100]]
+
+
+def _fonte_preparada_bling(kind, data_inicio, data_fim):
+    scope = current_collection_checkpoint()
+    if scope is None or str(data_inicio) != scope.day or str(data_fim) != scope.day:
+        return None
+    validate_collection_context()
+    return load_prepared_source(kind)
 
 
 def _iterar_janelas_data_bling(data_inicio: str, data_fim: str, dias_por_janela: int = 31) -> list[tuple[str, str]]:
@@ -1763,6 +1910,9 @@ def _get_vendas_db(client_id: str, loja: str = None):
 
 def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loja_nome: str, client_id: str = None, unidades_cache: dict = None, unidades_mapeamento: dict = None, mapa_lojas_cliente: dict = None):
     """Busca vendas no Bling com detalhes de itens."""
+    prepared = _fonte_preparada_bling("pedido", data_inicio, data_fim)
+    if prepared is not None:
+        return prepared["sales"], 200
     headers = {"Authorization": f"Bearer {access_token}"}
     url_lista = "https://api.bling.com.br/Api/v3/pedidos/vendas"
     registros = []
@@ -1772,22 +1922,46 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
     cache_numero_nf = {}
     unidades_cache = unidades_cache or {}
     unidades_mapeamento = unidades_mapeamento or {}
-    mapa_canais, status_canais = _bling_map_canais_venda_basico(access_token)
-    if status_canais == 401:
+    mapa_canais = {}
+    mapa_lojas_virtuais = {}
+    mapas_carregados = False
+
+    def carregar_mapas():
+        nonlocal mapa_canais, mapa_lojas_virtuais, mapas_carregados
+        if mapas_carregados:
+            return 200
+        mapa_canais, status_canais = _bling_map_canais_venda_basico(access_token)
+        if status_canais == 401:
+            return 401
+        mapa_canais = mapa_canais or {}
+        mapa_lojas_virtuais, _ = _bling_map_lojas_virtuais(access_token)
+        mapa_lojas_virtuais = mapa_lojas_virtuais or {}
+        mapa_unidades_api, status_unidades_api = _bling_map_unidades_por_canais(access_token)
+        if status_unidades_api == 401:
+            return 401
+        if mapa_unidades_api:
+            unidades_mapeamento.update(mapa_unidades_api)
+            # Persiste para uso em filtros e sessões futuras
+            try:
+                _salvar_mapeamento_unidades(unidades_mapeamento)
+            except Exception:
+                pass
+        mapas_carregados = True
+        return 200
+
+    if current_collection_checkpoint() is None and carregar_mapas() == 401:
         return None, 401
-    mapa_canais = mapa_canais or {}
-    mapa_lojas_virtuais, _ = _bling_map_lojas_virtuais(access_token)
-    mapa_lojas_virtuais = mapa_lojas_virtuais or {}
-    mapa_unidades_api, status_unidades_api = _bling_map_unidades_por_canais(access_token)
-    if status_unidades_api == 401:
-        return None, 401
-    if mapa_unidades_api:
-        unidades_mapeamento.update(mapa_unidades_api)
-        # Persiste para uso em filtros e sessões futuras
-        try:
-            _salvar_mapeamento_unidades(unidades_mapeamento)
-        except Exception:
-            pass
+
+    def progresso_descoberta(page):
+        if client_id:
+            _set_progresso(client_id, _criar_progresso("Bling", page, 0, min(30, 8 + page - 1), f"Consultando Bling - página {page}..."))
+
+    manifest_entries, manifest_status = _preparar_manifesto_coleta_bling(
+        "pedido", access_token, data_inicio, data_fim, client_id, progresso_descoberta,
+    )
+    if manifest_status != 200:
+        return None, manifest_status
+    manifest_hashes = {entry["document_id"]: entry["listing_hash"] for entry in manifest_entries or []}
 
     def _normalizar_data_bling(valor: str) -> str:
         """Converte YYYY-MM-DD / ISO em data curta YYYY-MM-DD (comportamento legado estável)."""
@@ -1826,31 +2000,36 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
         dt_fim = _normalizar_data_bling(data_fim)
         if client_id:
             pct_pagina = min(30, 8 + max(0, pagina - 1))
-            _sync_log(client_id, f"[SYNC] Bling: consultando página {pagina} ({dt_ini} até {dt_fim})")
-            _set_progresso(client_id, _criar_progresso("Bling", pagina, 0, pct_pagina, f"Consultando Bling - página {pagina}..."))
+            msg_pagina = (f"Retomando documentos Bling - lote {pagina}..." if manifest_entries is not None
+                          else f"Consultando Bling - página {pagina}...")
+            _sync_log(client_id, f"[SYNC] {msg_pagina}")
+            _set_progresso(client_id, _criar_progresso("Bling", pagina, 0, pct_pagina, msg_pagina))
         params = {"dataInicial": dt_ini, "dataFinal": dt_fim, "pagina": pagina, "limite": 100}
-        resp = _bling_get_with_adaptive_limit(
-            url_lista,
-            headers=headers,
-            params=params,
-            timeout=25,
-            limiter=limiter_lista,
-            max_attempts=3,
-            cancel_callback=_bling_cancel_callback(client_id),
-        )
-        if resp is None:
-            raise HTTPException(status_code=503, detail=f"Servico Bling indisponivel ao listar vendas (pagina {pagina}).")
-        if resp.status_code == 401:
-            return None, 401
-        if resp.status_code != 200:
-            _bling_raise_required_response(resp, "listar pedidos de venda")
+        if manifest_entries is not None:
+            pedidos = _pagina_manifesto_bling("pedido", manifest_entries, pagina)
+        else:
+            resp = _bling_get_with_adaptive_limit(
+                url_lista,
+                headers=headers,
+                params=params,
+                timeout=25,
+                limiter=limiter_lista,
+                max_attempts=3,
+                cancel_callback=_bling_cancel_callback(client_id),
+            )
+            if resp is None:
+                raise HTTPException(status_code=503, detail=f"Servico Bling indisponivel ao listar vendas (pagina {pagina}).")
+            if resp.status_code == 401:
+                return None, 401
+            if resp.status_code != 200:
+                _bling_raise_required_response(resp, "listar pedidos de venda")
 
-        pedidos = _bling_json_data(
-            resp,
-            action="listar pedidos de venda",
-            default=[],
-            expected_type=list,
-        )
+            pedidos = _bling_json_data(
+                resp,
+                action="listar pedidos de venda",
+                default=[],
+                expected_type=list,
+            )
         if not pedidos:
             break
 
@@ -1895,10 +2074,13 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
                 raise HTTPException(status_code=502, detail="Pedido sem identificador obrigatorio na resposta da Bling.")
             if _documento_ja_coletado(seen_documents, pid, p):
                 continue
-            cached = load_collected_document("pedido", pid, p)
+            cached = load_collected_document("pedido", pid, p, listing_hash=manifest_hashes.get(str(pid)))
             if cached is not None:
                 registros.extend(cached["sales"])
                 continue
+            validate_collection_context()
+            if carregar_mapas() == 401:
+                return None, 401
             document_start = len(registros)
             url_det = f"https://api.bling.com.br/Api/v3/pedidos/vendas/{pid}"
             det = _bling_get_with_adaptive_limit(
@@ -2057,6 +2239,7 @@ def _bling_listar_vendas(access_token: str, data_inicio: str, data_fim: str, loj
             save_collected_document(
                 "pedido", pid, p,
                 {"sales": registros[document_start:], "notes": [], "items": []},
+                listing_hash=manifest_hashes.get(str(pid)),
             )
         pagina += 1
 
@@ -2204,6 +2387,9 @@ def _bling_listar_notas_entrada(
     progress_start: int = 15,
     progress_end: int = 44,
 ):
+    prepared = _fonte_preparada_bling("nfe_entrada", data_inicio, data_fim)
+    if prepared is not None:
+        return prepared["notes"], prepared["items"], 200
     janelas = _iterar_janelas_data_bling(data_inicio, data_fim, dias_por_janela=31)
     if len(janelas) > 1:
         registros_total: list[dict] = []
@@ -2267,13 +2453,23 @@ def _bling_listar_notas_entrada(
         except Exception:
             mapa_lojas_cliente = {}
     
+    manifest_entries, manifest_status = _preparar_manifesto_coleta_bling(
+        "nfe_entrada", access_token, data_inicio, data_fim, client_id,
+        lambda page: _notificar_progresso_nf(progress_callback, "Notas Entrada", page, 0, progress_start,
+                                             f"NF-e de entrada: consultando pagina {page} ({data_inicio} a {data_fim})"),
+    )
+    if manifest_status != 200:
+        return None, None, manifest_status
+    manifest_hashes = {entry["document_id"]: entry["listing_hash"] for entry in manifest_entries or []}
+
     while True:
         # Verificar cancelamento antes de cada requisição
         if client_id:
             _verificar_cancelamento(client_id)
         
         pct_pagina = min(progress_end, max(progress_start, progress_start + max(0, pagina - 1)))
-        msg_pagina = f"NF-e de entrada: consultando pagina {pagina} ({data_inicio} a {data_fim})"
+        msg_pagina = (f"NF-e de entrada: retomando documentos do lote {pagina}" if manifest_entries is not None
+                      else f"NF-e de entrada: consultando pagina {pagina} ({data_inicio} a {data_fim})")
         _notificar_progresso_nf(progress_callback, "Notas Entrada", pagina, 0, pct_pagina, msg_pagina)
         if pagina == 1 or pagina % 5 == 0:
             _notificar_log_nf(log_callback, f"[ESTOQUE][LANC] {msg_pagina}")
@@ -2285,28 +2481,31 @@ def _bling_listar_notas_entrada(
             "pagina": pagina,
             "limite": 100
         }
-        resp = _bling_get_with_adaptive_limit(
-            url,
-            headers=headers,
-            params=params,
-            timeout=25,
-            limiter=limiter,
-            max_attempts=3,
-            cancel_callback=_bling_cancel_callback(client_id),
-        )
-        if resp is None:
-            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de entrada.")
-        if resp.status_code == 401:
-            return None, None, 401
-        if resp.status_code != 200:
-            _bling_raise_required_response(resp, "listar NFe de entrada")
+        if manifest_entries is not None:
+            notas = _pagina_manifesto_bling("nfe_entrada", manifest_entries, pagina)
+        else:
+            resp = _bling_get_with_adaptive_limit(
+                url,
+                headers=headers,
+                params=params,
+                timeout=25,
+                limiter=limiter,
+                max_attempts=3,
+                cancel_callback=_bling_cancel_callback(client_id),
+            )
+            if resp is None:
+                raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de entrada.")
+            if resp.status_code == 401:
+                return None, None, 401
+            if resp.status_code != 200:
+                _bling_raise_required_response(resp, "listar NFe de entrada")
 
-        notas = _bling_json_data(
-            resp,
-            action="listar NFe de entrada",
-            default=[],
-            expected_type=list,
-        )
+            notas = _bling_json_data(
+                resp,
+                action="listar NFe de entrada",
+                default=[],
+                expected_type=list,
+            )
         if not notas:
             break
 
@@ -2353,11 +2552,12 @@ def _bling_listar_notas_entrada(
                 )
             if _documento_ja_coletado(seen_documents, nid, nf):
                 continue
-            cached = load_collected_document("nfe_entrada", nid, nf)
+            cached = load_collected_document("nfe_entrada", nid, nf, listing_hash=manifest_hashes.get(str(nid)))
             if cached is not None:
                 registros.extend(cached["notes"])
                 itens.extend(cached["items"])
                 continue
+            validate_collection_context()
             document_start = len(itens)
             numero = nf.get("numero")
             data_emissao = nf.get("dataEmissao") or nf.get("data")
@@ -2583,6 +2783,7 @@ def _bling_listar_notas_entrada(
             save_collected_document(
                 "nfe_entrada", nid, nf,
                 {"sales": [], "notes": [registros[-1]], "items": itens[document_start:]},
+                listing_hash=manifest_hashes.get(str(nid)),
             )
 
         _notificar_log_nf(
@@ -2609,6 +2810,9 @@ def _bling_listar_vendas_fallback_nf_saida(
     progress_start: int = 45,
     progress_end: int = 74,
 ):
+    prepared = _fonte_preparada_bling("nfe_saida", data_inicio, data_fim)
+    if prepared is not None:
+        return prepared["sales"], 200
     janelas = _iterar_janelas_data_bling(data_inicio, data_fim, dias_por_janela=31)
     if len(janelas) > 1:
         registros_total: list[dict] = []
@@ -2672,6 +2876,18 @@ def _bling_listar_vendas_fallback_nf_saida(
         except Exception:
             mapa_lojas_cliente = {}
 
+    manifest_entries, manifest_status = _preparar_manifesto_coleta_bling(
+        "nfe_saida", access_token, data_inicio, data_fim, client_id,
+        lambda page: _notificar_progresso_nf(progress_callback, "Notas Saida", page, 0, progress_start,
+                                             f"NF-e de saida: consultando pagina {page} ({data_inicio} a {data_fim})"),
+    )
+    if manifest_status != 200:
+        if manifest_status == 403:
+            _notificar_log_nf(log_callback, "[ESTOQUE][LANC] Fallback de NFe de saida indisponivel por permissao 403; nenhuma venda sera inferida por esta fonte.")
+            return [], 403
+        return None, manifest_status
+    manifest_hashes = {entry["document_id"]: entry["listing_hash"] for entry in manifest_entries or []}
+
     while True:
         if client_id:
             _verificar_cancelamento(client_id)
@@ -2687,7 +2903,8 @@ def _bling_listar_vendas_fallback_nf_saida(
             )
 
         pct_pagina = min(progress_end, max(progress_start, progress_start + max(0, pagina - 1)))
-        msg_pagina = f"NF-e de saida: consultando pagina {pagina} ({data_inicio} a {data_fim})"
+        msg_pagina = (f"NF-e de saida: retomando documentos do lote {pagina}" if manifest_entries is not None
+                      else f"NF-e de saida: consultando pagina {pagina} ({data_inicio} a {data_fim})")
         _notificar_progresso_nf(progress_callback, "Notas Saida", pagina, 0, pct_pagina, msg_pagina)
         if pagina == 1 or pagina % 5 == 0:
             _notificar_log_nf(log_callback, f"[ESTOQUE][LANC] {msg_pagina}")
@@ -2700,34 +2917,37 @@ def _bling_listar_vendas_fallback_nf_saida(
             "limite": 100,
         }
 
-        resp = _bling_get_with_adaptive_limit(
-            url,
-            headers=headers,
-            params=params,
-            timeout=25,
-            limiter=limiter,
-            max_attempts=3,
-            cancel_callback=_bling_cancel_callback(client_id),
-        )
-        if resp is None:
-            raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de saida.")
-        if resp.status_code == 401:
-            return None, 401
-        if resp.status_code == 403:
-            _notificar_log_nf(
-                log_callback,
-                "[ESTOQUE][LANC] Fallback de NFe de saida indisponivel por permissao 403; nenhuma venda sera inferida por esta fonte.",
+        if manifest_entries is not None:
+            notas = _pagina_manifesto_bling("nfe_saida", manifest_entries, pagina)
+        else:
+            resp = _bling_get_with_adaptive_limit(
+                url,
+                headers=headers,
+                params=params,
+                timeout=25,
+                limiter=limiter,
+                max_attempts=3,
+                cancel_callback=_bling_cancel_callback(client_id),
             )
-            return [], 403
-        if resp.status_code != 200:
-            _bling_raise_required_response(resp, "listar NFe de saida")
+            if resp is None:
+                raise HTTPException(status_code=503, detail="Servico Bling indisponivel ao listar NFe de saida.")
+            if resp.status_code == 401:
+                return None, 401
+            if resp.status_code == 403:
+                _notificar_log_nf(
+                    log_callback,
+                    "[ESTOQUE][LANC] Fallback de NFe de saida indisponivel por permissao 403; nenhuma venda sera inferida por esta fonte.",
+                )
+                return [], 403
+            if resp.status_code != 200:
+                _bling_raise_required_response(resp, "listar NFe de saida")
 
-        notas = _bling_json_data(
-            resp,
-            action="listar NFe de saida",
-            default=[],
-            expected_type=list,
-        )
+            notas = _bling_json_data(
+                resp,
+                action="listar NFe de saida",
+                default=[],
+                expected_type=list,
+            )
         if not notas:
             break
 
@@ -2770,10 +2990,11 @@ def _bling_listar_vendas_fallback_nf_saida(
                 raise HTTPException(status_code=502, detail="NFe de saida sem identificador para buscar detalhe obrigatorio.")
             if _documento_ja_coletado(seen_documents, nf_id, nf):
                 continue
-            cached = load_collected_document("nfe_saida", nf_id, nf)
+            cached = load_collected_document("nfe_saida", nf_id, nf, listing_hash=manifest_hashes.get(str(nf_id)))
             if cached is not None:
                 registros.extend(cached["sales"])
                 continue
+            validate_collection_context()
             document_start = len(registros)
             numero_nf = str(nf.get("numero") or "").strip()
             data_venda = nf.get("dataEmissao") or nf.get("data") or ""
@@ -2905,6 +3126,7 @@ def _bling_listar_vendas_fallback_nf_saida(
             save_collected_document(
                 "nfe_saida", nf_id, nf,
                 {"sales": registros[document_start:], "notes": [], "items": []},
+                listing_hash=manifest_hashes.get(str(nf_id)),
             )
 
         _notificar_log_nf(

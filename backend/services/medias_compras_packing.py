@@ -13,7 +13,9 @@ import textwrap
 import uuid
 import zipfile
 import xml.etree.ElementTree as ET
+from collections import OrderedDict
 from datetime import datetime
+from threading import RLock
 from xml.sax.saxutils import escape
 
 import openpyxl
@@ -38,6 +40,12 @@ from backend.services import medias_compras_excel as excel
 
 MAX_PACKING_BYTES = 20 * 1024 * 1024
 PACKING_SCHEMA = "jk.packing-list.v1"
+PACKING_TOTALS_SCHEMA = "jk.packing-list-totals.v1"
+_PACKING_TOTALS_CACHE = OrderedDict()
+_PACKING_TOTALS_CACHE_LOCK = RLock()
+_PACKING_TOTALS_READ_LOCKS = tuple(RLock() for _ in range(16))
+_PACKING_TOTALS_CACHE_MAX = 256
+_PACKING_TOTALS_TENANT_MAX = 32
 
 
 def _numero_packing(valor, *, obrigatorio=False):
@@ -76,6 +84,109 @@ def _totais_embalagens_packing(grupos):
             origens.add(origem)
             totais[grupo.get("tipo_embalagem", "ctns")] += grupo["ctns"]
     return totais
+
+
+def _totais_packing(grupos):
+    """Count each supplier total cell once, including shared merged totals."""
+    embalagens = _totais_embalagens_packing(grupos)
+    totais = {"total_caixas": embalagens["ctns"], "total_trays": embalagens["trays"]}
+    for campo, destino in (("cbm_total", "total_m3"), ("gw_total", "peso_bruto_total_kg"),
+                           ("nw_total", "peso_liquido_total_kg")):
+        origens = set()
+        valores = []
+        try:
+            for indice, grupo in enumerate(grupos):
+                origem = (grupo.get("totais_origem", {}).get(campo)
+                          or grupo.get("totais_calculo_origem", {}).get(campo) or f"grupo-{indice}")
+                if origem not in origens:
+                    origens.add(origem)
+                    valores.append(_numero_packing(grupo[campo], obrigatorio=True))
+            totais[destino] = _numero_packing(math.fsum(valores), obrigatorio=True)
+        except (ValueError, OverflowError):
+            raise HTTPException(400, "O Packing List contém um total numérico inválido.") from None
+    return totais
+
+
+def _totais_persistidos_packing(metadata):
+    if metadata.get("totais_schema") != PACKING_TOTALS_SCHEMA:
+        return None
+    origem = metadata.get("totais")
+    if not isinstance(origem, dict):
+        return None
+    totais = {}
+    for campo in ("total_m3", "total_caixas", "total_trays", "peso_bruto_total_kg", "peso_liquido_total_kg"):
+        valor = origem.get(campo)
+        if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+            return None
+        try:
+            numero = _numero_packing(valor, obrigatorio=True)
+        except (ValueError, OverflowError):
+            return None
+        if campo in {"total_caixas", "total_trays"} and numero != int(numero):
+            return None
+        totais[campo] = numero
+    return totais
+
+
+def _assinatura_arquivo_packing(caminho):
+    estado = os.stat(caminho)
+    return (estado.st_dev, estado.st_ino, estado.st_size, estado.st_mtime_ns, estado.st_ctime_ns)
+
+
+def _guardar_cache_totais_packing(chave, totais):
+    with _PACKING_TOTALS_CACHE_LOCK:
+        _PACKING_TOTALS_CACHE[chave] = totais
+        _PACKING_TOTALS_CACHE.move_to_end(chave)
+        tenant_keys = [key for key in _PACKING_TOTALS_CACHE if key[0] == chave[0]]
+        while len(tenant_keys) > _PACKING_TOTALS_TENANT_MAX:
+            _PACKING_TOTALS_CACHE.pop(tenant_keys.pop(0), None)
+        while len(_PACKING_TOTALS_CACHE) > _PACKING_TOTALS_CACHE_MAX:
+            _PACKING_TOTALS_CACHE.popitem(last=False)
+
+
+def _totais_packing_lista(lista, client_id):
+    """Validate this tenant's original once per revision; never migrate on reads."""
+    metadata = lista.get("packing_list")
+    if not isinstance(metadata, dict) or metadata.get("schema") != PACKING_SCHEMA:
+        return None
+    sha256 = str(metadata.get("sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        return None
+    try:
+        caminho = _arquivo_packing(client_id, metadata.get("documento_id"))
+        tenant = common.canonical_path_key(os.path.dirname(common._arquivo_listas_pedidos(client_id)))
+        persistidos = _totais_persistidos_packing(metadata)
+        # Bounded stripes avoid duplicate cold reads without accumulating locks per file.
+        with _PACKING_TOTALS_READ_LOCKS[hash((tenant, caminho)) % len(_PACKING_TOTALS_READ_LOCKS)]:
+            assinatura = _assinatura_arquivo_packing(caminho)
+            if not 0 < assinatura[2] <= MAX_PACKING_BYTES:
+                return None
+            chave = ((str(client_id), tenant), common.canonical_path_key(caminho), sha256, assinatura,
+                     tuple(persistidos.items()) if persistidos is not None else None)
+            with _PACKING_TOTALS_CACHE_LOCK:
+                if chave in _PACKING_TOTALS_CACHE:
+                    totais = _PACKING_TOTALS_CACHE[chave]
+                    _PACKING_TOTALS_CACHE.move_to_end(chave)
+                    return dict(totais) if totais is not None else None
+            totais = None
+            try:
+                with open(caminho, "rb") as stream:
+                    conteudo = stream.read(MAX_PACKING_BYTES + 1)
+                if assinatura != _assinatura_arquivo_packing(caminho):
+                    return None
+                if hashlib.sha256(conteudo).hexdigest() == sha256:
+                    totais = persistidos if persistidos is not None else _totais_packing(
+                        _ler_packing_list_bytes(conteudo)["grupos"]
+                    )
+            except (OSError, ValueError, OverflowError, HTTPException):
+                pass
+            # Do not cache a read under a revision that changed during parsing.
+            if assinatura != _assinatura_arquivo_packing(caminho):
+                return None
+            _guardar_cache_totais_packing(chave, totais)
+            return dict(totais) if totais is not None else None
+    except (OSError, ValueError, OverflowError, HTTPException):
+        return None
 
 
 def _ler_packing_list_bytes(conteudo: bytes) -> dict:
@@ -171,6 +282,7 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
                 if any(numero <= 0 for numero in dimensoes):
                     raise ValueError("Informe as três medidas positivas da caixa em centímetros.")
                 cbm_ctn = _numero_packing(valor(linha, 10))
+                cbm_ctn_informado = cbm_ctn is not None
                 if cbm_ctn is None:
                     cbm_ctn = math.prod(dimensoes) / 1_000_000
                 cbm_total = _numero_packing(valor(linha, 11))
@@ -179,15 +291,26 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
                 nw_total = _numero_packing(valor(linha, 14))
                 gw_total = _numero_packing(valor(linha, 15))
                 origens_totais = {}
+                origens_calculo = {}
                 for campo, coluna, informado in (("cbm_total", 11, cbm_total),
                                                  ("nw_total", 14, nw_total), ("gw_total", 15, gw_total)):
                     if informado is not None:
                         origem = merged.get((linha, coluna), (linha, coluna))
                         origens_totais[campo] = f"{get_column_letter(origem[1])}{origem[0]}"
+                    else:
+                        fatores = ((10,) if cbm_ctn_informado else (7, 8, 9)) if campo == "cbm_total" else (
+                            (12,) if campo == "nw_total" else (13,)
+                        )
+                        origens = [merged.get((linha, fator), (linha, fator)) for fator in (6, *fatores)]
+                        origens_calculo[campo] = "calculo:" + "|".join(
+                            f"{get_column_letter(coluna_origem)}{linha_origem}"
+                            for linha_origem, coluna_origem in origens
+                        )
                 grupo = {
                     "caixas": str(caixa or "").strip(), "ctns": int(ctns), "dimensoes": dimensoes,
                     "tipo_embalagem": tipo_embalagem, "ctns_origem": f"{get_column_letter(origem_ctns[1])}{origem_ctns[0]}",
                     "totais_origem": origens_totais,
+                    "totais_calculo_origem": origens_calculo,
                     "cbm_ctn": cbm_ctn, "cbm_total": cbm_total if cbm_total is not None else cbm_ctn * ctns,
                     "nw_ctn": nw_ctn, "nw_total": nw_total if nw_total is not None else nw_ctn * ctns,
                     "gw_ctn": gw_ctn, "gw_total": gw_total if gw_total is not None else gw_ctn * ctns,
@@ -540,12 +663,14 @@ def _importar_packing_list_sync(lista_id, conteudo, filename, client_id):
     dados = _ler_packing_list_bytes(conteudo)
     grupos = dados["grupos"]
     embalagens = _totais_embalagens_packing(grupos)
+    totais = _totais_packing(grupos)
     metadata = {"schema": PACKING_SCHEMA, "documento_id": uuid.uuid4().hex,
                 "sha256": hashlib.sha256(conteudo).hexdigest(),
                 "nome_arquivo": str(filename).replace("\\", "/").rsplit("/", 1)[-1][:255],
                 "uploaded_at": datetime.now().isoformat(timespec="seconds"),
                 "total_linhas": sum(len(g["itens"]) for g in grupos),
-                "total_ctns": embalagens["ctns"], "total_trays": embalagens["trays"]}
+                "total_ctns": embalagens["ctns"], "total_trays": embalagens["trays"],
+                "totais_schema": PACKING_TOTALS_SCHEMA, "totais": totais}
     caminho = _arquivo_packing(client_id, metadata["documento_id"])
 
     @common._retry_listas_pedidos
@@ -585,7 +710,8 @@ def _importar_packing_list_sync(lista_id, conteudo, filename, client_id):
         finally:
             if os.path.exists(temporario):
                 os.unlink(temporario)
-        return {"success": True, "packing_list_ready": True}
+        return {"success": True, "packing_list_ready": True,
+                "lista": common._resumo_lista_pedido(lista, client_id=client_id)}
     return gravar()
 
 

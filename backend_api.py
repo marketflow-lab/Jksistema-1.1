@@ -1962,7 +1962,7 @@ app.include_router(create_admin_usuarios_router())
 from backend.routers.firebase_provisioning import FirebaseProvisioningRouterConfig, create_firebase_provisioning_router
 from backend.services.admin_usuarios_store import (
     _authorize_full_admin_firebase_provisioning, _authorize_admin_firebase_provisioning_status,
-    _obter_perfil_autenticado_remoto_sql,
+    _obter_politica_local_cofre_sql,
 )
 app.include_router(create_firebase_provisioning_router(FirebaseProvisioningRouterConfig(
     base_dir=BASE_DIR, info_dir=PASTA_INFO,
@@ -2071,7 +2071,7 @@ def _cofre_verified_jk_session(token: str) -> dict:
     machine_id = str(payload.get("machine_id") or "").strip()
     if not username or not client_id or not machine_id:
         raise HTTPException(401, "Sessão JK inválida.", headers={"WWW-Authenticate": "Bearer"})
-    usuario = _obter_perfil_autenticado_remoto_sql(username)
+    usuario = _obter_politica_local_cofre_sql(username)
     if not isinstance(usuario, dict) or not usuario:
         raise HTTPException(503, {"code": "cofre_session_unavailable",
             "message": "Não foi possível recuperar a autorização do Cofre. Tente novamente."})

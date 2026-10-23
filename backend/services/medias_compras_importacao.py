@@ -401,7 +401,7 @@ def _api_medias_compras_lista_pedido_importar_excel_precos_sync(
     return {
         "success": True,
         "lista": {
-            **_resumo_lista_pedido(lista),
+            **_resumo_lista_pedido(lista, client_id=client_id),
             "itens": lista.get("itens") or [],
         },
         "total_skus_lidos": len(atualizacoes),

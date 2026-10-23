@@ -26,7 +26,7 @@ def bridge(profile=None, payload=None, *, missing_profile=False):
     record = {"client_id": "example-company", "permissions": {"cofre": True},
               "active": True, "valid_until": None, "machine_ids": ["example-pc"], **(profile or {})}
     scope = {"HTTPException": HTTPException, "decodificar_access_token": lambda value: payload or dict(IDENTITY),
-             "_obter_perfil_autenticado_remoto_sql": lambda username: {} if missing_profile else record,
+             "_obter_politica_local_cofre_sql": lambda username: {} if missing_profile else record,
              "_login_usuario_ativo": lambda user: user.get("active") is True,
              "_login_validade_ok": lambda user: (user.get("valid_until") != "expired", None),
              "_normalizar_permissoes": lambda value: dict(value)}
@@ -46,10 +46,10 @@ def test_bridge_resolves_canonical_lookup_from_actual_backend_imports(monkeypatc
     from backend.services import admin_usuarios_store
     lookup = Mock(return_value={"client_id": "example-company", "permissions": {"cofre": True},
         "active": True, "valid_until": None, "machine_ids": ["example-pc"]})
-    monkeypatch.setattr(admin_usuarios_store, "_obter_perfil_autenticado_remoto_sql", lookup)
+    monkeypatch.setattr(admin_usuarios_store, "_obter_politica_local_cofre_sql", lookup)
     function = bridge()
     scope = function.__globals__
-    del scope["_obter_perfil_autenticado_remoto_sql"]
+    del scope["_obter_politica_local_cofre_sql"]
     tree = ast.parse((ROOT / "backend_api.py").read_text(encoding="utf-8-sig"))
     imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)
                and node.module == "backend.services.admin_usuarios_store"]

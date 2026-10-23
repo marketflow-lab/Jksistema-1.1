@@ -16,6 +16,9 @@ from backend.schemas import VendasSyncRequest
 from backend.services.bling_oauth import requires_bling_reauthorization
 from backend.services.bling_return_references import reference_from_note, store_reference
 from backend.services.sqlite_coordination import configure_sqlite_connection, sqlite_lock_for_path
+from backend.services.vendas_collection_checkpoint import (
+    collected_source_complete, save_collected_invoice_number, validate_collection_context,
+)
 
 from .errors import VendasDomainError as HTTPException
 from .legacy_duplicates import without_legacy_sale_duplicates
@@ -846,6 +849,7 @@ def _persistir_periodo_atomico(
                         references_by_note=return_references)
             _verificar_cancelamento(client_id)
 
+            validate_collection_context()
             conn.commit()
             committed = True
             return {
@@ -1178,6 +1182,7 @@ async def _sincronizar_vendas_periodo_impl(
             ):
                 item["numero_nf"] = str(numero_nf)
                 nf_enriquecidas += 1
+        save_collected_invoice_number(nf_id, str(numero_nf))
 
     nf_pendentes = sum(
         1
@@ -1193,14 +1198,17 @@ async def _sincronizar_vendas_periodo_impl(
         _criar_progresso("Notas", 0, 0, 76, "Buscando notas fiscais de entrada..."),
     )
     _verificar_cancelamento(client_id)
-    natureza_map, status_naturezas, bling_cfg = _bling_executar_com_refresh(
-        client_id,
-        req.loja,
-        bling_cfg,
-        _bling_listar_naturezas,
-        on_refresh=lambda: _sync_log(client_id, "[SYNC] Renovando token para naturezas..."),
-        store_id=store_id,
-    )
+    if collected_source_complete("nfe_entrada"):
+        natureza_map, status_naturezas = {}, 200
+    else:
+        natureza_map, status_naturezas, bling_cfg = _bling_executar_com_refresh(
+            client_id,
+            req.loja,
+            bling_cfg,
+            _bling_listar_naturezas,
+            on_refresh=lambda: _sync_log(client_id, "[SYNC] Renovando token para naturezas..."),
+            store_id=store_id,
+        )
     _raise_for_bling_status(status_naturezas, "listagem de naturezas")
     if not isinstance(natureza_map, dict):
         raise HTTPException(status_code=502, detail="Resposta inválida da Bling na listagem de naturezas.")

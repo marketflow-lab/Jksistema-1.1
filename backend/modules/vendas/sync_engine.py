@@ -5,6 +5,10 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import datetime
 import asyncio
+import hashlib
+import json
+import os
+import time
 from urllib.parse import urlsplit
 
 from backend.schemas import VendasSyncRequest
@@ -12,12 +16,15 @@ from backend.services.bling import _bling_get_with_adaptive_limit
 from backend.services.bling_oauth import requires_bling_reauthorization
 from backend.services.vendas_collection_checkpoint import (
     collection_checkpoint, collection_day_summary, finish_collection_day,
+    purge_store_collection,
 )
+from backend.services.store_public_snapshot import provider_identity
+from backend.services.cadastro_catalogo_common import configuracao_catalogo_aplicacao_fingerprint
 
 from .dependencies import logger
 from .errors import VendasDomainError as HTTPException
-from .legacy import buscar_loja, _listar_bancos_vendas_tenant, _bling_executar_com_refresh
-from .performance import invalidate_vendas_cache, prepare_vendas_database
+from .legacy import buscar_loja, _listar_bancos_vendas_tenant, _bling_executar_com_refresh, _get_vendas_db_path
+from .performance import invalidate_vendas_cache, prepare_vendas_database, open_vendas_readonly
 from .progress import (
     _criar_progresso, _set_progresso, _sync_context_key, _sync_log,
     _sync_unregister_active, _verificar_cancelamento,
@@ -27,7 +34,81 @@ from .sync_period import _sincronizar_vendas_periodo_impl
 from .sync_persistence import (
     _vendas_sync_dias_periodo, _vendas_sync_prepare_job, _vendas_sync_update_job,
 )
-from .sync_queue import SyncQueue
+from .sync_queue import SyncQueue, SYNC_TIMEZONE
+
+
+def _collection_store_state(req, client_id):
+    store = buscar_loja(client_id, req.loja, store_id=req.store_id)
+    if not store or str(store.get("store_id") or "") != req.store_id:
+        raise HTTPException(409, "A loja da coleta mudou; o progresso foi preservado.")
+    config = (store.get("integracoes") or {}).get("bling")
+    if not isinstance(config, dict) or not config.get("access_token"):
+        raise HTTPException(409, "A conexão Bling mudou; retome a coleta na conexão atual.")
+    identity = provider_identity(store, "bling")
+    if not identity:
+        # Central/legacy connections may lack a local OAuth epoch. Persist only
+        # public identity fields; the exact credential snapshot stays in memory.
+        public = [bool(config.get("central")), store.get("owner_client_id"),
+                  config.get("user_id"), config.get("site_id"),
+                  config.get("id") or config.get("app_id") or config.get("client_id")]
+        identity = hashlib.sha256(json.dumps(public, separators=(",", ":")).encode()).hexdigest()
+    guard = configuracao_catalogo_aplicacao_fingerprint("bling", req.store_id, req.loja, config)
+    return identity, guard
+
+
+def _store_history_exists(req, client_id, jobs, paths):
+    # A store rename changes the next write filename, not the committed data.
+    # Original job names also identify empty-day databases without sales rows.
+    names = {req.loja, *(job["loja"] for job in jobs)}
+    expected_paths = {_get_vendas_db_path(client_id, name) for name in names}
+    if any(os.path.isfile(path) for path in expected_paths):
+        return True
+    for path in paths:
+        conn = open_vendas_readonly(path)
+        try:
+            for table in ("vendas", "notas_entrada"):
+                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if "store_id" in columns and conn.execute(
+                    f"SELECT 1 FROM {table} WHERE store_id = ? LIMIT 1", (req.store_id,),
+                ).fetchone():
+                    return True
+        finally:
+            conn.close()
+    return False
+
+
+def _prepare_store_collection(req, client_id, queue, job_id, owner):
+    """Bind prepared documents and coverage to the same authorized connection."""
+    expected, expected_guard = _collection_store_state(req, client_id)
+
+    def validate():
+        _verificar_cancelamento(client_id)
+        if not queue.owns(job_id, owner):
+            raise HTTPException(409, "A coleta não possui mais a concessão de execução.")
+        if _collection_store_state(req, client_id) != (expected, expected_guard):
+            raise HTTPException(409, "A conexão Bling mudou; retome a coleta na conexão atual.")
+
+    validate()
+    changed = queue.bind_store_source(req.store_id, expected)
+    jobs = [job for job in queue.list_jobs() if job["store_id"] == req.store_id and job["dias_concluidos"]]
+    paths = [path for path in _listar_bancos_vendas_tenant(client_id, req.loja) if os.path.isfile(path)]
+    current_path = _get_vendas_db_path(client_id, req.loja)
+    if os.path.isfile(current_path) and current_path not in paths:
+        paths.append(current_path)
+    missing_days = queue.missing_database_days(req.store_id, {os.path.basename(path) for path in paths})
+    db_missing = bool(jobs) and not _store_history_exists(req, client_id, jobs, paths)
+    if changed or db_missing or missing_days:
+        # A missing DB before the FIRST commit is normal: keep partial documents.
+        # Only discard staging when it belonged to lost confirmed data/a new account.
+        if changed or db_missing:
+            queue.invalidate_store_days(req.store_id)
+        else:
+            for day in missing_days:
+                queue.invalidate_store_days(req.store_id, day, day)
+        purge_store_collection(client_id, req.store_id, on_write=validate)
+    SYNC_THREAD_CONTEXT.queue_job = queue.refresh_job_coverage(job_id, owner)
+    SYNC_THREAD_CONTEXT.collection_identity = expected
+    SYNC_THREAD_CONTEXT.collection_validate = validate
 
 
 def _resolve_store(req: VendasSyncRequest, client_id: str):
@@ -207,6 +288,7 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
         req = _resolve_store(req, client_id)
         SYNC_THREAD_CONTEXT.loja = req.loja
         _verificar_alertas_antes_da_coleta(req, client_id, queue, job_id, owner)
+        _prepare_store_collection(req, client_id, queue, job_id, owner)
         asyncio.run(_sincronizar_vendas_impl(req, client_id))
         for db_path in _listar_bancos_vendas_tenant(client_id, req.loja):
             try:
@@ -234,7 +316,8 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
             ))
     finally:
         _sync_unregister_active(client_id, job_id)
-        for attr in ("job_id", "loja", "queue_job", "lease_check", "queue_owner"):
+        for attr in ("job_id", "loja", "queue_job", "lease_check", "queue_owner",
+                     "collection_identity", "collection_validate"):
             try:
                 delattr(SYNC_THREAD_CONTEXT, attr)
             except AttributeError:
@@ -245,7 +328,10 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
 
 async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
     """Preserve the legacy coroutine, using the durable job when run by the queue."""
-    dias = _vendas_sync_dias_periodo(req.data_inicio, req.data_fim)
+    today = str(datetime.now(SYNC_TIMEZONE).date())
+    dias = [day for day in _vendas_sync_dias_periodo(req.data_inicio, req.data_fim) if day <= today]
+    if not dias:
+        raise HTTPException(400, "O período começa depois do dia atual.")
     job_context_key = _sync_context_key(client_id)
     job = getattr(SYNC_THREAD_CONTEXT, "queue_job", None)
     owner = getattr(SYNC_THREAD_CONTEXT, "queue_owner", None)
@@ -254,7 +340,19 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
         job_key, job = _vendas_sync_prepare_job(client_id, req, dias)
     else:
         job_key = job["id"]
-    done = set(job.get("dias_concluidos") or [])
+    done = set(job.get("dias_concluidos") or []).intersection(dias)
+    reused_days = len(done)
+    SYNC_META[job_context_key] = {
+        **(SYNC_META.get(job_context_key) or {}),
+        "dias_aproveitados": reused_days, "dias_pendentes": len(dias) - len(done),
+    }
+    validate = getattr(SYNC_THREAD_CONTEXT, "collection_validate", None)
+    if validate is None:
+        validate = lambda: _verificar_cancelamento(client_id)
+    _set_progresso(client_id, _criar_progresso(
+        "Retomada", len(done), len(dias), min(98, int(len(done) / max(1, len(dias)) * 100)),
+        f"{reused_days} dia(s) já concluído(s); {len(dias) - len(done)} dia(s) pendente(s).",
+    ))
     totals = {key: 0 for key in (
         "total", "notas_entrada_total", "nf_enriquecidas", "nf_pendentes_restantes",
         "vendas_processadas", "notas_processadas",
@@ -275,34 +373,49 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
                 _vendas_sync_update_job(client_id, job_key, {"status": "running", **meta})
             _set_progresso(client_id, _criar_progresso(
                 "Dia", index, len(dias), int(len(done) / len(dias) * 100),
-                f"Conferindo dia {index}/{len(dias)} ({day}).",
+                f"{reused_days} dia(s) aproveitado(s). Retomando {day}; "
+                f"{len(dias) - len(done)} dia(s) pendente(s).",
             ))
             day_req = req.model_copy(update={"data_inicio": day, "data_fim": day})
             SYNC_DAY_CONTEXT[job_context_key] = {
                 "dia_atual": day, "dia_indice": index, "total_dias": len(dias),
             }
             checkpoint = (
-                collection_checkpoint(client_id, req.store_id, job_key, day)
+                collection_checkpoint(
+                    client_id, req.store_id, job_key, day,
+                    force=bool(req.forcar_resync),
+                    refresh_discovery=day >= str(datetime.now(SYNC_TIMEZONE).date()),
+                    connection_identity=getattr(SYNC_THREAD_CONTEXT, "collection_identity", ""),
+                    on_write=validate,
+                )
                 if queue is not None else nullcontext()
             )
             try:
-                with checkpoint:
+                started_at = time.time()
+                with checkpoint as scope:
                     result = await _sincronizar_vendas_periodo_impl(day_req, client_id, reset_estado=False)
                 if not isinstance(result, dict) or result.get("success") is not True:
                     raise HTTPException(status_code=502, detail="Dia não confirmado.")
                 _verificar_cancelamento(client_id)
                 if queue is not None:
-                    result["checkpoint"] = collection_day_summary(client_id, req.store_id, job_key, day)
-                    queue.complete_day(job_key, owner, day, result)
+                    generation = getattr(scope, "cycle_id", job_key)
+                    started_at = getattr(scope, "started_at", started_at)
+                    result["checkpoint"] = collection_day_summary(client_id, req.store_id, generation, day)
+                    validate()
+                    queue.complete_day(
+                        job_key, owner, day, result, collection_started_at=started_at,
+                        database_name=os.path.basename(_get_vendas_db_path(client_id, req.loja)),
+                    )
                 else:
                     _vendas_sync_update_job(client_id, job_key, {
                         "status": "running", "dias_concluidos": [d for d in dias if d in done or d == day],
                         "ultimo_resultado": result,
                     })
                 done.add(day)
-                if queue is not None:
+                SYNC_META[job_context_key]["dias_pendentes"] = len(dias) - len(done)
+                if queue is not None and day < str(datetime.fromtimestamp(started_at, SYNC_TIMEZONE).date()):
                     try:
-                        finish_collection_day(client_id, req.store_id, job_key, day)
+                        finish_collection_day(client_id, req.store_id, generation, day, on_write=validate)
                     except Exception:
                         # Business data and completion are durable; an orphan staging
                         # row cannot be used by a different cycle.
@@ -356,6 +469,8 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
         if totals["composicoes"]["pending"] else "Período e composições conferidos."
     )
     progress = _criar_progresso("Finalizado", len(dias), len(dias), 100, message)
+    totals["dias_aproveitados"] = reused_days
+    progress["dias_aproveitados"] = reused_days
     progress.update(concluido=True, result=totals)
     _set_progresso(client_id, progress)
     return {"success": True, **totals}

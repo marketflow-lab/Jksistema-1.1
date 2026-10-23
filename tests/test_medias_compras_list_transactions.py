@@ -139,7 +139,7 @@ def test_detail_recalculates_on_approval_race(store, monkeypatch):
     monkeypatch.setattr(service, "_carregar_listas_pedidos", common._carregar_listas_pedidos)
     monkeypatch.setattr(service, "_salvar_listas_pedidos", common._salvar_listas_pedidos)
     monkeypatch.setattr(service, "_limpar_cache_lista_pedido", lambda *_args, **_kw: None)
-    monkeypatch.setattr(service, "_resumo_lista_pedido", lambda row: {"id": row["id"]})
+    monkeypatch.setattr(service, "_resumo_lista_pedido", lambda row, **_kwargs: {"id": row["id"]})
     from backend.services import cadastro_compatibilidade
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
                         lambda *_args, **_kwargs: {"scope": "resolved", "store_id": "store-a"})
@@ -226,7 +226,7 @@ def test_backfill_preserves_concurrent_public_mutations(store, monkeypatch, muta
         monkeypatch.setattr(module, "_carregar_listas_pedidos", common._carregar_listas_pedidos)
         monkeypatch.setattr(module, "_salvar_listas_pedidos", common._salvar_listas_pedidos)
         monkeypatch.setattr(module, "_limpar_cache_lista_pedido", lambda *_args, **_kw: None)
-        monkeypatch.setattr(module, "_resumo_lista_pedido", lambda row: {"id": row["id"]})
+        monkeypatch.setattr(module, "_resumo_lista_pedido", lambda row, **_kwargs: {"id": row["id"]})
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
                         lambda *_args, **_kwargs: {"scope": "resolved", "store_id": "store-a"})
     entered, release = threading.Event(), threading.Event()
