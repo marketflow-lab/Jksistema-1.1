@@ -2062,9 +2062,34 @@ _CONTEXT_HUB_RUNTIME_CONFIG = _context_hub_module.configure_context_hub(
     surface=_CONTEXT_HUB_SURFACE,
 )
 app.include_router(create_context_hub_router())
-async def get_cofre_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
+def _cofre_verified_jk_session(token: str) -> dict:
+    """Validate the existing JK session; cached policy can only narrow access."""
+    payload = decodificar_access_token(token)
+    username = str(payload.get("sub") or "").strip().lower()
+    client_id = str(payload.get("client_id") or "").strip()
+    machine_id = str(payload.get("machine_id") or "").strip()
+    if not username or not client_id or not machine_id:
+        raise HTTPException(401, "Sessão JK inválida.", headers={"WWW-Authenticate": "Bearer"})
+    usuario = _obter_perfil_autenticado_remoto_sql(username)
+    if not isinstance(usuario, dict) or not usuario:
+        raise HTTPException(503, {"code": "cofre_session_unavailable",
+            "message": "Não foi possível recuperar a autorização do Cofre. Tente novamente."})
+    if str(usuario.get("client_id") or "").strip() != client_id:
+        raise HTTPException(403, "A sessão não pertence a esta empresa.")
+    if machine_id not in usuario.get("machine_ids", []):
+        raise HTTPException(403, "Este dispositivo não possui acesso ao Cofre.")
+    valid, _message = _login_validade_ok(usuario)
+    permissions = _normalizar_permissoes(usuario.get("permissions") or {})
+    if not _login_usuario_ativo(usuario) or not valid or not (
+            permissions.get("full") is True or permissions.get("cofre") is True):
+        raise HTTPException(403, "Seu usuário não possui acesso ao Cofre.")
+    return {"sub": username, "client_id": client_id, "machine_id": machine_id,
+            "permissions": permissions, "valid_until": usuario.get("valid_until")}
+
+
+def get_cofre_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
     from backend.services.cofre_auth import bind_request
-    return bind_request(request, authorization)
+    return bind_request(request, authorization, decode_session=_cofre_verified_jk_session)
 
 
 app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_cofre_tenant_id, sharing=True))

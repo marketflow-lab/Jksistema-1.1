@@ -317,7 +317,8 @@
     "backend/modules/cofre/storage.py",
     "backend/modules/cofre/shared.py",
     "backend/modules/cofre/shared_storage.py",
-    "backend/services/cofre_auth.py"
+    "backend/services/cofre_auth.py",
+    "backend/services/cofre_session_store.py"
   ],
   "requiredSourceGlobs": [
     {
@@ -956,7 +957,8 @@
     "local_app/backend/modules/cofre/storage.py",
     "local_app/backend/modules/cofre/shared.py",
     "local_app/backend/modules/cofre/shared_storage.py",
-    "local_app/backend/services/cofre_auth.py"
+    "local_app/backend/services/cofre_auth.py",
+    "local_app/backend/services/cofre_session_store.py"
   ],
   "requiredPackagedSourceParity": [
     "backend/modules/context_hub/product_evidence_editorial.py",
@@ -1199,7 +1201,8 @@
     "backend/modules/cofre/storage.py",
     "backend/modules/cofre/shared.py",
     "backend/modules/cofre/shared_storage.py",
-    "backend/services/cofre_auth.py"
+    "backend/services/cofre_auth.py",
+    "backend/services/cofre_session_store.py"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",

@@ -52,4 +52,36 @@ class GatewayChangePasswordRequest(BaseModel):
         return GatewayLoginRequest.strip_non_secret_fields(value)
 
 
-__all__ = ["GatewayChangePasswordRequest", "GatewayLoginRequest"]
+class GatewayCofreSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_grant: SecretStr = Field(min_length=1, max_length=16384)
+    machine_id: str = Field(min_length=1, max_length=512)
+    app_version: str = Field(min_length=1, max_length=64)
+    request_nonce: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    @field_validator("machine_id", "app_version")
+    @classmethod
+    def strip_non_secret_fields(cls, value: str) -> str:
+        normalized = GatewayLoginRequest.strip_non_secret_fields(value)
+        if any(ord(char) < 32 for char in normalized):
+            raise ValueError("invalid_request")
+        return normalized
+
+
+class GatewayGoogleLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    credential: SecretStr = Field(min_length=1, max_length=16384)
+    machine_id: str = Field(min_length=1, max_length=512)
+    app_version: str = Field(min_length=1, max_length=64)
+    request_nonce: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+
+    @field_validator("machine_id", "app_version")
+    @classmethod
+    def strip_non_secret_fields(cls, value: str) -> str:
+        return GatewayCofreSessionRequest.strip_non_secret_fields(value)
+
+
+__all__ = ["GatewayChangePasswordRequest", "GatewayLoginRequest", "GatewayCofreSessionRequest",
+           "GatewayGoogleLoginRequest"]

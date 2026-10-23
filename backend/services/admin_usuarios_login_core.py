@@ -647,7 +647,7 @@ def _montar_resposta_login_sucesso(username: str, usuario: dict, permissoes: dic
         access_token=token,
     )
 
-def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, request: Request, app_version: Optional[str] = None) -> LoginResponse:
+def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, request: Request, app_version: Optional[str] = None, *, credential: str = "") -> LoginResponse:
     app_version_ok = _validar_versao_minima_app_ou_426(app_version)
     issuer = str((token_info or {}).get("iss") or "")
     if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
@@ -659,6 +659,12 @@ def _autenticar_usuario_por_google_info(token_info: dict, machine_id: str, reque
         email_verified = email_verified.strip().lower() == "true"
     if not email or not bool(email_verified):
         return LoginResponse(success=False, message="Use uma conta Google com e-mail verificado.")
+
+    if credential:
+        from backend.services.admin_usuarios_auth import _autenticar_google_remoto
+        remote_response = _autenticar_google_remoto(token_info, credential, machine_id, request, app_version_ok)
+        if remote_response is not None:
+            return remote_response
 
     usuarios, _ws, _headers = carregar_usuarios_sheets()
     username, usuario = _buscar_usuario_por_email_google(usuarios or {}, email)

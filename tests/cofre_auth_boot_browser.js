@@ -27,24 +27,33 @@ async function scenario(browser, options = {}) {
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   await page.clock.install({ time: new Date('2026-10-22T12:00:00Z') });
-  const state = { requests: [], chunks: [], forbidden: [], errors: [], api: [] };
+  const state = { requests: [], chunks: [], forbidden: [], errors: [], api: [],
+    backendUnavailable: !!options.backendUnavailable, backendUnauthorized: false,
+    mutationUnavailable: false, messagesUnavailable: false, redirectMessages: false,
+    holdMessages: false, heldMessage: null, messageStarted: false };
   page.on('pageerror', error => state.errors.push(error.message));
   await page.addInitScript(({ token, permissions, identity }) => {
     if (location.pathname !== '/cofre.html') return;
-    if (identity) {
-      localStorage.setItem('access_token', token);
-      localStorage.setItem('user_data', JSON.stringify({ client_id: 'fixture-company', username: 'fixture-user' }));
+    if (!sessionStorage.getItem('fixture-initialized')) {
+      if (identity) {
+        localStorage.setItem('access_token', token);
+        localStorage.setItem('user_data', JSON.stringify({ client_id: 'fixture-company', username: 'fixture-user' }));
+      }
+      localStorage.setItem('permissions', JSON.stringify(permissions));
+      sessionStorage.setItem('fixture-initialized', 'true');
     }
-    localStorage.setItem('permissions', JSON.stringify(permissions));
   }, { token, permissions: options.permissions || { cofre: true }, identity: options.identity !== false });
 
   await page.route('**/*', async route => {
     const request = route.request();
     const url = new URL(request.url());
     state.requests.push(url.pathname);
-    const reply = body => route.fulfill({ status: options.backendDenied ? 403 : options.backendUnauthorized || state.backendUnauthorized ? 401 : 200,
+    const unavailable = () => route.fulfill({ status: 503, contentType: 'application/json',
+      body: JSON.stringify({ detail: { code: 'cofre_session_unavailable', message: 'Acervo temporariamente indisponível.' } }) });
+    const reply = body => state.backendUnavailable ? unavailable() : route.fulfill({ status: options.backendDenied ? 403 : state.backendUnauthorized ? 401 : 200,
+      headers: state.backendUnauthorized ? { 'WWW-Authenticate': 'Bearer' } : {},
       contentType: 'application/json', body: JSON.stringify(options.backendDenied ? { detail: 'Acesso ao Cofre negado pela API.' }
-        : options.backendUnauthorized || state.backendUnauthorized ? { detail: 'A autorização do Cofre expirou ou não está disponível nesta sessão.' } : body) });
+        : state.backendUnauthorized ? { detail: 'Token de autenticação inválido.' } : body) });
     if (url.origin !== origin) { state.forbidden.push(url.origin + url.pathname); return route.abort(); }
     if (url.pathname === '/cofre.html') {
       let html = source(options.mirror ? 'static/cofre.html' : 'cofre.html');
@@ -67,16 +76,29 @@ async function scenario(browser, options = {}) {
     if (url.pathname.startsWith('/api/cofre/')) {
       state.api.push({ path: url.pathname, authorization: request.headers().authorization, method: request.method() });
       assert.equal(request.headers().authorization, 'Bearer ' + token, 'A API preserva Authorization de sessão.');
-      if (url.pathname === '/api/cofre/compartilhamento') return reply(sharing);
-      if (url.pathname === '/api/cofre/compartilhamento/sincronizar') return reply({ ...sharing, changed: false });
+      if (request.method() === 'PATCH') {
+        assert(state.mutationUnavailable, 'A fixture não aceita mutações reais.');
+        return unavailable();
+      }
+      if (url.pathname === '/api/cofre/compartilhamento') return reply({ ...sharing, can_publish: !!options.writer });
+      if (url.pathname === '/api/cofre/compartilhamento/sincronizar') return reply({ ...sharing, can_publish: !!options.writer, changed: false });
       if (url.pathname === '/api/cofre/servidores') return reply({ servidores: [server] });
       if (url.pathname === '/api/cofre/servidores/fixture-guild/canais') return reply({ servidor: server, canais: [channel] });
-      if (url.pathname === '/api/cofre/canais/fixture-channel/mensagens') return reply({
+      if (url.pathname === '/api/cofre/canais/fixture-channel/mensagens') {
+        if (state.holdMessages) {
+          state.messageStarted = true;
+          await new Promise(resolve => { state.heldMessage = resolve; });
+          state.holdMessages = false;
+        }
+        if (state.messagesUnavailable) return unavailable();
+        if (state.redirectMessages) return route.fulfill({ status: 302, headers: { location: origin + '/frontend_index.html' } });
+        return reply({
         mensagens: [{ id: 'fixture-message', author: 'Fixture', content, timestamp: '2026-10-22T12:00:00Z',
           attachments: options.backendAssetUnauthorized ? [{ filename: 'fixture.png', content_type: 'image/png',
             local_url: '/api/cofre/arquivos/fixture-guild/' + 'a'.repeat(64) + '/fixture.png' }] : [] }],
         total: 1, offset: 0, limit: 100, total_ativos: 1, total_excluidos: 0, has_more: false });
-      if (options.backendAssetUnauthorized && url.pathname.startsWith('/api/cofre/arquivos/')) return route.fulfill({ status: 401, body: '' });
+      }
+      if (options.backendAssetUnauthorized && url.pathname.startsWith('/api/cofre/arquivos/')) return route.fulfill({ status: 401, headers: { 'WWW-Authenticate': 'Bearer' }, body: '' });
     }
     if (['/dashboard.html', '/frontend_index.html'].includes(url.pathname)) return route.fulfill({ contentType: 'text/html', body: '<main>Destino fictício</main>' });
     if (url.pathname === '/favicon.ico') return route.fulfill({ status: 204 });
@@ -130,13 +152,31 @@ async function normalFacade(browser, dynamic) {
   assertMirrors();
   const browser = await chromium.launch({ headless: true });
   try {
-    for (const options of [{}, { mirror: true, permissions: { full: true } }, { dynamic: true }]) {
+    for (const options of [{ backendRenewed: true }, { mirror: true, permissions: { full: true } }, { dynamic: true }]) {
       const result = await scenario(browser, options);
       await result.page.getByText(content, { exact: true }).waitFor();
       const auth = await result.page.evaluate(() => ({ valid: verificarSessao(), headers: obterAuthHeaders({ 'X-Fixture': 'preserved' }) }));
       assert.equal(auth.valid, true);
       assert.deepEqual(auth.headers, { Authorization: 'Bearer ' + token, 'X-Fixture': 'preserved' });
       await assertQuiet(result);
+      assert.equal(await result.page.locator('#reauthenticateCofre').isVisible(), false,
+        'A sessão já renovada pelo backend carrega com o mesmo JWT JK, sem segundo login.');
+      if (options.backendRenewed) {
+        result.state.holdMessages = true;
+        const pending = result.page.waitForRequest(request => new URL(request.url()).pathname.endsWith('/mensagens'));
+        await result.page.locator('#refreshMessages').click();
+        await pending;
+        while (!result.state.heldMessage) await result.page.waitForTimeout(10);
+        await result.page.evaluate(() => {
+          const user = JSON.parse(localStorage.getItem('user_data'));
+          localStorage.setItem('user_data', JSON.stringify({ ...user, company_id: 'fixture-other-company' }));
+        });
+        result.state.heldMessage();
+        await result.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Sessão alterada');
+        assert.equal(await result.page.getByText(content, { exact: true }).count(), 0,
+          'Uma resposta da empresa anterior não volta à tela após troca de empresa.');
+        assert.equal(await result.page.evaluate(() => localStorage.getItem('access_token')), token);
+      }
       await result.context.close();
     }
     for (const [options, target] of [[{ permissions: {} }, '/dashboard.html'], [{ identity: false }, '/frontend_index.html']]) {
@@ -146,6 +186,18 @@ async function normalFacade(browser, dynamic) {
       assert.deepEqual(result.state.chunks, cofreChunks);
       assert.deepEqual(result.state.forbidden, []);
       assert.deepEqual(result.state.errors, []);
+      if (options.identity === false) {
+        await result.page.evaluate(() => {
+          localStorage.setItem('user_data', JSON.stringify({ client_id: 'fixture-legacy-local-only' }));
+          localStorage.setItem('permissions', JSON.stringify({ cofre: true }));
+        });
+        await result.page.goto(origin + '/cofre.html');
+        await result.page.getByText('Não foi possível iniciar o Cofre de Informações. Atualize a página para tentar novamente.', { exact: true }).waitFor();
+        assert.equal(result.state.api.length, 0, 'Um client_id no localStorage não substitui o JWT JK.');
+        assert.equal(await result.page.locator('#reauthenticateCofre').isVisible(), false);
+        assert.equal(await result.page.evaluate(() => JSON.parse(localStorage.getItem('user_data')).client_id), 'fixture-legacy-local-only');
+        assert.deepEqual(result.state.forbidden, []);
+      }
       await result.context.close();
     }
     const denied = await scenario(browser, { permissions: { full: true }, backendDenied: true });
@@ -153,39 +205,68 @@ async function normalFacade(browser, dynamic) {
     assert.equal(await denied.page.getByText(content, { exact: true }).count(), 0, 'Permissão local não contorna a decisão da API.');
     await assertQuiet(denied);
     await denied.context.close();
-    const restored = await scenario(browser, { backendUnauthorized: true });
-    await restored.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
-    assert.equal(await restored.page.locator('#sharingLabel').textContent(), 'Login necessário');
-    assert.equal(await restored.page.locator('#coverageBadge').textContent(), 'Aguardando login');
-    assert.equal(await restored.page.locator('#syncSharing').isVisible(), false);
+    const restored = await scenario(browser, { backendUnavailable: true });
+    await restored.page.locator('#reauthenticateCofre').waitFor();
+    assert.equal(await restored.page.locator('#reauthenticateCofre').textContent(), 'Tentar novamente');
+    assert.equal(await restored.page.locator('#sharingLabel').textContent(), 'Informações indisponíveis');
+    assert.equal(await restored.page.locator('#coverageBadge').textContent(), 'Consulta indisponível');
+    assert.equal(await restored.page.locator('#syncSharing').isVisible(), true);
     assert.equal(await restored.page.locator('#emptyImport').isVisible(), false);
     assert.equal(await restored.page.evaluate(() => localStorage.getItem('access_token')), token,
-      'A tela não encerra a sessão do JK sem uma ação da pessoa.');
+      '503 scoped preserva a sessão JK já restaurada, mesmo sem credencial disponível.');
     await assertQuiet(restored);
     assert.deepEqual(restored.state.api.map(request => request.path), ['/api/cofre/compartilhamento'],
-      'Uma sessão sem capability encerra a consulta sem repetir pedidos ou declarar acervo vazio.');
+      'Uma credencial indisponível pausa a consulta sem repetir pedidos ou declarar acervo vazio.');
     await restored.page.evaluate(() => localStorage.setItem('fixture-preserved', 'saved'));
-    await restored.page.getByRole('button', { name: 'Entrar novamente', exact: true }).click();
-    await restored.page.waitForURL(origin + '/frontend_index.html');
-    assert.deepEqual(await restored.page.evaluate(() => ['access_token', 'user_data', 'permissions'].map(key => localStorage.getItem(key))), [null, null, null]);
+    restored.state.backendUnavailable = false;
+    await restored.page.locator('#reauthenticateCofre').click();
+    await restored.page.getByText(content, { exact: true }).waitFor();
+    assert.equal(await restored.page.evaluate(() => localStorage.getItem('access_token')), token,
+      'Retry de leitura não troca token nem pede login novo.');
+    assert.equal(restored.state.requests.includes('/frontend_index.html'), false);
     assert.equal(await restored.page.evaluate(() => localStorage.getItem('fixture-preserved')), 'saved');
+    restored.state.redirectMessages = true;
+    await restored.page.locator('#refreshMessages').click();
+    await restored.page.getByText('Não foi possível consultar o acervo. Tente novamente.', { exact: true }).waitFor();
+    assert.equal(await restored.page.getByText(content, { exact: true }).count(), 1,
+      '302 não vira resposta JSON vazia nem apaga os itens exibidos.');
+    await restored.page.evaluate(() => {
+      localStorage.removeItem('access_token');
+      window.dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));
+    });
+    await restored.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Sessão alterada');
+    assert.equal(await restored.page.getByText(content, { exact: true }).count(), 0,
+      'Quando o JWT JK sai da sessão, o fallback legado não mantém dados da conta anterior na tela.');
     await restored.context.close();
-    const expired = await scenario(browser);
-    await expired.page.getByText(content, { exact: true }).waitFor();
-    expired.state.backendUnauthorized = true;
-    await expired.page.locator('#syncSharing').click();
-    await expired.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
-    assert.equal(await expired.page.locator('#messages').textContent(), '', 'O acervo sai da tela quando a autorização expira.');
-    assert.equal(await expired.page.locator('#emptyTitle').textContent(), 'Entre novamente para abrir o Cofre');
-    assert.equal(await expired.page.locator('#sharingLabel').textContent(), 'Login necessário');
-    const expiredRequests = expired.state.api.length;
-    await assertQuiet(expired);
-    assert.equal(expired.state.api.length, expiredRequests, 'Foco e timers não repetem consultas após 401.');
-    await expired.context.close();
+    const recovering = await scenario(browser, { writer: true });
+    await recovering.page.getByText(content, { exact: true }).waitFor();
+    recovering.state.mutationUnavailable = true;
+    await recovering.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).click();
+    await recovering.page.locator('#editContent').fill('Rascunho fictício sem aplicação.');
+    await recovering.page.locator('#saveEditMessage').click();
+    await recovering.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Informações indisponíveis');
+    assert.equal(await recovering.page.getByText(content, { exact: true }).count(), 1,
+      '503 na alteração mantém o item e não encerra a sessão.');
+    const pausedRequests = recovering.state.api.length;
+    await assertQuiet(recovering);
+    assert.equal(recovering.state.api.length, pausedRequests, 'Foco/timers não fazem retry automático após 503.');
+    recovering.state.mutationUnavailable = false;
+    await recovering.page.locator('#syncSharing').click();
+    await recovering.page.getByText(content, { exact: true }).waitFor();
+    assert.equal(recovering.state.api.filter(request => request.method === 'PATCH').length, 1,
+      'Retry manual recarrega leituras e nunca repete PATCH.');
+    assert(recovering.state.api.filter(request => request.method !== 'GET' && !request.path.endsWith('/sincronizar')).every(request => request.method === 'PATCH'));
+    recovering.state.messagesUnavailable = true;
+    await recovering.page.locator('#refreshMessages').click();
+    await recovering.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Informações indisponíveis');
+    assert.equal(await recovering.page.getByText(content, { exact: true }).count(), 1,
+      '503 durante refresh preserva o item previamente carregado.');
+    assert.equal(await recovering.page.evaluate(() => localStorage.getItem('access_token')), token);
+    await recovering.context.close();
     const assetExpired = await scenario(browser, { backendAssetUnauthorized: true });
-    await assetExpired.page.getByRole('button', { name: 'Entrar novamente', exact: true }).waitFor();
-    assert.equal(await assetExpired.page.locator('#messages').textContent(), '', 'Anexo sem autorização também encerra a visualização do acervo.');
-    assert.equal(await assetExpired.page.locator('#sharingLabel').textContent(), 'Login necessário');
+    await assetExpired.page.waitForURL(origin + '/frontend_index.html');
+    assert.equal(await assetExpired.page.evaluate(() => localStorage.getItem('access_token')), null,
+      'Somente 401 JWT realmente inválido é entregue ao guard global JK.');
     const assetRequests = assetExpired.state.api.length;
     assert.equal(assetExpired.state.api.filter(request => request.path.startsWith('/api/cofre/arquivos/')).length, 1);
     await assertQuiet(assetExpired);

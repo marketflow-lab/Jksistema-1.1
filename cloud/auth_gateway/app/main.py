@@ -9,15 +9,19 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from google.auth.transport.requests import Request as GoogleRequest
+from google.oauth2 import id_token as google_id_token
 
 from .config import GatewayConfigurationError, GatewaySettings
-from .contracts import GatewayChangePasswordRequest, GatewayLoginRequest
+from .contracts import (GatewayChangePasswordRequest, GatewayCofreSessionRequest,
+                        GatewayGoogleLoginRequest, GatewayLoginRequest)
 from .domain import (
     AuthRejected,
     AuthenticationService,
     ERROR_MESSAGES,
     GatewayUnavailable,
     LoginRateLimiter,
+    assert_supported_version,
 )
 from .firebase_adapter import FirebaseIdentityTokenIssuer, FirestoreUserRepository, firebase_app
 from .cofre_capability import GoogleCofreCapabilityIssuer
@@ -35,11 +39,20 @@ def _client_address(request: Request) -> str:
     return str(request.client.host if request.client else "unknown")[:80]
 
 
+def _cofre_protocol(request: Request) -> int:
+    if (request.headers.get("x-jk-cofre-session-protocol") == "2"
+            or request.headers.get("x-jk-cofre-protocol") == "2"):
+        return 2
+    return 1 if request.headers.get("x-jk-cofre-protocol") == "1" else 0
+
+
 def create_app(
     *,
     service: AuthenticationService | None = None,
     settings: GatewaySettings | None = None,
     central=None,
+    cofre_capabilities=None,
+    google_verifier=None,
 ) -> FastAPI:
     application = FastAPI(
         title="JK Sistema Authentication Gateway",
@@ -80,9 +93,22 @@ def create_app(
                     gateway_settings.minimum_app_version,
                     central=resolve_central(),
                     firebase_sessions=build_firebase_sessions(gateway_settings),
-                    cofre_capabilities=GoogleCofreCapabilityIssuer(firebase_app(gateway_settings.project_id)),
+                    cofre_capabilities=resolve_cofre_capabilities(),
                 )
                 application.state.auth_service = configured
+            return configured
+
+    def resolve_cofre_capabilities():
+        with state_lock:
+            configured = getattr(application.state, "cofre_capabilities", None)
+            if configured is None:
+                configured = cofre_capabilities or getattr(service, "_cofre_capabilities", None)
+                if configured is None:
+                    gateway_settings = resolve_settings()
+                    configured = GoogleCofreCapabilityIssuer(firebase_app(gateway_settings.project_id),
+                        session_secret=gateway_settings.cofre_session_secret,
+                        previous_session_secret=gateway_settings.cofre_session_previous_secret)
+                application.state.cofre_capabilities = configured
             return configured
 
     def resolve_limiter() -> LoginRateLimiter:
@@ -135,8 +161,8 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
-            if request.headers.get("x-jk-cofre-protocol") == "1":
-                return resolve_service().authenticate(payload, cofre_protocol=True,
+            if _cofre_protocol(request):
+                return resolve_service().authenticate(payload, cofre_protocol=_cofre_protocol(request),
                     firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
                     central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-firebase-protocol") == "1":
@@ -181,8 +207,8 @@ def create_app(
             limiter = resolve_limiter()
             if not limiter.consume(payload.username, _client_address(request)):
                 raise AuthRejected("rate_limited", 429)
-            if request.headers.get("x-jk-cofre-protocol") == "1":
-                return resolve_service().change_password(payload, cofre_protocol=True,
+            if _cofre_protocol(request):
+                return resolve_service().change_password(payload, cofre_protocol=_cofre_protocol(request),
                     firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
                     central_protocol=request.headers.get("x-jk-central-protocol") == "1")
             if request.headers.get("x-jk-firebase-protocol") == "1":
@@ -220,6 +246,74 @@ def create_app(
                     "message": ERROR_MESSAGES["auth_unavailable"],
                 },
             )
+    @application.post("/api/auth/v1/google-login")
+    def google_login(payload: GatewayGoogleLoginRequest, request: Request):
+        try:
+            if not resolve_limiter().consume("google-login", _client_address(request)):
+                raise AuthRejected("rate_limited", 429)
+            configured = resolve_settings()
+            assert_supported_version(payload.app_version, configured.minimum_app_version)
+            audience = getattr(configured, "google_oauth_client_id", "")
+            if not audience:
+                raise GatewayUnavailable("google_login_not_configured")
+            try:
+                credential = payload.credential.get_secret_value()
+                if google_verifier is not None:
+                    claims = google_verifier(credential, audience)
+                else:
+                    transport = GoogleRequest()
+
+                    def bounded_request(*args, **kwargs):
+                        kwargs["timeout"] = configured.identity_timeout_seconds
+                        return transport(*args, **kwargs)
+
+                    claims = google_id_token.verify_oauth2_token(credential, bounded_request, audience=audience)
+                if (not isinstance(claims, dict)
+                        or claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com")
+                        or claims.get("aud") != audience or not isinstance(claims.get("sub"), str)
+                        or not 1 <= len(claims["sub"]) <= 255):
+                    raise ValueError("invalid_google_identity")
+            except (ValueError, TypeError):
+                raise AuthRejected("invalid_credentials", 401) from None
+            return resolve_service().authenticate_google(payload, claims,
+                cofre_protocol=_cofre_protocol(request),
+                firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
+                central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+        except AuthRejected as exc:
+            return JSONResponse(status_code=exc.status_code,
+                content={"success": False, "code": exc.code,
+                         "message": ERROR_MESSAGES.get(exc.code, ERROR_MESSAGES["auth_unavailable"])})
+        except Exception as exc:
+            logger.error("google_login_dependency_failure type=%s", type(exc).__name__)
+            return JSONResponse(status_code=503,
+                content={"success": False, "code": "auth_unavailable", "message": ERROR_MESSAGES["auth_unavailable"]})
+
+    @application.post("/api/auth/v1/cofre/session")
+    def cofre_session(payload: GatewayCofreSessionRequest, request: Request):
+        try:
+            # The bucket does not use any unverified identity or grant bytes.
+            if not resolve_limiter().consume("cofre-session", _client_address(request)):
+                raise AuthRejected("rate_limited", 429)
+            assert_supported_version(payload.app_version, resolve_settings().minimum_app_version)
+            # Do not resolve AuthenticationService: its repositories are irrelevant
+            # to this exclusively signed-grant/IAM operation.
+            result = resolve_cofre_capabilities().renew_session(
+                payload.session_grant.get_secret_value(), payload.machine_id)
+            return {"success": True, "protocol": 2, "request_nonce": payload.request_nonce,
+                    "capability": result["capability"], "session_grant": result["session_grant"],
+                    "session_expires_at": result["session_expires_at"]}
+        except AuthRejected as exc:
+            return JSONResponse(status_code=exc.status_code,
+                content={"success": False, "code": exc.code,
+                         "message": ERROR_MESSAGES.get(exc.code, ERROR_MESSAGES["auth_unavailable"])})
+        except ValueError:
+            return JSONResponse(status_code=401,
+                content={"success": False, "code": "cofre_session_invalid", "message": "Autorizacao do Cofre invalida ou expirada."})
+        except Exception as exc:
+            logger.error("cofre_session_dependency_failure type=%s", type(exc).__name__)
+            return JSONResponse(status_code=503,
+                content={"success": False, "code": "auth_unavailable", "message": ERROR_MESSAGES["auth_unavailable"]})
+
     if settings is not None:
         application.state.settings = settings
     if service is not None:

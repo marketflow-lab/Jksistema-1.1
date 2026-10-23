@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import Mapping
 
 
@@ -43,6 +44,9 @@ class GatewaySettings:
     identity_timeout_seconds: int
     rate_limit_attempts: int
     rate_limit_window_seconds: int
+    google_oauth_client_id: str = ""
+    cofre_session_secret: str = field(default="", repr=False)
+    cofre_session_previous_secret: str = field(default="", repr=False)
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> "GatewaySettings":
@@ -51,6 +55,17 @@ class GatewaySettings:
         api_key = _env_text(values, "FIREBASE_WEB_API_KEY")
         collection = _env_text(values, "FIREBASE_USERS_COLLECTION", "jk_sistema_usuarios")
         minimum_version = _env_text(values, "JK_AUTH_MIN_APP_VERSION", "1.0.124")
+        google_client = _env_text(values, "GOOGLE_LOGIN_CLIENT_ID")
+        if google_client and not re.fullmatch(r"[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", google_client):
+            raise GatewayConfigurationError("invalid:GOOGLE_LOGIN_CLIENT_ID")
+        session_secret = _env_text(values, "JK_COFRE_SESSION_SECRET")
+        previous_secret = _env_text(values, "JK_COFRE_SESSION_PREVIOUS_SECRET")
+        for name, secret in (("JK_COFRE_SESSION_SECRET", session_secret),
+                             ("JK_COFRE_SESSION_PREVIOUS_SECRET", previous_secret)):
+            if secret and not re.fullmatch(r"[a-fA-F0-9]{64}", secret):
+                raise GatewayConfigurationError("invalid:" + name)
+        if previous_secret and not session_secret:
+            raise GatewayConfigurationError("missing:JK_COFRE_SESSION_SECRET")
 
         if not project_id:
             raise GatewayConfigurationError("missing:FIREBASE_PROJECT_ID")
@@ -92,6 +107,9 @@ class GatewaySettings:
                 minimum=30,
                 maximum=3600,
             ),
+            google_oauth_client_id=google_client,
+            cofre_session_secret=session_secret,
+            cofre_session_previous_secret=previous_secret,
         )
 
 

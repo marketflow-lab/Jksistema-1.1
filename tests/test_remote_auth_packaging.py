@@ -30,6 +30,9 @@ def test_installer_carries_public_remote_auth_bootstrap_and_client_module():
     assert "backend/services/remote_auth_client.py" in manifest["requiredPackagedSourceParity"]
     assert "backend/services/remote_auth_contracts.py" in manifest["requiredPackagedSourceParity"]
     assert "backend/services/remote_auth_verification.py" in manifest["requiredPackagedSourceParity"]
+    assert "backend/services/cofre_session_store.py" in manifest["requiredSourceFiles"]
+    assert "local_app/backend/services/cofre_session_store.py" in manifest["requiredPackagedFiles"]
+    assert "backend/services/cofre_session_store.py" in manifest["requiredPackagedSourceParity"]
 
 
 def test_public_bootstrap_contains_no_private_key_or_desktop_secret():
