@@ -1844,7 +1844,7 @@
         #listaWrap .documentos-lista-cards { grid-template-columns: minmax(0, 1fr); gap: 7px; width: 100%; }
         #listaWrap .documento-lista-card { box-sizing: border-box; min-height: 36px; padding: 9px 8px; border: 1px solid; border-radius: 8px; font-size: 11px; font-weight: 700; line-height: 1.2; box-shadow: 0 3px 8px #0003, inset 0 1px 0 #ffffff24; }
         #listaWrap .documento-lista-card--commercial { border-color: #f5cb84; background: linear-gradient(180deg, #f3c26f, #e9aa46); color: #34250e; }
-        #listaWrap .documento-lista-card--packing { border-color: #5790bc; background: linear-gradient(180deg, #214867, #1c3b58); color: #d9efff; }
+        #listaWrap .documento-lista-card--packing, #listaWrap .documento-lista-card--etiquetas { border-color: #5790bc; background: linear-gradient(180deg, #214867, #1c3b58); color: #d9efff; }
         #listaWrap .documento-lista-card--packing.documento-lista-card--anexado { border-color: #45cb7b; background: linear-gradient(180deg, #17854c, #126d3d); color: #edfff3; }
         #listaWrap .lista-card-excluir { display: none; }
         #listaWrap .lista-card-atualizacao { margin-top: 7px; margin-left: 0; font-size: 9px; color: #7894b2; white-space: normal; }
@@ -3409,6 +3409,7 @@
                             '<div class="documentos-lista-cards" aria-label="Documentos da lista">' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--commercial" data-commercial-invoice>Commercial Invoice</button>' +
                                 '<button type="button" class="documento-lista-card documento-lista-card--packing" data-packing-list>Packing List</button>' +
+                                '<button type="button" class="documento-lista-card documento-lista-card--etiquetas" data-etiquetas>Etiquetas</button>' +
                             '</div>' +
                             '<button type="button" class="btn-cancelar lista-card-excluir" tabindex="-1">Excluir</button>' +
                         '</div>' +
