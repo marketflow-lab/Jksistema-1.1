@@ -2,6 +2,13 @@
 
 const INDEX_URL = 'https://www.mercadolivre.com.br/categorias';
 const ID = /^MLB\d+$/;
+// Public links observed in the site's item breadcrumbs/category filters. These
+// categories are omitted from their parent's expanded filter. They remain
+// route candidates: the destination must prove its category or exact items.
+const OBSERVED_ROUTES = Object.freeze({
+    MLB122194: 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/elastomeros/*_NoIndex_True',
+    MLB459353: 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/freios/kits-cabos-cambios/*_NoIndex_True'
+});
 const label = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
 class CategoryNavigationError extends Error {
@@ -127,6 +134,9 @@ class OfficialCategoryNavigation {
             // this requested child; never retain a negative cache entry.
             try { if (links) selected = this.choose(links, expected, parentUrl); }
             catch (_error) { this.links.delete(parentKey); }
+            if (!selected && OBSERVED_ROUTES[key]) {
+                selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl);
+            }
             if (!selected) {
                 let page;
                 try {

@@ -163,9 +163,37 @@ async function runnerExpandedOptionsWaitForDestination() {
         error => error.code === 'category_scope_mismatch', 'an explicitly different parent cannot supply the expanded list');
 }
 
+async function observedMissingRoutesStayCandidates() {
+    const parts = node('MLB1934', 'Peças');
+    const elastomer = node('MLB122194', 'Elastômeros');
+    const parentUrl = cycling + 'pecas/';
+    const candidateUrl = parentUrl + 'elastomeros/*_NoIndex_True';
+    const resolver = navigation({ ancestry: [parts, elastomer], children: { [parts.key]: [elastomer], [elastomer.key]: [] } });
+    resolver.routes.set(parts.key, parentUrl);
+    assert.equal(await resolver.resolve(elastomer.key), candidateUrl, 'a verified public permalink can recover an omitted child after its parent is resolved');
+    const currentLink = node(elastomer.key, elastomer.nome, parentUrl + 'current-elastomeros/');
+    const fresh = navigation({ ancestry: [parts, elastomer], children: { [parts.key]: [elastomer], [elastomer.key]: [] } });
+    fresh.routes.set(parts.key, parentUrl); fresh.links.set(parts.key, [currentLink]);
+    assert.equal(await fresh.resolve(elastomer.key), currentLink.url, 'current observed parent links take priority over the fallback candidate');
+    const wrong = navigation({ ancestry: [parts, elastomer], children: { [parts.key]: [elastomer], [elastomer.key]: [] },
+        read: async url => ({ url, categories: [] }) });
+    wrong.routes.set(parts.key, cycling + 'another-branch/');
+    await assert.rejects(wrong.resolve(elastomer.key), error => error.code === 'category_link_missing', 'a remembered candidate cannot cross the resolved parent');
+    const h = runnerFixture({ [candidateUrl]: { anuncios: [{ id: 'unproven' }], categoryDocumentIdentity: false, effectiveCategoryId: '' } }, elastomer);
+    await assert.rejects(h.runner.read(candidateUrl), error => error.code === 'category_load_timeout', 'a remembered URL alone never proves a category');
+    const bareUrl = parentUrl + 'elastomeros/';
+    const discovered = runnerFixture({ [bareUrl]: { anuncios: [{ id: 'unproven' }], categoryDocumentIdentity: false, effectiveCategoryId: '' } }, elastomer);
+    discovered.runner.checkpoint.officialTaxonomy.ancestry = [parts, elastomer];
+    discovered.runner.officialCategoryUrl = async () => { throw Object.assign(new Error('Missing link'), { code: 'category_link_missing' }); };
+    discovered.runner.discoverOfficialCategoryRoute = async () => ({ ...elastomer, url: bareUrl });
+    await assert.rejects(discovered.runner.readCategory(elastomer), error => error.code === 'category_load_timeout',
+        'a newly discovered bare route must also prove its document category before returning seeds');
+}
+
 (async () => {
     await expandedCategoryPages();
     await runnerTrendsTransition();
     await runnerExpandedOptionsWaitForDestination();
+    await observedMissingRoutesStayCandidates();
     console.log('Pesquisa de Mercado navigation: observed NoIndex routes, category IDs, safe expanded filters and proven Trends transitions OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

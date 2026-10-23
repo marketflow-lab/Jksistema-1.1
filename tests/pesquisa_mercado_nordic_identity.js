@@ -112,6 +112,152 @@ async function main() {
         assert.equal((await readRsc(appliedOnly)).effectiveCategoryId, 'MLB122156', 'explicit applied filters remain authoritative without inspecting recommendations');
         appliedOnly.optimizedResponse.filters[0].values[0].id = '__REF__';
         assert.equal((await readRsc(appliedOnly)).categoryDocumentIdentity, false, 'opaque rendering references cannot fabricate category identity');
+        const literalListing = () => ({ appProps: { pageProps: { initialState: {
+            filters: [],
+            search_filter: { name: 'Somente em Coroas', permalink: base + '$query', default_checked: false },
+            search_filters: [{ id: 'category', value: 'MLB122156', name: 'Coroas', permalink: base + '$query', default_checked: false }],
+            canonical_info: { canonical: base },
+            sidebar: { components: [
+                { type: 'BREADCRUMB', html_tag: 'h1', label: { text: 'Peças Coroas' }, nodes: [
+                    { text: 'Ciclismo', url: listing }, { text: 'Peças', url: base.replace(/coroas\/$/, '') }] },
+                { type: 'APPLIED_FILTERS', filters: [] },
+                { type: 'AVAILABLE_FILTERS', filters: [{ id: 'category', values: [{ id: 'MLB122157', name: 'Fixture pública', permalink: base + 'fixture/' }] }] }
+            ] },
+            results: [{ polycard: { metadata: { id: 'MLB123456789', category_id: 'MLB122156' } } }]
+        } } } });
+        const literalBody = '<h1>Peças Coroas</h1><ol class="ui-search-layout"><li>Fixture pública</li></ol>';
+        const readLiteralListing = (payload, body = literalBody) => read(payload, '', '_n.ctx.r=', '__NORDIC_RENDERING_CTX__', body);
+        for (const destination of [base, base + '_NoIndex_True', base + '_NoIndex_True?original_category_landing=true']) {
+            await page.goto(destination);
+            const literal = await readLiteralListing(literalListing());
+            assert.equal(literal.effectiveCategoryId, 'MLB122156');
+            assert.equal(literal.categoryDocumentIdentity, true, 'a literal listing needs the exact selected base, DOM heading and ordered ancestor breadcrumbs');
+            assert.deepEqual(literal.categoryContext, { key: 'MLB122156', nome: 'Coroas', baseUrl: base });
+            assert.deepEqual(literal.categoryStructuredNavigation.categories, [{ key: 'MLB122157', nome: 'Fixture pública', url: base + 'fixture/' }]);
+            assert.equal(literal.categoryStructuredNavigation.breadcrumbs.length, 2);
+            assert.deepEqual(literal.categoryItems, [{ id: 'MLB123456789', categoryId: 'MLB122156' }]);
+        }
+        const literalWithRoot = (includeCurrent = false) => {
+            const state = literalListing(), linked = state.appProps.pageProps.initialState.sidebar.components[0].nodes;
+            linked.unshift({ text: 'Esportes e Fitness', url: 'https://www.mercadolivre.com.br/c/esportes-e-fitness' });
+            if (includeCurrent) linked.push({ text: 'Coroas', url: base, id: 'MLB122156' });
+            return state;
+        };
+        for (const destination of [base, base + '_NoIndex_True', base + '_NoIndex_True?original_category_landing=true']) {
+            await page.goto(destination);
+            for (const includeCurrent of [false, true]) {
+                const literal = await readLiteralListing(literalWithRoot(includeCurrent));
+                assert.equal(literal.effectiveCategoryId, 'MLB122156');
+                assert.equal(literal.categoryDocumentIdentity, true, 'the observed www/c root and optional final current-category link preserve literal document identity');
+                assert.equal(literal.categoryStructuredNavigation.breadcrumbs[0].url, 'https://www.mercadolivre.com.br/c/esportes-e-fitness');
+            }
+        }
+        await page.goto(base);
+        for (const mutate of [
+            state => { const linked = state.sidebar.components[0].nodes; linked.splice(1, 0, linked.shift()); },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://m.mercadolivre.com.br/c/esportes-e-fitness'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://example.com/c/esportes-e-fitness'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://www.mercadolivre.com.br/categorias/esportes-e-fitness'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://www.mercadolivre.com.br/c/'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://www.mercadolivre.com.br/c/esportes-e-fitness/outro'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://www.mercadolivre.com.br/c/esportes%2Fe-fitness'; },
+            state => { state.sidebar.components[0].nodes[0].url = 'https://www.mercadolivre.com.br:8443/c/esportes-e-fitness'; },
+            state => { state.sidebar.components[0].nodes[0].url += '?category_id=MLB1276'; },
+            state => { state.sidebar.components[0].nodes.at(-1).text = 'Pedais'; },
+            state => { state.sidebar.components[0].nodes.at(-1).url = base.replace(/coroas\/$/, 'pedais/'); },
+            state => { state.sidebar.components[0].nodes.at(-1).id = 'MLB1934'; },
+            state => { state.sidebar.components[0].nodes.push({ text: 'Peças', url: base.replace(/coroas\/$/, '') }); },
+            state => { state.sidebar.components[0].nodes.push({ text: 'Coroas', url: base }); },
+            state => { state.canonical_info.canonical = base + 'outra-palavra'; }
+        ]) {
+            const invalid = literalWithRoot(true); mutate(invalid.appProps.pageProps.initialState);
+            assert.equal((await readLiteralListing(invalid)).categoryDocumentIdentity, false, 'root position/route and current-category conflicts cannot establish literal identity');
+        }
+        assert.equal((await readLiteralListing(literalWithRoot(true), literalBody + '<div class="ui-category-trends-fixture"></div>')).categoryDocumentIdentity, false, 'a full category breadcrumb cannot promote a Trends hub to a listing');
+        assert.equal((await readLiteralListing(literalWithRoot(true), literalBody.replace('Peças Coroas', 'Peças Pedais'))).categoryDocumentIdentity, false, 'a linked current category still needs the compatible DOM h1');
+        await page.goto(base + 'coroas_NoIndex_True');
+        const literalKeyword = literalWithRoot(true); literalKeyword.appProps.pageProps.initialState.canonical_info.canonical = base + 'coroas_NoIndex_True';
+        assert.equal((await readLiteralListing(literalKeyword)).categoryDocumentIdentity, false, 'a category-named keyword URL cannot borrow the current linked category');
+        await page.goto(base);
+        for (const mutate of [
+            state => { state.sidebar.components[0].html_tag = 'span'; },
+            state => { state.sidebar.components[0].label.text = 'Peças Pedais'; },
+            state => { state.sidebar.components[0].nodes.reverse(); },
+            state => { state.sidebar.components[0].nodes = []; },
+            state => { state.sidebar.components[0].nodes = [{ text: 'Início', url: 'https://lista.mercadolivre.com.br/' }]; },
+            state => { state.sidebar.components[0].nodes.at(-1).url = base; },
+            state => { state.sidebar.components[0].nodes.at(-1).url = listing + 'outra/'; },
+            state => { state.sidebar.components[0].nodes.at(-1).url += '?category_id=MLB1934'; },
+            state => { state.search_filter.permalink = listing + '$query'; },
+            state => { state.search_filter.permalink = state.search_filters[0].permalink = listing + 'pecas/%ZZ/$query'; },
+            state => { state.search_filters.push(state.search_filters[0]); },
+            state => { state.canonical_info.canonical = listing; },
+            state => { state.results = [{ recommendations: { polycard: {} } }]; }
+        ]) {
+            const invalid = literalListing(); mutate(invalid.appProps.pageProps.initialState);
+            assert.equal((await readLiteralListing(invalid)).categoryDocumentIdentity, false, 'literal metadata cannot replace missing or conflicting page evidence');
+        }
+        for (const body of [literalBody.replace('Peças Coroas', 'Peças Pedais'), literalBody + '<h1>Outra categoria</h1>', literalBody.replace('ui-search-layout', 'unrelated'), literalBody + '<div class="ui-category-trends-fixture"></div>']) {
+            assert.equal((await readLiteralListing(literalListing(), body)).categoryDocumentIdentity, false, 'the literal alone cannot prove a listing without the matching unique DOM heading');
+        }
+        for (const destination of [base + 'outra-palavra', base + '*_NoIndex_True', base + '_Desde_49_NoIndex_True',
+            base + '?q=coroas', base + '?original_category_landing=false', base + '?original_category_landing=true&seller_id=123']) {
+            await page.goto(destination);
+            const invalid = literalListing(); invalid.appProps.pageProps.initialState.canonical_info.canonical = destination;
+            assert.equal((await readLiteralListing(invalid)).categoryDocumentIdentity, false, 'a query, pagination or deeper path cannot borrow literal category context');
+        }
+        const vBrakeBase = listing + 'pecas/freios/v-brake/';
+        const childBase = vBrakeBase + 'kits-freios-v-brake/';
+        await page.goto(childBase + '_NoIndex_True?original_category_landing=true');
+        const parentContext = literalListing(), parentState = parentContext.appProps.pageProps.initialState;
+        parentState.search_filter.permalink = vBrakeBase + '$query';
+        parentState.search_filters[0] = { id: 'category', value: 'MLB371933', name: 'V-Brake', permalink: vBrakeBase + '$query', default_checked: false };
+        parentState.canonical_info.canonical = childBase + '_NoIndex_True';
+        parentState.sidebar.components[0].label.text = 'Peças Freios V-Brake';
+        parentState.sidebar.components[0].nodes.push({ text: 'Freios', url: listing + 'pecas/freios/' });
+        parentState.sidebar.components[2].filters[0].values = [{ id: 'MLB122186', name: 'Kits de Freios V-brake', permalink: childBase }];
+        const scopedParent = await readLiteralListing(parentContext, literalBody.replace('Peças Coroas', 'Peças Freios V-Brake'));
+        assert.equal(scopedParent.categoryDocumentIdentity, false, 'the observed child canonical with parent context and mixed cards cannot prove the child or borrow the parent base');
+        assert.equal(scopedParent.effectiveCategoryId, '');
+        assert.equal(scopedParent.categoryContext.key, 'MLB371933');
+        parentState.sidebar.components[0].nodes.unshift({ text: 'Esportes e Fitness', url: 'https://www.mercadolivre.com.br/c/esportes-e-fitness' });
+        parentState.sidebar.components[0].nodes.push({ text: 'V-Brake', url: vBrakeBase, id: 'MLB371933' });
+        assert.equal((await readLiteralListing(parentContext, literalBody.replace('Peças Coroas', 'Peças Freios V-Brake'))).categoryDocumentIdentity, false, 'even a complete parent breadcrumb cannot give a deeper child URL its parent identity');
+        await page.goto(base);
+        const literalConflict = literalListing();
+        literalConflict.appProps.pageProps.initialState.sidebar.components[1].filters = [{ id: 'category', values: [{ id: 'MLB1292' }] }];
+        assert.equal((await readLiteralListing(literalConflict)).categoryIdentityConflict, true, 'literal sidebar applied filters remain authoritative and conflicting identities block the document');
+        const literalApplied = { appProps: { pageProps: { initialState: { sidebar: { components: [{ type: 'APPLIED_FILTERS', filters: [{ id: 'category', values: [{ id: 'MLB122156' }] }] }] } } } } };
+        assert.equal((await readLiteralListing(literalApplied)).effectiveCategoryId, 'MLB122156', 'literal sidebar applied filters work independently of contextual inference');
+        const itemResult = (id, categoryId, extra = {}) => ({ polycard: { metadata: { id, category_id: categoryId, ...extra } } });
+        const itemState = literalListing();
+        itemState.appProps.pageProps.initialState.results = [
+            itemResult('MLB999', 'MLB122186', { category_path: ['public fixture'], domain_id: 'MLB-FIXTURE', seller_id: 'private-fixture', token: 'secret-fixture' }),
+            itemResult('MLB999', 'MLB122186'),
+            itemResult('MLB1000', 'MLB278054'),
+            itemResult('MLB1001', 'MLB122186'), itemResult('MLB1001', 'MLB278054'), itemResult('MLB1001', 'MLB122186'),
+            { polycard: { metadata: { id: 'MLB1002' }, category_id: 'MLB122186' } },
+            { polycard: { id: 'MLB1003', metadata: { category_id: 'MLB122186' } } },
+            { metadata: { id: 'MLB1004', category_id: 'MLB122186' } },
+            { recommendations: { polycard: { metadata: { id: 'MLB1005', category_id: 'MLB122186' } } } },
+            itemResult('MLB-1006', 'MLB122186'), itemResult('MLB1007', 'invalid'), itemResult(1008, 'MLB122186'), itemResult('MLB1009', 122186)
+        ];
+        const literalItems = await readLiteralListing(itemState);
+        assert.deepEqual(literalItems.categoryItems, [{ id: 'MLB999', categoryId: 'MLB122186' }, { id: 'MLB1000', categoryId: 'MLB278054' }], 'only IDs coupled in the same polycard metadata are exposed; conflicting item categories are removed permanently');
+        assert.equal(literalItems.effectiveCategoryId, 'MLB122156', 'item membership is separate from global document identity');
+        assert.equal(literalItems.categoryIdentityConflict, false, 'item conflicts do not fabricate a global category conflict');
+        assert.ok(!JSON.stringify(literalItems.categoryItems).includes('private-fixture'));
+        assert.ok(!JSON.stringify(literalItems.categoryItems).includes('secret-fixture'));
+        const rscItems = await readRsc({ optimizedResponse: { results: [itemResult('MLB2000', 'MLB122186'), itemResult('MLB2001', 'MLB278054')] } });
+        assert.deepEqual(rscItems.categoryItems, [{ id: 'MLB2000', categoryId: 'MLB122186' }, { id: 'MLB2001', categoryId: 'MLB278054' }]);
+        assert.equal(rscItems.categoryDocumentIdentity, false, 'RSC result metadata alone cannot establish document scope');
+        const mixedState = literalListing(); mixedState.appProps.pageProps.initialState.results = [itemResult('MLB3000', 'MLB122186'), itemResult('MLB3001', 'MLB278054')];
+        await readLiteralListing(mixedState);
+        const mixedRsc = '0:' + JSON.stringify({ optimizedResponse: { results: [itemResult('MLB3000', 'MLB278054'), itemResult('MLB3002', 'MLB122186')] } }) + '\n';
+        await page.addScriptTag({ type: 'application/json', content: '_n.ctx.s["nr"].q(' + JSON.stringify(mixedRsc) + ');' });
+        const mixedItems = await page.evaluate(scripts.discoveryScript());
+        assert.deepEqual(mixedItems.categoryItems, [{ id: 'MLB3001', categoryId: 'MLB278054' }, { id: 'MLB3002', categoryId: 'MLB122186' }], 'conflicting item membership across literal and RSC transport is excluded');
+        assert.equal(mixedItems.categoryDocumentIdentity, true);
         const browseState = () => ({ appProps: { pageProps: {
             categories: [{ id: 'category', name: 'em Coroas', permalink: base + '$query_NoIndex_True', default_checked: false },
                 { id: 'all_mercadolibre', permalink: null, default_checked: true }],
@@ -190,7 +336,12 @@ async function main() {
             ['unrelated footer', '<footer><a href="' + moreUrl + '">Mostrar mais</a></footer>'],
             ['promotional carousel', '<section class="carousel">' + moreGroup() + '</section>']
         ]) assert.equal((await readMarkup(body)).categoryFilterMoreUrl, '', description + ' cannot provide the category expansion control');
-        console.log('Nordic category identity: bounded JSON literal, applied filters, trend exclusion, URL separation, conflict and no execution OK');
+        await page.evaluate(() => document.replaceChildren());
+        const transitioning = await page.evaluate(scripts.discoveryScript());
+        assert.equal(transitioning.anuncios.length, 0, 'a transient document without body has no discovery seeds');
+        assert.equal(transitioning.categoryDocumentIdentity, false, 'an empty transition document cannot prove category identity');
+        assert.equal(transitioning.empty, false, 'an unloaded document is not a confirmed empty category');
+        console.log('Nordic category identity: bounded JSON literal, applied filters, trend exclusion, URL separation, conflict, transient document and no execution OK');
     } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

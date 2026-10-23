@@ -681,7 +681,8 @@ async function officialDirectoryAndRescueSettles() {
     wrongDestination.runner.taxonomy = taxonomy();
     await wrongDestination.runner.start(scope); await wrongDestination.runner.task;
     assert.equal(wrongDestination.saved().status, 'failed', 'a directory tree from another destination is never consumed');
-    assert.deepEqual(wrongDestination.visited, [index], 'wrong document links must never become category navigation');
+    assert(wrongDestination.visited.length && wrongDestination.visited.every(url => url === index),
+        'independent discovery may reopen the directory, but wrong document links must never become category navigation');
     assert.equal(wrongDestination.saved().counters.pages, 0);
     assert.deepEqual(wrongDestination.saved().checkpoint.scope.category, scope);
 

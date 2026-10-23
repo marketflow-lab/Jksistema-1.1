@@ -69,12 +69,14 @@
         };
         const isProduct = value => /\/MLB-\d{6,}|\/(?:p|up)\/MLB|[?&](?:wid|item_id)=MLB/i.test(value);
         const firstLink = (scope, selector) => nodes(selector, scope).find(item => absolute(item.getAttribute('href')));
-        const content = document.querySelector('main') || document.body;
+        // A page transition briefly has neither main nor body. Read an empty
+        // document safely while the coordinator waits for the new listing.
+        const content = document.querySelector('main') || document.body || document;
         const url = absolute(location.href);
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
-        let categoryStructuredNavigation = null, categoryBrowse = null, categoryFilterMoreUrl = '';
+        let categoryStructuredNavigation = null, categoryBrowse = null, categoryFilterMoreUrl = '', categoryItems = [];
         const effectiveCategoryId = (() => {
             if (isProduct(url) || currentListingIsSeller()) return '';
             const evidence = new Set(), documentEvidence = new Set();
@@ -201,6 +203,17 @@
                     || identity(target).id || identity(target).perfilUrl || isProduct(target)) return null;
                 return { key, nome, url: target };
             };
+            const itemCategories = new Map();
+            const inspectCategoryItems = results => {
+                for (const result of Array.isArray(results) ? results.slice(0, 1000) : []) {
+                    const metadata = result && result.polycard && result.polycard.metadata;
+                    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)
+                        || typeof metadata.id !== 'string' || !/^MLB\d+$/.test(metadata.id)
+                        || typeof metadata.category_id !== 'string' || !/^MLB\d+$/.test(metadata.category_id)) continue;
+                    if (!itemCategories.has(metadata.id)) itemCategories.set(metadata.id, metadata.category_id);
+                    else if (itemCategories.get(metadata.id) !== metadata.category_id) itemCategories.set(metadata.id, '');
+                }
+            };
             if (document.querySelector('[class*="ui-category-trends"]')) for (const props of nordicPageProps) {
                 const initial = props.initialState;
                 if (!initial || typeof initial !== 'object' || !Array.isArray(initial.search_filters) || !Array.isArray(props.categories)) continue;
@@ -232,11 +245,95 @@
                 // explicit query placeholder; the runner must verify the next document.
                 categoryBrowse = { key: selected.key, nome: selected.nome, url: emitted.href.replace('$query', '*') };
             }
+            for (const props of nordicPageProps) {
+                const initial = props.initialState;
+                if (!initial || typeof initial !== 'object' || Array.isArray(initial)) continue;
+                inspectCategoryItems(initial.results);
+                const components = initial.sidebar && Array.isArray(initial.sidebar.components) ? initial.sidebar.components.slice(0, 128) : [];
+                const categories = [], breadcrumbs = [], breadcrumbComponents = [];
+                const appendAvailable = filters => {
+                    for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
+                        if (!filter || filter.id !== 'category') continue;
+                        for (const value of Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []) {
+                            const category = coupledCategory(value);
+                            if (category && !category.url.includes('$query')) categories.push(category);
+                        }
+                    }
+                };
+                appendAvailable(initial.available_filters);
+                for (const component of components) {
+                    if (!component || typeof component !== 'object') continue;
+                    if (component.type === 'APPLIED_FILTERS') inspect({ filters: component.filters });
+                    if (component.type === 'AVAILABLE_FILTERS') appendAvailable(component.filters);
+                    if (component.type !== 'BREADCRUMB') continue;
+                    breadcrumbComponents.push(component);
+                    for (const node of Array.isArray(component.nodes) ? component.nodes.slice(0, 32) : []) {
+                        const target = absolute(node && node.url), nome = clean(node && node.text);
+                        if (target && target.length <= 4000 && nome && nome.length <= 400 && !new URL(target).search
+                            && !new URL(target).username && !new URL(target).password && !isProduct(target) && !identity(target).perfilUrl) breadcrumbs.push({ nome, url: target });
+                    }
+                }
+                categoryStructuredNavigation = { categories, breadcrumbs };
+                const options = Array.isArray(initial.search_filters) ? initial.search_filters.filter(option => option && option.id === 'category') : [];
+                if (options.length !== 1) continue;
+                const option = options[0], selected = coupledCategory({ ...option, id: option.value });
+                if (!selected || !/\/\$query\/?$/.test(new URL(selected.url).pathname)
+                    || absolute(initial.search_filter && initial.search_filter.permalink) !== selected.url) continue;
+                const template = new URL(selected.url);
+                template.pathname = template.pathname.replace(/\$query\/?$/, '');
+                categoryContext = { key: selected.key, nome: selected.nome, baseUrl: template.href };
+                categoryStructuredNavigation.listingTemplate = selected;
+                const basePath = template.pathname.replace(/\/+$/, '');
+                let decodedBase;
+                try { decodedBase = decodeURIComponent(basePath); } catch (_error) { continue; }
+                if (/\*|\$query|(?:^|\/)_[^/]+/.test(decodedBase)) continue;
+                const exactCategoryBase = target => {
+                    if (!target) return false;
+                    const parsed = new URL(target), query = [...parsed.searchParams.entries()];
+                    if (parsed.origin !== template.origin || parsed.username || parsed.password || parsed.port && parsed.port !== '443'
+                        || query.length && (query.length !== 1 || query[0][0] !== 'original_category_landing' || query[0][1] !== 'true')) return false;
+                    return parsed.pathname.replace(/\/_NoIndex_True\/?$/, '/').replace(/\/+$/, '') === basePath;
+                };
+                const component = breadcrumbComponents.length === 1 && breadcrumbComponents[0];
+                const label = norm(component && component.label && component.label.text), name = norm(selected.nome);
+                const headings = nodes('main h1');
+                const ancestorNodes = component && Array.isArray(component.nodes) && component.nodes;
+                let previousPath = '';
+                const ancestors = ancestorNodes && ancestorNodes.length > 0 && ancestorNodes.length <= 32 && breadcrumbs.length === ancestorNodes.length
+                    && breadcrumbs.every((node, index) => {
+                        const parsed = new URL(node.url), path = parsed.pathname.replace(/\/+$/, '');
+                        if (index === 0 && parsed.hostname === 'www.mercadolivre.com.br' && (!parsed.port || parsed.port === '443')) {
+                            let rootPath;
+                            try { rootPath = decodeURIComponent(parsed.pathname); } catch (_error) { return false; }
+                            return /^\/c\/[^/_*$?#\u0000-\u0020]+\/?$/.test(rootPath);
+                        }
+                        if (parsed.origin === template.origin && path === basePath) {
+                            const rawNode = ancestorNodes[index];
+                            const linkedIds = [rawNode && rawNode.id, rawNode && rawNode.key, rawNode && rawNode.category_id].filter(value => typeof value === 'string' && /^MLB\d+$/.test(value));
+                            return index === breadcrumbs.length - 1 && norm(node.nome) === name
+                                && linkedIds.every(value => value === selected.key) && (!previousPath || path.startsWith(previousPath + '/'));
+                        }
+                        const valid = !!path && parsed.origin === template.origin && basePath.startsWith(path + '/')
+                            && (!previousPath || path.startsWith(previousPath + '/'));
+                        previousPath = path;
+                        return valid;
+                    });
+                const listing = !!document.querySelector('main .ui-search-layout');
+                const trends = !!document.querySelector('[class*="ui-category-trends"]');
+                const cards = Array.isArray(initial.results) && initial.results.some(item => item && typeof item.polycard === 'object' && item.polycard !== null);
+                // The root can use www/c and the final linked node can be the
+                // selected category itself. Every other node remains an ordered
+                // strict ancestor; a child URL cannot borrow its parent's base.
+                if (listing && !trends && cards && exactCategoryBase(url) && exactCategoryBase(absolute(initial.canonical_info && initial.canonical_info.canonical))
+                    && component && component.html_tag === 'h1' && label && (label === name || label.endsWith(' ' + name))
+                    && headings.length === 1 && norm(headings[0].textContent) === label && ancestors) add(selected.key, true);
+            }
             for (const line of rscParts.join('').split('\n').slice(0, 2048)) {
                 if (!line.startsWith('0:')) continue;
                 const state = extendedJson(line.slice(2));
                 const optimized = state && state.optimizedResponse;
                 if (!optimized || typeof optimized !== 'object' || Array.isArray(optimized)) continue;
+                inspectCategoryItems(optimized.results);
                 // Applied filters have a different meaning from search options.
                 inspect({ filters: optimized.filters });
                 const components = optimized.sidebar && Array.isArray(optimized.sidebar.components) ? optimized.sidebar.components : [];
@@ -293,6 +390,7 @@
                     && new URL(canonical).pathname.replace(/\/+$/, '') === new URL(url).pathname.replace(/\/+$/, '')
                     && linkedCategory) add(selected.key, true);
             }
+            categoryItems = [...itemCategories].filter(([, categoryId]) => categoryId).map(([id, categoryId]) => ({ id, categoryId }));
             categoryIdentityConflict = evidence.size > 1;
             categoryDocumentIdentity = documentEvidence.size === 1 && !categoryIdentityConflict;
             return evidence.size === 1 ? [...evidence][0] : '';
@@ -801,9 +899,9 @@
         const categoryNotFound = categoryRescue && anuncios.length === 0 && !isProduct(url)
             && !currentIdentity.id && !currentIdentity.perfilUrl && !authRequired
             && !categoryHeading && !categoryBreadcrumb && !categoryDocumentIdentity;
-        const scrolling = document.scrollingElement || document.documentElement || document.body;
+        const scrolling = document.scrollingElement || document.documentElement || document.body || {};
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
-        return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl,
+        return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
             categoryTrends: !!document.querySelector('[class*="ui-category-trends"]'),
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
