@@ -942,7 +942,7 @@ def _cubagem_lista_historica(lista: dict) -> bool:
     }
 
 
-def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
+def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None, *, client_id: str | None = None) -> dict:
     from backend.services.cadastro_cubagem import decimal_cubagem, normalizar_sku_cubagem
     from backend.services.medias_compras_fiscal import _campo_cubagem_historica
     import math
@@ -976,6 +976,13 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
             pendentes_m3 += 1
         else:
             total_m3 += volume
+    packing_totais = None
+    if client_id is not None and lista.get("packing_list"):
+        from backend.services.medias_compras_packing import _totais_packing_lista
+        packing_totais = _totais_packing_lista(lista, client_id)
+    if packing_totais is not None:
+        total_m3 = packing_totais["total_m3"]
+        pendentes_m3 = 0
     return {
         "id": str(lista.get("id", "") or ""),
         "nome_lista": str(lista.get("nome_lista", "") or ""),
@@ -990,6 +997,8 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None) -> dict:
         "total_m3": total_m3,
         "m3_pendente_itens": pendentes_m3,
         "m3_completo": pendentes_m3 == 0,
+        "m3_fonte": "packing_list" if packing_totais is not None else "lista",
+        "packing_list_totais": packing_totais,
         "skus": [
             str(i.get("SKU", "") or "").strip()
             for i in itens

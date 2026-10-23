@@ -63,7 +63,7 @@ def pedido(monkeypatch, tmp_path):
         "_recalcular_frete_internacional_itens_lista",
         lambda _client_id, itens, **_kwargs: itens,
     )
-    monkeypatch.setattr(service, "_resumo_lista_pedido", lambda lista: {"id": lista["id"]})
+    monkeypatch.setattr(service, "_resumo_lista_pedido", lambda lista, **_kwargs: {"id": lista["id"]})
     monkeypatch.setattr(service, "_resolver_foto_cadastro_sku", resolver_foto)
     monkeypatch.setattr(cadastro_produtos, "_obter_produto_cadastro_sync", obter_produto)
     monkeypatch.setattr(cadastro_listagem, "_listar_produtos_cadastro_sync", listar_produtos)

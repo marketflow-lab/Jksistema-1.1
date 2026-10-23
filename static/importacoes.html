@@ -1732,7 +1732,7 @@
         }
 
         /* Vista principal: listas em colunas, com os controles reais de edição. */
-        :root { color-scheme: dark; --lista-colunas: minmax(205px, 1.45fr) minmax(172px, 1.18fr) minmax(205px, 1.25fr) minmax(128px, .85fr) 150px 26px; }
+        :root { color-scheme: dark; --lista-colunas: minmax(190px, 1.2fr) minmax(170px, 1.08fr) minmax(290px, 1.65fr) minmax(128px, .85fr) 150px 26px; }
         body { background: radial-gradient(ellipse at 70% -20%, #17365388, transparent 58%), #0b1320; }
         body::before, .card::before { display: none; }
         .container { padding: 24px clamp(12px, 2vw, 28px) 28px; }
@@ -1833,9 +1833,25 @@
         #listaWrap .meta-data-pedido:has(input) { width: 154px; }
         #listaWrap input.meta-data-pedido-input { font-size: 10px; }
         #listaWrap .meta-invoice:has(input) { width: 100%; min-width: 0; }
-        #listaWrap .lista-quantidades-grid { display: grid; grid-template-columns: minmax(35px,.65fr) minmax(58px,1fr) minmax(79px,1.25fr); gap: 9px; font-variant-numeric: tabular-nums; }
+        #listaWrap .lista-quantidades-grid { display: flex; align-items: baseline; gap: 25px; margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+        #listaWrap .lista-quantidades-grid > div { display: flex; align-items: baseline; gap: 6px; }
         #listaWrap .lista-quantidade-valor { display: block; font-size: 17px; font-weight: 500; line-height: 1.2; color: #d8e6f6; white-space: nowrap; }
         #listaWrap .lista-quantidade-rotulo { display: block; color: #7d9bb9; font-size: 10px; margin-top: 5px; }
+        .lista-transporte { border: 1px solid #2b425b; background: #122238; border-radius: 7px; padding: 10px 11px; min-width: 0; }
+        .lista-transporte-fonte { display: flex; align-items: center; gap: 6px; color: #8fa7c2; font-size: 10px; margin-bottom: 9px; }
+        .lista-transporte-fonte::before { content: ''; width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: #728ca8; }
+        .lista-transporte-grid { display: grid; grid-template-columns: 1fr .65fr 1.3fr; gap: 8px; font-variant-numeric: tabular-nums; }
+        .lista-transporte-grid > div { min-width: 0; }
+        .lista-transporte .lista-transporte-valor { display: block; color: #bad2ed; font-size: 13px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+        .lista-transporte-rotulo { display: block; color: #829fbd; font-size: 10px; margin-top: 4px; line-height: 1.3; }
+        .lista-transporte-trays { display: block; color: #97b9af; font-size: 10px; margin-top: 4px; }
+        .lista-transporte--packing { border-color: #2e6759; background: #112b2d; }
+        .lista-transporte--packing .lista-transporte-fonte { color: #95daba; }
+        .lista-transporte--packing .lista-transporte-fonte::before { background: #61ce9e; }
+        .lista-transporte--packing .lista-transporte-valor { color: #d8f4e7; }
+        .lista-transporte--packing .lista-transporte-rotulo { color: #97b9af; }
+        #listaWrap .lista-transporte .meta-m3 strong { display: block; color: inherit; font-size: inherit; font-weight: inherit; white-space: normal; overflow: visible; }
+        #listaWrap .lista-transporte .meta-m3 { display: block; overflow: visible; font-size: 13px; }
         #listaWrap .meta-m3, #listaWrap .meta-usd, #listaWrap .meta-brl { padding: 0; background: transparent; border: 0; cursor: default; }
         #listaWrap .meta-m3 strong { color: #a2d7c5; font-size: 13px; font-weight: 500; white-space: nowrap; }
         #listaWrap .meta-usd strong { color: #a3d2ff; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -1859,11 +1875,11 @@
         #menuListaImportacoes [data-menu-excluir] { color: #dba2a9; }
         #vistaMain button:focus-visible, #listaWrap [tabindex]:focus-visible, .busca-listas input:focus-visible { outline: 2px solid #76baff; outline-offset: 3px; }
         @media (min-width: 1430px) {
-            :root { --lista-colunas: minmax(250px,1.5fr) minmax(205px,1.2fr) minmax(230px,1.3fr) minmax(145px,.85fr) 162px 26px; }
+            :root { --lista-colunas: minmax(230px,1.2fr) minmax(205px,1.08fr) minmax(320px,1.65fr) minmax(145px,.85fr) 162px 26px; }
             #listaWrap .lista-item--compacta, .listas-colunas-cabecalho { padding-left: 24px; padding-right: 24px; gap: 20px; }
         }
         @media (max-width: 1160px) {
-            :root { --lista-colunas: minmax(190px,1.3fr) minmax(150px,1fr) minmax(185px,1.1fr) minmax(112px,.8fr) 137px 23px; }
+            :root { --lista-colunas: minmax(170px,1.2fr) minmax(140px,1fr) minmax(265px,1.65fr) minmax(112px,.8fr) 137px 23px; }
             .fx-update, .clock-country { display: none; }
             .card { padding: 17px; }
             #listaWrap .lista-item--compacta, .listas-colunas-cabecalho { gap: 11px; padding-left: 14px; padding-right: 14px; }
@@ -1875,20 +1891,20 @@
             .busca-listas { flex-basis: 250px; }
             .listas-principal-ajuda { font-size: 10px; }
         }
-        @media (max-width: 1040px) {
+        @media (max-width: 1160px) {
             .topbar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
             .topbar h1 { grid-column: 1 / -1; margin: 0 0 17px; }
             .topbar .fx-box, .topbar .clock-box { grid-column: auto; }
             .loja-filtro-area { flex-wrap: wrap; gap: 12px; }
             .busca-listas { flex-basis: 100%; }
             .listas-colunas-cabecalho { display: none; }
-            #listaWrap .lista-item--compacta { grid-template-columns: minmax(190px, 1.4fr) minmax(170px, 1fr) 150px; grid-template-areas: 'pedido parceiros documentos' 'quantidade valores acoes'; gap: 15px 20px; min-height: 0; }
+            #listaWrap .lista-item--compacta { grid-template-columns: minmax(290px, 1.4fr) minmax(170px, 1fr) 150px; grid-template-areas: 'pedido parceiros documentos' 'quantidade valores acoes'; gap: 15px 20px; min-height: 0; }
             #tabelaListasImportacoes.is-compacta .lista-item--compacta { min-height: 0; }
             #listaWrap .lista-coluna-acoes { justify-self: end; }
             .toolbar .importacao-monitor { flex-basis: 100%; margin-bottom: 3px; }
             .toolbar .importacao-acao--medias { margin-left: auto; }
         }
-        @media (max-width: 680px) {
+        @media (max-width: 780px) {
             .container { padding: 17px 12px; }
             .topbar { margin-bottom: 17px; }
             h1 { font-size: 28px; }
@@ -1916,7 +1932,6 @@
             #listaWrap .nome-lista { font-size: 18px; }
             #listaWrap .meta-cadastro-lista strong { font-size: 11px; }
             #listaWrap .lista-coluna-quantidade { border-top: 1px solid #273e57; padding-top: 13px; }
-            #listaWrap .lista-quantidades-grid { grid-template-columns: 1fr 1fr 1.25fr; }
             #listaWrap .lista-quantidade-valor { font-size: 18px; }
             #listaWrap .meta-m3 strong { font-size: 15px; }
             #listaWrap .lista-coluna-valores { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
@@ -2102,7 +2117,7 @@
                     <div class="listas-principal-ferramentas"><span class="listas-principal-ajuda">Dois cliques para editar os campos</span><button type="button" id="btnDensidadeListas" aria-pressed="true">Visualização confortável</button></div>
                 </div>
                 <div id="tabelaListasImportacoes" class="is-compacta">
-                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidades</span><span>Valores</span><span>Documentos</span><span></span></div>
+                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidades e transporte</span><span>Valores</span><span>Documentos</span><span></span></div>
                     <div id="listaWrap" class="lista-wrap"></div>
                 </div>
                 <div class="listas-rodape">Enter salva · Esc cancela a edição</div>
@@ -2291,6 +2306,41 @@
 
         function formatarM3Resumo(lista) {
             return formatarM3(lista && lista.total_m3 || 0) + (cubagemResumoPendente(lista) ? ' (parcial)' : '');
+        }
+
+        function numeroTransporteLista(valor, casas) {
+            if (typeof valor !== 'number' || !Number.isFinite(valor) || valor < 0) return '—';
+            return valor.toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
+        }
+
+        function resumoTransporteListaHtml(lista) {
+            const totais = lista && lista.packing_list_totais;
+            const packing = !!totais && lista.m3_fonte === 'packing_list';
+            const fonte = packing ? 'Dados do Packing List' : lista.packing_list_ready === true
+                ? 'Dados do Packing List indisponíveis' : 'Packing List não anexado';
+            const caixas = packing ? numeroTransporteLista(totais.total_caixas, 0) : '—';
+            const peso = packing ? numeroTransporteLista(totais.peso_bruto_total_kg, 2) : '—';
+            const trays = packing && typeof totais.total_trays === 'number' && totais.total_trays > 0
+                ? '<span class="lista-transporte-trays">+ ' + numeroTransporteLista(totais.total_trays, 0) + ' Trays</span>' : '';
+            return '<div class="lista-transporte' + (packing ? ' lista-transporte--packing' : '') +
+                '" data-transporte-lista-id="' + escaparHtml(lista.id) + '">' +
+                '<span class="lista-transporte-fonte">' + fonte + '</span><div class="lista-transporte-grid">' +
+                '<div><span class="lista-transporte-valor meta-pill meta-m3"><strong>' + formatarM3Resumo(lista) +
+                '</strong></span><span class="lista-transporte-rotulo">' + (packing ? 'Volume' : 'Volume da lista') + '</span></div>' +
+                '<div><strong class="lista-transporte-valor" data-transporte-caixas>' + caixas +
+                '</strong><span class="lista-transporte-rotulo">Caixas</span>' + trays + '</div>' +
+                '<div><strong class="lista-transporte-valor" data-transporte-peso>' + peso + (peso === '—' ? '' : ' kg') +
+                '</strong><span class="lista-transporte-rotulo">Peso bruto total</span></div></div></div>';
+        }
+
+        function atualizarTotaisPackingList(lista, resumo) {
+            if (!resumo || String(resumo.id) !== String(lista.id)) return;
+            const atualizada = atualizarListaCacheImportacoes(lista.id, resumo, lista.loja);
+            Object.assign(lista, atualizada);
+            document.querySelectorAll('[data-transporte-lista-id]').forEach(bloco => {
+                if (bloco.dataset.transporteListaId === String(lista.id)) bloco.outerHTML = resumoTransporteListaHtml(atualizada);
+            });
+            renderEmbarques(todasListasCache);
         }
 
         function escaparHtml(valor) {
@@ -2792,6 +2842,7 @@
                     if (controle.signal.aborted || !dialogo.isConnected) return;
                     controleEnvio = null;
                     atualizarEstadoPackingList(lista, true);
+                    atualizarTotaisPackingList(lista, resultado.lista);
                     setStatus('Packing List incluído. Clique em Packing List para baixar.');
                     fechar();
                 } catch (erro) {
@@ -3420,8 +3471,7 @@
                             '<div class="meta lista-card-quantidade lista-quantidades-grid">' +
                                 '<div><strong class="lista-quantidade-valor">' + numero(l.total_itens || 0) + '</strong><span class="lista-quantidade-rotulo">itens</span></div>' +
                                 '<div><strong class="lista-quantidade-valor">' + numero(l.total_quantidade || 0) + '</strong><span class="lista-quantidade-rotulo">unidades</span></div>' +
-                                '<div><span class="meta-pill meta-m3"><strong>' + formatarM3Resumo(l) + '</strong></span><span class="lista-quantidade-rotulo">volume</span></div>' +
-                            '</div><span class="status">Analisando orçamento</span>' +
+                            '</div>' + resumoTransporteListaHtml(l) + '<span class="status">Analisando orçamento</span>' +
                         '</div>' +
                         '<div class="lista-coluna lista-coluna-valores">' +
                             '<span class="lista-campo-rotulo">Total USD</span><span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
@@ -3759,6 +3809,12 @@
             var volumes = dados.map(embObterM3TotalItem);
             var m3Completo = volumes.every(function(v) { return Number.isFinite(v); });
             var totalM3 = volumes.reduce(function(s, v) { return s + (Number.isFinite(v) ? v : 0); }, 0);
+            var resumo = calcularTotaisEmbarque(listaIds, todasListasCache);
+            if (resumo.listas.length > 0 &&
+                    resumo.listas.every(l => typeof l.total_m3 === 'number' && Number.isFinite(l.total_m3))) {
+                totalM3 = resumo.totalM3;
+                m3Completo = resumo.m3Completo;
+            }
             var valorPorM3 = m3Completo && totalM3 > 0 ? (totalUsd / totalM3) : 0;
             var totalNcm = embContarNcmsDiferentes(dados);
 

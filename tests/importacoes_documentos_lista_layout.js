@@ -14,7 +14,7 @@ const markup = html.slice(markupStart, markupEnd);
 for (const marker of [
   'class="nome-lista"', 'data-abrir-lista', 'data-invoice-pill', 'lojaPill',
   'metaFornecedorListaHtml(l)', 'metaNacionalizadorListaHtml(l)', 'window.JKDataPedidoLista.html(l)',
-  'lista-card-quantidade', 'meta-m3', 'meta-usd', 'meta-brl', 'lista-card-atualizacao',
+  'lista-card-quantidade', 'resumoTransporteListaHtml(l)', 'meta-usd', 'meta-brl', 'lista-card-atualizacao',
   'data-commercial-invoice', 'data-menu-lista', 'aria-haspopup="menu"',
 ]) assert(markup.includes(marker), 'Controle ou informação original ausente: ' + marker);
 assert(markup.includes('<button type="button" class="documento-lista-card documento-lista-card--packing" data-packing-list>Packing List</button>'),
