@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 import bcrypt
@@ -57,6 +58,8 @@ def signing():
 
 @pytest.fixture(autouse=True)
 def isolated_sessions(monkeypatch, signing):
+    monkeypatch.setattr(cofre_auth, "_STORE", SimpleNamespace(load=lambda *_: None,
+        save=lambda *_: None, delete=lambda *_: None, revoke_identity=lambda *_: None))
     monkeypatch.setenv("JK_COFRE_ISSUER_EMAIL", ISSUER)
     with cofre_auth._LOCK:
         cofre_auth._SESSIONS.clear()
@@ -142,7 +145,13 @@ def test_scope_and_claims_contract_is_closed(signing):
         verify(jwt.encode(claims(), "fixture-hmac-key-with-32-bytes-test", algorithm="HS256"))
 
 
-def test_signature_forgery_and_unknown_key_fail_closed(signing):
+def test_signature_forgery_and_unknown_key_fail_closed(signing, monkeypatch):
+    key = {**jwt.algorithms.RSAAlgorithm.to_jwk(signing.public, as_dict=True), "kid": "fixture-key"}
+    payload = {"keys": [key]}
+    response = SimpleNamespace(status_code=200, content=json.dumps(payload).encode(),
+                               headers={"Cache-Control": "max-age=300"}, json=lambda: payload)
+    transport = SimpleNamespace(get=lambda *_args, **_kwargs: response, close=lambda: None)
+    monkeypatch.setattr(cofre_auth, "configure_requests_session", lambda *_args: transport)
     wrong = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     forged = jwt.encode(claims(), wrong, algorithm="RS256")
     with pytest.raises(ValueError):

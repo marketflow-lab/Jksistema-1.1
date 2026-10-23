@@ -54,6 +54,31 @@ class FirestoreUserRepository:
             return None
         return data
 
+    def find_google_user(self, email: str) -> tuple[str, dict[str, Any]] | None:
+        """Replace the normal Google-login directory lookup; never used on Cofre renewal."""
+        normalized = str(email or "").strip().lower()
+        if not normalized or "@" not in normalized:
+            raise AuthRejected("invalid_credentials", 401)
+        match = None
+        try:
+            snapshots = self._collection.stream(retry=None, timeout=self._settings.firestore_timeout_seconds)
+            for snapshot in snapshots:
+                current = snapshot.to_dict() or {}
+                username = str(current.get("username") or snapshot.id).strip().lower()
+                if self._document_id(username) != snapshot.id:
+                    continue
+                addresses = {str(current.get(key) or "").strip().lower() for key in ("email", "google_email")}
+                if normalized not in addresses and username != normalized:
+                    continue
+                if match is not None:
+                    raise AuthRejected("invalid_credentials", 401)
+                match = (username, current)
+        except AuthRejected:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable("firestore_read_failed") from exc
+        return match
+
     def claim_machine(
         self,
         username: str,

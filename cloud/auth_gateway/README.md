@@ -78,7 +78,63 @@ da identidade confiável, com cache; ela nunca é escolhida por uma URL no JWT.
 IAM pode emitir sem `kid`, caso em que o verificador tenta até dez chaves RSA do
 conjunto confiável. Não se distribui chave privada nem refresh token ao Cofre.
 O refresh Firebase existente não estende a capability; expiração e reinício do
-backend encerram a autorização, e a revogação remota não é imediata nesse modelo.
+backend encerram a autorização no protocolo 1, e a revogação remota não é imediata nesse modelo.
+
+## Sessão única JK e recuperação do Cofre (protocolo 2)
+
+O desktop novo preserva o cabeçalho de compatibilidade `X-JK-Cofre-Protocol: 1`
+e envia também `X-JK-Cofre-Session-Protocol: 2`. O login normal do JK, por senha
+ou Google, entrega no mesmo envelope assinado:
+`cofre_access: {protocol: 2, capability, session_grant, session_expires_at}`.
+O hash autenticado pelo ID token cobre a extensão inteira; identidade, empresa,
+máquina, nonce, política e escopos são verificados antes de qualquer persistência.
+
+A capability continua RS256, válida por até oito horas e verificada pelas chaves
+públicas confiáveis do Google. O `session_grant` é uma credencial opaca para o
+desktop: somente o gateway verifica sua assinatura HMAC com segredo estável de
+servidor. O prazo absoluto termina em até 30 dias ou no vencimento da licença,
+o que ocorrer primeiro; renovações não prorrogam esse prazo. Não se usa uma
+assinatura IAM de 30 dias: as chaves públicas de `signBlob` só têm publicação
+garantida por pelo menos 12 horas, insuficiente para a credencial longa
+([documentação IAM](https://docs.cloud.google.com/iam/docs/reference/credentials/rest/v1/projects.serviceAccounts/signBlob)).
+
+O backend guarda credencial, contexto verificado e prazo no Credential Manager
+do Windows, em blocos limitados, vinculados ao hash do token JK e à identidade.
+Não há fallback para arquivo plaintext, localStorage ou senha salva. Ao reiniciar
+ou se aproximar do vencimento da capability, valida a sessão JK existente e a
+política local autenticada, que só pode restringir o escopo. Então chama
+`POST /api/auth/v1/cofre/session`, que valida a credencial opaca e a máquina e
+assina outra capability curta. Não consulta perfil, Firestore, grants Firebase,
+presença nem Firebase Auth nesse caminho. Não repete automaticamente mutações.
+
+O endpoint aceita somente `session_grant`, `machine_id`, `request_nonce` e
+`app_version`; a resposta inclui `success`, `protocol`, o mesmo nonce, uma
+capability nova, o mesmo grant e o mesmo `session_expires_at`. O desktop verifica
+assinatura atual, identidade, escopo e prazo da capability antes de utilizá-la.
+Concorrência compartilha uma renovação; indisponibilidade retorna 503 recuperável
+sem apagar o login geral do JK. JWT JK inválido e negação real continuam 401/403.
+
+Configure `JK_COFRE_SESSION_SECRET` exclusivamente no Cloud Run, com 32 bytes
+aleatórios em 64 dígitos hexadecimais, injetados por versão fixa do Secret Manager.
+Nenhum segredo real deve entrar no repositório, instalador ou resposta ao cliente.
+Para uma rotação planejada, coloque a chave anterior em
+`JK_COFRE_SESSION_PREVIOUS_SECRET` por pelo menos 30 dias; depois remova-a. Uma
+revogação emergencial pode removê-la antes, invalidando os grants correspondentes.
+Sem segredo configurado, o login mantém o protocolo 1 e a renovação fica indisponível.
+
+O login Google usa `GOOGLE_LOGIN_CLIENT_ID`, a audiência pública já utilizada pelo
+JK. O gateway verifica o ID token e encontra a conta na consulta normal do login,
+sem aceitar empresa, usuário ou permissões fornecidos pelo desktop. A consulta de
+entrada substitui a busca legada de usuários; abrir/renovar o Cofre não a repete.
+
+Ativação: configurar o segredo e a audiência, implantar primeiro o gateway e
+depois integrar o desktop aprovado. Não exige alteração do Worker/D1 nem de Rules
+Firebase. Uma sessão antiga que já perdeu toda prova remota não pode receber
+permissão de nuvem apenas por possuir um token local: o próximo login normal no
+JK estabelece a nova credencial, sem um login separado no Cofre. O prazo de
+30 dias também limita a defasagem de revogações remotas sem consulta online; a
+política local atualizada pode restringir antes. Reativar acesso remoto além
+desse prazo exige autenticação normal do JK.
 
 ## Conexão Firebase restrita após login (protocolo 1)
 

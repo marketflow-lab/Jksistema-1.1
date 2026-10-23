@@ -17,6 +17,7 @@ from backend.services.admin_usuarios_context import configure_admin_usuarios_con
 from backend.services.remote_auth_client import (
     RemoteAuthState,
     attempt_remote_login,
+    attempt_remote_google_login,
     attempt_remote_password_change,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
@@ -336,6 +337,7 @@ def google_auth_callback(request: Request, code: Optional[str] = None, state: Op
         str(state_data.get("machine_id") or ""),
         request,
         str(state_data.get("app_version") or ""),
+        credential=id_token_value,
     )
     if login_resp.success:
         try:
@@ -374,7 +376,96 @@ async def google_login_endpoint(payload: GoogleLoginRequest, request: Request):
         logger.warning("[LOGIN] Falha ao validar token Google: %s", exc)
         return LoginResponse(success=False, message="Erro ao validar login Google.")
 
-    return _autenticar_usuario_por_google_info(token_info, payload.machine_id, request, payload.app_version)
+    return _autenticar_usuario_por_google_info(token_info, payload.machine_id, request, payload.app_version, credential=credential)
+
+def _autenticar_google_remoto(token_info: dict, credential: str, machine_id: str,
+                               request: Request, app_version: str):
+    """Use normal Google sign-in to prepare the same JK session as password login."""
+    machine_remote, _metadata = _montar_machine_id_login(request, machine_id)
+    remote_attempt = attempt_remote_google_login(
+        credential=credential, machine_id=machine_remote, app_version=app_version)
+    if remote_attempt.success:
+        expected_email = str(token_info.get("email") or "").strip().lower()
+        actual_email = str(remote_attempt.user_data.get("google_email") or "").strip().lower()
+        if not expected_email or actual_email != expected_email:
+            return LoginResponse(success=False, message="Não foi possível validar a conta Google vinculada.")
+        return _complete_remote_login(remote_attempt, request, app_version)
+    if remote_attempt.state is RemoteAuthState.NOT_CONFIGURED or (
+            remote_attempt.state is RemoteAuthState.UNAVAILABLE and remote_attempt.allow_legacy_fallback):
+        return None
+    return LoginResponse(success=False, message=remote_attempt.message or "Autenticação indisponível.")
+
+
+def _complete_remote_login(remote_attempt, request: Request, app_version_ok: str):
+    username = remote_attempt.user_data["username"]
+    user_data = remote_attempt.user_data
+    client_id = str(user_data.get("client_id") or "").strip()
+    machine_final = str(user_data.get("machine_id") or "").strip()
+    try:
+        usuario_remoto = _salvar_perfil_autenticado_remoto(username, remote_attempt)
+    except Exception as exc:
+        logger.error("[REMOTE-AUTH] Falha ao preparar perfil local autenticado: %s", type(exc).__name__)
+        return LoginResponse(success=False, message="Nao foi possivel preparar a sessao local. Tente novamente.")
+
+    usuario_remoto["firebase_user"] = bool(remote_attempt.firebase_access)
+
+    if remote_attempt.central:
+        from backend.services.central_accounts_client import register_login
+        usuario_remoto["central"] = True
+        response = _montar_resposta_login_sucesso(username, usuario_remoto, remote_attempt.permissions,
+                                                 client_id, machine_final)
+        try:
+            central_client = register_login(response.access_token, remote_attempt)
+        except Exception:
+            return LoginResponse(success=False, message="Não foi possível preparar a conexão com a central.")
+        try:
+            from backend.services.central_accounts_migration import finalize_after_central_login
+            finalize_after_central_login(client_id, central_client.public_stores())
+        except Exception as exc:
+            runtime_logger = globals().get("logger")
+            if runtime_logger is not None:
+                runtime_logger.warning("[CENTRAL] Limpeza local pendente apos ativacao: %s", type(exc).__name__)
+        response.user_data["central"] = {"protocol": 1, "sync_mode": "manual",
+                                         "expires_at": remote_attempt.central["expires_at"]}
+        return _conectar_firebase_apos_login(response, remote_attempt)
+
+    migration_response = None
+    if remote_attempt.central_migration:
+        from backend.services.central_accounts_client import register_migration_login
+        usuario_remoto["central_migration"] = True
+        migration_response = _montar_resposta_login_sucesso(
+            username, usuario_remoto, remote_attempt.permissions, client_id, machine_final)
+        try:
+            register_migration_login(migration_response.access_token, remote_attempt)
+        except Exception:
+            return LoginResponse(success=False, message="Não foi possível preparar a migração para a central.")
+        migration_response.user_data["central_migration"] = {
+            "available": True,
+            "expires_at": remote_attempt.central_migration["expires_at"],
+        }
+
+    try:
+        _registrar_login_maquina(username, client_id, machine_final, request)
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel registrar auditoria do login remoto: %s", type(exc).__name__)
+    try:
+        _machine_presence_save(
+            _machine_presence_record(username, client_id, machine_final, request, "login", app_version_ok)
+        )
+    except Exception as exc:
+        logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial remota: %s", type(exc).__name__)
+    if migration_response is not None:
+        return _conectar_firebase_apos_login(migration_response, remote_attempt)
+    response = _montar_resposta_login_sucesso(
+        username,
+        usuario_remoto,
+        remote_attempt.permissions,
+        client_id,
+        machine_final,
+    )
+    return _conectar_firebase_apos_login(response, remote_attempt)
+
+
 
 async def login_endpoint(payload: LoginRequest, request: Request):
     app_version_ok = _validar_versao_minima_app_ou_426(payload.app_version)
@@ -391,72 +482,7 @@ async def login_endpoint(payload: LoginRequest, request: Request):
         app_version=app_version_ok,
     )
     if remote_attempt.success:
-        user_data = remote_attempt.user_data
-        client_id = str(user_data.get("client_id") or "").strip()
-        machine_final = str(user_data.get("machine_id") or "").strip()
-        try:
-            usuario_remoto = _salvar_perfil_autenticado_remoto(username, remote_attempt)
-        except Exception as exc:
-            logger.error("[REMOTE-AUTH] Falha ao preparar perfil local autenticado: %s", type(exc).__name__)
-            return LoginResponse(success=False, message="Nao foi possivel preparar a sessao local. Tente novamente.")
-
-        usuario_remoto["firebase_user"] = bool(remote_attempt.firebase_access)
-
-        if remote_attempt.central:
-            from backend.services.central_accounts_client import register_login
-            usuario_remoto["central"] = True
-            response = _montar_resposta_login_sucesso(username, usuario_remoto, remote_attempt.permissions,
-                                                     client_id, machine_final)
-            try:
-                central_client = register_login(response.access_token, remote_attempt)
-            except Exception:
-                return LoginResponse(success=False, message="Não foi possível preparar a conexão com a central.")
-            try:
-                from backend.services.central_accounts_migration import finalize_after_central_login
-                finalize_after_central_login(client_id, central_client.public_stores())
-            except Exception as exc:
-                runtime_logger = globals().get("logger")
-                if runtime_logger is not None:
-                    runtime_logger.warning("[CENTRAL] Limpeza local pendente apos ativacao: %s", type(exc).__name__)
-            response.user_data["central"] = {"protocol": 1, "sync_mode": "manual",
-                                             "expires_at": remote_attempt.central["expires_at"]}
-            return _conectar_firebase_apos_login(response, remote_attempt)
-
-        migration_response = None
-        if remote_attempt.central_migration:
-            from backend.services.central_accounts_client import register_migration_login
-            usuario_remoto["central_migration"] = True
-            migration_response = _montar_resposta_login_sucesso(
-                username, usuario_remoto, remote_attempt.permissions, client_id, machine_final)
-            try:
-                register_migration_login(migration_response.access_token, remote_attempt)
-            except Exception:
-                return LoginResponse(success=False, message="Não foi possível preparar a migração para a central.")
-            migration_response.user_data["central_migration"] = {
-                "available": True,
-                "expires_at": remote_attempt.central_migration["expires_at"],
-            }
-
-        try:
-            _registrar_login_maquina(username, client_id, machine_final, request)
-        except Exception as exc:
-            logger.warning("[LOGIN] Nao foi possivel registrar auditoria do login remoto: %s", type(exc).__name__)
-        try:
-            _machine_presence_save(
-                _machine_presence_record(username, client_id, machine_final, request, "login", app_version_ok)
-            )
-        except Exception as exc:
-            logger.warning("[LOGIN] Nao foi possivel registrar presenca inicial remota: %s", type(exc).__name__)
-        if migration_response is not None:
-            return _conectar_firebase_apos_login(migration_response, remote_attempt)
-        response = _montar_resposta_login_sucesso(
-            username,
-            usuario_remoto,
-            remote_attempt.permissions,
-            client_id,
-            machine_final,
-        )
-        return _conectar_firebase_apos_login(response, remote_attempt)
+        return _complete_remote_login(remote_attempt, request, app_version_ok)
 
     if remote_attempt.state in {RemoteAuthState.REJECTED, RemoteAuthState.INTEGRITY_FAILURE}:
         return LoginResponse(success=False, message=remote_attempt.message)

@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import bcrypt
 
-from .contracts import GatewayChangePasswordRequest, GatewayLoginRequest
+from .contracts import GatewayChangePasswordRequest, GatewayGoogleLoginRequest, GatewayLoginRequest
 from .errors import AuthRejected, GatewayUnavailable
 from .policy import (
     AUTH_PROTOCOL_VERSION,
@@ -35,6 +35,8 @@ DUMMY_PASSWORD_HASH = "$2b$12$110.wdzOzrIf8hqQsjoIZOPs94qpVworZsDUAuGG74fivqjjKu
 
 class UserRepository(Protocol):
     def get_user(self, username: str) -> dict[str, Any] | None: ...
+
+    def find_google_user(self, email: str) -> tuple[str, dict[str, Any]] | None: ...
 
     def claim_machine(
         self,
@@ -92,7 +94,8 @@ class AuthenticationService:
         central_protocol: bool = False,
         app_version: str = "",
         firebase_protocol: bool = False,
-        cofre_protocol: bool = False,
+        cofre_protocol: bool | int = False,
+        google_email: str = "",
     ) -> dict[str, Any]:
         expiry = assert_access_allowed(current)
         raw_permissions = current.get("permissions") or current.get("permissoes")
@@ -117,6 +120,8 @@ class AuthenticationService:
             "client_id": client_id,
             "machine_id": machine_id,
         }
+        if google_email:
+            user_data["google_email"] = google_email
         signed_payload = {
             "user_data": user_data,
             "permissions": permissions,
@@ -144,8 +149,14 @@ class AuthenticationService:
                          if "firebase_access" in signed_payload else [])
             if "central" in signed_payload:
                 deadlines.append(signed_payload["central"]["expires_at"])
-            capability = self._cofre_capabilities.issue(
-                current, username, machine_id, expires_at=min(deadlines) if deadlines else None)
+            if cofre_protocol == 2:
+                # The signed renewable grant has its own absolute 30-day/licence
+                # deadline. It must not inherit Firebase's shorter session window.
+                capability = self._cofre_capabilities.issue_session(
+                    current, username, machine_id, expires_at=min(deadlines) if deadlines else None)
+            else:
+                capability = self._cofre_capabilities.issue(
+                    current, username, machine_id, expires_at=min(deadlines) if deadlines else None)
             if capability is not None:
                 signed_payload["cofre_access"] = capability
         claims = {
@@ -228,6 +239,32 @@ class AuthenticationService:
             cofre_protocol=cofre_protocol,
             app_version=request.app_version,
         )
+
+    def authenticate_google(self, request: GatewayGoogleLoginRequest, google_claims: dict, *,
+                            central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
+        """HTTP supplies verified Google claims; identity is loaded only by the repository."""
+        assert_supported_version(request.app_version, self._minimum_app_version)
+        email = google_claims.get("email")
+        if (google_claims.get("email_verified") is not True or not isinstance(email, str)
+                or not 1 <= len(email) <= 254 or any(ord(char) < 32 for char in email)):
+            raise AuthRejected("invalid_credentials", 401)
+        email = email.strip().lower()
+        if not email or "@" not in email:
+            raise AuthRejected("invalid_credentials", 401)
+        found = self._repository.find_google_user(email)
+        if found is None:
+            raise AuthRejected("invalid_credentials", 401)
+        username, user = found
+        username = GatewayLoginRequest.normalize_username(username)
+        assert_access_allowed(user)
+        current = self._repository.claim_machine(username, password_value(user), request.machine_id)
+        linked_emails = {username, *(str(current.get(key) or "").strip().lower()
+                                    for key in ("email", "google_email"))}
+        if email not in linked_emails:
+            raise AuthRejected("invalid_credentials", 401)
+        return self._signed_response(current, username, request.machine_id, request.request_nonce,
+            code="authenticated", app_version=request.app_version, central_protocol=central_protocol,
+            firebase_protocol=firebase_protocol, cofre_protocol=cofre_protocol, google_email=email)
 
 
 ERROR_MESSAGES = {

@@ -61,6 +61,13 @@ def validate_success_payload(
     machine_id = str(user_data_source.get("machine_id") or "").strip()
     name = str(user_data_source.get("name") or username).strip()
     email = str(user_data_source.get("email") or "").strip().lower()
+    google_email = None
+    if "google_email" in user_data_source:
+        google_email = user_data_source["google_email"]
+        if (not isinstance(google_email, str) or not 1 <= len(google_email) <= 254
+                or google_email != google_email.strip().lower() or "@" not in google_email
+                or any(ord(char) < 32 for char in google_email)):
+            raise ValueError("invalid_remote_google_identity")
     if username != requested_username or machine_id != requested_machine_id:
         raise ValueError("remote_identity_mismatch")
     if not client_id or len(client_id) > 128 or not name or len(name) > 200 or len(email) > 254:
@@ -89,10 +96,14 @@ def validate_success_payload(
     extension = {}
     if "cofre_access" in payload:
         cofre = payload["cofre_access"]
-        if (not isinstance(cofre, dict) or set(cofre) != {"protocol", "capability"}
-                or type(cofre["protocol"]) is not int or cofre["protocol"] != 1
+        if (not isinstance(cofre, dict) or type(cofre.get("protocol")) is not int
+                or cofre["protocol"] not in {1, 2}
+                or set(cofre) != ({"protocol", "capability", "session_grant", "session_expires_at"} if cofre["protocol"] == 2 else {"protocol", "capability"})
                 or not isinstance(cofre["capability"], str)
-                or not 1 <= len(cofre["capability"]) <= 16384):
+                or not 1 <= len(cofre["capability"]) <= 16384
+                or cofre["protocol"] == 2 and (not isinstance(cofre["session_grant"], str)
+                    or not 1 <= len(cofre["session_grant"]) <= 16384
+                    or type(cofre["session_expires_at"]) is not int)):
             raise ValueError("invalid_cofre_access")
         extension["cofre_access"] = dict(cofre)
     if "firebase_access" in payload:
@@ -143,6 +154,7 @@ def validate_success_payload(
             "email": email,
             "client_id": client_id,
             "machine_id": machine_id,
+            **({"google_email": google_email} if google_email is not None else {}),
         },
         "permissions": permissions,
         "policy": {
@@ -209,6 +221,10 @@ def verify_signed_response(
             raise ValueError("invalid_central_migration_expiry")
     if "cofre_access" in validated:
         signed_payload["cofre_access"] = validated["cofre_access"]
+    # This cryptographic binding covers the entire Cofre extension, including
+    # the opaque refresh credential and its deadline. The verified Firebase
+    # identity above also binds username, tenant, machine and request nonce.
+    # Never register or persist a refresh credential before this check passes.
     if str(claims.get("jk_response_hash") or "") != canonical_hash(signed_payload):
         raise ValueError("invalid_response_claim")
     firebase_claim = claims.get("firebase")
@@ -232,6 +248,18 @@ def verify_signed_response(
             raise ValueError("invalid_cofre_session_expiry")
         if "central" in validated and principal["exp"] > validated["central"]["expires_at"]:
             raise ValueError("invalid_cofre_session_expiry")
+        if validated["cofre_access"]["protocol"] == 2:
+            from backend.services.cofre_auth import validate_session_deadline
+            deadline = validated["cofre_access"]["session_expires_at"]
+            # This branch is reached only after signature/identity/hash checks
+            # of the complete normal-login envelope AND independent RS256
+            # capability verification against this user's exact identity and
+            # permissions. The desktop never decodes/trusts the opaque grant;
+            # only the gateway verifies its stable server-only HMAC secret.
+            validate_session_deadline(deadline, valid_until=validated["policy"]["valid_until"],
+                                      now=now, established_at=now)
+            if principal["exp"] > deadline:
+                raise ValueError("invalid_cofre_session_grant")
 
 
 __all__ = [

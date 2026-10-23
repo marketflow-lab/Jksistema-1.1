@@ -5,13 +5,13 @@
   const state = {
     servers: [], server: null, channels: [], channel: null,
     offset: 0, total: 0, loaded: 0, lastDay: null, revision: 0, serverRevision: 0,
-    request: null, mediaController: new AbortController(),
+    request: null, messageRetry: null, displayedChannel: null, mediaController: new AbortController(),
     mediaCache: new Map(), objectUrls: new Set(), observer: null,
     importing: false, searching: null, query: '', trashMode: false,
     totalActive: 0, totalDeleted: 0, summaryRevision: 0,
     messageDrafts: new Map(), channelDrafts: new Map(), mutations: new Map(),
     editor: null, channelEditor: null, deleteTarget: null, deleting: false,
-    session: null, sessionInvalidated: false, authRequired: false, archiveReady: false, accessReady: false,
+    session: null, sessionInvalidated: false, sessionUnavailable: false, archiveReady: false, accessReady: false,
     sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null },
     sharingKnown: false, sharingError: false, sharingBusy: false, sharingRequest: null,
     lastSharingAttempt: 0, publishing: false, publishSession: null
@@ -74,8 +74,13 @@
   }
 
   function authHeaders() {
-    if (typeof obterAuthHeaders !== 'function') throw new Error('Sua sessão está indisponível. Entre novamente no JK Sistema.');
-    return obterAuthHeaders();
+    if (typeof obterAuthHeaders !== 'function') throw new Error('Sua sessão do JK está indisponível.');
+    const headers = obterAuthHeaders();
+    if (!Object.entries(headers).some(([key, value]) => key.toLowerCase() === 'authorization' && /^Bearer\s+\S+$/i.test(String(value)))) {
+      throw new Error('Sua sessão do JK está indisponível.');
+    }
+    // Never authorize the Cofre using the legacy localStorage X-Client-ID fallback.
+    return headers;
   }
 
   function errorMessage(data, fallback) {
@@ -94,10 +99,10 @@
     return { key, headers: { ...headers } };
   }
 
-  function invalidateSession(reauthenticate = false) {
+  function invalidateSession() {
     if (state.sessionInvalidated) return;
     state.sessionInvalidated = true;
-    state.authRequired = reauthenticate;
+    state.sessionUnavailable = false;
     state.serverRevision += 1;
     state.summaryRevision += 1;
     cancelMessages();
@@ -133,30 +138,64 @@
     $('messageSearch').value = '';
     $('channelIntro').hidden = true;
     $('emptyState').hidden = false;
-    $('emptyDescription').textContent = reauthenticate
-      ? 'Entre novamente no JK Sistema para autorizar o Cofre e carregar as informações da sua empresa.'
-      : 'Sua sessão mudou. Reabra o Cofre de Informações para carregar o acervo da conta atual.';
-    $('emptyTitle').textContent = reauthenticate ? 'Entre novamente para abrir o Cofre' : 'Um lugar para tudo o que importa.';
-    $('reauthenticateCofre').hidden = !reauthenticate;
-    $('emptyFormat').hidden = reauthenticate;
-    $('channelName').textContent = reauthenticate ? 'Autorize seu acesso ao Cofre' : 'Sessão alterada';
-    $('channelTopic').textContent = reauthenticate ? 'Entre novamente no JK Sistema para continuar.' : 'Reabra este módulo para continuar.';
+    $('emptyDescription').textContent = 'Sua sessão mudou. Reabra o Cofre de Informações para carregar o acervo da conta atual.';
+    $('emptyTitle').textContent = 'Sessão alterada';
+    $('reauthenticateCofre').hidden = true;
+    $('emptyFormat').hidden = true;
+    $('channelName').textContent = 'Sessão alterada';
+    $('channelTopic').textContent = 'Reabra este módulo para continuar.';
     setChannelsOpen(false);
     renderServers();
     renderChannels();
     renderDetails();
-    if (reauthenticate) {
-      $('detailServer').textContent = 'Acesso pendente';
-      $('coverageBadge').textContent = 'Aguardando login';
-      $('coverageDescription').textContent = 'Entre novamente para consultar o acervo da sua empresa.';
-      $('exportDate').textContent = 'As informações serão carregadas após o login.';
+    notice('Sua sessão mudou. O contexto anterior foi encerrado. Reabra o Cofre de Informações para continuar.');
+  }
+
+  function pauseUnavailableSession() {
+    if (state.sessionInvalidated || state.sessionUnavailable) return;
+    state.sessionUnavailable = true;
+    state.sharingError = true;
+    state.serverRevision += 1;
+    state.summaryRevision += 1;
+    state.revision += 1;
+    state.request?.abort();
+    clearTimeout(state.searching);
+    // Keep the displayed archive and object URLs; recovery never clears JK storage.
+    for (const id of ['messageSearch', 'toggleTrash', 'editChannel', 'refreshMessages']) $(id).disabled = true;
+    $('channelList').querySelectorAll('button').forEach(button => { button.disabled = true; });
+    $('serverList').querySelectorAll('button').forEach(button => { button.disabled = true; });
+    $('loadMore').hidden = true;
+    $('timelineStatus').textContent = state.loaded ? 'As informações exibidas foram mantidas. Tente novamente para atualizar.' : '';
+    if (!state.archiveReady && !state.channel) {
+      $('emptyState').hidden = false;
+      $('emptyTitle').textContent = 'Informações indisponíveis no momento';
+      $('emptyDescription').textContent = 'Sua sessão do JK continua ativa. Tente novamente para consultar o acervo.';
+      $('emptyFormat').hidden = true;
+      $('channelName').textContent = 'Consulta indisponível';
+      $('channelTopic').textContent = 'Tente novamente em instantes.';
+      $('detailServer').textContent = 'Consulta indisponível';
+      $('coverageBadge').textContent = 'Consulta indisponível';
+      $('coverageDescription').textContent = 'Não foi possível consultar o histórico agora.';
+      $('exportDate').textContent = 'A última cópia será exibida quando a consulta estiver disponível.';
     }
-    notice(reauthenticate ? 'Sua sessão do Cofre precisa ser autorizada. Entre novamente no JK Sistema.'
-      : 'Sua sessão mudou. O contexto anterior foi encerrado. Reabra o Cofre de Informações para continuar.');
+    $('reauthenticateCofre').hidden = $('emptyState').hidden;
+    renderSharing();
+    notice('As informações estão indisponíveis no momento. Tente novamente em instantes.', true);
+  }
+
+  function retryReadOnly() {
+    if (!state.sessionUnavailable || state.importing || state.publishing || state.mutations.size) return;
+    try { ensureSession(); } catch (_error) { return; }
+    // A fresh GET boot cannot replay an edit, deletion, import or publication.
+    window.location.reload();
   }
 
   function ensureSession(session = state.session) {
-    if (state.sessionInvalidated || !session || captureSession().key !== session.key || state.session?.key !== session.key) {
+    let matches = false;
+    if (!state.sessionInvalidated && session && state.session?.key === session.key) {
+      try { matches = captureSession().key === session.key; } catch (_error) {}
+    }
+    if (!matches) {
       invalidateSession();
       throw new Error('Sua sessão mudou. Reabra o Cofre de Informações para continuar.');
     }
@@ -165,32 +204,43 @@
 
   async function request(path, options = {}, session = state.session) {
     ensureSession(session);
+    if (state.sessionUnavailable && options.method && !['GET', 'HEAD'].includes(options.method) && path !== '/compartilhamento/sincronizar') {
+      const error = new Error('As informações estão indisponíveis no momento. Tente novamente em instantes.');
+      error.status = 503;
+      throw error;
+    }
     const response = await fetch('/api/cofre' + path, {
       cache: 'no-store', credentials: 'same-origin', ...options,
+      redirect: 'error',
       headers: { ...session.headers, ...(options.headers || {}) }
+    }).catch(error => {
+      if (error.name === 'AbortError') throw error;
+      throw new Error('Não foi possível consultar o acervo. Tente novamente.');
     });
     ensureSession(session);
-    const data = await response.json().catch(() => ({}));
+    const data = await response.json().catch(() => null);
     ensureSession(session);
     if (!response.ok) {
-      if (response.status === 401) invalidateSession(true);
+      if (response.status === 401) invalidateSession();
+      if (response.status === 503 && data?.detail?.code === 'cofre_session_unavailable') pauseUnavailableSession();
       const fallback = response.status === 403 ? 'Sua conta não tem acesso ao Cofre de Informações.' : 'Não foi possível carregar o Cofre de Informações. Tente novamente.';
       const error = new Error(errorMessage(data, fallback));
       error.status = response.status;
       throw error;
     }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Não foi possível consultar o acervo. Tente novamente.');
     return data;
   }
 
   function notice(message, isError) {
-    if (state.authRequired) { message = 'Sua sessão do Cofre precisa ser autorizada. Entre novamente no JK Sistema.'; isError = false; }
+    if (state.sessionUnavailable) { message = 'As informações estão indisponíveis no momento. Tente novamente em instantes.'; isError = true; }
     $('notice').hidden = !message;
     $('notice').textContent = message || '';
     $('notice').classList.toggle('error', !!isError);
   }
 
   function canEditArchive() {
-    return state.accessReady && state.sharingKnown && !state.sessionInvalidated &&
+    return state.accessReady && state.sharingKnown && !state.sessionInvalidated && !state.sessionUnavailable &&
       (!state.sharing.configured || state.sharing.can_publish);
   }
 
@@ -206,23 +256,25 @@
   function renderSharing() {
     const sharing = state.sharing;
     const invalid = state.sessionInvalidated;
+    const unavailable = state.sessionUnavailable;
     const editable = canEditArchive();
     $('cofreApp').classList.toggle('sharing-ready', state.accessReady && state.sharingKnown);
     $('sharingStrip').classList.toggle('sharing-company', sharing.enabled && !invalid);
     $('sharingStrip').classList.toggle('sharing-error', state.sharingError && !invalid);
     $('sharingStrip').classList.toggle('sharing-busy', state.sharingBusy && !invalid);
-    $('sharingLabel').textContent = state.authRequired ? 'Login necessário' : invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
+    $('sharingLabel').textContent = unavailable ? 'Informações indisponíveis' : invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
     const synced = formatDate(sharing.last_sync);
-    $('sharingDescription').textContent = state.authRequired ? 'Entre novamente para autorizar o acesso ao Cofre.'
+    $('sharingDescription').textContent = unavailable ? 'Sua sessão do JK foi mantida. Tente novamente para consultar o acervo.'
       : invalid ? 'Reabra o módulo para carregar a conta atual.'
       : state.sharingBusy ? state.publishing ? 'Publicando acervo…' : 'Sincronizando acervo…'
       : state.sharingError ? 'Não foi possível sincronizar agora. A cópia disponível foi mantida.'
       : !state.sharingKnown ? 'Confira o acervo para continuar.'
       : sharing.enabled ? (sharing.can_publish ? 'As alterações são compartilhadas.' : 'Somente leitura.') + (synced ? ' Atualizado às ' + timeFormat.format(synced) + '.' : '')
       : sharing.configured && sharing.can_publish ? 'Publique para compartilhar com a empresa.' : 'Disponível neste computador.';
-    $('syncSharing').hidden = invalid || (state.sharingKnown && !sharing.configured);
-    $('syncSharing').disabled = state.sharingBusy || !state.accessReady;
-    $('publishSharing').hidden = invalid || !state.sharingKnown || !sharing.configured || !sharing.can_publish;
+    $('syncSharing').textContent = unavailable ? 'Tentar novamente' : '↻ Sincronizar';
+    $('syncSharing').hidden = invalid || (!unavailable && state.sharingKnown && !sharing.configured);
+    $('syncSharing').disabled = state.sharingBusy || (!unavailable && !state.accessReady);
+    $('publishSharing').hidden = invalid || unavailable || !state.sharingKnown || !sharing.configured || !sharing.can_publish;
     $('publishSharing').disabled = state.sharingBusy || !state.accessReady;
     for (const control of document.querySelectorAll('[data-cofre-write]')) {
       control.hidden = !editable;
@@ -288,7 +340,7 @@
   }
 
   async function synchronizeSharing({ initial = false, manual = false, reload = true } = {}) {
-    if (state.sessionInvalidated) return { changed: false };
+    if (state.sessionInvalidated || state.sessionUnavailable) return { changed: false, failed: true };
     if (state.sharingRequest) return state.sharingRequest;
     if (state.publishing || state.importing || state.mutations.size) {
       if (manual) notice('Aguarde a alteração em andamento para sincronizar.');
@@ -329,8 +381,9 @@
   }
 
   async function refreshArchive() {
+    if (state.sessionInvalidated || state.sessionUnavailable) return;
     const result = await synchronizeSharing();
-    if (!state.sessionInvalidated && !result.refreshed && state.channel) await loadMessages(true, true);
+    if (!state.sessionInvalidated && !state.sessionUnavailable && !result.refreshed && state.channel) await loadMessages(true, true);
   }
 
   function openPublishSharing() {
@@ -344,6 +397,7 @@
   }
 
   async function publishSharing() {
+    if (!requireWriteAccess()) return;
     if (state.publishing || !state.publishSession || !state.sharing.can_publish || state.sessionInvalidated) return;
     state.publishing = true;
     state.sharingBusy = true;
@@ -421,6 +475,8 @@
     state.offset = 0;
     state.total = 0;
     state.lastDay = null;
+    state.displayedChannel = null;
+    state.messageRetry = null;
     $('messages').replaceChildren();
     $('loadMore').hidden = true;
     $('loadMore').disabled = false;
@@ -529,6 +585,7 @@
   }
 
   async function selectServer(server) {
+    if (state.sessionUnavailable || state.sessionInvalidated) return;
     const revision = ++state.serverRevision;
     state.server = server;
     state.channel = null;
@@ -569,6 +626,7 @@
   }
 
   async function selectChannel(channel) {
+    if (state.sessionUnavailable || state.sessionInvalidated) return;
     state.channel = channel;
     state.query = '';
     $('messageSearch').value = '';
@@ -600,10 +658,15 @@
     if (state.mediaCache.has(path)) return state.mediaCache.get(path);
     const session = ensureSession();
     const promise = (async () => {
-      const response = await fetch(path, { headers: session.headers, cache: 'no-store', credentials: 'same-origin', signal: state.mediaController.signal });
+      const response = await fetch(path, { headers: session.headers, cache: 'no-store', credentials: 'same-origin', redirect: 'error', signal: state.mediaController.signal });
       ensureSession(session);
       if (!response.ok) {
-        if (response.status === 401) invalidateSession(true);
+        if (response.status === 401) invalidateSession();
+        if (response.status === 503) {
+          const data = await response.json().catch(() => null);
+          ensureSession(session);
+          if (data?.detail?.code === 'cofre_session_unavailable') pauseUnavailableSession();
+        }
         throw new Error('Arquivo indisponível nesta cópia.');
       }
       const blob = await response.blob();
@@ -777,19 +840,28 @@
   }
 
   async function loadMessages(reset, preserveScroll = false) {
-    if (!state.channel || !state.server) return;
+    if (!state.channel || !state.server || state.sessionInvalidated || state.sessionUnavailable) return;
     const previousScroll = preserveScroll ? $('messageScroll').scrollTop : 0;
     const restoreCount = preserveScroll ? Math.max(state.loaded, 1) : 100;
     const anchor = preserveScroll ? captureScrollAnchor() : null;
+    const keepDisplayed = reset && state.displayedChannel?.session === state.session &&
+      state.displayedChannel.serverId === state.server.id && state.displayedChannel.channelId === state.channel.id;
     if (reset) {
-      cancelMessages();
-      if (!preserveScroll) $('messageScroll').scrollTop = 0;
+      if (keepDisplayed) {
+        state.revision += 1;
+        state.request?.abort();
+        clearTimeout(state.searching);
+      } else {
+        cancelMessages();
+        if (!preserveScroll) $('messageScroll').scrollTop = 0;
+      }
     }
     state.request?.abort();
     state.request = new AbortController();
     const revision = state.revision;
     const controller = state.request;
-    const params = new URLSearchParams({ servidor_id: state.server.id, offset: String(state.offset), limit: '100' });
+    const startOffset = reset ? 0 : state.offset;
+    const params = new URLSearchParams({ servidor_id: state.server.id, offset: String(startOffset), limit: '100' });
     if (state.query) params.set('q', state.query);
     if (state.trashMode) params.set('excluidos', 'true');
     $('loadMore').disabled = true;
@@ -800,7 +872,7 @@
       const messages = [];
       let data;
       do {
-        params.set('offset', String(state.offset + messages.length));
+        params.set('offset', String(startOffset + messages.length));
         params.set('limit', String(preserveScroll ? Math.min(200, Math.max(1, restoreCount - messages.length)) : 100));
         data = await request('/canais/' + encodeURIComponent(channelId) + '/mensagens?' + params, { signal: controller.signal });
         if (revision !== state.revision) return;
@@ -808,6 +880,15 @@
         messages.push(...batch);
         if (!preserveScroll || !data.has_more || !batch.length) break;
       } while (messages.length < restoreCount);
+      if (keepDisplayed) {
+        clearMedia();
+        state.loaded = 0;
+        state.offset = 0;
+        state.total = 0;
+        state.lastDay = null;
+        $('messages').replaceChildren();
+        if (!preserveScroll) $('messageScroll').scrollTop = 0;
+      }
       const fragment = document.createDocumentFragment();
       for (const message of messages) {
         const divider = dateDivider(message.timestamp);
@@ -817,6 +898,8 @@
       $('messages').appendChild(fragment);
       state.loaded += messages.length;
       state.offset += messages.length;
+      state.displayedChannel = { session: state.session, serverId: state.server.id, channelId: state.channel.id };
+      state.messageRetry = null;
       state.total = Number(data.total) || 0;
       state.totalActive = Number.isFinite(data.total_ativos) ? data.total_ativos : Number(state.channel.message_count) || 0;
       state.totalDeleted = Number.isFinite(data.total_excluidos) ? data.total_excluidos : Number(state.channel.deleted_message_count) || 0;
@@ -836,6 +919,7 @@
     } catch (error) {
       if (error.name === 'AbortError' || revision !== state.revision) return;
       $('timelineStatus').textContent = 'Não foi possível carregar as mensagens.';
+      state.messageRetry = { reset, preserveScroll };
       $('loadMore').hidden = false;
       $('loadMore').disabled = false;
       $('loadMore').textContent = 'Tentar novamente';
@@ -1341,12 +1425,12 @@
     state.session = captureSession();
     const checkIdentity = () => { try { ensureSession(); return true; } catch (_error) { return false; } };
     window.addEventListener('storage', event => { if (!event.key || ['access_token', 'user_data', 'permissions'].includes(event.key)) checkIdentity(); });
-    const focusSync = () => { if (checkIdentity() && state.archiveReady) synchronizeSharing(); };
+    const focusSync = () => { if (checkIdentity() && state.archiveReady && !state.sessionUnavailable) synchronizeSharing(); };
     window.addEventListener('focus', focusSync);
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') focusSync(); });
     if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     for (const id of ['railImport', 'sidebarImport', 'emptyImport', 'detailImport', 'footerImport']) $(id).addEventListener('click', openImport);
-    $('reauthenticateCofre').addEventListener('click', () => { if (state.authRequired) encerrarSessao(); });
+    $('reauthenticateCofre').addEventListener('click', retryReadOnly);
     $('closeMedia').addEventListener('click', () => $('mediaDialog').close());
     $('closeImport').addEventListener('click', closeImport);
     $('cancelImport').addEventListener('click', closeImport);
@@ -1363,7 +1447,7 @@
     $('closeChannels').addEventListener('click', () => { setChannelsOpen(false); $('openChannels').focus(); });
     $('sidebarScrim').addEventListener('click', () => setChannelsOpen(false));
     $('refreshMessages').addEventListener('click', refreshArchive);
-    $('syncSharing').addEventListener('click', () => synchronizeSharing({ manual: true }));
+    $('syncSharing').addEventListener('click', () => state.sessionUnavailable ? retryReadOnly() : synchronizeSharing({ manual: true }));
     $('publishSharing').addEventListener('click', openPublishSharing);
     $('confirmPublishSharing').addEventListener('click', publishSharing);
     $('syncBeforePublish').addEventListener('click', () => { if (!state.publishing) { $('publishSharingDialog').close(); synchronizeSharing({ manual: true }); } });
@@ -1375,7 +1459,7 @@
       updateChannelHeading();
       loadMessages(true);
     });
-    $('loadMore').addEventListener('click', () => loadMessages(false));
+    $('loadMore').addEventListener('click', () => loadMessages(state.messageRetry?.reset || false, state.messageRetry?.preserveScroll || false));
     $('searchForm').addEventListener('submit', (event) => { event.preventDefault(); applySearch(); });
     $('messageSearch').addEventListener('input', () => {
       clearTimeout(state.searching);
@@ -1392,12 +1476,12 @@
     });
     window.addEventListener('pagehide', () => { state.request?.abort(); clearMedia(); });
     await synchronizeSharing({ initial: true, reload: false });
-    if (state.sessionInvalidated) return;
+    if (state.sessionInvalidated || state.sessionUnavailable) return;
     state.accessReady = true;
     renderSharing();
     try { await loadServers(); state.archiveReady = true; }
-    catch (error) { if (!state.sessionInvalidated) { notice(error.message, true); $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; } }
+    catch (error) { if (!state.sessionInvalidated && !state.sessionUnavailable) { notice(error.message, true); $('emptyTitle').textContent = 'Informações indisponíveis no momento'; $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; } }
   }
 
-  init().catch(() => { notice('Não foi possível iniciar o Cofre de Informações. Atualize a página ou entre novamente.', true); });
+  init().catch(() => { notice('Não foi possível iniciar o Cofre de Informações. Atualize a página para tentar novamente.', true); });
 })();

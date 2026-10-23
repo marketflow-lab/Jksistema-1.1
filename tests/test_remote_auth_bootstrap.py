@@ -185,6 +185,8 @@ def test_python_bat_bootstrap_negotiates_real_capability_and_binds_login_without
     monkeypatch.setattr(requests.Session, "request", forbidden)
     monkeypatch.setenv("JK_COFRE_ISSUER_EMAIL", issuer)
     monkeypatch.setattr(cofre_auth, "_SESSIONS", {})
+    monkeypatch.setattr(cofre_auth, "_STORE", SimpleNamespace(load=lambda *_: None,
+        save=lambda *_: None, delete=lambda *_: None, revoke_identity=lambda *_: None))
     monkeypatch.setattr(cofre_auth, "_KEYS", {issuer: (now + 3600, {"fixture-key": private.public_key()})})
     monkeypatch.setattr(auth, "attempt_remote_login", lambda **kwargs: remote_auth_client.attempt_remote_login(
         **kwargs, environ=environment, session=Transport(), verifier=verify, now=now))
