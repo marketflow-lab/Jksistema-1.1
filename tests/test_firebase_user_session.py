@@ -1,14 +1,18 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context
+import json
 from threading import Barrier
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from google.api_core.exceptions import Forbidden
+from google.api_core.exceptions import Forbidden, NotFound, ServiceUnavailable, TooManyRequests, Unauthorized
 from google.auth.exceptions import RefreshError
-from google.auth.credentials import AnonymousCredentials
+from google.auth.credentials import AnonymousCredentials, Credentials
 from requests import Response
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ChunkedEncodingError, ConnectionError as RequestsConnectionError
+from urllib3.exceptions import ProtocolError, ReadTimeoutError
 from google.cloud.firestore_v1.services.firestore.transports.rest import FirestoreRestTransport
 
 from backend.services import firebase_user_session as service
@@ -344,3 +348,241 @@ def test_real_rest_sdk_query_accepts_json_whitespace_after_array(monkeypatch, pa
     documents = list(db.collection("items").stream(timeout=8, retry=None))
     assert [(document.id, document.to_dict()) for document in documents] == [("one", {"label": "line  one"})]
     assert request.call_count == 1
+
+
+class SyntheticRestCredentials(Credentials):
+    def __init__(self):
+        super().__init__()
+        self.token = "synthetic-before-refresh"
+        self.refreshes = 0
+
+    def refresh(self, request):
+        self.refreshes += 1
+        self.token = "synthetic-after-refresh"
+
+
+def rest_response(status, payload):
+    response = Response()
+    response.status_code = status
+    response.headers["Content-Type"] = "application/json; charset=UTF-8"
+    response.encoding = "utf-8"
+    response._content = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    response._content_consumed = True
+    return response
+
+
+@pytest.fixture
+def rest_sdk(monkeypatch):
+    monkeypatch.delenv("FIRESTORE_EMULATOR_HOST", raising=False)
+    clients = []
+
+    def create(responses):
+        credentials = SyntheticRestCredentials()
+        db = service.UserFirestoreClient(project="project-safe", credentials=credentials)
+        session = db._firestore_api.transport._session
+        sent = []
+
+        class FixtureAdapter(HTTPAdapter):
+            def send(self, request, **kwargs):
+                assert len(sent) < len(responses), "Unexpected extra Firestore request"
+                response = responses[len(sent)]
+                response.request = request
+                sent.append(response)
+                return response
+
+        session.mount("https://firestore.googleapis.com/", FixtureAdapter())
+        clients.append(db)
+        return SimpleNamespace(db=db, session=session, credentials=credentials, sent=sent)
+
+    yield create
+    for db in clients:
+        db.close()
+
+
+@pytest.mark.parametrize("status,code,error_type,mapped", [
+    (401, "UNAUTHENTICATED", Unauthorized, "session_expired"),
+    (403, "PERMISSION_DENIED", Forbidden, "session_expired"),
+    (404, "NOT_FOUND", NotFound, "session_expired"),
+    (429, "RESOURCE_EXHAUSTED", TooManyRequests, "connection_failed"),
+    (503, "UNAVAILABLE", ServiceUnavailable, "connection_failed"),
+])
+@pytest.mark.parametrize("envelope", ["object", "array"])
+def test_real_rest_error_keeps_http_classification_and_session_policy(rest_sdk, status, code, error_type, mapped, envelope):
+    error = {"error": {"code": status, "status": code, "message": "Synthetic error"}}
+    response = rest_response(status, [error] if envelope == "array" else error)
+    original_body, original_headers = response.content, dict(response.headers)
+    sdk = rest_sdk([response])
+    # Test the terminal HTTP error directly; refresh behavior is exercised below.
+    sdk.session._max_refresh_attempts = 0
+
+    with pytest.raises(error_type) as raised:
+        sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert raised.value.code == status
+    assert len(sdk.sent) == 1
+    assert sdk.credentials.refreshes == 0
+    assert response.status_code == status
+    assert response.content == original_body
+    assert dict(response.headers) == original_headers
+    session = service.FirebaseUserSession(IDENTITY)
+    session._record_failure(raised.value)
+    assert session._code == mapped
+    assert session.status()["ready"] is False
+
+
+def test_real_rest_401_array_keeps_normal_refresh_before_success(rest_sdk):
+    unauthorized = rest_response(401, [{"error": {
+        "code": 401, "status": "UNAUTHENTICATED", "message": "Synthetic expired ID token",
+    }}])
+    success = rest_response(200, [{"found": {
+        "name": "projects/project-safe/databases/(default)/documents/items/one",
+        "fields": {"label": {"stringValue": "line  one"}},
+    }}])
+    sdk = rest_sdk([unauthorized, success])
+
+    snapshot = sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert snapshot.exists
+    assert snapshot.to_dict() == {"label": "line  one"}
+    assert sdk.credentials.refreshes == 1
+    assert len(sdk.sent) == 2
+    assert unauthorized.status_code == 401
+    assert success.status_code == 200
+
+
+def test_repeated_rest_401_arrays_reject_after_bounded_refresh(rest_sdk):
+    responses = [rest_response(401, [{"error": {
+        "code": 401, "status": "UNAUTHENTICATED", "message": "Synthetic rejected ID token",
+    }}]) for _ in range(3)]
+    sdk = rest_sdk(responses)
+
+    with pytest.raises(Unauthorized):
+        sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert sdk.credentials.refreshes == 2
+    assert len(sdk.sent) == 3
+
+
+def broken_rest_body(kind):
+    response = Response()
+    response.status_code = 401
+    response.headers["Content-Type"] = "application/json; charset=UTF-8"
+    response.encoding = "utf-8"
+
+    class BrokenRaw:
+        def stream(self, *args, **kwargs):
+            yield b"[{"
+            if kind == "chunked":
+                raise ProtocolError("Synthetic truncated error body")
+            raise ReadTimeoutError(None, None, "Synthetic error body timeout")
+
+        def close(self):
+            pass
+
+        def release_conn(self):
+            pass
+
+    response.raw = BrokenRaw()
+    return response
+
+
+@pytest.mark.parametrize("kind", ["chunked", "timeout"])
+def test_rest_401_body_transport_failure_still_allows_refresh_then_success(rest_sdk, kind):
+    failed_body = broken_rest_body(kind)
+    success = rest_response(200, [{"found": {
+        "name": "projects/project-safe/databases/(default)/documents/items/one",
+        "fields": {"ok": {"booleanValue": True}},
+    }}])
+    sdk = rest_sdk([failed_body, success])
+
+    snapshot = sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert snapshot.to_dict() == {"ok": True}
+    assert sdk.credentials.refreshes == 1
+    assert len(sdk.sent) == 2
+    assert failed_body.status_code == 401
+
+
+@pytest.mark.parametrize("kind,error_type", [
+    ("chunked", ChunkedEncodingError), ("timeout", RequestsConnectionError),
+])
+def test_repeated_rest_401_body_failure_stops_after_bounded_refresh(rest_sdk, kind, error_type):
+    sdk = rest_sdk([broken_rest_body(kind) for _ in range(3)])
+
+    with pytest.raises(error_type):
+        sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert sdk.credentials.refreshes == 2
+    assert len(sdk.sent) == 3
+
+
+def test_rest_error_hook_does_not_swallow_programming_errors(rest_sdk):
+    response = rest_response(401, {})
+    response.json = Mock(side_effect=TypeError("Synthetic programming error"))
+    sdk = rest_sdk([response])
+
+    with pytest.raises(TypeError, match="Synthetic programming error"):
+        sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert sdk.credentials.refreshes == 0
+    assert len(sdk.sent) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    [],
+    [{"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "one"}},
+     {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "two"}}],
+    [{"error": {"code": 401, "status": "UNAUTHENTICATED", "message": "Mismatched HTTP"}}],
+    [{"error": {"code": True, "status": "PERMISSION_DENIED", "message": "Invalid code"}}],
+    [{"error": {"code": 403, "status": "PERMISSION_DENIED", "message": {"unexpected": "object"}}}],
+    [{"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Invalid details", "details": ["invalid"]}}],
+    [{"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "Unexpected envelope"}, "other": 1}],
+    b"not JSON",
+])
+def test_malformed_rest_error_is_not_unwrapped_and_never_grants_access(rest_sdk, payload):
+    response = rest_response(403, payload)
+    original_body = response.content
+    sdk = rest_sdk([response])
+
+    with pytest.raises((Forbidden, AttributeError)) as raised:
+        sdk.db.collection("items").document("one").get(timeout=8, retry=None)
+
+    assert len(sdk.sent) == 1
+    assert sdk.credentials.refreshes == 0
+    assert response.content == original_body
+    if not isinstance(payload, bytes):
+        assert response.json() == payload
+    session = service.FirebaseUserSession(IDENTITY)
+    session._record_failure(raised.value)
+    assert session.status()["ready"] is False
+
+
+@pytest.mark.parametrize("operation", ["get", "missing", "query", "aggregate"])
+@pytest.mark.parametrize("padding", ["", " \r\n\t"])
+def test_real_rest_success_streams_are_unchanged_with_error_hook(rest_sdk, operation, padding):
+    document = {"name": "projects/project-safe/databases/(default)/documents/items/one",
+                "fields": {"label": {"stringValue": "line  one"}}}
+    payloads = {
+        "get": [{"found": document}],
+        "missing": [{"missing": document["name"]}],
+        "query": [{"document": document}],
+        "aggregate": [{"result": {"aggregateFields": {"count": {"integerValue": "3"}}}}],
+    }
+    body = (padding + json.dumps(payloads[operation]) + padding).encode()
+    response = rest_response(200, body)
+    sdk = rest_sdk([response])
+
+    if operation == "get":
+        assert sdk.db.collection("items").document("one").get(timeout=8, retry=None).to_dict() == {"label": "line  one"}
+    elif operation == "missing":
+        assert not sdk.db.collection("items").document("one").get(timeout=8, retry=None).exists
+    elif operation == "query":
+        assert [item.to_dict() for item in sdk.db.collection("items").stream(timeout=8, retry=None)] == [{"label": "line  one"}]
+    else:
+        result = sdk.db.collection("items").count(alias="count").get(timeout=8, retry=None)
+        assert result[0][0].value == 3
+    assert response.content == body
+    assert response.status_code == 200
+    assert response.json() == payloads[operation]
+    assert sdk.credentials.refreshes == 0
+    assert len(sdk.sent) == 1
