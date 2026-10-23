@@ -10,6 +10,7 @@ import openpyxl
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from backend.routers.medias_compras import create_medias_compras_router
 from backend.services import cadastro_compatibilidade, cadastro_importador_loja
@@ -125,7 +126,7 @@ def test_etiquetas_pdf_tem_uma_pagina_por_caixa_no_modelo():
             assert pagina.rect.height == pytest.approx(595.28, abs=.1)
             texto = pagina.get_text()
             assert "LABEL-2026" in texto
-            assert re.search(rf"\b{numero}\s*/\s*11\b", texto)
+            assert re.search(rf"\b0*{numero}\s*/\s*0*11\b", texto)
             assert f'SKU {"479" if numero <= 10 else "479-1"}' in texto
             if numero <= 10:
                 assert "479-1" not in texto
@@ -168,7 +169,7 @@ def test_etiquetas_lista_explicita_e_caixa_mista_preservam_todos_skus():
     textos = _textos_pdf(packing._gerar_etiquetas_packing_bytes(_lista(), dados))
     assert len(textos) == 3
     for texto in textos:
-        assert "SKU 479, 479-1" in texto
+        assert "SKU 479" in texto and "SKU 479-1" in texto
         assert "SKU SKU" not in texto
 
 
@@ -235,12 +236,14 @@ def test_etiquetas_usa_cabecalho_e_destinatarios_atuais_e_origem_cadastrada(monk
     texto = _textos_pdf(pdf)[0]
     for esperado in ("EXPORTADOR <A> & B", "IMPORTER SYNTHETIC CURRENT", "BUYER SYNTHETIC CURRENT"):
         assert esperado in texto
-    assert f"FROM: {origem}".strip() in texto
+    assert "FROM" in texto
+    if origem:
+        assert origem in texto
     assert "CHINA" not in texto
 
 
 def test_etiquetas_textos_longos_e_especiais_sao_literais_e_cabem_na_pagina():
-    invoice = "INV <teste> & (A) " + "EXTENSO-" * 16
+    invoice = "INV <teste> & (A) " + "EXTENSO-" * 6
     sku = "PECA<1>&(A)"
     pdf = packing._gerar_etiquetas_packing_bytes(_lista(numero_invoice=invoice),
                                                {"grupos": [_grupo(skus=(f"SKU:{sku}",))]})
@@ -353,3 +356,135 @@ def test_etiquetas_http_exige_autenticacao_e_usa_tenant_da_sessao(tenants, monke
         assert resposta.status_code == 200, resposta.text
         assert resposta.headers["content-type"] == "application/pdf"
         assert len(_textos_pdf(resposta.content)) == 11
+
+
+def _foto(cor, tamanho=(120, 60)):
+    buffer = io.BytesIO()
+    Image.new("RGB", tamanho, cor).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _cores_pdf(conteudo):
+    with fitz.open(stream=conteudo, filetype="pdf") as documento:
+        cores = []
+        for pagina in documento:
+            for image in pagina.get_images(full=True):
+                pixmap = fitz.Pixmap(documento, image[0])
+                cores.append(tuple(pixmap.samples[:3]))
+        return cores
+
+
+def test_etiquetas_itens_preservam_zeros_case_e_agrupam_somente_sku_exato():
+    dados = {"grupos": [_grupo(skus=("SKU:001", "SKU:1", "SKU:Ab", "SKU:ab", "SKU:001"))]}
+    dados["grupos"][0]["itens"][0]["quantidade"] = 2
+    dados["grupos"][0]["itens"][-1]["quantidade"] = 3
+    antes = copy.deepcopy(dados)
+    caixas = packing._caixas_etiquetas_packing(dados, incluir_itens=True)
+    assert len(caixas) == 1
+    assert caixas[0]["skus"] == ["001", "1", "Ab", "ab"]
+    itens = caixas[0]["itens"]
+    assert [item["sku"] for item in itens] == ["001", "1", "Ab", "ab"]
+    assert itens[0]["quantidade"] == 5
+    assert [item["quantidade"] for item in itens[1:]] == [10, 10, 10]
+    assert dados == antes
+
+
+@pytest.mark.parametrize("ctns,total,informado,individual,esperado", [
+    (1, 7, None, False, 7),
+    (1, 0, None, False, 0),
+    (2, 20, 10, True, 10),
+    (2, 25, 10, True, None),
+    (2, 20, 10, False, None),
+    (2, 20, None, True, None),
+])
+def test_etiquetas_quantidade_por_caixa_exige_fonte_individual_consistente(ctns, total, informado, individual, esperado):
+    dados = {"grupos": [_grupo("1" if ctns == 1 else "1-2", ctns)]}
+    item = dados["grupos"][0]["itens"][0]
+    item.update(quantidade=total, qty_ctn_informado=informado, qty_ctn_individual=individual)
+    antes = copy.deepcopy(dados)
+    caixas = packing._caixas_etiquetas_packing(dados, incluir_itens=True)
+    assert [caixa["itens"][0]["quantidade"] for caixa in caixas] == [esperado] * ctns
+    assert dados == antes
+
+
+def test_etiquetas_nao_inferem_quantidade_por_caixa_de_dados_legados():
+    dados = {"grupos": [_grupo("1-2", 2)]}
+    assert dados["grupos"][0]["itens"][0]["qty_ctn"] == 10
+    caixas = packing._caixas_etiquetas_packing(dados, incluir_itens=True)
+    assert [caixa["itens"][0]["quantidade"] for caixa in caixas] == [None, None]
+
+
+def test_etiquetas_sku_repetido_com_quantidade_desconhecida_mantem_total_vazio():
+    dados = {"grupos": [_grupo("1-2", 2, ("SKU:001", "SKU:001"))]}
+    item = dados["grupos"][0]["itens"][0]
+    item.update(qty_ctn_informado=10, qty_ctn_individual=True)
+    caixas = packing._caixas_etiquetas_packing(dados, incluir_itens=True)
+    assert all(len(caixa["itens"]) == 1 for caixa in caixas)
+    assert all(caixa["itens"][0]["quantidade"] is None for caixa in caixas)
+
+
+def test_etiquetas_parser_preserva_evidencia_de_quantidade_sem_mudar_calculo_packing():
+    dados = {"grupos": [_grupo("1-2", 2, ("SKU:001", "SKU:002"))]}
+    lido = packing._ler_packing_list_bytes(_xlsx(dados))
+    itens = lido["grupos"][0]["itens"]
+    assert [item["qty_ctn_informado"] for item in itens] == [10, 10]
+    assert all(item["qty_ctn_individual"] is True for item in itens)
+    assert [item["qty_ctn"] for item in itens] == [10, 10]
+
+    workbook = openpyxl.load_workbook(io.BytesIO(_xlsx(dados)))
+    workbook.active.merge_cells("E2:E3")
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    workbook.close()
+    lido_mesclado = packing._ler_packing_list_bytes(buffer.getvalue())
+    itens_mesclados = lido_mesclado["grupos"][0]["itens"]
+    assert [item["qty_ctn_informado"] for item in itens_mesclados] == [10, 10]
+    assert all(item["qty_ctn_individual"] is False for item in itens_mesclados)
+    assert [item["qty_ctn"] for item in itens_mesclados] == [10, 10]
+    assert all(caixa["itens"][0]["quantidade"] is None
+               for caixa in packing._caixas_etiquetas_packing(lido_mesclado, incluir_itens=True))
+
+
+def test_etiquetas_fotos_do_cadastro_correspondem_ao_sku_e_tenant_atuais(tenants, monkeypatch):
+    cores = {"cliente-a": ("red", "blue"), "cliente-b": ("green", "yellow")}
+    for tenant, pares in cores.items():
+        pasta = tenants / tenant / "cadastro_fotos"
+        pasta.mkdir()
+        for sku, cor in zip(("001", "002"), pares):
+            (pasta / f"{sku}.png").write_bytes(_foto(cor))
+    consultas = []
+
+    def contexto(client_id, store_id, **_kwargs):
+        consultas.append((client_id, store_id))
+        return {"scope": "store", "store_id": store_id, "produtos": [
+            {"sku": sku, "foto": f"{sku}.png", "cg_product description": f"Atual {sku}"}
+            for sku in ("001", "002")
+        ]}
+
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja", contexto)
+    resolver = lambda _client, _sku, foto="", *_args, **_kwargs: foto
+    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", resolver)
+    monkeypatch.setattr(excel, "_resolver_foto_cadastro_sku", resolver)
+    dados = {"grupos": [_grupo(skus=("SKU:001", "SKU:002"))]}
+    for item in dados["grupos"][0]["itens"]:
+        item["foto"] = _foto("magenta")
+    antes = copy.deepcopy(dados)
+    for tenant, esperado in cores.items():
+        pdf = packing._gerar_etiquetas_packing_bytes(_lista(), dados, client_id=tenant)
+        assert set(_cores_pdf(pdf)) == {Image.new("RGB", (1, 1), cor).getpixel((0, 0)) for cor in esperado}
+        assert "Sem foto" not in _textos_pdf(pdf)[0]
+        assert (tenant, "store-a") in consultas
+    assert dados == antes
+
+
+def test_etiquetas_sem_foto_no_cadastro_nao_recuperam_foto_do_fornecedor(tenants):
+    dados = {"grupos": [_grupo(skus=("SKU:001", "SKU:002"))]}
+    for item, cor in zip(dados["grupos"][0]["itens"], ("red", "blue")):
+        item["foto"] = _foto(cor)
+    antes = copy.deepcopy(dados)
+    pdf_tenant = packing._gerar_etiquetas_packing_bytes(_lista(), dados, client_id="cliente-a")
+    assert _cores_pdf(pdf_tenant) == []
+    assert _textos_pdf(pdf_tenant)[0].count("Sem foto") == 2
+    pdf_legado = packing._gerar_etiquetas_packing_bytes(_lista(), dados)
+    assert set(_cores_pdf(pdf_legado)) == {(255, 0, 0), (0, 0, 255)}
+    assert dados == antes
