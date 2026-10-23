@@ -6,7 +6,7 @@ const ROOT = '/api/pesquisa-mercado/jobs';
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
-const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath } = require('./pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath, neutralCategoryPage } = require('./pesquisa-mercado-category-navigation');
 const { discoverCategoryRoute } = require('./pesquisa-mercado-category-discovery');
 const { scopeCategoryItems, validateCategoryItemScope, categoryItemScopeUrlAllowed } = require('./pesquisa-mercado-category-item-scope');
 const CATEGORY_FAILURES = Object.freeze({
@@ -1038,7 +1038,19 @@ class PesquisaMercadoRunner {
             if (children.length) return { url: category.url, categories: children, hasChildren: true };
             let url = '';
             const readRoute = async (route, strict = false) => {
-                try { return await this.read(route, strict ? 'category-transport' : 'category', strict ? category.key : ''); }
+                try {
+                    const page = await this.read(route, strict ? 'category-transport' : 'category', strict ? category.key : '');
+                    const renamedCategoryBase = page.categoryDocumentIdentity && !page.categoryIdentityConflict
+                        && page.effectiveCategoryId === category.key && page.categoryContext?.key === category.key
+                        && neutralCategoryPage(page.categoryContext.baseUrl, page.url);
+                    if (!neutralCategoryPage(route, page.url) && !renamedCategoryBase) {
+                        const error = new CategoryNavigationError('category_scope_mismatch', category.key);
+                        error.categoryScopeMismatch = true;
+                        error.categoryPage = page;
+                        throw error;
+                    }
+                    return page;
+                }
                 catch (error) {
                     if (error.categoryScopeMismatch || error.code === 'category_load_timeout') {
                         const scoped = await this.tryCategoryItemScope(category, error.categoryPage, route);
@@ -1082,9 +1094,11 @@ class PesquisaMercadoRunner {
         const next = canonicalUrl(current.nextUrl);
         if (next) {
             if (itemScope) return this.readScopedCategoryPage(next, itemScope);
-            if (transportCategoryId) return this.read(next, 'category-transport', transportCategoryId);
-            this.assertCategoryDestination(current.url, next);
-            return this.read(next);
+            if ((transportCategoryId || this.officialCategoryId()) && !neutralCategoryPage(current.url, next)) throw new CategoryNavigationError('category_scope_mismatch');
+            if (!transportCategoryId) this.assertCategoryDestination(current.url, next);
+            const page = await this.read(next, transportCategoryId ? 'category-transport' : 'category', transportCategoryId);
+            if ((transportCategoryId || this.officialCategoryId()) && !neutralCategoryPage(current.url, page.url)) throw new CategoryNavigationError('category_scope_mismatch');
+            return page;
         }
         if (!current.hasNext) return null;
         if (typeof this.scripts.nextCategoryPageScript !== 'function') throw new Error('Controle de paginacao indisponivel.');
@@ -1107,6 +1121,13 @@ class PesquisaMercadoRunner {
                 await this.wait(450);
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 this.check();
+                const navigationStatus = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
+                if (navigationStatus && [403, 429].includes(navigationStatus.statusCode)
+                    && canonicalUrl(navigationStatus.url) === canonicalUrl(page.url || this.browser.getURL())) {
+                    const error = new CategoryNavigationError('category_access_denied', itemScope ? itemScope.transportCategoryId : transportCategoryId || this.officialCategoryId());
+                    error.sharedCategoryFailure = true;
+                    throw error;
+                }
                 if (page.authRequired || page.avantAuthRequired) {
                     if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
                         reason: page.authRequired ? 'ml_login_required' : 'avant_login_required' };
@@ -1115,6 +1136,8 @@ class PesquisaMercadoRunner {
                 }
                 const ready = canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty);
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
+                if (ready && !loading && !itemScope && (transportCategoryId || this.officialCategoryId())
+                    && !neutralCategoryPage(current.url, page.url)) throw new CategoryNavigationError('category_scope_mismatch');
                 if (itemScope && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== itemScope.transportCategoryId)) continue;
                 if (transportCategoryId && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== transportCategoryId)) continue;
                 if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) {

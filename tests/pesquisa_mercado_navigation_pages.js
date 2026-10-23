@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert/strict');
 const { normalizeCategory, PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
-const { OfficialCategoryNavigation, officialCategoryMoreUrl, categoryBasePath } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, officialCategoryMoreUrl, categoryBasePath, neutralCategoryPage } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
 const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({ key, nome, url });
 const navigation = options => new OfficialCategoryNavigation({ ancestry: [], children: {}, normalize: normalizeCategory,
     read: async () => { throw new Error('Unexpected navigation'); }, ...options });
@@ -9,6 +9,13 @@ const cycling = 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/';
 const parent = cycling + 'pecas/*_NoIndex_True';
 const expected = node('MLB122156', 'Coroas');
 const href = cycling + 'pecas/coroas/_NoIndex_True';
+for (const suffix of ['', '*', '*_NoIndex_True', '*_Desde_49_NoIndex_True', '_NoIndex_True_Desde_49']) {
+    assert(neutralCategoryPage(cycling + 'pecas/coroas/', cycling + 'pecas/coroas/' + suffix));
+}
+for (const suffix of ['keyword_NoIndex_True', '*_Desde_49_NoIndex_True?q=coroa', '*_NoIndex_True_NoIndex_True', '../outra/', '*_OrderId_PRICE']) {
+    assert.equal(neutralCategoryPage(cycling + 'pecas/coroas/', cycling + 'pecas/coroas/' + suffix), false, suffix);
+}
+assert(neutralCategoryPage(cycling + 'pecas/coroas/*_Desde_49_NoIndex_True', cycling + 'pecas/coroas/*_Desde_97_NoIndex_True'));
 const nav = navigation();
 const identified = node(expected.key, 'Coroas de transmissao', href);
 assert.equal(nav.route(identified, expected, parent)?.url, href, 'a matching official category ID survives a renamed public label');
@@ -188,6 +195,21 @@ async function observedMissingRoutesStayCandidates() {
     discovered.runner.discoverOfficialCategoryRoute = async () => ({ ...elastomer, url: bareUrl });
     await assert.rejects(discovered.runner.readCategory(elastomer), error => error.code === 'category_load_timeout',
         'a newly discovered bare route must also prove its document category before returning seeds');
+
+    const keywordUrl = bareUrl + 'only-a-keyword_NoIndex_True';
+    for (const discoveredRoute of [false, true]) {
+        const redirected = runnerFixture({ [bareUrl]: { url: keywordUrl, anuncios: [{ id: 'subset' }],
+            categoryDocumentIdentity: true, effectiveCategoryId: elastomer.key,
+            categoryContext: { key: elastomer.key, baseUrl: bareUrl } } }, elastomer);
+        redirected.runner.checkpoint.officialTaxonomy.ancestry = [parts, elastomer];
+        redirected.runner.officialCategoryUrl = async () => {
+            if (discoveredRoute) throw Object.assign(new Error('Missing link'), { code: 'category_link_missing' });
+            return bareUrl;
+        };
+        redirected.runner.discoverOfficialCategoryRoute = async () => ({ ...elastomer, url: bareUrl });
+        await assert.rejects(redirected.runner.readCategory(elastomer), error => error.code === 'category_scope_mismatch',
+            'a matching category ID cannot turn a keyword redirect into a complete official category');
+    }
 }
 
 (async () => {

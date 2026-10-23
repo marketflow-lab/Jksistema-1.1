@@ -238,7 +238,7 @@ async function testResumableProductionNavigation() {
     const subset = fallbackFixture({ keywordFinal: true });
     const subsetSummary = await subset.audit.run();
     assert.equal(subsetSummary.verifiedDocumentNodes, 0, 'exact category IDs on a keyword subset cannot confirm the complete leaf document');
-    assert.equal(subsetSummary.failureCodes.discovered_document_unconfirmed, 2);
+    assert.equal(subsetSummary.failureCodes.category_scope_mismatch, 2, 'the production runner rejects a keyword redirect before audit confirmation');
     assert.equal(subset.audit.evidence().observations.length, 0, 'unconfirmed final discovery pages remain quarantined from the live evidence manifest');
     const queryRoute = fallbackFixture({ invalidReturnedQuery: true });
     const querySummary = await queryRoute.audit.run();

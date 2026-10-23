@@ -33,6 +33,30 @@ function categoryBasePath(pathname) {
     return pathname.replace(/(?:\/)?\*?_NoIndex_True\/?$/i, '').replace(/\/?\*\/?$/, '').replace(/\/+$/, '') || '/';
 }
 
+// The same category ID can also appear in a keyword subset. Only neutral
+// listing/pagination suffixes may change when an official category is opened.
+function neutralCategoryPage(expected, actual) {
+    const base = value => {
+        try {
+            const url = new URL(value);
+            if (url.protocol !== 'https:' || url.username || url.password || url.port && url.port !== '443'
+                || !/(^|\.)mercadolivre\.com\.br$/i.test(url.hostname) || url.hash) return null;
+            const query = [...url.searchParams];
+            if (query.length && !(query.length === 1 && query[0][0] === 'original_category_landing' && query[0][1] === 'true')) return null;
+            let path = url.pathname.replace(/\/+$/, '');
+            const suffix = path.match(/\/?\*?(?:_Desde_[1-9]\d{0,8}|_NoIndex_True){1,2}$/);
+            if (suffix) {
+                const tokens = suffix[0].match(/_Desde_[1-9]\d{0,8}|_NoIndex_True/g);
+                if (new Set(tokens.map(token => token.startsWith('_Desde_') ? 'page' : 'noindex')).size !== tokens.length) return null;
+                path = path.slice(0, suffix.index);
+            } else if (path.endsWith('/*')) path = path.slice(0, -2);
+            return url.origin + path.replace(/\/+$/, '');
+        } catch (_error) { return null; }
+    };
+    const source = base(expected), destination = base(actual);
+    return !!source && source === destination;
+}
+
 function officialCategoryMoreUrl(value, currentParentUrl) {
     try {
         const parent = new URL(currentParentUrl), more = new URL(value);
@@ -177,4 +201,4 @@ class OfficialCategoryNavigation {
 }
 
 module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label,
-    categoryBasePath, officialCategoryMoreUrl };
+    categoryBasePath, officialCategoryMoreUrl, neutralCategoryPage };

@@ -490,7 +490,8 @@ async function officialTaxonomyScope() {
     const tree={MLB100:[branch], MLB101:[leaf], MLB102:[], MLB200:[]};
     const native='https://lista.mercadolivre.com.br/pecas/filtros/';
     const attach = h => { let loads=0; h.runner.taxonomy={load:async()=>{loads+=1;return {complete:true,updatedAt:'2026-10-06T10:00:00Z',get:key=>[root,branch,leaf,outside].find(c=>c.key===key),children:key=>copy(tree[key])};}}; return ()=>loads; };
-    const h=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,empty:true,categories:[outside],hasChildren:true}});
+    const h=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,categoryDocumentIdentity:true,
+        categoryContext:{key:leaf.key,baseUrl:native},empty:true,categories:[outside],hasChildren:true}});
     const loads=attach(h);
     await h.runner.start(root); await h.runner.task;
     assert.equal(loads(),1);
@@ -523,7 +524,8 @@ async function officialTaxonomyScope() {
     assert.equal(verifiedCategoryPage(leaf.url,'https://example.com/cat',leaf.key,leaf.key),false);
     // Resume uses the snapshot saved for this owner; a later refresh cannot
     // add an unrelated public node to the in-flight selection.
-    const resumed=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,empty:true}});
+    const resumed=harness({[leaf.url]:{url:native,effectiveCategoryId:leaf.key,categoryDocumentIdentity:true,
+        categoryContext:{key:leaf.key,baseUrl:native},empty:true}});
     resumed.restoreCheckpoint({...h.saved(),status:'paused',checkpoint:{...h.saved().checkpoint,categoryIndex:2,page:null}});
     resumed.runner.taxonomy={load:async()=>{throw new Error('changed taxonomy must not be loaded on resume');}};
     await resumed.runner.resume('run-1'); await resumed.runner.task;

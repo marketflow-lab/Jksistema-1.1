@@ -242,11 +242,44 @@ function resumedCheckpointCannotChangeTransport() {
     }
 }
 
+async function javascriptNextStopsOnAccessDenied() {
+    for (const statusCode of [403, 429]) {
+        const pages = defaultPages();
+        pages[parts].nextUrl = ''; pages[parts].hasNext = true; pages[parts].clickNext = page2;
+        pages[page2] = { url: page2, readyState: 'complete', anuncios: [], categoryDocumentIdentity: false };
+        const h = harness(pages); h.initDirect();
+        let blockedStatusReads = 0;
+        h.browser.getNavigationStatus = () => {
+            const blocked = h.browser.getURL() === page2;
+            if (blocked) blockedStatusReads += 1;
+            return { url: h.browser.getURL(), statusCode: blocked ? statusCode : 200 };
+        };
+        const first = scopeCategoryItems(pages[parts], { categoryKey: leaf.key, documentCategoryId: parent.key, categoryBaseUrl: leafUrl }, observedAncestry);
+        await assert.rejects(h.runner.nextCategoryPage(first), error => error.code === 'category_access_denied' && error.sharedCategoryFailure === true);
+        assert.equal(h.visits.filter(url => url === page2).length, 1, 'a blocked next document is not clicked or retried repeatedly');
+        assert.equal(blockedStatusReads, 1, 'access status is checked before waiting for document identity on a blocked page');
+        assert.deepEqual(h.snapshots, []);
+    }
+}
+
+async function hrefPaginationRejectsKeywordRedirect() {
+    const nextUrl = leafUrl + '_Desde_49_NoIndex_True';
+    const keyword = leafUrl + 'keyword_NoIndex_True';
+    const h = harness({ [nextUrl]: { url: keyword, readyState: 'complete', categoryDocumentIdentity: true,
+        effectiveCategoryId: leaf.key, categoryContext: { key: leaf.key, baseUrl: leafUrl }, anuncios: [item('MLB100001')] } });
+    h.initDirect();
+    await assert.rejects(h.runner.nextCategoryPage({ url: leafUrl, hasNext: true, nextUrl }), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(h.processed, []);
+    assert.deepEqual(h.snapshots, []);
+}
+
 (async () => {
     await nextPageRestoresScope();
     await persistEveryPageAndReopenedAlias();
     await javascriptNextPreservesItemScope();
     await boundedOpeningNeedsAnExactItem();
+    await javascriptNextStopsOnAccessDenied();
+    await hrefPaginationRejectsKeywordRedirect();
     resumedCheckpointCannotChangeTransport();
     console.log('Pesquisa de Mercado scoped navigation: seller restoration, unmatched pagination, safe URLs and all checkpoint paths OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });
