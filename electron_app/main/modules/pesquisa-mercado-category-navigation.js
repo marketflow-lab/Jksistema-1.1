@@ -22,6 +22,27 @@ function unsupportedCategoryAlias(value) {
     } catch (_error) { return false; }
 }
 
+function categoryBasePath(pathname) {
+    return pathname.replace(/(?:\/)?\*?_NoIndex_True\/?$/i, '').replace(/\/?\*\/?$/, '').replace(/\/+$/, '') || '/';
+}
+
+function officialCategoryMoreUrl(value, currentParentUrl) {
+    try {
+        const parent = new URL(currentParentUrl), more = new URL(value);
+        if (parent.protocol !== 'https:' || more.protocol !== 'https:' || more.origin !== parent.origin
+            || parent.username || parent.password || more.username || more.password || more.hash
+            || parent.port && parent.port !== '443' || !/(^|\.)mercadolivre\.com\.br$/i.test(more.hostname)) return '';
+        const query = [...more.searchParams.entries()];
+        if (query.length !== 1 || query[0][0] !== 'filter' || query[0][1] !== 'category') return '';
+        if (!/_FiltersAvailableSidebar\/?$/.test(more.pathname)) return '';
+        // Expansion belongs to this exact observed document, including its
+        // wildcard/NoIndex route. It must not become a guessed category URL.
+        const source = more.pathname.replace(/_FiltersAvailableSidebar\/?$/, '').replace(/\/+$/, '');
+        if (source !== parent.pathname.replace(/\/+$/, '')) return '';
+        return more.href;
+    } catch (_error) { return ''; }
+}
+
 // Routes come from the Category directory/filter links, never from a guessed
 // slug or a free-text search. Each coordinator owns its navigation cache.
 class OfficialCategoryNavigation {
@@ -46,28 +67,38 @@ class OfficialCategoryNavigation {
 
     route(raw, expected, parentUrl = '') {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-        const candidate = this.normalize({ key: raw.key, nome: raw.nome, url: raw.url });
-        if (!candidate || label(candidate.nome) !== label(expected.nome)
-            || ID.test(candidate.key) && candidate.key !== expected.key
+        let candidate = this.normalize({ key: raw.key, nome: raw.nome, url: raw.url });
+        const candidateId = candidate && ID.test(candidate.key.toUpperCase()) ? candidate.key.toUpperCase() : '';
+        if (!candidate || (candidateId ? candidateId !== expected.key : label(candidate.nome) !== label(expected.nome))
             || unsupportedCategoryAlias(candidate.url)) return null;
+        if (candidateId) candidate = { ...candidate, key: candidateId };
         const url = new URL(candidate.url);
-        if (url.search || /_(?:Desde|NoIndex|OrderId|PriceRange|SHIPPING|BRAND|ITEM_CONDITION|Container)_/i.test(url.pathname)) return null;
+        const categoryPath = url.pathname.replace(/(?:\/)?\*?_NoIndex_True\/?$/i, '');
+        if (url.search || /_(?:Desde|NoIndex|OrderId|PriceRange|SHIPPING|BRAND|ITEM_CONDITION|Container)_|_FiltersAvailableSidebar/i.test(categoryPath)
+            || /\$query/i.test(decodeURIComponent(url.pathname))) return null;
+        const ids = [...decodeURIComponent(url.pathname).matchAll(/_(?:CatId|CATEGORY)_(MLB\d+)(?=_|\/|$)/gi)].map(match => match[1].toUpperCase());
+        if (ids.some(id => id !== expected.key)) return null;
         if (parentUrl) {
             const parent = new URL(parentUrl);
             if (parent.hostname === 'lista.mercadolivre.com.br') {
-                const prefix = parent.pathname.replace(/\/+$/, '') + '/';
-                if (url.hostname !== parent.hostname || !url.pathname.startsWith(prefix)) return null;
+                const base = categoryBasePath(parent.pathname), prefix = base + '/';
+                if (url.hostname !== parent.hostname || !url.pathname.startsWith(prefix) || categoryBasePath(url.pathname) === base) return null;
             }
         }
         return candidate;
     }
 
     choose(raw, expected, parentUrl = '') {
-        const matches = new Map();
+        let matches = new Map();
+        const identified = new Map();
         for (const item of raw || []) {
             const candidate = this.route(item, expected, parentUrl);
-            if (candidate) matches.set(candidate.url, candidate);
+            if (candidate) {
+                matches.set(candidate.url, candidate);
+                if (candidate.key === expected.key && ID.test(candidate.key)) identified.set(candidate.url, candidate);
+            }
         }
+        if (identified.size) matches = identified;
         if (matches.size !== 1) {
             throw new CategoryNavigationError(matches.size ? 'category_link_ambiguous' : 'category_link_missing', expected.key);
         }
@@ -87,7 +118,7 @@ class OfficialCategoryNavigation {
             const groups = Array.isArray(page.categoryTree) ? page.categoryTree : [];
             try { selected = this.choose(groups, expected); }
             catch (error) { error.sharedCategoryFailure = true; throw error; }
-            const group = groups.find(item => item.url === selected.url && label(item.nome) === label(expected.nome));
+            const group = groups.find(item => item.url === selected.url && this.route(item, expected));
             if (group && Array.isArray(group.children) && group.children.length) this.links.set(key, group.children);
         } else {
             const parentUrl = await this.resolve(parentKey);
@@ -112,7 +143,21 @@ class OfficialCategoryNavigation {
                     throw error;
                 }
                 links = page.categories || [];
-                selected = this.choose(links, expected, parentUrl);
+                try { selected = this.choose(links, expected, parentUrl); }
+                catch (error) {
+                    if (error.code !== 'category_link_missing') throw error;
+                    const moreUrl = officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url || parentUrl);
+                    if (!moreUrl) throw error;
+                    let expanded;
+                    try { expanded = await this.read(moreUrl, 'category-options', parentKey, expected); }
+                    catch (expandedError) {
+                        if (!expandedError.navigationDependencyKey) expandedError.navigationDependencyKey = parentKey;
+                        if (['category_filters_unavailable', 'category_not_found'].includes(expandedError.code) || expandedError.categoryScopeMismatch) expandedError.sharedCategoryFailure = true;
+                        throw expandedError;
+                    }
+                    links = expanded.categories || [];
+                    selected = this.choose(links, expected, page.url || parentUrl);
+                }
                 this.links.set(parentKey, links);
             }
         }
@@ -121,4 +166,5 @@ class OfficialCategoryNavigation {
     }
 }
 
-module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label };
+module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label,
+    categoryBasePath, officialCategoryMoreUrl };

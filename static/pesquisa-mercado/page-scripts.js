@@ -73,7 +73,8 @@
         const url = absolute(location.href);
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
-        let categoryIdentityConflict = false, categoryDocumentIdentity = false;
+        let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
+        let categoryStructuredNavigation = null, categoryBrowse = null, categoryFilterMoreUrl = '';
         const effectiveCategoryId = (() => {
             if (isProduct(url) || currentListingIsSeller()) return '';
             const evidence = new Set(), documentEvidence = new Set();
@@ -106,6 +107,24 @@
                     initial && initial.search, initial && initial.pageState && initial.pageState.search,
                     props, props && props.initialState, props && props.initialState && props.initialState.pageState]) inspect(source);
             };
+            const assignedJson = (text, pattern) => {
+                if (text.length > 8 * 1024 * 1024) return null;
+                const match = text.match(pattern);
+                if (!match) return null;
+                const start = match.index + match[0].length;
+                if (text[start] !== '{') return null;
+                let depth = 0, quoted = false, escaped = false;
+                for (let index = start; index < text.length; index += 1) {
+                    const char = text[index];
+                    if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false; }
+                    else if (char === '"') quoted = true;
+                    else if (char === '{') depth += 1;
+                    else if (char === '}' && --depth === 0) {
+                        try { return JSON.parse(text.slice(start, index + 1)); } catch (_error) { return null; }
+                    }
+                }
+                return null;
+            };
             for (const script of nodes('script#__PRELOADED_STATE__, script#__NEXT_DATA__').slice(0, 12)) {
                 const text = script.textContent || '';
                 if (text.length > 8 * 1024 * 1024) continue;
@@ -115,22 +134,164 @@
             // literal; never execute script text or walk arbitrary nested data.
             for (const script of nodes('script:not([src])').slice(0, 40)) {
                 const text = script.textContent || '';
+                inspectDocumentState(assignedJson(text, /(?:window\.)?__PRELOADED_STATE__\s*=\s*/));
+            }
+            const nordicPageProps = [];
+            for (const script of nodes('script#__NORDIC_RENDERING_CTX__').slice(0, 4)) {
+                // Nordic appProps are serialized JSON followed by runtime code.
+                // Read only its initial literal and known pageProps path. Optional
+                // search_filters and trend/recommendation payloads are not applied filters.
+                const state = assignedJson(script.textContent || '', /^\s*_n\.ctx\.r\s*=\s*/);
+                if (state && state.appProps && typeof state.appProps === 'object' && !Array.isArray(state.appProps)) {
+                    inspectDocumentState({ props: state.appProps });
+                    if (state.appProps.pageProps && typeof state.appProps.pageProps === 'object') nordicPageProps.push(state.appProps.pageProps);
+                }
+            }
+            // Nordic's RSC transport is a JSON string carrying extended JSON.
+            // Undefined/NaN and opaque rendering references have no category
+            // authority. Keep them absent rather than execute or guess a decoder.
+            const rscParts = [];
+            let rscBytes = 0;
+            for (const script of nodes('script:not([src])').slice(0, 128)) {
+                const text = script.textContent || '';
                 if (text.length > 8 * 1024 * 1024) continue;
-                const match = text.match(/(?:window\.)?__PRELOADED_STATE__\s*=\s*/);
-                if (!match) continue;
-                const start = match.index + match[0].length;
-                if (text[start] !== '{') continue;
-                let depth = 0, quoted = false, escaped = false;
-                for (let index = start; index < text.length; index += 1) {
+                const match = text.match(/^\s*_n\.ctx\.s\["nr"\]\.q\(\s*/);
+                if (!match || text[match[0].length] !== '"') continue;
+                const start = match[0].length;
+                let escaped = false;
+                for (let end = start + 1; end < text.length; end += 1) {
+                    if (escaped) { escaped = false; continue; }
+                    if (text[end] === '\\') { escaped = true; continue; }
+                    if (text[end] !== '"') continue;
+                    try {
+                        const part = JSON.parse(text.slice(start, end + 1));
+                        if (typeof part === 'string' && rscBytes + part.length <= 8 * 1024 * 1024) { rscParts.push(part); rscBytes += part.length; }
+                    } catch (_error) {}
+                    break;
+                }
+            }
+            const extendedJson = text => {
+                let result = '', quoted = false, escaped = false, references = 0;
+                for (let index = 0; index < text.length; index += 1) {
                     const char = text[index];
-                    if (quoted) { if (escaped) escaped = false; else if (char === '\\') escaped = true; else if (char === '"') quoted = false; }
-                    else if (char === '"') quoted = true;
-                    else if (char === '{') depth += 1;
-                    else if (char === '}' && --depth === 0) {
-                        try { inspectDocumentState(JSON.parse(text.slice(start, index + 1))); } catch (_error) {}
-                        break;
+                    if (quoted) {
+                        result += char;
+                        if (escaped) escaped = false;
+                        else if (char === '\\') escaped = true;
+                        else if (char === '"') quoted = false;
+                    } else if (char === '"') { quoted = true; result += char; }
+                    else {
+                        const token = ['@', '$', 'N', 'u'].includes(char) && text.slice(index).match(/^(?:@[0-9]+|\$[0-9]+|NaN|u)(?=[\s,}\]]|$)/);
+                        if (token) {
+                            if (++references > 2048) return null;
+                            result += 'null'; index += token[0].length - 1;
+                        } else result += char;
                     }
                 }
+                try { return JSON.parse(result); } catch (_error) { return null; }
+            };
+            const coupledCategory = value => {
+                if (!value || typeof value !== 'object') return null;
+                const key = value.id === 'category' ? value.value : value.id || value.value;
+                if (typeof key !== 'string' || key.length > 500 || !/^MLB\d+$/.test(key)) return null;
+                const nome = clean(value.name || value.text), target = absolute(value.permalink || value.url);
+                if (!nome || nome.length > 400 || !target || target.length > 4000) return null;
+                const parsed = new URL(target);
+                if (parsed.search || parsed.username || parsed.password || parsed.port && parsed.port !== '443'
+                    || identity(target).id || identity(target).perfilUrl || isProduct(target)) return null;
+                return { key, nome, url: target };
+            };
+            if (document.querySelector('[class*="ui-category-trends"]')) for (const props of nordicPageProps) {
+                const initial = props.initialState;
+                if (!initial || typeof initial !== 'object' || !Array.isArray(initial.search_filters) || !Array.isArray(props.categories)) continue;
+                const selectedOptions = initial.search_filters.filter(value => value && value.id === 'category');
+                const emittedOptions = props.categories.filter(value => value && value.id === 'category');
+                if (selectedOptions.length !== 1 || emittedOptions.length !== 1) continue;
+                const option = selectedOptions[0];
+                const selected = coupledCategory({ ...option, id: option.value });
+                const searchTemplate = absolute(initial.search_filter && initial.search_filter.permalink);
+                const emittedTemplate = absolute(emittedOptions[0].permalink);
+                if (!selected || selected.url !== searchTemplate || !emittedTemplate) continue;
+                const search = new URL(searchTemplate), emitted = new URL(emittedTemplate);
+                if (!/\/\$query$/.test(search.pathname) || !/\/\$query_NoIndex_True$/.test(emitted.pathname)
+                    || emitted.search || emitted.username || emitted.password || emitted.port && emitted.port !== '443') continue;
+                const base = new URL(search.href); base.pathname = base.pathname.slice(0, -'$query'.length);
+                const emittedBase = emitted.pathname.slice(0, -'$query_NoIndex_True'.length);
+                if (emitted.origin !== base.origin || emittedBase !== base.pathname) continue;
+                const canonical = absolute(initial.canonical_info && initial.canonical_info.canonical);
+                const sameBase = target => {
+                    if (!target) return false;
+                    const parsed = new URL(target);
+                    return !parsed.search && parsed.origin === base.origin && parsed.pathname.replace(/\/+$/, '') === base.pathname.replace(/\/+$/, '');
+                };
+                if (!sameBase(url) || !sameBase(canonical) || !Array.isArray(initial.breadcrumb)) continue;
+                const breadcrumb = initial.breadcrumb.at(-1);
+                if (!breadcrumb || norm(breadcrumb.text) !== norm(selected.nome) || !sameBase(absolute(breadcrumb.url))) continue;
+                // This is an observed form template, not a category document.
+                // Retain its emitted NoIndex suffix and substitute only its
+                // explicit query placeholder; the runner must verify the next document.
+                categoryBrowse = { key: selected.key, nome: selected.nome, url: emitted.href.replace('$query', '*') };
+            }
+            for (const line of rscParts.join('').split('\n').slice(0, 2048)) {
+                if (!line.startsWith('0:')) continue;
+                const state = extendedJson(line.slice(2));
+                const optimized = state && state.optimizedResponse;
+                if (!optimized || typeof optimized !== 'object' || Array.isArray(optimized)) continue;
+                // Applied filters have a different meaning from search options.
+                inspect({ filters: optimized.filters });
+                const components = optimized.sidebar && Array.isArray(optimized.sidebar.components) ? optimized.sidebar.components : [];
+                const categories = [], breadcrumbs = [];
+                const appendAvailable = filters => {
+                    for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
+                        if (!filter || filter.id !== 'category') continue;
+                        for (const value of Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []) {
+                            const category = coupledCategory(value);
+                            if (category && !category.url.includes('$query')) categories.push(category);
+                        }
+                    }
+                };
+                appendAvailable(optimized.available_filters);
+                for (const component of components.slice(0, 128)) {
+                    if (!component || typeof component !== 'object') continue;
+                    if (component.type === 'APPLIED_FILTERS') inspect({ filters: component.filters });
+                    if (component.type === 'AVAILABLE_FILTERS') appendAvailable(component.filters);
+                    if (component.type === 'BREADCRUMB') {
+                        // label.text is the searched term, even when it happens
+                        // to equal the category name. Only the linked nodes can
+                        // establish a category breadcrumb.
+                        for (const node of Array.isArray(component.nodes) ? component.nodes.slice(0, 32) : []) {
+                            const target = absolute(node && node.url), nome = clean(node && node.text);
+                            if (target && target.length <= 4000 && nome && nome.length <= 400 && !new URL(target).search && !new URL(target).username && !new URL(target).password
+                                && !isProduct(target) && !identity(target).perfilUrl) breadcrumbs.push({ nome, url: target });
+                        }
+                    }
+                }
+                categoryStructuredNavigation = { categories, breadcrumbs };
+                const options = Array.isArray(optimized.search_filters) ? optimized.search_filters.filter(option => option && option.id === 'category') : [];
+                if (options.length !== 1) continue;
+                const option = options[0];
+                const selected = coupledCategory({ ...option, id: option.value });
+                if (!selected || !/\/\$query\/?$/.test(new URL(selected.url).pathname)) continue;
+                const template = new URL(selected.url);
+                template.pathname = template.pathname.replace(/\$query\/?$/, '');
+                categoryContext = { key: selected.key, nome: selected.nome, baseUrl: template.href };
+                categoryStructuredNavigation.listingTemplate = selected;
+                const canonical = absolute(optimized.canonical_info && optimized.canonical_info.canonical);
+                const inside = target => {
+                    if (!target) return false;
+                    const parsed = new URL(target), base = template.pathname.replace(/\/+$/, '');
+                    return parsed.origin === template.origin && (parsed.pathname.replace(/\/+$/, '') === base || parsed.pathname.startsWith(base + '/'));
+                };
+                const listing = !!document.querySelector('main .ui-search-layout');
+                const trends = !!document.querySelector('[class*="ui-category-trends"]');
+                const cards = Array.isArray(optimized.results) && optimized.results.some(item => item && typeof item.polycard === 'object' && item.polycard !== null);
+                const lastBreadcrumb = breadcrumbs.at(-1);
+                const linkedCategory = lastBreadcrumb && norm(lastBreadcrumb.nome) === norm(selected.nome)
+                    && new URL(lastBreadcrumb.url).origin === template.origin
+                    && new URL(lastBreadcrumb.url).pathname.replace(/\/+$/, '') === template.pathname.replace(/\/+$/, '');
+                if (listing && !trends && cards && canonical && inside(url) && inside(canonical)
+                    && new URL(canonical).pathname.replace(/\/+$/, '') === new URL(url).pathname.replace(/\/+$/, '')
+                    && linkedCategory) add(selected.key, true);
             }
             categoryIdentityConflict = evidence.size > 1;
             categoryDocumentIdentity = documentEvidence.size === 1 && !categoryIdentityConflict;
@@ -409,7 +570,7 @@
         const resolvedKeys = (window.__JK_AVANT_LAST_QUEUE_RESULT || {}).resolvedKeys || [];
         const resultRoot = content.querySelector('.ui-search-layout, [data-testid="search-results"], .ui-search-results') || content;
         nodes(cardSelector, resultRoot).forEach(node => {
-            if (node.closest('[class*="recommend"], [class*="carousel"], .ui-recommendations')) return;
+            if (node.closest('[class*="recommend"], [class*="carousel"], .ui-recommendations, [class*="ui-category-trends"]')) return;
             const outer = node.closest('.ui-search-layout__item, [data-testid="search-result"]') || node;
             if (seenElements.has(outer)) return;
             seenElements.add(outer);
@@ -534,8 +695,22 @@
             return title ? (/^categorias?$/.test(norm(title.textContent)) ? 'category' : 'other') : '';
         };
         const groups = nodes(groupSelector, content);
+        const categoryModal = /_FiltersAvailableSidebar$/.test(location.pathname)
+            && location.search === '?filter=category' && content.querySelector('.ui-search-modal');
+        if (categoryModal) categoryLinks.push(...nodes('a.ui-search-search-modal-filter[href]', categoryModal));
         for (const group of groups) {
             if (groupKind(group) === 'category') {
+                for (const anchor of nodes('a[href]', group)) {
+                    if (anchor.closest(excludedCategoryArea)) continue;
+                    if (!/^(?:mostrar|ver) mais$/.test(norm(anchor.textContent))) continue;
+                    try {
+                        const more = new URL(anchor.getAttribute('href'), url), current = new URL(url);
+                        if (more.origin === current.origin && more.pathname === current.pathname + '_FiltersAvailableSidebar'
+                            && more.search === '?filter=category' && !more.username && !more.password) {
+                            more.hash = ''; categoryFilterMoreUrl = more.href;
+                        }
+                    } catch (_error) { /* Ignore unrelated filter controls. */ }
+                }
                 categoryLinks = categoryLinks.concat(nodes('a[href]', group).filter(anchor => {
                     for (let parent = anchor.parentElement; parent && parent !== group; parent = parent.parentElement) {
                         if (parent.matches(groupSelector) && groupKind(parent) === 'other') return false;
@@ -549,12 +724,16 @@
             // Its confirmed HTTPS destination is a category hub, not a global
             // permission to follow HTTP links in listings or seller collection.
             const href = anchor.getAttribute('href');
-            const categoryUrl = absolute(categoryIndexPage && href === 'http://www.mercadolivre.com.br/imoveis/'
+            let categoryUrl = absolute(categoryIndexPage && href === 'http://www.mercadolivre.com.br/imoveis/'
                 ? 'https://www.mercadolivre.com.br/c/imoveis' : href);
+            if (categoryModal && categoryUrl) {
+                const modalLink = new URL(categoryUrl);
+                if (modalLink.search === '?filter=category') { modalLink.search = ''; categoryUrl = modalLink.href; }
+            }
             const name = clean(anchor.textContent);
             const label = norm(name);
             if (anchor.closest(excludedCategoryArea) || anchor.matches('[aria-current="page"], [aria-disabled="true"]')) return null;
-            if (/^(?:ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
+            if (/^(?:mostrar (?:mais|menos)|ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
             if (!categoryUrl || !name || isProduct(categoryUrl) || identity(categoryUrl).id || identity(categoryUrl).perfilUrl || categoryUrl === url) return null;
             const destination = new URL(categoryUrl), candidatePath = categoryPath(categoryUrl);
             if (!(['lista.mercadolivre.com.br', 'imoveis.mercadolivre.com.br', 'servicos.mercadolivre.com.br'].includes(destination.hostname)
@@ -570,6 +749,16 @@
             if (!category || categorySeen.has(category.url)) continue;
             categorySeen.add(category.url);
             categories.push(category);
+        }
+        // Nordic exposes the complete Category filter, including values hidden
+        // behind "Mostrar mais". IDs are read together with their own permalinks.
+        for (const category of categoryStructuredNavigation && categoryStructuredNavigation.categories || []) {
+            const destination = new URL(category.url);
+            if (!/^MLB\d+$/.test(category.key) || destination.search || destination.username || destination.password
+                || /_(?:Desde|OrderId|PriceRange|SHIPPING|BRAND|ITEM_CONDITION|Container)_/i.test(destination.pathname)) continue;
+            const previous = categories.findIndex(item => item.url === category.url);
+            if (previous >= 0) categories[previous] = category;
+            else { categorySeen.add(category.url); categories.push(category); }
         }
         // The canonical index exposes both roots and their direct children.
         // /c/... can be a marketing landing; do not infer its tree from carousels.
@@ -614,7 +803,9 @@
             && !categoryHeading && !categoryBreadcrumb && !categoryDocumentIdentity;
         const scrolling = document.scrollingElement || document.documentElement || document.body;
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
-        return { url, effectiveCategoryId, categoryIdentityConflict, readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
+        return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl,
+            categoryTrends: !!document.querySelector('[class*="ui-category-trends"]'),
+            readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
