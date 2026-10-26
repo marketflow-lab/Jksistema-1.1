@@ -73,6 +73,7 @@
         // document safely while the coordinator waits for the new listing.
         const content = document.querySelector('main') || document.body || document;
         const url = absolute(location.href);
+        const mlVerificationRequired = /\/captcha(?:\/|$)/i.test(location.pathname);
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
@@ -98,7 +99,7 @@
             categoryFilterMoreUrl = categoryExpansionUrls.size === 1 ? [...categoryExpansionUrls][0] : '';
         };
         const effectiveCategoryId = (() => {
-            if (isProduct(url) || currentListingIsSeller()) return '';
+            if (mlVerificationRequired || isProduct(url) || currentListingIsSeller()) return '';
             const evidence = new Set(), documentEvidence = new Set();
             const add = (value, fromDocument = false) => {
                 if (typeof value !== 'string' || !/^MLB\d+$/.test(value)) return;
@@ -443,7 +444,7 @@
         })();
         const bodyText = norm(document.body && (document.body.innerText || document.body.textContent));
         const loginForm = document.querySelector('input[type="password"], form[action*="login"], #login_user_form');
-        const authRequired = /\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
+        const authRequired = mlVerificationRequired || /\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
             || !!loginForm || !!document.querySelector('[data-testid="captcha"], iframe[src*="captcha"]');
         const avantDialog = nodes('[role="dialog"], [class*="avantpro"][class*="modal"], [class*="avantpro"][class*="login"]')
             .find(node => /avant\s*pro|avantpro/.test(norm(node.textContent)) && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
@@ -942,8 +943,28 @@
             && !categoryHeading && !categoryBreadcrumb && !categoryDocumentIdentity;
         const scrolling = document.scrollingElement || document.documentElement || document.body || {};
         const y = Number(window.scrollY || scrolling.scrollTop || 0), height = Number(scrolling.scrollHeight || 0), viewport = Number(window.innerHeight || 800);
+        const categoryTrends = !!document.querySelector('[class*="ui-category-trends"]');
+        // Some official Trends hubs are static HTML without category metadata.
+        // This descriptor authorizes only examining child hrefs; it cannot
+        // establish a category ID or make recommendation cards into listings.
+        const categoryNavigationHub = (() => {
+            if (!categoryTrends || categoryBrowse || categoryDocumentIdentity || categoryIdentityConflict
+                || authRequired || avantDialog || currentIdentity.id || currentIdentity.perfilUrl || isProduct(url)) return null;
+            const headings = nodes('h1', content).filter(node => !node.closest(excludedCategoryArea));
+            const canonicals = nodes('link[rel="canonical"]');
+            if (headings.length !== 1 || canonicals.length !== 1) return null;
+            const heading = clean(headings[0].textContent);
+            if (!heading || heading.length > 400) return null;
+            try {
+                const current = new URL(location.href), canonical = new URL(canonicals[0].getAttribute('href'), current.href);
+                if (current.protocol !== 'https:' || current.hostname !== 'lista.mercadolivre.com.br'
+                    || current.username || current.password || current.port && current.port !== '443'
+                    || current.search || current.hash || canonical.href !== current.href) return null;
+                return { version: 1, url: current.href, canonical: canonical.href, heading };
+            } catch (_error) { return null; }
+        })();
         return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
-            categoryTrends: !!document.querySelector('[class*="ui-category-trends"]'),
+            categoryTrends, categoryNavigationHub,
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),

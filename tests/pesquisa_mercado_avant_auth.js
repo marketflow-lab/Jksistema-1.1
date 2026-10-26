@@ -135,6 +135,7 @@ async function main() {
     for (const value of ['invalid', 'a@b', 'bad\n@account.example', 'a@evil.example/path', {}, 'a'.repeat(255) + '@account.example']) assert.equal(normalizeEmail(value), '');
     assert(allowedPage(MARKET_URL));
     for (const url of ['http://lista.mercadolivre.com.br/a', 'https://lista.mercadolivre.com.br.evil.example/a', 'https://u:p@lista.mercadolivre.com.br/a', 'https://lista.mercadolivre.com.br:8443/a', 'https://www.mercadolivre.com.br/jms/mlb/lgz/login', 'https://www.mercadolivre.com.br/account-verification', 'https://www.mercadolivre.com.br/challenge']) assert.equal(allowedPage(url), false);
+    for (const path of ['/captcha', '/captcha/wall/logged']) assert.equal(allowedPage('https://www.mercadolivre.com.br' + path), false);
 
     const browser = await chromium.launch({ headless:true });
     let cases = 0;
@@ -354,6 +355,15 @@ async function main() {
         }
         await test({ marketCaptcha:true }, async f => {
             const result = await f.session.ensure(); assert.equal(result.reason, 'ml_login_required'); assert.equal(await f.submits(), 0); assert.equal(f.stats.frameExecutions, 0);
+        });
+        await test({ marketUrl:'https://lista.mercadolivre.com.br/captcha/wall/logged' }, async f => {
+            const result = await f.session.ensure();
+            assert.equal(result.reason, 'ml_login_required');
+            assert.equal(f.stats.pageExecutions, 0, 'a verification route is rejected before operating the Avant menu');
+            assert.equal(f.stats.frameExecutions, 0);
+            assert.equal(await f.submits(), 0);
+            assert.equal((await f.page.evaluate(pageScript('open-login'))).state, 'ml_login');
+            assert.equal(await f.page.evaluate(() => window.fixture.loginClicks), 0, 'direct page inspection also leaves the verification wall untouched');
         });
         await test({ reportedUrl:'https://lista.mercadolivre.com.br.evil.example/' }, async f => {
             const result = await f.session.ensure(); assert.equal(result.authenticated, false); assert.equal(f.stats.pageExecutions, 0);

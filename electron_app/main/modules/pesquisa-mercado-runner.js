@@ -762,6 +762,28 @@ class PesquisaMercadoRunner {
         throw last;
     }
 
+    navigationHubCandidate(page, requestedUrl, parentKey, expectedChild) {
+        const hub = page && page.categoryNavigationHub, navigation = this.officialNavigation;
+        const parent = navigation && navigation.records.get(parentKey), child = expectedChild && navigation && navigation.records.get(expectedChild.key);
+        if (!hub || hub.version !== 1 || Object.keys(hub).some(key => !['version', 'url', 'canonical', 'heading'].includes(key))
+            || !parent || !child || navigation.parents.get(child.key) !== parentKey
+            || child.nome !== expectedChild.nome || categoryLabel(hub.heading) !== categoryLabel(parent.nome)
+            || !page.categoryTrends || page.categoryBrowse || page.categoryDocumentIdentity || page.categoryIdentityConflict
+            || page.authRequired || page.avantAuthRequired || page.categoryNotFound
+            || page.effectiveCategoryId && page.effectiveCategoryId !== parentKey
+            || page.categoryContext && page.categoryContext.key !== parentKey) return '';
+        try {
+            const actual = new URL(this.browser.getURL());
+            if (actual.protocol !== 'https:' || actual.hostname !== 'lista.mercadolivre.com.br'
+                || actual.username || actual.password || actual.port && actual.port !== '443'
+                || actual.search || actual.hash || actual.href !== page.url || actual.href !== hub.url || actual.href !== hub.canonical
+                || !neutralCategoryPage(requestedUrl, actual.href)
+                || page.categoryContext && !neutralCategoryPage(page.categoryContext.baseUrl, actual.href)) return '';
+            const selected = navigation.choose(page.categories, child, actual.href);
+            return JSON.stringify([actual.href, hub.heading, selected.key, selected.url]);
+        } catch (_error) { return ''; }
+    }
+
     async read(url, purpose = 'category', navigationCategoryId = '', expectedChild = null, browseTransition = false) {
         if (!allowedUrl(url)) throw new Error('Link de pesquisa fora do Mercado Livre.');
         let pendingBrowseUrl = '';
@@ -776,7 +798,7 @@ class PesquisaMercadoRunner {
             const categoryId = isOfficialIndex ? '' : ['navigation', 'category-transport'].includes(purpose) ? navigationCategoryId : this.officialCategoryId();
             const destination = categoryPageWaiter(isOfficialIndex || isCategory && this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null,
                 verifyDestination ? categoryId : '');
-            let mismatchSignature = '', mismatchReads = 0;
+            let mismatchSignature = '', mismatchReads = 0, hubSignature = '', hubReads = 0;
             for (let poll = 0; poll < 34; poll += 1) {
                 await this.wait(450);
                 this.check();
@@ -822,6 +844,12 @@ class PesquisaMercadoRunner {
                         pendingBrowseUrl = browse.url;
                         return null;
                     }
+                }
+                if (purpose === 'navigation' && expectedChild) {
+                    const signature = !loading && this.navigationHubCandidate(page, url, navigationCategoryId, expectedChild);
+                    hubReads = signature && signature === hubSignature ? hubReads + 1 : signature ? 1 : 0;
+                    hubSignature = signature || '';
+                    if (hubReads >= 2) return page;
                 }
                 if (isCategory && (page.categoryBrowse || page.categoryTrends)) continue;
                 if (isCategoryOptions) {

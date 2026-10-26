@@ -11,7 +11,7 @@ function allowedPage(value) {
         const url = new URL(value);
         return url.protocol === 'https:' && /(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)
             && !url.username && !url.password && (!url.port || url.port === '443')
-            && !/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(url.pathname);
+            && !/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b|\/captcha(?:\/|$)/i.test(url.pathname);
     } catch (_error) { return false; }
 }
 
@@ -26,7 +26,7 @@ function pageSession(action) {
     };
     const nodes = selector => Array.from(document.querySelectorAll(selector));
     const first = selector => nodes(selector).find(visible);
-    if (/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
+    if (/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b|\/captcha(?:\/|$)/i.test(location.pathname)
         || document.querySelector('#login_user_form, input[type="password"], [data-testid="captcha"], iframe[src*="captcha"]')) return { state: 'ml_login' };
     const authFrame = first('#avantpro-login-modal #authMfeIframe');
     let frameAllowed = false;
