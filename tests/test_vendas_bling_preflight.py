@@ -24,7 +24,8 @@ def context(tmp_path, monkeypatch):
     paths = AppPaths.create(base_dir=tmp_path, info_dir=tmp_path / "info", logger=logging.getLogger("preflight-test"))
     monkeypatch.setattr(dependencies, "_dependencies", SimpleNamespace(paths=paths, logger=paths.logger))
     cfg = {"id": "app-a", "secret": "fixture-secret", "access_token": "fixture-access",
-           "refresh_token": "fixture-refresh", "oauth_connection_id": "connection-a", "connected": True}
+           "refresh_token": "fixture-refresh", "oauth_connection_id": "connection-a", "connected": True,
+           "empresa_id": "1001", "empresa_oauth_connection_id": "connection-a"}
     state = {"cfg": cfg, "responses": [], "calls": [], "refreshes": [], "marked": []}
     req = VendasSyncRequest(loja="Mesmo nome", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
 
@@ -204,7 +205,8 @@ def test_worker_checks_before_collection_and_preserves_historical_diagnostics(co
     queue, job = pending(req)
     state["responses"] = [response(body={"data": []})]
     collected = []
-    async def collect(_req, _client):
+    async def collect(_req, _client, *, day_budget=None):
+        assert day_budget == 1
         assert len(state["calls"]) == 1
         saved = queue.get_job(job["id"])
         assert saved["dias_concluidos"] == [req.data_inicio]

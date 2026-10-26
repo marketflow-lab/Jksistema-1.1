@@ -37,6 +37,14 @@ def build_central(settings):
 def install_central_routes(app, resolve_central):
     router = APIRouter(prefix="/api/central/v1")
 
+    @app.middleware("http")
+    async def advertise_bling_quota(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/central/v1/"):
+            from .central_bling_quota import CAPABILITY_HEADER, CAPABILITY_VALUE
+            response.headers[CAPABILITY_HEADER] = CAPABILITY_VALUE
+        return response
+
     def service():
         central = resolve_central()
         if central is None:
@@ -61,7 +69,7 @@ def install_central_routes(app, resolve_central):
         details = {key: value for key, value in exc.details.items()
                    if key in {"store_id", "provider"} and isinstance(value, str)}
         return JSONResponse(status_code=exc.status,
-                            content={"success": False, "code": exc.code, **details})
+                            content={"success": False, "code": exc.code, **details}, headers=exc.headers)
 
     @app.exception_handler(GatewayUnavailable)
     async def central_unavailable(_request, _exc):

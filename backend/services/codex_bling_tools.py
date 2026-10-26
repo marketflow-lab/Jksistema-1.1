@@ -16,7 +16,7 @@ from typing import Any, Callable, Optional
 from fastapi import HTTPException
 import requests
 
-from backend.services.bling import _BlingAdaptiveLimiter
+from backend.services.bling import _BlingAdaptiveLimiter, bling_account_request, remember_bling_throttle
 from backend.services.bling_vendas import (
     _bling_executar_com_refresh,
     _bling_listar_naturezas,
@@ -320,12 +320,15 @@ def _get_json(
         try:
             from backend.services.central_accounts_client import is_marker, provider_request
             request_get = (lambda url, **kwargs: provider_request(access_token, "GET", url, **kwargs)) if is_marker(access_token) else requests.get
-            resp = request_get(
-                _resource_url(path),
-                headers=headers,
-                params=params,
-                timeout=_remaining_timeout(deadline, timeout),
-            )
+            with bling_account_request(headers, deadline=deadline) as mark_start:
+                mark_start()
+                resp = request_get(
+                    _resource_url(path),
+                    headers=headers,
+                    params=params,
+                    timeout=_remaining_timeout(deadline, timeout),
+                )
+                remember_bling_throttle(headers, resp)
         except requests.RequestException:
             if deadline is not None and time.monotonic() >= float(deadline):
                 return {"error": "A consulta completa do Bling excedeu 60 segundos."}, 504

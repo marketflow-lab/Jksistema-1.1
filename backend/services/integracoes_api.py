@@ -725,6 +725,8 @@ async def integracoes_auth_callback(request: Request, code: Optional[str] = None
                 "access_token": access_token,
                 "refresh_token": refresh_token,
                 "oauth_connection_id": oauth_connection_id,
+                "empresa_id": "",
+                "empresa_oauth_connection_id": "",
                 "connected": True,
                 "status": "conectado",
                 "motivo": "",

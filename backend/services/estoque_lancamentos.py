@@ -655,6 +655,8 @@ def _sincronizar_lancamentos_estoque_sku_api(
         raise HTTPException(status_code=404, detail="Loja não encontrada para o cliente.")
     store_id_resolvido = str(loja_cfg.get("store_id") or store_id or "").strip() or None
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
+    from .bling_accounts import remember_bling_configuration
+    remember_bling_configuration(bling_cfg)
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
     sec = bling_cfg.get("secret")
@@ -785,6 +787,8 @@ async def _sincronizar_lancamentos_estoque_lote_impl(
         data_inicio = (data_fim_ref - timedelta(days=365)).strftime("%Y-%m-%d")
 
     bling_cfg = (loja_cfg.get("integracoes") or {}).get("bling") or {}
+    from .bling_accounts import remember_bling_configuration
+    remember_bling_configuration(bling_cfg)
     access_token = bling_cfg.get("access_token")
     cid = bling_cfg.get("id")
     sec = bling_cfg.get("secret")

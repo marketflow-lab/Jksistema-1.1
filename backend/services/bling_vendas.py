@@ -482,6 +482,8 @@ def _bling_executar_com_refresh(
     reused_concurrent_validator: Optional[Callable[[dict, dict], bool]] = None,
 ) -> tuple[Any, int, dict]:
     cfg = dict(cfg or {})
+    from .bling_accounts import remember_bling_configuration
+    remember_bling_configuration(cfg)
     access_token = str(cfg.get("access_token") or "").strip()
     resultado, status = chamada(access_token)
     if status == 401:
@@ -523,6 +525,7 @@ def _bling_executar_com_refresh(
             cfg = _bling_renovar_token_loja(
                 client_id, nome_loja, cfg, store_id=store_id
             )
+        remember_bling_configuration(cfg)
         resultado, status = chamada(str(cfg.get("access_token") or ""))
     if status == 401:
         motivo = "Token Bling expirado. Refaça a conexão em Integrações."

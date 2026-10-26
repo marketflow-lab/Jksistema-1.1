@@ -5,11 +5,13 @@ import base64
 import json
 import re
 import time
+from contextlib import nullcontext
 from urllib.parse import unquote, urlsplit
 
 import requests
 
 from .central_accounts import CentralError
+from .errors import GatewayUnavailable
 
 
 BASES = {"mercadolivre": "https://api.mercadolibre.com",
@@ -59,8 +61,9 @@ def _has_secret(value):
 
 
 class ProviderTransport:
-    def __init__(self, session_factory=requests.Session, clock=time.time):
+    def __init__(self, session_factory=requests.Session, clock=time.time, *, bling_quota=None):
         self.session_factory, self.clock = session_factory, clock
+        self.bling_quota = bling_quota
 
     @staticmethod
     def validate(payload, connection):
@@ -123,9 +126,10 @@ class ProviderTransport:
         else:
             url = BASES[provider] + "/oauth/token"
             kwargs = {"data": {**form, "client_id": app_id, "client_secret": app_secret}}
-        status, _, raw = self._http("POST", url, **kwargs)
+        status, headers, raw = self._http("POST", url, **kwargs)
         if status == 429:
-            raise CentralError("central_provider_rate_limited", 429)
+            from .central_bling_quota import rate_limited, retry_after_seconds
+            raise rate_limited(retry_after_seconds(headers, self.clock(), default=60))
         if status >= 500:
             # An error response after a refresh POST cannot prove that the
             # single-use refresh token was not consumed.
@@ -145,15 +149,22 @@ class ProviderTransport:
             raise CentralError("central_oauth_invalid", 502) from None
 
     def exchange(self, draft, code):
-        creds = self._token(draft["provider"], draft["app_id"], draft["app_secret"], {
-            "grant_type": "authorization_code", "code": code, "redirect_uri": draft["redirect_uri"]})
+        guard = self.bling_quota.discovery() if draft["provider"] == "bling" and self.bling_quota else nullcontext()
+        with guard:
+            creds = self._token(draft["provider"], draft["app_id"], draft["app_secret"], {
+                "grant_type": "authorization_code", "code": code, "redirect_uri": draft["redirect_uri"]})
         return {**creds, **self.identify(creds)}
 
     def identify(self, credentials):
         provider = credentials["provider"]
         endpoint = "/users/me" if provider == "mercadolivre" else "/empresas/me/dados-basicos"
-        status, _, raw = self._http("GET", BASES[provider] + endpoint,
-                                    headers={"Authorization": "Bearer " + credentials["access_token"]})
+        guard = self.bling_quota.discovery() if provider == "bling" and self.bling_quota else nullcontext()
+        with guard:
+            status, headers, raw = self._http("GET", BASES[provider] + endpoint,
+                                            headers={"Authorization": "Bearer " + credentials["access_token"]})
+            if status == 429:
+                from .central_bling_quota import rate_limited, retry_after_seconds
+                raise rate_limited(retry_after_seconds(headers, self.clock(), default=60))
         if status != 200:
             raise CentralError("central_reconnect_required" if status in (400, 401, 403)
                                else "central_account_identity_unavailable", 409 if status in (400, 401, 403) else 502)
@@ -173,8 +184,27 @@ class ProviderTransport:
         return {"seller_id": seller, "site_id": site_id}
 
     def refresh(self, credentials):
-        updated = self._token(credentials["provider"], credentials["app_id"], credentials["app_secret"],
-                              {"grant_type": "refresh_token", "refresh_token": credentials["refresh_token"]})
+        guard = nullcontext()
+        company = credentials.get("seller_id")
+        if credentials["provider"] == "bling" and self.bling_quota:
+            guard = self.bling_quota.account(company) if company else self.bling_quota.discovery()
+        started = False
+        try:
+            with guard:
+                started = True
+                try:
+                    updated = self._token(credentials["provider"], credentials["app_id"], credentials["app_secret"],
+                                          {"grant_type": "refresh_token", "refresh_token": credentials["refresh_token"]})
+                except CentralError as exc:
+                    if exc.status == 429 and company and self.bling_quota:
+                        self.bling_quota.block(company, exc.headers)
+                    raise
+        except GatewayUnavailable:
+            if not started:
+                # No token POST was sent. Keep the refresh authority usable;
+                # a failed post-response commit must still remain uncertain.
+                raise CentralError("central_quota_unavailable", 503, headers={"Retry-After": "2"}) from None
+            raise
         return {**credentials, **updated}
 
     def request(self, credentials, payload):
@@ -184,7 +214,8 @@ class ProviderTransport:
         # Provider errors never carry token-bearing request echoes to the desktop.
         if status >= 300:
             raw = json.dumps({"error": "provider_rejected", "status": status}).encode()
-            headers = {"Content-Type": "application/json", "Retry-After": headers.get("Retry-After", "")}
+            retry_after = next((value for name, value in headers.items() if name.lower() == "retry-after"), "")
+            headers = {"Content-Type": "application/json", "Retry-After": retry_after}
         elif any(str(credentials.get(key, "")).encode() in raw for key in
                  ("access_token", "refresh_token", "app_secret") if credentials.get(key)):
             raise CentralError("central_sensitive_response_blocked", 502)

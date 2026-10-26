@@ -69,6 +69,11 @@ function setSyncButtons(isSyncing) {
     btnCancel.disabled = !isSyncing && !verificandoConexoes && !automacao?.habilitadas && !automacao?.pendentes;
 }
 
+function possuiColetaAgendadaVendas(data) {
+    return !!data?.active || [...(data?.automacao?.jobs || []), ...(data?.automacao?.lojas || [])]
+        .some(item => ['queued', 'running'].includes(String(item?.status || '').toLowerCase()));
+}
+
 const mensagemVerificacaoConexoesVendas = 'Verificando conexões Bling antes da coleta...';
 
 function formatarMomentoSyncVendas(valor) {
@@ -143,9 +148,12 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         ? `<span class="vendas-sync-attention">⚠ ${rotuloAlertas}</span>` : '';
     const alertas = lojasComAlerta
         .map(({ loja, estado }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${estado[0] === 'paused' ? 'Última tentativa antes da pausa: ' : ''}${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
-    const linhas = estados.map(({ loja, estado: [chave, rotulo] }) =>
-        `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong><span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`
-    ).join('');
+    const linhas = estados.map(({ loja, estado: [chave, rotulo] }) => {
+        const dia = loja?.dia_atual || loja?.proximo_dia;
+        const data = dia && ['running', 'queued'].includes(chave)
+            ? `<span class="vendas-sync-muted">${chave === 'running' ? 'Dia' : 'Próximo dia'}: ${escaparHtmlVendas(formatDate(dia))}</span>` : '';
+        return `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong>${data}<span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`;
+    }).join('');
     const detalhesLojas = estados.map(({ loja, estado: [, rotulo] }) => {
         const periodo = loja?.data_inicio && loja?.data_fim
             ? ` · ${formatDate(loja.data_inicio)} a ${formatDate(loja.data_fim)}` : '';
@@ -190,8 +198,12 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
         substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${mensagemVerificacaoConexoesVendas}</strong></div>`);
         return;
     }
-    const valor = Number(p.percentual || 0);
-    const percent = Number.isFinite(valor) ? Math.max(0, Math.min(100, valor)) : 0;
+    const confirmados = Number(p.dias_confirmados);
+    const total = Number(p.dias_total);
+    const possuiCobertura = Number.isFinite(confirmados) && Number.isFinite(total) && total > 0;
+    const valor = possuiCobertura ? Math.floor(Math.max(0, confirmados) / total * 100) : Number(p.percentual || 0);
+    const limite = possuiCobertura && p.concluido !== true ? 99 : 100;
+    const percent = Number.isFinite(valor) ? Math.max(0, Math.min(limite, valor)) : 0;
     const listaLojas = Array.isArray(lojas) ? lojas : [];
     const lojasAtivas = listaLojas.filter(loja =>
         ['running', 'executando', 'em_execucao'].includes(String(loja?.status || '').toLowerCase()));
@@ -201,8 +213,8 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
         ? `<div class="vendas-sync-alert">${escaparHtmlVendas(p.mensagem || 'Falha na sincronização.')}</div>` : '';
     const detalhes = !listaLojas.length && (registros || p.mensagem)
         ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
-    const diasAproveitados = Number(p.dias_aproveitados);
-    const diasPendentes = Number(p.dias_pendentes);
+    const diasAproveitados = possuiCobertura ? Math.max(0, Math.min(total, confirmados)) : Number(p.dias_aproveitados);
+    const diasPendentes = possuiCobertura ? Math.max(0, total - diasAproveitados) : Number(p.dias_pendentes);
     const cobertura = Number.isFinite(diasAproveitados) && Number.isFinite(diasPendentes)
         ? `<div class="vendas-sync-muted">${Math.max(0, diasAproveitados)} dia(s) já concluído(s) · ${Math.max(0, diasPendentes)} dia(s) pendente(s)</div>` : '';
     painel.className = 'status-bar loading';
@@ -217,6 +229,7 @@ let verificandoConexoesMonitor = false;
 function criarAtualizadorConfirmadoVendas() {
     let context = null;
     let confirmed = new Map();
+    let confirmedRevision = null;
     let timer = null;
     let pending = false;
     let running = false;
@@ -227,7 +240,7 @@ function criarAtualizadorConfirmadoVendas() {
     function cancel() {
         generation += 1;
         if (timer) clearTimeout(timer);
-        timer = null; pending = false; context = null; confirmed = new Map();
+        timer = null; pending = false; context = null; confirmed = new Map(); confirmedRevision = null;
     }
     function request() {
         const next = scope();
@@ -238,7 +251,9 @@ function criarAtualizadorConfirmadoVendas() {
         const revision = generation;
         timer = setTimeout(async () => {
             timer = null;
-            if (revision !== generation || expected !== scope() || document.visibilityState === 'hidden') { pending = false; return; }
+            if (revision !== generation || expected !== scope()) { pending = false; return; }
+            // Keep the pending refresh until the visible monitor observes the same revision again.
+            if (document.visibilityState === 'hidden') return;
             pending = false; running = true; progressReloadInFlight = true;
             try {
                 await Promise.allSettled([carregarVendas({ retornoRapido: true }), carregarGrafico()]);
@@ -254,6 +269,11 @@ function criarAtualizadorConfirmadoVendas() {
         if (baseline) { cancel(); context = nextContext; }
         const next = new Map();
         let advanced = false;
+        const dataRevision = payload?.data_revision;
+        if (Number.isSafeInteger(dataRevision) && dataRevision >= 0) {
+            if (!baseline && confirmedRevision !== null && dataRevision !== confirmedRevision) advanced = true;
+            confirmedRevision = dataRevision;
+        }
         for (const job of payload?.automacao?.jobs || []) {
             if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(job.loja, lojaSelecionada)) continue;
             if (job.data_fim < getDataIniISO() || job.data_inicio > getDataFimISO()) continue;
@@ -267,7 +287,7 @@ function criarAtualizadorConfirmadoVendas() {
         }
         // A collected document can still be staging. Only committed days or completed jobs advance the view.
         confirmed = next;
-        if (advanced) request();
+        if (advanced || pending) request();
     }
     return { observe, request, cancel };
 }
@@ -278,7 +298,14 @@ function aplicarEstadoMonitorSyncVendas(data) {
     if (!data) return;
     atualizadorConfirmadoVendas.observe(data);
     renderAutomacaoSyncVendas(data);
-    const progresso = data.progress || null;
+    const automacao = data.automacao || {};
+    const progresso = data.progress ? { ...data.progress } : null;
+    if (progresso && Number.isFinite(automacao.dias_confirmados) && Number.isFinite(automacao.dias_total)) {
+        progresso.dias_confirmados = automacao.dias_confirmados;
+        progresso.dias_total = automacao.dias_total;
+        progresso.dias_pendentes = Math.max(0, automacao.dias_total - automacao.dias_confirmados);
+        if (Number(automacao.pendentes) > 0) progresso.concluido = false;
+    }
     const etapa = String(progresso?.etapa || '').toLowerCase();
     const loteLocalAtivo = !!syncController;
     const estavaVerificandoConexoes = verificandoConexoesMonitor;
@@ -291,7 +318,7 @@ function aplicarEstadoMonitorSyncVendas(data) {
         return;
     }
 
-    if (data.active) {
+    if (possuiColetaAgendadaVendas(data)) {
         syncEmAndamento = true;
         setSyncButtons(true);
         const readError = window.JKVendasReadState?.get('resumo')?.error;

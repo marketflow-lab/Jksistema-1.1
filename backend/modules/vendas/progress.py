@@ -332,7 +332,7 @@ def progresso_sincronizacao_vendas(client_id: str):
             "id": job_id,
             "progress": job_progress,
         })
-    from .sync_queue import SyncQueue
+    from .sync_queue import SyncQueue, SYNC_TIMEZONE
     from .sync_automation import remember_authorization
     remember_authorization(client_id)
     automacao = SyncQueue(client_id).summary()
@@ -346,10 +346,10 @@ def progresso_sincronizacao_vendas(client_id: str):
         done = set(job.get("dias_concluidos") or [])
         start = dt.date.fromisoformat(job["data_inicio"])
         end = dt.date.fromisoformat(job["data_fim"])
-        day = start
-        while day <= end and day.isoformat() in done:
-            day += dt.timedelta(days=1)
-        if day <= end:
+        day = min(end, datetime.now(SYNC_TIMEZONE).date())
+        while day >= start and day.isoformat() in done:
+            day -= dt.timedelta(days=1)
+        if day >= start:
             checkpoint = collection_day_summary(client_id, job["store_id"], job["id"], day.isoformat())
             if checkpoint.get("documentos_salvos"):
                 job["checkpoint"] = checkpoint
@@ -391,8 +391,23 @@ def progresso_sincronizacao_vendas(client_id: str):
             "Conexões", 0, 0, 0, "Verificando conexões Bling antes da coleta...",
         )
         progress["concluido"] = False
+    if durable_jobs and progress is not None:
+        confirmed = automacao["dias_confirmados"]
+        total = automacao["dias_total"]
+        pending = any(job.get("status") in {"queued", "running", "retry", "blocked"} for job in durable_jobs)
+        paused = any(store.get("status") == "paused" for store in automacao.get("lojas", []))
+        unfinished = pending or paused or automacao.get("verificando_conexoes") is True
+        progress = dict(progress)
+        progress.update(
+            dias_confirmados=confirmed, dias_total=total, dias_pendentes=max(0, total - confirmed),
+            percentual=min(99, int(confirmed * 100 / total) if total else 0) if unfinished else 100,
+            concluido=not unfinished,
+        )
+        active_days = [store["dia_atual"] for store in automacao.get("lojas", []) if store.get("dia_atual")]
+        progress["dia_atual"] = max(active_days) if active_days else None
     return {
         "success": True,
+        "data_revision": automacao["data_revision"],
         "automacao": automacao,
         "progress": progress,
         "logs": [_corrigir_texto_mojibake(log) for log in SYNC_LOGS.get(client_id, [])],

@@ -3032,6 +3032,14 @@ def atualizar_api_loja(
         if isinstance(atual, dict) and isinstance(dados_api, dict):
             merged = dict(atual)
             merged.update(dados_api)
+            if str(api_nome or "").strip().lower() == "bling" and (
+                ("access_token" in dados_api and dados_api["access_token"] != atual.get("access_token"))
+                or ("oauth_connection_id" in dados_api and dados_api["oauth_connection_id"] != atual.get("oauth_connection_id"))
+            ):
+                # Generic connection replacement is not the CAS refresh path.
+                # Old public company evidence must not follow a new authorization.
+                merged["empresa_id"] = ""
+                merged["empresa_oauth_connection_id"] = ""
             integracoes[api_nome] = merged
         else:
             integracoes[api_nome] = dados_api
@@ -3192,6 +3200,8 @@ def renovar_token_bling_loja(
 
     def resultado(config: dict, disposition: str):
         payload = dict(config or {})
+        from .bling_accounts import remember_bling_configuration
+        remember_bling_configuration(payload)
         return (payload, disposition) if return_disposition else payload
 
     store_id_exato = str(store_id or "").strip()

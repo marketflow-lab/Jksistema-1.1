@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from .sync_config import MAX_CONCURRENT_ACCOUNTS
+
 
 @dataclass
 class VendasSyncState:
@@ -15,7 +17,7 @@ class VendasSyncState:
     metadata: dict[str, Any] = field(default_factory=dict)
     day_context: dict[str, Any] = field(default_factory=dict)
     active: dict[str, Any] = field(default_factory=dict)
-    max_active_sync: int = 2
+    max_active_sync: int = MAX_CONCURRENT_ACCOUNTS
     active_lock: threading.RLock = field(default_factory=threading.RLock)
     persistence_lock: threading.RLock = field(default_factory=threading.RLock)
     thread_context: threading.local = field(default_factory=threading.local)

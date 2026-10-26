@@ -425,18 +425,26 @@ function criarMonitorSyncVendas() {
         window.dispatchEvent(new CustomEvent('jk:vendas-sync-state', { detail: payload }));
     }
 
+    function cycleActive(payload) {
+        if (payload?.active || payload?.automacao?.verificando_conexoes) return true;
+        return [...(payload?.automacao?.jobs || []), ...(payload?.automacao?.lojas || [])]
+            .some(item => ['queued', 'running'].includes(String(item?.status || '').toLowerCase()));
+    }
+
     function publish(payload) {
-        const wasActive = !!lastPayload?.active;
+        const wasActive = cycleActive(lastPayload);
+        const isActive = cycleActive(payload);
         lastPayload = payload;
         failures = 0;
         notify(payload);
-        if (wasActive && !payload?.active) {
+        // Releasing a daily lease returns a job to the queue; the period is still pending.
+        if (wasActive && !isActive && !(Number(payload?.automacao?.pendentes) > 0)) {
             completionSequence += 1;
             window.dispatchEvent(new CustomEvent('jk:vendas-sync-finished', {
                 detail: { id: completionSequence, payload }
             }));
         }
-        schedule(payload?.active ? activeIntervalMs : idleIntervalMs);
+        schedule(isActive ? activeIntervalMs : idleIntervalMs);
         return payload;
     }
 
@@ -505,7 +513,7 @@ function criarMonitorSyncVendas() {
     }
 
     function waitForInactive(options = {}) {
-        let sawActive = !!lastPayload?.active;
+        let sawActive = cycleActive(lastPayload);
         return new Promise((resolve, reject) => {
             let unsubscribe = () => {};
             let settled = false;
@@ -518,7 +526,7 @@ function criarMonitorSyncVendas() {
             };
             const onAbort = () => finish(reject, new DOMException('Operação cancelada.', 'AbortError'));
             const onState = (payload, fresh = false) => {
-                if (payload?.active) {
+                if (cycleActive(payload)) {
                     sawActive = true;
                     return;
                 }

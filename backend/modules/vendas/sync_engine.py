@@ -35,6 +35,7 @@ from .sync_persistence import (
     _vendas_sync_dias_periodo, _vendas_sync_prepare_job, _vendas_sync_update_job,
 )
 from .sync_queue import SyncQueue, SYNC_TIMEZONE
+from .sync_config import MAX_CONCURRENT_ACCOUNTS
 
 
 def _collection_store_state(req, client_id):
@@ -155,7 +156,7 @@ def sincronizar_vendas(req: VendasSyncRequest, client_id: str):
         "store_id": req.store_id,
         "data_inicio": req.data_inicio,
         "data_fim": req.data_fim,
-        "limit": 2,
+        "limit": MAX_CONCURRENT_ACCOUNTS,
         "message": "Período salvo para sincronização e retomada.",
     }
 
@@ -288,8 +289,20 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
         req = _resolve_store(req, client_id)
         SYNC_THREAD_CONTEXT.loja = req.loja
         _verificar_alertas_antes_da_coleta(req, client_id, queue, job_id, owner)
+        from backend.services.bling_accounts import resolve_bling_account
+        account_store = buscar_loja(client_id, req.loja, store_id=req.store_id)
+        if not account_store or str(account_store.get("store_id") or "") != req.store_id:
+            raise HTTPException(409, "A loja da coleta mudou; o progresso foi preservado.")
+        account_id = resolve_bling_account(client_id, req.loja, store_id=req.store_id,
+                                          config=(account_store.get("integracoes") or {}).get("bling"),
+                                          cancel_callback=lambda: _verificar_cancelamento(client_id))
+        if not queue.bind_job_account(job_id, owner, account_id):
+            SYNC_META[job_id] = {**(SYNC_META.get(job_id) or {}), "status": "queued"}
+            return
         _prepare_store_collection(req, client_id, queue, job_id, owner)
-        asyncio.run(_sincronizar_vendas_impl(req, client_id))
+        result = asyncio.run(_sincronizar_vendas_impl(req, client_id, day_budget=1))
+        if isinstance(result, dict) and result.get("yielded"):
+            return
         for db_path in _listar_bancos_vendas_tenant(client_id, req.loja):
             try:
                 prepare_vendas_database(db_path)
@@ -298,6 +311,7 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
         invalidate_vendas_cache(client_id)
         SYNC_META[job_id] = {**(SYNC_META.get(job_id) or {}), "status": "complete"}
     except Exception as exc:
+        failed = False
         if queue.owns(job_id, owner):
             retry_after = None
             headers = getattr(exc, "headers", None) or {}
@@ -305,12 +319,21 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
                 retry_after = min(900, max(1, float(headers.get("Retry-After"))))
             except (TypeError, ValueError):
                 pass
-            queue.fail_job(job_id, owner, _safe_failure(exc),
-                           retryable=getattr(exc, "status_code", 500) != 404,
-                           retry_after=retry_after)
+            try:
+                queue.fail_job(job_id, owner, _safe_failure(exc),
+                               retryable=getattr(exc, "status_code", 500) != 404,
+                               retry_after=retry_after)
+                failed = True
+            except RuntimeError:
+                # Pause or another process may revoke the lease between the
+                # ownership check and its transactional failure acknowledgement.
+                if queue.owns(job_id, owner):
+                    raise
+        if failed:
             _set_progresso(client_id, _criar_progresso("Pendente", 0, 0, 0, _safe_failure(exc)))
             SYNC_META[job_id] = {**(SYNC_META.get(job_id) or {}), "status": "retry"}
         else:
+            SYNC_META[job_id] = {**(SYNC_META.get(job_id) or {}), "status": "paused"}
             _set_progresso(client_id, _criar_progresso(
                 "Pausado", 0, 0, 0, "Sincronização pausada; o progresso foi preservado."
             ))
@@ -326,10 +349,11 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
         wake()
 
 
-async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
+async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str, *, day_budget: int | None = None):
     """Preserve the legacy coroutine, using the durable job when run by the queue."""
     today = str(datetime.now(SYNC_TIMEZONE).date())
-    dias = [day for day in _vendas_sync_dias_periodo(req.data_inicio, req.data_fim) if day <= today]
+    dias = sorted((day for day in _vendas_sync_dias_periodo(req.data_inicio, req.data_fim)
+                   if day <= today), reverse=True)
     if not dias:
         raise HTTPException(400, "O período começa depois do dia atual.")
     job_context_key = _sync_context_key(client_id)
@@ -358,10 +382,12 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
         "vendas_processadas", "notas_processadas",
     )}
     try:
-        for index, day in enumerate(dias, start=1):
+        processed = 0
+        for day in dias:
             _verificar_cancelamento(client_id)
             if day in done:
                 continue
+            index = len(done) + 1
             meta = {
                 "loja": req.loja, "store_id": req.store_id,
                 "data_inicio": req.data_inicio, "data_fim": req.data_fim,
@@ -422,9 +448,27 @@ async def _sincronizar_vendas_impl(req: VendasSyncRequest, client_id: str):
                         logger.warning("Limpeza da preparação ficará pendente após confirmação do dia.")
                 for key in totals:
                     totals[key] += int(result.get(key) or 0)
+                processed += 1
             finally:
                 SYNC_DAY_CONTEXT.pop(job_context_key, None)
+            if queue is not None and day_budget is not None and processed >= day_budget and len(done) < len(dias):
+                queue.yield_job(job_key, owner)
+                SYNC_META[job_context_key] = {**(SYNC_META.get(job_context_key) or {}), "status": "queued"}
+                pending = _criar_progresso("Fila", len(done), len(dias), min(99, int(len(done) / len(dias) * 100)),
+                                         "Dia confirmado; aguardando a próxima rodada do período.")
+                pending.update(concluido=False, dias_confirmados=len(done), dias_pendentes=len(dias) - len(done))
+                _set_progresso(client_id, pending)
+                return {"success": True, "yielded": True, **totals}
         _verificar_cancelamento(client_id)
+        if queue is not None:
+            # Previous daily turns and inherited confirmations contribute to the
+            # final summary; a worker's local counters cover only its own turn.
+            saved = queue.get_job(job_key)
+            aliases = {"total": "vendas", "vendas_processadas": "vendas",
+                       "notas_entrada_total": "notas", "notas_processadas": "notas"}
+            totals = {key: sum(int(value.get(key, value.get(aliases.get(key), 0)) or 0)
+                               for value in saved["resultados_dias"].values())
+                      for key in totals}
         composition_progress = _criar_progresso(
             "Composições", len(dias), len(dias), 99,
             "Conferindo as composições dos produtos vendidos.",

@@ -54,6 +54,17 @@ class MemoryDocuments:
             self._documents[group, key] = deepcopy(value)
             return deepcopy(value)
 
+    def change_many(self, references, transform):
+        """Read all references atomically; write only aliases returned by transform."""
+        with self._lock:
+            before = {name: deepcopy(self._documents.get(ref)) for name, ref in references.items()}
+            changes = transform(before)
+            if set(changes) - set(references):
+                raise ValueError("unknown_document_reference")
+            for name, value in changes.items():
+                self._documents[references[name]] = deepcopy(value)
+            return deepcopy(changes)
+
     def accessible(self, access_key):
         with self._lock:
             return deepcopy([v for (group, _), v in self._documents.items()
@@ -82,6 +93,25 @@ class FirestoreDocuments:
             value = transform(snapshot.to_dict())
             transaction.set(ref, value)
             return value
+
+        return update(self.client.transaction(max_attempts=3))
+
+    def change_many(self, references, transform):
+        from firebase_admin import firestore
+        refs = {name: self._ref(*ref) for name, ref in references.items()}
+
+        @firestore.transactional
+        def update(transaction):
+            # Firestore requires every read to precede the first write. The
+            # provider/discovery barrier is read-only during ordinary grants.
+            before = {name: ref.get(transaction=transaction, retry=None,
+                                    timeout=self.timeout).to_dict() for name, ref in refs.items()}
+            changes = transform(before)
+            if set(changes) - set(refs):
+                raise ValueError("unknown_document_reference")
+            for name, value in changes.items():
+                transaction.set(refs[name], value)
+            return changes
 
         return update(self.client.transaction(max_attempts=3))
 

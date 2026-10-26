@@ -83,6 +83,7 @@ class CentralClient:
         self._stores = copy.deepcopy(extension["stores"])
         validate_public_stores(self._stores)
         self._transport = transport
+        self.bling_account_quota = False
         self._ref = secrets.token_hex(16)
         parsed = urlsplit(self.configuration.url)
         self._origin = parsed.scheme + "://" + parsed.netloc
@@ -101,6 +102,7 @@ class CentralClient:
             response = session.request(method, self._origin + "/api/central/v1" + path,
                 json=body, headers={"Authorization": "Bearer " + self._credential, "X-JK-Machine": self.machine},
                 timeout=request_timeout((3.05, 35)), allow_redirects=False)
+            self.bling_account_quota = response.headers.get("X-JK-Bling-Quota") == "company-v1"
             check_budget()
             if len(response.content) > 12 * 1024 * 1024:
                 raise HTTPException(502, "Resposta da central excedeu o limite.")
@@ -125,9 +127,12 @@ class CentralClient:
                 if code == "central_result_uncertain":
                     raise HTTPException(409, messages[code])
                 raise HTTPException(response.status_code if response.status_code in (400, 403, 404, 409, 413, 429) else 503,
-                                    messages.get(code, "A central não conseguiu concluir a solicitação."))
+                                    messages.get(code, "A central não conseguiu concluir a solicitação."),
+                                    headers={"Retry-After": response.headers["Retry-After"]}
+                                    if response.status_code == 429 and response.headers.get("Retry-After") else None)
             return response.json()
         except (requests.RequestException, ValueError):
+            self.bling_account_quota = False
             if path.endswith("/request") and (body or {}).get("method") != "GET":
                 raise HTTPException(409, "Resultado incerto. Consulte a plataforma antes de repetir a operação.") from None
             raise HTTPException(503, "Não foi possível consultar a central. Verifique a conexão e tente novamente.") from None
@@ -295,6 +300,26 @@ def is_marker(value):
     return str(value or "").startswith(PREFIX)
 
 
+def bling_account_for_marker(marker, *, require_quota=False):
+    """Read company identity from the authorized bootstrap, never the marker."""
+    with _lock:
+        reference = _references.get(str(marker or ""))
+    if reference is None:
+        return ""
+    client, store_id, provider = reference
+    active = current()
+    if active is not None and active is not client:
+        raise HTTPException(403, "A conexão pertence a outra sessão.")
+    if provider != "bling" or client.expires_at <= time.time():
+        return ""
+    if require_quota and not client.bling_account_quota:
+        return ""
+    for row in client.public_stores():
+        if row["store_id"] == store_id:
+            return str((row["integracoes"].get("bling") or {}).get("user_id") or "")
+    return ""
+
+
 def provider_request(marker, method, url, *, headers=None, params=None, json=None, data=None, **_kwargs):
     with _lock:
         reference = _references.get(marker)
@@ -324,11 +349,22 @@ def provider_request(marker, method, url, *, headers=None, params=None, json=Non
             json = __import__("json").loads(data) if isinstance(data, (str, bytes)) else data
         except ValueError:
             raise HTTPException(400, "Formato não suportado para esta operação.") from None
-    result = client.call("POST", f"/stores/{store_id}/request", {
-        "provider": provider, "method": method.upper(), "path": path, "params": parameters,
-        "headers": {str(key).lower(): str(value) for key, value in (headers or {}).items()
-                    if str(key).lower() in {"x-format-new", "x-version", "if-match", "if-none-match"}},
-        "body": json, "request_id": secrets.token_hex(16)})
+    try:
+        result = client.call("POST", f"/stores/{store_id}/request", {
+            "provider": provider, "method": method.upper(), "path": path, "params": parameters,
+            "headers": {str(key).lower(): str(value) for key, value in (headers or {}).items()
+                        if str(key).lower() in {"x-format-new", "x-version", "if-match", "if-none-match"}},
+            "body": json, "request_id": secrets.token_hex(16)})
+    except HTTPException as exc:
+        if provider != "bling" or method.upper() != "GET" or exc.status_code != 429:
+            raise
+        # Let each existing caller preserve its own read retry policy.
+        response = requests.Response()
+        response.status_code = 429
+        response._content = b'{"error":{"type":"TOO_MANY_REQUESTS"}}'
+        response.headers.update(exc.headers or {})
+        response.url = url
+        return response
     response = requests.Response()
     response.status_code = result["status"]
     if response.status_code == 401 or (method.upper() != "GET" and response.status_code >= 500):

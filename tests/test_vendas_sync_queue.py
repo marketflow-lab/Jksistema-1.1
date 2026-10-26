@@ -28,7 +28,9 @@ def enqueue(queue, store="store-1", start="2026-10-01", end="2026-10-02", **kwar
 
 
 def finish(queue, job, owner, now, today=None):
-    for offset in range(job["dias_total"]):
+    end = min(dt.date.fromisoformat(job["data_fim"]), dt.date.fromisoformat(today or job["data_fim"]))
+    count = (end - dt.date.fromisoformat(job["data_inicio"])).days + 1
+    for offset in range(count):
         day = dt.date.fromisoformat(job["data_inicio"]) + dt.timedelta(days=offset)
         queue.complete_day(job["id"], owner, str(day), {"vendas": 0, "notas": 0}, now=now,
                            collection_started_at=now)
@@ -78,22 +80,24 @@ def test_day_acknowledgement_is_idempotent_and_filters_payload(queue):
         queue.complete_day(job["id"], "worker", "2026-10-03", {}, now=BASE + 103)
 
 
-def test_claim_is_atomic_limits_two_per_tenant_and_one_per_store(queue, tmp_path):
+def test_claim_is_atomic_limits_four_per_tenant_and_one_per_store(queue, tmp_path):
     enqueue(queue, store="store-1", now=BASE + 100)
     enqueue(queue, store="store-1", start="2026-09-01", end="2026-09-02", now=BASE + 101)
     enqueue(queue, store="store-2", now=BASE + 102)
     enqueue(queue, store="store-3", now=BASE + 103)
+    enqueue(queue, store="store-4", now=BASE + 104)
+    enqueue(queue, store="store-5", now=BASE + 105)
     with ThreadPoolExecutor(max_workers=8) as pool:
         claimed = list(pool.map(lambda i: queue.claim(f"worker-{i}", now=BASE + 110, limit=50), range(8)))
     claimed = [job for job in claimed if job]
     # Nonblocking history-gate contention may defer a worker to the scheduler's
     # next dispatch. Sequential retries must fill, but never exceed, the limit.
-    for index in range(2):
+    for index in range(4):
         retry = queue.claim(f"retry-{index}", now=BASE + 110, limit=50)
         if retry is not None:
             claimed.append(retry)
-    assert len(claimed) == 2
-    assert len({job["store_id"] for job in claimed}) == 2
+    assert len(claimed) == 4
+    assert len({job["store_id"] for job in claimed}) == 4
     other = SyncQueue("tenant-b", tenant_path=tmp_path / "tenant-b")
     enqueue(other, now=BASE + 110)
     assert other.claim("independent-worker", now=BASE + 110)
@@ -194,10 +198,10 @@ def test_manual_request_disables_auto_without_dropping_other_period(queue):
 
 def test_schedule_recovers_offline_gap_without_reviewing_completed_history(queue):
     initial_time, now = stamp("2026-01-04"), stamp("2026-10-15")
-    enqueue(queue, start="2026-01-01", end="2026-01-03", automatico=True,
+    enqueue(queue, start="2026-01-01", end="2026-12-31", automatico=True,
             requires_session=True, now=initial_time)
     initial = queue.claim("initial", now=initial_time)
-    finish(queue, initial, "initial", now=initial_time + 1)
+    finish(queue, initial, "initial", now=initial_time + 1, today="2026-01-03")
     due = queue.schedule_due(dt.date(2026, 10, 15), now=now)
     assert len(due) == 1 and due[0]["kind"] == "recent"
     recent = due[0]
@@ -221,8 +225,8 @@ def test_schedule_recovers_offline_gap_without_reviewing_completed_history(queue
 
 def test_schedule_revisits_only_today_and_does_not_rotate_closed_history(queue):
     now = stamp("2026-10-15")
-    enqueue(queue, start="2026-10-01", end="2026-10-15", automatico=True, now=now)
-    finish(queue, queue.claim("initial", now=now), "initial", now=now + 1)
+    enqueue(queue, start="2026-10-01", end="2026-10-31", automatico=True, now=now)
+    finish(queue, queue.claim("initial", now=now), "initial", now=now + 1, today="2026-10-15")
     assert queue.schedule_due(dt.date(2026, 10, 15), now=now + 2) == []
     first = queue.schedule_due(dt.date(2026, 10, 15), now=now + 901)
     assert [(job["data_inicio"], job["data_fim"]) for job in first] == [("2026-10-15", "2026-10-15")]
@@ -234,7 +238,7 @@ def test_schedule_revisits_only_today_and_does_not_rotate_closed_history(queue):
     assert [(job["data_inicio"], job["data_fim"]) for job in third] == [("2026-10-16", "2026-10-16")]
     with sqlite3.connect(queue.path) as conn:
         assert {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {
-            "tenant", "jobs", "plans", "days", "connection_alert_ack", "connection_check_state", "store_sources"}
+            "tenant", "jobs", "plans", "days", "connection_alert_ack", "connection_check_state", "store_sources", "sync_revision"}
 
 
 def test_future_empty_days_do_not_hide_gap_after_long_downtime(queue):
@@ -244,7 +248,7 @@ def test_future_empty_days_do_not_hide_gap_after_long_downtime(queue):
     scheduled = queue.schedule_due(dt.date(2027, 1, 15), now=stamp("2027-01-15"))
     recent = next(job for job in scheduled if job["kind"] == "recent")
     assert recent["data_inicio"] == "2026-10-15"
-    assert recent["data_fim"] == "2027-01-15"
+    assert recent["data_fim"] == "2026-12-31"
 
 
 def test_newer_manual_period_does_not_forget_original_start_or_unvisited_gap(queue):

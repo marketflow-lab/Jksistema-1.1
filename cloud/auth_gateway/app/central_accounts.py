@@ -4,19 +4,22 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
 
-from .errors import AuthRejected
+from .errors import AuthRejected, GatewayUnavailable
 from .policy import (assert_access_allowed, assert_registered_machine, canonical_hash,
                      normalize_permissions, password_value, user_client_id)
 
 
 class CentralError(Exception):
-    def __init__(self, code, status=409, details=None):
+    def __init__(self, code, status=409, details=None, *, headers=None):
         self.code, self.status = code, status
         self.details = dict(details or {})
+        self.headers = {"Retry-After": str(value) for key, value in (headers or {}).items()
+                        if str(key).lower() == "retry-after" and str(value).isdigit()}
         super().__init__(code)
 
 
@@ -39,10 +42,13 @@ class Principal:
 
 class CentralAccounts:
     def __init__(self, users, documents, vault, provider, public_origin, *, clock=time.time,
-                 enrollment_required=False):
+                 enrollment_required=False, bling_quota=None):
         self.users, self.documents, self.vault = users, documents, vault
         self.provider, self.public_origin, self.clock = provider, public_origin.rstrip("/"), clock
         self.enrollment_required = enrollment_required
+        from .central_bling_quota import BlingCompanyQuota
+        self.bling_quota = bling_quota or BlingCompanyQuota(documents)
+        self.provider.bling_quota = self.bling_quota
 
     def enabled_for(self, user):
         return not self.enrollment_required or user.get("central_accounts_enabled") is True
@@ -201,7 +207,8 @@ class CentralAccounts:
                         identity = self.provider.identify(connection)
                     except CentralError as exc:
                         raise CentralError(exc.code, exc.status, {
-                            "store_id": store["store_id"], "provider": connection["provider"]}) from None
+                            "store_id": store["store_id"], "provider": connection["provider"]},
+                            headers=exc.headers) from None
                     seller_id = str(identity.get("seller_id") or "")
                     site_id = str(identity.get("site_id") or "")
                     if (connection["expected_account_id"]
@@ -475,7 +482,8 @@ class CentralAccounts:
         if row["status"] != "ready":
             raise CentralError("central_reconnect_required", 409)
         if row.get("retry_after", 0) > self.clock():
-            raise CentralError("central_provider_rate_limited", 429)
+            from .central_bling_quota import rate_limited
+            raise rate_limited(row["retry_after"] - self.clock())
         credentials = self.vault.open("connection:" + connection_id, row["sealed"])
         if rejected_token and credentials["access_token"] != rejected_token:
             return credentials
@@ -487,7 +495,8 @@ class CentralAccounts:
             if current["version"] != row["version"] or current["status"] != "ready":
                 raise CentralError("central_refresh_busy", 409)
             if current.get("retry_after", 0) > self.clock():
-                raise CentralError("central_provider_rate_limited", 429)
+                from .central_bling_quota import rate_limited
+                raise rate_limited(current["retry_after"] - self.clock())
             current.update(status="refreshing", lease=lease, lease_until=self.clock() + 45)
             return current
 
@@ -496,21 +505,24 @@ class CentralAccounts:
             refreshed = self.provider.refresh(credentials)
         except Exception as exc:
             code = exc.code if isinstance(exc, CentralError) else "central_refresh_uncertain"
-            if code not in {"central_reconnect_required", "central_provider_rate_limited"}:
+            if code not in {"central_reconnect_required", "central_provider_rate_limited", "central_quota_unavailable"}:
                 code = "central_refresh_uncertain"
             def uncertain(current):
                 if current.get("lease") == lease:
-                    current["status"] = ("ready" if code == "central_provider_rate_limited" else
+                    current["status"] = ("ready" if code in {"central_provider_rate_limited", "central_quota_unavailable"} else
                                          "reconnect_required" if code == "central_reconnect_required" else
                                          "refresh_uncertain")
                     current.pop("lease", None)
                     current["lease_until"] = 0
                     if code == "central_provider_rate_limited":
-                        current["retry_after"] = self.clock() + 60
+                        from .central_bling_quota import retry_after_seconds
+                        current["retry_after"] = self.clock() + retry_after_seconds(
+                            getattr(exc, "headers", None), self.clock(), default=60)
                 return current
             self.documents.change("connections", connection_id, uncertain)
             raise CentralError(code, 429 if code == "central_provider_rate_limited" else
-                               409 if code == "central_reconnect_required" else 503) from None
+                               409 if code == "central_reconnect_required" else 503,
+                               headers=getattr(exc, "headers", None)) from None
 
         def finish(current):
             if current.get("lease") != lease or current["version"] != row["version"]:
@@ -523,6 +535,21 @@ class CentralAccounts:
         self.documents.change("connections", connection_id, finish)
         return refreshed
 
+    def _provider_request(self, credentials, payload, *, before_request=None):
+        company = credentials.get("seller_id")
+        guard = self.bling_quota.account(company) if payload.provider == "bling" else nullcontext()
+        with guard as permit:
+            # A denied quota has not submitted a mutation. Claim its operation
+            # only after admission, so a safe retry retains the same request id.
+            if before_request is not None:
+                before_request()
+            if permit is not None:
+                permit.start()
+            response = self.provider.request(credentials, payload)
+            if payload.provider == "bling" and response["status"] == 429:
+                self.bling_quota.block(company, response.get("headers"))
+            return response
+
     def request(self, principal, store_id, payload):
         writing = payload.method != "GET"
         store = self.store(principal, store_id, write=writing)
@@ -534,7 +561,7 @@ class CentralAccounts:
         assert_provider_permission(principal, payload)
         operation_key = key_for(principal.key, store_id, payload.request_id)
         fingerprint = key_for(payload.model_dump())
-        if writing:
+        def claim_operation():
             def claim(old):
                 if old:
                     raise CentralError("central_operation_already_submitted", 409)
@@ -543,17 +570,18 @@ class CentralAccounts:
             self.documents.change("operations", operation_key, claim)
         credentials = self._credentials(connection["id"], store["tenant"])
         try:
-            response = self.provider.request(credentials, payload)
+            response = self._provider_request(credentials, payload,
+                                              before_request=claim_operation if writing else None)
             if response["status"] == 401:
                 credentials = self._credentials(connection["id"], store["tenant"], force=True,
                                                 rejected_token=credentials["access_token"])
                 # Retry only reads; mutations are never automatically replayed.
                 if not writing:
-                    response = self.provider.request(credentials, payload)
+                    response = self._provider_request(credentials, payload)
             if writing:
                 self.documents.change("operations", operation_key, lambda old: {**old, "status": "completed"})
             return response
-        except CentralError:
+        except (CentralError, GatewayUnavailable):
             raise
         except Exception:
             raise CentralError("central_result_uncertain" if writing else "central_provider_unavailable", 502) from None

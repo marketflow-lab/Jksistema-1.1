@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 import threading
 import time
+from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from typing import Callable
 
 import requests
@@ -27,8 +29,123 @@ def _get_bling_session():
 
 BLING_SESSION = _get_bling_session()
 BLING_ACCOUNT_MIN_INTERVAL_SECONDS = 0.35
-_BLING_ACCOUNT_LIMIT_LOCK = threading.Lock()
+_BLING_ACCOUNT_LIMIT_LOCK = threading.RLock()
 _BLING_ACCOUNT_NEXT_CALL: dict[str, float] = {}
+_BLING_QUOTA_CONDITION = threading.Condition(_BLING_ACCOUNT_LIMIT_LOCK)
+_BLING_QUOTA_ACTIVE = 0
+_BLING_QUOTA_ACTIVE_KEYS: set[str] = set()
+_BLING_QUOTA_UNKNOWN_ACTIVE = False
+_BLING_QUOTA_UNKNOWN_WAITERS = 0
+_BLING_QUOTA_LAST_START = 0.0
+_BLING_QUOTA_UNKNOWN_UNTIL = 0.0
+
+
+def _bling_quota_key(headers):
+    from .bling_accounts import account_for_token
+    token = str((headers or {}).get("Authorization") or "").removeprefix("Bearer ")
+    account = account_for_token(token)
+    return "bling:" + account if account else "bling-process-wide"
+
+
+@contextmanager
+def bling_account_request(headers, *, cancel_callback=None, deadline=None):
+    """Grant an actual HTTP start; unknown identities exclude all known groups.
+
+    Slots are not preallocated: delayed threads must check again at the point
+    they really dispatch, avoiding bursts when several sleepers wake late.
+    """
+    global _BLING_QUOTA_ACTIVE, _BLING_QUOTA_UNKNOWN_ACTIVE
+    global _BLING_QUOTA_UNKNOWN_WAITERS, _BLING_QUOTA_LAST_START, _BLING_QUOTA_UNKNOWN_UNTIL
+    key = _bling_quota_key(headers)
+    unknown = key == "bling-process-wide"
+    granted = False
+    waiting = unknown
+    with _BLING_QUOTA_CONDITION:
+        if waiting:
+            _BLING_QUOTA_UNKNOWN_WAITERS += 1
+    try:
+        while True:
+            if callable(cancel_callback):
+                cancel_callback()
+            with _BLING_QUOTA_CONDITION:
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    raise requests.Timeout("Bling account quota deadline exceeded")
+                available = not _BLING_QUOTA_UNKNOWN_ACTIVE and (
+                    _BLING_QUOTA_ACTIVE == 0 if unknown else (
+                        _BLING_QUOTA_UNKNOWN_WAITERS == 0 and key not in _BLING_QUOTA_ACTIVE_KEYS))
+                ready_at = max(_BLING_ACCOUNT_NEXT_CALL.get(key, 0.0), _BLING_QUOTA_UNKNOWN_UNTIL)
+                if unknown:
+                    ready_at = max(ready_at, _BLING_QUOTA_LAST_START + BLING_ACCOUNT_MIN_INTERVAL_SECONDS)
+                if available and now >= ready_at:
+                    _BLING_ACCOUNT_NEXT_CALL[key] = now + BLING_ACCOUNT_MIN_INTERVAL_SECONDS
+                    _BLING_QUOTA_LAST_START = now
+                    if unknown:
+                        _BLING_QUOTA_UNKNOWN_WAITERS -= 1
+                        waiting = False
+                        _BLING_QUOTA_UNKNOWN_ACTIVE = True
+                        _BLING_QUOTA_UNKNOWN_UNTIL = now + BLING_ACCOUNT_MIN_INTERVAL_SECONDS
+                    else:
+                        _BLING_QUOTA_ACTIVE += 1
+                        _BLING_QUOTA_ACTIVE_KEYS.add(key)
+                    granted = True
+                    break
+                delay = min(0.25, max(0.001, ready_at - now)) if available else 0.25
+                if deadline is not None:
+                    delay = min(delay, max(0.001, deadline - now))
+                _BLING_QUOTA_CONDITION.wait(delay)
+        def mark_start():
+            # A worker may be suspended after admission. Anchor the next slot
+            # again immediately before its transport starts, with its company
+            # still exclusively held; do not add an interval after the response.
+            global _BLING_QUOTA_LAST_START, _BLING_QUOTA_UNKNOWN_UNTIL
+            if callable(cancel_callback):
+                cancel_callback()
+            with _BLING_QUOTA_CONDITION:
+                started = time.monotonic()
+                if deadline is not None and started >= deadline:
+                    raise requests.Timeout("Bling account quota deadline exceeded")
+                _BLING_ACCOUNT_NEXT_CALL[key] = max(
+                    _BLING_ACCOUNT_NEXT_CALL.get(key, 0.0), started + BLING_ACCOUNT_MIN_INTERVAL_SECONDS)
+                _BLING_QUOTA_LAST_START = max(_BLING_QUOTA_LAST_START, started)
+                if unknown:
+                    _BLING_QUOTA_UNKNOWN_UNTIL = max(
+                        _BLING_QUOTA_UNKNOWN_UNTIL, started + BLING_ACCOUNT_MIN_INTERVAL_SECONDS)
+        yield mark_start
+    finally:
+        with _BLING_QUOTA_CONDITION:
+            if waiting:
+                _BLING_QUOTA_UNKNOWN_WAITERS -= 1
+            if granted:
+                if unknown:
+                    _BLING_QUOTA_UNKNOWN_ACTIVE = False
+                else:
+                    _BLING_QUOTA_ACTIVE -= 1
+                    _BLING_QUOTA_ACTIVE_KEYS.discard(key)
+            _BLING_QUOTA_CONDITION.notify_all()
+
+
+def remember_bling_throttle(headers, response):
+    """Share provider cooldowns across callers, including non-retrying reads."""
+    global _BLING_QUOTA_UNKNOWN_UNTIL
+    if int(getattr(response, "status_code", 0)) != 429:
+        return
+    try:
+        raw_retry = (getattr(response, "headers", None) or {}).get("Retry-After") or "1"
+        try:
+            retry_after = float(raw_retry)
+        except (TypeError, ValueError):
+            retry_after = parsedate_to_datetime(str(raw_retry)).timestamp() - time.time()
+        retry_after = min(86400.0, max(0.35, retry_after))
+    except (TypeError, ValueError, OverflowError):
+        retry_after = 1.0
+    key = _bling_quota_key(headers)
+    with _BLING_QUOTA_CONDITION:
+        until = time.monotonic() + retry_after
+        _BLING_ACCOUNT_NEXT_CALL[key] = max(_BLING_ACCOUNT_NEXT_CALL.get(key, 0.0), until)
+        if key == "bling-process-wide":
+            _BLING_QUOTA_UNKNOWN_UNTIL = max(_BLING_QUOTA_UNKNOWN_UNTIL, until)
+        _BLING_QUOTA_CONDITION.notify_all()
 
 
 def _bling_wait_account_turn(
@@ -37,13 +154,7 @@ def _bling_wait_account_turn(
     cancel_callback: Callable[[], object] | None = None,
     deadline: float | None = None,
 ) -> None:
-    """Serialize every Bling GET start under a conservative process-wide limit.
-
-    The official quota is account-wide and OAuth tokens rotate. The desktop
-    runtime does not have a trustworthy immutable Bling account id before a
-    request, so a single bucket is deliberately stricter than the provider's
-    per-account quota and cannot split one account across token generations.
-    """
+    """Legacy reservation facade; live reads use ``bling_account_request``."""
 
     key = "bling-process-wide"
     now = time.monotonic()
@@ -282,30 +393,31 @@ def _bling_get_with_adaptive_limit(
         if time.monotonic() >= deadline:
             break
         limiter.wait_turn(cancel_callback=cancel_callback, deadline=deadline)
-        _bling_wait_account_turn(
-            headers,
-            cancel_callback=cancel_callback,
-            deadline=deadline,
-        )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            resp = BLING_SESSION.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=_bling_bounded_timeout(timeout, remaining),
-                stream=True,
-            )
-            _bling_consume_response_before_deadline(
-                resp,
-                deadline=deadline,
-                cancel_callback=cancel_callback,
-            )
+            with bling_account_request(headers, cancel_callback=cancel_callback, deadline=deadline) as mark_start:
+                mark_start()
+                remaining = deadline - time.monotonic()
+                resp = BLING_SESSION.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=_bling_bounded_timeout(timeout, remaining),
+                    stream=True,
+                )
+                _bling_consume_response_before_deadline(
+                    resp,
+                    deadline=deadline,
+                    cancel_callback=cancel_callback,
+                )
+                remember_bling_throttle(headers, resp)
             last_resp = resp
         except requests.RequestException:
-            if tentativa >= attempts - 1 or time.monotonic() >= deadline:
+            if time.monotonic() >= deadline:
+                return last_resp
+            if tentativa >= attempts - 1:
                 return None
             _bling_cancelable_sleep(
                 limiter.on_transient_error(),

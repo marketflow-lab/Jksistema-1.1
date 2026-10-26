@@ -97,10 +97,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Contagens verificadas tambem no checkout-base 8927d188, sem esta correcao.
+        # Contagens reproduzidas no snapshot-base 75188595, sem esta correcao.
         # O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 522,
-        "pairs": 520,
+        "routes": 523,
+        "pairs": 521,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
@@ -177,15 +177,17 @@ def test_sync_queue_keeps_capacity_limit_and_cancellation_contract(tmp_path, mon
         for store in stores:
             store.clear()
         reqs = [VendasSyncRequest(loja=name, data_inicio="2026-07-01", data_fim="2026-07-01")
-                for name in ("A", "B", "C")]
+                for name in ("A", "B", "C", "D", "E")]
         first = vendas_sync_engine.sincronizar_vendas(reqs[0], "tenant-sync")
         duplicate = vendas_sync_engine.sincronizar_vendas(reqs[0], "tenant-sync")
         second = vendas_sync_engine.sincronizar_vendas(reqs[1], "tenant-sync")
-        queued = vendas_sync_engine.sincronizar_vendas(reqs[2], "tenant-sync")
-        assert first["started"] and second["started"]
+        third = vendas_sync_engine.sincronizar_vendas(reqs[2], "tenant-sync")
+        fourth = vendas_sync_engine.sincronizar_vendas(reqs[3], "tenant-sync")
+        queued = vendas_sync_engine.sincronizar_vendas(reqs[4], "tenant-sync")
+        assert all(result["started"] for result in (first, second, third, fourth))
         assert duplicate["job_id"] == first["job_id"]
         assert queued["queued"] and queued["accepted"]
-        assert len(SYNC_ACTIVE["tenant-sync"]) == 2
+        assert len(SYNC_ACTIVE["tenant-sync"]) == 4
         cancelled = vendas_progress.cancelar_sincronizacao_vendas("tenant-sync")
         assert cancelled["success"] is True
         assert all(job["status"] == "paused" for job in SyncQueue("tenant-sync").list_jobs())

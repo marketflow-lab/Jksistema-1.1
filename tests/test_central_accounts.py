@@ -276,6 +276,22 @@ def test_rate_limited_refresh_retains_authority_and_recovers_after_cooldown(cent
     assert central.provider.refreshes == 2
 
 
+def test_refresh_admission_outage_keeps_authority_ready_for_safe_retry(central):
+    owner, identity, _ = connected(central)
+    expire_connection(central, owner, identity)
+    central.provider.refresh_error = CentralError("central_quota_unavailable", 503,
+                                                  headers={"Retry-After": "2"})
+    with pytest.raises(CentralError) as error:
+        central.request(owner, identity, request())
+    assert error.value.code == "central_quota_unavailable"
+    assert error.value.headers == {"Retry-After": "2"}
+    row = central.documents.get("stores", key_for("store", identity))
+    connection_id = row["connections"]["mercadolivre"]["id"]
+    assert central.documents.get("connections", connection_id)["status"] == "ready"
+    central.provider.refresh_error = None
+    assert central.request(owner, identity, request())["status"] == 200
+
+
 def test_concurrent_rate_limit_is_rechecked_inside_refresh_claim(central, monkeypatch):
     owner, identity, _ = connected(central)
     expire_connection(central, owner, identity)
@@ -619,3 +635,82 @@ def test_hosting_routes_central_and_auth_to_same_pinned_service():
     routes = {row['source']: row for row in config['hosting']['rewrites']}
     assert routes['/api/central/**']['run'] == routes['/api/auth/**']['run']
     assert routes['/api/central/**']['run']['pinTag'] is True
+
+
+def connected_bling(central, request_id="1", app_id="app-a"):
+    from urllib.parse import parse_qs, urlsplit
+    owner = principal(central)
+    store = central.create_store(owner, StoreCreate(name="Bling Shop", request_id=request_id * 32))
+    flow = central.connect(owner, store["store_id"], ConnectRequest(provider="bling", app_id=app_id,
+                                                                  app_secret="provider-secret"))
+    state = parse_qs(urlsplit(flow["url"]).query)["state"][0]
+    central.complete_oauth(state, "one-use-code")
+    return owner, store["store_id"]
+
+
+def test_bling_company_throttle_is_shared_by_replicas_stores_apps_and_read_modules(central):
+    from cloud.auth_gateway.app.central_bling_quota import BlingCompanyQuota
+    owner, one = connected_bling(central, "1", "app-a")
+    _, two = connected_bling(central, "2", "app-b")
+    central.bling_quota = BlingCompanyQuota(central.documents, wait_budget=0)
+    replica = CentralAccounts(central.users, central.documents, central.vault, Provider(),
+                              central.public_origin, clock=central.clock,
+                              bling_quota=BlingCompanyQuota(central.documents, wait_budget=0))
+    central.provider.status = 429
+    original_request = central.provider.request
+
+    def rejected(credentials, payload):
+        response = original_request(credentials, payload)
+        response["headers"]["Retry-After"] = "19"
+        return response
+
+    central.provider.request = rejected
+    first = ProviderRequest(provider="bling", method="GET", path="/pedidos/vendas", request_id="a" * 32)
+    assert central.request(owner, one, first)["status"] == 429
+    second = first.model_copy(update={"path": "/produtos", "request_id": "b" * 32})
+    with pytest.raises(CentralError) as error:
+        replica.request(owner, two, second)
+    assert error.value.status == 429
+    assert int(error.value.headers["Retry-After"]) >= 18
+    assert not replica.provider.requests
+
+
+def test_bling_quota_denial_does_not_submit_a_mutation_or_consume_its_request_id(central):
+    from cloud.auth_gateway.app.central_bling_quota import BlingCompanyQuota
+    owner, store_id = connected_bling(central)
+    central.bling_quota = BlingCompanyQuota(central.documents, wait_budget=0)
+    central.bling_quota.block("123", {"Retry-After": "20"})
+    payload = ProviderRequest(provider="bling", method="POST", path="/produtos", request_id="f" * 32)
+    with pytest.raises(CentralError) as error:
+        central.request(owner, store_id, payload)
+    assert error.value.status == 429
+    assert not central.provider.requests
+    assert central.documents.get("operations", key_for(owner.key, store_id, payload.request_id)) is None
+
+
+def test_central_advertises_quota_capability_and_preserves_retry_after_on_errors(central):
+    from cloud.auth_gateway.app.central_bling_quota import BlingCompanyQuota
+    _, store_id = connected_bling(central)
+    central.bling_quota = BlingCompanyQuota(central.documents, wait_budget=0)
+    central.bling_quota.block("123", {"Retry-After": "17"})
+    session = central.bootstrap_session(central.users.get_user("owner"), "owner", "machine-a")
+    headers = {"Authorization": "Bearer " + session["session"], "X-JK-Machine": "machine-a"}
+    client = TestClient(create_app(central=central))
+    bootstrap = client.get("/api/central/v1/bootstrap", headers=headers)
+    assert bootstrap.headers["X-JK-Bling-Quota"] == "company-v1"
+    assert set(bootstrap.json()) == {"protocol", "sync_mode", "stores"}
+    response = client.post(f"/api/central/v1/stores/{store_id}/request", headers=headers, json={
+        "provider": "bling", "method": "GET", "path": "/produtos", "request_id": "e" * 32})
+    assert response.status_code == 429
+    assert int(response.headers["Retry-After"]) >= 16
+    assert response.headers["X-JK-Bling-Quota"] == "company-v1"
+    assert response.json() == {"success": False, "code": "central_provider_rate_limited"}
+    assert not central.provider.requests
+
+
+def test_provider_preserves_lowercase_retry_after_header(monkeypatch):
+    provider = ProviderTransport()
+    monkeypatch.setattr(provider, "_http", lambda *_args, **_kwargs: (429, {"retry-after": "23"}, b"{}"))
+    payload = ProviderRequest(provider="bling", method="GET", path="/produtos", request_id="f" * 32)
+    result = provider.request({"access_token": "private"}, payload)
+    assert result["headers"]["Retry-After"] == "23"

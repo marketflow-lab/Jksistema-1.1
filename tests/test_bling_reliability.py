@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 import time
@@ -47,7 +48,11 @@ class FakeSession:
 
 
 @pytest.fixture(autouse=True)
-def limpar_limitador_de_conta_bling():
+def limpar_limitador_de_conta_bling(monkeypatch):
+    # These cases exercise HTTP retry/deadline policy. Actual shared quota and
+    # concurrency are covered independently in test_bling_quota_desktop.py.
+    monkeypatch.setattr(bling, "bling_account_request", lambda *a, **kw: nullcontext(lambda: None))
+    monkeypatch.setattr(bling, "remember_bling_throttle", lambda *a, **kw: None)
     with bling._BLING_ACCOUNT_LIMIT_LOCK:
         bling._BLING_ACCOUNT_NEXT_CALL.clear()
     yield

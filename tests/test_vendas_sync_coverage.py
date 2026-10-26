@@ -307,7 +307,7 @@ def test_daily_runner_downloads_only_gaps_after_the_period_changes(queue, monkey
     result = asyncio.run(sync_engine._sincronizar_vendas_impl(request, "tenant-a"))
 
     assert result["success"]
-    assert downloaded == ["2026-10-02", "2026-10-04", "2026-10-05"]
+    assert downloaded == ["2026-10-05", "2026-10-04", "2026-10-02"]
     assert queue.get_job(claimed["id"])["status"] == "complete"
 
 

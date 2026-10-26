@@ -236,9 +236,10 @@ def test_migration_seeds_barrier_once_only_when_operational_work_and_alerts_exis
 def test_scheduler_requests_barrier_for_alerts_in_paused_other_stores(queue, requires_session):
     failed(queue)
     queue.pause_all(now=NOW + 3)
-    job = enqueue(queue, "automatic", now=NOW + 4, automatico=True, requires_session=requires_session)
+    job = queue.enqueue("automatic", "Loja automatic", "2026-10-21", "2026-10-22",
+                        now=NOW + 4, automatico=True, requires_session=requires_session)
     queue.claim("collector", now=NOW + 4)
-    for day in ("2026-10-01", "2026-10-02"):
+    for day in ("2026-10-21", "2026-10-22"):
         queue.complete_day(job["id"], "collector", day, {}, now=NOW + 5)
     queue.complete_job(job["id"], "collector", now=NOW + 6)
     assert queue.schedule_due("2026-10-22", now=NOW + 906)

@@ -115,6 +115,8 @@ def history_environment(tmp_path, monkeypatch):
             "access_token": "fixture-access-" + store_id,
             "refresh_token": "fixture-refresh-" + store_id,
             "oauth_connection_id": "fixture-connection-" + store_id,
+            "empresa_id": str(1000 + index),
+            "empresa_oauth_connection_id": "fixture-connection-" + store_id,
             "connected": True, "oauth_invalid": False, "status": "conectado",
         }
         if index >= 9:
@@ -214,7 +216,7 @@ def test_historical_eleven_store_batch_acknowledges_nine_before_any_collection(h
 
     entered, observed, failures, lock = threading.Event(), [], [], threading.Lock()
 
-    async def observe_collection(req, client_id):
+    async def observe_collection(req, client_id, *, day_budget=None):
         try:
             assert client_id == TENANT
             assert len(state.adapter.calls) == 9
@@ -223,7 +225,7 @@ def test_historical_eleven_store_batch_acknowledges_nine_before_any_collection(h
             assert plans(state.queue) == saved_plans
             with lock:
                 observed.append(req.store_id)
-                if len(observed) == 2:
+                if len(observed) == 4:
                     entered.set()
             assert state.release.wait(5)
             sync_engine._verificar_cancelamento(client_id)
@@ -237,9 +239,9 @@ def test_historical_eleven_store_batch_acknowledges_nine_before_any_collection(h
 
     monkeypatch.setattr(sync_engine, "_sincronizar_vendas_impl", observe_collection)
     started = sync_automation.dispatch(TENANT)
-    assert len(started) == 2
+    assert len(started) == 4
     assert entered.wait(5)
     assert not failures
-    assert len(observed) == 2 and set(observed).issubset(state.valid)
+    assert len(observed) == 4 and set(observed).issubset(state.valid)
     assert len(state.adapter.calls) == 9, "claim must transfer the acknowledgement rather than re-probe"
     assert all(state.queue.get_job(job_id)["dias_concluidos"] == [START] for job_id in started)

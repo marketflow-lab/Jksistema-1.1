@@ -63,6 +63,8 @@ def environment(tmp_path, monkeypatch):
             "id": "fixture-app", "secret": "fixture-secret", "connected": True,
             "access_token": "fixture-access-" + store_id,
             "oauth_connection_id": "fixture-connection-" + store_id,
+            "empresa_id": str(1000 + int(store_id.rsplit("-", 1)[-1])),
+            "empresa_oauth_connection_id": "fixture-connection-" + store_id,
         }}}
     monkeypatch.setattr(sync_engine, "buscar_loja", store)
     queue.pause_all()
@@ -116,7 +118,8 @@ def test_all_eleven_alerted_stores_are_checked_before_any_collection(environment
             last_check.set()
             assert state.release.wait(5)
 
-    async def collect(req, client):
+    async def collect(req, client, *, day_budget=None):
+        assert day_budget == 1
         state.events.append(("collect", req.store_id))
         assert {store for kind, store in state.events if kind == "check"} == {r.store_id for r in state.requests}
         assert not state.queue.connection_alerts(req.store_id), "claim must keep the confirmed warning dismissed"

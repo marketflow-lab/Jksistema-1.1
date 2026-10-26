@@ -66,20 +66,20 @@ class WaitingThread:
         return self.alive
 
 
-def test_three_stores_are_durable_even_when_only_two_can_start(isolated, monkeypatch):
+def test_five_stores_are_durable_even_when_only_four_can_start(isolated, monkeypatch):
     monkeypatch.setattr(sync_automation.threading, "Thread", WaitingThread)
     requests = [VendasSyncRequest(loja=name, data_inicio="2026-10-01", data_fim="2026-10-02",
-                                 automatico=True) for name in ("A", "B", "C")]
+                                 automatico=True) for name in ("A", "B", "C", "D", "E")]
     results = [sync_engine.sincronizar_vendas(req, "tenant-a") for req in requests]
     repeated = sync_engine.sincronizar_vendas(requests[0], "tenant-a")
     queue = SyncQueue("tenant-a")
-    assert results[0]["started"] and results[1]["started"]
-    assert results[2]["queued"]
+    assert all(result["started"] for result in results[:4])
+    assert results[4]["queued"]
     assert repeated["job_id"] == results[0]["job_id"]
-    assert len(queue.list_jobs()) == 3
-    assert len([job for job in queue.list_jobs() if job["status"] == "running"]) == 2
+    assert len(queue.list_jobs()) == 5
+    assert len([job for job in queue.list_jobs() if job["status"] == "running"]) == 4
     state = progress.progresso_sincronizacao_vendas("tenant-a")
-    assert state["active"] and state["automacao"]["pendentes"] == 3
+    assert state["active"] and state["automacao"]["pendentes"] == 5
     progress.cancelar_sincronizacao_vendas("tenant-a")
     assert all(job["status"] == "paused" for job in queue.list_jobs())
     assert queue.summary()["habilitadas"] == 0
@@ -107,7 +107,7 @@ def test_interrupted_days_resume_and_empty_day_is_a_real_acknowledgement(isolate
     req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-03")
     with pytest.raises(VendasDomainError):
         asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
-    assert queue.get_job(job["id"])["dias_concluidos"] == ["2026-10-01"]
+    assert queue.get_job(job["id"])["dias_concluidos"] == ["2026-10-03"]
     queue.fail_job(job["id"], "first", "Indisponível.", retry_after=1)
     # A POST resumes the same saved cycle instead of depending on the UI's row count.
     again = queue.enqueue("store-a", "A", req.data_inicio, req.data_fim)
@@ -119,7 +119,7 @@ def test_interrupted_days_resume_and_empty_day_is_a_real_acknowledgement(isolate
         return {"success": True, "total": 1}
     monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", complete)
     asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
-    assert seen == ["2026-10-01", "2026-10-02", "2026-10-02", "2026-10-03"]
+    assert seen == ["2026-10-03", "2026-10-02", "2026-10-02", "2026-10-01"]
     assert queue.get_job(job["id"])["status"] == "complete"
 
 
@@ -151,6 +151,27 @@ def test_worker_waits_for_the_original_authorization_after_restart(isolated, mon
     saved = queue.get_job(job["id"])
     assert saved["status"] == "retry" and not saved["dias_concluidos"]
     assert "login" in saved["last_error"]
+
+
+def test_worker_accepts_a_pause_between_failure_check_and_transaction(isolated, monkeypatch):
+    queue = SyncQueue("tenant-a")
+    job = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-01")
+    queue.claim("first")
+    store = {"store_id": "store-a", "integracoes": {"bling": {"access_token": "fixture",
+        "oauth_connection_id": "fixture", "empresa_oauth_connection_id": "fixture", "empresa_id": "1001"}}}
+    monkeypatch.setattr(sync_engine, "buscar_loja", lambda *_, **__: store)
+    def unavailable(*_, **__):
+        raise VendasDomainError(503, "Fixture unavailable")
+    monkeypatch.setattr(sync_engine, "_prepare_store_collection", unavailable)
+    original_failure = SyncQueue.fail_job
+    def pause_before_failure(self, *args, **kwargs):
+        self.pause_all()
+        return original_failure(self, *args, **kwargs)
+    monkeypatch.setattr(SyncQueue, "fail_job", pause_before_failure)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-01")
+    sync_engine._sincronizar_vendas_thread_worker(req, "tenant-a", job["id"], "first")
+    assert queue.get_job(job["id"])["status"] == "paused"
+    assert SYNC_META[job["id"]]["status"] != "complete"
 
 
 def test_failed_job_is_not_displayed_as_complete_between_attempts(isolated):
@@ -259,7 +280,7 @@ def test_compositions_run_after_committed_days_before_job_completion(isolated, m
     _composition_hook(monkeypatch, compositions)
     req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-02")
     result = asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a"))
-    assert calls == ["2026-10-01", "2026-10-02", ("tenant-a", "store-a")]
+    assert calls == ["2026-10-02", "2026-10-01", ("tenant-a", "store-a")]
     assert result["success"] and result["total"] == result["vendas_processadas"] == 2
     assert result["composicoes"] == {"updated": 2, "pending": False}
     final = SYNC_PROGRESS[job["id"]]
@@ -267,6 +288,44 @@ def test_compositions_run_after_committed_days_before_job_completion(isolated, m
     assert final["etapa"] == "Finalizado" and final["concluido"] is True
     assert final["percentual"] == 100 and final["mensagem"] == "Período e composições conferidos."
     assert queue.get_job(job["id"])["status"] == "complete"
+
+
+def test_daily_turns_yield_newest_first_and_finalize_compositions_once(isolated, monkeypatch):
+    queue = SyncQueue("tenant-a")
+    queued = queue.enqueue("store-a", "A", "2026-10-01", "2026-10-03", automatico=True)
+    seen = []
+    compositions = []
+
+    async def collect(req, client, reset_estado=False):
+        seen.append(req.data_inicio)
+        return {"success": True, "total": 2, "notas_entrada_total": 1, "vendas_processadas": 2}
+
+    def compose(*_, **__):
+        compositions.append(True)
+        return {"updated": 1, "pending": False}
+
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_periodo_impl", collect)
+    _composition_hook(monkeypatch, compose)
+    req = VendasSyncRequest(loja="A", store_id="store-a", data_inicio="2026-10-01", data_fim="2026-10-03")
+    for index in range(3):
+        owner = str(index)
+        job = queue.claim(owner)
+        _bind(job, queue, owner)
+        result = asyncio.run(sync_engine._sincronizar_vendas_impl(req, "tenant-a", day_budget=1))
+        state = progress.progresso_sincronizacao_vendas("tenant-a")
+        assert state["data_revision"] == index + 1
+        assert state["progress"]["dias_confirmados"] == index + 1
+        if index < 2:
+            assert result["yielded"] and queue.get_job(queued["id"])["status"] == "queued"
+            assert state["progress"]["concluido"] is False
+            assert state["progress"]["percentual"] < 100
+            assert not compositions
+        else:
+            assert result["total"] == result["vendas_processadas"] == 6
+            assert result["notas_entrada_total"] == 3
+            assert state["progress"]["concluido"] is True
+    assert seen == ["2026-10-03", "2026-10-02", "2026-10-01"]
+    assert compositions == [True]
 
 
 @pytest.mark.parametrize("failure_type", ["runtime", "provider_http"])

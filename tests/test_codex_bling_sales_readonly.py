@@ -55,7 +55,7 @@ def test_connected_bling_store_is_required_and_exact():
         {"store_id": "store-jk", "nome": "JK Peças", "integracoes": {"bling": {"access_token": "a", "refresh_token": "r"}}},
         {"store_id": "store-carlos", "nome": "Carlos José", "integracoes": {"bling": {"access_token": "b", "refresh_token": "s"}}},
     ]
-    with patch("backend.services.integracoes.carregar_lojas", return_value=stores):
+    with patch("backend.services.integracoes.ler_lojas", return_value=stores):
         missing, missing_warnings = codex_bling_tools._connected_stores("000002", None, require_exact=True)
         invalid, invalid_warnings = codex_bling_tools._connected_stores("000002", "Carlos", require_exact=True)
         exact, exact_warnings = codex_bling_tools._connected_stores("000002", "Carlos Jose", require_exact=True)

@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .sync_config import MAX_CONCURRENT_ACCOUNTS, UNKNOWN_ACCOUNT_ID
+
 
 INTERVAL_SECONDS = 15 * 60
 HISTORY_INTERVAL_SECONDS = 24 * 60 * 60
@@ -124,6 +126,27 @@ class SyncQueue:
                 conn.execute("ALTER TABLE days ADD COLUMN collection_started_at REAL")
             if "database_name" not in day_columns:
                 conn.execute("ALTER TABLE days ADD COLUMN database_name TEXT")
+            job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+            for name, definition in (
+                ("account_id", "TEXT"),
+                ("waiting_since", "REAL"),
+                ("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+                ("batch_number", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in job_columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+            conn.execute("""CREATE TABLE IF NOT EXISTS sync_revision (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1), value INTEGER NOT NULL)""")
+            conn.execute("INSERT OR IGNORE INTO sync_revision (singleton, value) VALUES (1, 0)")
+            revision_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sync_revision)")}
+            if "batch_number" not in revision_columns:
+                conn.execute("ALTER TABLE sync_revision ADD COLUMN batch_number INTEGER NOT NULL DEFAULT 0")
+            if conn.execute("SELECT batch_number FROM sync_revision").fetchone()[0] == 0:
+                number = max(1, conn.execute("SELECT COALESCE(MAX(batch_number), 0) FROM jobs").fetchone()[0])
+                if conn.execute("SELECT 1 FROM jobs LIMIT 1").fetchone():
+                    conn.execute("UPDATE sync_revision SET batch_number = ?", (number,))
+                    conn.execute("""UPDATE jobs SET batch_number = ? WHERE batch_number = 0
+                        AND status IN ('queued', 'running', 'retry', 'blocked')""", (number,))
             tenant = conn.execute("SELECT client_id FROM tenant").fetchone()
             if tenant is not None and tenant[0] != self.client_id:
                 raise ValueError("A fila pertence a outro cliente.")
@@ -373,7 +396,17 @@ class SyncQueue:
                 missing.append(day)
         return sorted(missing)
 
-    def _enqueue(self, conn, store_id, loja, start, end, force, automatic, kind, now, requires_session=False):
+    @staticmethod
+    def _current_batch(conn):
+        number = conn.execute("SELECT batch_number FROM sync_revision WHERE singleton = 1").fetchone()[0]
+        if not conn.execute("SELECT 1 FROM jobs WHERE status IN ('queued', 'running', 'retry', 'blocked') LIMIT 1").fetchone():
+            number += 1
+            conn.execute("UPDATE sync_revision SET batch_number = ? WHERE singleton = 1", (number,))
+        return number
+
+    def _enqueue(self, conn, store_id, loja, start, end, force, automatic, kind, now, requires_session=False,
+                 batch_number=None):
+        batch_number = self._current_batch(conn) if batch_number is None else batch_number
         identity = [store_id, start, end, bool(force)]
         if kind == "history":
             # Preserve existing signatures for queued jobs from older versions.
@@ -383,6 +416,7 @@ class SyncQueue:
         old = conn.execute("SELECT id, status FROM jobs WHERE signature = ? AND status != 'complete'",
                            (signature,)).fetchone()
         if old:
+            conn.execute("UPDATE jobs SET batch_number = ? WHERE id = ?", (batch_number, old["id"]))
             if old["status"] != "running":
                 conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?,
                     owner = NULL, lease_until = NULL, updated_at = ?, loja = ?, automatico = ?,
@@ -393,10 +427,10 @@ class SyncQueue:
         job_id = uuid.uuid4().hex
         conn.execute("""INSERT INTO jobs
             (id, signature, store_id, loja, data_inicio, data_fim, forcar_resync,
-             automatico, kind, next_attempt, created_at, updated_at, requires_session)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+             automatico, kind, next_attempt, created_at, updated_at, requires_session, batch_number)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (job_id, signature, store_id, loja, start, end, int(force),
-                      int(automatic), kind, now, now, now, int(requires_session)))
+                      int(automatic), kind, now, now, now, int(requires_session), batch_number))
         self._reuse_completed_days(conn, job_id, now)
         return self._job(conn, job_id)
 
@@ -418,6 +452,7 @@ class SyncQueue:
             raise ValueError("Tipo de sincronizacao invalido.")
         now = _time(now)
         with self._transaction() as conn:
+            batch_number = self._current_batch(conn)
             conn.execute("""INSERT INTO plans
                 (store_id, loja, enabled, data_inicio, data_fim, forcar_resync,
                  next_due, history_cursor, history_next_due, requires_session)
@@ -437,15 +472,16 @@ class SyncQueue:
                     updated_at = ? WHERE store_id = ? AND automatico = 1 AND status != 'complete'""",
                              (now, store_id))
             else:
-                conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?, updated_at = ?
-                    WHERE store_id = ? AND automatico = 1 AND status = 'paused'""", (now, now, store_id))
+                conn.execute("""UPDATE jobs SET status = 'queued', next_attempt = ?, updated_at = ?, batch_number = ?
+                    WHERE store_id = ? AND automatico = 1 AND status = 'paused'""", (now, now, batch_number, store_id))
             job = self._enqueue(conn, store_id, loja, str(start), str(end),
-                                forcar_resync, automatico, kind, now, requires_session)
+                                forcar_resync, automatico, kind, now, requires_session, batch_number=batch_number)
             if verify_connections:
                 self._request_connection_check(conn, requires_session=requires_session)
             return job
 
-    def claim(self, owner, now=None, lease_seconds=120, limit=2, exclude_store_ids=()):
+    def claim(self, owner, now=None, lease_seconds=120,
+              limit=MAX_CONCURRENT_ACCOUNTS, exclude_store_ids=()):
         if not str(owner or "").strip() or lease_seconds <= 0:
             raise ValueError("Executor e duracao de concessao validos sao obrigatorios.")
         with self._history_gate(timeout=0) as acquired:
@@ -458,16 +494,29 @@ class SyncQueue:
             now = _time(now)
             if self._connection_check_pending(conn):
                 return None
-            active = conn.execute("SELECT store_id FROM jobs WHERE status = 'running' AND lease_until > ?",
+            active = conn.execute("SELECT store_id, account_id FROM jobs WHERE status = 'running' AND lease_until > ?",
                                   (now,)).fetchall()
-            if len(active) >= min(2, max(0, int(limit))):
+            if len(active) >= min(MAX_CONCURRENT_ACCOUNTS, max(0, int(limit))):
                 return None
-            rows = conn.execute("""SELECT id, store_id FROM jobs WHERE
+            rows = conn.execute("""SELECT * FROM jobs WHERE
                 (status IN ('queued', 'retry') AND COALESCE(next_attempt, 0) <= ?)
                 OR (status = 'running' AND COALESCE(lease_until, 0) <= ?)
                 ORDER BY created_at, rowid""", (now, now)).fetchall()
             busy = {row["store_id"] for row in active} | {str(value) for value in exclude_store_ids}
-            row = next((row for row in rows if row["store_id"] not in busy), None)
+            busy_accounts = {row["account_id"] for row in active if row["account_id"]}
+            if UNKNOWN_ACCOUNT_ID in busy_accounts:
+                return None
+            candidates = []
+            for order, row in enumerate(rows):
+                if row["store_id"] in busy or row["account_id"] in busy_accounts:
+                    continue
+                if row["account_id"] == UNKNOWN_ACCOUNT_ID and active:
+                    continue
+                self._reuse_completed_days(conn, row["id"], now)
+                day = self._next_pending_day(conn, row, now)
+                candidates.append((day or "", -(row["waiting_since"] or row["created_at"]),
+                                   -row["created_at"], -order, row))
+            row = max(candidates, key=lambda item: item[:4])[-1] if candidates else None
             if row is None:
                 return None
             # Coverage may have improved while this period waited behind an
@@ -488,6 +537,44 @@ class SyncQueue:
                 conn.execute("UPDATE connection_alert_ack SET error_signature = ? WHERE job_id = ?",
                              (self._error_signature(job), job["id"]))
             return job
+
+    @staticmethod
+    def _next_pending_day(conn, job, now):
+        end = min(_date(job["data_fim"]), dt.datetime.fromtimestamp(now, SYNC_TIMEZONE).date())
+        start = _date(job["data_inicio"])
+        done = {row[0] for row in conn.execute("SELECT day FROM days WHERE job_id = ?", (job["id"],))}
+        while end >= start and str(end) in done:
+            end -= dt.timedelta(days=1)
+        return str(end) if end >= start else None
+
+    def bind_job_account(self, job_id, owner, account_id, *, now=None):
+        """Bind verified provider identity and reject a second collector for it."""
+        account_id = str(account_id or "").strip() or UNKNOWN_ACCOUNT_ID
+        if len(account_id) > 128:
+            raise ValueError("Identidade da conta Bling indisponivel.")
+        with self._transaction() as conn:
+            now = _time(now)
+            job = self._require_owner(conn, job_id, owner, now)
+            active = conn.execute("""SELECT account_id FROM jobs WHERE id != ? AND status = 'running'
+                AND lease_until > ? AND account_id IS NOT NULL""", (job_id, now)).fetchall()
+            busy = any(account_id == UNKNOWN_ACCOUNT_ID or row["account_id"] in (account_id, UNKNOWN_ACCOUNT_ID)
+                       for row in active)
+            conn.execute("UPDATE jobs SET account_id = ? WHERE store_id = ?", (account_id, job["store_id"]))
+            if busy:
+                conn.execute("""UPDATE jobs SET status = 'queued', owner = NULL, lease_until = NULL,
+                    waiting_since = COALESCE(waiting_since, created_at), next_attempt = ?, updated_at = ?
+                    WHERE id = ?""", (now, now, job_id))
+            return not bool(busy)
+
+    def yield_job(self, job_id, owner, *, now=None):
+        """Release a successful daily turn without completing or failing the cycle."""
+        with self._transaction() as conn:
+            now = _time(now)
+            self._require_owner(conn, job_id, owner, now)
+            conn.execute("""UPDATE jobs SET status = 'queued', owner = NULL, lease_until = NULL,
+                next_attempt = ?, waiting_since = ?, updated_at = ? WHERE id = ?""",
+                         (now, now, now, job_id))
+            return self._job(conn, job_id)
 
     @staticmethod
     def _owns(conn, job_id, owner, now):
@@ -523,7 +610,8 @@ class SyncQueue:
         database_name = self._database_name(database_name)
         # Never persist source payloads, credentials or arbitrary tool results.
         counts = {key: int(value) for key, value in (result or {}).items()
-                  if key in {"vendas", "notas", "itens", "devolucoes"}
+                   if key in {"vendas", "notas", "itens", "devolucoes", "total", "notas_entrada_total",
+                              "nf_enriquecidas", "nf_pendentes_restantes", "vendas_processadas", "notas_processadas"}
                   and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0}
         checkpoint = _checkpoint((result or {}).get("checkpoint"))
         if checkpoint:
@@ -536,10 +624,12 @@ class SyncQueue:
             started = job["created_at"] if collection_started_at is None else _time(collection_started_at)
             if not math.isfinite(started) or started > now:
                 raise ValueError("Inicio da coleta invalido para confirmar o dia.")
-            conn.execute("""INSERT OR IGNORE INTO days
+            inserted = conn.execute("""INSERT OR IGNORE INTO days
                 (job_id, day, result, completed_at, collection_started_at, database_name)
                 VALUES (?, ?, ?, ?, ?, ?)""", (job_id, day, json.dumps(counts), now, started, database_name))
-            conn.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
+            if inserted.rowcount:
+                conn.execute("UPDATE sync_revision SET value = value + 1 WHERE singleton = 1")
+            conn.execute("UPDATE jobs SET updated_at = ?, consecutive_failures = 0 WHERE id = ?", (now, job_id))
             return self._job(conn, job_id)
 
     def complete_job(self, job_id, owner, now=None, today=None):
@@ -578,12 +668,13 @@ class SyncQueue:
         with self._transaction() as conn:
             now = _time(now)
             job = self._require_owner(conn, job_id, owner, now)
-            delay = min(INTERVAL_SECONDS, 15 * 2 ** min(6, max(0, job["attempts"] - 1)))
+            delay = min(INTERVAL_SECONDS, 15 * 2 ** min(6, job["consecutive_failures"]))
             if retry_after is not None:
                 delay = max(1, float(retry_after))
             conn.execute("DELETE FROM connection_alert_ack WHERE job_id = ?", (job_id,))
             conn.execute("""UPDATE jobs SET status = ?, last_error = ?, next_attempt = ?,
-                owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ?""",
+                owner = NULL, lease_until = NULL, consecutive_failures = consecutive_failures + 1,
+                updated_at = ? WHERE id = ?""",
                          ("retry" if retryable else "blocked", str(message)[:240],
                           now + delay if retryable else None, now, job_id))
             return self._job(conn, job_id)
@@ -775,6 +866,7 @@ class SyncQueue:
             conn.execute("""UPDATE jobs SET status = 'paused', owner = NULL, lease_until = NULL,
                 updated_at = ? WHERE status != 'complete'""", (now,))
             conn.execute("DELETE FROM days")
+            conn.execute("UPDATE sync_revision SET value = value + 1 WHERE singleton = 1")
             conn.execute("DELETE FROM connection_alert_ack")
             conn.execute("""UPDATE plans SET last_success = NULL, last_success_day = NULL,
                 next_due = ?, history_cursor = data_inicio, history_next_due = ?""", (now, now))
@@ -808,15 +900,20 @@ class SyncQueue:
                                 (plan["store_id"],)).fetchone():
                     continue
                 start = _date(plan["data_inicio"])
-                if start > today:
+                end = min(_date(plan["data_fim"]), today)
+                if start > end:
                     continue
                 if plan["next_due"] <= now:
-                    covered = self._confirmed_days(conn, plan["store_id"], str(start), str(today), now)
+                    covered = self._confirmed_days(conn, plan["store_id"], str(start), str(end), now)
                     begin = start
-                    while begin < today and str(begin) in covered:
+                    while begin <= end and str(begin) in covered:
                         begin += dt.timedelta(days=1)
+                    if begin > end:
+                        conn.execute("UPDATE plans SET next_due = ? WHERE store_id = ?",
+                                     (now + INTERVAL_SECONDS, plan["store_id"]))
+                        continue
                     scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
-                        str(begin), str(today), False, True, "recent", now, plan["requires_session"]))
+                        str(begin), str(end), False, True, "recent", now, plan["requires_session"]))
             if scheduled:
                 self._request_connection_check(conn, requires_session=any(
                     job["requires_session"] for job in scheduled))
@@ -826,18 +923,23 @@ class SyncQueue:
         with self._connection() as conn:
             conn.execute("BEGIN")
             rows = conn.execute("""SELECT id FROM jobs WHERE status != 'complete'
+                OR batch_number = (SELECT batch_number FROM sync_revision WHERE singleton = 1)
                 OR id IN (SELECT id FROM jobs WHERE status = 'complete' ORDER BY created_at DESC, rowid DESC LIMIT 20)
                 OR id IN (SELECT j.id FROM jobs j WHERE j.id = (
                     SELECT latest.id FROM jobs latest WHERE latest.store_id = j.store_id
                     ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1))
                 ORDER BY created_at DESC, rowid DESC""").fetchall()
             jobs = [self._job(conn, row[0], detailed=False) for row in rows]
+            current = _time(now)
+            today = dt.datetime.fromtimestamp(current, SYNC_TIMEZONE).date()
+            batch_number = conn.execute("SELECT batch_number FROM sync_revision WHERE singleton = 1").fetchone()[0]
             acknowledgements = {row["job_id"]: row["error_signature"] for row in
                                 conn.execute("SELECT job_id, error_signature FROM connection_alert_ack")}
             for job in jobs:
                 job["aviso_conexao_verificado"] = bool(job["last_error"] and
                     acknowledgements.get(job["id"]) == self._error_signature(job))
-                for private in ("owner", "signature", "requires_session"):
+                job["proximo_dia"] = self._next_pending_day(conn, job, current) if job["status"] != "complete" else None
+                for private in ("owner", "signature", "requires_session", "account_id", "waiting_since", "consecutive_failures"):
                     job.pop(private, None)
             plans = conn.execute("SELECT * FROM plans ORDER BY loja, store_id").fetchall()
             stores = []
@@ -852,12 +954,28 @@ class SyncQueue:
                 due = plan["next_due"] if plan["enabled"] else None
                 if job and job["status"] != "complete":
                     due = job["next_attempt"] if job["status"] in {"queued", "retry"} else None
+                # Count each requested store/day once, preferring the newest
+                # cycle when overlapping requests have different force flags.
+                coverage = {}
+                represented = [value for value in related if value["batch_number"] == batch_number
+                               and (value["status"] != "paused" or value is latest)]
+                for value in represented:
+                    day = _date(value["data_inicio"])
+                    end = min(_date(value["data_fim"]), today)
+                    confirmed = set(value["dias_concluidos"])
+                    while day <= end:
+                        coverage.setdefault(str(day), str(day) in confirmed)
+                        day += dt.timedelta(days=1)
+                next_days = [value["proximo_dia"] for value in operational if value.get("proximo_dia")]
                 stores.append({"loja": plan["loja"], "store_id": plan["store_id"],
                     "habilitado": bool(plan["enabled"]), "status": job["status"] if job else "idle",
                     "data_inicio": job["data_inicio"] if job else plan["data_inicio"],
                     "data_fim": job["data_fim"] if job else plan["data_fim"],
-                    "dias_concluidos": len(job["dias_concluidos"]) if job else 0,
-                    "dias_total": job["dias_total"] if job else 0,
+                    "dias_concluidos": sum(coverage.values()),
+                    "dias_total": len(coverage),
+                    "proximo_dia": max(next_days) if next_days else None,
+                    "dia_atual": job.get("proximo_dia") if job and job["status"] == "running" else None,
+                    "aguardando": bool(operational) and not any(value["status"] == "running" for value in operational),
                     "pendentes": len(operational), "pausados": len(pending) - len(operational),
                     "checkpoint": job["checkpoint"] if job else {},
                     "proxima_execucao": _iso(due),
@@ -867,6 +985,10 @@ class SyncQueue:
                     "job_id": job["id"] if job else None,
                     "forcar_resync": job["forcar_resync"] if job else bool(plan["forcar_resync"])})
             return {"lojas": stores, "jobs": jobs,
+                    "data_revision": conn.execute("SELECT value FROM sync_revision WHERE singleton = 1").fetchone()[0],
+                    "dias_confirmados": sum(store["dias_concluidos"] for store in stores),
+                    "dias_total": sum(store["dias_total"] for store in stores),
+                    "aguardando": sum(store["aguardando"] for store in stores),
                     "verificando_conexoes": self._connection_check_pending(conn),
                     "pendentes": sum(job["status"] not in {"complete", "paused"} for job in jobs),
                     "pausados": sum(job["status"] == "paused" for job in jobs),

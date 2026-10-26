@@ -565,7 +565,9 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
     monkeypatch.setattr(sync_engine.time, "time", lambda: clock[0])
     queue = SyncQueue("tenant-test", tenant_path=tmp_path)
     cfg = {"access_token": "access-old", "refresh_token": "refresh-old", "id": "app", "secret": "secret",
-           "connected": False, "oauth_invalid": True, "status": "reautenticacao_necessaria"}
+           "connected": False, "oauth_invalid": True, "status": "reautenticacao_necessaria",
+           "oauth_connection_id": "fixture-connection", "empresa_id": "1001",
+           "empresa_oauth_connection_id": "fixture-connection"}
     store = {"store_id": "store-a", "nome": "Loja A", "integracoes": {"bling": cfg}}
     for module in (sync_engine, sync_period):
         monkeypatch.setattr(module, "buscar_loja", lambda *_args, **_kwargs: store)

@@ -19,6 +19,7 @@ from .errors import VendasDomainError
 from .progress import _sync_register_active_unlocked, _sync_unregister_active
 from .state import SYNC_ACTIVE_LOCK, SYNC_CANCEL_FLAGS, SYNC_THREAD_CONTEXT
 from .sync_queue import SyncQueue, SYNC_TIMEZONE
+from .sync_config import MAX_CONCURRENT_ACCOUNTS
 
 _LOCK = threading.RLock()
 _WAKE = threading.Event()
@@ -162,7 +163,7 @@ def dispatch(client_id: str):
                 queue.abandon_connection_check(owner, grant["generation"])
                 raise
             return started
-        while len([key for key in _RUNNING if key[0] == client_id]) < 2:
+        while len([key for key in _RUNNING if key[0] == client_id]) < MAX_CONCURRENT_ACCOUNTS:
             exclusions = [value["store_id"] for key, value in _RUNNING.items() if key[0] == client_id]
             owner = uuid.uuid4().hex
             job = queue.claim(owner, exclude_store_ids=exclusions)

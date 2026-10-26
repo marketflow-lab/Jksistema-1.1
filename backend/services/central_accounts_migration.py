@@ -167,6 +167,13 @@ def _request(method: str, url: str, **kwargs):
     base = requests.Session()
     session = configure_requests_session(base, os.environ)
     try:
+        if method.upper() == "GET" and url.startswith("https://api.bling.com.br/Api/v3/"):
+            from .bling import bling_account_request, remember_bling_throttle
+            with bling_account_request(kwargs.get("headers"), deadline=time.monotonic() + 30) as mark_start:
+                mark_start()
+                response = session.request(method, url, timeout=(3.05, 25), allow_redirects=False, **kwargs)
+                remember_bling_throttle(kwargs.get("headers"), response)
+                return response
         return session.request(method, url, timeout=(3.05, 25), allow_redirects=False, **kwargs)
     finally:
         session.close()
