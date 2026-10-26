@@ -47,6 +47,14 @@
                 return url.href;
             } catch (_error) { return ''; }
         };
+        const vehicleStockUrl = value => {
+            const candidate = absolute(value);
+            if (!candidate) return '';
+            const parsed = new URL(candidate);
+            return parsed.hostname === 'lista.mercadolivre.com.br' && !parsed.username && !parsed.password
+                && (!parsed.port || parsed.port === '443') && !parsed.search
+                && /^\/veiculos\/_CustId_\d+\/?$/.test(parsed.pathname) ? candidate : '';
+        };
         const identity = value => {
             const url = absolute(value);
             const ids = new Set();
@@ -57,7 +65,7 @@
             const profile = url.match(/^(https:\/\/[^/]+\/perfil\/[^/?#]+)/i);
             const store = url.match(/^https:\/\/[^/]+\/loja\/([^/?#]+)/i);
             if (store) return { id: '', perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
-            return { id: match ? match[1] : '', perfilUrl: profile ? profile[1].replace(/\/$/, '') : (match ? 'https://lista.mercadolivre.com.br/_CustId_' + match[1] : ''), store: false };
+            return { id: match ? match[1] : '', perfilUrl: profile ? profile[1].replace(/\/$/, '') : (match ? vehicleStockUrl(url) || 'https://lista.mercadolivre.com.br/_CustId_' + match[1] : ''), store: false };
         };
         const productId = (value, element) => {
             const explicit = clean(element && (element.getAttribute('data-item-id') || element.getAttribute('data-id')));
@@ -466,18 +474,26 @@
             || !!loginForm || !!document.querySelector('[data-testid="captcha"], iframe[src*="captcha"]');
         const avantDialog = nodes('[role="dialog"], [class*="avantpro"][class*="modal"], [class*="avantpro"][class*="login"]')
             .find(node => /avant\s*pro|avantpro/.test(norm(node.textContent)) && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
+        const sellerExcluded = '[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"], .poly-card, .ui-search-layout__item, .ui-search-result, .ui-search-result__wrapper, [data-testid="search-result"]';
         const officialStore = nodes('a[href*="/loja/"]', content).find(anchor => {
-            if (!identity(anchor.getAttribute('href')).store || anchor.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]')) return false;
+            if (!identity(anchor.getAttribute('href')).store || anchor.closest(sellerExcluded)) return false;
             const label = norm([anchor.textContent, anchor.getAttribute('aria-label'), anchor.getAttribute('title')].join(' '));
             const nearbyLabel = norm(anchor.parentElement && anchor.parentElement.textContent);
             return /\bloja\b/.test(label) || (nearbyLabel.length < 160 && /\bloja oficial/.test(nearbyLabel)) || !!anchor.closest('[class*="official-store"], [data-testid*="official-store"]');
         });
-        const headerSeller = firstLink(content, '.ui-pdp-seller__link, .ui-pdp-seller__link-trigger, .ui-pdp-seller__header__info-container a[href], .ui-seller-info a[href], .seller-info a[href], [data-testid="seller-info"] a[href]') || officialStore;
+        const productMain = document.querySelector('main');
+        const vehicleSellerLinks = isProduct(url) && productMain
+            && nodes('.ui-pdp-title', productMain).some(node => !node.closest(sellerExcluded))
+            ? nodes('.ui-vip-seller-profile .ui-vip-profile-info__info-link[href]', productMain)
+                .filter(anchor => !anchor.closest(sellerExcluded) && vehicleStockUrl(anchor.getAttribute('href')))
+            : [];
+        const headerSeller = nodes('.ui-pdp-seller__link, .ui-pdp-seller__link-trigger, .ui-pdp-seller__header__info-container a[href], .ui-seller-info a[href], .seller-info a[href], [data-testid="seller-info"] a[href]', content)
+            .find(anchor => !anchor.closest(sellerExcluded) && absolute(anchor.getAttribute('href'))) || vehicleSellerLinks[0] || officialStore;
         const currentIdentity = identity(url);
         const headerIdentity = identity(headerSeller && headerSeller.href);
         const primaryStore = currentIdentity.store ? currentIdentity : (headerIdentity.store ? headerIdentity : null);
         const allAds = nodes('a[href]', content).find(anchor => {
-            if (anchor.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]')) return false;
+            if (anchor.closest(sellerExcluded)) return false;
             const label = norm(anchor.textContent);
             if (!/^(?:todos os (?:produtos|anuncios)|(?:ver|veja|ir para)\s+(?:todos?|mais|os|as)?\s*(?:os\s+|as\s+)?(?:anuncios|produtos))/.test(label)) return false;
             const candidate = absolute(anchor.getAttribute('href'));
@@ -486,7 +502,12 @@
         });
         const allIdentity = identity(allAds && allAds.href);
         const primaryIdentity = currentIdentity.id || currentIdentity.perfilUrl ? currentIdentity : (headerIdentity.id || headerIdentity.perfilUrl ? headerIdentity : allIdentity);
-        const headerConflict = !!currentIdentity.conflict || !!headerIdentity.conflict || !!(
+        const headerConflict = !!currentIdentity.conflict || !!headerIdentity.conflict
+            || vehicleSellerLinks.some(anchor => {
+                const candidate = identity(anchor.getAttribute('href'));
+                return primaryIdentity.id ? candidate.id !== primaryIdentity.id
+                    : !!primaryIdentity.perfilUrl && candidate.perfilUrl !== primaryIdentity.perfilUrl;
+            }) || !!(
             currentIdentity.id && headerIdentity.id && currentIdentity.id !== headerIdentity.id
             || currentIdentity.perfilUrl && headerIdentity.perfilUrl && !currentIdentity.id && !headerIdentity.id
                 && currentIdentity.perfilUrl.toLowerCase() !== headerIdentity.perfilUrl.toLowerCase());
@@ -501,7 +522,7 @@
                 || /^(?:vendedor|seller|comprar|saiba mais)$/.test(normalized) ? '' : name;
         };
         const nameSelectors = '.ui-pdp-seller__header__title, .ui-pdp-seller__nickname, .ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"], .ui-ms-profile__name, .ui-ms-profile__title';
-        const named = nodes(nameSelectors, content).filter(node => !node.closest('[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"]'))
+        const named = nodes(nameSelectors, content).filter(node => !node.closest(sellerExcluded))
             .map(node => nameText(node.textContent)).find(Boolean);
         const storeTitle = currentIdentity.store && !isProduct(url) ? nameText((content.querySelector('h1') || {}).textContent) : '';
         const vendedor = headerConflict ? '' : named || nameText(headerSeller && headerSeller.textContent) || storeTitle;
