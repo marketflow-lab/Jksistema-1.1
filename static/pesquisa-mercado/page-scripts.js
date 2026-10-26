@@ -869,12 +869,38 @@
                 const modalLink = new URL(categoryUrl);
                 if (modalLink.search === '?filter=category') { modalLink.search = ''; categoryUrl = modalLink.href; }
             }
-            const name = clean(anchor.textContent);
+            const categoryFilterAnchor = groups.some(group => groupKind(group) === 'category' && group.contains(anchor)
+                && belongsToCategoryGroup(anchor, group))
+                || categoryModal && categoryModal.contains(anchor) && anchor.matches('a.ui-search-search-modal-filter[href]');
+            const nameNode = categoryFilterAnchor && anchor.querySelector('.ui-search-filter-name');
+            const name = clean(nameNode ? nameNode.textContent : anchor.textContent);
             const label = norm(name);
             if (anchor.closest(excludedCategoryArea) || anchor.matches('[aria-current="page"], [aria-disabled="true"]')) return null;
             if (categoryExpansionUrl(href)) return null;
             if (/^(?:mostrar (?:mais|menos)|ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
             if (!categoryUrl || !name || isProduct(categoryUrl) || identity(categoryUrl).id || identity(categoryUrl).perfilUrl || categoryUrl === url) return null;
+            let trackedCategoryId = '';
+            if (categoryFilterAnchor) {
+                try {
+                    const raw = new URL(href, url);
+                    if (raw.hash) {
+                        if (href.length > 4000 || /[\\\u0000-\u0020]/.test(href)) return null;
+                        const fragment = decodeURIComponent(raw.hash.slice(1));
+                        // Ordinary navigation/tracking fragments carry no ID.
+                        // Applied-filter metadata must validate completely;
+                        // a conflicting claim cannot fall back to its name.
+                        const params = new URLSearchParams(fragment);
+                        if ([...params.keys()].some(key => /^applied_(?:filter|value)_/i.test(key))) {
+                            const allowed = new Set(['applied_filter_id', 'applied_filter_name', 'applied_filter_order', 'applied_value_id', 'applied_value_name',
+                                'applied_value_order', 'applied_value_results', 'is_custom', 'view_more_flag']);
+                            if ([...params.keys()].some(key => !allowed.has(key) || params.getAll(key).length !== 1)
+                                || params.get('applied_filter_id') !== 'category' || !/^MLB\d+$/.test(params.get('applied_value_id') || '')
+                                || params.has('applied_value_name') && norm(params.get('applied_value_name')) !== label) return null;
+                            trackedCategoryId = params.get('applied_value_id');
+                        }
+                    }
+                } catch (_error) { return null; }
+            }
             const destination = new URL(categoryUrl), candidatePath = categoryPath(categoryUrl);
             if (!(['lista.mercadolivre.com.br', 'imoveis.mercadolivre.com.br', 'servicos.mercadolivre.com.br'].includes(destination.hostname)
                 || /^\/(?:c|categorias)\//.test(destination.pathname))) return null;
@@ -882,7 +908,8 @@
             if (!categoryIndexPage && currentCategoryPath.startsWith(candidatePath + '/')) return null;
             if (/_?(?:PriceRange|OrderId|Desde|CustoEnvio|SHIPPING|ITEM_CONDITION|BRAND|LOCATION)_|[?&](?:page|offset|sort|price|shipping|brand|state|city)=/i.test(categoryUrl)) return null;
             const id = categoryUrl.match(/(?:_CATEGORY_|\/)(MLB\d+)/i);
-            return { key: id ? id[1].toUpperCase() : categoryUrl, nome: name, url: categoryUrl };
+            if (trackedCategoryId && id && id[1].toUpperCase() !== trackedCategoryId) return null;
+            return { key: trackedCategoryId || (id ? id[1].toUpperCase() : categoryUrl), nome: name, url: categoryUrl };
         };
         for (const anchor of categoryLinks) {
             const category = categoryData(anchor);
