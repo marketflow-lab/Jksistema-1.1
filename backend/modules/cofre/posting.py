@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -132,6 +134,37 @@ def _prepare_attachments(attachments, staging, guild_id):
     return result, fingerprints, blobs
 
 
+def _place_blob(staged: Path, target: Path):
+    """Publish a complete blob atomically even when TEMP is on another volume."""
+    try:
+        os.replace(staged, target)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+            raise
+    temporary = None
+    try:
+        # Copy to the target filesystem first. The final content-addressed name
+        # is never exposed while bytes are incomplete, and Windows must close
+        # the sibling file before its atomic rename.
+        with tempfile.NamedTemporaryFile(mode="w+b", prefix=".jk-cofre-post-", suffix=".tmp",
+                dir=target.parent, delete=False) as output:
+            temporary = Path(output.name)
+            with staged.open("rb") as source:
+                shutil.copyfileobj(source, output, length=64 * 1024)
+            output.flush()
+            output.seek(0)
+            if hashlib.file_digest(output, "sha256").hexdigest() != target.name:
+                raise OSError(errno.EIO, "Attachment staging copy failed integrity check.")
+            os.fsync(output.fileno())
+        storage._assert_safe(temporary)
+        storage._assert_safe(target)
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def _permissions_for_connection(connection, guild_id, channel_id, actor):
     deleted_channel = storage._channel_deleted(connection, guild_id, channel_id)
     return {row["id"]: {
@@ -210,7 +243,7 @@ def create_message(info_root, client_id, guild_id, channel_id, payload, actor, *
                         target = blob_directory / digest
                         storage._assert_safe(target)
                         if not target.exists():
-                            os.replace(staged, target)
+                            _place_blob(staged, target)
                             created_blobs.append(target)
                         connection.execute("INSERT OR IGNORE INTO assets VALUES(?,?,?)", (guild_id, digest, filename))
                 connection.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)", (guild_id, channel_id, message_id,

@@ -1,11 +1,13 @@
 """Fictional local posts, immutable JK authorship, files and snapshot metadata."""
 import copy
+import errno
 import hashlib
 import io
 import json
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -297,3 +299,107 @@ def test_asset_resolver_runs_before_export_validation_without_leaking_local_path
     assert len(calls) == 1 and calls[0][:2] == (GUILD, CHANNEL)
     assert "local_url" not in json.dumps(state) and "archive_path" not in json.dumps(state)
     assert messages(archive)["mensagens"][-1]["attachments"][0]["url"] == ""
+
+
+def simulate_cross_volume(monkeypatch, archive, kind="exdev", *, fail_local=False):
+    """Model TEMP and data on separate volumes without requiring a second drive."""
+    system_temp = archive / "separate-system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(posting.tempfile, "tempdir", str(system_temp))
+    original = posting.os.replace
+    attempts = []
+    def replace(source, target):
+        source, target = Path(source), Path(target)
+        attempts.append((source, target))
+        if source.parent != target.parent:
+            error = OSError(errno.EXDEV if kind == "exdev" else errno.EINVAL, "Fixture cross-volume move")
+            if kind == "winerror17":
+                error.winerror = 17
+            raise error
+        if fail_local:
+            raise PermissionError(errno.EACCES, "Fixture rename denied")
+        return original(source, target)
+    monkeypatch.setattr(posting.os, "replace", replace)
+    return attempts, system_temp
+
+
+def assert_no_post_or_attachment_changes(archive):
+    assert messages(archive)["total"] == 1
+    directory = storage._tenant_dir(archive, CLIENT)
+    with storage._connect(directory) as connection:
+        for table in ("assets", "message_ownership", "posting_receipts"):
+            assert connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0] == 0
+    assert list((directory / "assets").iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["exdev", "winerror17"])
+def test_cross_volume_attachment_is_atomic_and_idempotent(archive, monkeypatch, kind):
+    attempts, system_temp = simulate_cross_volume(monkeypatch, archive, kind)
+    content = b"\x89PNG\r\n\x1a\nfixture cross-volume image"
+    upload = posting.PreparedAttachment(io.BytesIO(content), "fixture.png", "text/html")
+    body = payload("")
+    result = create(archive, body, attachments=[upload])
+    digest = hashlib.sha256(content).hexdigest()
+    target = storage.get_asset(archive, CLIENT, GUILD, digest, "fixture.png")
+    assert target.read_bytes() == content
+    assert result["mensagem"]["attachments"][0]["content_type"] == "image/png"
+    assert len(attempts) == 2 and attempts[1][0].parent == attempts[1][1].parent == target.parent
+    assert attempts[0][0].parent.parent == system_temp
+    assert list(target.parent.iterdir()) == [target]
+    assert list(system_temp.iterdir()) == []
+    assert create(archive, body, attachments=[upload]) == result
+    assert len(attempts) == 2 and messages(archive)["total"] == 2
+
+
+@pytest.mark.parametrize("failure", ["copy", "partial-copy", "fsync", "replace", "transaction"])
+def test_cross_volume_failure_preserves_rollback_and_removes_partial_blob(archive, monkeypatch, failure):
+    attempts, system_temp = simulate_cross_volume(monkeypatch, archive, fail_local=failure == "replace")
+    if failure in {"copy", "partial-copy"}:
+        def incomplete_copy(source, output, *args, **kwargs):
+            output.write(b"partial")
+            if failure == "copy":
+                raise OSError(errno.ENOSPC, "Fixture destination full")
+        monkeypatch.setattr(posting.shutil, "copyfileobj", incomplete_copy)
+    elif failure == "fsync":
+        def fail_sync(*args):
+            raise OSError(errno.EIO, "Fixture sync failure")
+        monkeypatch.setattr(posting.os, "fsync", fail_sync)
+    elif failure == "transaction":
+        def fail_result(*args, **kwargs):
+            raise storage.CofreError("Fixture transaction failure", 503)
+        monkeypatch.setattr(posting, "_message_result", fail_result)
+    with pytest.raises((OSError, storage.CofreError)):
+        create(archive, attachments=[posting.PreparedAttachment(io.BytesIO(b"complete fixture content"), "fixture.bin")])
+    assert attempts
+    assert_no_post_or_attachment_changes(archive)
+    assert list(system_temp.iterdir()) == []
+
+
+def test_unrelated_replace_error_does_not_copy_or_change_post(archive, monkeypatch):
+    failure = PermissionError(errno.EACCES, "Fixture permission denied")
+    def deny_replace(*args):
+        raise failure
+    monkeypatch.setattr(posting.os, "replace", deny_replace)
+    with pytest.raises(PermissionError) as error:
+        create(archive, attachments=[posting.PreparedAttachment(io.BytesIO(b"fixture"), "fixture.bin")])
+    assert error.value is failure
+    assert_no_post_or_attachment_changes(archive)
+
+
+def test_cross_volume_rollback_keeps_preexisting_shared_blob(archive, monkeypatch):
+    attempts, system_temp = simulate_cross_volume(monkeypatch, archive)
+    content = b"shared fixture content"
+    upload = posting.PreparedAttachment(io.BytesIO(content), "fixture.bin")
+    first = create(archive, attachments=[upload])
+    digest = hashlib.sha256(content).hexdigest()
+    target = storage.get_asset(archive, CLIENT, GUILD, digest, "fixture.bin")
+    def fail_result(*args, **kwargs):
+        raise storage.CofreError("Fixture transaction failure", 503)
+    monkeypatch.setattr(posting, "_message_result", fail_result)
+    with pytest.raises(storage.CofreError):
+        create(archive, payload("another post"), attachments=[upload])
+    assert target.read_bytes() == content
+    assert len(attempts) == 2 and list(target.parent.iterdir()) == [target]
+    assert messages(archive)["total"] == 2
+    assert messages(archive)["mensagens"][-1]["id"] == first["mensagem"]["id"]
+    assert list(system_temp.iterdir()) == []
