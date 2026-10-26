@@ -379,6 +379,31 @@ async function main() {
             ['unrelated footer', '<footer><a href="' + moreUrl + '">Mostrar mais</a></footer>'],
             ['promotional carousel', '<section class="carousel">' + moreGroup() + '</section>']
         ]) assert.equal((await readMarkup(body)).categoryFilterMoreUrl, '', description + ' cannot provide the category expansion control');
+        await page.goto(listing);
+        const hubMarkup = '<link rel="canonical" href="' + listing + '"><section class="ui-category-trends-desktop-content"><h1>Ciclismo</h1>'
+            + '<dl><dt>Categorias</dt><dd><a href="' + listing + 'pecas/">Peças</a></dd></dl></section>';
+        const staticHub = await readMarkup(hubMarkup);
+        assert.deepEqual(staticHub.categoryNavigationHub, { version: 1, url: listing, canonical: listing, heading: 'Ciclismo' });
+        assert.equal(staticHub.categoryDocumentIdentity, false);
+        assert.equal(staticHub.effectiveCategoryId, '');
+        for (const [description, markup] of [
+            ['missing canonical', hubMarkup.replace(/<link[^>]+>/, '')],
+            ['different canonical', hubMarkup.replace('href="' + listing + '"', 'href="' + listing + 'outros/"')],
+            ['duplicate canonical', hubMarkup + '<link rel="canonical" href="' + listing + '">'],
+            ['duplicate heading', hubMarkup + '<h1>Outra categoria</h1>'],
+            ['missing component', hubMarkup.replace('ui-category-trends-desktop-content', 'ordinary-content')]
+        ]) assert.equal((await readMarkup(markup)).categoryNavigationHub, null, description);
+        await page.goto(listing + '?q=pecas');
+        assert.equal((await readMarkup(hubMarkup.replace('href="' + listing + '"', 'href="' + listing + '?q=pecas"'))).categoryNavigationHub, null,
+            'a keyword/query route cannot provide static hub navigation');
+        for (const path of ['/captcha', '/captcha/wall/logged']) {
+            await page.goto('https://www.mercadolivre.com.br' + path + '?go_url=https%3A%2F%2Flista.mercadolivre.com.br%2Fcategoria');
+            const verification = await read(applied, '', '_n.ctx.r=', '__NORDIC_RENDERING_CTX__', hubMarkup);
+            assert.equal(verification.authRequired, true, 'a verification wall pauses even without captcha inputs or frames');
+            assert.equal(verification.categoryDocumentIdentity, false, 'verification pages never acquire category identity from embedded state');
+            assert.equal(verification.effectiveCategoryId, '');
+            assert.equal(verification.categoryNavigationHub, null);
+        }
         await page.evaluate(() => document.replaceChildren());
         const transitioning = await page.evaluate(scripts.discoveryScript());
         assert.equal(transitioning.anuncios.length, 0, 'a transient document without body has no discovery seeds');

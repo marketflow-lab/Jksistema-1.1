@@ -254,11 +254,71 @@ async function observedLegacyPathRequiresDestinationIdentity() {
     }
 }
 
+async function staticHubOnlySuppliesObservedChildLinks() {
+    const hub = node('MLB1292', 'Ciclismo', cycling), child = node('MLB1934', 'Peças');
+    const emitted = { key: cycling + 'pecas/', nome: child.nome, url: cycling + 'pecas/' };
+    const descriptor = { version: 1, url: cycling, canonical: cycling, heading: hub.nome };
+    const fixture = patch => {
+        const value = { categoryTrends: true, categoryDocumentIdentity: false, effectiveCategoryId: '',
+            categoryNavigationHub: descriptor, categories: [emitted], anuncios: [{ id: 'recommendation-only' }] };
+        const h = runnerFixture({ [cycling]: poll => typeof patch === 'function' ? patch(value, poll) : { ...value, ...patch } }, child);
+        const children = { [hub.key]: [child], [child.key]: [] };
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [hub, child], children };
+        h.runner.officialNavigation = navigation({ ancestry: [hub, child], children });
+        return h;
+    };
+    const valid = fixture();
+    const result = await valid.runner.read(cycling, 'navigation', hub.key, child);
+    assert.equal(valid.polls(), 2, 'static hub links require two stable reads');
+    assert.equal(result.categoryDocumentIdentity, false, 'following a child href never promotes the hub into a category document');
+    assert.equal(result.effectiveCategoryId, '', 'the frozen parent ID is never assigned to metadata-free HTML');
+    assert.deepEqual(result.categories, [emitted]);
+    const changing = fixture((value, poll) => ({ ...value, categoryNavigationHub: poll === 2 ? { ...descriptor, heading: 'Outro hub' } : descriptor }));
+    await changing.runner.read(cycling, 'navigation', hub.key, child);
+    assert.equal(changing.polls(), 4, 'an inconsistent read resets stability');
+    for (const [description, patch] of [
+        ['different heading', { categoryNavigationHub: { ...descriptor, heading: child.nome } }],
+        ['different canonical', { categoryNavigationHub: { ...descriptor, canonical: cycling + 'outros/' } }],
+        ['unknown descriptor field', { categoryNavigationHub: { ...descriptor, categoryId: hub.key } }],
+        ['keyword redirect', { url: cycling + 'apenas-uma-busca', categoryNavigationHub: { ...descriptor, url: cycling + 'apenas-uma-busca', canonical: cycling + 'apenas-uma-busca' } }],
+        ['conflicting document ID', { categoryDocumentIdentity: true, effectiveCategoryId: 'MLB999' }],
+        ['conflicting advisory ID', { categoryContext: { key: 'MLB999', baseUrl: cycling } }],
+        ['conflicting advisory route', { categoryContext: { key: hub.key, baseUrl: cycling + 'outros/' } }],
+        ['identity conflict', { categoryIdentityConflict: true }],
+        ['Mercado Livre login', { authRequired: true }],
+        ['Avant login', { avantAuthRequired: true }],
+        ['loading document', { readyState: 'loading' }],
+        ['wrong child ID', { categories: [{ ...emitted, key: 'MLB999' }] }],
+        ['untyped external branch', { categories: [{ ...emitted, key: cycling + 'fora/pecas/', url: 'https://lista.mercadolivre.com.br/fora/pecas/' }] }],
+        ['ambiguous child', { categories: [emitted, { ...emitted, key: cycling + 'pecas-2/', url: cycling + 'pecas-2/' }] }]
+    ]) {
+        const blocked = fixture(patch);
+        await assert.rejects(blocked.runner.read(cycling, 'navigation', hub.key, child), undefined, description);
+    }
+    const unrelated = fixture();
+    unrelated.runner.officialNavigation.parents.set(child.key, 'MLB999');
+    await assert.rejects(unrelated.runner.read(cycling, 'navigation', hub.key, child),
+        'a matching label cannot establish a relationship outside the frozen taxonomy');
+    for (const purpose of ['category', 'category-transport']) {
+        const blocked = fixture();
+        await assert.rejects(blocked.runner.read(cycling, purpose, hub.key, child),
+            'a navigation hub cannot make recommendation cards into a category listing');
+    }
+    const verificationUrl = 'https://www.mercadolivre.com.br/captcha/wall/logged?go_url=https%3A%2F%2Flista.mercadolivre.com.br%2Fcategoria';
+    const verification = fixture({ url: verificationUrl, authRequired: true, categoryNavigationHub: null });
+    verification.runner.browser.getURL = () => verificationUrl;
+    await assert.rejects(verification.runner.read(cycling, 'navigation', hub.key, child),
+        error => error.waitingLogin === true && error.message === 'ml_login_required',
+        'a CAPTCHA redirect preserves the manual waiting_login flow instead of becoming an incomplete category');
+    assert.equal(verification.polls(), 1, 'the verification wall stops category retries immediately');
+}
+
 (async () => {
     await expandedCategoryPages();
     await runnerTrendsTransition();
     await runnerExpandedOptionsWaitForDestination();
     await observedMissingRoutesStayCandidates();
     await observedLegacyPathRequiresDestinationIdentity();
+    await staticHubOnlySuppliesObservedChildLinks();
     console.log('Pesquisa de Mercado navigation: observed NoIndex routes, category IDs, safe expanded filters and proven Trends transitions OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });
