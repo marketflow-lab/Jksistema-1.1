@@ -25,10 +25,13 @@ assert.doesNotMatch(lojaRule[1], /overflow\s*:\s*hidden\s*;/);
 assert.strictEqual(mirrorHtml, canonicalHtml, 'o espelho raiz de vendas deve acompanhar o HTML canonico');
 assert.match(canonicalHtml, /aria-label="Selecionar loja virtual"/);
 assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
-for (const asset of ['styles.css', 'runtime.js', 'periodo-cache.js', 'sync.js', 'dados-render.js']) {
-  const expectedCacheKey = asset === 'styles.css'
-    ? '20261020-vendas-status-compacto-v2'
-    : asset === 'sync.js' ? '20261022-vendas-firebase-sessao-v1' : '20261022-vendas-bling-lote-v1';
+for (const [asset, expectedCacheKey] of Object.entries({
+  'styles.css': '20261020-vendas-status-compacto-v2',
+  'runtime.js': '20261026-vendas-recentes-v1',
+  'periodo-cache.js': '20261026-vendas-recentes-v1',
+  'sync.js': '20261022-vendas-firebase-sessao-v1',
+  'dados-render.js': '20261022-vendas-bling-lote-v1',
+})) {
   assert.ok(
     canonicalHtml.includes(`/vendas/${asset}?v=${expectedCacheKey}`),
     `o cache-buster de ${asset} deve refletir a correcao`,
