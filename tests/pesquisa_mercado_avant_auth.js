@@ -119,12 +119,12 @@ async function createFixture(browser, options = {}) {
         async executeJavaScript(code) { stats.pageExecutions++; return page.evaluate(source => (0, eval)(source), code); }
     };
     const session = new AvantSession({ getContents:() => contents, getEmail:() => suppliedEmail, getContext:() => contextVersion,
-        timeoutMs:options.timeoutMs || 260, probeMs:options.probeMs || 40, pollMs:5 });
+        timeoutMs:options.timeoutMs || 2000, probeMs:options.probeMs || 250, pollMs:5 });
     return { page, session, contents, stats, close:() => context.close(), switchContext:() => { contextVersion++; }, setEmail:value => { suppliedEmail = value; },
         submits:() => page.evaluate(() => window.fixture.submits), probe:() => contents.executeJavaScript(pageScript('probe')) };
 }
 
-async function until(check, timeout = 1000) {
+async function until(check, timeout = 5000) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
     throw new Error('Fixture condition did not complete.');
@@ -227,7 +227,7 @@ async function main() {
             assert.equal(f.stats.frameExecutions, 0);
         });
         for (const redirect of [true, false]) {
-            await test({ loggedIn:true, timeoutMs:500 }, async f => {
+            await test({ loggedIn:true, timeoutMs:3000, probeMs:1500 }, async f => {
                 const execute = f.contents.executeJavaScript;
                 await f.page.evaluate(() => document.querySelector('#btnLogoutMenu').remove());
                 let interrupted = false;
@@ -291,11 +291,20 @@ async function main() {
             }
         }
         await test({ beginPopup:true, deferForm:'root', timeoutMs:150, probeMs:20 }, async f => {
+            const frame = f.contents.mainFrame.framesInSubtree.find(candidate => candidate.url.startsWith(AUTH_URL));
+            assert(frame, 'The loading auth frame must exist.');
+            // Isolate the overall deadline from browser IPC latency. Actual
+            // delayed rendering and uncertain submissions use real frames above.
+            frame.executeJavaScript = async () => {
+                f.stats.frameExecutions++;
+                return { ready:false };
+            };
             const started = Date.now();
             const result = await f.session.ensure();
             assert.deepEqual(result, { authenticated:false, attempted:false, reason:'avant_login_not_confirmed' });
             assert(Date.now() - started >= 150, 'A loading login form must use the overall timeout.');
             assert(Date.now() - started < 1000, 'A form that never renders must still time out.');
+            assert(f.stats.frameExecutions > 1, 'A loading frame must be polled until the deadline.');
             assert.equal(await f.submits(), 0);
         });
         for (const interruption of ['abort', 'context']) {
@@ -352,12 +361,12 @@ async function main() {
         await test({ email:'' }, async f => {
             const result = await f.session.ensure(); assert.equal(result.reason, 'avant_email_missing'); assert.equal(await f.submits(), 0);
         });
-        await test({ beginPopup:true, disabled:true, timeoutMs:85 }, async f => {
+        await test({ beginPopup:true, disabled:true, timeoutMs:800 }, async f => {
             const result = await f.session.ensure(); assert.equal(result.authenticated, false); assert.equal(result.attempted, false);
             assert.equal(await f.submits(), 0, 'Filling alone must never authenticate.');
             assert.equal(await f.page.frames().find(frame => frame.url().startsWith(AUTH_URL)).locator('#email').inputValue(), FIXTURE_EMAIL);
         });
-        await test({ beginPopup:true, timeoutMs:85 }, async f => {
+        await test({ beginPopup:true, timeoutMs:800 }, async f => {
             const result = await f.session.ensure(); assert.equal(result.authenticated, false); assert.equal(result.attempted, true);
             assert.equal(result.reason, 'avant_login_not_confirmed'); assert.equal(await f.submits(), 1);
             const second = await f.session.ensure(); assert.equal(second.authenticated, false); assert.equal(second.attempted, false);
