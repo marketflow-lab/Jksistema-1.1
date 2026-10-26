@@ -73,7 +73,25 @@
         // document safely while the coordinator waits for the new listing.
         const content = document.querySelector('main') || document.body || document;
         const url = absolute(location.href);
-        const mlVerificationRequired = /\/captcha(?:\/|$)/i.test(location.pathname);
+        const mlVerificationRequired = (() => {
+            if (/\/captcha(?:\/|$)/i.test(location.pathname)) return true;
+            // A redirect response can arrive as HTTP 200 at the original URL.
+            // Recognize its narrow public body without following or returning
+            // the verification destination (which can contain session data).
+            const body = document.body;
+            if (!body || document.querySelector('main') || body.children.length !== 1 || body.firstElementChild.tagName !== 'P') return false;
+            const text = clean(body.innerText || body.textContent);
+            if (text.length > 2000 || !/^Found\. Redirecting to https:\/\//i.test(text)) return false;
+            const paragraph = body.firstElementChild, links = nodes('a[href]', paragraph);
+            if (links.length > 1 || nodes('*', paragraph).some(element => element.tagName !== 'A')) return false;
+            try {
+                const target = new URL(text.replace(/^Found\. Redirecting to\s+/i, ''));
+                return target.protocol === 'https:' && target.hostname === 'www.mercadolivre.com.br'
+                    && !target.username && !target.password && (!target.port || target.port === '443')
+                    && /^\/captcha(?:\/|$)/i.test(target.pathname)
+                    && (!links.length || new URL(links[0].href).href === target.href);
+            } catch (_error) { return false; }
+        })();
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;

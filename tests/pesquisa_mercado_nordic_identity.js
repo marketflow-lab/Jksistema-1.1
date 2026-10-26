@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const scripts = require('../static/pesquisa-mercado/page-scripts');
+const { currentPageRequiresLogin } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 
 async function main() {
     const browser = await chromium.launch({ headless: true });
@@ -444,6 +445,37 @@ async function main() {
             assert.equal(verification.categoryDocumentIdentity, false, 'verification pages never acquire category identity from embedded state');
             assert.equal(verification.effectiveCategoryId, '');
             assert.equal(verification.categoryNavigationHub, null);
+        }
+        await page.goto('https://www.mercadolivre.com.br/categorias');
+        const redirectTarget = 'https://www.mercadolivre.com.br/captcha/wall/logged?go_url=https%3A%2F%2Fwww.mercadolivre.com.br%2Fcategorias';
+        const readRedirect = async markup => {
+            await page.setContent('<html><head><script type="application/json" id="__NORDIC_RENDERING_CTX__">_n.ctx.r='
+                + JSON.stringify(applied) + '</script></head><body>' + markup + '</body></html>');
+            return page.evaluate(scripts.discoveryScript());
+        };
+        for (const markup of ['<p>Found. Redirecting to ' + redirectTarget + '</p>',
+            '<p>Found. Redirecting to <a href="' + redirectTarget + '">' + redirectTarget + '</a></p>']) {
+            const redirect = await readRedirect(markup);
+            assert.equal(redirect.authRequired, true, 'an explicit official CAPTCHA redirect body pauses at its original category URL');
+            assert.equal(redirect.url, 'https://www.mercadolivre.com.br/categorias');
+            assert.equal(currentPageRequiresLogin(redirect, { getURL: () => redirect.url, isLoading: () => false }), true,
+                'the runner pauses on the currently displayed redirect body');
+            assert.equal(currentPageRequiresLogin(redirect, { getURL: () => redirect.url + '?another-document=1', isLoading: () => false }), false,
+                'a stale redirect body cannot pause another document');
+            assert.equal(redirect.categoryDocumentIdentity, false, 'redirect bodies cannot inherit incidental category state');
+            assert.equal(redirect.effectiveCategoryId, '');
+            assert(!JSON.stringify(redirect).includes('go_url='), 'verification parameters never leave the parser');
+        }
+        for (const markup of ['<main><p>Found. Redirecting to ' + redirectTarget + '</p></main>',
+            '<p>Resolva o CAPTCHA se solicitado.</p>', '<p>Continue em ' + redirectTarget + '</p>',
+            '<p>Found. Redirecting to ' + redirectTarget + '</p><a href="' + redirectTarget + '">Outro link</a>',
+            '<p>Found. Redirecting to <a href="' + redirectTarget + '">Outro destino</a></p>',
+            '<p>Found. Redirecting to <a href="' + redirectTarget.replace('/wall/logged', '/different') + '">' + redirectTarget + '</a></p>',
+            ...['http://www.mercadolivre.com.br/captcha', 'https://www.mercadolivre.com.br.evil.invalid/captcha',
+                'https://user@www.mercadolivre.com.br/captcha', 'https://www.mercadolivre.com.br:444/captcha',
+                'https://www.mercadolivre.com.br/captchafake', 'https://www.mercadolivre.com.br/categorias?next=/captcha']
+                .map(target => '<p>Found. Redirecting to ' + target + '</p>')]) {
+            assert.equal((await readRedirect(markup)).authRequired, false, 'ordinary content or an invalid redirect cannot claim manual verification');
         }
         await page.evaluate(() => document.replaceChildren());
         const transitioning = await page.evaluate(scripts.discoveryScript());
