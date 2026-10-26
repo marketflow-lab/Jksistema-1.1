@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Cofre de Informações — JK Sistema</title>
-  <link rel="stylesheet" href="/cofre/cofre.css?v=20261022-design-2">
+  <link rel="stylesheet" href="/cofre/cofre.css?v=20261026-composer-1">
   <script src="/auth.js?v=20261022-cofre-auth-1"></script>
-  <script defer src="/cofre/cofre.js?v=20261026-jk-session-1"></script>
+  <script defer src="/cofre/cofre.js?v=20261026-composer-1"></script>
 </head>
 <body>
   <div class="cofre-shell" id="cofreApp">
@@ -40,6 +40,7 @@
         <form class="search-form" id="searchForm" role="search"><label class="sr-only" for="messageSearch">Buscar neste canal</label><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input type="search" id="messageSearch" placeholder="Buscar neste canal" autocomplete="off" disabled><kbd aria-hidden="true">↵</kbd></form>
         <button class="header-action" id="toggleTrash" title="Ver lixeira deste canal" aria-label="Ver lixeira deste canal" aria-pressed="false" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg><span>Lixeira</span><span id="trashCount" class="trash-count" hidden></span></button>
         <button class="icon-button" id="editChannel" data-cofre-write title="Editar canal" aria-label="Editar canal" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14z"/></svg></button>
+        <button type="button" class="icon-button delete-action" id="deleteChannel" title="Excluir canal completo" aria-label="Excluir canal completo" hidden disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button>
         <button class="icon-button" id="refreshMessages" title="Atualizar canal" aria-label="Atualizar canal" disabled><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 7v5h-5M4 17v-5h5M5.5 7a8 8 0 0 1 13-2l1.5 2M4 17l1.5 2a8 8 0 0 0 13-2"/></svg></button>
         <button class="icon-button details-toggle" id="toggleDetails" title="Informações do acervo" aria-label="Informações do acervo" aria-controls="archiveDetails" aria-expanded="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></svg></button>
       </header>
@@ -59,10 +60,24 @@
           <span class="empty-format" id="emptyFormat">Arquivo .zip ou .json do Cofre de Informações</span>
         </div>
         <div class="channel-intro" id="channelIntro" hidden><img class="channel-cover" src="/cofre/assets/cofre-cover.png" alt="" aria-hidden="true" decoding="async"><div class="intro-symbol" aria-hidden="true">#</div><span class="eyebrow">COFRE DE INFORMAÇÕES</span><h2 id="introTitle"></h2><p id="introDescription"></p></div>
-        <div id="messages" class="messages" aria-label="Mensagens arquivadas"></div>
+        <button type="button" class="load-more history-beginning" id="loadBeginning" hidden>Ver início do histórico</button>
+        <div id="messages" class="messages" aria-label="Mensagens do canal"></div>
         <div class="timeline-status" id="timelineStatus" role="status" aria-live="polite"></div>
         <button class="load-more" id="loadMore" hidden>Carregar mais mensagens</button>
       </div>
+      <section class="composer-wrap" id="composerWrap" aria-label="Publicar no canal" hidden>
+        <form class="message-composer" id="messageComposer">
+          <div class="composer-files" id="composerFiles" aria-label="Anexos selecionados" hidden></div>
+          <div class="composer-input-row">
+            <button type="button" class="composer-attach" id="attachMessageFiles" title="Anexar fotos ou arquivos" aria-label="Anexar fotos ou arquivos"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m8 12 6-6a3.5 3.5 0 0 1 5 5L10 20a5 5 0 0 1-7-7l10-10m-7 12 9-9"/></svg></button>
+            <input type="file" id="messageFiles" class="sr-only" multiple tabindex="-1" aria-label="Selecionar fotos e arquivos">
+            <label class="sr-only" for="messageContent">Nova mensagem</label><textarea id="messageContent" rows="1" maxlength="32000" placeholder="Compartilhe uma informação…" aria-describedby="composerHint composerFeedback"></textarea>
+            <button type="submit" class="composer-send" id="sendMessage" title="Enviar mensagem" aria-label="Enviar mensagem"><span>Enviar</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 3 19 9-19 9 4-9-4-9Zm4 9h15"/></svg></button>
+          </div>
+          <progress class="composer-progress" id="composerProgress" aria-label="Enviando mensagem e anexos" hidden></progress>
+        </form>
+        <div class="composer-bottom"><span id="composerHint">Até 5 arquivos de 10 MB · Enter envia · Shift + Enter quebra a linha</span><span class="composer-feedback" id="composerFeedback" role="status" aria-live="polite"></span></div>
+      </section>
       <footer class="conversation-footer"><span class="archive-lock" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="5" rx="2"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9m-10 4h6"/></svg></span><span id="archiveCaption">Cópia para consulta · mensagens e arquivos preservados</span><button id="footerImport" data-cofre-write>Importar cópia</button></footer>
     </main>
 
@@ -112,6 +127,14 @@
     <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">♲</span><button type="button" class="icon-button" id="closeDeleteMessage" aria-label="Fechar exclusão">×</button></div>
     <h2 id="deleteMessageTitle">Mover item para a lixeira?</h2><p class="dialog-description">O item sairá do acervo ativo. Você poderá restaurá-lo pela Lixeira deste canal.</p><blockquote class="delete-preview" id="deleteMessagePreview"></blockquote>
     <p class="edit-feedback" id="deleteMessageFeedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary-button" id="cancelDeleteMessage">Cancelar</button><button type="button" class="danger-button" id="confirmDeleteMessage">Mover para a lixeira</button></div>
+  </dialog>
+  <dialog class="edit-dialog delete-dialog" id="deleteChannelDialog" aria-labelledby="deleteChannelTitle">
+    <form id="deleteChannelForm">
+      <div class="dialog-header"><span class="dialog-icon" aria-hidden="true">#</span><button type="button" class="icon-button" id="closeDeleteChannel" aria-label="Fechar exclusão do canal">×</button></div>
+      <span class="eyebrow">SOMENTE ADMINISTRADORES</span><h2 id="deleteChannelTitle">Excluir canal completo?</h2><p class="dialog-description">O canal, suas mensagens e seus anexos serão excluídos do Cofre da empresa. Esta ação não pode ser desfeita.</p><blockquote class="delete-preview" id="deleteChannelPreview"></blockquote>
+      <label class="field-label" for="deleteChannelName">Digite o nome do canal para confirmar</label><input class="edit-input" id="deleteChannelName" autocomplete="off" required>
+      <p class="edit-feedback" id="deleteChannelFeedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary-button" id="cancelDeleteChannel">Cancelar</button><button type="submit" class="danger-button" id="confirmDeleteChannel" disabled>Excluir canal e mensagens</button></div>
+    </form>
   </dialog>
   <dialog class="media-dialog" id="mediaDialog" aria-labelledby="mediaTitle">
     <div class="media-dialog-header"><strong id="mediaTitle"></strong><button class="icon-button" id="closeMedia" aria-label="Fechar imagem">×</button></div>

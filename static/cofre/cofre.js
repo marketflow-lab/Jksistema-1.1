@@ -4,15 +4,16 @@
   const $ = (id) => document.getElementById(id);
   const state = {
     servers: [], server: null, channels: [], channel: null,
-    offset: 0, total: 0, loaded: 0, lastDay: null, revision: 0, serverRevision: 0,
+    offset: 0, windowStart: 0, total: 0, loaded: 0, lastDay: null, revision: 0, serverRevision: 0,
     request: null, messageRetry: null, displayedChannel: null, mediaController: new AbortController(),
     mediaCache: new Map(), objectUrls: new Set(), observer: null,
     importing: false, searching: null, query: '', trashMode: false,
     totalActive: 0, totalDeleted: 0, summaryRevision: 0,
     messageDrafts: new Map(), channelDrafts: new Map(), mutations: new Map(),
     editor: null, channelEditor: null, deleteTarget: null, deleting: false,
+    composerDrafts: new Map(), composerContext: null, deleteChannelTarget: null, deletingChannel: false,
     session: null, sessionInvalidated: false, sessionUnavailable: false, archiveReady: false, accessReady: false,
-    sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null },
+    sharing: { configured: false, enabled: false, can_publish: false, can_post: null, is_admin: null, revision: null, last_sync: null },
     sharingKnown: false, sharingError: false, sharingBusy: false, sharingRequest: null,
     lastSharingAttempt: 0, publishing: false, publishSession: null
   };
@@ -116,6 +117,8 @@
     updateTrashCount();
     state.messageDrafts.clear();
     state.channelDrafts.clear();
+    clearComposerDrafts();
+    state.deleteChannelTarget = null;
     state.mutations.clear();
     state.editor = null;
     state.channelEditor = null;
@@ -124,7 +127,7 @@
     state.server = null;
     state.channels = [];
     state.channel = null;
-    for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'importDialog', 'publishSharingDialog']) $(id).close();
+    for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'deleteChannelDialog', 'importDialog', 'publishSharingDialog']) $(id).close();
     for (const id of ['editAuthor', 'editContent', 'editChannelName', 'editChannelCategory', 'editChannelTopic']) $(id).value = '';
     $('editMessageLinks').replaceChildren();
     $('editMessageEmbeds').replaceChildren();
@@ -249,6 +252,32 @@
       (!state.sharing.enabled || !state.sharingError);
   }
 
+  function canMutateMessages() {
+    return state.accessReady && state.sharingKnown && !state.sessionInvalidated && !state.sessionUnavailable &&
+      (!state.sharing.enabled || !state.sharingError);
+  }
+
+  function canPostMessages() {
+    return canMutateMessages() && (typeof state.sharing.can_post === 'boolean' ? state.sharing.can_post : state.sharing.can_publish);
+  }
+
+  function isArchiveAdmin() {
+    return typeof state.sharing.is_admin === 'boolean' ? state.sharing.is_admin : state.sharing.can_publish;
+  }
+
+  function messagePermission(message, permission) {
+    return canMutateMessages() && (typeof message[permission] === 'boolean' ? message[permission] : canEditArchive());
+  }
+
+  function requireMessageDelete(context) {
+    if (!canMutateMessages() || !context?.canDelete) {
+      notice('Somente quem enviou este item ou um administrador pode excluí-lo ou restaurá-lo.', true);
+      return false;
+    }
+    if (state.sharingBusy) { notice('Aguarde a sincronização em andamento.'); return false; }
+    try { ensureSession(context.session); return true; } catch (_error) { return false; }
+  }
+
   function requireWriteAccess() {
     if (!canEditArchive()) {
       notice(state.sharingKnown ? 'Este acervo está disponível para consulta na sua conta.' : 'Confira o estado do acervo antes de fazer alterações.', true);
@@ -274,7 +303,7 @@
       : state.sharingBusy ? state.publishing ? 'Publicando acervo…' : 'Sincronizando acervo…'
       : state.sharingError ? 'Não foi possível sincronizar agora. A cópia disponível foi mantida.'
       : !state.sharingKnown ? 'Confira o acervo para continuar.'
-      : sharing.enabled ? (sharing.can_publish ? 'As alterações são compartilhadas.' : 'Somente leitura.') + (synced ? ' Atualizado às ' + timeFormat.format(synced) + '.' : '')
+      : sharing.enabled ? (sharing.can_post || sharing.can_publish ? 'Compartilhe informações nos canais da empresa.' : 'Somente leitura.') + (synced ? ' Atualizado às ' + timeFormat.format(synced) + '.' : '')
       : sharing.configured && sharing.can_publish ? 'Publique para compartilhar com a empresa.' : 'Disponível neste computador.';
     $('syncSharing').textContent = unavailable ? 'Tentar novamente' : '↻ Sincronizar';
     $('syncSharing').hidden = invalid || (!unavailable && state.sharingKnown && !sharing.configured);
@@ -286,18 +315,28 @@
       control.disabled = !editable || state.sharingBusy || (control.id === 'editChannel' && !state.channel);
     }
     if (!editable) {
-      $('messages').querySelectorAll('.message-actions').forEach(actions => actions.remove());
       if (state.accessReady && state.sharingKnown && sharing.configured) {
-        for (const id of ['editMessageDialog', 'editChannelDialog', 'deleteMessageDialog', 'importDialog']) $(id).close();
+        for (const id of ['editMessageDialog', 'editChannelDialog', 'importDialog']) $(id).close();
       }
     }
+    for (const button of $('messages').querySelectorAll('.message-action')) {
+      const allowed = button.dataset.action === 'edit-message' ? editable : canMutateMessages();
+      button.hidden = !allowed;
+      const key = JSON.stringify([state.session?.key, String(state.server?.id), String(state.channel?.id), button.closest('.message')?.dataset.messageId]);
+      button.disabled = !allowed || state.sharingBusy || state.mutations.has(key);
+    }
+    if (!canMutateMessages()) $('deleteMessageDialog').close();
+    $('deleteChannel').hidden = !isArchiveAdmin() || !canMutateMessages();
+    $('deleteChannel').disabled = !state.channel || state.sharingBusy || state.deletingChannel;
+    if (!isArchiveAdmin() || !canMutateMessages()) $('deleteChannelDialog').close();
+    renderComposer();
     if (!sharing.can_publish && !state.publishing) $('publishSharingDialog').close();
   }
 
   function applySharingStatus(data) {
     const wasEditable = canEditArchive();
     const wasEnabled = state.sharing.enabled;
-    for (const field of ['configured', 'enabled', 'can_publish']) {
+    for (const field of ['configured', 'enabled', 'can_publish', 'can_post', 'is_admin']) {
       if (typeof data[field] === 'boolean') state.sharing[field] = data[field];
     }
     for (const field of ['revision', 'last_sync']) {
@@ -479,12 +518,14 @@
     clearMedia();
     state.loaded = 0;
     state.offset = 0;
+    state.windowStart = 0;
     state.total = 0;
     state.lastDay = null;
     state.displayedChannel = null;
     state.messageRetry = null;
     $('messages').replaceChildren();
     $('loadMore').hidden = true;
+    $('loadBeginning').hidden = true;
     $('loadMore').disabled = false;
     $('timelineStatus').textContent = '';
   }
@@ -584,6 +625,8 @@
       $('refreshMessages').disabled = true;
       $('editChannel').disabled = true;
       $('toggleTrash').disabled = true;
+      renderComposer();
+      renderSharing();
       return;
     }
     const selected = state.servers.find((server) => server.id === preferredId) || state.servers[0];
@@ -596,6 +639,8 @@
     state.server = server;
     state.channel = null;
     state.channels = [];
+    renderComposer();
+    renderSharing();
     cancelMessages();
     $('messageSearch').disabled = true;
     $('messageSearch').value = '';
@@ -635,6 +680,7 @@
     if (state.sessionUnavailable || state.sessionInvalidated) return;
     state.channel = channel;
     state.query = '';
+    state.trashMode = false;
     $('messageSearch').value = '';
     $('messageSearch').disabled = false;
     $('refreshMessages').disabled = false;
@@ -643,6 +689,7 @@
     updateChannelHeading();
     renderChannels();
     renderDetails();
+    renderSharing();
     await loadMessages(true);
   }
 
@@ -845,11 +892,12 @@
     return article;
   }
 
-  async function loadMessages(reset, preserveScroll = false) {
+  async function loadMessages(reset, preserveScroll = false, requestedOffset = null) {
     if (!state.channel || !state.server || state.sessionInvalidated || state.sessionUnavailable) return;
     const previousScroll = preserveScroll ? $('messageScroll').scrollTop : 0;
     const restoreCount = preserveScroll ? Math.max(state.loaded, 1) : 100;
     const anchor = preserveScroll ? captureScrollAnchor() : null;
+    const preservedStart = state.windowStart;
     const keepDisplayed = reset && state.displayedChannel?.session === state.session &&
       state.displayedChannel.serverId === state.server.id && state.displayedChannel.channelId === state.channel.id;
     if (reset) {
@@ -866,7 +914,7 @@
     state.request = new AbortController();
     const revision = state.revision;
     const controller = state.request;
-    const startOffset = reset ? 0 : state.offset;
+    const startOffset = reset ? Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : preserveScroll ? preservedStart : 0 : state.offset;
     const params = new URLSearchParams({ servidor_id: state.server.id, offset: String(startOffset), limit: '100' });
     if (state.query) params.set('q', state.query);
     if (state.trashMode) params.set('excluidos', 'true');
@@ -903,7 +951,8 @@
       }
       $('messages').appendChild(fragment);
       state.loaded += messages.length;
-      state.offset += messages.length;
+      state.offset = startOffset + messages.length;
+      if (reset) state.windowStart = startOffset;
       state.displayedChannel = { session: state.session, serverId: state.server.id, channelId: state.channel.id };
       state.messageRetry = null;
       state.total = Number(data.total) || 0;
@@ -919,13 +968,14 @@
       $('loadMore').hidden = !more;
       $('loadMore').disabled = false;
       $('loadMore').textContent = 'Carregar mais mensagens';
+      $('loadBeginning').hidden = state.windowStart === 0;
       $('timelineStatus').textContent = state.total === 0
         ? state.query ? 'Nenhuma mensagem encontrada para esta busca.' : state.trashMode ? 'A lixeira deste canal está vazia.' : 'Nenhuma mensagem nesta cópia do canal.'
-        : numberFormat.format(state.loaded) + ' de ' + numberFormat.format(state.total) + (state.query ? ' mensagens encontradas' : state.trashMode ? ' mensagens na lixeira' : ' mensagens no acervo') + (more ? '' : ' · você chegou ao fim da cópia');
+        : (state.windowStart ? 'Últimas ' : '') + numberFormat.format(state.loaded) + ' de ' + numberFormat.format(state.total) + (state.query ? ' mensagens encontradas' : state.trashMode ? ' mensagens na lixeira' : ' mensagens no acervo') + (more ? '' : ' · você chegou ao fim da cópia');
     } catch (error) {
       if (error.name === 'AbortError' || revision !== state.revision) return;
       $('timelineStatus').textContent = 'Não foi possível carregar as mensagens.';
-      state.messageRetry = { reset, preserveScroll };
+      state.messageRetry = { reset, preserveScroll, requestedOffset };
       $('loadMore').hidden = false;
       $('loadMore').disabled = false;
       $('loadMore').textContent = 'Tentar novamente';
@@ -976,12 +1026,13 @@
     $('toggleTrash').setAttribute('aria-label', $('toggleTrash').title);
     $('messageSearch').placeholder = state.trashMode ? 'Buscar na lixeira' : 'Buscar neste canal';
     document.querySelector('label[for="messageSearch"]').textContent = $('messageSearch').placeholder;
+    renderComposer();
     state.totalDeleted = Number(channel.deleted_message_count) || 0;
     updateTrashCount();
   }
 
   function messageContext(message) {
-    const context = { session: ensureSession(), serverId: String(state.server.id), channelId: String(state.channel.id), messageId: String(message.id) };
+    const context = { session: ensureSession(), serverId: String(state.server.id), channelId: String(state.channel.id), messageId: String(message.id), canDelete: messagePermission(message, 'can_delete'), canEdit: messagePermission(message, 'can_edit') };
     context.key = JSON.stringify([context.session.key, context.serverId, context.channelId, context.messageId]);
     return context;
   }
@@ -1007,6 +1058,190 @@
     return path + '?servidor_id=' + encodeURIComponent(context.serverId);
   }
 
+  function composerScope() {
+    if (!state.channel || !state.server || !state.session || state.sessionInvalidated) return null;
+    const context = { session: state.session, serverId: String(state.server.id), channelId: String(state.channel.id) };
+    context.key = JSON.stringify(['post', context.session.key, context.serverId, context.channelId]);
+    return context;
+  }
+
+  function composerDraft(context = composerScope()) {
+    if (!context) return null;
+    let draft = state.composerDrafts.get(context.key);
+    if (!draft) {
+      draft = { context, content: '', files: [], requestId: null, busy: false, feedback: '', error: false, disposed: false };
+      state.composerDrafts.set(context.key, draft);
+    }
+    return draft;
+  }
+
+  function releaseComposerDraft(draft) {
+    draft.disposed = true;
+    for (const item of draft.files) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    draft.files = [];
+    draft.content = '';
+  }
+
+  function clearComposerDrafts() {
+    for (const draft of state.composerDrafts.values()) releaseComposerDraft(draft);
+    state.composerDrafts.clear();
+    state.composerContext = null;
+    $('messageContent').value = '';
+    $('messageFiles').value = '';
+    $('composerFiles').replaceChildren();
+    $('composerWrap').hidden = true;
+  }
+
+  function resizeComposer() {
+    const input = $('messageContent');
+    input.style.height = 'auto';
+    input.style.height = Math.min(150, Math.max(42, input.scrollHeight)) + 'px';
+  }
+
+  function renderComposerFiles(draft) {
+    const container = $('composerFiles');
+    container.replaceChildren();
+    container.hidden = !draft.files.length;
+    draft.files.forEach((item, index) => {
+      const card = node('div', 'composer-file');
+      if (item.previewUrl) {
+        const image = node('img', 'composer-file-image');
+        image.src = item.previewUrl;
+        image.alt = 'Prévia de ' + item.file.name;
+        card.appendChild(image);
+      } else card.appendChild(node('span', 'composer-file-symbol', '▤'));
+      const info = node('div', 'composer-file-info');
+      const name = node('strong', null, item.file.name);
+      name.title = item.file.name;
+      info.append(name, node('small', null, item.file.size < 1024 * 1024 ? Math.max(1, Math.ceil(item.file.size / 1024)) + ' KB' : (item.file.size / (1024 * 1024)).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + ' MB'));
+      const remove = node('button', 'composer-file-remove', '×');
+      remove.type = 'button';
+      remove.disabled = draft.busy;
+      remove.setAttribute('aria-label', 'Remover anexo ' + item.file.name);
+      remove.addEventListener('click', () => {
+        if (draft.busy || draft.disposed) return;
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        draft.files.splice(index, 1);
+        draft.requestId = null;
+        draft.feedback = '';
+        renderComposer();
+      });
+      card.append(info, remove);
+      container.appendChild(card);
+    });
+  }
+
+  function renderComposer() {
+    const context = composerScope();
+    const visible = !!context && !state.trashMode && !state.sessionInvalidated;
+    $('composerWrap').hidden = !visible;
+    if (!visible) { state.composerContext = null; return; }
+    const draft = composerDraft(context);
+    state.composerContext = context;
+    if ($('messageContent').value !== draft.content) $('messageContent').value = draft.content;
+    const available = canPostMessages() && !state.sharingBusy && !draft.busy && !state.deletingChannel;
+    $('messageContent').disabled = !available;
+    $('messageContent').placeholder = 'Mensagem em #' + state.channel.name;
+    $('messageContent').setAttribute('aria-label', 'Nova mensagem em #' + state.channel.name);
+    $('attachMessageFiles').disabled = !available || draft.files.length >= 5;
+    $('messageFiles').disabled = !available;
+    $('sendMessage').disabled = !available || (!draft.content.trim() && !draft.files.length);
+    $('sendMessage').querySelector('span').textContent = draft.busy ? 'Enviando…' : 'Enviar';
+    $('messageComposer').setAttribute('aria-busy', String(draft.busy));
+    $('composerProgress').hidden = !draft.busy;
+    $('composerWrap').classList.toggle('composer-unavailable', !available && !draft.busy);
+    $('composerFeedback').textContent = draft.feedback || (!canPostMessages() ? state.sharing.enabled && state.sharingError ? 'Sincronize para enviar. Seu rascunho foi mantido.' : 'O envio está indisponível nesta conta.' : state.sharingBusy ? 'Aguarde a sincronização.' : '');
+    $('composerFeedback').classList.toggle('error', draft.error);
+    renderComposerFiles(draft);
+    resizeComposer();
+  }
+
+  async function safeRasterPreview(item, draft) {
+    if (!/^image\/(png|jpeg|gif|webp)$/i.test(item.file.type)) return;
+    const bytes = new Uint8Array(await item.file.slice(0, 12).arrayBuffer());
+    const signature = Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const raster = signature.startsWith('89504e470d0a1a0a') || signature.startsWith('ffd8ff') ||
+      signature.startsWith('474946383761') || signature.startsWith('474946383961') ||
+      (signature.startsWith('52494646') && signature.slice(16, 24) === '57454250');
+    if (!raster || draft.disposed || !draft.files.includes(item)) return;
+    item.previewUrl = URL.createObjectURL(item.file);
+    if (state.composerContext?.key === draft.context.key) renderComposerFiles(draft);
+  }
+
+  function addComposerFiles(files) {
+    const context = composerScope();
+    if (!context || !canPostMessages() || state.sharingBusy) return;
+    try { ensureSession(context.session); } catch (_error) { return; }
+    const draft = composerDraft(context);
+    if (draft.busy) return;
+    const selected = Array.from(files || []);
+    if (!selected.length) return;
+    const error = selected.some(file => file.size > 10 * 1024 * 1024) ? 'Cada arquivo pode ter até 10 MB.' :
+      draft.files.length + selected.length > 5 ? 'Selecione até 5 arquivos por mensagem.' : '';
+    if (error) { draft.feedback = error; draft.error = true; renderComposer(); return; }
+    for (const file of selected) {
+      const item = { file, previewUrl: null };
+      draft.files.push(item);
+      safeRasterPreview(item, draft).catch(() => {});
+    }
+    draft.requestId = null;
+    draft.feedback = '';
+    draft.error = false;
+    renderComposer();
+    $('messageContent').focus();
+  }
+
+  async function sendNewMessage(event) {
+    event.preventDefault();
+    const context = composerScope();
+    if (!context || !canPostMessages() || state.sharingBusy || state.deletingChannel) return;
+    const draft = composerDraft(context);
+    if (draft.busy || (!draft.content.trim() && !draft.files.length)) return;
+    if (draft.content.length > 32000) { draft.feedback = 'A mensagem pode ter até 32.000 caracteres.'; draft.error = true; renderComposer(); return; }
+    try { ensureSession(context.session); } catch (_error) { return; }
+    draft.requestId ||= crypto.randomUUID();
+    const form = new FormData();
+    form.append('payload', JSON.stringify({ request_id: draft.requestId, content: draft.content, links: [] }));
+    for (const item of draft.files) form.append('arquivos', item.file, item.file.name);
+    draft.busy = true;
+    draft.error = false;
+    draft.feedback = 'Enviando mensagem' + (draft.files.length ? ' e anexos' : '') + '…';
+    state.mutations.set(context.key, 'post');
+    renderComposer();
+    let result;
+    try {
+      result = await request(scopedPath('/canais/' + encodeURIComponent(context.channelId) + '/mensagens', context), { method: 'POST', body: form }, context.session);
+      if (result.success === false) throw new Error('O envio não foi concluído.');
+    } catch (error) {
+      if (!draft.disposed) { draft.feedback = error.message + ' Seu rascunho foi mantido. Clique em Enviar para tentar novamente.'; draft.error = true; }
+      return;
+    } finally {
+      draft.busy = false;
+      state.mutations.delete(context.key);
+      if (currentChannel(context)) renderComposer();
+    }
+    // A confirmed send is never replayed if refreshing the conversation fails.
+    releaseComposerDraft(draft);
+    state.composerDrafts.delete(context.key);
+    if (!currentChannel(context)) return;
+    const nextDraft = composerDraft(context);
+    nextDraft.feedback = 'Mensagem enviada.';
+    if (Number.isFinite(result.total_ativos)) state.channel.message_count = result.total_ativos;
+    state.query = '';
+    $('messageSearch').value = '';
+    state.trashMode = false;
+    updateChannelHeading();
+    renderComposer();
+    const tail = Number.isSafeInteger(result.message_offset) && result.message_offset >= 0 ? result.message_offset : Math.max(0, (Number(result.total_ativos) || 0) - 100);
+    await loadMessages(true, false, tail);
+    if (currentChannel(context)) {
+      $('messageScroll').scrollTop = $('messageScroll').scrollHeight;
+      $('messageContent').focus();
+      renderChannels();
+      renderDetails();
+    }
+  }
+
   function cloneLinks(links) {
     return (Array.isArray(links) ? links : []).filter(item => item && typeof item === 'object').map(item => ({ url: String(item.url || ''), text: String(item.text || '') }));
   }
@@ -1021,9 +1256,9 @@
     if (message.edited) meta.appendChild(node('span', 'message-state', 'Editado'));
     const deleted = message.deleted === true || state.trashMode;
     if (deleted) meta.appendChild(node('span', 'message-state deleted-state', 'Na lixeira'));
-    if (!canEditArchive()) return;
+    if (!context.canDelete && !context.canEdit) return;
     const actions = node('div', 'message-actions');
-    if (deleted) {
+    if (deleted && context.canDelete) {
       const restore = node('button', 'message-action restore-action', '↶ Restaurar');
       restore.type = 'button';
       restore.dataset.action = 'restore-message';
@@ -1031,20 +1266,25 @@
       restore.disabled = state.mutations.has(context.key);
       restore.addEventListener('click', () => restoreMessage(context, restore));
       actions.appendChild(restore);
-    } else {
-      const edit = node('button', 'message-action', '✎ Editar');
-      edit.type = 'button';
-      edit.dataset.action = 'edit-message';
-      edit.setAttribute('aria-label', 'Editar item de ' + authorName(message));
-      edit.disabled = state.mutations.has(context.key);
-      edit.addEventListener('click', () => openMessageEditor(message, context));
-      const remove = node('button', 'message-action delete-action', '♲ Excluir');
-      remove.type = 'button';
-      remove.dataset.action = 'delete-message';
-      remove.setAttribute('aria-label', 'Excluir item de ' + authorName(message));
-      remove.disabled = state.mutations.has(context.key);
-      remove.addEventListener('click', () => openDeleteMessage(message, context));
-      actions.append(edit, remove);
+    } else if (!deleted) {
+      if (context.canEdit) {
+        const edit = node('button', 'message-action', '✎ Editar');
+        edit.type = 'button';
+        edit.dataset.action = 'edit-message';
+        edit.setAttribute('aria-label', 'Editar item de ' + authorName(message));
+        edit.disabled = state.mutations.has(context.key);
+        edit.addEventListener('click', () => openMessageEditor(message, context));
+        actions.appendChild(edit);
+      }
+      if (context.canDelete) {
+        const remove = node('button', 'message-action delete-action', '♲ Excluir');
+        remove.type = 'button';
+        remove.dataset.action = 'delete-message';
+        remove.setAttribute('aria-label', 'Excluir item de ' + authorName(message));
+        remove.disabled = state.mutations.has(context.key);
+        remove.addEventListener('click', () => openDeleteMessage(message, context));
+        actions.appendChild(remove);
+      }
     }
     body.appendChild(actions);
   }
@@ -1119,7 +1359,7 @@
   }
 
   function openMessageEditor(message, context) {
-    if (!requireWriteAccess()) return;
+    if (!context.canEdit || !requireWriteAccess()) return;
     if (state.mutations.has(context.key) && !state.messageDrafts.has(context.key)) {
       notice('Este item tem uma alteração em andamento. Aguarde a conclusão.');
       return;
@@ -1185,7 +1425,7 @@
   async function saveMessage(event) {
     event.preventDefault();
     const session = state.editor;
-    if (!requireWriteAccess()) return;
+    if (!session?.context.canEdit || !requireWriteAccess()) return;
     if (!session || state.mutations.has(session.context.key)) return;
     const { context, draft } = session;
     const revision = draft.revision;
@@ -1223,7 +1463,7 @@
   }
 
   function openDeleteMessage(message, context) {
-    if (!requireWriteAccess()) return;
+    if (!requireMessageDelete(context)) return;
     if (state.mutations.has(context.key)) { notice('Este item tem uma alteração em andamento. Aguarde a conclusão.'); return; }
     try { ensureSession(context.session); } catch (_error) { return; }
     state.deleteTarget = context;
@@ -1235,7 +1475,7 @@
 
   async function deleteMessage() {
     const context = state.deleteTarget;
-    if (!requireWriteAccess()) return;
+    if (!requireMessageDelete(context)) return;
     if (!context || state.deleting || state.mutations.has(context.key)) return;
     state.deleting = true;
     state.mutations.set(context.key, 'delete');
@@ -1255,7 +1495,7 @@
   }
 
   async function restoreMessage(context, button) {
-    if (!requireWriteAccess()) return;
+    if (!requireMessageDelete(context)) return;
     if (state.mutations.has(context.key)) return;
     state.mutations.set(context.key, 'restore');
     button.disabled = true;
@@ -1338,6 +1578,112 @@
     }
   }
 
+  function openChannelDeletion() {
+    if (!isArchiveAdmin() || !canMutateMessages() || !requireWriteAccess() || !state.channel || !state.server) return;
+    if (state.mutations.size || state.importing) { notice('Aguarde as alterações em andamento antes de excluir o canal.'); return; }
+    let session;
+    try { session = ensureSession(); } catch (_error) { return; }
+    const channel = state.channel;
+    const context = { session, serverId: String(state.server.id), channelId: String(channel.id), name: String(channel.name) };
+    context.key = JSON.stringify(['delete-channel', session.key, context.serverId, context.channelId]);
+    state.deleteChannelTarget = context;
+    const count = Number(channel.archive_message_count) || (Number(channel.message_count) || 0) + (Number(channel.deleted_message_count) || 0);
+    $('deleteChannelPreview').textContent = '#' + context.name + '\n' + numberFormat.format(count) + ' mensagens, incluindo os itens da lixeira, e todos os anexos deste canal.';
+    $('deleteChannelName').value = '';
+    $('confirmDeleteChannel').disabled = true;
+    feedback('deleteChannelFeedback', '');
+    $('deleteChannelDialog').showModal();
+    $('deleteChannelName').focus();
+  }
+
+  async function deleteEntireChannel(event) {
+    event.preventDefault();
+    const context = state.deleteChannelTarget;
+    if (!context || state.deletingChannel || !isArchiveAdmin() || !requireWriteAccess()) return;
+    if ($('deleteChannelName').value.trim() !== context.name) {
+      feedback('deleteChannelFeedback', 'Digite o nome do canal exatamente como aparece acima.', true);
+      return;
+    }
+    try { ensureSession(context.session); } catch (_error) { return; }
+    if (state.mutations.size || state.importing) { feedback('deleteChannelFeedback', 'Aguarde as alterações em andamento.', true); return; }
+    state.deletingChannel = true;
+    state.mutations.set(context.key, 'delete-channel');
+    for (const id of ['confirmDeleteChannel', 'cancelDeleteChannel', 'closeDeleteChannel', 'deleteChannelName']) $(id).disabled = true;
+    feedback('deleteChannelFeedback', 'Excluindo canal, mensagens e anexos…');
+    renderComposer();
+    try {
+      const result = await request(scopedPath('/canais/' + encodeURIComponent(context.channelId), context), { method: 'DELETE' }, context.session);
+      if (result.success === false) throw new Error('Não foi possível excluir o canal.');
+      $('deleteChannelDialog').close();
+      for (const [key, draft] of state.composerDrafts) {
+        if (draft.context.session === context.session && draft.context.serverId === context.serverId && draft.context.channelId === context.channelId) {
+          releaseComposerDraft(draft);
+          state.composerDrafts.delete(key);
+        }
+      }
+      state.channelDrafts.delete(JSON.stringify(['channel', context.session.key, context.serverId, context.channelId]));
+      if (state.server?.id === context.serverId) {
+        const wasSelected = currentChannel(context);
+        state.channels = state.channels.filter(channel => String(channel.id) !== context.channelId);
+        if (wasSelected) {
+          if (state.channels.length) await selectChannel(state.channels[0]);
+          else {
+            state.channel = null;
+            cancelMessages();
+            $('channelIntro').hidden = true;
+            $('emptyState').hidden = false;
+            $('emptyTitle').textContent = 'Seu servidor está pronto para novas informações.';
+            $('emptyDescription').textContent = 'Este servidor ainda não tem canais. Importe uma cópia para começar.';
+            $('channelName').textContent = state.server.name;
+            $('channelTopic').textContent = 'Nenhum canal neste servidor.';
+            for (const id of ['messageSearch', 'refreshMessages', 'editChannel', 'toggleTrash']) $(id).disabled = true;
+          }
+        }
+        if (state.server) state.server.channel_count = state.channels.length;
+        renderChannels();
+        renderDetails();
+        renderSharing();
+        notice('Canal #' + context.name + ' excluído com suas mensagens e anexos.');
+      }
+    } catch (error) {
+      if (!state.sessionInvalidated && context.session === state.session) feedback('deleteChannelFeedback', error.message, true);
+    } finally {
+      state.deletingChannel = false;
+      state.mutations.delete(context.key);
+      for (const id of ['cancelDeleteChannel', 'closeDeleteChannel', 'deleteChannelName']) $(id).disabled = false;
+      $('confirmDeleteChannel').disabled = $('deleteChannelName').value.trim() !== context.name;
+      renderSharing();
+    }
+  }
+
+  function bindComposer() {
+    $('messageComposer').addEventListener('submit', sendNewMessage);
+    $('messageContent').addEventListener('input', () => {
+      const draft = composerDraft();
+      if (!draft || draft.busy) return;
+      draft.content = $('messageContent').value;
+      draft.requestId = null;
+      draft.feedback = '';
+      draft.error = false;
+      renderComposer();
+    });
+    $('messageContent').addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+        event.preventDefault();
+        $('messageComposer').requestSubmit();
+      }
+    });
+    $('attachMessageFiles').addEventListener('click', () => $('messageFiles').click());
+    $('messageFiles').addEventListener('change', () => {
+      addComposerFiles($('messageFiles').files);
+      $('messageFiles').value = '';
+    });
+    $('messageContent').addEventListener('paste', event => {
+      const files = event.clipboardData?.files;
+      if (files?.length) { event.preventDefault(); addComposerFiles(files); }
+    });
+  }
+
   function bindEditors() {
     $('editMessageForm').addEventListener('submit', saveMessage);
     for (const id of ['closeEditMessage', 'cancelEditMessage']) $(id).addEventListener('click', () => $('editMessageDialog').close());
@@ -1364,6 +1710,11 @@
     $('confirmDeleteMessage').addEventListener('click', deleteMessage);
     for (const id of ['closeDeleteMessage', 'cancelDeleteMessage']) $(id).addEventListener('click', () => { if (!state.deleting) $('deleteMessageDialog').close(); });
     $('deleteMessageDialog').addEventListener('cancel', event => { if (state.deleting) event.preventDefault(); });
+    $('deleteChannel').addEventListener('click', openChannelDeletion);
+    $('deleteChannelForm').addEventListener('submit', deleteEntireChannel);
+    $('deleteChannelName').addEventListener('input', () => { $('confirmDeleteChannel').disabled = state.deletingChannel || $('deleteChannelName').value.trim() !== state.deleteChannelTarget?.name; });
+    for (const id of ['closeDeleteChannel', 'cancelDeleteChannel']) $(id).addEventListener('click', () => { if (!state.deletingChannel) $('deleteChannelDialog').close(); });
+    $('deleteChannelDialog').addEventListener('cancel', event => { if (state.deletingChannel) event.preventDefault(); });
   }
 
   function openImport() {
@@ -1460,12 +1811,14 @@
     for (const id of ['closePublishSharing', 'cancelPublishSharing']) $(id).addEventListener('click', () => { if (!state.publishing) $('publishSharingDialog').close(); });
     $('publishSharingDialog').addEventListener('cancel', event => { if (state.publishing) event.preventDefault(); });
     bindEditors();
+    bindComposer();
     $('toggleTrash').addEventListener('click', () => {
       state.trashMode = !state.trashMode;
       updateChannelHeading();
       loadMessages(true);
     });
-    $('loadMore').addEventListener('click', () => loadMessages(state.messageRetry?.reset || false, state.messageRetry?.preserveScroll || false));
+    $('loadMore').addEventListener('click', () => loadMessages(state.messageRetry?.reset || false, state.messageRetry?.preserveScroll || false, state.messageRetry?.requestedOffset ?? null));
+    $('loadBeginning').addEventListener('click', () => loadMessages(true, false, 0));
     $('searchForm').addEventListener('submit', (event) => { event.preventDefault(); applySearch(); });
     $('messageSearch').addEventListener('input', () => {
       clearTimeout(state.searching);
@@ -1480,7 +1833,7 @@
       setChannelsOpen(false);
       if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     });
-    window.addEventListener('pagehide', () => { state.request?.abort(); clearMedia(); });
+    window.addEventListener('pagehide', () => { state.request?.abort(); clearMedia(); clearComposerDrafts(); });
     try { applySharingStatus(await request('/compartilhamento')); }
     catch (_error) { if (!state.sessionInvalidated) { state.sharingError = true; renderSharing(); } }
     if (state.sessionInvalidated || state.sessionUnavailable) return;

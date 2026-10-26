@@ -384,3 +384,47 @@ body {
   *, *:before, *:after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .channel-intro:hover .channel-cover { transform: none; }
 }
+.composer-wrap { flex: 0 0 auto; min-width: 0; padding: 12px 20px 9px; background: linear-gradient(0deg, #151822, #131620); border-top: 1px solid #a7afd214; }
+.message-composer { min-width: 0; border: 1px solid #46405f; border-radius: 14px; background: linear-gradient(115deg, #252438, #1b1f2f 70%); box-shadow: 0 8px 24px #0000001c, inset 0 1px #d8cdff06; transition: border-color .18s, box-shadow .18s; overflow: hidden; }
+.message-composer:focus-within { border-color: #a698ee9c; box-shadow: 0 0 0 3px #a698ee0b, 0 8px 24px #0000001c; }
+.composer-input-row { display: flex; align-items: flex-end; gap: 10px; padding: 9px; }
+.composer-attach { flex: 0 0 38px; height: 42px; display: grid; place-items: center; border-radius: 10px; background: #b5adff0c; color: #b6afcf; }
+.composer-attach:hover:not(:disabled) { color: #e6e0ff; background: #b5adff1c; }
+.composer-attach .ui-icon { width: 22px; height: 22px; }
+#messageContent { flex: 1; display: block; width: 100%; min-width: 0; min-height: 42px; max-height: 150px; resize: none; border: 0; outline: 0; background: transparent; color: #e9e7f5; font: inherit; font-size: 13px; line-height: 1.6; padding: 10px 0; scrollbar-width: thin; scrollbar-color: #6d648a transparent; }
+#messageContent::placeholder { color: #949ab5; }
+.composer-send { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 9px; height: 42px; padding: 0 15px; border-radius: 10px; color: #211c39; background: linear-gradient(125deg, #c4baff, #a294ed); box-shadow: 0 3px 14px #9c80ef1a; font-weight: 700; font-size: 12px; transition: filter .18s, transform .18s; }
+.composer-send:hover:not(:disabled) { filter: brightness(1.09); transform: translateY(-1px); }
+.composer-send:disabled { opacity: .4; }
+.composer-send .ui-icon { width: 18px; height: 18px; }
+.composer-bottom { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 7px 3px 0; font-size: 10px; line-height: 1.5; color: #8b94ad; }
+.composer-feedback { color: #addecf; overflow-wrap: anywhere; }
+.composer-feedback.error { color: #f1b3bd; }
+.composer-unavailable .message-composer { border-color: #454454; }
+.composer-progress { display: block; width: 100%; height: 3px; border: 0; accent-color: #b6a8ff; }
+.composer-progress::-webkit-progress-bar { background: #25253b; }
+.composer-progress::-webkit-progress-value { background: #b6a8ff; }
+.composer-files { display: flex; gap: 10px; padding: 12px 12px 3px; overflow-x: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #62567f transparent; }
+.composer-file { flex: 0 0 185px; position: relative; display: flex; gap: 9px; align-items: center; min-width: 0; padding: 9px; border: 1px solid #67598266; border-radius: 10px; background: #141623b3; }
+.composer-file-image { flex: 0 0 45px; display: block; width: 45px; height: 45px; object-fit: cover; border-radius: 6px; background: #0d0f17; }
+.composer-file-symbol { flex: 0 0 37px; height: 42px; display: grid; place-items: center; color: #c1b2e8; font-size: 27px; }
+.composer-file-info { flex: 1; min-width: 0; padding-right: 10px; }
+.composer-file-info strong { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; color: #dad6e9; }
+.composer-file-info small { display: block; margin-top: 5px; font-size: 10px; color: #9298ae; }
+.composer-file-remove { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border-radius: 7px; background: #2c293c; color: #d8cee8; font-size: 16px; line-height: 1; }
+.composer-file-remove:hover:not(:disabled) { background: #624758; color: #fff; }
+.history-beginning { margin: 12px auto; background: #252137; color: #c2b5eb; }
+.composer-wrap:not([hidden]) + .conversation-footer { min-height: 35px; padding-top: 7px; padding-bottom: 7px; border-top: 0; font-size: 9px; }
+@media (max-width: 760px) {
+  .composer-wrap { padding: 9px 11px 6px; }
+  .composer-input-row { gap: 6px; padding: 6px; }
+  .composer-attach { flex-basis: 30px; height: 39px; }
+  #messageContent { font-size: 12px; min-height: 39px; padding-top: 10px; }
+  .composer-send { width: 37px; height: 39px; padding: 0; }
+  .composer-send > span { display: none; }
+  .composer-bottom { font-size: 9px; }
+  .composer-files { padding: 9px 9px 2px; gap: 7px; }
+  .composer-file { flex-basis: 165px; }
+  .composer-wrap:not([hidden]) + .conversation-footer { min-height: 30px; padding: 5px 12px; font-size: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .composer-send, .message-composer { transition: none; } }

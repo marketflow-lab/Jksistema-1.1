@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { type DatabaseSync } from "node:sqlite";
+import { createDatabase } from "./database";
 import { createWorker, type Env } from "../src/index";
 import { EMPTY_STATE, MAX_REQUEST_BYTES, MAX_STATE_BYTES } from "../src/schema";
 
@@ -20,19 +20,7 @@ beforeAll(async () => {
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 function database() {
-  const sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(readFileSync(new URL("../migrations/0001_company_state.sql", import.meta.url), "utf8"));
-  databases.push(sqlite);
-  const calls: { sql: string; values: SQLInputValue[] }[] = [];
-  const binding = {
-    prepare(sql: string) {
-      return { bind(...values: SQLInputValue[]) {
-        calls.push({ sql, values });
-        return { async first<T>() { return (sqlite.prepare(sql).get(...values) ?? null) as T | null; } };
-      } };
-    },
-  } as unknown as D1Database;
-  return { sqlite, binding, calls };
+  const db = createDatabase(); databases.push(db.sqlite); return db;
 }
 
 function encode(value: unknown) {

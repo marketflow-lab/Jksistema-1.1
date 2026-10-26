@@ -1,5 +1,5 @@
 export const MAX_STATE_BYTES = 1024 * 1024;
-export const MAX_REQUEST_BYTES = MAX_STATE_BYTES + 64 * 1024;
+export const MAX_REQUEST_BYTES = 2 * MAX_STATE_BYTES + 64 * 1024;
 export const MAX_REVISION = Number.MAX_SAFE_INTEGER - 1;
 export const EMPTY_STATE = Object.freeze({ format: "jk-cofre-shared-v1", guilds: [] });
 
@@ -131,11 +131,12 @@ export function serializeState(value: unknown): string {
   return serialized;
 }
 
-export function validateWrite(value: unknown): { expectedRevision: number; serializedState: string } {
-  const body = object(value, ["expected_revision", "state"], ["expected_revision", "state"]);
+export function validateWrite(value: unknown): { expectedRevision: number; serializedState: string; metadata?: unknown } {
+  const body = object(value, ["expected_revision", "state", "metadata"], ["expected_revision", "state"]);
   if (typeof body.expected_revision !== "number" || !Number.isSafeInteger(body.expected_revision)
       || body.expected_revision < 0 || body.expected_revision > MAX_REVISION) invalid();
-  return { expectedRevision: body.expected_revision, serializedState: serializeState(body.state) };
+  return { expectedRevision: body.expected_revision, serializedState: serializeState(body.state),
+    ...(Object.hasOwn(body, "metadata") ? { metadata: body.metadata } : {}) };
 }
 
 export async function readBoundedJson(request: Request): Promise<unknown> {

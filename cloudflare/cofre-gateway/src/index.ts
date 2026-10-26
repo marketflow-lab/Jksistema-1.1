@@ -1,7 +1,10 @@
 import { createAuthenticator, type AuthDependencies } from "./auth";
 import { EMPTY_STATE, GatewayError, MAX_REVISION, readBoundedJson, validateWrite } from "./schema";
+import { tuple, validateAssetRequest, validateMutation, type DeletedChannel, type Value } from "./publishing-schema";
+import { mutate, putState, readView } from "./publishing";
+import { downloadAsset, reserveAsset, uploadAsset } from "./assets";
 
-export interface Env { DB: D1Database; COFRE_ISSUER_EMAIL: string }
+export interface Env { DB: D1Database; COFRE_ISSUER_EMAIL: string; MEDIA?: KVNamespace }
 const HEADERS = {
   "Cache-Control": "no-store, max-age=0",
   "Pragma": "no-cache",
@@ -30,36 +33,62 @@ export function createWorker(dependencies: AuthDependencies = {}) {
     async fetch(request: Request, env: Env): Promise<Response> {
       try {
         const url = new URL(request.url);
-        if (url.pathname !== "/v1/state") return json({ error: "not_found" }, 404);
-        if (request.method !== "GET" && request.method !== "PUT") return json({ error: "method_not_allowed" }, 405, { Allow: "GET, PUT" });
-        const write = request.method === "PUT";
+        const assetContent = /^\/v1\/assets\/([0-9a-f]{64})\/content$/.exec(url.pathname);
+        const assetDownload = /^\/v1\/assets\/([0-9a-f]{64})\/([^/]+)$/.exec(url.pathname);
+        const allowed = url.pathname === "/v1/state" ? ["GET", "PUT"]
+          : url.pathname === "/v1/mutations" || url.pathname === "/v1/assets" ? ["POST"]
+          : assetContent ? ["PUT", "GET"] : assetDownload ? ["GET"] : null;
+        if (!allowed) return json({ error: "not_found" }, 404);
+        if (!allowed.includes(request.method)) return json({ error: "method_not_allowed" }, 405, { Allow: allowed.join(", ") });
+        const write = request.method === "PUT" && url.pathname === "/v1/state";
         const principal = await authenticate(request, env.COFRE_ISSUER_EMAIL, write);
         const keys = [...url.searchParams.keys()];
-        if (keys.length > 1 || keys.some(key => write || key !== "after")) throw new GatewayError(400, "invalid_query");
+        if (keys.length > 1 || keys.some(key => url.pathname !== "/v1/state" || write || key !== "after")) throw new GatewayError(400, "invalid_query");
+        const conflict = async () => {
+          const row = await env.DB.prepare("SELECT revision FROM cofre_company_state WHERE company=?1").bind(principal.company).first<{ revision: number }>();
+          return json({ error: "revision_conflict", revision: row?.revision ?? 0 }, 409);
+        };
+        if (url.pathname === "/v1/mutations") {
+          const result = await mutate(env.DB, principal, validateMutation(await readBoundedJson(request)), url.origin, now());
+          return result ? json(result, 200, { ETag: etag(result.revision) }) : await conflict();
+        }
+        if (url.pathname === "/v1/assets") return json(await reserveAsset(env, principal, validateAssetRequest(await readBoundedJson(request)), url.origin, now()));
+        if (assetContent && request.method === "PUT") return json(await uploadAsset(env, principal, assetContent[1], request, url.origin, now()));
+        if (assetDownload) {
+          let filename: string;
+          try { filename = decodeURIComponent(assetDownload[2]); } catch { throw new GatewayError(400, "invalid_filename"); }
+          const { stream, row } = await downloadAsset(env, principal, assetDownload[1], filename);
+          return new Response(stream, { headers: { ...HEADERS, "Content-Type": row.content_type, "Content-Length": String(row.size),
+            "X-Cofre-SHA256": row.sha256, "Content-Disposition": "attachment; filename*=UTF-8''" + encodeURIComponent(row.filename).replace(/['()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase()) } });
+        }
         if (!write) {
           const after = url.searchParams.has("after") ? revision(url.searchParams.get("after")!) : null;
+          const metadata = request.headers.get("X-JK-Cofre-Metadata");
+          if (metadata !== null && metadata !== "1") throw new GatewayError(400, "invalid_metadata_version");
+          if (metadata === "1") {
+            const view = await readView(env.DB, principal.company);
+            if (after === view.revision) return new Response(null, { status: 304, headers: { ...HEADERS, ETag: etag(view.revision) } });
+            return json(view, 200, { ETag: etag(view.revision) });
+          }
           const row = await env.DB.prepare("SELECT revision,state FROM cofre_company_state WHERE company=?1")
             .bind(principal.company).first<{ revision: number; state: string }>();
           const current = row?.revision ?? 0;
           if (after === current) return new Response(null, { status: 304, headers: { ...HEADERS, ETag: etag(current) } });
-          return json({ revision: current, state: row ? JSON.parse(row.state) : EMPTY_STATE }, 200, { ETag: etag(current) });
+          const state = row ? JSON.parse(row.state) : structuredClone(EMPTY_STATE);
+          if (row) {
+            const tombstones = await env.DB.prepare("SELECT guild_id,channel_id FROM cofre_deleted_channels WHERE company=?1").bind(principal.company).all<DeletedChannel>();
+            const hidden = new Set(tombstones.results.map(d => tuple(d.guild_id, d.channel_id)));
+            for (const g of state.guilds) g.channels = g.channels.filter((c: Value) => !hidden.has(tuple(g.guild.id, c.id)));
+          }
+          return json({ revision: current, state }, 200, { ETag: etag(current) });
         }
         const body = validateWrite(await readBoundedJson(request));
-        // Each branch is one atomic, parameterized SQLite statement. No read/modify/write race.
-        const result = body.expectedRevision === 0
-          ? await env.DB.prepare("INSERT INTO cofre_company_state(company,revision,state,updated_at) VALUES(?1,1,?2,?3) ON CONFLICT(company) DO NOTHING RETURNING revision")
-            .bind(principal.company, body.serializedState, now()).first<{ revision: number }>()
-          : await env.DB.prepare("UPDATE cofre_company_state SET revision=revision+1,state=?1,updated_at=?2 WHERE company=?3 AND revision=?4 AND revision<?5 RETURNING revision")
-            .bind(body.serializedState, now(), principal.company, body.expectedRevision, Number.MAX_SAFE_INTEGER).first<{ revision: number }>();
-        if (!result) {
-          const current = await env.DB.prepare("SELECT revision FROM cofre_company_state WHERE company=?1")
-            .bind(principal.company).first<{ revision: number }>();
-          return json({ error: "revision_conflict", revision: current?.revision ?? 0 }, 409);
-        }
-        return json({ revision: result.revision }, 200, { ETag: etag(result.revision) });
+        const result = await putState(env.DB, principal, body.expectedRevision, JSON.parse(body.serializedState), body.metadata, url.origin, now());
+        return result === null ? await conflict() : json({ revision: result }, 200, { ETag: etag(result) });
       } catch (error) {
         // No request, token, account identifier, payload, or exception detail is logged or reflected.
-        if (error instanceof GatewayError) return json({ error: error.code }, error.status);
+        if (error instanceof GatewayError) return json({ error: error.code }, error.status,
+          error.status === 503 && error.code.startsWith("asset_") ? { "Retry-After": "60" } : {});
         return json({ error: "service_unavailable" }, 503);
       }
     },

@@ -427,6 +427,7 @@ async function clean(result) {
     const reader = await scenario(browser, { sharing: { configured: true, enabled: true, can_publish: false, revision: 7, last_sync: '2026-10-22T11:00:00Z' } });
     const rp = reader.page;
     await rp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    await rp.waitForFunction(() => !document.querySelector('#syncSharing').disabled && document.querySelector('#sharingDescription').textContent.includes('Somente leitura'));
     assert.strictEqual(await rp.locator('#sharingLabel').textContent(), 'Compartilhado com a empresa');
     assert((await rp.locator('#sharingDescription').textContent()).includes('Somente leitura'));
     for (const id of ['railImport', 'sidebarImport', 'emptyImport', 'detailImport', 'footerImport', 'editChannel', 'publishSharing']) assert(await rp.locator('#' + id).isHidden(), 'Leitor não vê mutação: ' + id);
@@ -546,6 +547,11 @@ async function clean(result) {
     const cp = changedCompany.page;
     const cs = changedCompany.state;
     await cp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    // Rendering the local copy precedes the initial background sync. Finish
+    // that request before holding the separate sync used to test company changes.
+    if (cs.syncCalls === 0) await cp.waitForResponse(response => new URL(response.url()).pathname === '/api/cofre/compartilhamento/sincronizar');
+    await cp.locator('#syncSharing:not([disabled])').waitFor();
+    assert.strictEqual(cs.syncCalls, 1, 'A sincronização inicial termina antes de suspender a tentativa manual.');
     cs.holdSharingSync = true;
     await cp.locator('#syncSharing').click();
     await cs.sharingSyncStarted.promise;

@@ -5,12 +5,13 @@ import io
 import json
 import sqlite3
 import stat
+import time
 import warnings
 import zipfile
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.testclient import TestClient
 
 from backend.modules.cofre import storage
@@ -196,10 +197,13 @@ def test_tenant_path_invalid(tmp_path, tenant):
 
 @pytest.fixture
 def client(tmp_path):
-    async def authenticated_tenant(authorization: str | None = Header(None)):
+    async def authenticated_tenant(request: Request, authorization: str | None = Header(None)):
         if authorization not in {"Bearer tenant-a", "Bearer tenant-b"}:
             raise HTTPException(401, "Sessao obrigatoria")
-        return authorization.split()[-1]
+        company = authorization.split()[-1]
+        request.state.cofre_principal = {"client_id": company, "username": "fixture-admin",
+            "scope": ["cofre:read", "cofre:write"], "exp": int(time.time()) + 3600, "capability": ""}
+        return company
     app = FastAPI()
     app.include_router(create_cofre_router(info_root=tmp_path, tenant_dependency=authenticated_tenant))
     return TestClient(app)

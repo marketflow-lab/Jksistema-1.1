@@ -236,6 +236,21 @@ def _connect(directory: Path, *, writable=False):
             CREATE TABLE IF NOT EXISTS channel_local(
                 guild_id TEXT, id TEXT, overrides TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY(guild_id,id));
+            CREATE TABLE IF NOT EXISTS message_ownership(
+                guild_id TEXT, channel_id TEXT, id TEXT, owner_username TEXT NOT NULL,
+                created_at TEXT NOT NULL, PRIMARY KEY(guild_id,channel_id,id));
+            CREATE TRIGGER IF NOT EXISTS cofre_owner_immutable
+                BEFORE UPDATE OF owner_username ON message_ownership
+                WHEN OLD.owner_username != NEW.owner_username
+                BEGIN SELECT RAISE(ABORT,'immutable_cofre_owner'); END;
+            CREATE TABLE IF NOT EXISTS channel_tombstones(
+                guild_id TEXT, id TEXT, deleted INTEGER NOT NULL DEFAULT 0,
+                deleted_by TEXT NOT NULL, deleted_at TEXT NOT NULL,
+                PRIMARY KEY(guild_id,id));
+            CREATE TABLE IF NOT EXISTS posting_receipts(
+                username TEXT, request_id TEXT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+                message_id TEXT NOT NULL, body_digest TEXT NOT NULL,
+                PRIMARY KEY(username,request_id));
         """)
     else:
         target = directory / "cofre.sqlite3"
@@ -243,7 +258,7 @@ def _connect(directory: Path, *, writable=False):
             return None
         connection = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True, timeout=10)
         existing_tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if not {"message_local", "channel_local"}.issubset(existing_tables):
+        if not {"message_local", "channel_local", "message_ownership", "channel_tombstones", "posting_receipts"}.issubset(existing_tables):
             connection.close()
             with _lock(directory), closing(_connect(directory, writable=True)):
                 pass
@@ -394,6 +409,14 @@ def import_archive(info_root: Path, client_id: str, source: BinaryIO, filename: 
             if needed - imported_assets.keys():
                 raise CofreError("JSON com anexos locais deve ser importado dentro de ZIP.")
             guild_id = manifest.guild.id
+            # Imported display names/identifiers can never overwrite a JK post.
+            previous_connection = _connect(directory)
+            if previous_connection is not None:
+                with closing(previous_connection):
+                    owned = {(row[0], row[1]) for row in previous_connection.execute(
+                        "SELECT channel_id,id FROM message_ownership WHERE guild_id=?", (guild_id,))}
+                    if any((channel.id, message.id) in owned for channel in manifest.channels for message in channel.messages):
+                        raise CofreError("A importacao conflita com uma mensagem criada no JK.", 409)
             directory.mkdir(parents=True, exist_ok=True)
             blobs = directory / "assets"
             _assert_safe(blobs)
@@ -444,6 +467,13 @@ def import_archive(info_root: Path, client_id: str, source: BinaryIO, filename: 
 
 
 _MESSAGE_JOIN = " LEFT JOIN message_local l ON l.guild_id=m.guild_id AND l.channel_id=m.channel_id AND l.id=m.id "
+_CHANNEL_JOIN = " LEFT JOIN channel_tombstones d ON d.guild_id=m.guild_id AND d.id=m.channel_id "
+
+
+def _channel_deleted(connection, guild_id, channel_id):
+    row = connection.execute("SELECT deleted FROM channel_tombstones WHERE guild_id=? AND id=?",
+                             (guild_id, channel_id)).fetchone()
+    return bool(row and row[0])
 
 
 def _message_counts(connection, guild_id, channel_id=None):
@@ -451,7 +481,8 @@ def _message_counts(connection, guild_id, channel_id=None):
     if channel_id is not None:
         where += " AND m.channel_id=?"
         args.append(channel_id)
-    row = connection.execute("SELECT COUNT(*),COALESCE(SUM(COALESCE(l.deleted,0)),0) FROM messages m" + _MESSAGE_JOIN + "WHERE " + where, args).fetchone()
+    row = connection.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN COALESCE(l.deleted,0)=1 OR COALESCE(d.deleted,0)=1 THEN 1 ELSE 0 END),0) FROM messages m"
+                             + _MESSAGE_JOIN + _CHANNEL_JOIN + "WHERE " + where, args).fetchone()
     return {"total_ativos": row[0] - row[1], "total_excluidos": row[1]}
 
 
@@ -461,14 +492,17 @@ def _effective_message(row):
             "edited": bool(overrides), "deleted": bool(row["deleted"])}
 
 
-def _channel_record(connection, guild_id, channel_id):
+def _channel_record(connection, guild_id, channel_id, *, include_deleted=False):
     row = connection.execute("SELECT c.payload,l.overrides FROM channels c LEFT JOIN channel_local l ON l.guild_id=c.guild_id AND l.id=c.id WHERE c.guild_id=? AND c.id=?",
                              (guild_id, channel_id)).fetchone()
     if not row:
         raise CofreError("Canal nao encontrado.", 404)
+    deleted = _channel_deleted(connection, guild_id, channel_id)
+    if deleted and not include_deleted:
+        raise CofreError("Canal nao encontrado.", 404)
     overrides = json.loads(row["overrides"]) if row["overrides"] else {}
     counts = _message_counts(connection, guild_id, channel_id)
-    return {**json.loads(row["payload"]), **overrides, "edited": bool(overrides),
+    return {**json.loads(row["payload"]), **overrides, "edited": bool(overrides), "deleted": deleted,
             "message_count": counts["total_ativos"], "deleted_message_count": counts["total_excluidos"],
             "archive_message_count": counts["total_ativos"] + counts["total_excluidos"]}
 
@@ -478,15 +512,16 @@ def _guild_summary(connection, guild_id):
     if not row:
         raise CofreError("Servidor nao encontrado.", 404)
     result = json.loads(row["payload"])
-    channel_rows = connection.execute("SELECT payload FROM channels WHERE guild_id=?", (guild_id,)).fetchall()
+    channel_rows = connection.execute("SELECT c.payload FROM channels c LEFT JOIN channel_tombstones d ON d.guild_id=c.guild_id AND d.id=c.id WHERE c.guild_id=? AND COALESCE(d.deleted,0)=0", (guild_id,)).fetchall()
     result["channel_count"] = len(channel_rows)
+    result["deleted_channel_count"] = connection.execute("SELECT COUNT(*) FROM channels c JOIN channel_tombstones d ON d.guild_id=c.guild_id AND d.id=c.id WHERE c.guild_id=? AND d.deleted=1", (guild_id,)).fetchone()[0]
     result["history_complete"] = bool(channel_rows) and all(json.loads(r["payload"])["history_complete"] for r in channel_rows)
     counts = _message_counts(connection, guild_id)
     result["message_count"] = counts["total_ativos"]
     result["deleted_message_count"] = counts["total_excluidos"]
     result["archive_message_count"] = counts["total_ativos"] + counts["total_excluidos"]
     result["attachment_count"] = sum(len(json.loads(r[0]).get("attachments", [])) for r in
-                                     connection.execute("SELECT m.payload FROM messages m" + _MESSAGE_JOIN + "WHERE m.guild_id=? AND COALESCE(l.deleted,0)=0", (guild_id,)))
+                                     connection.execute("SELECT m.payload FROM messages m" + _MESSAGE_JOIN + _CHANNEL_JOIN + "WHERE m.guild_id=? AND COALESCE(l.deleted,0)=0 AND COALESCE(d.deleted,0)=0", (guild_id,)))
     return result
 
 
@@ -500,38 +535,58 @@ def list_guilds(info_root: Path, client_id: str):
                                 connection.execute("SELECT id FROM guilds ORDER BY id").fetchall()]}
 
 
-def list_channels(info_root: Path, client_id: str, guild_id: str):
+def list_channels(info_root: Path, client_id: str, guild_id: str, *, excluidos=False, actor=None):
+    if actor is not None:
+        from .posting import require_actor
+        require_actor(client_id, actor, admin=excluidos)
     directory = _tenant_dir(info_root, client_id)
     connection = _connect(directory)
     if connection is None:
         raise CofreError("Servidor nao encontrado.", 404)
     with closing(connection):
         summary = _guild_summary(connection, guild_id)
-        channels = [_channel_record(connection, guild_id, row[0]) for row in
-                    connection.execute("SELECT id FROM channels WHERE guild_id=? ORDER BY position,id", (guild_id,)).fetchall()]
+        channels = [_channel_record(connection, guild_id, row[0], include_deleted=excluidos) for row in
+                    connection.execute("SELECT c.id FROM channels c LEFT JOIN channel_tombstones d ON d.guild_id=c.guild_id AND d.id=c.id WHERE c.guild_id=? AND COALESCE(d.deleted,0)=? ORDER BY c.position,c.id", (guild_id, int(excluidos))).fetchall()]
+        if actor is not None:
+            from .posting import is_admin
+            for channel in channels:
+                channel.update(can_post=not channel["deleted"], can_edit=is_admin(actor) and not channel["deleted"], can_delete=is_admin(actor))
         return {"servidor": summary, "canais": channels}
 
 
 def list_messages(info_root: Path, client_id: str, guild_id: str, channel_id: str,
-                  *, q="", offset=0, limit=100, excluidos=False):
+                  *, q="", offset=0, limit=100, excluidos=False, actor=None):
+    if actor is not None:
+        from .posting import require_actor
+        require_actor(client_id, actor)
     if offset < 0 or limit < 1 or limit > 200 or len(q) > 500:
         raise CofreError("Paginacao ou busca invalida.")
     connection = _connect(_tenant_dir(info_root, client_id))
     if connection is None:
         raise CofreError("Canal nao encontrado.", 404)
     with closing(connection):
-        if not connection.execute("SELECT 1 FROM channels WHERE guild_id=? AND id=?", (guild_id, channel_id)).fetchone():
-            raise CofreError("Canal nao encontrado.", 404)
+        channel = _channel_record(connection, guild_id, channel_id, include_deleted=excluidos)
+        if channel["deleted"] and actor is not None:
+            require_actor(client_id, actor, admin=True)
         counts = _message_counts(connection, guild_id, channel_id)
-        where = "m.guild_id=? AND m.channel_id=? AND COALESCE(l.deleted,0)=?"
+        effective_deleted = "1" if channel["deleted"] else "COALESCE(l.deleted,0)"
+        where = "m.guild_id=? AND m.channel_id=? AND " + effective_deleted + "=?"
         args = [guild_id, channel_id, int(excluidos)]
         if q:
             where += " AND instr(COALESCE(l.searchable,m.searchable),?)>0"
             args.append(q.casefold())
         total = connection.execute("SELECT COUNT(*) FROM messages m" + _MESSAGE_JOIN + "WHERE " + where, args).fetchone()[0]
-        rows = connection.execute("SELECT m.payload,l.overrides,COALESCE(l.deleted,0) deleted FROM messages m" + _MESSAGE_JOIN + "WHERE " + where + " ORDER BY m.timestamp,m.id LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
-        return {"mensagens": [_effective_message(row) for row in rows], "total": total, **counts,
-                "offset": offset, "limit": limit, "has_more": offset + len(rows) < total}
+        rows = connection.execute("SELECT m.payload,l.overrides," + effective_deleted + " deleted FROM messages m" + _MESSAGE_JOIN + "WHERE " + where + " ORDER BY m.timestamp,m.id LIMIT ? OFFSET ?", [*args, limit, offset]).fetchall()
+        messages = [_effective_message(row) for row in rows]
+        result = {"mensagens": messages, "total": total, **counts,
+                  "offset": offset, "limit": limit, "has_more": offset + len(rows) < total}
+        if actor is not None:
+            from .posting import _permissions_for_connection
+            permissions = _permissions_for_connection(connection, guild_id, channel_id, actor)
+            for message in messages:
+                message.update(permissions[message["id"]])
+            result["can_post"] = not channel["deleted"]
+        return result
 
 
 def _editable_connection(directory):
@@ -554,17 +609,22 @@ def change_message(info_root: Path, client_id: str, guild_id: str, channel_id: s
         raise CofreError("Nenhuma alteracao informada.")
     directory = _tenant_dir(info_root, client_id)
     with _lock(directory), closing(_editable_connection(directory)) as connection, connection:
-        row = _message_record(connection, guild_id, channel_id, message_id)
-        overrides = json.loads(row["overrides"]) if row["overrides"] else {}
-        if patch is not None:
-            overrides.update(patch.model_dump(include=patch.model_fields_set))
-        effective = {**json.loads(row["payload"]), **overrides}
-        next_deleted = bool(row["deleted"]) if deleted is None else deleted
-        connection.execute("INSERT INTO message_local VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,id) DO UPDATE SET overrides=excluded.overrides,deleted=excluded.deleted,searchable=excluded.searchable,updated_at=excluded.updated_at",
-                           (guild_id, channel_id, message_id, _dump(overrides), int(next_deleted),
-                            _searchable_message(effective), datetime.now(timezone.utc).isoformat()))
-        result = _effective_message(_message_record(connection, guild_id, channel_id, message_id))
-        return {"mensagem": result, **_message_counts(connection, guild_id, channel_id)}
+        return _change_message_record(connection, guild_id, channel_id, message_id, patch=patch, deleted=deleted)
+
+
+def _change_message_record(connection, guild_id, channel_id, message_id, *, patch=None, deleted=None):
+    _channel_record(connection, guild_id, channel_id)
+    row = _message_record(connection, guild_id, channel_id, message_id)
+    overrides = json.loads(row["overrides"]) if row["overrides"] else {}
+    if patch is not None:
+        overrides.update(patch.model_dump(include=patch.model_fields_set))
+    effective = {**json.loads(row["payload"]), **overrides}
+    next_deleted = bool(row["deleted"]) if deleted is None else deleted
+    connection.execute("INSERT INTO message_local VALUES(?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,id) DO UPDATE SET overrides=excluded.overrides,deleted=excluded.deleted,searchable=excluded.searchable,updated_at=excluded.updated_at",
+                       (guild_id, channel_id, message_id, _dump(overrides), int(next_deleted),
+                        _searchable_message(effective), datetime.now(timezone.utc).isoformat()))
+    result = _effective_message(_message_record(connection, guild_id, channel_id, message_id))
+    return {"mensagem": result, **_message_counts(connection, guild_id, channel_id)}
 
 
 def change_channel(info_root: Path, client_id: str, guild_id: str, channel_id: str, patch: ChannelPatch):
