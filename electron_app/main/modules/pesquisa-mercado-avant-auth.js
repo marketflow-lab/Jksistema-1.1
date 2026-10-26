@@ -56,9 +56,13 @@ const pageScript = action => `(${pageSession.toString()})(${JSON.stringify(actio
 function submitLogin(email) {
     if (location.origin !== 'https://auth.avantprocloud.com.br' || location.pathname !== '/') return { blocked: true };
     const root = document.querySelector('#avantauth-root');
-    const heading = root && root.querySelector('h1');
-    if (!heading || !/^iniciar sess[aã]o$/i.test(String(heading.textContent || '').trim())
-        || root.querySelector('input[name="name"], input[name="phone"]')) return { blocked: true };
+    // The auth iframe can commit before its application has rendered the form.
+    if (!root) return { ready: false };
+    if (root.querySelector('input[name="name"], input[name="phone"]')) return { blocked: true };
+    const heading = root.querySelector('h1');
+    const title = heading && String(heading.textContent || '').trim();
+    if (!title) return { ready: false };
+    if (!/^iniciar sess[aã]o$/i.test(title)) return { blocked: true };
     const visible = node => {
         if (!node || !node.isConnected) return false;
         const rect = node.getBoundingClientRect();
@@ -174,6 +178,7 @@ class AvantSession {
                     if (state.state === 'logged_out') {
                         if (!loginOpened) { await executePage('open-login'); loginOpened = true; }
                     } else if (!attempted) {
+                        loginOpened = true; // An existing auth form also gets the full loading deadline.
                         const main = contents.mainFrame;
                         const frames = main && main.framesInSubtree || [];
                         const frame = frames.find(candidate => {

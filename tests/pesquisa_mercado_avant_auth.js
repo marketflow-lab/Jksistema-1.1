@@ -49,7 +49,7 @@ function authHtml(options) {
         : options.challenge === 'otp' ? '<input autocomplete="one-time-code">'
         : options.challenge === 'captcha' ? '<div data-testid="captcha">Captcha</div>' : '';
     return `<!doctype html><meta charset="UTF-8"><div id="avantauth-root"><form>
-      <h1>${options.registration ? 'Criar conta' : 'Iniciar Sessão'}</h1>
+      <h1>${options.registration ? 'Criar conta' : options.headingText || 'Iniciar Sessão'}</h1>
       ${options.registration ? '<input name="name">' : ''}
       <label for="email">Email</label><input id="email" type="email" name="email" autocomplete="email">
       ${challenge}<button type="submit" ${options.disabled || options.enableDelay ? 'disabled' : ''}>Login</button>
@@ -65,6 +65,17 @@ function authHtml(options) {
         parent.postMessage({kind:'fixture-submitted'}, 'https://lista.mercadolivre.com.br');
         if (settings.success) setTimeout(() => parent.postMessage({kind:'fixture-confirmed'}, 'https://lista.mercadolivre.com.br'), settings.confirmDelay || 10);
       });
+      const root = document.querySelector('#avantauth-root');
+      const heading = root.querySelector('h1');
+      if (settings.deferForm === 'root' || settings.deferForm === 'heading') {
+        const node = settings.deferForm === 'root' ? root : heading;
+        const container = node.parentNode; const next = node.nextSibling;
+        node.remove();
+        window.revealLogin = () => container.insertBefore(node, next);
+      } else if (settings.deferForm === 'title') {
+        const title = heading.textContent; heading.textContent = '';
+        window.revealLogin = () => { heading.textContent = title; };
+      }
       </script>`;
 }
 
@@ -81,7 +92,7 @@ async function createFixture(browser, options = {}) {
     let contextVersion = 1;
     let suppliedEmail = options.email === undefined ? FIXTURE_EMAIL : options.email;
     const wrappers = new Map();
-    const stats = { frameExecutions:0, pageExecutions:0 };
+    const stats = { frameExecutions:0, pageExecutions:0, frameResults:[] };
     function wrap(frame) {
         if (!wrappers.has(frame)) {
             const item = {
@@ -91,6 +102,7 @@ async function createFixture(browser, options = {}) {
                 async executeJavaScript(code) {
                     stats.frameExecutions++;
                     const result = await frame.evaluate(source => (0, eval)(source), code);
+                    stats.frameResults.push(result);
                     if (options.rejectAfterSubmit && result && result.submitted) throw new Error('Execution context was destroyed during authentication reload.');
                     return result;
                 }
@@ -260,6 +272,42 @@ async function main() {
             assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:true });
             assert.equal(await f.submits(), 1); assert(f.stats.frameExecutions > 1, 'Validation must be polled before clicking disabled button.');
         });
+        for (const deferForm of ['root', 'heading', 'title']) {
+            for (const beginPopup of [false, true]) {
+                await test({ success:true, beginPopup, deferForm, timeoutMs:1500, probeMs:30 }, async f => {
+                    let settled = false;
+                    const pending = f.session.ensure();
+                    pending.finally(() => { settled = true; }).catch(() => {});
+                    await until(() => f.stats.frameResults.length > 0);
+                    assert.deepEqual(f.stats.frameResults[0], { ready:false }, 'A trusted form still rendering must remain pending.');
+                    assert.equal(await f.submits(), 0, 'An incomplete form must not receive a login submission.');
+                    await new Promise(resolve => setTimeout(resolve, 60));
+                    assert.equal(settled, false, 'An open login form must keep waiting beyond the initial session probe.');
+                    const frame = f.page.frames().find(candidate => candidate.url().startsWith(AUTH_URL));
+                    await frame.evaluate(() => window.revealLogin());
+                    assert.deepEqual(await pending, { authenticated:true, attempted:true });
+                    assert.equal(await f.submits(), 1, 'A form rendered later must submit exactly once.');
+                });
+            }
+        }
+        await test({ beginPopup:true, deferForm:'root', timeoutMs:150, probeMs:20 }, async f => {
+            const started = Date.now();
+            const result = await f.session.ensure();
+            assert.deepEqual(result, { authenticated:false, attempted:false, reason:'avant_login_not_confirmed' });
+            assert(Date.now() - started >= 150, 'A loading login form must use the overall timeout.');
+            assert(Date.now() - started < 1000, 'A form that never renders must still time out.');
+            assert.equal(await f.submits(), 0);
+        });
+        for (const interruption of ['abort', 'context']) {
+            await test({ beginPopup:true, deferForm:'root', timeoutMs:1500 }, async f => {
+                const controller = new AbortController();
+                const pending = f.session.ensure({ signal:controller.signal });
+                await until(() => f.stats.frameResults.length > 0);
+                if (interruption === 'abort') controller.abort(); else f.switchContext();
+                await assert.rejects(pending, error => error.name === 'AbortError');
+                assert.equal(await f.submits(), 0, 'An interrupted form must not submit an account.');
+            });
+        }
         await test({ success:true, beginPopup:true, confirmDelay:20, rejectAfterSubmit:true }, async f => {
             assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:true });
             assert.equal(await f.submits(), 1, 'A destroyed submission context must be confirmed using the fresh parent document.');
@@ -282,6 +330,14 @@ async function main() {
         await test({ beginPopup:true, registration:true }, async f => {
             const result = await f.session.ensure(); assert.equal(result.reason, 'avant_manual_login_required'); assert.equal(await f.submits(), 0);
         });
+        for (const options of [{ registration:true, deferForm:'heading' }, { headingText:'Outra página' }]) {
+            await test({ beginPopup:true, ...options }, async f => {
+                const result = await f.session.ensure();
+                assert.equal(result.reason, 'avant_manual_login_required'); assert.equal(await f.submits(), 0);
+                const frame = f.page.frames().find(candidate => candidate.url().startsWith(AUTH_URL));
+                assert.equal(await frame.locator('#email').inputValue(), '', 'An incompatible form must not receive the account.');
+            });
+        }
         for (const challenge of ['password','otp','captcha']) {
             await test({ beginPopup:true, challenge }, async f => {
                 const result = await f.session.ensure(); assert.equal(result.reason, 'avant_manual_login_required'); assert.equal(await f.submits(), 0);
