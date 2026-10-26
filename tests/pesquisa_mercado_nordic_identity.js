@@ -80,6 +80,41 @@ async function main() {
         const navigation = await readRsc(filters);
         assert.deepEqual(navigation.categoryStructuredNavigation.categories, [{ key: child.id, nome: child.name, url: child.permalink }], 'only coupled public category fields are exposed');
         assert.ok(!JSON.stringify(navigation.categoryStructuredNavigation).includes('untrusted-fixture'));
+        const tracking = (key, suffix = '') => '#' + encodeURIComponent('applied_filter_id=category&applied_value_id=' + key + '&applied_value_name=Fixture&view_more_flag=true' + suffix);
+        const expanded = regular(), emittedMore = current + '_FiltersAvailableSidebar?filter=category';
+        const tracked = { id: 'MLB122160', name: 'Expanded only', url: base + 'expanded/*_NoIndex_True' + tracking('MLB122160') };
+        const repeated = { id: 'MLB122161', name: 'Repeated', url: base + 'repeated/*_NoIndex_True' + tracking('MLB122161') };
+        const conflicted = { id: 'MLB122162', name: 'Conflict', url: base + 'conflict/*_NoIndex_True' + tracking('MLB122162') };
+        expanded.optimizedResponse.sidebar.components[2].filters = [{ id: 'category', url: emittedMore, values: [repeated, conflicted],
+            expanded_values: [tracked, repeated, { ...conflicted, url: base + 'different/*_NoIndex_True' + tracking(conflicted.id) }] }];
+        const expandedPage = await readRsc(expanded);
+        assert.deepEqual(expandedPage.categoryStructuredNavigation.categories, [
+            { key: repeated.id, nome: repeated.name, url: repeated.url.split('#')[0] },
+            { key: tracked.id, nome: tracked.name, url: tracked.url.split('#')[0] }
+        ], 'RSC category values and expanded_values retain coupled IDs, deduplicate equal routes and discard conflicting IDs');
+        assert.equal(expandedPage.categoryFilterMoreUrl, emittedMore, 'the RSC category group exposes its emitted exact-document expansion URL');
+        assert.equal(expandedPage.categories.some(value => value.key === tracked.id), true, 'an expanded-only child reaches the production navigation list');
+        assert.deepEqual([expandedPage.effectiveCategoryId, expandedPage.categoryDocumentIdentity, expandedPage.categoryIdentityConflict],
+            [rsc.effectiveCategoryId, rsc.categoryDocumentIdentity, rsc.categoryIdentityConflict], 'navigation expansion cannot change document identity');
+        assert.ok(!JSON.stringify(expandedPage.categoryStructuredNavigation).includes('applied_filter'), 'tracking fields are validated then discarded');
+        for (const hash of [tracking('MLB999'), tracking(tracked.id, '&applied_value_id=' + tracked.id), tracking(tracked.id, '&token=fixture'),
+            '#applied_filter_id=brand&applied_value_id=' + tracked.id, '#%E0%A4%A', '#wid=MLB123456789']) {
+            const invalid = regular(); invalid.optimizedResponse.available_filters = [{ id: 'category', expanded_values: [{ ...tracked, url: tracked.url.split('#')[0] + hash }] }];
+            assert.deepEqual((await readRsc(invalid)).categoryStructuredNavigation.categories, [], 'malformed or uncoupled tracking cannot supply a category route');
+        }
+        for (const wrongMore of [emittedMore + '&filter=category', emittedMore.replace('filter=category', 'filter=brand'),
+            emittedMore.replace('/coroas/', '/other/'), emittedMore.replace('lista.mercadolivre.com.br', 'example.com'), emittedMore + '#category',
+            emittedMore.replace('https://', 'https://user:secret@'), current + '?filter=category']) {
+            const invalid = regular(); invalid.optimizedResponse.available_filters = [{ id: 'category', url: wrongMore, expanded_values: [tracked] }];
+            assert.equal((await readRsc(invalid)).categoryFilterMoreUrl, '', 'an expansion endpoint must belong to this exact document and only the category filter');
+        }
+        const unrelatedFilter = regular(); unrelatedFilter.optimizedResponse.available_filters = [{ id: 'brand', url: emittedMore, expanded_values: [tracked] }];
+        const unrelatedNavigation = await readRsc(unrelatedFilter);
+        assert.deepEqual(unrelatedNavigation.categoryStructuredNavigation.categories, []); assert.equal(unrelatedNavigation.categoryFilterMoreUrl, '');
+        const bounded = regular(); bounded.optimizedResponse.available_filters = [{ id: 'category', expanded_values: [...Array(1000).fill(null), tracked] }];
+        assert.deepEqual((await readRsc(bounded)).categoryStructuredNavigation.categories, [], 'expanded category metadata is bounded before extraction');
+        const availableOnly = await readRsc({ optimizedResponse: { available_filters: [{ id: 'category', url: emittedMore, expanded_values: [tracked] }] } });
+        assert.equal(availableOnly.categoryDocumentIdentity, false); assert.equal(availableOnly.effectiveCategoryId, '', 'available category IDs remain navigation candidates only');
         assert.equal(await page.evaluate(() => globalThis.__nordicUnsafe), undefined);
         assert.equal((await readRsc(regular(), { trend: true })).categoryDocumentIdentity, false, 'trend documents do not prove a regular category listing');
         const wrongLabel = regular(); wrongLabel.optimizedResponse.sidebar.components[0].nodes.at(-1).text = 'Pedais';
@@ -327,8 +362,16 @@ async function main() {
         const more = await readMarkup(moreGroup());
         assert.equal(more.categoryFilterMoreUrl, moreUrl, 'the category filter exposes its observed exact-document expansion URL');
         assert.deepEqual(more.categories.map(item => item.nome), ['Peças'], 'Mostrar mais is a control and never a child category');
+        for (const label of ['Show more', 'Ver más', '']) {
+            const translated = await readMarkup(moreGroup().replace('Mostrar mais', label));
+            assert.equal(translated.categoryFilterMoreUrl, moreUrl, 'the exact endpoint identifies expansion independently of its visible language');
+            assert.deepEqual(translated.categories.map(item => item.nome), ['Peças'], 'a translated or icon-only expansion is never a child category');
+        }
+        const typedGroup = await readMarkup(moreGroup().replace('<dl ', '<dl data-filter-id="category" ').replace('Categorias', 'Categories').replace('Mostrar mais', 'See all'));
+        assert.equal(typedGroup.categoryFilterMoreUrl, moreUrl, 'a typed category group does not depend on a Portuguese heading or control label');
         for (const [description, body] of [
             ['brand group', moreGroup(moreUrl, 'Marca')],
+            ['nested brand group', '<dl data-filter-id="category">' + moreGroup(moreUrl, 'Marca') + '</dl>'],
             ['another filter', moreGroup(moreUrl.replace('?filter=category', '?filter=brand'))],
             ['seller filter', moreGroup(moreUrl + '&seller_id=123')],
             ['another document', moreGroup(listing + 'outro_NoIndex_True_FiltersAvailableSidebar?filter=category')],

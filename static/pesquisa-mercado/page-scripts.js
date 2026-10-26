@@ -77,6 +77,26 @@
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
         let categoryStructuredNavigation = null, categoryBrowse = null, categoryFilterMoreUrl = '', categoryItems = [];
+        const categoryExpansionUrls = new Set();
+        const categoryExpansionUrl = value => {
+            if (typeof value !== 'string' || value.length > 4000 || /[\\\u0000-\u0020]/.test(value)) return '';
+            try {
+                const current = new URL(url), more = new URL(value, url);
+                if (more.protocol !== 'https:' || more.origin !== current.origin || more.username || more.password || more.hash
+                    || current.username || current.password || more.port && more.port !== '443'
+                    || !/(^|\.)mercadolivre\.com\.br$/i.test(more.hostname)) return '';
+                const query = [...more.searchParams];
+                if (query.length !== 1 || query[0][0] !== 'filter' || query[0][1] !== 'category'
+                    || !/_FiltersAvailableSidebar\/?$/.test(more.pathname)
+                    || more.pathname.replace(/_FiltersAvailableSidebar\/?$/, '').replace(/\/+$/, '') !== current.pathname.replace(/\/+$/, '')) return '';
+                return more.href;
+            } catch (_error) { return ''; }
+        };
+        const rememberCategoryExpansion = value => {
+            const target = categoryExpansionUrl(value);
+            if (target) categoryExpansionUrls.add(target);
+            categoryFilterMoreUrl = categoryExpansionUrls.size === 1 ? [...categoryExpansionUrls][0] : '';
+        };
         const effectiveCategoryId = (() => {
             if (isProduct(url) || currentListingIsSeller()) return '';
             const evidence = new Set(), documentEvidence = new Set();
@@ -202,6 +222,25 @@
                 if (parsed.search || parsed.username || parsed.password || parsed.port && parsed.port !== '443'
                     || identity(target).id || identity(target).perfilUrl || isProduct(target)) return null;
                 return { key, nome, url: target };
+            };
+            const availableCategory = value => {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+                const key = value.id === 'category' ? value.value : value.id || value.value;
+                const raw = value.permalink || value.url;
+                if (typeof key !== 'string' || !/^MLB\d+$/.test(key) || typeof raw !== 'string' || raw.length > 4000 || /[\\\u0000-\u0020]/.test(raw)) return null;
+                try {
+                    const target = new URL(raw, url);
+                    if (target.hash) {
+                        const params = new URLSearchParams(decodeURIComponent(target.hash.slice(1)));
+                        const allowed = new Set(['applied_filter_id', 'applied_filter_name', 'applied_filter_order', 'applied_value_id', 'applied_value_name',
+                            'applied_value_order', 'applied_value_results', 'is_custom', 'view_more_flag']);
+                        if ([...params.keys()].some(name => !allowed.has(name)) || params.getAll('applied_filter_id').length !== 1
+                            || params.get('applied_filter_id') !== 'category' || params.getAll('applied_value_id').length !== 1
+                            || params.get('applied_value_id') !== key) return null;
+                        target.hash = '';
+                    }
+                    return coupledCategory({ id: key, name: value.name || value.text, permalink: target.href });
+                } catch (_error) { return null; }
             };
             const itemCategories = new Map();
             const inspectCategoryItems = results => {
@@ -337,13 +376,19 @@
                 // Applied filters have a different meaning from search options.
                 inspect({ filters: optimized.filters });
                 const components = optimized.sidebar && Array.isArray(optimized.sidebar.components) ? optimized.sidebar.components : [];
-                const categories = [], breadcrumbs = [];
+                const categoryCandidates = new Map(), categoryCandidateConflicts = new Set(), breadcrumbs = [];
                 const appendAvailable = filters => {
                     for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
                         if (!filter || filter.id !== 'category') continue;
-                        for (const value of Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []) {
-                            const category = coupledCategory(value);
-                            if (category && !category.url.includes('$query')) categories.push(category);
+                        rememberCategoryExpansion(filter.url);
+                        const values = [...(Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []),
+                            ...(Array.isArray(filter.expanded_values) ? filter.expanded_values.slice(0, 1000) : [])];
+                        for (const value of values) {
+                            const category = availableCategory(value);
+                            if (!category || category.url.includes('$query')) continue;
+                            const previous = categoryCandidates.get(category.key);
+                            if (previous && previous.url !== category.url) categoryCandidateConflicts.add(category.key);
+                            else categoryCandidates.set(category.key, category);
                         }
                     }
                 };
@@ -363,6 +408,7 @@
                         }
                     }
                 }
+                const categories = [...categoryCandidates.values()].filter(category => !categoryCandidateConflicts.has(category.key));
                 categoryStructuredNavigation = { categories, breadcrumbs };
                 const options = Array.isArray(optimized.search_filters) ? optimized.search_filters.filter(option => option && option.id === 'category') : [];
                 if (options.length !== 1) continue;
@@ -793,28 +839,22 @@
             return title ? (/^categorias?$/.test(norm(title.textContent)) ? 'category' : 'other') : '';
         };
         const groups = nodes(groupSelector, content);
+        const belongsToCategoryGroup = (anchor, group) => {
+            for (let parent = anchor.parentElement; parent && parent !== group; parent = parent.parentElement) {
+                if (parent.matches(groupSelector) && groupKind(parent) === 'other') return false;
+            }
+            return true;
+        };
         const categoryModal = /_FiltersAvailableSidebar$/.test(location.pathname)
             && location.search === '?filter=category' && content.querySelector('.ui-search-modal');
         if (categoryModal) categoryLinks.push(...nodes('a.ui-search-search-modal-filter[href]', categoryModal));
         for (const group of groups) {
             if (groupKind(group) === 'category') {
                 for (const anchor of nodes('a[href]', group)) {
-                    if (anchor.closest(excludedCategoryArea)) continue;
-                    if (!/^(?:mostrar|ver) mais$/.test(norm(anchor.textContent))) continue;
-                    try {
-                        const more = new URL(anchor.getAttribute('href'), url), current = new URL(url);
-                        if (more.origin === current.origin && more.pathname === current.pathname + '_FiltersAvailableSidebar'
-                            && more.search === '?filter=category' && !more.username && !more.password) {
-                            more.hash = ''; categoryFilterMoreUrl = more.href;
-                        }
-                    } catch (_error) { /* Ignore unrelated filter controls. */ }
+                    if (anchor.closest(excludedCategoryArea) || !belongsToCategoryGroup(anchor, group)) continue;
+                    rememberCategoryExpansion(anchor.getAttribute('href'));
                 }
-                categoryLinks = categoryLinks.concat(nodes('a[href]', group).filter(anchor => {
-                    for (let parent = anchor.parentElement; parent && parent !== group; parent = parent.parentElement) {
-                        if (parent.matches(groupSelector) && groupKind(parent) === 'other') return false;
-                    }
-                    return true;
-                }));
+                categoryLinks = categoryLinks.concat(nodes('a[href]', group).filter(anchor => belongsToCategoryGroup(anchor, group)));
             }
         }
         const categoryData = anchor => {
@@ -831,6 +871,7 @@
             const name = clean(anchor.textContent);
             const label = norm(name);
             if (anchor.closest(excludedCategoryArea) || anchor.matches('[aria-current="page"], [aria-disabled="true"]')) return null;
+            if (categoryExpansionUrl(href)) return null;
             if (/^(?:mostrar (?:mais|menos)|ver (?:tudo|todos(?: os produtos)?|mais)|(?:ver )?todas?(?: as)? categorias|voltar(?:\b.*)?|retornar(?:\b.*)?|pagina anterior|anterior)$/.test(label)) return null;
             if (!categoryUrl || !name || isProduct(categoryUrl) || identity(categoryUrl).id || identity(categoryUrl).perfilUrl || categoryUrl === url) return null;
             const destination = new URL(categoryUrl), candidatePath = categoryPath(categoryUrl);
