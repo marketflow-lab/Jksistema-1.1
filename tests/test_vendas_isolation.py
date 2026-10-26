@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from backend.core import AppPaths
 from backend.modules.vendas import (
     LegacyBlingVendasAdapter,
@@ -18,6 +20,7 @@ from backend.modules.vendas import (
 from backend.modules.vendas import progress as vendas_progress
 from backend.modules.vendas import sync_engine as vendas_sync_engine
 from backend.modules.vendas.state import SYNC_ACTIVE, SYNC_CANCEL_FLAGS, SYNC_DAY_CONTEXT, SYNC_LOGS, SYNC_META, SYNC_PROGRESS
+from backend.modules.vendas.sync_config import MAX_CONCURRENT_ACCOUNTS
 from backend.schemas import VendasSyncRequest
 
 
@@ -52,7 +55,7 @@ async def _tenant_dependency(*_args, **_kwargs) -> str:
     return "tenant-test"
 
 
-def _create_module(tmp_path: Path):
+def _create_module(tmp_path: Path, *, max_active_sync: int = MAX_CONCURRENT_ACCOUNTS):
     logger = logging.getLogger("test-vendas-isolation")
     paths = AppPaths.create(base_dir=tmp_path, info_dir=tmp_path / "info", logger=logger)
     return create_vendas_module(
@@ -61,6 +64,7 @@ def _create_module(tmp_path: Path):
             paths=paths,
             logger=logger,
             legacy=LegacyBlingVendasAdapter(),
+            max_active_sync=max_active_sync,
         )
     )
 
@@ -77,6 +81,9 @@ def test_composed_app_preserves_global_and_openapi_contracts() -> None:
     code = r'''
 import collections, hashlib, json
 import backend_api
+from backend.modules.vendas.sync_config import MAX_CONCURRENT_ACCOUNTS
+assert backend_api.SYNC_MAX_ACTIVE_VENDAS == MAX_CONCURRENT_ACCOUNTS
+assert backend_api._vendas_domain.state.max_active_sync == MAX_CONCURRENT_ACCOUNTS
 routes=[]
 for route in backend_api.app.routes:
     effective_route_contexts=getattr(route, "effective_route_contexts", None)
@@ -97,10 +104,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Contagens reproduzidas no snapshot-base 75188595, sem esta correcao.
+        # As duas novas rotas aprovadas do Cofre acrescem duas rotas e pares.
         # O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 523,
-        "pairs": 521,
+        "routes": 525,
+        "pairs": 523,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }
@@ -135,7 +142,13 @@ def test_legacy_facades_delegate_to_the_explicit_default_module(tmp_path: Path) 
 
     assert vendas.limites_vendas(client_id="tenant-test") == {"inicio": None, "fim": None}
     assert vendas.progresso_sincronizacao_vendas("tenant-test")["success"] is True
-    assert module.state.max_active_sync == 2
+    assert module.state.max_active_sync == MAX_CONCURRENT_ACCOUNTS
+
+
+@pytest.mark.parametrize("max_active_sync", [2, 3, 5])
+def test_module_factory_rejects_capacity_that_differs_from_shared_limit(tmp_path: Path, max_active_sync: int) -> None:
+    with pytest.raises(ValueError, match=f"permanecer em {MAX_CONCURRENT_ACCOUNTS}"):
+        _create_module(tmp_path, max_active_sync=max_active_sync)
 
 
 def test_app_paths_never_moves_global_legacy_file_into_non_default_tenant(

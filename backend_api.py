@@ -344,6 +344,7 @@ from backend.modules.vendas import (
     create_vendas_module,
     install_default_vendas_module,
 )
+from backend.modules.vendas.sync_config import MAX_CONCURRENT_ACCOUNTS
 from backend.services.renovacao import (
     RenovacaoServiceConfig,
     configure_renovacao_context,
@@ -515,8 +516,8 @@ SYNC_LOGS = {}
 SYNC_META = {}
 # Contexto temporario para transformar progresso de um dia em progresso global
 SYNC_DAY_CONTEXT = {}
-# Controle interno para permitir sincronizar vendas de ate 2 contas ao mesmo tempo
-SYNC_MAX_ACTIVE_VENDAS = 2
+# Simbolo legado mantido com o limite canonico de contas simultaneas.
+SYNC_MAX_ACTIVE_VENDAS = MAX_CONCURRENT_ACCOUNTS
 SYNC_ACTIVE_LOCK = threading.RLock()
 SYNC_STATE_LOCK = threading.RLock()
 SYNC_THREAD_CONTEXT = threading.local()
@@ -2563,7 +2564,6 @@ _vendas_domain = install_default_vendas_module(create_vendas_module(VendasModule
     paths=_vendas_paths,
     logger=logger,
     legacy=LegacyBlingVendasAdapter(),
-    max_active_sync=2,
 )))
 app.include_router(_vendas_domain.router)
 

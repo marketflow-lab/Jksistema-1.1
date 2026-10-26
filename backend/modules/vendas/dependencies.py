@@ -10,6 +10,7 @@ from backend.core import AppPaths
 from backend.services import bling_vendas, estoque_historico, integracoes
 
 from .errors import VendasDomainError
+from .sync_config import MAX_CONCURRENT_ACCOUNTS
 
 
 _ALLOWED_BLING_HELPERS = frozenset(
@@ -133,7 +134,7 @@ class VendasModuleDependencies:
     paths: AppPaths
     logger: logging.Logger
     legacy: LegacyBlingVendasAdapter
-    max_active_sync: int = 2
+    max_active_sync: int = MAX_CONCURRENT_ACCOUNTS
 
 
 _dependencies: VendasModuleDependencies | None = None
@@ -149,8 +150,8 @@ logger = _DependencyLogger()
 
 def install_vendas_dependencies(dependencies: VendasModuleDependencies) -> None:
     global _dependencies
-    if int(dependencies.max_active_sync) != 2:
-        raise ValueError("O limite de sincronizacoes de Vendas deve permanecer em 2.")
+    if int(dependencies.max_active_sync) != MAX_CONCURRENT_ACCOUNTS:
+        raise ValueError(f"O limite de sincronizacoes de Vendas deve permanecer em {MAX_CONCURRENT_ACCOUNTS}.")
     dependencies.legacy.configure(dependencies.paths, dependencies.logger)
     _dependencies = dependencies
 
