@@ -41,7 +41,7 @@ async function scenario(browser, options = {}) {
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   if (options.clock) await page.clock.install({ time: new Date('2026-10-22T12:00:00Z') });
-  const state = { requests: [], errors: [], unexpected: [], imported: false, assetCalls: 0, failMessages: !!options.failMessages, slowStarted: deferred(), slowRelease: deferred(), overrides: new Map(), deleted: new Set(), channelOverrides: new Map(), failMutation: false, holdEdit: false, editStarted: deferred(), editRelease: deferred(), lastEditPayload: null, lastAppliedEdit: null, sharing: { configured: false, enabled: false, can_publish: false, revision: null, last_sync: null, ...(options.sharing || {}) }, syncCalls: 0, publishCalls: 0, syncChanged: false, failSharingSync: !!options.failSharingSync, failSharingStatus: !!options.failSharingStatus, conflictPublish: !!options.conflictPublish, holdSharingSync: false, sharingSyncStarted: deferred(), sharingSyncRelease: deferred(), remoteContent: null };
+  const state = { requests: [], errors: [], unexpected: [], imported: false, assetCalls: 0, failMessages: !!options.failMessages, slowStarted: deferred(), slowRelease: deferred(), overrides: new Map(), deleted: new Set(), channelOverrides: new Map(), failMutation: false, holdEdit: false, editStarted: deferred(), editRelease: deferred(), lastEditPayload: null, lastAppliedEdit: null, sharing: { configured: false, enabled: false, can_publish: true, revision: null, last_sync: null, ...(options.sharing || {}) }, syncCalls: 0, publishCalls: 0, syncChanged: false, failSharingSync: !!options.failSharingSync, failSharingStatus: !!options.failSharingStatus, conflictPublish: !!options.conflictPublish, holdSharingSync: false, sharingSyncStarted: deferred(), sharingSyncRelease: deferred(), remoteContent: null };
   const manyMessages = Array.from({ length: 150 }, (_, index) => ({ id: 'many' + (index + 1), author: 'Pessoa Exemplo', timestamp: '2026-10-21T14:00:00Z', content: 'Item ' + (index + 1) + ' preservado.' }));
   function allMessages(channelId) {
     const base = channelId === 'references' ? [{ id: 'ref1', author: 'Pessoa Exemplo', timestamp: '2026-10-21T16:00:00Z', content: 'Referência do segundo canal.' }] : channelId === 'empty' ? [] : options.manyMessages ? manyMessages : messages;
@@ -435,7 +435,7 @@ async function clean(result) {
     assert.strictEqual(reader.state.requests.filter(item => /PATCH|DELETE/.test(item.method)).length, 0);
     assert.strictEqual(reader.state.imported, false, 'Leitor também é bloqueado na entrada de importação.');
     const initialOrder = reader.state.requests.map(item => new URL(item.url).pathname);
-    assert(initialOrder.indexOf('/api/cofre/compartilhamento/sincronizar') < initialOrder.indexOf('/api/cofre/servidores'), 'Sincronização antecede primeira leitura.');
+    assert(initialOrder.indexOf('/api/cofre/servidores') < initialOrder.indexOf('/api/cofre/compartilhamento/sincronizar'), 'A consulta local abre antes da sincronização.');
     await screenshot(rp, 'cofre-compartilhado-leitor');
     await clean(reader);
 
@@ -446,9 +446,17 @@ async function clean(result) {
     for (const id of ['railImport', 'editChannel', 'publishSharing']) assert(await localReader.page.locator('#' + id).isHidden());
     await clean(localReader);
 
+    const disconnectedReader = await scenario(browser, { sharing: { configured: false, enabled: false, can_publish: false, revision: 0 } });
+    await disconnectedReader.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    assert.strictEqual(await disconnectedReader.page.locator('.message-action').count(), 0,
+      'Desligar o compartilhamento não transforma leitor em editor do acervo local.');
+    for (const id of ['railImport', 'editChannel', 'publishSharing']) assert(await disconnectedReader.page.locator('#' + id).isHidden());
+    await clean(disconnectedReader);
+
     const offline = await scenario(browser, { sharing: { configured: true, enabled: true, can_publish: false, revision: 7 }, failSharingSync: true });
     await offline.page.waitForFunction(() => document.querySelectorAll('.message').length === 2);
-    assert.strictEqual(await offline.page.locator('#sharingLabel').textContent(), 'Compartilhado com a empresa');
+    await offline.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Cópia local');
+    assert.strictEqual(await offline.page.locator('#sharingLabel').textContent(), 'Cópia local');
     assert((await offline.page.locator('#sharingDescription').textContent()).includes('cópia disponível foi mantida'));
     assert((await offline.page.locator('.message[data-message-id="m1"] .message-text').textContent()).includes('Bem-vindos ao acervo'));
     assert.strictEqual(await offline.page.locator('.message-action').count(), 0, 'Falha de rede não promove leitor a escritor.');
@@ -510,6 +518,7 @@ async function clean(result) {
     const sp = focusSharing.page;
     const ss = focusSharing.state;
     await sp.waitForFunction(() => document.querySelectorAll('.message').length === 2);
+    if (ss.syncCalls === 0) await sp.waitForResponse(response => new URL(response.url()).pathname === '/api/cofre/compartilhamento/sincronizar');
     assert.strictEqual(ss.syncCalls, 1);
     await sp.clock.fastForward(5000);
     assert.strictEqual(ss.syncCalls, 1, 'Não existe polling a cada5segundos.');

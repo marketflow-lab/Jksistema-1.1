@@ -29,6 +29,9 @@ async function scenario(browser, options = {}) {
   await page.clock.install({ time: new Date('2026-10-22T12:00:00Z') });
   const state = { requests: [], chunks: [], forbidden: [], errors: [], api: [],
     backendUnavailable: !!options.backendUnavailable, backendUnauthorized: false,
+    syncUnavailable: !!options.syncUnavailable,
+    holdSync: !!options.holdSync, heldSync: null,
+    mutationSyncUnavailable: false,
     mutationUnavailable: false, messagesUnavailable: false, redirectMessages: false,
     holdMessages: false, heldMessage: null, messageStarted: false };
   page.on('pageerror', error => state.errors.push(error.message));
@@ -77,11 +80,22 @@ async function scenario(browser, options = {}) {
       state.api.push({ path: url.pathname, authorization: request.headers().authorization, method: request.method() });
       assert.equal(request.headers().authorization, 'Bearer ' + token, 'A API preserva Authorization de sessão.');
       if (request.method() === 'PATCH') {
+        if (state.mutationSyncUnavailable) return route.fulfill({ status: 503, contentType: 'application/json',
+          body: JSON.stringify({ detail: { code: 'cofre_sync_unavailable', message: 'Compartilhamento temporariamente indisponível.' } }) });
         assert(state.mutationUnavailable, 'A fixture não aceita mutações reais.');
         return unavailable();
       }
-      if (url.pathname === '/api/cofre/compartilhamento') return reply({ ...sharing, can_publish: !!options.writer });
-      if (url.pathname === '/api/cofre/compartilhamento/sincronizar') return reply({ ...sharing, can_publish: !!options.writer, changed: false });
+      if (url.pathname === '/api/cofre/compartilhamento') return reply({ ...sharing,
+        enabled: options.sharingEnabled !== false, can_publish: !!options.writer });
+      if (url.pathname === '/api/cofre/compartilhamento/sincronizar') {
+        if (state.holdSync) {
+          await new Promise(resolve => { state.heldSync = resolve; });
+          state.holdSync = false;
+        }
+        if (state.syncUnavailable) return route.fulfill({ status: 503, contentType: 'application/json',
+          body: JSON.stringify({ detail: { code: 'cofre_sync_unavailable', message: 'Compartilhamento temporariamente indisponível.' } }) });
+        return reply({ ...sharing, enabled: options.sharingEnabled !== false, can_publish: !!options.writer, changed: false });
+      }
       if (url.pathname === '/api/cofre/servidores') return reply({ servidores: [server] });
       if (url.pathname === '/api/cofre/servidores/fixture-guild/canais') return reply({ servidor: server, canais: [channel] });
       if (url.pathname === '/api/cofre/canais/fixture-channel/mensagens') {
@@ -205,6 +219,71 @@ async function normalFacade(browser, dynamic) {
     assert.equal(await denied.page.getByText(content, { exact: true }).count(), 0, 'Permissão local não contorna a decisão da API.');
     await assertQuiet(denied);
     await denied.context.close();
+    const slowSync = await scenario(browser, { holdSync: true });
+    await slowSync.page.getByText(content, { exact: true }).waitFor();
+    while (!slowSync.state.heldSync) await slowSync.page.waitForTimeout(10);
+    assert.equal(await slowSync.page.evaluate(() => localStorage.getItem('access_token')), token);
+    assert.equal(await slowSync.page.locator('#reauthenticateCofre').isVisible(), false,
+      'A cópia local abre enquanto a conexão compartilhada ainda está pendente.');
+    slowSync.state.heldSync();
+    await slowSync.page.waitForFunction(() => !document.querySelector('#syncSharing').disabled);
+    await slowSync.context.close();
+    const cached = await scenario(browser, { syncUnavailable: true, writer: true });
+    await cached.page.getByText(content, { exact: true }).waitFor();
+    await cached.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Cópia local');
+    assert.equal(await cached.page.locator('#sharingLabel').textContent(), 'Cópia local',
+      'Uma falha de sincronização não bloqueia a leitura do acervo já disponível.');
+    assert.equal(await cached.page.evaluate(() => localStorage.getItem('access_token')), token);
+    assert.equal(await cached.page.locator('#reauthenticateCofre').isVisible(), false);
+    assert.equal(await cached.page.locator('#publishSharing').isVisible(), false);
+    assert.equal(await cached.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).count(), 0,
+      'Uma cópia compartilhada fica em consulta enquanto não puder publicar alterações.');
+    assert.equal(cached.state.requests.includes('/frontend_index.html'), false);
+    const sharingRequests = () => cached.state.api.filter(request => request.path.includes('/compartilhamento')).length;
+    const cachedRequests = sharingRequests();
+    await assertQuiet(cached);
+    assert.equal(sharingRequests(), cachedRequests, 'A consulta local não inicia novas tentativas de login ou sincronização.');
+    cached.state.syncUnavailable = false;
+    await cached.page.locator('#syncSharing').click();
+    await cached.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Compartilhado com a empresa');
+    await cached.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).waitFor();
+    assert.equal(await cached.page.evaluate(() => localStorage.getItem('access_token')), token,
+      'A sincronização recupera sem trocar a sessão do JK.');
+    assert.equal(cached.state.api.filter(request => request.method === 'PATCH').length, 0);
+    await cached.context.close();
+    const original = await scenario(browser, { syncUnavailable: true, sharingEnabled: false, writer: true });
+    await original.page.getByText(content, { exact: true }).waitFor();
+    await original.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).waitFor();
+    assert.equal(await original.page.locator('#sharingLabel').textContent(), 'Cópia local');
+    assert.equal(await original.page.evaluate(() => localStorage.getItem('access_token')), token,
+      'O login JK permite trabalhar no acervo local ainda não publicado.');
+    assert.equal(original.state.requests.includes('/frontend_index.html'), false);
+    await assertQuiet(original);
+    await original.context.close();
+    const cloudMutation = await scenario(browser, { writer: true });
+    await cloudMutation.page.getByText(content, { exact: true }).waitFor();
+    if (!cloudMutation.state.api.some(request => request.path.endsWith('/sincronizar'))) {
+      await cloudMutation.page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/sincronizar'));
+    }
+    await cloudMutation.page.waitForFunction(() => !document.querySelector('#syncSharing').disabled);
+    cloudMutation.state.mutationSyncUnavailable = true;
+    await cloudMutation.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).click();
+    await cloudMutation.page.locator('#editContent').fill('Rascunho local ainda não publicado.');
+    await cloudMutation.page.locator('#saveEditMessage').click();
+    await cloudMutation.page.waitForFunction(() => document.querySelector('#sharingLabel').textContent === 'Cópia local');
+    assert.equal(await cloudMutation.page.getByText(content, { exact: true }).count(), 1);
+    assert.equal(await cloudMutation.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).count(), 0);
+    assert.equal(await cloudMutation.page.evaluate(() => localStorage.getItem('access_token')), token);
+    await assertQuiet(cloudMutation);
+    cloudMutation.state.mutationSyncUnavailable = false;
+    await cloudMutation.page.locator('#syncSharing').click();
+    await cloudMutation.page.waitForFunction(() => !document.querySelector('#syncSharing').disabled && document.querySelector('#sharingLabel').textContent === 'Compartilhado com a empresa');
+    await cloudMutation.page.getByRole('button', { name: 'Editar item de Fixture', exact: true }).click();
+    assert.equal(await cloudMutation.page.locator('#editContent').inputValue(), 'Rascunho local ainda não publicado.',
+      'Falhar uma alteração compartilhada preserva o rascunho até a recuperação.');
+    assert.equal(cloudMutation.state.api.filter(request => request.method === 'PATCH').length, 1,
+      'Recuperar a sincronização nunca repete uma alteração que falhou.');
+    await cloudMutation.context.close();
     const restored = await scenario(browser, { backendUnavailable: true });
     await restored.page.locator('#reauthenticateCofre').waitFor();
     assert.equal(await restored.page.locator('#reauthenticateCofre').textContent(), 'Tentar novamente');
@@ -274,6 +353,6 @@ async function normalFacade(browser, dynamic) {
     await assetExpired.context.close();
     await normalFacade(browser, false);
     await normalFacade(browser, true);
-    console.log('Cofre auth boot: 11 browser scenarios passed; zero Firebase/global boot requests.');
+    console.log('Cofre auth boot: 15 browser scenarios passed; zero Firebase/global boot requests.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error.message); process.exitCode = 1; });

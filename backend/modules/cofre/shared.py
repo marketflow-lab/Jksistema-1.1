@@ -17,6 +17,13 @@ DEFAULT_URL = "https://jk-cofre-gateway.jk-sistema.workers.dev"
 SYNC_INTERVAL = 60
 
 
+class CofreSyncUnavailable(storage.CofreError):
+    """A cloud proof failure must not invalidate the authenticated JK session."""
+
+    def __init__(self):
+        super().__init__("A sincronizacao do Cofre esta indisponivel. Sua copia local foi preservada.", 503)
+
+
 class SharedCofre:
     def __init__(self, info_root: Path, *, url: str | None = None):
         self.root = Path(info_root)
@@ -49,6 +56,7 @@ class SharedCofre:
         return namespaced
 
     def status(self, client_id: str, principal: dict) -> dict:
+        self._assert_local_principal(client_id, principal)
         meta = shared_storage.read_meta(self.cache_for(client_id), client_id)
         return {"success": True, "configured": bool(self.url), "enabled": bool(self.url) and meta["revision"] > 0,
                 "revision": meta["revision"], "last_sync": meta["last_sync"],
@@ -59,12 +67,17 @@ class SharedCofre:
         meta = shared_storage.read_meta(cached, client_id)
         return cached if self.url and meta["revision"] > 0 else self.local_root(client_id)
 
-    def _assert_principal(self, client_id: str, principal: dict, *, write=False):
-        permission = "cofre:write" if write else "cofre:read"
-        if (principal.get("client_id") != client_id or permission not in principal.get("scope", [])
-                or type(principal.get("exp")) is not int or principal["exp"] <= time.time()
-                or not isinstance(principal.get("capability"), str) or not principal["capability"]):
+    def _assert_local_principal(self, client_id: str, principal: dict, *, write=False):
+        if (not isinstance(principal, dict) or principal.get("client_id") != client_id
+                or not isinstance(principal.get("scope"), list) or "cofre:read" not in principal["scope"]
+                or write and "cofre:write" not in principal["scope"]
+                or type(principal.get("exp")) is not int or principal["exp"] <= time.time()):
             raise storage.CofreError("Acesso ao Cofre nao autorizado. Entre novamente.", 403)
+
+    def _assert_principal(self, client_id: str, principal: dict, *, write=False):
+        self._assert_local_principal(client_id, principal, write=write)
+        if not isinstance(principal.get("capability"), str) or not principal["capability"]:
+            raise CofreSyncUnavailable()
 
     def _remote(self, method: str, path: str, principal: dict, payload=None):
         try:
@@ -86,7 +99,7 @@ class SharedCofre:
                         if len(raw) > shared_storage.MAX_STATE_BYTES + 8192:
                             raise storage.CofreError("Resposta do Cofre maior que o permitido.", 502)
                     if status in {401, 403}:
-                        raise storage.CofreError("Acesso ao Cofre expirado ou sem permissao. Entre novamente.", status)
+                        raise CofreSyncUnavailable()
                     if status == 409:
                         raise storage.CofreError("Sincronize antes de publicar. Outra pessoa alterou o Cofre.", 409)
                     if status not in {200, 201}:
@@ -145,13 +158,14 @@ class SharedCofre:
         return {**self.status(client_id, principal), "changed": True}
 
     def publish(self, client_id: str, principal: dict):
+        self._assert_principal(client_id, principal, write=True)
         with self._lock(client_id):
             current = self.status(client_id, principal)
             state = shared_storage.export_state(self.read_root(client_id), client_id)
             return self._publish_state(client_id, principal, state, current["revision"])
 
     def change_message(self, client_id, principal, guild_id, channel_id, message_id, *, patch=None, deleted=None):
-        self._assert_principal(client_id, principal, write=bool(self.url))
+        self._assert_local_principal(client_id, principal, write=True)
         with self._lock(client_id):
             current = self.status(client_id, principal)
             if not current["enabled"]:
@@ -181,7 +195,7 @@ class SharedCofre:
                                           patch=patch, deleted=deleted)
 
     def change_channel(self, client_id, principal, guild_id, channel_id, patch):
-        self._assert_principal(client_id, principal, write=bool(self.url))
+        self._assert_local_principal(client_id, principal, write=True)
         with self._lock(client_id):
             current = self.status(client_id, principal)
             if not current["enabled"]:
@@ -202,7 +216,7 @@ class SharedCofre:
             return storage.change_channel(self.cache_for(client_id), client_id, guild_id, channel_id, patch)
 
     def import_archive(self, client_id, principal, source, filename):
-        self._assert_principal(client_id, principal, write=bool(self.url))
+        self._assert_local_principal(client_id, principal, write=True)
         with self._lock(client_id):
             current = self.status(client_id, principal)
             if not current["enabled"]:

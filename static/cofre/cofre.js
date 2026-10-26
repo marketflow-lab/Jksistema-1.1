@@ -221,7 +221,11 @@
     const data = await response.json().catch(() => null);
     ensureSession(session);
     if (!response.ok) {
-      if (response.status === 401) invalidateSession();
+      if (response.status === 401 && /\bbearer\b/i.test(response.headers.get('WWW-Authenticate') || '')) invalidateSession();
+      if (response.status === 503 && data?.detail?.code === 'cofre_sync_unavailable') {
+        state.sharingError = true;
+        renderSharing();
+      }
       if (response.status === 503 && data?.detail?.code === 'cofre_session_unavailable') pauseUnavailableSession();
       const fallback = response.status === 403 ? 'Sua conta não tem acesso ao Cofre de Informações.' : 'Não foi possível carregar o Cofre de Informações. Tente novamente.';
       const error = new Error(errorMessage(data, fallback));
@@ -241,7 +245,8 @@
 
   function canEditArchive() {
     return state.accessReady && state.sharingKnown && !state.sessionInvalidated && !state.sessionUnavailable &&
-      (!state.sharing.configured || state.sharing.can_publish);
+      state.sharing.can_publish &&
+      (!state.sharing.enabled || !state.sharingError);
   }
 
   function requireWriteAccess() {
@@ -262,7 +267,7 @@
     $('sharingStrip').classList.toggle('sharing-company', sharing.enabled && !invalid);
     $('sharingStrip').classList.toggle('sharing-error', state.sharingError && !invalid);
     $('sharingStrip').classList.toggle('sharing-busy', state.sharingBusy && !invalid);
-    $('sharingLabel').textContent = unavailable ? 'Informações indisponíveis' : invalid ? 'Sessão alterada' : sharing.enabled ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
+    $('sharingLabel').textContent = unavailable ? 'Informações indisponíveis' : invalid ? 'Sessão alterada' : sharing.enabled && !state.sharingError ? 'Compartilhado com a empresa' : state.sharingKnown || state.sharingError ? 'Cópia local' : 'Verificando acervo…';
     const synced = formatDate(sharing.last_sync);
     $('sharingDescription').textContent = unavailable ? 'Sua sessão do JK foi mantida. Tente novamente para consultar o acervo.'
       : invalid ? 'Reabra o módulo para carregar a conta atual.'
@@ -274,7 +279,7 @@
     $('syncSharing').textContent = unavailable ? 'Tentar novamente' : '↻ Sincronizar';
     $('syncSharing').hidden = invalid || (!unavailable && state.sharingKnown && !sharing.configured);
     $('syncSharing').disabled = state.sharingBusy || (!unavailable && !state.accessReady);
-    $('publishSharing').hidden = invalid || unavailable || !state.sharingKnown || !sharing.configured || !sharing.can_publish;
+    $('publishSharing').hidden = invalid || unavailable || state.sharingError || !state.sharingKnown || !sharing.configured || !sharing.can_publish;
     $('publishSharing').disabled = state.sharingBusy || !state.accessReady;
     for (const control of document.querySelectorAll('[data-cofre-write]')) {
       control.hidden = !editable;
@@ -341,6 +346,7 @@
 
   async function synchronizeSharing({ initial = false, manual = false, reload = true } = {}) {
     if (state.sessionInvalidated || state.sessionUnavailable) return { changed: false, failed: true };
+    if (state.sharingError && !initial && !manual) return { changed: false };
     if (state.sharingRequest) return state.sharingRequest;
     if (state.publishing || state.importing || state.mutations.size) {
       if (manual) notice('Aguarde a alteração em andamento para sincronizar.');
@@ -387,7 +393,7 @@
   }
 
   function openPublishSharing() {
-    if (!state.sharingKnown || !state.sharing.configured || !state.sharing.can_publish || state.sessionInvalidated || state.sharingBusy) return;
+    if (!state.sharingKnown || !state.sharing.configured || !state.sharing.can_publish || state.sharingError || state.sessionInvalidated || state.sharingBusy) return;
     if (state.importing || state.mutations.size) { notice('Aguarde a alteração em andamento para publicar.'); return; }
     try { state.publishSession = ensureSession(); } catch (_error) { return; }
     feedback('publishSharingFeedback', '');
@@ -1475,12 +1481,14 @@
       if (window.matchMedia('(max-width: 1180px)').matches) setDetailsOpen(false);
     });
     window.addEventListener('pagehide', () => { state.request?.abort(); clearMedia(); });
-    await synchronizeSharing({ initial: true, reload: false });
+    try { applySharingStatus(await request('/compartilhamento')); }
+    catch (_error) { if (!state.sessionInvalidated) { state.sharingError = true; renderSharing(); } }
     if (state.sessionInvalidated || state.sessionUnavailable) return;
     state.accessReady = true;
     renderSharing();
     try { await loadServers(); state.archiveReady = true; }
     catch (error) { if (!state.sessionInvalidated && !state.sessionUnavailable) { notice(error.message, true); $('emptyTitle').textContent = 'Informações indisponíveis no momento'; $('emptyDescription').textContent = 'Não foi possível consultar seu acervo agora. Atualize a página para tentar novamente.'; } }
+    if (!state.sessionInvalidated && !state.sessionUnavailable) await synchronizeSharing({ initial: true });
   }
 
   init().catch(() => { notice('Não foi possível iniciar o Cofre de Informações. Atualize a página para tentar novamente.', true); });

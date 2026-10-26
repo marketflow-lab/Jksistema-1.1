@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 from typing import Callable
 
@@ -13,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import ValidationError
 
 from backend.modules.cofre import storage
-from backend.modules.cofre.shared import SharedCofre
+from backend.modules.cofre.shared import CofreSyncUnavailable, SharedCofre
 
 _HEADERS = {"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
             "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"}
@@ -39,30 +40,68 @@ async def _read_patch(request: Request, model):
 
 
 def create_cofre_router(*, info_root: str | Path, tenant_dependency: Callable,
-                        sharing: bool = False, shared_service: SharedCofre | None = None) -> APIRouter:
+                        sharing: bool = False, shared_service: SharedCofre | None = None,
+                        remote_principal: Callable | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/cofre", tags=["cofre"])
     root = Path(info_root)
     shared = shared_service if shared_service is not None else SharedCofre(root) if sharing else None
 
     def principal(request: Request) -> dict:
-        value = getattr(request.state, "cofre_principal", None)
+        value = getattr(getattr(request, "state", None), "cofre_principal", None)
         if not isinstance(value, dict):
             raise HTTPException(401, "Entre novamente para acessar o Cofre compartilhado.")
         return value
 
-    async def invoke(operation, *args, _request: Request | None = None, **kwargs):
+    def sync_unavailable():
+        return HTTPException(503, {"code": "cofre_sync_unavailable",
+            "message": "A sincronizacao do Cofre esta indisponivel. Sua copia local foi preservada."})
+
+    def operation_error(exc, *, cloud=False):
+        if isinstance(exc, StarletteHTTPException):
+            bearer = any(name.lower() == "www-authenticate" and "bearer" in value.lower()
+                         for name, value in (exc.headers or {}).items())
+            if cloud and not bearer and exc.status_code in {401, 403, 503}:
+                return sync_unavailable()
+            return exc
+        if isinstance(exc, CofreSyncUnavailable) or cloud and exc.status_code in {401, 403, 503}:
+            return sync_unavailable()
+        return HTTPException(exc.status_code, str(exc))
+
+    async def cloud_principal(request: Request, client_id: str, *, write=False):
+        # Local policy can narrow cloud authority, never create or enlarge it.
+        shared._assert_local_principal(client_id, principal(request), write=write)
         try:
+            identity = principal(request) if remote_principal is None else await run_in_threadpool(remote_principal, request)
+            if inspect.isawaitable(identity):
+                identity = await identity
+            shared._assert_principal(client_id, identity, write=write)
+            return identity
+        except (storage.CofreError, StarletteHTTPException) as exc:
+            raise operation_error(exc, cloud=True) from exc
+        except Exception:
+            raise sync_unavailable() from None
+
+    async def invoke(operation, *args, _request: Request | None = None, **kwargs):
+        cloud = False
+        try:
+            if shared:
+                shared._assert_local_principal(args[0], principal(_request))
             if shared and operation in {storage.import_archive, storage.change_message, storage.change_channel}:
+                identity = principal(_request)
+                shared._assert_local_principal(args[0], identity, write=True)
+                if shared.status(args[0], identity)["enabled"]:
+                    identity = await cloud_principal(_request, args[0], write=True)
+                    cloud = True
                 return await run_in_threadpool(
-                    getattr(shared, operation.__name__), args[0], principal(_request), *args[1:], **kwargs
+                    getattr(shared, operation.__name__), args[0], identity, *args[1:], **kwargs
                 )
             active_root = shared.read_root(args[0]) if shared else root
             # Originals remain available for existing local attachment URLs.
             if operation is storage.get_asset:
                 active_root = shared.local_root(args[0]) if shared else root
             return await run_in_threadpool(operation, active_root, *args, **kwargs)
-        except storage.CofreError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        except (storage.CofreError, StarletteHTTPException) as exc:
+            raise operation_error(exc, cloud=cloud) from exc
 
     async def sharing_operation(name: str, request: Request, client_id: str):
         if shared is None:
@@ -70,12 +109,17 @@ def create_cofre_router(*, info_root: str | Path, tenant_dependency: Callable,
                                  "revision": 0, "last_sync": None, "can_publish": True,
                                  "changed": False}, headers=_HEADERS)
         identity = principal(request)
+        cloud = False
         try:
-            shared._assert_principal(client_id, identity)
+            shared._assert_local_principal(client_id, identity, write=name == "publish")
+            if name != "status":
+                identity = await cloud_principal(request, client_id, write=name == "publish")
+                cloud = True
             result = await run_in_threadpool(getattr(shared, name), client_id, identity)
             return JSONResponse(result, headers=_HEADERS)
-        except storage.CofreError as exc:
-            raise HTTPException(exc.status_code, str(exc)) from exc
+        except (storage.CofreError, StarletteHTTPException) as exc:
+            # Permission denials before cloud resolution retain their 403.
+            raise operation_error(exc, cloud=cloud) from exc
 
     @router.get("/compartilhamento", name="cofre_compartilhamento")
     async def compartilhamento(request: Request, client_id: str = Depends(tenant_dependency)):
@@ -124,23 +168,23 @@ def create_cofre_router(*, info_root: str | Path, tenant_dependency: Callable,
                                       _request=request)
                 return JSONResponse(result, headers=_HEADERS)
         except StarletteHTTPException as exc:
-            raise HTTPException(exc.status_code, str(exc.detail)) from exc
+            raise HTTPException(exc.status_code, exc.detail, headers=exc.headers) from exc
 
     @router.get("/servidores", name="cofre_servidores")
-    async def servidores(client_id: str = Depends(tenant_dependency)):
-        return JSONResponse(await invoke(storage.list_guilds, client_id), headers=_HEADERS)
+    async def servidores(request: Request, client_id: str = Depends(tenant_dependency)):
+        return JSONResponse(await invoke(storage.list_guilds, client_id, _request=request), headers=_HEADERS)
 
     @router.get("/servidores/{guild_id}/canais", name="cofre_canais")
-    async def canais(guild_id: str, client_id: str = Depends(tenant_dependency)):
-        return JSONResponse(await invoke(storage.list_channels, client_id, guild_id), headers=_HEADERS)
+    async def canais(guild_id: str, request: Request, client_id: str = Depends(tenant_dependency)):
+        return JSONResponse(await invoke(storage.list_channels, client_id, guild_id, _request=request), headers=_HEADERS)
 
     @router.get("/canais/{channel_id}/mensagens", name="cofre_mensagens")
-    async def mensagens(channel_id: str, servidor_id: str = Query(..., min_length=1, max_length=128),
+    async def mensagens(channel_id: str, request: Request, servidor_id: str = Query(..., min_length=1, max_length=128),
                         q: str = Query("", max_length=500), offset: int = Query(0, ge=0),
                         limit: int = Query(100, ge=1, le=200), excluidos: bool = Query(False),
                         client_id: str = Depends(tenant_dependency)):
         result = await invoke(storage.list_messages, client_id, servidor_id, channel_id,
-                              q=q, offset=offset, limit=limit, excluidos=excluidos)
+                              q=q, offset=offset, limit=limit, excluidos=excluidos, _request=request)
         return JSONResponse(result, headers=_HEADERS)
 
     @router.patch("/canais/{channel_id}/mensagens/{message_id}", name="cofre_mensagem_editar")
@@ -177,9 +221,9 @@ def create_cofre_router(*, info_root: str | Path, tenant_dependency: Callable,
         return JSONResponse(result, headers=_HEADERS)
 
     @router.get("/arquivos/{guild_id}/{digest}/{filename}", name="cofre_arquivo")
-    async def arquivo(guild_id: str, digest: str, filename: str,
+    async def arquivo(guild_id: str, digest: str, filename: str, request: Request,
                       client_id: str = Depends(tenant_dependency)):
-        path = await invoke(storage.get_asset, client_id, guild_id, digest, filename)
+        path = await invoke(storage.get_asset, client_id, guild_id, digest, filename, _request=request)
         # Always download untrusted imported bytes; the UI may preview known raster types as blobs.
         return FileResponse(path, media_type="application/octet-stream", filename=filename,
                             content_disposition_type="attachment", headers={
