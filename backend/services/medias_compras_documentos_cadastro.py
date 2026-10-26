@@ -103,7 +103,7 @@ def _descricoes_legadas(client_id, produtos, store_id):
     return descricoes
 
 
-def _contexto_cadastro_documentos(lista, client_id, *, skus=None):
+def _contexto_cadastro_documentos(lista, client_id, *, skus=None, incluir_fotos=True):
     if not client_id:
         return {"scope": "legacy", "store_id": "", "por_sku": {}}
     if skus is None:
@@ -142,10 +142,12 @@ def _contexto_cadastro_documentos(lista, client_id, *, skus=None):
     mapas_fotos = {}
     for chave, produto in produtos.items():
         sku = str(produto.get("sku") or produto.get("SKU") or "").strip()
-        foto_ref = common._primeiro_texto_item(produto, ["foto", "Foto", "cg_foto", "Picture", "imagem"])
-        foto = common._resolver_foto_cadastro_sku(
-            client_id, sku, foto_ref, store_id or None, mapas_fotos=mapas_fotos,
-        )
+        foto = ""
+        if incluir_fotos:
+            foto_ref = common._primeiro_texto_item(produto, ["foto", "Foto", "cg_foto", "Picture", "imagem"])
+            foto = common._resolver_foto_cadastro_sku(
+                client_id, sku, foto_ref, store_id or None, mapas_fotos=mapas_fotos,
+            )
         unidade = common._primeiro_texto_item(produto, ["Unit/Pair", "Unit Pair", "unidade_bling", "Unidade"])
         if not unidade or unidade.casefold() in {"un", "und", "unidade", "pcs", "pc"}:
             unidade = "Unit"

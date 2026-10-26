@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from backend.modules.cofre import shared_storage, storage
-from backend.modules.cofre.shared import SharedCofre
+from backend.modules.cofre.shared import CofreSyncUnavailable, SharedCofre
 from backend.routers.cofre import create_cofre_router
 
 
@@ -63,6 +63,83 @@ def service(root, remote):
 
 def messages(shared, company="company-a", *, trash=False):
     return storage.list_messages(shared.read_root(company), company, "guild", "channel", excluidos=trash)
+
+
+def test_unpublished_archive_accepts_local_jk_write_without_cloud_capability(tmp_path):
+    remote = MemoryD1()
+    shared = service(tmp_path, remote)
+    local = {**identity(), "capability": ""}
+    shared.import_archive("company-a", local, io.BytesIO(json.dumps(archive()).encode()), "local.json")
+    assert shared.status("company-a", local)["enabled"] is False
+    shared.change_message("company-a", local, "guild", "channel", "message",
+                          patch=storage.MessagePatch(content="Edicao local"))
+    shared.change_channel("company-a", local, "guild", "channel", storage.ChannelPatch(name="Canal local"))
+    shared.change_message("company-a", local, "guild", "channel", "message", deleted=True)
+    assert messages(shared)["total"] == 0
+    shared.change_message("company-a", local, "guild", "channel", "message", deleted=False)
+    assert messages(shared)["mensagens"][0]["content"] == "Edicao local"
+    assert remote.calls == [] and remote.companies == {}
+    with pytest.raises(CofreSyncUnavailable):
+        shared.publish("company-a", local)
+
+
+@pytest.mark.parametrize("changes", [
+    {"client_id": "company-b"}, {"exp": 0}, {"exp": True},
+    {"scope": []}, {"scope": ["cofre:write"]},
+])
+def test_local_status_still_requires_tenant_read_scope_and_live_session(tmp_path, changes):
+    shared = service(tmp_path, MemoryD1())
+    with pytest.raises(storage.CofreError) as denied:
+        shared.status("company-a", {**identity(), "capability": "", **changes})
+    assert denied.value.status_code == 403
+
+
+def test_published_archive_never_falls_back_to_local_mutations_without_cloud_proof(tmp_path):
+    remote = MemoryD1()
+    shared = service(tmp_path, remote)
+    import_archive(tmp_path)
+    shared.publish("company-a", identity())
+    before = shared_storage.export_state(shared.cache_for("company-a"), "company-a")
+    local = {**identity(), "capability": ""}
+    count = len(remote.calls)
+    for mutation in (
+        lambda: shared.change_message("company-a", local, "guild", "channel", "message", deleted=True),
+        lambda: shared.change_channel("company-a", local, "guild", "channel", storage.ChannelPatch(name="Denied")),
+        lambda: shared.import_archive("company-a", local, io.BytesIO(json.dumps(archive("Denied")).encode()), "denied.json"),
+    ):
+        with pytest.raises(CofreSyncUnavailable):
+            mutation()
+    assert shared_storage.export_state(shared.cache_for("company-a"), "company-a") == before
+    assert storage.list_messages(tmp_path, "company-a", "guild", "channel")["mensagens"][0]["content"] == "Informacao da empresa"
+    assert len(remote.calls) == count
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_worker_authentication_error_is_sync_unavailable_not_jk_logout(tmp_path, monkeypatch, status):
+    from backend.modules.cofre import shared as shared_module
+
+    class Response:
+        status_code = status
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def iter_content(self, *_):
+            return iter([b'{"error":"invalid_token"}'])
+
+    class Transport:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            pass
+        def request(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(shared_module.requests, "Session", Transport)
+    monkeypatch.setattr(shared_module, "configure_requests_session", lambda *_: None)
+    with pytest.raises(CofreSyncUnavailable) as unavailable:
+        SharedCofre(tmp_path, url="https://cofre.example.test").sync("company-a", identity())
+    assert unavailable.value.status_code == 503
 
 
 def test_two_devices_publish_pull_search_and_read_without_network(tmp_path):

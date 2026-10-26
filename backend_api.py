@@ -2089,11 +2089,18 @@ def _cofre_verified_jk_session(token: str) -> dict:
 
 
 def get_cofre_tenant_id(request: Request, authorization: Optional[str] = Header(default=None)):
+    from backend.services.cofre_auth import bind_jk_request
+    return bind_jk_request(request, authorization, decode_session=_cofre_verified_jk_session)
+
+
+def get_cofre_remote_principal(request: Request):
     from backend.services.cofre_auth import bind_request
-    return bind_request(request, authorization, decode_session=_cofre_verified_jk_session)
+    bind_request(request, request.headers.get("Authorization"), decode_session=_cofre_verified_jk_session)
+    return request.state.cofre_principal
 
 
-app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_cofre_tenant_id, sharing=True))
+app.include_router(create_cofre_router(info_root=PASTA_INFO, tenant_dependency=get_cofre_tenant_id,
+                                      sharing=True, remote_principal=get_cofre_remote_principal))
 
 
 def _context_hub_clientes_iniciais() -> tuple[str, ...]:

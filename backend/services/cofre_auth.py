@@ -365,6 +365,61 @@ def principal_for_token(local_token, *, now=None, identity=None):
         return _visible(principal)
 
 
+def bind_jk_request(request: Request, authorization, *, decode_session):
+    """Authorize local files with the JK session and current local policy only.
+
+    The required decoder validates the JK token and its current company,
+    machine, active status, licence and permissions. This principal has no cloud
+    credential and must never be used to authorize D1 or publish shared state.
+    """
+    if (not isinstance(authorization, str) or not authorization.startswith("Bearer ")
+            or not authorization[7:].strip()):
+        raise HTTPException(401, "Token de autenticação ausente.", headers={"WWW-Authenticate": "Bearer"})
+    try:
+        identity = decode_session(authorization[7:].strip())
+        if (not isinstance(identity, dict) or not isinstance(identity.get("sub"), str)
+                or not identity["sub"] or not valid_client_id(identity.get("client_id"))
+                or not isinstance(identity.get("machine_id"), str) or not identity["machine_id"]):
+            raise ValueError("invalid_local_session")
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise HTTPException(401, exc.detail, headers={**(exc.headers or {}), "WWW-Authenticate": "Bearer"}) from None
+        raise
+    except Exception:
+        raise HTTPException(401, "Sessão JK inválida.", headers={"WWW-Authenticate": "Bearer"}) from None
+    permissions = identity.get("permissions")
+    if not isinstance(permissions, dict) or not (
+            permissions.get("cofre") is True or permissions.get("full") is True):
+        raise HTTPException(403, "Seu usuário não possui acesso ao Cofre.")
+    now = time.time()
+    # Allow a large upload to finish; this metadata is never a cloud credential.
+    # Every new request rechecks the JK session and current local policy.
+    expires = int(now) + MAX_SESSION_SECONDS
+    validity = identity.get("valid_until")
+    if validity is not None:
+        try:
+            if not isinstance(validity, str):
+                raise ValueError("invalid_local_validity")
+            date = datetime.strptime(validity, "%d/%m/%Y")
+            if date.strftime("%d/%m/%Y") != validity:
+                raise ValueError("invalid_local_validity")
+            licence_end = int((date + timedelta(days=1)).replace(tzinfo=ZoneInfo("America/Sao_Paulo")).timestamp())
+            if licence_end <= now:
+                raise ValueError("expired_local_validity")
+            expires = min(expires, licence_end)
+        except (TypeError, ValueError, OverflowError):
+            raise HTTPException(403, "Seu usuário não possui acesso ao Cofre.") from None
+    scope = ["cofre:read"]
+    if permissions.get("full") is True or permissions.get("admin_usuarios") is True:
+        scope.append("cofre:write")
+    principal = {"client_id": identity["client_id"], "username": identity["sub"],
+                 "scope": scope, "exp": expires, "capability": ""}
+    request.state.cofre_principal = principal
+    request.state.client_id = principal["client_id"]
+    request.state.username = principal["username"]
+    return principal["client_id"]
+
+
 def bind_request(request: Request, authorization, *, decode_session=None):
     if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Token de autenticação ausente.", headers={"WWW-Authenticate": "Bearer"})

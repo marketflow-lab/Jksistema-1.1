@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from datetime import datetime
 from threading import RLock
+from typing import Literal
 from xml.sax.saxutils import escape
 
 import openpyxl
@@ -46,6 +47,7 @@ _PACKING_TOTALS_CACHE_LOCK = RLock()
 _PACKING_TOTALS_READ_LOCKS = tuple(RLock() for _ in range(16))
 _PACKING_TOTALS_CACHE_MAX = 256
 _PACKING_TOTALS_TENANT_MAX = 32
+MAX_ETIQUETAS_PACKING = 5000
 
 
 def _numero_packing(valor, *, obrigatorio=False):
@@ -241,7 +243,10 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
 
         merged = {}
         grupos_linhas = {}
+        quantidades_compartilhadas = set()
         for intervalo in ws.merged_cells.ranges:
+            if intervalo.min_col <= 5 <= intervalo.max_col and intervalo.max_row > intervalo.min_row:
+                quantidades_compartilhadas.update(range(intervalo.min_row, intervalo.max_row + 1))
             if intervalo.min_col == 1 and intervalo.max_col == 1:
                 for linha in range(intervalo.min_row, intervalo.max_row + 1):
                     grupos_linhas[linha] = (intervalo.min_row, intervalo.max_row)
@@ -324,6 +329,8 @@ def _ler_packing_list_bytes(conteudo: bytes) -> dict:
             grupo["itens"].append({
                 "sku": str(sku).strip(), "quantidade": quantidade,
                 "qty_ctn": qty_ctn if qty_ctn is not None else quantidade / grupo["ctns"],
+                "qty_ctn_informado": qty_ctn,
+                "qty_ctn_individual": linha not in quantidades_compartilhadas,
                 "foto": fotos.get(linha),
             })
         if not grupos or sum(len(grupo["itens"]) for grupo in grupos) > 2000:
@@ -724,7 +731,8 @@ async def api_medias_compras_lista_pedido_packing_list_importar(
                            filename=file.filename or "", client_id=client_id)
 
 
-def _baixar_packing_list_sync(lista_id, client_id):
+def _carregar_packing_lista_validado(lista_id, client_id):
+    """Resolve the canonical original without modifying the list or document."""
     listas = common._carregar_listas_pedidos(client_id)
     lista = next((row for row in listas if str(row.get("id", "")) == str(lista_id)), None)
     if lista is None:
@@ -740,7 +748,11 @@ def _baixar_packing_list_sync(lista_id, client_id):
         raise HTTPException(404, "Nenhum Packing List adicionado nesta lista.") from None
     if hashlib.sha256(conteudo).hexdigest() != metadata.get("sha256"):
         raise HTTPException(409, "O documento de Packing List está inválido. Verifique o arquivo enviado.")
-    dados = _ler_packing_list_bytes(conteudo)
+    return lista, _ler_packing_list_bytes(conteudo)
+
+
+def _baixar_packing_list_sync(lista_id, client_id):
+    lista, dados = _carregar_packing_lista_validado(lista_id, client_id)
     output = _gerar_packing_list_bytes(lista, dados, client_id=client_id)
     nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
     nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
@@ -753,6 +765,182 @@ async def api_medias_compras_lista_pedido_packing_list(lista_id: str, client_id:
     return await run_heavy(_baixar_packing_list_sync, lista_id=lista_id, client_id=client_id)
 
 
+def _quantidade_item_etiqueta_packing(grupo, item):
+    """Do not present an average distribution as a physical carton count."""
+    try:
+        caixas = _numero_packing(grupo.get("ctns"), obrigatorio=True)
+        total = _numero_packing(item.get("quantidade"))
+        informado = _numero_packing(item.get("qty_ctn_informado"))
+    except ValueError:
+        return None
+    if caixas == 1:
+        return total
+    if (item.get("qty_ctn_individual") is True and informado is not None and total is not None
+            and math.isclose(informado * caixas, total, rel_tol=1e-9, abs_tol=1e-9)):
+        return informado
+    return None
+
+
+def _caixas_etiquetas_packing(dados, *, incluir_itens=False):
+    """Expand only explicit carton numbers, retaining mixed-carton contents."""
+    caixas = {}
+    origens = {}
+    for indice, grupo in enumerate(dados.get("grupos") or []):
+        try:
+            quantidade = _numero_packing(grupo.get("ctns"), obrigatorio=True)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from None
+        if quantidade <= 0 or quantidade != int(quantidade):
+            raise HTTPException(400, "Informe uma quantidade inteira e positiva de volumes no Packing List.")
+        if quantidade > MAX_ETIQUETAS_PACKING:
+            raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+        tipo = grupo.get("tipo_embalagem", "ctns")
+        if tipo not in {"ctns", "trays"}:
+            raise HTTPException(400, "O Packing List contém um tipo de embalagem inválido.")
+        numeros = []
+        for trecho in str(grupo.get("caixas") or "").split(","):
+            intervalo = re.fullmatch(r"\s*([0-9]+)(?:\s*[-\u2013\u2014]\s*([0-9]+))?\s*", trecho)
+            if not intervalo:
+                raise HTTPException(400, "Preencha Carton No com números ou intervalos explícitos, como 1 ou 2-10.")
+            if any(len(valor.lstrip("0")) > 4 for valor in intervalo.groups() if valor):
+                raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+            inicio = int(intervalo.group(1).lstrip("0") or "0")
+            fim = int(intervalo.group(2).lstrip("0") or "0") if intervalo.group(2) else inicio
+            if inicio <= 0 or fim < inicio:
+                raise HTTPException(400, "O Packing List contém uma numeração de volumes inválida.")
+            if fim > MAX_ETIQUETAS_PACKING or len(numeros) + fim - inicio + 1 > MAX_ETIQUETAS_PACKING:
+                raise HTTPException(400, "Limite máximo de 5.000 etiquetas por Packing List.")
+            numeros.extend(range(inicio, fim + 1))
+        if len(set(numeros)) != len(numeros):
+            raise HTTPException(400, "O Packing List repete números de volumes no mesmo intervalo.")
+        if len(numeros) != quantidade:
+            raise HTTPException(400, "A numeração de Carton No não corresponde à quantidade de caixas ou Trays.")
+        skus = []
+        itens_etiqueta = []
+        for item in grupo.get("itens") or []:
+            sku = re.sub(r"(?i)^sku(?:[\s:]+|$)", "", str(item.get("sku") or "").strip()).strip()
+            if not sku:
+                raise HTTPException(400, "Todos os volumes precisam ter um Item No preenchido para gerar etiquetas.")
+            if sku not in skus:
+                skus.append(sku)
+            if incluir_itens:
+                itens_etiqueta.append({
+                    "sku": sku, "sku_origem": str(item.get("sku") or "").strip(),
+                    "quantidade": _quantidade_item_etiqueta_packing(grupo, item),
+                    "foto": item.get("foto"), "descricao": "",
+                })
+        if not skus:
+            raise HTTPException(400, "Todos os volumes precisam conter produtos para gerar etiquetas.")
+        origem = str(grupo.get("ctns_origem") or f"grupo-{indice}")
+        identidade = (tuple(sorted(numeros)), tipo)
+        if origem in origens and origens[origem] != identidade:
+            raise HTTPException(400, "Uma mesma quantidade mesclada possui numerações ou tipos de embalagem diferentes.")
+        origens[origem] = identidade
+        for numero in numeros:
+            if numero in caixas and caixas[numero]["origem"] != origem:
+                raise HTTPException(400, "O Packing List repete números de volumes em grupos diferentes.")
+            caixa = caixas.setdefault(numero, {"origem": origem, "skus": []})
+            caixa["skus"].extend(sku for sku in skus if sku not in caixa["skus"])
+            if incluir_itens:
+                por_sku = caixa.setdefault("itens", {})
+                for item in itens_etiqueta:
+                    if item["sku"] not in por_sku:
+                        por_sku[item["sku"]] = dict(item)
+                    else:
+                        anterior = por_sku[item["sku"]]
+                        anterior["quantidade"] = (
+                            anterior["quantidade"] + item["quantidade"]
+                            if anterior["quantidade"] is not None and item["quantidade"] is not None else None
+                        )
+    if not caixas:
+        raise HTTPException(400, "Inclua volumes numerados no Packing List para gerar etiquetas.")
+    numeros = sorted(caixas)
+    if numeros != list(range(1, len(numeros) + 1)):
+        raise HTTPException(400, "A numeração de volumes deve começar em 1 e seguir sem lacunas.")
+    resultado = [{"numero": numero, "skus": caixas[numero]["skus"]} for numero in numeros]
+    if incluir_itens:
+        for caixa in resultado:
+            caixa["itens"] = list(caixas[caixa["numero"]]["itens"].values())
+    return resultado
+
+
+
+def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None, modelo="com_fotos"):
+    from backend.services.fornecedor_origem import identificar_pais_fornecedor
+    from backend.services.medias_compras_etiquetas_pdf import gerar_etiquetas_pdf
+
+    if modelo not in {"com_fotos", "sem_fotos"}:
+        raise HTTPException(400, "Modelo de etiquetas inválido.")
+    caixas = _caixas_etiquetas_packing(dados, incluir_itens=True)
+    opcoes_contexto = {"incluir_fotos": False} if modelo == "sem_fotos" else {}
+    contexto = _contexto_cadastro_documentos(
+        lista, client_id, skus=[item["sku"] for grupo in dados["grupos"] for item in grupo["itens"]],
+        **opcoes_contexto,
+    )
+    por_sku = {}
+    for item in lista.get("itens") or []:
+        if isinstance(item, dict):
+            por_sku.setdefault(_chave_sku_packing(item.get("SKU") or item.get("sku")), item)
+    fotos = {}
+    for caixa in caixas:
+        for item in caixa["itens"]:
+            if modelo == "sem_fotos":
+                item["foto"] = None
+            if client_id:
+                produto = _dados_produto_documento(contexto, item["sku_origem"])
+                item["descricao"] = produto["descricao"]
+                caminho = None
+                if modelo == "com_fotos" and produto["foto"]:
+                    caminho = excel._resolver_caminho_foto_cadastro_seguro(
+                        client_id, produto["foto"], produto["sku"],
+                        contexto.get("store_id") or None, permitir_default=False,
+                    )
+                if caminho and caminho not in fotos:
+                    try:
+                        with open(caminho, "rb") as stream:
+                            conteudo = stream.read(MAX_PACKING_BYTES + 1)
+                        fotos[caminho] = conteudo if 0 < len(conteudo) <= MAX_PACKING_BYTES else None
+                    except OSError:
+                        fotos[caminho] = None
+                # Match the generated Packing List: no historical/default photo fallback.
+                item["foto"] = fotos.get(caminho)
+            else:
+                cadastro = por_sku.get(_chave_sku_packing(item["sku_origem"]))
+                if cadastro is None:
+                    rotulado = re.match(r"(?i)^sku[\s:]+([^\s]+)", item["sku_origem"])
+                    cadastro = por_sku.get(_chave_sku_packing(rotulado.group(1)), {}) if rotulado else {}
+                item["descricao"] = common._primeiro_texto_item(
+                    cadastro, [common.TITULO_PRODUTO_INGLES_KEY, "Título em inglês", "Description", "Descrição", "Descricao"],
+                )
+    fornecedor = excel._cadastro_fornecedor_commercial_invoice(lista, client_id)
+    cabecalho, _altura = excel._cabecalho_fornecedor_commercial_invoice(lista, client_id, cadastro=fornecedor)
+    importador, _altura = excel._bloco_nacionalizador_commercial_invoice(lista, client_id)
+    comprador = _texto_comprador_packing(lista, client_id, contexto_cadastro=contexto)
+    return gerar_etiquetas_pdf(
+        lista, caixas, cabecalho=str(cabecalho), importador=importador, comprador=comprador,
+        origem=identificar_pais_fornecedor(fornecedor), data=_data_packing(lista),
+        modelo=modelo,
+    )
+
+
+def _baixar_etiquetas_packing_sync(lista_id, client_id, modelo="com_fotos"):
+    lista, dados = _carregar_packing_lista_validado(lista_id, client_id)
+    output = _gerar_etiquetas_packing_bytes(lista, dados, client_id=client_id, modelo=modelo)
+    nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
+    nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
+    sufixo = "_Sem_Fotos" if modelo == "sem_fotos" else ""
+    return Response(content=output, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="Etiquetas_Externas_{nome}{sufixo}.pdf"'})
+
+
+async def api_medias_compras_lista_pedido_etiquetas(
+    lista_id: str, client_id: str = Depends(common.get_tenant_id),
+    modelo: Literal["com_fotos", "sem_fotos"] = "com_fotos",
+):
+    from backend.services.blocking_workers import run_heavy
+    return await run_heavy(_baixar_etiquetas_packing_sync, lista_id=lista_id, client_id=client_id, modelo=modelo)
+
+
 def limpar_documento_packing_lista(client_id, lista):
     metadata = lista.get("packing_list") or {}
     if _documento_packing_existe(client_id, metadata):
@@ -763,4 +951,5 @@ def limpar_documento_packing_lista(client_id, lista):
             pass
 
 
-__all__ = ["api_medias_compras_lista_pedido_packing_list", "api_medias_compras_lista_pedido_packing_list_importar"]
+__all__ = ["api_medias_compras_lista_pedido_packing_list", "api_medias_compras_lista_pedido_packing_list_importar",
+           "api_medias_compras_lista_pedido_etiquetas"]

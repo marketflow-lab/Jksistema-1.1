@@ -92,6 +92,7 @@ __all__ = [
     "api_medias_compras_lista_pedido_commercial_invoice",
     "api_medias_compras_lista_pedido_packing_list",
     "api_medias_compras_lista_pedido_packing_list_importar",
+    "api_medias_compras_lista_pedido_etiquetas",
     "api_medias_compras_lista_pedido_gerar_download",
     "api_medias_compras_lista_pedido_importar_excel_precos",
     "api_medias_compras_lista_pedido_importar_excel_nova_lista",
