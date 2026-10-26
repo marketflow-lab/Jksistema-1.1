@@ -32,9 +32,23 @@ for (const suffix of ['_NoIndex_False', '_OrderId_PRICE', '_Desde_49', '_PriceRa
     assert.equal(nav.route({ ...identified, url: cycling + 'pecas/coroas/' + suffix }, expected, parent), null, suffix);
 }
 for (const url of [cycling + 'pecas/coroas/?q=coroas', cycling + 'pecas/coroas/$query', cycling + 'pecas/coroas/%24query',
-    cycling + 'outro-ramo/coroas/', cycling + 'pecas/*_NoIndex_True', cycling + 'pecas/_CATEGORY_MLB999']) {
+    cycling + 'pecas/*_NoIndex_True', cycling + 'pecas/_CATEGORY_MLB999']) {
     assert.equal(nav.route({ ...identified, url }, expected, parent), null, 'an ID cannot authorize another scope or an unresolved query template');
 }
+
+const machinery = node('MLB1514', 'Maquinaria Agrícola', 'https://lista.mercadolivre.com.br/agro/maquinaria-agricola/*_NoIndex_True');
+const otherMachines = node('MLB271602', 'Outras Máquinas');
+const legacyMachines = { ...otherMachines, url: 'https://lista.mercadolivre.com.br/agro/maquinas-ferramentas/outras/*_NoIndex_True' };
+assert.equal(nav.route(legacyMachines, otherMachines, machinery.url)?.url, legacyMachines.url,
+    'an exact observed category ID can retain its legacy path after the parent path changes');
+assert.equal(nav.route({ ...legacyMachines, key: 'MLB260601' }, otherMachines, machinery.url), null,
+    'a homonymous category in the vehicle tree cannot supply the agricultural category');
+assert.equal(nav.route({ ...legacyMachines, key: legacyMachines.url }, otherMachines, machinery.url), null,
+    'a name-only candidate outside the parent path cannot establish the legacy relationship');
+assert.equal(nav.route({ ...legacyMachines, url: legacyMachines.url.replace('lista.', 'servicos.') }, otherMachines, machinery.url), null,
+    'an exact ID cannot authorize a change of listing hostname');
+assert.equal(nav.route({ ...legacyMachines, url: legacyMachines.url.replace('/outras/', '/outras/_CATEGORY_MLB260601/') }, otherMachines, machinery.url), null,
+    'a conflicting category ID in the emitted path remains invalid');
 
 const more = parent + '_FiltersAvailableSidebar?filter=category';
 assert.equal(officialCategoryMoreUrl(more, parent), more);
@@ -212,10 +226,39 @@ async function observedMissingRoutesStayCandidates() {
     }
 }
 
+async function observedLegacyPathRequiresDestinationIdentity() {
+    const children = { [machinery.key]: [otherMachines], [otherMachines.key]: [] };
+    for (const identity of [otherMachines.key, 'MLB260601']) {
+        const h = runnerFixture({
+            [machinery.url]: { categoryDocumentIdentity: true, effectiveCategoryId: machinery.key,
+                categories: [legacyMachines], anuncios: [{ id: 'parent-item' }] },
+            [legacyMachines.url]: { categoryDocumentIdentity: true, effectiveCategoryId: identity,
+                categoryContext: { key: identity, nome: otherMachines.nome, baseUrl: legacyMachines.url.replace('*_NoIndex_True', '') },
+                anuncios: [{ id: 'leaf-item' }] }
+        }, otherMachines);
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [machinery, otherMachines], children };
+        h.runner.officialNavigation = navigation({ ancestry: [machinery, otherMachines], children,
+            read: (...args) => h.runner.read(...args) });
+        h.runner.officialNavigation.routes.set(machinery.key, machinery.url);
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        if (identity === otherMachines.key) {
+            const page = await h.runner.readCategory(otherMachines);
+            assert.equal(page.effectiveCategoryId, otherMachines.key);
+            assert.deepEqual(h.visited, [machinery.url, legacyMachines.url],
+                'the real emitted link reaches the destination without guessing a slug or searching by title');
+        } else {
+            h.runner.tryCategoryItemScope = async () => null;
+            await assert.rejects(h.runner.readCategory(otherMachines), error => error.code === 'category_scope_mismatch',
+                'an observed ID-coupled legacy link cannot publish a different destination category');
+        }
+    }
+}
+
 (async () => {
     await expandedCategoryPages();
     await runnerTrendsTransition();
     await runnerExpandedOptionsWaitForDestination();
     await observedMissingRoutesStayCandidates();
+    await observedLegacyPathRequiresDestinationIdentity();
     console.log('Pesquisa de Mercado navigation: observed NoIndex routes, category IDs, safe expanded filters and proven Trends transitions OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

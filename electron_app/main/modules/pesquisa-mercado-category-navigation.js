@@ -96,7 +96,7 @@ class OfficialCategoryNavigation {
         this.links = new Map();
     }
 
-    route(raw, expected, parentUrl = '') {
+    route(raw, expected, parentUrl = '', allowObservedAlias = true) {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
         let candidate = this.normalize({ key: raw.key, nome: raw.nome, url: raw.url });
         const candidateId = candidate && ID.test(candidate.key.toUpperCase()) ? candidate.key.toUpperCase() : '';
@@ -113,7 +113,11 @@ class OfficialCategoryNavigation {
             const parent = new URL(parentUrl);
             if (parent.hostname === 'lista.mercadolivre.com.br') {
                 const base = categoryBasePath(parent.pathname), prefix = base + '/';
-                if (url.hostname !== parent.hostname || !url.pathname.startsWith(prefix) || categoryBasePath(url.pathname) === base) return null;
+                if (url.hostname !== parent.hostname || categoryBasePath(url.pathname) === base) return null;
+                // ML can retain a legacy public path for a child of a renamed
+                // parent. An observed ID-coupled link is still only a route
+                // candidate: the runner must prove the destination's own ID.
+                if (!url.pathname.startsWith(prefix) && (!candidateId || !allowObservedAlias)) return null;
             }
         }
         return candidate;
@@ -159,7 +163,8 @@ class OfficialCategoryNavigation {
             try { if (links) selected = this.choose(links, expected, parentUrl); }
             catch (_error) { this.links.delete(parentKey); }
             if (!selected && OBSERVED_ROUTES[key]) {
-                selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl);
+                // Remembered fallbacks have no fresh parent-document evidence.
+                selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl, false);
             }
             if (!selected) {
                 let page;
