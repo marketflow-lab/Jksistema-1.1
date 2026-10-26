@@ -151,7 +151,13 @@ function pesquisaMercadoBrowserAdapter() {
             let timer;
             let abort;
             const interrupted = new Promise((_resolve, reject) => {
-                const fail = message => { worker.webContents.stop(); const err = new Error(message); err.name = signal && signal.aborted ? 'AbortError' : 'TimeoutError'; reject(err); };
+                const fail = message => {
+                    worker.webContents.stop();
+                    const err = new Error(message);
+                    err.name = signal && signal.aborted ? 'AbortError' : 'TimeoutError';
+                    if (err.name === 'TimeoutError') err.code = 'category_load_timeout';
+                    reject(err);
+                };
                 timer = setTimeout(() => fail('Tempo esgotado ao abrir a pagina.'), 35000);
                 abort = () => fail('Pesquisa interrompida.');
                 if (signal) signal.addEventListener('abort', abort, { once: true });
@@ -170,7 +176,11 @@ function pesquisaMercadoBrowserAdapter() {
             try {
                 return await Promise.race([
                     worker.webContents.executeJavaScript(String(code), true),
-                    new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Tempo esgotado ao ler os dados.')), 12000); })
+                    new Promise((_resolve, reject) => { timer = setTimeout(() => {
+                        const err = new Error('Tempo esgotado ao ler os dados.');
+                        err.name = 'TimeoutError'; err.code = 'category_load_timeout';
+                        reject(err);
+                    }, 12000); })
                 ]);
             } finally { clearTimeout(timer); }
         },

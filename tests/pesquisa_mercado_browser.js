@@ -218,7 +218,7 @@ function harness(saved = [], options = {}) {
             if (filename.endsWith('shared-collector.js')) return {};
             throw new Error(`Dependência inesperada: ${path.basename(filename)}`);
         },
-        URL, Promise, AbortController, setTimeout, clearTimeout
+        URL, Promise, AbortController, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout
     };
     vm.createContext(sandbox);
     vm.runInContext(functionSource('electron_app/main/modules/ipc.js', 'assertTrustedFavoritosIpcSender'), sandbox);
@@ -722,7 +722,96 @@ async function testIncompleteRecoveryAndTerminalDiagnostics() {
     }
 }
 
+function controlledTimers() {
+    const pending = new Map(), cleared = [];
+    let serial = 0;
+    return { pending, cleared,
+        setTimeout(callback, delay) { const id = ++serial; pending.set(id, { callback, delay }); return id; },
+        clearTimeout(id) { cleared.push(id); pending.delete(id); },
+        fire(delay) {
+            const entry = [...pending].find(([, timer]) => timer.delay === delay);
+            assert(entry, 'expected browser timer is scheduled');
+            const [id, timer] = entry; pending.delete(id); timer.callback(); return id;
+        }
+    };
+}
+
+async function testTypedBrowserTimeoutsAndRecovery() {
+    const timers = controlledTimers(), h = harness([], timers), adapter = h.api.browser();
+    await adapter.prepare();
+    const worker = h.windows[0]; worker.blockLoads = true;
+    let navigationError;
+    const loading = assert.rejects(adapter.navigate(category.url), error => {
+        navigationError = error; return error.name === 'TimeoutError' && error.code === 'category_load_timeout';
+    });
+    const navigationTimer = timers.fire(35000); await loading;
+    assert.equal(worker.webContents.stops, 1); assert(timers.cleared.includes(navigationTimer)); assert.equal(timers.pending.size, 0);
+    const originalExecute = worker.webContents.executeJavaScript;
+    worker.webContents.executeJavaScript = () => new Promise(() => {});
+    const reading = assert.rejects(adapter.executeJavaScript('fixture:categories'), error => error.name === 'TimeoutError' && error.code === 'category_load_timeout');
+    const readingTimer = timers.fire(12000); await reading;
+    assert(timers.cleared.includes(readingTimer)); assert.equal(timers.pending.size, 0);
+    worker.webContents.executeJavaScript = originalExecute;
+    const controller = new AbortController();
+    const aborted = assert.rejects(adapter.navigate(category.url, controller.signal), error => error.name === 'AbortError' && error.code === undefined);
+    controller.abort(); await aborted; assert.equal(timers.pending.size, 0, 'abort clears its timer without becoming a category timeout');
+    const genuine = Object.assign(new Error('Fixture transport failure'), { code: 'ERR_FIXTURE_NETWORK' });
+    worker.loadURL = () => Promise.reject(genuine);
+    await assert.rejects(adapter.navigate(category.url), error => error === genuine && error.code === 'ERR_FIXTURE_NETWORK');
+    worker.webContents.executeJavaScript = () => Promise.reject(genuine);
+    await assert.rejects(adapter.executeJavaScript('fixture:categories'), error => error === genuine);
+    assert.equal(timers.pending.size, 0, 'genuine transport and renderer failures also clear timers');
+    assert(navigationError, 'the real adapter generated a typed timeout');
+
+    const parent = { key: 'MLB100', nome: 'Fixture Parent', url: 'https://lista.mercadolivre.com.br/fixture-parent/' };
+    const child = { key: 'MLB101', nome: 'Fixture Child', url: 'https://lista.mercadolivre.com.br/_CatId_MLB101' };
+    const first = parent.url + 'first/', recovered = parent.url + 'recovered/';
+    for (const documentId of [child.key, 'MLB999']) {
+        const clock = controlledTimers();
+        const f = harness([], { ...clock, categoryPages: { [recovered]: { readyState: 'complete', categories: [], anuncios: [{ id: 'MLB1000000000' }],
+            categoryDocumentIdentity: true, effectiveCategoryId: documentId,
+            categoryContext: { key: documentId, nome: child.nome, baseUrl: recovered } } } });
+        const browser = f.api.browser(); await browser.prepare();
+        const window = f.windows[0], load = window.loadURL.bind(window);
+        window.loadURL = url => { window.blockLoads = url === first; return load(url); };
+        const runner = new runnerModule.PesquisaMercadoRunner({ browser, pageScripts: { discoveryScript: () => 'fixture:categories' }, wait: async () => {} });
+        runner.controller = new AbortController();
+        runner.checkpoint = { scope: { category: child }, officialTaxonomy: { ancestry: [parent, child], children: { [parent.key]: [child], [child.key]: [] } } };
+        runner.officialNavigation = { routes: new Map([[parent.key, parent.url], [child.key, first]]), resolve: async () => first };
+        let discoveries = 0, settled = false;
+        runner.discoverOfficialCategoryRoute = async value => { assert.equal(value.key, child.key); discoveries++; return { ...child, url: recovered }; };
+        const pending = runner.readCategory(child);
+        pending.then(() => { settled = true; }, () => { settled = true; });
+        for (let turn = 0; turn < 30 && !settled; turn++) {
+            await tick();
+            if ([...clock.pending.values()].some(timer => timer.delay === 35000)) clock.fire(35000);
+        }
+        assert(settled, 'typed transport timeout reaches the bounded route recovery');
+        if (documentId === child.key) {
+            const page = await pending;
+            assert.equal(page.effectiveCategoryId, child.key); assert.equal(page.url, recovered);
+            assert.equal(runner.officialNavigation.routes.get(child.key), recovered);
+        } else {
+            await assert.rejects(pending, error => error.code === 'category_scope_mismatch');
+            assert.equal(runner.officialNavigation.routes.get(child.key), first, 'a wrong-ID recovery cannot replace the category route');
+        }
+        assert.equal(discoveries, 1); assert.equal(clock.pending.size, 0, 'every recovery branch clears the browser timers');
+    }
+    const failedRunner = new runnerModule.PesquisaMercadoRunner({ browser: adapter, pageScripts: { discoveryScript: () => 'fixture:categories' }, wait: async () => {} });
+    failedRunner.controller = new AbortController();
+    failedRunner.checkpoint = { scope: { category: child }, officialTaxonomy: { ancestry: [parent, child], children: { [parent.key]: [child], [child.key]: [] } } };
+    failedRunner.officialNavigation = { routes: new Map([[child.key, first]]), resolve: async () => first };
+    let unexpectedDiscovery = 0;
+    failedRunner.discoverOfficialCategoryRoute = async () => { unexpectedDiscovery++; return { ...child, url: recovered }; };
+    await assert.rejects(failedRunner.readCategory(child), error => error === genuine);
+    assert.equal(unexpectedDiscovery, 0, 'an unrelated browser failure is not relabeled as a timeout or route-discovery condition');
+    failedRunner.controller.abort();
+    await assert.rejects(failedRunner.readCategory(child), error => error.name === 'AbortError');
+    assert.equal(unexpectedDiscovery, 0, 'an interrupted read cannot trigger route discovery');
+}
+
 async function main() {
+    await testTypedBrowserTimeoutsAndRecovery();
     await testIncompleteRecoveryAndTerminalDiagnostics();
     await testNamesLoginContextOwnership();
     await testAvantConfigurationOwnership();
