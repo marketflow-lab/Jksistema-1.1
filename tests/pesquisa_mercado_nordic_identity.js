@@ -379,6 +379,47 @@ async function main() {
             ['unrelated footer', '<footer><a href="' + moreUrl + '">Mostrar mais</a></footer>'],
             ['promotional carousel', '<section class="carousel">' + moreGroup() + '</section>']
         ]) assert.equal((await readMarkup(body)).categoryFilterMoreUrl, '', description + ' cannot provide the category expansion control');
+        const heavyParent = 'https://lista.mercadolivre.com.br/veiculos/veiculos-pesados/';
+        const heavyChild = 'https://lista.mercadolivre.com.br/veiculos/pesados/outros/';
+        const heavyTracking = 'applied_filter_id=category&applied_filter_name=Categorias&applied_value_id=MLB260598&applied_value_name=Outros Veículos Pesados&applied_value_results=209';
+        const heavyLink = (fragment = encodeURIComponent(heavyTracking), target = heavyChild) => '<a class="ui-search-link" href="' + target + (fragment ? '#' + fragment : '')
+            + '"><span class="ui-search-filter-name">Outros Veículos Pesados</span><span class="ui-search-filter-results-qty">(209)</span></a>';
+        const heavyGroup = (link, title = 'Categorias') => '<dl class="ui-search-filter-dl"><h3>' + title + '</h3>' + link + '</dl>';
+        await page.goto(heavyParent);
+        for (const fragment of [encodeURIComponent(heavyTracking), new URLSearchParams(heavyTracking).toString().replace(/&/g, '&amp;')]) {
+            const heavy = await readMarkup(heavyGroup(heavyLink(fragment)));
+            assert.deepEqual(heavy.categories, [{ key: 'MLB260598', nome: 'Outros Veículos Pesados', url: heavyChild }],
+                'the observed DOM category ID is coupled to its legacy href and count-free name');
+            assert.equal(heavy.categoryDocumentIdentity, false, 'available links cannot prove the parent or child listing identity');
+            assert.equal(heavy.effectiveCategoryId, '');
+        }
+        const untyped = await readMarkup(heavyGroup(heavyLink('')));
+        assert.equal(untyped.categories[0].nome, 'Outros Veículos Pesados', 'the known count span is not part of the category name');
+        assert.equal(untyped.categories[0].key, heavyChild, 'the DOM label never invents a typed ID');
+        for (const fragment of ['menu', 'origin=category_sidebar&position=1', 'origin=applied_filter_id', 'discount=10%']) {
+            const ordinary = await readMarkup(heavyGroup(heavyLink(encodeURIComponent(fragment))));
+            assert.deepEqual(ordinary.categories, [{ key: heavyChild, nome: 'Outros Veículos Pesados', url: heavyChild }],
+                'ordinary non-filter tracking preserves a name-only route candidate without inventing identity');
+            assert.equal(ordinary.categoryDocumentIdentity, false);
+        }
+        for (const [description, fragment, target] of [
+            ['another filter', heavyTracking.replace('filter_id=category', 'filter_id=brand')],
+            ['duplicate ID', heavyTracking + '&applied_value_id=MLB999'],
+            ['duplicate filter', heavyTracking + '&applied_filter_id=category'],
+            ['unknown field', heavyTracking + '&seller_id=123'],
+            ['name conflict', heavyTracking.replace('value_name=Outros Veículos Pesados', 'value_name=Maquinaria Agrícola')],
+            ['conflicting path ID', heavyTracking, heavyChild + '_CATEGORY_MLB999']
+        ]) assert.deepEqual((await readMarkup(heavyGroup(heavyLink(encodeURIComponent(fragment), target)))).categories, [], description);
+        assert.deepEqual((await readMarkup(heavyGroup(heavyLink('%E0%A4%A')))).categories, [],
+            'a genuinely malformed fragment cannot provide a category candidate');
+        for (const target of ['https://produto.mercadolivre.com.br/MLB-123456789-item', 'https://www.mercadolivre.com.br/up/MLBU123456789',
+            'https://lista.mercadolivre.com.br/_CustId_123', 'https://www.mercadolivre.com.br/perfil/EXAMPLE']) {
+            assert.deepEqual((await readMarkup(heavyGroup(heavyLink(encodeURIComponent(heavyTracking), target)))).categories, [],
+                'product, catalog and seller links cannot become categories through tracking');
+        }
+        assert.deepEqual((await readMarkup(heavyGroup(heavyLink(), 'Marca'))).categories, [], 'another filter cannot provide a category ID');
+        assert.deepEqual((await readMarkup('<dl data-filter-id="category">' + heavyGroup(heavyLink(), 'Marca') + '</dl>')).categories, [],
+            'a nested brand group cannot inherit a category tracking context');
         await page.goto(listing);
         const hubMarkup = '<link rel="canonical" href="' + listing + '"><section class="ui-category-trends-desktop-content"><h1>Ciclismo</h1>'
             + '<dl><dt>Categorias</dt><dd><a href="' + listing + 'pecas/">Peças</a></dd></dl></section>';
