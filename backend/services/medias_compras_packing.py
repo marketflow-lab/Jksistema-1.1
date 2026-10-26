@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from datetime import datetime
 from threading import RLock
+from typing import Literal
 from xml.sax.saxutils import escape
 
 import openpyxl
@@ -864,13 +865,17 @@ def _caixas_etiquetas_packing(dados, *, incluir_itens=False):
 
 
 
-def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None):
+def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None, modelo="com_fotos"):
     from backend.services.fornecedor_origem import identificar_pais_fornecedor
     from backend.services.medias_compras_etiquetas_pdf import gerar_etiquetas_pdf
 
+    if modelo not in {"com_fotos", "sem_fotos"}:
+        raise HTTPException(400, "Modelo de etiquetas inválido.")
     caixas = _caixas_etiquetas_packing(dados, incluir_itens=True)
+    opcoes_contexto = {"incluir_fotos": False} if modelo == "sem_fotos" else {}
     contexto = _contexto_cadastro_documentos(
         lista, client_id, skus=[item["sku"] for grupo in dados["grupos"] for item in grupo["itens"]],
+        **opcoes_contexto,
     )
     por_sku = {}
     for item in lista.get("itens") or []:
@@ -879,11 +884,13 @@ def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None):
     fotos = {}
     for caixa in caixas:
         for item in caixa["itens"]:
+            if modelo == "sem_fotos":
+                item["foto"] = None
             if client_id:
                 produto = _dados_produto_documento(contexto, item["sku_origem"])
                 item["descricao"] = produto["descricao"]
                 caminho = None
-                if produto["foto"]:
+                if modelo == "com_fotos" and produto["foto"]:
                     caminho = excel._resolver_caminho_foto_cadastro_seguro(
                         client_id, produto["foto"], produto["sku"],
                         contexto.get("store_id") or None, permitir_default=False,
@@ -912,21 +919,26 @@ def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None):
     return gerar_etiquetas_pdf(
         lista, caixas, cabecalho=str(cabecalho), importador=importador, comprador=comprador,
         origem=identificar_pais_fornecedor(fornecedor), data=_data_packing(lista),
+        modelo=modelo,
     )
 
 
-def _baixar_etiquetas_packing_sync(lista_id, client_id):
+def _baixar_etiquetas_packing_sync(lista_id, client_id, modelo="com_fotos"):
     lista, dados = _carregar_packing_lista_validado(lista_id, client_id)
-    output = _gerar_etiquetas_packing_bytes(lista, dados, client_id=client_id)
+    output = _gerar_etiquetas_packing_bytes(lista, dados, client_id=client_id, modelo=modelo)
     nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
     nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
+    sufixo = "_Sem_Fotos" if modelo == "sem_fotos" else ""
     return Response(content=output, media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="Etiquetas_Externas_{nome}.pdf"'})
+                    headers={"Content-Disposition": f'attachment; filename="Etiquetas_Externas_{nome}{sufixo}.pdf"'})
 
 
-async def api_medias_compras_lista_pedido_etiquetas(lista_id: str, client_id: str = Depends(common.get_tenant_id)):
+async def api_medias_compras_lista_pedido_etiquetas(
+    lista_id: str, client_id: str = Depends(common.get_tenant_id),
+    modelo: Literal["com_fotos", "sem_fotos"] = "com_fotos",
+):
     from backend.services.blocking_workers import run_heavy
-    return await run_heavy(_baixar_etiquetas_packing_sync, lista_id=lista_id, client_id=client_id)
+    return await run_heavy(_baixar_etiquetas_packing_sync, lista_id=lista_id, client_id=client_id, modelo=modelo)
 
 
 def limpar_documento_packing_lista(client_id, lista):

@@ -232,8 +232,110 @@ def _grade(pdf, itens, esquerda, direita, topo, base, inicio, total, cache):
                       largura - 16, y + altura - 4 - foto_y, cache)
 
 
-def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, origem, data):
+def _campo_em_ingles(texto):
+    """Translate known field labels without changing names or field values."""
+    rotulos = {
+        "contact name": "Contact person", "contact personal": "Contact person",
+        "nome do contato": "Contact person", "e-mail": "Email", "email": "Email",
+        "zip code": "Postal code", "cep": "Postal code", "address": "Address",
+        "endereço": "Address", "endereco": "Address", "contact": "Contact",
+        "contato": "Contact", "tax id": "Tax ID", "cnpj": "Tax ID",
+        "telefone": "Phone", "bairro": "Neighborhood", "cidade": "City",
+        "estado": "State", "país": "Country", "pais": "Country",
+    }
+    partes = re.split(r"(\s+\|\s+)", texto)
+    for indice in range(0, len(partes), 2):
+        campo = partes[indice]
+        if re.match(r"(?i)^CNP\.?J\.?\s", campo):
+            partes[indice] = re.sub(r"(?i)^CNP\.?J\.?\s*", "Tax ID: ", campo)
+            continue
+        rotulo, separador, valor = campo.partition(":")
+        chave = rotulo.strip().casefold()
+        if separador and chave in rotulos:
+            if chave in {"tax id", "cnpj"}:
+                valor = re.sub(r"(?i)^\s*CNPJ\s+", " ", valor)
+            partes[indice] = rotulos[chave] + ":" + valor
+    return "".join(partes)
+
+
+def _destinatario_sem_fotos(pdf, titulo, texto, x, topo, largura, base, *, comprador=False):
+    _rotulo(pdf, titulo, x, topo)
+    campos = _campos(texto)
+    if not campos:
+        return
+    empresa = re.sub(r"^(?:IMPORTER|Buyer|Importador|Comprador):\s*", "", campos[0], flags=re.IGNORECASE)
+    altura_nome = _texto(pdf, empresa, x, topo - 11, largura, 30,
+                        tamanho=11, minimo=10.5, fonte=NEGRITO)
+    cursor = topo - 11 - altura_nome - 5
+    linhas = _campos_comprador_compactos(campos[1:]) if comprador else campos[1:]
+    _texto(pdf, "\n".join(_campo_em_ingles(campo) for campo in linhas),
+           x, cursor, largura, cursor - base - 9, tamanho=9.6, minimo=9)
+
+
+def _valor_quantidade(item):
+    # Reuse the existing validation and preserve an unknown quantity as blank.
+    return _quantidade(item).partition(":")[2].strip()
+
+
+def _item_unico_sem_fotos(pdf, item, esquerda, direita, topo, base):
+    centro = (esquerda + direita) / 2
+    pdf.setFillColor(SECUNDARIA)
+    pdf.setFont(NEGRITO, 8)
+    pdf.drawCentredString(centro, topo - 22, "CONTENTS")
+    _texto(pdf, "SKU " + str(item.get("sku") or ""), esquerda + 28, topo - 41,
+           direita - esquerda - 56, 65, tamanho=44, minimo=9,
+           fonte=NEGRITO, centralizado=True)
+    _texto(pdf, item.get("descricao") or "", esquerda + 42, topo - 115,
+           direita - esquerda - 84, 63, tamanho=14.5, minimo=9, centralizado=True)
+    largura, altura = min(290, direita - esquerda - 40), 59
+    x, y = centro - largura / 2, base + 17
+    pdf.setStrokeColor(colors.HexColor("#b9bec6"))
+    pdf.setLineWidth(.6)
+    pdf.roundRect(x, y, largura, altura, 3)
+    pdf.setFillColor(SECUNDARIA)
+    pdf.setFont(NEGRITO, 8)
+    pdf.drawCentredString(centro, y + altura - 15, "QUANTITY PER CARTON")
+    _texto(pdf, _valor_quantidade(item), x + 10, y + altura - 22, largura - 20, 34,
+           tamanho=27, minimo=9, fonte=NEGRITO, centralizado=True)
+
+
+def _grade_sem_fotos(pdf, itens, esquerda, direita, topo, base, inicio, total):
+    colunas, linhas = grade_etiquetas(len(itens))
+    _rotulo(pdf, "CONTENTS", esquerda + 15, topo - 17)
+    pdf.setFillColor(SECUNDARIA)
+    pdf.setFont(NEGRITO, 8)
+    pdf.drawRightString(direita - 15, topo - 17, f"ITEMS {inicio + 1}-{inicio + len(itens)} OF {total}")
+    grade_esquerda, grade_direita = esquerda + 11, direita - 11
+    grade_topo, grade_base, espacamento = topo - 26, base + 10, 6
+    largura = (grade_direita - grade_esquerda - (colunas - 1) * espacamento) / colunas
+    altura = (grade_topo - grade_base - (linhas - 1) * espacamento) / linhas
+    for indice, item in enumerate(itens):
+        coluna, linha = indice % colunas, indice // colunas
+        x = grade_esquerda + coluna * (largura + espacamento)
+        y = grade_topo - (linha + 1) * altura - linha * espacamento
+        pdf.setStrokeColor(colors.HexColor("#b9bec6"))
+        pdf.setLineWidth(.45)
+        pdf.rect(x, y, largura, altura)
+        qtd, altura_qtd = _paragrafo("QUANTITY PER CARTON: " + _valor_quantidade(item),
+                                    largura - 12, altura * .45, tamanho=10 if linhas == 1 else 9,
+                                    minimo=9, cor=SECUNDARIA, centralizado=True)
+        texto_sku = "SKU " + str(item.get("sku") or "")
+        tamanho_sku = 26 if linhas == 1 else 16 if linhas == 2 else 12
+        while tamanho_sku > 9 and stringWidth(texto_sku, NEGRITO, tamanho_sku) > largura - 12:
+            tamanho_sku -= .25
+        sku, altura_sku = _paragrafo(texto_sku, largura - 12,
+                                    altura - altura_qtd - 18, tamanho=tamanho_sku,
+                                    minimo=9, fonte=NEGRITO, centralizado=True)
+        inicio_y = y + (altura - altura_qtd - altura_sku - 6) / 2
+        qtd.drawOn(pdf, x + 6, inicio_y)
+        sku.drawOn(pdf, x + 6, inicio_y + altura_qtd + 6)
+
+
+def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, origem, data, modelo="com_fotos"):
     """Render resolved carton contents, splitting each carton into 18-item sheets."""
+    if modelo not in {"com_fotos", "sem_fotos"}:
+        raise HTTPException(400, "Modelo de etiquetas inválido.")
+    sem_fotos = modelo == "sem_fotos"
     if not caixas or any(not caixa.get("itens") for caixa in caixas):
         raise HTTPException(400, "Inclua produtos nos volumes para gerar etiquetas.")
     if sum(math.ceil(len(caixa["itens"]) / ITENS_POR_FOLHA) for caixa in caixas) > MAX_FOLHAS:
@@ -247,10 +349,12 @@ def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, orig
     invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
     output = io.BytesIO()
     pdf = Canvas(output, pagesize=(largura_pagina, altura_pagina), pageCompression=1)
-    pdf.setTitle(f"Etiquetas externas {invoice}".strip())
+    pdf.setTitle(f"Carton labels {invoice}".strip() if sem_fotos else f"Etiquetas externas {invoice}".strip())
     pdf.setAuthor("JK Sistema")
     cache_fotos = {}
     campos_fornecedor = _campos(cabecalho)
+    if sem_fotos and campos_fornecedor:
+        campos_fornecedor = campos_fornecedor[:1] + [_campo_em_ingles(campo) for campo in campos_fornecedor[1:]]
     for caixa in caixas:
         itens = caixa["itens"]
         folhas = math.ceil(len(itens) / ITENS_POR_FOLHA)
@@ -278,7 +382,7 @@ def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, orig
             centro_contador = (contador_x + direita) / 2
             pdf.setFillColor(SECUNDARIA)
             pdf.setFont(NEGRITO, 9)
-            pdf.drawCentredString(centro_contador, topo - 24, "CARTON / CAIXA")
+            pdf.drawCentredString(centro_contador, topo - 24, "CARTON" if sem_fotos else "CARTON / CAIXA")
             pdf.setFillColor(TINTA)
             contador = f'{caixa["numero"]:02d} / {len(caixas):02d}'
             tamanho_contador = 40
@@ -289,25 +393,32 @@ def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, orig
             pdf.setFont(NEGRITO, tamanho_contador)
             pdf.drawCentredString(centro_contador, topo - 73, contador)
             pdf.setFont(NEGRITO, 11.8)
-            pdf.drawCentredString(centro_contador, cabecalho_base + 23, f"FOLHA {folha + 1} DE {folhas}")
+            pdf.drawCentredString(centro_contador, cabecalho_base + 23,
+                                  f"SHEET {folha + 1} OF {folhas}" if sem_fotos else f"FOLHA {folha + 1} DE {folhas}")
             pdf.setFillColor(SECUNDARIA)
             pdf.setFont(NORMAL, 8.3)
-            pdf.drawCentredString(centro_contador, cabecalho_base + 10, "SHEET / MESMA CAIXA")
+            if not sem_fotos:
+                pdf.drawCentredString(centro_contador, cabecalho_base + 10, "SHEET / MESMA CAIXA")
             for titulo, valor, campo_x, campo_largura, tamanho in (
                 ("INVOICE", invoice, esquerda + 15, 388, 14.2),
                 ("DATE", data, esquerda + 424, 220, 11.5),
-                ("ORIGIN / FROM", origem, direita - 116, 100, 12),
+                ("ORIGIN" if sem_fotos else "ORIGIN / FROM", origem, direita - 116, 100, 12),
             ):
                 _rotulo(pdf, titulo, campo_x, cabecalho_base - 13)
                 _texto(pdf, valor, campo_x, cabecalho_base - 20, campo_largura, 20,
                        tamanho=tamanho, minimo=9, fonte=NEGRITO)
-            if len(itens_folha) == 1:
+            if sem_fotos and len(itens_folha) == 1:
+                _item_unico_sem_fotos(pdf, itens_folha[0], esquerda, direita, faixa_base, conteudo_base)
+            elif sem_fotos:
+                _grade_sem_fotos(pdf, itens_folha, esquerda, direita, faixa_base, conteudo_base, inicio, len(itens))
+            elif len(itens_folha) == 1:
                 _item_unico(pdf, itens_folha[0], esquerda, direita, faixa_base, conteudo_base, cache_fotos)
             else:
                 _grade(pdf, itens_folha, esquerda, direita, faixa_base, conteudo_base, inicio, len(itens), cache_fotos)
-            _destinatario(pdf, "IMPORTER / IMPORTADOR", importador, esquerda + 15, conteudo_base - 13,
+            destinatario = _destinatario_sem_fotos if sem_fotos else _destinatario
+            destinatario(pdf, "IMPORTER" if sem_fotos else "IMPORTER / IMPORTADOR", importador, esquerda + 15, conteudo_base - 13,
                           largura / 2 - 30, base)
-            _destinatario(pdf, "BUYER / COMPRADOR", comprador, divisor + 15, conteudo_base - 13,
+            destinatario(pdf, "BUYER" if sem_fotos else "BUYER / COMPRADOR", comprador, divisor + 15, conteudo_base - 13,
                           largura / 2 - 30, base, comprador=True)
             pdf.showPage()
     pdf.save()

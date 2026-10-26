@@ -694,6 +694,16 @@
         .packing-list-dialog button:disabled { opacity: .5; cursor: default; }
         .packing-list-dialog :focus-visible { outline: 2px solid #67caff; outline-offset: 3px; }
 
+        .etiquetas-modelo-dialog { width: min(390px, calc(100vw - 32px)); box-sizing: border-box; padding: 22px; border: 1px solid #39739b; border-radius: 14px; background: #102034; color: #e8f1ff; font: inherit; }
+        .etiquetas-modelo-dialog::backdrop { background: rgba(3, 10, 20, .78); }
+        .etiquetas-modelo-dialog h2 { margin: 0 0 10px; font-size: 21px; }
+        .etiquetas-modelo-dialog p { margin: 0 0 18px; color: #bed1e6; line-height: 1.5; }
+        .etiquetas-modelo-opcoes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .etiquetas-modelo-dialog button { min-height: 42px; padding: 10px 12px; border: 1px solid #39739b; border-radius: 8px; background: #193650; color: #eef6ff; font: inherit; cursor: pointer; }
+        .etiquetas-modelo-dialog [data-etiquetas-modelo="com_fotos"] { background: #197db0; }
+        .etiquetas-modelo-acoes { display: flex; justify-content: flex-end; margin-top: 16px; }
+        .etiquetas-modelo-dialog :focus-visible { outline: 2px solid #67caff; outline-offset: 3px; }
+
         .nome-lista {
             font-weight: 800;
             color: #f0f7ff;
@@ -2915,8 +2925,53 @@
         }
 
         const etiquetasEmExecucao = new Set();
+        let dialogoModeloEtiquetas = null;
 
-        async function baixarEtiquetasLista(lista, btn) {
+        function escolherModeloEtiquetas(lista, botaoOrigem) {
+            const listaId = String(lista && lista.id || '').trim();
+            if (etiquetasEmExecucao.has(listaId)) return;
+            if (dialogoPackingList && dialogoPackingList.listaId === listaId) {
+                abrirInclusaoPackingList(lista, botaoOrigem, 'Etiquetas');
+                return;
+            }
+            if (dialogoModeloEtiquetas) {
+                if (dialogoModeloEtiquetas.listaId === listaId) {
+                    dialogoModeloEtiquetas.elemento.querySelector('[data-etiquetas-modelo]').focus();
+                    return;
+                }
+                dialogoModeloEtiquetas.fechar();
+            }
+            const dialogo = document.createElement('dialog');
+            dialogo.className = 'etiquetas-modelo-dialog';
+            dialogo.setAttribute('aria-labelledby', 'etiquetasModeloTitulo');
+            dialogo.setAttribute('aria-describedby', 'etiquetasModeloDescricao');
+            dialogo.innerHTML = '<h2 id="etiquetasModeloTitulo">Etiquetas</h2>' +
+                '<p id="etiquetasModeloDescricao">Escolha o modelo do PDF.</p>' +
+                '<div class="etiquetas-modelo-opcoes"><button type="button" data-etiquetas-modelo="com_fotos">Com fotos</button>' +
+                '<button type="button" data-etiquetas-modelo="sem_fotos">Sem fotos (inglês)</button></div>' +
+                '<div class="etiquetas-modelo-acoes"><button type="button" data-etiquetas-modelo-cancelar>Cancelar</button></div>';
+            const fechar = modelo => {
+                if (!dialogoModeloEtiquetas || dialogoModeloEtiquetas.elemento !== dialogo) return;
+                dialogoModeloEtiquetas = null;
+                dialogo.close();
+                dialogo.remove();
+                if (botaoOrigem && botaoOrigem.isConnected) botaoOrigem.focus();
+                if (modelo === 'com_fotos' || modelo === 'sem_fotos') {
+                    baixarEtiquetasLista(todasListasCache.find(item => String(item.id) === listaId) || lista, botaoOrigem, modelo);
+                }
+            };
+            dialogo.querySelectorAll('[data-etiquetas-modelo]').forEach(botao => {
+                botao.addEventListener('click', () => fechar(botao.dataset.etiquetasModelo));
+            });
+            dialogo.querySelector('[data-etiquetas-modelo-cancelar]').addEventListener('click', () => fechar());
+            dialogo.addEventListener('cancel', evento => { evento.preventDefault(); fechar(); });
+            document.body.appendChild(dialogo);
+            dialogoModeloEtiquetas = { elemento: dialogo, listaId, fechar };
+            dialogo.showModal();
+            dialogo.querySelector('[data-etiquetas-modelo="com_fotos"]').focus();
+        }
+
+        async function baixarEtiquetasLista(lista, btn, modelo = 'com_fotos') {
             const listaId = String(lista && lista.id || '').trim();
             if (!listaId) { setStatus('Não foi possível identificar a lista para gerar as etiquetas.'); return; }
             if (etiquetasEmExecucao.has(listaId)) return;
@@ -2935,7 +2990,8 @@
                 const invoice = await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId) || obterInvoiceLista(listaAtualizada, listaId);
                 if (btn) btn.textContent = 'Gerando...';
                 setStatus('Gerando etiquetas da lista ' + String(listaAtualizada.nome_lista || '') + '...');
-                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/etiquetas', {
+                const semFotos = modelo === 'sem_fotos';
+                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/etiquetas' + (semFotos ? '?modelo=sem_fotos' : ''), {
                     method: 'GET', headers: { ...obterAuthHeaders() }
                 });
                 if (resposta.status === 404) {
@@ -2954,7 +3010,7 @@
                 const objectUrl = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = objectUrl;
-                link.download = nomeArquivoCommercialInvoice(resposta, 'Etiquetas_Externas_' + nomeSeguro + '.pdf');
+                link.download = nomeArquivoCommercialInvoice(resposta, 'Etiquetas_Externas_' + nomeSeguro + (semFotos ? '_Sem_Fotos' : '') + '.pdf');
                 document.body.appendChild(link);
                 link.click();
                 link.remove();
@@ -2968,6 +3024,7 @@
             } finally {
                 etiquetasEmExecucao.delete(listaId);
                 if (btn) { btn.disabled = false; btn.textContent = textoOriginal || 'Etiquetas'; btn.removeAttribute('aria-busy'); }
+                if (btn && btn.isConnected && document.activeElement === document.body) btn.focus();
             }
         }
 
@@ -3567,11 +3624,11 @@
                 const btnEtiquetas = el.querySelector('[data-etiquetas]');
                 if (btnEtiquetas) {
                     btnEtiquetas.dataset.etiquetasListaId = listaId;
-                    btnEtiquetas.title = 'Gerar etiquetas em PDF a partir do Packing List';
+                    btnEtiquetas.title = 'Escolher modelo de etiquetas em PDF';
                     btnEtiquetas.addEventListener('click', evento => {
                         evento.preventDefault();
                         evento.stopPropagation();
-                        baixarEtiquetasLista(todasListasCache.find(item => String(item.id) === listaId) || l, btnEtiquetas);
+                        escolherModeloEtiquetas(todasListasCache.find(item => String(item.id) === listaId) || l, btnEtiquetas);
                     });
                 }
                 const btnCommercialInvoice = el.querySelector('[data-commercial-invoice]');

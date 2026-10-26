@@ -6,6 +6,7 @@ const path = require('path');
 const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const downloadDirectory = process.env.JK_ETIQUETAS_DOWNLOAD_DIR;
+const previewDirectory = process.env.JK_ETIQUETAS_PREVIEW_DIR;
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const ids = ['ready', 'fallback', 'legacy', 'missing', 'conflict', 'error', 'empty', 'invalid', 'preflight-error'];
 const lists = ids.map(id => ({
@@ -32,6 +33,8 @@ const state = { requests: [], downloads: [], updates: [], uploads: [], alerts: [
 const packingReady = Object.fromEntries(ids.map(id => [id, id !== 'missing']));
 const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const button = (page, id) => page.locator('[data-etiquetas][data-etiquetas-lista-id="' + id + '"]');
+const picker = page => page.getByRole('dialog', { name: 'Etiquetas', exact: true });
+const option = (page, modelo) => picker(page).locator('[data-etiquetas-modelo="' + modelo + '"]');
 const modal = page => page.locator('dialog.packing-list-dialog');
 const fileInput = page => modal(page).locator('input[type=file]');
 const xlsx = { name: 'synthetic-packing.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('PK synthetic packing') };
@@ -44,10 +47,15 @@ async function idle(page, id) {
   assert.strictEqual(await button(page, id).getAttribute('aria-busy'), null);
   assert.strictEqual((await button(page, id).textContent()).trim(), 'Etiquetas');
 }
-async function download(page, id, filename, key = null) {
+async function choose(page, id, modelo = 'com_fotos', key = null) {
+  if (key) await button(page, id).press(key); else await button(page, id).click();
+  await picker(page).waitFor({ state: 'visible' });
+  await option(page, modelo).click();
+}
+async function download(page, id, filename, key = null, modelo = 'com_fotos') {
   const before = state.downloadEvents;
   const result = page.waitForEvent('download');
-  if (key) await button(page, id).press(key); else await button(page, id).click();
+  await choose(page, id, modelo, key);
   const document = await result;
   assert.strictEqual(document.suggestedFilename(), filename);
   const payload = await page.evaluate(async () => await window.__etiquetasDownloadPayloads.at(-1));
@@ -58,10 +66,10 @@ async function download(page, id, filename, key = null) {
   await idle(page, id);
   assert.strictEqual(state.downloadEvents, before + 1);
 }
-async function alertWithoutDownload(page, id, expected) {
+async function alertWithoutDownload(page, id, expected, modelo = 'com_fotos') {
   const before = state.downloadEvents;
   const alertCount = state.alerts.length;
-  await button(page, id).click();
+  await choose(page, id, modelo);
   await until(() => state.alerts.length > alertCount);
   assert(state.alerts.at(-1).includes(expected), 'Mensagem deve explicar a falha: ' + state.alerts.at(-1));
   await idle(page, id);
@@ -96,12 +104,16 @@ async function routes(page) {
         const list = lists.find(item => item.id === id);
         assert(list, 'Etiquetas devem pertencer à lista sintética');
         assert.strictEqual(request.method(), 'GET');
-        state.downloads.push({ id, invoice: list.numero_invoice, date: list.order_date });
+        const modelo = url.searchParams.get('modelo') || 'com_fotos';
+        assert(['com_fotos', 'sem_fotos'].includes(modelo));
+        assert.strictEqual(url.search, modelo === 'sem_fotos' ? '?modelo=sem_fotos' : '', 'Modelo com fotos deve preservar a URL legada');
+        state.downloads.push({ id, invoice: list.numero_invoice, date: list.order_date, modelo, search: url.search });
         if (state.downloadGate) await state.downloadGate;
         if (!packingReady[id]) return json(route, { detail: 'Packing List não incluído' }, 404);
         if (id === 'conflict') return json(route, { detail: 'Packing List sintético contém caixas inconsistentes' }, 409);
         if (id === 'error') return json(route, { detail: 'Erro sintético ao gerar etiquetas' }, 500);
-        const headers = id === 'fallback' ? {} : { 'Content-Disposition': "attachment; filename*=UTF-8''Etiquetas%20sint%C3%A9ticas.pdf" };
+        const headers = id === 'fallback' ? {} : { 'Content-Disposition': "attachment; filename*=UTF-8''" +
+          encodeURIComponent(modelo === 'sem_fotos' ? 'Etiquetas sintéticas Sem Fotos.pdf' : 'Etiquetas sintéticas.pdf') };
         return route.fulfill({ status: 200, contentType: id === 'invalid' ? 'text/html' : 'application/pdf', headers,
           body: id === 'empty' ? Buffer.alloc(0) : pdf });
       }
@@ -153,6 +165,7 @@ async function routes(page) {
 
 (async () => {
   if (downloadDirectory) fs.mkdirSync(downloadDirectory, { recursive: true });
+  if (previewDirectory) fs.mkdirSync(previewDirectory, { recursive: true });
   const browser = await chromium.launch({ headless: true, ...(downloadDirectory ? { downloadsPath: downloadDirectory } : {}) });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, acceptDownloads: true });
@@ -175,6 +188,29 @@ async function routes(page) {
     const originalURL = page.url();
     assert.strictEqual(await page.locator('[data-etiquetas]').count(), lists.length);
 
+    // Choosing/cancelling a model must not request or download a document.
+    const beforeChoice = state.requests.filter(request => request.pathname.includes('/listas-pedidos/ready')).length;
+    await button(page, 'ready').click();
+    await picker(page).waitFor({ state: 'visible' });
+    assert.strictEqual(await picker(page).count(), 1);
+    assert.strictEqual(await option(page, 'com_fotos').evaluate(element => element === document.activeElement), true);
+    assert.strictEqual(await option(page, 'sem_fotos').textContent(), 'Sem fotos (inglês)');
+    assert.strictEqual(await picker(page).getAttribute('aria-describedby'), 'etiquetasModeloDescricao');
+    if (previewDirectory) await picker(page).screenshot({ path: path.join(previewDirectory, 'etiquetas-modelo-desktop.png') });
+    await picker(page).getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await picker(page).waitFor({ state: 'detached' });
+    assert.strictEqual(await button(page, 'ready').evaluate(element => element === document.activeElement), true);
+    await button(page, 'ready').press('Enter');
+    await picker(page).waitFor({ state: 'visible' });
+    await page.keyboard.press('Tab');
+    assert.strictEqual(await option(page, 'sem_fotos').evaluate(element => element === document.activeElement), true);
+    await page.keyboard.press('Escape');
+    await picker(page).waitFor({ state: 'detached' });
+    assert.strictEqual(await button(page, 'ready').evaluate(element => element === document.activeElement), true);
+    assert.strictEqual(state.requests.filter(request => request.pathname.includes('/listas-pedidos/ready')).length, beforeChoice);
+    assert.strictEqual(state.downloadEvents, 0);
+    console.log('Etiquetas: escolha acessível, cancelamento/Escape, teclado e foco devolvido sem gerar documento: OK');
+
     await download(page, 'ready', 'Etiquetas sintéticas.pdf');
     const documentRequests = state.requests.filter(request => request.pathname.includes('/listas-pedidos/ready'));
     assert.deepStrictEqual(documentRequests.map(request => request.pathname.split('/').at(-1)), ['ready', 'etiquetas']);
@@ -184,10 +220,25 @@ async function routes(page) {
     assert(state.updates.some(update => update.id === 'legacy' && update.payload.numero_invoice === 'INV-LEGACY-LOCAL'));
     console.log('Etiquetas: PDF autenticado, arquivo íntegro, nome UTF-8/fallback e invoice legado: OK');
 
+    await button(page, 'ready').press('Enter');
+    await picker(page).waitFor({ state: 'visible' });
+    await page.keyboard.press('Tab');
+    const englishDownload = page.waitForEvent('download');
+    await page.keyboard.press('Enter');
+    assert.strictEqual((await englishDownload).suggestedFilename(), 'Etiquetas sintéticas Sem Fotos.pdf');
+    await idle(page, 'ready');
+    assert.strictEqual(state.downloads.at(-1).modelo, 'sem_fotos');
+    await download(page, 'fallback', 'Etiquetas_Externas_INV-FALLBACK_Sem_Fotos.pdf', null, 'sem_fotos');
+    assert.strictEqual(state.downloads.at(-1).search, '?modelo=sem_fotos');
+    console.log('Etiquetas: variante sem fotos por teclado, query explícita e nome fallback distinto: OK');
+
     const gate = deferred(); state.downloadGate = gate.promise;
     const beforeDuplicate = state.downloads.length;
     const result = page.waitForEvent('download');
     await button(page, 'ready').evaluate(element => { element.click(); element.click(); });
+    assert.strictEqual(await picker(page).count(), 1);
+    assert.strictEqual(state.downloads.length, beforeDuplicate);
+    await option(page, 'com_fotos').evaluate(element => { element.click(); element.click(); });
     await until(() => state.downloads.length === beforeDuplicate + 1);
     assert.strictEqual(await button(page, 'ready').isDisabled(), true);
     assert.strictEqual(await button(page, 'ready').getAttribute('aria-busy'), 'true');
@@ -195,16 +246,16 @@ async function routes(page) {
     assert.strictEqual(state.downloads.length, beforeDuplicate + 1);
     console.log('Etiquetas: duplo clique protegido e botão restaurado após a resposta: OK');
 
-    for (const [id, message] of [
-      ['conflict', 'caixas inconsistentes'], ['error', 'Erro sintético ao gerar etiquetas'],
-      ['empty', 'PDF de etiquetas foi gerado vazio'], ['invalid', 'não retornou um PDF de etiquetas válido'],
-      ['preflight-error', 'Falha sintética na consulta da lista'],
-    ]) await alertWithoutDownload(page, id, message);
+    for (const [id, message, modelo] of [
+      ['conflict', 'caixas inconsistentes', 'sem_fotos'], ['error', 'Erro sintético ao gerar etiquetas', 'com_fotos'],
+      ['empty', 'PDF de etiquetas foi gerado vazio', 'sem_fotos'], ['invalid', 'não retornou um PDF de etiquetas válido', 'sem_fotos'],
+      ['preflight-error', 'Falha sintética na consulta da lista', 'com_fotos'],
+    ]) await alertWithoutDownload(page, id, message, modelo);
     assert(!state.downloads.some(item => item.id === 'preflight-error'), 'Falha da consulta deve impedir geração');
     console.log('Etiquetas: 409, 500, resposta vazia, MIME inválido e falha da consulta: OK');
 
     const beforeMissing = state.downloadEvents;
-    await button(page, 'missing').click();
+    await choose(page, 'missing', 'sem_fotos');
     await modal(page).waitFor({ state: 'visible' });
     assert((await modal(page).locator('[data-packing-list-contexto]').textContent()).includes('para gerar as etiquetas'));
     assert.strictEqual(await fileInput(page).getAttribute('accept'), '.xlsx');
@@ -212,7 +263,7 @@ async function routes(page) {
     assert((await modal(page).textContent()).includes('<img src=x'));
     assert.strictEqual(state.chooserCount, 0, 'Inclusão exige seleção explícita do usuário');
     await page.keyboard.press('Escape'); await modal(page).waitFor({ state: 'detached' });
-    await button(page, 'missing').press('Enter'); await modal(page).waitFor({ state: 'visible' });
+    await choose(page, 'missing', 'sem_fotos', 'Enter'); await modal(page).waitFor({ state: 'visible' });
     await fileInput(page).setInputFiles({ ...xlsx, name: 'invalid.txt' });
     assert.strictEqual(await modal(page).locator('[data-packing-list-enviar]').isDisabled(), true);
     await fileInput(page).setInputFiles(xlsx);
@@ -228,7 +279,8 @@ async function routes(page) {
     uploadGate.resolve(); state.uploadGate = null;
     await modal(page).waitFor({ state: 'detached' });
     assert.strictEqual(state.downloadEvents, beforeMissing, 'Upload deve aguardar novo clique para baixar etiquetas');
-    await download(page, 'missing', 'Etiquetas sintéticas.pdf');
+    await download(page, 'missing', 'Etiquetas sintéticas Sem Fotos.pdf', null, 'sem_fotos');
+    assert.strictEqual(state.downloads.at(-1).modelo, 'sem_fotos');
     assert.strictEqual(state.uploads.length, uploadsBeforeRetry + 1, 'Envio duplicado deve ser bloqueado');
     console.log('Etiquetas: 404, modal seguro, teclado, upload multipart, falha/retry e novo clique: OK');
 
@@ -243,7 +295,7 @@ async function routes(page) {
       await until(() => state.updates.some(update => update.id === 'ready' && update.payload[field] === value));
       const before = state.downloads.length;
       const event = page.waitForEvent('download');
-      await button(page, 'ready').click();
+      await choose(page, 'ready', field === 'order_date' ? 'sem_fotos' : 'com_fotos');
       assert.strictEqual(state.downloads.length, before, 'Documento deve aguardar salvamento pendente');
       saveGate.resolve(); state.putGate = null; await event; await idle(page, 'ready');
       assert.strictEqual(state.downloads.at(-1)[field === 'order_date' ? 'date' : 'invoice'], value);
@@ -259,7 +311,7 @@ async function routes(page) {
       await until(() => state.updates.some(update => update.payload[field] === value));
       const before = state.downloads.length;
       const alerts = state.alerts.length;
-      await button(page, 'ready').click();
+      await choose(page, 'ready', field === 'order_date' ? 'sem_fotos' : 'com_fotos');
       failGate.resolve(); state.putGate = null;
       await until(() => state.alerts.length > alerts && state.alerts.at(-1).includes(expected));
       await idle(page, 'ready');
@@ -278,8 +330,17 @@ async function routes(page) {
       assert(bounds.x >= 0 && bounds.right <= 391 && bounds.height >= 32 && bounds.fits, 'Botão deve caber na tela estreita');
     }
     await download(page, 'ready', 'Etiquetas sintéticas.pdf', 'Space');
+    await button(page, 'ready').click(); await picker(page).waitFor({ state: 'visible' });
+    const pickerBounds = await picker(page).boundingBox();
+    assert(pickerBounds.x >= 0 && pickerBounds.x + pickerBounds.width <= 390, 'Escolha de modelo deve caber na tela estreita');
+    for (const element of await picker(page).getByRole('button').all()) {
+      assert.strictEqual(await element.evaluate(button => button.scrollWidth <= button.clientWidth + 1), true);
+    }
+    if (previewDirectory) await picker(page).screenshot({ path: path.join(previewDirectory, 'etiquetas-modelo-mobile.png') });
+    await page.keyboard.press('Escape'); await picker(page).waitFor({ state: 'detached' });
+    assert.strictEqual(await button(page, 'ready').evaluate(element => element === document.activeElement), true);
     packingReady.missing = false;
-    await button(page, 'missing').click(); await modal(page).waitFor({ state: 'visible' });
+    await choose(page, 'missing'); await modal(page).waitFor({ state: 'visible' });
     const bounds = await modal(page).boundingBox();
     assert(bounds.x >= 0 && bounds.x + bounds.width <= 390, 'Modal deve caber na tela estreita');
     await modal(page).locator('[data-packing-list-cancelar]').click();
@@ -287,6 +348,6 @@ async function routes(page) {
     assert.strictEqual(state.chooserCount, 0);
     assert.deepStrictEqual(state.errors, []);
     assert.deepStrictEqual(state.routeErrors, []);
-    console.log('Etiquetas: 6 grupos de cenários aprovados; todas as requisições simuladas, sem navegar ou acessar o app instalado.');
+    console.log('Etiquetas: 8 grupos de cenários aprovados; todas as requisições simuladas, sem navegar ou acessar o app instalado.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
