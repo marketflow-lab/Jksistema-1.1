@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager, contextmanager
 import contextvars
 import copy
 import datetime as dt
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -31,6 +32,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 BASELINE_COMMIT = "751885950c0bcff6390bc15e79baaa4c7b669bbd"
+BASELINE_FIXTURE = ROOT / "tests/fixtures/vendas_sync_baseline_75188595.json.gz"
+BASELINE_SHA256 = {
+    "backend/modules/vendas/sync_queue.py": "c4edb83f4573678433405efa0803fa949cedd98511bfc65f712abe1115e0cb8c",
+    "backend/modules/vendas/sync_engine.py": "24cd1112a129353d9f694faae0a8451c78f419cd05e2c6abb4497cec81de59cf",
+    "backend/services/bling.py": "2f3358e3440f20ea29b71b6548c7b60ea090328a6b897c91fe3658e7fd45135b",
+}
 FINAL_DAY = dt.date(2026, 10, 26)
 EPOCH = dt.datetime(2026, 10, 26, 12, tzinfo=dt.timezone(dt.timedelta(hours=-3))).timestamp()
 TENANT = "benchmark"
@@ -113,9 +120,26 @@ class AsyncQuota(ast.NodeTransformer):
 
 
 def _git_source(commit, path):
-    result = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=ROOT,
-                            check=True, capture_output=True)
-    return result.stdout.decode("utf-8")
+    try:
+        result = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=ROOT,
+                                check=True, capture_output=True)
+        return result.stdout.decode("utf-8")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        if commit != BASELINE_COMMIT or path not in BASELINE_SHA256:
+            raise
+    # A depth-one CI checkout cannot read the historical commit. This checked-in
+    # snapshot contains its exact three sources, with pinned independent hashes.
+    with gzip.open(BASELINE_FIXTURE, "rt", encoding="utf-8") as stream:
+        fixture = json.load(stream)
+    if (fixture.get("schema_version") != 1 or fixture.get("baseline_commit") != BASELINE_COMMIT
+            or set(fixture.get("sources", {})) != set(BASELINE_SHA256)
+            or fixture.get("sha256") != BASELINE_SHA256):
+        raise ValueError("The offline synchronization baseline fixture is invalid.")
+    for name, expected in BASELINE_SHA256.items():
+        source = fixture["sources"][name]
+        if not isinstance(source, str) or hashlib.sha256(source.encode()).hexdigest() != expected:
+            raise ValueError("The offline synchronization baseline checksum is invalid.")
+    return fixture["sources"][path]
 
 
 def _module(source, label):

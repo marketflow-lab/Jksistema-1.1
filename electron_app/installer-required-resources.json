@@ -321,7 +321,9 @@
     "backend/modules/cofre/shared.py",
     "backend/modules/cofre/shared_storage.py",
     "backend/services/cofre_auth.py",
-    "backend/services/cofre_session_store.py"
+    "backend/services/cofre_session_store.py",
+    "backend/services/bling_accounts.py",
+    "backend/modules/vendas/sync_config.py"
   ],
   "requiredSourceGlobs": [
     {
@@ -1210,7 +1212,9 @@
     "backend/modules/cofre/shared.py",
     "backend/modules/cofre/shared_storage.py",
     "backend/services/cofre_auth.py",
-    "backend/services/cofre_session_store.py"
+    "backend/services/cofre_session_store.py",
+    "backend/services/bling_accounts.py",
+    "backend/modules/vendas/sync_config.py"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",
