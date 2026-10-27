@@ -26,7 +26,7 @@ const obrigatorios = [
     'await salvarMargensAutomaticasSku(',
     "item.analise_concorrentes = resultado && resultado.analise_concorrentes",
     'data-coluna="margens_concorrentes"',
-    'void analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);',
+    'await analisarMargensConcorrentesAutomaticamente(listaId, itens);',
     "(!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')",
     'Falha na análise',
     'Analisando...',
@@ -40,7 +40,7 @@ for (const trecho of obrigatorios) {
 
 const renderInicial = html.indexOf('renderItens(itens, lista);');
 const disparoAutomatico = html.indexOf(
-    'void analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);',
+    'await analisarMargensConcorrentesAutomaticamente(listaId, itens);',
     renderInicial
 );
 if (!(renderInicial >= 0 && disparoAutomatico > renderInicial)) {

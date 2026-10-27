@@ -9,6 +9,8 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/cache-persistente.js?v=20261027-v1"></script>
+    <script src="/vendas/cache-dados.js?v=20261027-v1"></script>
     <style>
         body { margin:0; padding:20px; background:#0e1117; color:#e5e5e5; font-family:"Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
         .container { max-width:1360px; margin:0 auto; }
@@ -412,6 +414,7 @@
     </div>
 
     <div id="status" class="status-bar"></div>
+    <div id="cacheVendasStatus" class="status-bar empty" role="status" hidden></div>
 
     <div class="loja-barra">
         <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
@@ -559,6 +562,8 @@
     let dateRangePicker = null;
     let dateFimPicker = null;
     let unidadeNegocioInicialAplicada = false;
+    let carregarVendasSkuToken = 0;
+    let dadosSkuConsultaChave = '';
     const controladoresFetchAtivos = new Set();
     const timeoutsAtivos = new Set();
 
@@ -732,6 +737,7 @@
 
     function cancelarProcessosAtivosSku() {
         paginaEncerrando = true;
+        carregarVendasSkuToken += 1;
         carregarGraficoSkuToken += 1;
         controladoresFetchAtivos.forEach(controller => controller.abort());
         controladoresFetchAtivos.clear();
@@ -761,6 +767,10 @@
     else if (dataFim_param) setDataRangeISO(dataFim_param, dataFim_param);
     atualizarPeriodoTexto();
     if (dataInicio && dataFim_param) sincronizarMesAnoSelect(dataInicio, dataFim_param);
+    if (unidadeNegocioAlvo) {
+        unidadeNegocioSelect.add(new Option(unidadeNegocioAlvo, unidadeNegocioAlvo));
+        unidadeNegocioSelect.value = unidadeNegocioAlvo;
+    }
     mesAno.addEventListener('change', (e) => selecionarMes(e.target.value));
 
     // Redireciona setDataRangeISO para funcionar antes do flatpickr estar inicializado
@@ -978,6 +988,8 @@
     }
 
     async function carregarUnidadesNegocioSku() {
+        const contexto = window.JKVendasCache?.contexto();
+        const periodo = JSON.stringify([getDataIniISO(), getDataFimISO()]);
         try {
             const qsUn = new URLSearchParams();
             if (lojaAlvo) qsUn.append('loja', lojaAlvo);
@@ -989,6 +1001,8 @@
             const resp = await fetchCancelable('/api/unidades-negocios' + (qsUn.toString() ? `?${qsUn.toString()}` : ''), { headers: obterHeadersProtegidos() });
             if (!resp.ok) return;
             const payload = await resp.json();
+            if (paginaEncerrando || (window.JKVendasCache && !window.JKVendasCache.vigente(contexto))
+                || periodo !== JSON.stringify([getDataIniISO(), getDataFimISO()])) return;
             const unidades = Array.isArray(payload?.unidades) ? payload.unidades : [];
             const nomes = unidades
                 .map(u => String(u?.nome || '').trim())
@@ -1039,98 +1053,119 @@
         }
     }
 
+    function prepararConsultaVendasSku() {
+        const qs = new URLSearchParams({ sku: skuAlvo, resolver_nf: '0' });
+        const qsDev = new URLSearchParams();
+        for (const [chave, valor] of [['data_inicio', getDataIniISO()], ['data_fim', getDataFimISO()],
+            ['loja', lojaAlvo], ['unidade_negocio', unidadeNegocioSelect.value]]) {
+            if (!valor || valor === '__todos') continue;
+            qs.set(chave, valor);
+            qsDev.set(chave, valor);
+        }
+        const qsTransfer = new URLSearchParams(qs);
+        qsTransfer.set('incluir_ebazar', '1');
+        const url = '/api/vendas?' + qs.toString();
+        const urlTransfer = '/api/vendas?' + qsTransfer.toString();
+        const urlDev = '/api/notas-entrada/sku/' + encodeURIComponent(skuAlvo) + '?' + qsDev.toString();
+        return { qs, url, urlTransfer, urlDev, chave: JSON.stringify([url, urlDev, urlTransfer]) };
+    }
+
+    function aplicarSnapshotVendasSku(snapshot, chave) {
+        dadosSkuConsultaChave = chave;
+        dados = snapshot.dados;
+        devolucoes = snapshot.devolucoes;
+        renderTransferenciaFull(snapshot.transferencias);
+        renderResumo(dados, devolucoes);
+        renderTabela(dados, devolucoes);
+    }
+
+    async function restaurarSnapshotVendasSku(consulta, contexto, leituraAtual) {
+        try {
+            const salvo = await window.JKVendasCache?.ler(consulta.chave, contexto);
+            if (!leituraAtual()) return false;
+            const snapshot = salvo?.dados;
+            const linhasValidas = linhas => Array.isArray(linhas)
+                && linhas.every(linha => linha && typeof linha === 'object' && !Array.isArray(linha));
+            if (snapshot?.schema !== 1 || !linhasValidas(snapshot.dados) || !linhasValidas(snapshot.devolucoes)
+                || !linhasValidas(snapshot.transferencias)) return false;
+            aplicarSnapshotVendasSku(snapshot, consulta.chave);
+            window.JKVendasCache?.estado('SKU', 'atualizando', salvo.salvoEm);
+            return true;
+        } catch (_erro) { return false; }
+    }
+
+    function salvarSnapshotVendasSku(chave, contexto) {
+        return window.JKVendasCache?.salvar(chave, { schema: 1, dados, devolucoes, transferencias: vendasTransferenciaFull }, contexto);
+    }
+
     async function carregarVendasSku() {
         if (paginaEncerrando) return;
+        const contexto = window.JKVendasCache?.contexto();
+        const token = ++carregarVendasSkuToken;
+        const consulta = prepararConsultaVendasSku();
+        if (dadosSkuConsultaChave !== consulta.chave) {
+            dados = []; devolucoes = [];
+            tBody.textContent = ''; resumo.textContent = '';
+            renderTransferenciaFull([]);
+        }
+        const leituraAtual = () => !paginaEncerrando && token === carregarVendasSkuToken
+            && consulta.chave === prepararConsultaVendasSku().chave
+            && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contexto));
+        let restaurouCache = false;
         statusEl.className = 'status-bar loading';
         statusEl.textContent = 'Carregando vendas e devolucoes...';
         try {
-            clientId = clientId || obterClientId();
-            if (!clientId) {
-                console.warn('ClientId vazio - tentando carregar de localStorage novamente');
-                const userData2 = JSON.parse(localStorage.getItem('user_data') || 'null');
-                if (userData2 && userData2.client_id) {
-                    clientId = userData2.client_id;
-                    console.log('ClientId recuperado:', clientId);
-                }
-            }
-
+            clientId = obterClientId();
             if (!clientId) {
                 statusEl.className = 'status-bar error';
                 statusEl.innerHTML = '⚠️ Sessão expirada. <a href="/frontend_index.html" style="color:white; text-decoration:underline;">Fazer login novamente</a>';
-                console.warn('ClientId ainda vazio');
                 return;
             }
             if (!skuAlvo) {
                 statusEl.textContent = 'SKU nao informado.';
                 return;
             }
-
-            const iniIso = getDataIniISO();
-            const fimIso = getDataFimISO();
-            const qs = new URLSearchParams({ sku: skuAlvo, resolver_nf: '0' });
-            if (iniIso) qs.append('data_inicio', iniIso);
-            if (fimIso) qs.append('data_fim', fimIso);
-            if (lojaAlvo) qs.append('loja', lojaAlvo);
-            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-                qs.append('unidade_negocio', unidadeNegocioSelect.value);
-            }
-            const qsTransfer = new URLSearchParams(qs);
-            qsTransfer.set('incluir_ebazar', '1');
-
+            window.JKVendasCache?.estado('SKU', null);
+            restaurouCache = await restaurarSnapshotVendasSku(consulta, contexto, leituraAtual);
+            if (!leituraAtual()) return;
             const graficoPromise = carregarGrafico();
-
-            const url = '/api/vendas?' + qs.toString();
-            const urlTransfer = '/api/vendas?' + qsTransfer.toString();
-            const qsDev = new URLSearchParams();
-            if (iniIso) qsDev.append('data_inicio', iniIso);
-            if (fimIso) qsDev.append('data_fim', fimIso);
-            if (lojaAlvo) qsDev.append('loja', lojaAlvo);
-            if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-                qsDev.append('unidade_negocio', unidadeNegocioSelect.value);
-            }
-            const urlDev = '/api/notas-entrada/sku/' + encodeURIComponent(skuAlvo) + '?' + qsDev.toString();
-
             const [resp, respDev, respTransfer] = await Promise.all([
-                fetchCancelable(url, { headers: obterHeadersProtegidos() }),
-                fetchCancelable(urlDev, { headers: obterHeadersProtegidos() }),
-                fetchCancelable(urlTransfer, { headers: obterHeadersProtegidos() })
+                fetchCancelable(consulta.url, { headers: obterHeadersProtegidos() }),
+                fetchCancelable(consulta.urlDev, { headers: obterHeadersProtegidos() }),
+                fetchCancelable(consulta.urlTransfer, { headers: obterHeadersProtegidos() })
             ]);
-
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const dadosApi = await resp.json();
-            dados = (Array.isArray(dadosApi) ? dadosApi : []).filter(item => Number(item?.devolucao || 0) !== 1);
-            if (respDev.ok) {
-                devolucoes = await respDev.json();
-            } else {
-                devolucoes = [];
-            }
-
-            let listaTransferencia = [];
-            if (respTransfer.ok) {
-                const dadosComEbazar = await respTransfer.json();
-                listaTransferencia = (Array.isArray(dadosComEbazar) ? dadosComEbazar : []).filter(vendaEhTransferenciaFull);
-            }
-            renderTransferenciaFull(listaTransferencia);
-
-            if (paginaEncerrando) return;
-
-            // A API de devoluções já recebe os mesmos filtros (loja/unidade/período),
-            // então devemos sempre contabilizar o retorno para manter o resumo consistente.
-            renderResumo(dados, devolucoes);
-            renderTabela(dados, devolucoes);
-            statusEl.className = 'status-bar';
-            statusEl.textContent = '';
-            await graficoPromise;
-
-            // Hidrata numero de NF em segundo plano sem bloquear a primeira renderizacao.
-            hidratarNfEmSegundoPlano(qs);
-        } catch (e) {
-            if (paginaEncerrando || e.name === 'AbortError') {
+            if (!leituraAtual()) return;
+            if ([401, 403].includes(resp.status)) {
+                void window.JKCachePersistente?.invalidar(['vendas']);
+                window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
                 return;
             }
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            if (restaurouCache && (!respDev.ok || !respTransfer.ok)) throw new Error('Dados complementares indisponíveis.');
+            const [dadosApi, devApi, transferApi] = await Promise.all([
+                resp.json(), respDev.ok ? respDev.json() : [], respTransfer.ok ? respTransfer.json() : []
+            ]);
+            if (!Array.isArray(dadosApi) || !Array.isArray(devApi) || !Array.isArray(transferApi)) {
+                throw new Error('Resposta inválida ao carregar o SKU.');
+            }
+            if (!leituraAtual()) return;
+            aplicarSnapshotVendasSku({
+                dados: dadosApi.filter(item => Number(item?.devolucao || 0) !== 1),
+                devolucoes: devApi, transferencias: transferApi.filter(vendaEhTransferenciaFull)
+            }, consulta.chave);
+            statusEl.className = 'status-bar';
+            statusEl.textContent = '';
+            window.JKVendasCache?.estado('SKU', null);
+            if (respDev.ok && respTransfer.ok) await salvarSnapshotVendasSku(consulta.chave, contexto);
+            await graficoPromise;
+            if (!leituraAtual()) return;
+            // Hidrata numero de NF em segundo plano sem bloquear a primeira renderizacao.
+            void hidratarNfEmSegundoPlano(consulta.qs, { leituraAtual, contexto, chave: consulta.chave });
+        } catch (e) {
+            if (!leituraAtual() || e.name === 'AbortError') return;
+            if (restaurouCache) window.JKVendasCache?.estado('SKU', 'erro');
             statusEl.className = 'status-bar error';
             statusEl.textContent = 'Erro ao carregar: ' + e.message;
-            console.error(e);
         }
     }
 
@@ -1144,7 +1179,7 @@
         ].join('|');
     }
 
-    async function hidratarNfEmSegundoPlano(qsBase) {
+    async function hidratarNfEmSegundoPlano(qsBase, opcoes = {}) {
         if (paginaEncerrando) return;
         const semNf = dados.some(v => !v.numero_nf && v.nota_fiscal_id);
         if (!semNf) return;
@@ -1156,6 +1191,7 @@
             if (!respNf.ok) return;
 
             const dadosComNf = await respNf.json();
+            if (paginaEncerrando || (opcoes.leituraAtual && !opcoes.leituraAtual())) return;
             const mapaNf = new Map(dadosComNf.map(item => [chaveVenda(item), item.numero_nf || '']));
             let alterou = false;
 
@@ -1171,6 +1207,7 @@
             if (alterou) {
                 if (paginaEncerrando) return;
                 renderTabela(dados, devolucoes);
+                if (opcoes.chave) void salvarSnapshotVendasSku(opcoes.chave, opcoes.contexto);
             }
         } catch (_e) {
             // Sem impacto na UX principal se a hidratacao de NF falhar.
@@ -1523,8 +1560,13 @@
 
     async function carregarGrafico() {
         if (paginaEncerrando) return;
+        const contexto = window.JKVendasCache?.contexto();
         const tokenAtual = ++carregarGraficoSkuToken;
         const assinaturaContexto = obterAssinaturaCarregamentoGraficoSku();
+        const leituraAtual = () => !paginaEncerrando && tokenAtual === carregarGraficoSkuToken
+            && assinaturaContexto === obterAssinaturaCarregamentoGraficoSku()
+            && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contexto));
+        let restaurouCache = false;
         try {
             const params = new URLSearchParams({
                 periodo: periodoGrafico,
@@ -1542,7 +1584,19 @@
                 params.set('incluir_previsao_mes_atual', 'true');
             }
 
-            const response = await fetchCancelable(`/api/vendas/grafico?${params.toString()}`, {
+            const url = `/api/vendas/grafico?${params.toString()}`;
+            window.JKVendasCache?.estado('Gráfico', null);
+            try {
+                const salvo = await window.JKVendasCache?.ler(url, contexto);
+                if (!leituraAtual()) return;
+                if (salvo?.dados && typeof salvo.dados === 'object' && Array.isArray(salvo.dados.labels)) {
+                    renderizarGrafico(salvo.dados);
+                    atualizarObservacoesGrafico(salvo.dados);
+                    restaurouCache = true;
+                    window.JKVendasCache?.estado('Gráfico', 'atualizando', salvo.salvoEm);
+                }
+            } catch (_erroCache) { /* Uma cópia inválida não impede a leitura atual. */ }
+            const response = await fetchCancelable(url, {
                 headers: obterHeadersProtegidos()
             });
             if (!response.ok) {
@@ -1550,22 +1604,15 @@
             }
             const data = await response.json();
 
-            if (
-                paginaEncerrando
-                || tokenAtual !== carregarGraficoSkuToken
-                || assinaturaContexto !== obterAssinaturaCarregamentoGraficoSku()
-            ) {
-                return;
-            }
+            if (!leituraAtual()) return;
             renderizarGrafico(data);
             atualizarObservacoesGrafico(data);
+            window.JKVendasCache?.estado('Gráfico', null);
+            void window.JKVendasCache?.salvar(url, data, contexto);
         } catch (error) {
-            if (
-                paginaEncerrando
-                || error.name === 'AbortError'
-                || tokenAtual !== carregarGraficoSkuToken
-                || assinaturaContexto !== obterAssinaturaCarregamentoGraficoSku()
-            ) {
+            if (!leituraAtual() || error.name === 'AbortError') return;
+            if (restaurouCache) {
+                window.JKVendasCache?.estado('Gráfico', 'erro');
                 return;
             }
             console.error('Erro ao carregar gráfico:', error);
@@ -1937,6 +1984,15 @@
 
     carregarPreferenciaGraficoSku();
     aplicarPreferenciaGraficoUI();
+    const contextoInicialCacheSku = window.JKVendasCache?.contexto();
+    const consultaInicialCacheSku = prepararConsultaVendasSku();
+    const tokenInicialCacheSku = carregarVendasSkuToken;
+    if (skuAlvo && getDataIniISO()) {
+        void restaurarSnapshotVendasSku(consultaInicialCacheSku, contextoInicialCacheSku, () => !paginaEncerrando
+            && tokenInicialCacheSku === carregarVendasSkuToken
+            && consultaInicialCacheSku.chave === prepararConsultaVendasSku().chave
+            && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contextoInicialCacheSku)));
+    }
     carregarLojasBotoes();
     carregarUnidadesNegocioSku().finally(async () => {
         if (['3m', '6m', '1a', '2a', 'max'].includes(periodoGraficoParam)) {
@@ -1980,18 +2036,54 @@
     }
 
     async function carregarLojasBotoes() {
+        const contexto = window.JKVendasCache?.contexto();
         try {
             const resp = await fetchCancelable('/api/lojas', { headers: obterHeadersProtegidos() });
             if (!resp.ok) return;
             const lojas = await resp.json();
+            if (paginaEncerrando || (window.JKVendasCache && !window.JKVendasCache.vigente(contexto))) return;
             if (!Array.isArray(lojas)) return;
             lojas.sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
             renderBotoesLojasSku(lojas);
         } catch (_e) {
+            if (paginaEncerrando || (window.JKVendasCache && !window.JKVendasCache.vigente(contexto))) return;
             // Se falhar mantém botão Todas as lojas vazio
             lojaBotoes.innerHTML = '<button class="loja-btn active">Todas as lojas</button>';
         }
     }
+
+    function limparDadosDaSessaoSku(mensagem) {
+        cancelarProcessosAtivosSku();
+        dados = []; devolucoes = []; vendasTransferenciaFull = [];
+        dadosSkuConsultaChave = '';
+        tBody.textContent = ''; resumo.textContent = ''; tBodyTransferenciaFull.textContent = '';
+        lojaBotoes.textContent = '';
+        panelTransferenciaFull.classList.remove('active');
+        btnTransferenciaFull.disabled = true;
+        if (graficoObservacoes) graficoObservacoes.textContent = '';
+        window.JKVendasCache?.limpar();
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = typeof mensagem === 'string' ? mensagem : 'Sessão alterada. Entre novamente para consultar os dados.';
+    }
+    ['jk:cache-persistente-auth-negado', 'jk:vendas-acesso-negado'].forEach(evento => window.addEventListener(evento,
+        () => limparDadosDaSessaoSku('Acesso negado ou sessão expirada. Entre novamente para consultar os dados.')));
+    ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparDadosDaSessaoSku));
+    window.addEventListener('storage', event => {
+        if (!event.key || ['user_data', 'permissions'].includes(event.key)) limparDadosDaSessaoSku();
+    });
+    let revalidacaoCacheSkuTimer = null;
+    window.addEventListener('jk:cache-persistente-invalidado', event => {
+        const tags = event.detail?.tags;
+        if (!Array.isArray(tags) || !tags.some(tag => tag === 'vendas' || tag === '*') || event.detail?.origem === 'auth'
+            || paginaEncerrando || document.visibilityState === 'hidden') return;
+        const token = ++carregarVendasSkuToken;
+        carregarGraficoSkuToken += 1;
+        if (revalidacaoCacheSkuTimer) clearTimeout(revalidacaoCacheSkuTimer);
+        revalidacaoCacheSkuTimer = setTimeout(() => {
+            revalidacaoCacheSkuTimer = null;
+            if (!paginaEncerrando && token === carregarVendasSkuToken) void carregarVendasSku();
+        }, 100);
+    });
 
 </script>
 <script src="/ia-sidebar.js"></script>

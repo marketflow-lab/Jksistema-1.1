@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
     <script src="/medias_compras/data-pedido-lista.js?v=20261006-data-pedido-v2"></script>
@@ -2194,6 +2195,7 @@
                 <label class="busca-listas"><input type="search" id="buscarListasImportacoes" aria-label="Buscar listas por nome, Invoice, loja, fornecedor ou nacionalizador" placeholder="Buscar lista, Invoice ou fornecedor…" autocomplete="off"></label>
             </div>
             <div id="status" class="muted">Carregando listas...</div>
+            <div id="cacheImportacoesStatus" class="muted" role="status" aria-live="polite"></div>
 
             <!-- Vista: detalhe de embarque -->
             <div id="embarqueDetalheView" style="display:none">
@@ -3870,25 +3872,67 @@
             });
         }
 
+        let geracaoListasImportacoes = 0;
+        function statusCacheImportacoes(texto) {
+            const el = document.getElementById('cacheImportacoesStatus');
+            if (el) el.textContent = texto;
+        }
+
         async function carregarListasImportacoes() {
+            const geracao = ++geracaoListasImportacoes;
+            const persistencia = window.JKCachePersistente;
+            const candidato = persistencia?.contexto();
+            const contexto = persistencia?.vigente(candidato) ? candidato : null;
+            const vigente = () => geracao === geracaoListasImportacoes && (!contexto || persistencia.vigente(contexto));
+            const dadosVigentes = () => vigente() && (!contexto || !persistencia.dadosVigentes || persistencia.dadosVigentes(contexto, ['importacoes']));
+            const chave = 'importacoes:GET:/api/medias-compras/listas-pedidos';
+            let copiaVisivel = false;
+            const aplicar = async (data, aguardarEdicao = false) => {
+                while (aguardarEdicao && vigente() && (document.querySelector('#listaWrap input, #listaWrap [aria-busy="true"]') || invoicesSalvando.size)) {
+                    await new Promise(resolve => setTimeout(resolve, 120));
+                }
+                if (!dadosVigentes() || !Array.isArray(data?.listas)
+                    || data.listas.some(lista => !lista || typeof lista !== 'object' || Array.isArray(lista))) return false;
+                todasListasCache = data.listas.filter(l => String(l.status || '').trim() === 'Analisando orçamento');
+                renderFiltroLojasImportacoes(todasListasCache);
+                aplicarFiltroListasImportacoes();
+                return true;
+            };
             try {
                 setStatus('Carregando listas...');
+                try {
+                    const copia = contexto ? await persistencia.ler(chave, { contexto }) : null;
+                    if (!vigente()) return;
+                    if (copia && await aplicar(copia.dados)) {
+                        copiaVisivel = true;
+                        statusCacheImportacoes('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
+                    }
+                } catch (_cacheError) { /* A rede permanece disponível quando a cópia está inválida. */ }
                 const resp = await fetch('/api/medias-compras/listas-pedidos', {
                     method: 'GET',
                     headers: { ...obterAuthHeaders() }
                 });
+                if (resp.status === 403) {
+                    negarAcessoCacheImportacoes();
+                    await persistencia?.invalidar(['importacoes']);
+                    return;
+                }
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({}));
                     throw new Error(err.detail || 'Falha ao carregar listas.');
                 }
 
                 const data = await resp.json();
-                const todas = Array.isArray(data.listas) ? data.listas : [];
-                const filtradas = todas.filter(l => String(l.status || '').trim() === 'Analisando orçamento');
-                todasListasCache = filtradas;
-                renderFiltroLojasImportacoes(filtradas);
-                aplicarFiltroListasImportacoes();
+                if (!dadosVigentes()) return;
+                if (!Array.isArray(data?.listas)) throw new Error('Lista de importações inválida.');
+                if (contexto) await persistencia.salvar(chave, data, { contexto, tags: ['importacoes'] });
+                if (await aplicar(data, copiaVisivel)) statusCacheImportacoes('Dados atualizados.');
             } catch (e) {
+                if (!vigente()) return;
+                if (copiaVisivel) {
+                    statusCacheImportacoes('Exibindo a cópia salva. Não foi possível atualizar agora.');
+                    return;
+                }
                 setStatus(e.message || 'Erro ao carregar listas para importações.');
                 todasListasCache = [];
                 renderFiltroLojasImportacoes([]);
@@ -3896,6 +3940,23 @@
                 renderEmbarques([]);
             }
         }
+
+        window.addEventListener('jk:machine-sync-updated', () => { void carregarListasImportacoes(); });
+        function negarAcessoCacheImportacoes(mensagem) {
+            geracaoListasImportacoes++;
+            todasListasCache = [];
+            renderFiltroLojasImportacoes([]);
+            renderListas([]);
+            renderEmbarques([]);
+            document.getElementById('embarquesWrap')?.replaceChildren();
+            const detalhe = document.getElementById('embarqueDetalheView');
+            if (detalhe) detalhe.style.display = 'none';
+            statusCacheImportacoes(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar as listas.');
+        }
+        window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheImportacoes);
+        const limparContextoImportacoes = () => negarAcessoCacheImportacoes('Cliente ou permissões alterados. Abra as listas novamente.');
+        window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoImportacoes(); });
+        ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoImportacoes));
 
 
         // ─── Embarques ─────────────────────────────────────────────────────────────

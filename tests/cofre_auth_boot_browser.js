@@ -10,7 +10,7 @@ const root = path.resolve(__dirname, '..');
 const origin = 'https://cofre-boot.test';
 const token = 'fixture-auth-boot-token';
 const cofreChunks = ['session.js', 'navigation.js', 'guards.js'];
-const normalChunks = ['session.js', 'navigation.js', 'shared-sync-boot.js', 'guards.js', 'permissions.js', 'global-ui.js'];
+const normalChunks = ['session.js', 'navigation.js', 'cache-persistente.js', 'shared-sync-boot.js', 'guards.js', 'permissions.js', 'global-ui.js'];
 const content = 'Informação fictícia carregada com a sessão do Cofre.';
 const server = { id: 'fixture-guild', name: 'Acervo fictício', channel_count: 1, message_count: 1, attachment_count: 0 };
 const channel = { id: 'fixture-channel', name: 'Guias', message_count: 1 };
@@ -149,6 +149,10 @@ async function normalFacade(browser, dynamic) {
     if (url.pathname === '/normal.html') return route.fulfill({ contentType: 'text/html', body:
       '<!doctype html><html><head>' + (dynamic ? '' : '<script src="/auth.js"></script>') + '</head><body>Fixture</body></html>' });
     if (url.pathname === '/auth.js') return route.fulfill({ contentType: 'application/javascript', body: source('auth.js') });
+    if (url.pathname === '/cache-persistente.js') {
+      chunks.push('cache-persistente.js');
+      return route.fulfill({ contentType: 'application/javascript', body: 'window.fixtureChunkCount=(window.fixtureChunkCount||0)+1;' });
+    }
     if (url.pathname.startsWith('/auth/')) {
       chunks.push(url.pathname.slice('/auth/'.length));
       return route.fulfill({ contentType: 'application/javascript', body: 'window.fixtureChunkCount=(window.fixtureChunkCount||0)+1;' });
@@ -158,7 +162,7 @@ async function normalFacade(browser, dynamic) {
   await page.goto(origin + '/normal.html');
   if (dynamic) { await page.addScriptTag({ url: origin + '/auth.js' }); await page.evaluate(() => window.__JK_AUTH_READY__); }
   assert.deepEqual(chunks, normalChunks, 'Outros módulos preservam todos os boots e a ordem original.');
-  assert.equal(await page.evaluate(() => window.fixtureChunkCount), 6);
+  assert.equal(await page.evaluate(() => window.fixtureChunkCount), 7);
   await context.close();
 }
 

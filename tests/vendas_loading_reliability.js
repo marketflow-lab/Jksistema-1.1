@@ -556,26 +556,94 @@ async function main() {
     });
     await check('cache from another tenant is rejected before reading business rows', async () => {
         const h = harness();
-        h.context.sessionStorage.getItem = () => JSON.stringify({ client_id: 'tenant-b', ts: h.clock.now, dados: [{ sku: 'secret' }] });
-        h.evaluate(period.slice(period.indexOf('async function restaurarCacheTelaVendasSeValido()'), period.indexOf('function preencherMeses()')));
+        h.window.JKVendasCache = { contexto: () => ({}), dadosVigentes: () => true,
+            ler: async () => ({ dados: { client_id: 'tenant-b', ts: h.clock.now, dados: [{ sku: 'secret' }] } }) };
+        h.evaluate(period.slice(period.indexOf('function chaveCacheTelaVendas('), period.indexOf('function preencherMeses()')));
         assert.equal(await h.evaluate('restaurarCacheTelaVendasSeValido()'), false); assert.equal(h.fixture.rows.length, 0);
     });
     await check('a scheduled cache write cannot relabel old data after a filter or session change', async () => {
         for (const changed of ['tenant', 'dates', 'session']) {
             const h = harness(), background = [], cached = [];
+            h.window.JKVendasCache = { contexto: () => ({}), vigente: () => true, dadosVigentes: () => true,
+                ler: async () => null, estado() {}, salvar: async (_key, value) => { cached.push(JSON.parse(JSON.stringify(value))); return true; } };
             await h.evaluate('carregarVendas()');
-            h.context.sessionStorage.setItem = (_key, value) => cached.push(JSON.parse(value));
-            h.evaluate(period.slice(period.indexOf('function salvarCacheTelaVendas('), period.indexOf('async function restaurarCacheTelaVendasSeValido()')));
-            h.evaluate('salvarCacheTelaVendas()'); assert.equal(cached.length, 1); assert.equal(cached[0].dados[0].sku, '001'); cached.length = 0;
+            h.evaluate(period.slice(period.indexOf('function chaveCacheTelaVendas('), period.indexOf('async function restaurarCacheTelaVendasSeValido(')));
+            await h.evaluate('salvarCacheTelaVendas()'); assert.equal(cached.length, 1); assert.equal(cached[0].dados[0].sku, '001'); cached.length = 0;
             h.context.deferCache = fn => background.push(fn);
             h.evaluate('agendarSegundoPlano = fn => deferCache(fn); agendarSalvarCacheTelaVendas()');
             await h.clock.tick(180); assert.equal(background.length, 1);
             if (changed === 'tenant') { h.fixture.tenant = 'tenant-b'; h.evaluate('clientId = obterClientId()'); }
             if (changed === 'dates') h.fixture.start = '2026-10-10';
             if (changed === 'session') h.window.dispatchEvent({ type: 'storage', key: 'access_token' });
-            background[0](); h.evaluate('salvarCacheTelaVendas()');
+            background[0](); await h.evaluate('salvarCacheTelaVendas()');
             assert.equal(cached.length, 0, changed + ' must not write old rows into the new scope');
         }
+    });
+    for (const failure of [false, true]) {
+        await check('persistent summary appears before refresh and preserves composition, failed=' + failure, async () => {
+            const h = harness(), pending = deferred(), saved = [], states = [];
+            const cached = { client_id: 'tenant-a', data_inicio: h.fixture.start, data_fim: h.fixture.end,
+                unidadeSelecionada: '__todos', dadosModoResumo: true, resumoTotaisVendas: { itens: 7 },
+                dados: [{ sku: 'cached', quantidade: 7, itens: 7, itensDiretos: 2, itensComposicao: 5 }], devolucaoItens: [] };
+            h.window.JKVendasCache = { contexto: () => ({}), vigente: () => true, dadosVigentes: () => true,
+                ler: async () => ({ dados: cached, salvoEm: 100 }), estado: (...args) => states.push(args),
+                salvar: async (key, value) => { saved.push({ key, value: JSON.parse(JSON.stringify(value)) }); return true; } };
+            h.evaluate(period.slice(period.indexOf('function chaveCacheTelaVendas('), period.indexOf('function preencherMeses()')));
+            h.fixture.fetch = () => pending.promise;
+            const request = h.evaluate('carregarVendas()'); await flush();
+            assert.equal(h.fixture.rows.at(-1)[0].sku, 'cached');
+            assert.equal(h.fixture.rows.at(-1)[0].itensComposicao, 5);
+            assert.equal(saved.length, 0, 'Reading a saved snapshot must not renew its timestamp');
+            pending.resolve(failure ? { ok: false, status: 503 } : response({ rows: [{ sku: 'fresh', quantidade: 9, itensComposicao: 6 }], totals: { itens: 9 } }));
+            await request;
+            assert.equal(h.fixture.rows.at(-1)[0].sku, failure ? 'cached' : 'fresh');
+            assert.equal(saved.length, failure ? 0 : 1);
+            if (!failure) assert.equal(saved[0].value.dados[0].itensComposicao, 6);
+            else assert.ok(states.some(([kind, state]) => kind === 'Lista' && state === 'erro'));
+        });
+    }
+    await check('unavailable persistent identity still permits the normal network read', async () => {
+        const h = harness();
+        h.window.JKCachePersistente = { contexto: () => ({}), vigente: () => false,
+            dadosVigentes: () => false, ler: () => { throw new Error('Unavailable cache must not be read'); } };
+        h.evaluate(source('cache-dados'));
+        h.evaluate(period.slice(period.indexOf('function chaveCacheTelaVendas('), period.indexOf('function preencherMeses()')));
+        await h.evaluate('carregarVendas()');
+        assert.equal(h.fixture.rows.at(-1)[0].sku, '001');
+        assert.equal(h.fixture.calls.length, 1);
+    });
+    await check('a forbidden primary summary clears the shown snapshot and invalidates Vendas', async () => {
+        const h = harness(), invalidated = [];
+        h.window.JKCachePersistente = { invalidar: tags => invalidated.push(tags) };
+        await h.evaluate('carregarVendas()');
+        h.fixture.fetch = async () => ({ ok: false, status: 403 });
+        await h.evaluate('carregarVendas()');
+        assert.equal(h.evaluate('dados.length'), 0);
+        assert.equal(h.snapshot().rows.length, 0);
+        assert.equal(JSON.stringify(invalidated), JSON.stringify([['vendas']]));
+        assert.match(h.node('status').textContent, /Acesso negado/);
+    });
+    await check('a failed yearly comparison preserves the complete saved chart without replacing its cache', async () => {
+        const h = harness(), saved = [], states = [];
+        h.evaluate('compararAnoPassado = true');
+        h.window.JKVendasCache = { contexto: () => ({}), dadosVigentes: () => true,
+            ler: async () => ({dados:{data:{labels:['saved'],valores_vendas:[20]},dataComparativo:{labels:['previous'],valores_vendas:[10]}},salvoEm:100}),
+            estado: (...args) => states.push(args), salvar: async (...args) => saved.push(args) };
+        h.fixture.fetch = async url => url.includes('2025-') ? {ok:false,status:503} : response({labels:['fresh'],valores_vendas:[30]});
+        await h.evaluate('carregarGrafico()');
+        assert.equal(h.fixture.graphs.length, 1);
+        assert.equal(h.fixture.graphs[0].labels[0], 'saved');
+        assert.equal(saved.length, 0);
+        assert.ok(states.some(([kind,state]) => kind === 'Gráfico' && state === 'erro'));
+    });
+    await check('a malformed saved graph cannot prevent a normal network graph', async () => {
+        const h = harness();
+        h.window.JKVendasCache = { contexto: () => ({}), dadosVigentes: () => true,
+            ler: async () => ({dados:{data:{labels:'invalid'}},salvoEm:100}), estado(){}, salvar:async()=>true };
+        await h.evaluate('carregarGrafico()');
+        assert.equal(h.fixture.calls.filter(call => call.url.includes('/grafico')).length, 1);
+        assert.equal(h.fixture.graphs.length, 1);
+        assert.equal(h.fixture.graphs[0].labels[0], '2026-10');
     });
     console.log(`vendas_loading_reliability: OK (${passed} behavioral scenarios)`);
 }

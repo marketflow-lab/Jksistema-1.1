@@ -5,8 +5,11 @@ if (data_inicio_param && data_fim_param) {
 }
 agendarSegundoPlano(() => iaRestaurarOuCriarConversa().catch(() => {}), 900);
 aplicarPreferenciaGraficoUI();
+const restauracaoInicialVendas = typeof restaurarCacheTelaVendasSeValido === 'function'
+    ? restaurarCacheTelaVendasSeValido({ restaurarFiltro: true }) : Promise.resolve(false);
 carregarLojas()
     .then(async () => {
+        await restauracaoInicialVendas;
         const periodoNormalizado = await normalizarPeriodoGraficoRestaurado();
         if (
             periodoNormalizado === false
@@ -22,11 +25,6 @@ carregarLojas()
             statusEl.className = 'status-bar loading';
             statusEl.innerHTML = `${spinnerHtml}Retornando da visão SKU...`;
             void verificarSyncEmAndamentoNaEntrada();
-            const restaurouCache = await restaurarCacheTelaVendasSeValido();
-            if (restaurouCache) {
-                agendarSegundoPlano(() => carregarGrafico(), 100);
-                return null;
-            }
         } else {
             void verificarSyncEmAndamentoNaEntrada();
         }

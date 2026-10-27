@@ -5,11 +5,12 @@
 (function () {
   'use strict';
 
-  const VERSION = '20261016-medias-photo-cache-v1';
+  const VERSION = '20261027-cache-persistente-v1';
   const COFRE_CHUNKS = ['session.js', 'navigation.js', 'guards.js'];
   const CHUNKS = document.documentElement?.getAttribute('data-jk-module') === 'cofre' ? COFRE_CHUNKS : [
     "session.js",
     "navigation.js",
+    "cache-persistente.js",
     "shared-sync-boot.js",
     "guards.js",
     "permissions.js",
@@ -20,7 +21,7 @@
   window.__JK_AUTH_LOADER_LOADED__ = true;
 
   function chunkUrl(fileName) {
-    return '/auth/' + fileName + '?v=' + VERSION;
+    return (fileName === 'cache-persistente.js' ? '/' : '/auth/') + fileName + '?v=' + VERSION;
   }
 
   function scriptTag(fileName) {

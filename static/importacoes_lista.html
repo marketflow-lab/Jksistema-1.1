@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Detalhe da Lista - Importações</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <style>
         body {
@@ -703,6 +704,7 @@
         </div>
 
         <div id="erro" class="erro"></div>
+        <div id="cacheListaStatus" class="meta" role="status" aria-live="polite"></div>
 
         <div class="card">
             <div id="meta" class="meta"></div>
@@ -939,23 +941,62 @@
         let cotacaoDolarTopo = 0;
         let ultimaListaCarregada = null;
         let geracaoCarregamentoLista = 0;
+        let contextoPersistenteLista = null;
         let requisicaoFaturamento = 0;
         let requisicaoCustoPosto = 0;
         const AUXILIAR_TIMEOUT_MS = 5000;
         const controladoresAuxiliares = new Set();
 
         function contextoCarregamentoAtual(listaId) {
-            return { geracao: geracaoCarregamentoLista, listaId: String(listaId || '') };
+            return { geracao: geracaoCarregamentoLista, listaId: String(listaId || ''), persistencia: contextoPersistenteLista };
         }
 
         function carregamentoVigente(contexto) {
-            return contexto.geracao === geracaoCarregamentoLista && ultimaListaCarregada
+            return contexto.geracao === geracaoCarregamentoLista && (!contexto.persistencia || window.JKCachePersistente?.vigente(contexto.persistencia)) && ultimaListaCarregada
                 && String(ultimaListaCarregada.id || '') === contexto.listaId;
         }
 
-        async function consultarComplementoJson(url, contexto) {
+        function dadosListaVigentes(contexto) {
+            return carregamentoVigente(contexto) && (!contexto.persistencia || !window.JKCachePersistente?.dadosVigentes
+                || window.JKCachePersistente.dadosVigentes(contexto.persistencia, ['importacoes', 'vendas']));
+        }
+
+        function confirmarMutacaoLista(contexto, resposta) {
+            if (!contexto.persistencia) return true;
+            const novo = window.JKCachePersistente?.confirmarMutacao?.(contexto.persistencia, resposta);
+            if (!novo) { contexto.podeSalvar = false; return false; }
+            contexto.persistencia = novo;
+            contextoPersistenteLista = novo;
+            return true;
+        }
+
+        function statusCacheLista(texto) {
+            const el = document.getElementById('cacheListaStatus');
+            if (el) el.textContent = texto;
+        }
+
+        async function salvarSnapshotLista(contexto) {
+            if (!dadosListaVigentes(contexto) || contexto.podeSalvar === false) return;
+            const persistencia = window.JKCachePersistente;
+            if (!persistencia || !contexto.persistencia) return;
+            const dados = { lista: ultimaListaCarregada, complementosLista: {
+                custo: assinaturaAnaliseCustoPosto === assinaturaListaAtual ? ultimaAnaliseCustoPosto : null,
+                custoAssinatura: assinaturaAnaliseCustoPosto, faturamento: faturamentoVendas12m,
+                faturamentoLoja: faturamentoVendasLoja, mapaM3: Array.from(mapaM3IndividualSku.entries()),
+                mapaM3Carregado: mapaM3IndividualCarregado, mapaM3Loja: mapaM3StoreId,
+            } };
+            await persistencia.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId), dados,
+                { contexto: contexto.persistencia, tags: ['importacoes', 'vendas'] });
+        }
+
+        async function consultarComplementoJson(url, contexto, aoRestaurar, recurso = url) {
+            const persistencia = window.JKCachePersistente;
+            const chave = 'importacoes:GET:' + recurso;
+            const copia = contexto.persistencia ? await persistencia.ler(chave, { contexto: contexto.persistencia }) : null;
+            if (!dadosListaVigentes(contexto)) return null;
+            if (copia && aoRestaurar) aoRestaurar(copia.dados);
             for (let tentativa = 0; tentativa < 2; tentativa++) {
-                if (!carregamentoVigente(contexto)) return null;
+                if (!dadosListaVigentes(contexto)) return null;
                 const controller = new AbortController();
                 controladoresAuxiliares.add(controller);
                 const timeout = setTimeout(() => controller.abort(), AUXILIAR_TIMEOUT_MS);
@@ -965,10 +1006,15 @@
                     });
                     if (!resposta.ok) throw new Error('Complemento indisponível.');
                     const dados = await resposta.json();
-                    return carregamentoVigente(contexto) ? dados : null;
+                    if (!dadosListaVigentes(contexto)) return null;
+                    if (contexto.persistencia) await persistencia.salvar(chave, dados, { contexto: contexto.persistencia, tags: ['importacoes', 'vendas'] });
+                    return dadosListaVigentes(contexto) ? dados : null;
                 } catch (erro) {
-                    if (!carregamentoVigente(contexto)) return null;
-                    if (tentativa === 1) throw erro;
+                    if (!dadosListaVigentes(contexto)) return null;
+                    if (tentativa === 1) {
+                        if (copia && dadosListaVigentes(contexto)) return copia.dados;
+                        throw erro;
+                    }
                 } finally {
                     clearTimeout(timeout);
                     controladoresAuxiliares.delete(controller);
@@ -976,9 +1022,25 @@
             }
             return null;
         }
+
+        async function assinaturaCustosLista(lista) {
+            const canonico = valor => {
+                if (Array.isArray(valor)) return valor.map(canonico);
+                if (valor && typeof valor === 'object') return Object.fromEntries(Object.keys(valor).sort()
+                    .filter(chave => !['analise_concorrentes', 'updated_at'].includes(chave))
+                    .map(chave => [chave, canonico(valor[chave])]));
+                return valor;
+            };
+            const fonte = JSON.stringify(canonico(lista));
+            if (!window.crypto?.subtle) return fonte;
+            const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(fonte));
+            return Array.from(new Uint8Array(digest), valor => valor.toString(16).padStart(2, '0')).join('');
+        }
         let ultimosItensCarregados = [];
         let fornecedorResumoSalvando = false;
         let ultimaAnaliseCustoPosto = null;
+        let assinaturaListaAtual = '';
+        let assinaturaAnaliseCustoPosto = '';
         let cicloAnaliseMargensAutomaticas = 0;
         const estadosAnaliseMargensAutomaticas = new Map();
         let skuArrastadoIndex = -1;
@@ -1070,20 +1132,18 @@
             try {
                 const params = new URLSearchParams({ periodo: '1a', intervalo: 'mes' });
                 params.set('loja', lojaFiltro);
-                const data = await consultarComplementoJson('/api/vendas/grafico?' + params.toString(), contexto);
-                if (!carregamentoVigente(contexto) || ordemRequisicao !== requisicaoFaturamento) return;
-                const vendas = Array.isArray(data && data.valores_vendas) ? data.valores_vendas : [];
-                const devolucoes = Array.isArray(data && data.valores_devolucoes) ? data.valores_devolucoes : [];
-
-                const totalVendas = vendas.reduce((acc, v) => acc + Number(v || 0), 0);
-                const totalDevolucoes = devolucoes.reduce((acc, v) => acc + Number(v || 0), 0);
-                if (!carregamentoVigente(contexto) || obterChaveFaturamentoLoja(ultimaListaCarregada) !== chaveLoja) return;
-                faturamentoVendas12m = totalVendas - totalDevolucoes;
-                faturamentoVendasLoja = chaveLoja;
-
-                if (ultimaListaCarregada) {
+                const aplicar = data => {
+                    if (!data || !dadosListaVigentes(contexto) || ordemRequisicao !== requisicaoFaturamento
+                        || obterChaveFaturamentoLoja(ultimaListaCarregada) !== chaveLoja) return;
+                    const vendas = Array.isArray(data?.valores_vendas) ? data.valores_vendas : [];
+                    const devolucoes = Array.isArray(data?.valores_devolucoes) ? data.valores_devolucoes : [];
+                    faturamentoVendas12m = vendas.reduce((acc, v) => acc + Number(v || 0), 0)
+                        - devolucoes.reduce((acc, v) => acc + Number(v || 0), 0);
+                    faturamentoVendasLoja = chaveLoja;
                     renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
-                }
+                };
+                const data = await consultarComplementoJson('/api/vendas/grafico?' + params.toString(), contexto, aplicar);
+                aplicar(data);
             } catch (_e) {
                 // Mantém o último valor conhecido em caso de falha transitória.
             } finally {
@@ -1332,7 +1392,7 @@
                 : {};
         }
 
-        async function salvarMargensAutomaticasSku(listaId, sku, payload) {
+        async function salvarMargensAutomaticasSku(listaId, sku, payload, contexto) {
             const resp = await fetch(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
                     + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
@@ -1346,7 +1406,9 @@
                 const erro = await resp.json().catch(() => ({}));
                 throw new Error(erro.detail || 'Não foi possível calcular as margens deste SKU.');
             }
-            return resp.json();
+            const dados = await resp.json();
+            confirmarMutacaoLista(contexto, resp);
+            return dados;
         }
 
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
@@ -1379,13 +1441,15 @@
                     const resultado = await salvarMargensAutomaticasSku(
                         listaId,
                         sku,
-                        montarPayloadMargensAutomaticas(fonte)
+                        montarPayloadMargensAutomaticas(fonte),
+                        contexto
                     );
                     if (!carregamentoVigente(contexto) || cicloAtual !== cicloAnaliseMargensAutomaticas) return;
                     item.analise_concorrentes = resultado && resultado.analise_concorrentes
                         ? resultado.analise_concorrentes
                         : { margens: {} };
                     definirEstadoMargensAutomaticas(item, '');
+                    if (contexto.podeSalvar === false) return contexto;
                 } catch (erro) {
                     if (!carregamentoVigente(contexto) || cicloAtual !== cicloAnaliseMargensAutomaticas) return;
                     definirEstadoMargensAutomaticas(
@@ -1395,6 +1459,7 @@
                     );
                 }
             }
+            return contexto;
         }
 
         const mapaM3IndividualSku = new Map();
@@ -1463,7 +1528,8 @@
         async function carregarMapaM3Individual(contexto) {
             const ordem = ++requisicaoM3;
             const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
-            const faltantes = ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item)));
+            const faltantes = ultimosItensCarregados.some(item => !statusCubagemItem(item)
+                && valorNumerico(item.Quantidade) > 0 && !(valorNumerico(obterCampoNormalizado(item, ['M3 individual'], 0)) > 0));
             if (!storeId || !faltantes || (mapaM3IndividualCarregado && mapaM3StoreId === storeId)) {
                 mapaM3IndividualCarregando = false;
                 atualizarM3Visivel(faltantes);
@@ -1471,17 +1537,20 @@
             }
             mapaM3IndividualCarregando = true;
             try {
-                const lista = await consultarComplementoJson('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto);
-                if (!carregamentoVigente(contexto) || ordem !== requisicaoM3) return;
-                if (!Array.isArray(lista)) throw new Error('Cadastro de metragem indisponível.');
-                (Array.isArray(lista) ? lista : []).forEach((p) => {
-                    if (!p || String(p.store_id || '') !== storeId) return;
-                    const sku = p && (p.cubagem_sku || p.sku);
-                    const m3 = p && obterCampoNormalizado(p, ['m3 individual'], 0);
-                    registrarM3IndividualPorSku(sku, m3);
-                });
-                mapaM3IndividualCarregado = true;
-                mapaM3StoreId = storeId;
+                const aplicar = lista => {
+                    if (!dadosListaVigentes(contexto) || ordem !== requisicaoM3) return;
+                    if (!Array.isArray(lista)) throw new Error('Cadastro de metragem indisponível.');
+                    mapaM3IndividualSku.clear();
+                    lista.forEach(p => {
+                        if (!p || String(p.store_id || '') !== storeId) return;
+                        registrarM3IndividualPorSku(p.cubagem_sku || p.sku, obterCampoNormalizado(p, ['m3 individual'], 0));
+                    });
+                    mapaM3IndividualCarregado = true;
+                    mapaM3StoreId = storeId;
+                    atualizarM3Visivel();
+                };
+                const lista = await consultarComplementoJson('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto, aplicar);
+                aplicar(lista);
             } catch (_e) {
                 // A tabela permanece disponível e a metragem ausente continua indisponível.
             } finally {
@@ -1883,6 +1952,7 @@
         }
 
         async function atualizarLojaListaResumo(listaId, lojaLista) {
+            const contextoAnterior = contextoCarregamentoAtual(listaId);
             const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
                 method: 'PUT',
                 headers: {
@@ -1897,10 +1967,13 @@
                 throw new Error(err.detail || 'Nao foi possivel atualizar a loja da lista.');
             }
 
-            return resp.json().catch(() => ({}));
+            const dados = await resp.json().catch(() => ({}));
+            if (carregamentoVigente(contextoAnterior)) confirmarMutacaoLista(contextoAnterior, resp);
+            return dados;
         }
 
         async function atualizarCampoLogisticoLista(listaId, campo, valor) {
+            const contextoAnterior = contextoCarregamentoAtual(listaId);
             const numericos = new Set(['exchange_rate', 'lead_time_days']);
             const bodyValue = numericos.has(campo) ? valorNumerico(valor) : String(valor || '').trim();
             try {
@@ -1913,10 +1986,15 @@
                     const err = await resp.json().catch(() => ({}));
                     throw new Error(err.detail || 'Nao foi possivel salvar o dado logistico.');
                 }
-                if (ultimaListaCarregada) ultimaListaCarregada[campo] = bodyValue;
+                const dados = await resp.json().catch(() => ({}));
+                if (!carregamentoVigente(contextoAnterior)) return;
+                if (dados.lista) Object.assign(ultimaListaCarregada, dados.lista);
+                else ultimaListaCarregada[campo] = bodyValue;
+                confirmarMutacaoLista(contextoAnterior, resp);
                 if (campo === 'numero_invoice') salvarResumoEditavel(listaId, campo, '');
                 ultimaAnaliseCustoPosto = null;
-                void carregarCustoPostoBackend(listaId);
+                await carregarCustoPostoBackend(listaId);
+                await salvarSnapshotLista(contextoCarregamentoAtual(listaId));
             } catch (e) {
                 setErro(e.message || 'Falha ao salvar dado logistico.');
             }
@@ -1953,6 +2031,7 @@
                     fornecedorResumoSalvando = true;
                     status.textContent = 'Salvando fornecedor...';
                     try {
+                        const contextoAnterior = contextoCarregamentoAtual(listaId);
                         const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
                             method: 'PUT',
                             headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
@@ -1963,6 +2042,8 @@
                         if (!listaAtiva()) return;
                         fornecedorAnterior = String(fornecedor.id);
                         Object.assign(ultimaListaCarregada, dados.lista || { fornecedor_id: fornecedorAnterior, supplier: fornecedor.nome_empresa });
+                        confirmarMutacaoLista(contextoAnterior, resposta);
+                        void salvarSnapshotLista(contextoAnterior);
                         if (vigente()) {
                             select.value = String(ultimaListaCarregada.fornecedor_id || fornecedorAnterior);
                             status.textContent = 'Fornecedor salvo.';
@@ -2038,7 +2119,7 @@
                     card.dataset.editando = '0';
                     setErro('');
                     renderMeta(ultimaListaCarregada);
-                    buscarFaturamentoLojaAtual();
+                    void carregarFaturamentoVendas12m();
                     renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
                 } catch (e) {
                     salvando = false;
@@ -2559,7 +2640,7 @@
             const ordem = ++requisicaoPreferencias;
             try {
                 const data = await consultarComplementoJson('/api/medias-compras/listas-pedidos/preferencias-colunas', contexto);
-                if (!carregamentoVigente(contexto) || ordem !== requisicaoPreferencias) return;
+                if (!data || !dadosListaVigentes(contexto) || ordem !== requisicaoPreferencias) return;
                 preferenciasColunasCarregadas = true;
                 if (revisao !== revisaoColunasLocal || colunaArrastadaKey || colunaRedimensionando) return;
                 preferenciasColunasPendentes = { contexto, revisao, data };
@@ -3060,6 +3141,7 @@
 
         async function salvarOrdemItensLista(itensOrdenados, itensAnteriores) {
             const listaId = getListaIdDaUrl();
+            const contextoAnterior = contextoCarregamentoAtual(listaId);
             if (!listaId) {
                 setErro('Lista nao informada.');
                 return false;
@@ -3086,6 +3168,8 @@
                 const itensAtualizados = Array.isArray(listaAtualizada.itens) ? listaAtualizada.itens : itensOrdenados;
                 ultimaListaCarregada = { ...(ultimaListaCarregada || {}), ...listaAtualizada, itens: itensAtualizados };
                 ultimosItensCarregados = itensAtualizados;
+                confirmarMutacaoLista(contextoAnterior, resp);
+                void salvarSnapshotLista(contextoAnterior);
                 renderMeta(ultimaListaCarregada);
                 renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
                 renderItens(ultimosItensCarregados, ultimaListaCarregada);
@@ -3404,47 +3488,129 @@
 
         async function carregarDetalheLista() {
             const geracao = ++geracaoCarregamentoLista;
+            const persistencia = window.JKCachePersistente;
+            const candidato = persistencia?.contexto();
+            const contextoPersistente = persistencia?.vigente(candidato) ? candidato : null;
+            contextoPersistenteLista = contextoPersistente;
             controladoresAuxiliares.forEach(controller => controller.abort());
-            try {
-                setErro('');
-                const listaId = getListaIdDaUrl();
-                if (!listaId) {
-                    throw new Error('Lista não informada.');
+            const listaId = getListaIdDaUrl();
+            const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId);
+            const chave = 'importacoes:GET:' + url;
+            const vigente = () => geracao === geracaoCarregamentoLista && listaId === getListaIdDaUrl()
+                && (!contextoPersistente || persistencia.vigente(contextoPersistente));
+            const dadosVigentes = () => vigente() && (!contextoPersistente || !persistencia.dadosVigentes
+                || persistencia.dadosVigentes(contextoPersistente, ['importacoes']));
+            let copiaVisivel = false;
+            let respostaCompleta = false;
+            const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
+                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input')
+                    || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
+                    await new Promise(resolve => setTimeout(resolve, 120));
                 }
-
-                const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Falha ao carregar detalhes da lista.');
-                }
-
-                const data = await resp.json();
-                if (geracao !== geracaoCarregamentoLista || listaId !== getListaIdDaUrl()) return;
-                const lista = data && data.lista ? data.lista : {};
-                const itens = lista.itens || [];
+                if (!dadosVigentes() || !data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)
+                    || data.lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
+                const lista = data.lista;
+                const itens = lista.itens;
+                const assinatura = await assinaturaCustosLista(lista);
+                if (!dadosVigentes()) return false;
+                const mesmaLista = ultimaListaCarregada && String(ultimaListaCarregada.id) === String(lista.id)
+                    && String(ultimaListaCarregada.store_id || '') === String(lista.store_id || '');
                 ultimaListaCarregada = lista;
-                ultimaAnaliseCustoPosto = null;
-                ultimosItensCarregados = Array.isArray(itens) ? itens : [];
+                if (!mesmaLista || assinatura !== assinaturaListaAtual) {
+                    ultimaAnaliseCustoPosto = null;
+                    assinaturaAnaliseCustoPosto = '';
+                    mapaM3IndividualSku.clear();
+                    mapaM3IndividualCarregado = false;
+                }
+                assinaturaListaAtual = assinatura;
+                ultimosItensCarregados = itens;
                 const storeId = String(lista.store_id || '').trim();
-                mapaM3IndividualSku.clear();
-                mapaM3IndividualCarregado = false;
+                const complemento = data.complementosLista;
+                if (complemento && (!complemento.mapaM3Loja || complemento.mapaM3Loja === storeId)) {
+                    ultimaAnaliseCustoPosto = complemento.custoAssinatura === assinatura ? (complemento.custo || null) : null;
+                    assinaturaAnaliseCustoPosto = ultimaAnaliseCustoPosto ? assinatura : '';
+                    faturamentoVendas12m = complemento.faturamento ?? null;
+                    faturamentoVendasLoja = complemento.faturamentoLoja || '';
+                    mapaM3IndividualSku.clear();
+                    if (Array.isArray(complemento.mapaM3)) complemento.mapaM3.forEach(entrada => {
+                        if (Array.isArray(entrada) && entrada.length === 2) registrarM3IndividualPorSku(entrada[0], entrada[1]);
+                    });
+                    mapaM3IndividualCarregado = !!complemento.mapaM3Carregado;
+                }
+                if (atualizarMargens) mapaM3IndividualCarregado = false;
                 mapaM3StoreId = storeId;
-                mapaM3IndividualCarregando = !!storeId && ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
+                mapaM3IndividualCarregando = !!storeId && itens.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
                 renderCabecalho();
                 renderMeta(lista);
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
                 const contexto = contextoCarregamentoAtual(listaId);
-                void carregarPreferenciasColunasServidor(contexto);
-                void carregarMapaM3Individual(contexto);
-                void carregarFaturamentoVendas12m();
-                void carregarCustoPostoBackend(listaId);
-                void analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);
+                if (atualizarMargens) {
+                    const complementos = [carregarPreferenciasColunasServidor(contexto), carregarMapaM3Individual(contexto),
+                        carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
+                    void Promise.allSettled(complementos).then(async () => {
+                        if (!dadosListaVigentes(contexto)) return;
+                        const contextoAnalise = await analisarMargensConcorrentesAutomaticamente(listaId, itens);
+                        await salvarSnapshotLista(contextoAnalise || contexto);
+                        if (carregamentoVigente(contextoAnalise || contexto)) statusCacheLista(ultimaAnaliseCustoPosto
+                            ? 'Dados atualizados.' : 'Itens atualizados. Custo complementar pendente.');
+                    });
+                }
+                return true;
+            };
+            try {
+                setErro('');
+                if (!listaId) throw new Error('Lista não informada.');
+                try {
+                    const copia = contextoPersistente ? await persistencia.ler(chave, { contexto: contextoPersistente }) : null;
+                    if (!vigente()) return;
+                    if (copia && await aplicar(copia.dados)) {
+                        copiaVisivel = true;
+                        statusCacheLista('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
+                    }
+                } catch (_cacheError) { /* A consulta principal também atende uma cópia inválida. */ }
+                if (!copiaVisivel && contextoPersistente) {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 5000);
+                    void fetch(url + '?somente_salvos=true', { headers: { ...obterAuthHeaders() }, signal: controller.signal })
+                        .then(resp => resp.ok ? resp.json() : null)
+                        .then(async data => {
+                            if (!respostaCompleta && vigente() && await aplicar(data)) {
+                                copiaVisivel = true;
+                                statusCacheLista('Dados salvos da lista · Atualizando informações complementares...');
+                            }
+                        }).catch(() => {}).finally(() => clearTimeout(timeout));
+                }
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 15000);
+                let resp;
+                try {
+                    resp = await fetch(url, { method: 'GET', headers: { ...obterAuthHeaders() }, signal: controller.signal });
+                    if (resp.status === 403) {
+                        negarAcessoCacheLista();
+                        await persistencia?.invalidar(['importacoes']);
+                        return;
+                    }
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Falha ao carregar detalhes da lista.');
+                    }
+                    const data = await resp.json();
+                    if (!vigente()) return;
+                    if (!data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)) throw new Error('Dados da lista inválidos.');
+                    respostaCompleta = true;
+                    if (contextoPersistente) await persistencia.salvar(chave, data, { contexto: contextoPersistente, tags: ['importacoes'] });
+                    if (await aplicar(data, copiaVisivel, true)) statusCacheLista('Itens atualizados · Atualizando informações complementares...');
+                } finally {
+                    clearTimeout(timeout);
+                }
             } catch (e) {
-                if (geracao !== geracaoCarregamentoLista) return;
+                if (!vigente()) return;
+                respostaCompleta = true;
+                if (copiaVisivel) {
+                    statusCacheLista('Exibindo os dados salvos. Não foi possível atualizar agora.');
+                    return;
+                }
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);
                 renderItens([], {});
@@ -3455,16 +3621,44 @@
             const contexto = contextoCarregamentoAtual(listaId);
             const ordem = ++requisicaoCustoPosto;
             try {
-                const data = await consultarComplementoJson('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/landed-cost', contexto);
-                if (!carregamentoVigente(contexto) || ordem !== requisicaoCustoPosto) return;
-                ultimaAnaliseCustoPosto = data && data.analysis ? data.analysis : null;
-                if (ultimaListaCarregada && String(ultimaListaCarregada.id || '') === String(listaId || '')) {
+                const assinatura = await assinaturaCustosLista(ultimaListaCarregada);
+                if (!dadosListaVigentes(contexto) || ordem !== requisicaoCustoPosto) return;
+                assinaturaListaAtual = assinatura;
+                if (assinaturaAnaliseCustoPosto !== assinatura) ultimaAnaliseCustoPosto = null;
+                const aplicar = data => {
+                    if (!data || !dadosListaVigentes(contexto) || ordem !== requisicaoCustoPosto || assinaturaListaAtual !== assinatura) return;
+                    ultimaAnaliseCustoPosto = data?.analysis || null;
+                    assinaturaAnaliseCustoPosto = ultimaAnaliseCustoPosto ? assinatura : '';
+                    renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                };
+                const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/landed-cost';
+                const data = await consultarComplementoJson(url, contexto, aplicar, url + ':lista:' + assinatura);
+                aplicar(data);
+            } catch (_e) {
+                if (dadosListaVigentes(contexto) && ordem === requisicaoCustoPosto) {
+                    ultimaAnaliseCustoPosto = null;
+                    assinaturaAnaliseCustoPosto = '';
                     renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
                 }
-            } catch (_e) {
-                if (carregamentoVigente(contexto) && ordem === requisicaoCustoPosto) ultimaAnaliseCustoPosto = null;
             }
         }
+
+        window.addEventListener('jk:machine-sync-updated', () => { void carregarDetalheLista(); });
+        function negarAcessoCacheLista(mensagem) {
+            geracaoCarregamentoLista++;
+            ultimaListaCarregada = null;
+            ultimosItensCarregados = [];
+            document.getElementById('meta').textContent = '';
+            document.getElementById('resumoTopo').replaceChildren();
+            document.getElementById('tbodyLista').replaceChildren();
+            document.getElementById('totalGeral').textContent = '';
+            document.getElementById('titulo').textContent = 'Lista de Importação';
+            statusCacheLista(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar a lista.');
+        }
+        window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheLista);
+        const limparContextoLista = () => negarAcessoCacheLista('Cliente ou permissões alterados. Abra a lista novamente.');
+        window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoLista(); });
+        ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoLista));
 
         renderCabecalho();
         carregarFxTopo();

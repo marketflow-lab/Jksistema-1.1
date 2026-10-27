@@ -79,6 +79,8 @@ async function installRoutes(page, state) {
         return route.fulfill({ status: 200, contentType: 'application/javascript',
           body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic-interface"});' });
       }
+      if (pathname === '/cache-persistente.js') return route.fulfill({ status: 200,
+        contentType: 'application/javascript', body: fs.readFileSync(path.join(root, 'static', 'cache-persistente.js')) });
       if (/^\/medias_compras\/[a-z0-9_-]+\.(?:js|css)$/i.test(pathname)) {
         return route.fulfill({ status: 200,
           contentType: pathname.endsWith('.css') ? 'text/css' : 'application/javascript',

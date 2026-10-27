@@ -141,7 +141,7 @@
             chartOptions: readChartOptions(),
             sync: clientMatches ? copy(window.__jkVendasSyncMonitor?.getLastPayload?.() || null) : null,
             status: {
-                text: clientMatches ? nativeStatus?.textContent || '' : '',
+                text: clientMatches ? [nativeStatus?.textContent, document.getElementById('cacheVendasStatus')?.textContent].filter(Boolean).join(' ') : '',
                 className: nativeStatus?.className || '',
                 automationText: clientMatches ? persistentStatus?.textContent || '' : '',
                 syncDisabled: typeof btnSync !== 'undefined' && Boolean(btnSync?.disabled),
@@ -360,5 +360,6 @@
     window.addEventListener('jk:vendas-sync-state', schedulePublish);
     window.addEventListener('jk:vendas-sync-finished', schedulePublish);
     window.addEventListener('jk:vendas-read-state', schedulePublish);
+    window.addEventListener('jk:vendas-cache-state', schedulePublish);
     window.addEventListener('storage', event => { if (event.key === 'user_data' || event.key === 'access_token') schedulePublish(); });
 }());

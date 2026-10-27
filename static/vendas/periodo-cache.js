@@ -547,16 +547,18 @@ function atualizarPeriodoTexto() {
     }
 }
 
-function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('resumo')) {
+function chaveCacheTelaVendas() {
+    return JSON.stringify(['/api/vendas/resumo', getDataIniISO(), getDataFimISO(),
+        lojaSelecionada || '__todas', unidadeNegocioSelect.value || '__todos']);
+}
+
+async function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('resumo'), contexto = contextoDadosVendas) {
     try {
         if (clientId !== obterClientId() || expectedScope !== window.JKVendasReadState?.scope('resumo')) return;
+        if (dadosVendasDeCache || !window.JKVendasCache?.dadosVigentes(contexto)) return;
         if (window.JKVendasReadState && !window.JKVendasReadState.canCache()) return;
         const dadosParaCache = Array.isArray(dados) ? dados : [];
         const devolucoesParaCache = Array.isArray(devolucaoItens) ? devolucaoItens : [];
-        if ((dadosParaCache.length + devolucoesParaCache.length) > VENDAS_VIEW_CACHE_MAX_ROWS) {
-            sessionStorage.removeItem(VENDAS_VIEW_CACHE_KEY);
-            return;
-        }
 
         const payload = {
             ts: Date.now(),
@@ -570,6 +572,7 @@ function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('
             resumoTotaisVendas,
             vendasResumoMeta,
             dados: dadosParaCache.map(r => ({
+                ...r,
                 data: r.data || '',
                 data_inicio: r.data_inicio || '',
                 data_fim: r.data_fim || '',
@@ -587,6 +590,7 @@ function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('
                 valor: Number(r.valor || 0)
             })),
             devolucaoItens: devolucoesParaCache.map(d => ({
+                ...d,
                 sku: d.sku || '',
                 descricao: d.descricao || '',
                 quantidade: Number(d.quantidade || 0),
@@ -597,7 +601,7 @@ function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('
             })),
             mapeamentoUnidades
         };
-        sessionStorage.setItem(VENDAS_VIEW_CACHE_KEY, JSON.stringify(payload));
+        return await window.JKVendasCache.salvar(chaveCacheTelaVendas(), payload, contexto);
     } catch (_e) {
         // Cache de tela é best-effort.
     }
@@ -605,25 +609,27 @@ function salvarCacheTelaVendas(expectedScope = window.JKVendasReadState?.scope('
 
 function agendarSalvarCacheTelaVendas() {
     const expectedScope = window.JKVendasReadState?.scope('resumo');
+    const contexto = contextoDadosVendas;
     if (cacheSaveTimer) {
         clearTimeout(cacheSaveTimer);
     }
     cacheSaveTimer = setTimeout(() => {
         cacheSaveTimer = null;
-        agendarSegundoPlano(() => salvarCacheTelaVendas(expectedScope), 60);
+        agendarSegundoPlano(() => salvarCacheTelaVendas(expectedScope, contexto), 60);
     }, 180);
 }
 
-async function restaurarCacheTelaVendasSeValido() {
+async function restaurarCacheTelaVendasSeValido(opcoes = {}) {
+    const contexto = opcoes.contexto || window.JKVendasCache?.contexto();
+    const scope = window.JKVendasReadState?.scope('resumo');
+    const vigente = () => (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contexto))
+        && scope === window.JKVendasReadState?.scope('resumo')
+        && (!opcoes.leituraAtual || opcoes.leituraAtual());
     try {
-        const raw = sessionStorage.getItem(VENDAS_VIEW_CACHE_KEY);
-        if (!raw) return false;
-        const payload = JSON.parse(raw);
+        const salvo = await window.JKVendasCache?.ler(chaveCacheTelaVendas(), contexto);
+        if (!salvo || !vigente()) return false;
+        const payload = salvo.dados;
         if (payload?.client_id !== obterClientId()) return false;
-        if (!payload || !payload.ts || (Date.now() - Number(payload.ts)) > VENDAS_VIEW_CACHE_TTL_MS) {
-            sessionStorage.removeItem(VENDAS_VIEW_CACHE_KEY);
-            return false;
-        }
 
         const iniAtual = getDataIniISO() || '';
         const fimAtual = getDataFimISO() || '';
@@ -633,6 +639,9 @@ async function restaurarCacheTelaVendasSeValido() {
 
         if (!Array.isArray(payload.dados)) return false;
 
+        clientId = obterClientId();
+        dadosVendasDeCache = true;
+        contextoDadosVendas = contexto;
         dadosModoResumo = payload.dadosModoResumo === true;
         resumoTotaisVendas = payload.resumoTotaisVendas || null;
         vendasResumoMeta = payload.vendasResumoMeta || null;
@@ -640,11 +649,8 @@ async function restaurarCacheTelaVendasSeValido() {
         devolucaoItens = Array.isArray(payload.devolucaoItens) ? payload.devolucaoItens : [];
         mapeamentoUnidades = payload.mapeamentoUnidades || {};
 
-        if (payload.filtroTexto != null) {
+        if (opcoes.restaurarFiltro && payload.filtroTexto != null) {
             filtroTexto.value = String(payload.filtroTexto);
-        }
-        if (payload.lojaSelecionada) {
-            lojaSelecionada = payload.lojaSelecionada;
         }
 
         atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
@@ -654,6 +660,8 @@ async function restaurarCacheTelaVendasSeValido() {
         window.JKVendasReadState?.captureData();
         renderBotoesLojas(lojasDisponiveis || []);
         await filtrar();
+        if (!vigente()) return false;
+        window.JKVendasCache?.estado('Lista', 'atualizando', salvo.salvoEm);
         if (!syncEmAndamento) {
             statusEl.className = 'status-bar';
             statusEl.textContent = '';

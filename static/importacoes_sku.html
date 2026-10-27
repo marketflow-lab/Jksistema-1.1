@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
+    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
     <style>
         :root {
             --bg: #0b0f1a;
@@ -819,6 +820,7 @@
 
         <div id="meta" class="meta-strip"></div>
         <div id="erro" class="erro"></div>
+        <div id="cacheSkuStatus" class="meta-strip" role="status" aria-live="polite"></div>
 
         <div class="layout">
             <section class="card">
@@ -955,6 +957,7 @@
         let ultimaAnaliseConcorrentes = null;
         let ultimosAnunciosLojaConcorrentes = {};
         let cacheImpostosProdutos = null;
+        let ultimosPrecosOfertas = {};
         let geracaoDetalheSku = 0;
         let contextoDetalheSku = null;
         let custoComplementosPendente = true;
@@ -965,7 +968,13 @@
         function detalheSkuVigente(contexto) {
             const params = getParams();
             return contexto && contexto.geracao === geracaoDetalheSku
+                && (!contexto.persistencia || window.JKCachePersistente?.vigente(contexto.persistencia))
                 && contexto.listaId === params.listaId && contexto.sku === normSku(params.sku);
+        }
+
+        function dadosSkuVigentes(contexto) {
+            return detalheSkuVigente(contexto) && (!contexto.persistencia || !window.JKCachePersistente?.dadosVigentes
+                || window.JKCachePersistente.dadosVigentes(contexto.persistencia, ['importacoes', 'vendas']));
         }
 
         async function consultarJsonDetalheSku(url, contexto, opcoes = {}) {
@@ -978,9 +987,26 @@
                     ...opcoes, headers: { ...obterAuthHeaders(), ...opcoes.headers },
                     cache: 'no-store', signal: controller.signal,
                 });
+                if (resp.status === 403 && url === '/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId)) {
+                    negarAcessoCacheSku();
+                    await window.JKCachePersistente?.invalidar(['importacoes']);
+                    throw new Error('Acesso à lista negado.');
+                }
                 const dados = await resp.json();
                 if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
                 if (!resp.ok) throw new Error(typeof dados.detail === 'string' ? dados.detail : 'Consulta indisponível.');
+                if ((!opcoes.method || String(opcoes.method).toUpperCase() === 'GET') && !dadosSkuVigentes(contexto)) {
+                    throw new Error('Os dados foram alterados durante o carregamento.');
+                }
+                if (contexto.persistencia && opcoes.method && String(opcoes.method).toUpperCase() !== 'GET') {
+                    const novo = window.JKCachePersistente?.confirmarMutacao?.(contexto.persistencia, resp);
+                    if (novo) contexto.persistencia = novo;
+                    else contexto.podeSalvar = false;
+                }
+                if (contexto.persistencia && (!opcoes.method || String(opcoes.method).toUpperCase() === 'GET')) {
+                    await window.JKCachePersistente?.salvar('importacoes:GET:' + url, dados,
+                        { contexto: contexto.persistencia, tags: ['importacoes'] });
+                }
                 return dados;
             } catch (erro) {
                 if (controller.signal.aborted && detalheSkuVigente(contexto)) {
@@ -2111,6 +2137,7 @@
             if (!atualEl || !originalEl || !promoEl) return;
 
             const dados = detalhe || normalizarDetalhePrecoOferta('', {});
+            ultimosPrecosOfertas[tipo + ':' + numero] = { ...dados };
             atualEl.textContent = dados.precoAtual !== null ? fmtBRL(dados.precoAtual) : '-';
             atualEl.classList.toggle('is-promotional', !!dados.temPromocao);
             originalEl.hidden = !dados.temPromocao;
@@ -2945,9 +2972,90 @@
             }
         }
 
+        function statusCacheSku(texto) {
+            const el = document.getElementById('cacheSkuStatus');
+            if (el) el.textContent = texto;
+        }
+
+        function aplicarLinksCacheSku(linksConc) {
+            ultimosAnunciosLojaConcorrentes = {};
+            [1, 2, 3, 4, 5].forEach(function(n) {
+                const chave = 'concorrente_' + n;
+                const linkMlb = linksConc.mlb[chave] || '';
+                const linkConcorrente = linksConc.links[chave] || '';
+                const codigoMlb = extrairCodigoMlbOferta(linkMlb);
+                const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
+                if (codigoMlb) ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
+                setLinkConcorrente('lblMlb' + n, codigoMlb || 'Anúncio da loja', linkMlb);
+                setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
+                aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
+                aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
+            });
+        }
+
+        function chaveSnapshotSku(contexto) {
+            return 'importacoes:SKU:' + encodeURIComponent(contexto.listaId) + ':' + encodeURIComponent(contexto.sku);
+        }
+
+        async function restaurarCacheSku(contexto) {
+            const persistencia = window.JKCachePersistente;
+            if (!persistencia || !contexto.persistencia) return false;
+            let copia = await persistencia.ler(chaveSnapshotSku(contexto), { contexto: contexto.persistencia });
+            let completo = !!copia;
+            if (!copia) copia = await persistencia.ler('importacoes:GET:/api/medias-compras/listas-pedidos/'
+                + encodeURIComponent(contexto.listaId), { contexto: contexto.persistencia });
+            if (!copia || !detalheSkuVigente(contexto)) return false;
+            const dados = copia.dados;
+            const lista = dados?.lista;
+            if (!lista || String(lista.id) !== contexto.listaId || !Array.isArray(lista.itens)
+                || lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
+            const item = lista.itens.find(row => normSku(row?.SKU) === contexto.sku);
+            if (!item) return false;
+            completo = completo && dados.versao === 1 && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
+            completo = completo && dados.impostos.every(entrada => Array.isArray(entrada) && entrada.length === 2)
+                && dados.mapaM3.every(entrada => Array.isArray(entrada) && entrada.length === 2);
+            contexto.restaurado = true;
+            contexto.snapshot = completo ? dados : null;
+            if (completo) {
+                cacheImpostosProdutos = new Map(dados.impostos);
+                if (!(cotacaoDolarHoje > 0)) cotacaoDolarHoje = Number(dados.cotacao || 0);
+                custoComplementosPendente = !!dados.custoPendente;
+            }
+            montarMeta(String(lista.nome_lista || '-'), contexto.sku);
+            await preencherCampos(item, lista, completo ? dados.cadastro : null, lista.itens,
+                new Map(completo ? dados.mapaM3 : []), { somenteDadosLista: !completo });
+            if (!detalheSkuVigente(contexto)) return false;
+            configurarAprovacaoCompra(lista, item);
+            if (completo && dados.concorrentes) {
+                aplicarLinksCacheSku(dados.concorrentes);
+                Object.entries(dados.precosOfertas || {}).forEach(([chave, detalhe]) => {
+                    const [tipo, numero] = chave.split(':');
+                    if (['mlb', 'concorrente'].includes(tipo) && /^[1-5]$/.test(numero)) aplicarDetalhePrecoOferta(tipo, Number(numero), detalhe);
+                });
+            }
+            aplicarAnaliseConcorrentes(item.analise_concorrentes);
+            statusCacheSku('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
+            return true;
+        }
+
+        async function salvarSnapshotSku(contexto, lista, cadastro, mapaM3, concorrentes) {
+            if (!dadosSkuVigentes(contexto) || contexto.podeSalvar === false || !contexto.persistencia || !window.JKCachePersistente) return;
+            const { contextoCarregamento, ...fontes } = concorrentes;
+            const dados = { versao: 1, lista, cadastro, mapaM3: Array.from(mapaM3.entries()),
+                impostos: Array.from((cacheImpostosProdutos || new Map()).entries()), concorrentes: fontes,
+                precosOfertas: ultimosPrecosOfertas, cotacao: cotacaoDolarHoje, custoPendente: custoComplementosPendente };
+            const contextoAtual = contexto.persistencia;
+            await window.JKCachePersistente.salvar(chaveSnapshotSku(contexto), dados,
+                { contexto: contextoAtual, tags: ['importacoes', 'vendas'] });
+            await window.JKCachePersistente.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId),
+                { lista }, { contexto: contextoAtual, tags: ['importacoes'] });
+        }
+
         async function carregarDetalheSku() {
             const { listaId, sku } = getParams();
-            const contexto = { geracao: ++geracaoDetalheSku, listaId, sku: normSku(sku) };
+            const candidato = window.JKCachePersistente?.contexto();
+            const contexto = { geracao: ++geracaoDetalheSku, listaId, sku: normSku(sku),
+                persistencia: window.JKCachePersistente?.vigente(candidato) ? candidato : null, restaurado: false };
             contextoDetalheSku = contexto;
             controladoresDetalheSku.forEach(controller => controller.abort());
             cacheImpostosProdutos = null;
@@ -2966,18 +3074,25 @@
             }
             try {
                 setErro('');
+                try { await restaurarCacheSku(contexto); }
+                catch (_cacheError) { contexto.restaurado = false; contexto.snapshot = null; }
+                if (!detalheSkuVigente(contexto)) return;
+                cacheImpostosProdutos = null;
                 const data = await consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), contexto, { timeoutMs: 15000 });
                 if (!detalheSkuVigente(contexto)) return;
                 const lista = data && data.lista ? data.lista : {};
+                if (String(lista.id) !== listaId || !Array.isArray(lista.itens)) throw new Error('Dados da lista inválidos.');
                 atualizarFxCompraTopo(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
                 const itens = Array.isArray(lista.itens) ? lista.itens : [];
                 const skuNorm = normSku(sku);
                 const item = itens.find(i => normSku(i && i.SKU) === skuNorm);
                 montarMeta(String(lista.nome_lista || '-'), skuNorm);
                 if (!item) throw new Error('SKU não encontrado nesta lista.');
-                preencherCampos(item, lista, null, itens, new Map(), { somenteDadosLista: true });
-                configurarAprovacaoCompra(lista, item);
-                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                if (!contexto.restaurado) {
+                    preencherCampos(item, lista, null, itens, new Map(), { somenteDadosLista: true });
+                    configurarAprovacaoCompra(lista, item);
+                    aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                }
                 const storeId = String(lista.store_id || '').trim();
                 const promessaConcorrentes = buscarLinksConcorrentes(skuNorm, contexto).then(
                     value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })
@@ -2989,6 +3104,15 @@
                     (getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
                 ]);
                 if (!detalheSkuVigente(contexto)) return;
+                let resultadoConcorrentes = contexto.restaurado ? await promessaConcorrentes : null;
+                if (!detalheSkuVigente(contexto)) return;
+                if (contexto.restaurado && [...resultados, resultadoConcorrentes].some(resultado => resultado.status === 'rejected')) {
+                    if (contexto.snapshot) cacheImpostosProdutos = new Map(contexto.snapshot.impostos);
+                    statusCacheSku('Exibindo a cópia salva. Algumas informações não puderam ser atualizadas.');
+                    return;
+                }
+                if (!detalheSkuVigente(contexto)) return;
+                configurarAprovacaoCompra(lista, item);
                 const cad = resultados[0].status === 'fulfilled' ? resultados[0].value : null;
                 const mapaM3Cadastro = resultados[1].status === 'fulfilled' ? resultados[1].value : new Map();
                 if (cad && Number(cad.m3Individual || 0) > 0) registrarM3CadastroPorSku(mapaM3Cadastro, skuNorm, cad.m3Individual);
@@ -3001,26 +3125,14 @@
                     && aliquotas.every(valor => valor !== null) && getNumber(item.Quantidade) > 0
                     && ((getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
                 const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
-                const resultadoConcorrentes = await promessaConcorrentes;
+                if (!resultadoConcorrentes) resultadoConcorrentes = await promessaConcorrentes;
                 if (!detalheSkuVigente(contexto)) return;
                 const falhas = [...resultados, resultadoConcorrentes].filter(resultado => resultado.status === 'rejected');
                 if (falhas.length) setErro('Algumas informações complementares estão indisponíveis. Os dados da lista continuam disponíveis. Atualize a página para tentar novamente.');
                 if (resultadoConcorrentes.status !== 'fulfilled') { await promessaDadosImposto; return; }
                 const linksConc = resultadoConcorrentes.value;
                 linksConc.contextoCarregamento = contexto;
-                ultimosAnunciosLojaConcorrentes = {};
-                [1, 2, 3, 4, 5].forEach(function(n) {
-                    const chave = 'concorrente_' + n;
-                    const linkMlb = linksConc.mlb[chave] || '';
-                    const linkConcorrente = linksConc.links[chave] || '';
-                    const codigoMlb = extrairCodigoMlbOferta(linkMlb);
-                    const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
-                    if (codigoMlb) ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
-                    setLinkConcorrente('lblMlb' + n, codigoMlb || 'Anúncio da loja', linkMlb);
-                    setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
-                    aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
-                    aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
-                });
+                aplicarLinksCacheSku(linksConc);
                 aplicarAnaliseConcorrentes(item.analise_concorrentes);
                 await Promise.all([
                     promessaDadosImposto,
@@ -3028,17 +3140,44 @@
                 ]);
                 if (!detalheSkuVigente(contexto)) return;
                 analiseComplementosPronta = !!storeId && !custoComplementosPendente && ultimoValorUnitarioProduto !== null;
-                if (!analiseComplementosPronta) return;
+                if (!analiseComplementosPronta) {
+                    if (!falhas.length) {
+                        await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
+                        if (detalheSkuVigente(contexto)) statusCacheSku('Dados atualizados.');
+                    }
+                    return;
+                }
                 try {
                     const resultadoAnalise = await salvarAnaliseConcorrentes(listaId, skuNorm);
-                    if (detalheSkuVigente(contexto)) aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);
+                    if (detalheSkuVigente(contexto)) {
+                        item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;
+                        aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                        await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
+                        statusCacheSku('Dados atualizados.');
+                    }
                 } catch (erroPersistencia) {
                     if (detalheSkuVigente(contexto)) setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
                 }
             } catch (e) {
-                if (detalheSkuVigente(contexto)) setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+                if (detalheSkuVigente(contexto)) {
+                    if (contexto.restaurado) statusCacheSku('Exibindo a cópia salva. Não foi possível atualizar agora.');
+                    else setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+                }
             }
         }
+
+        window.addEventListener('jk:machine-sync-updated', () => { void carregarDetalheSku(); });
+        function negarAcessoCacheSku(mensagem) {
+            geracaoDetalheSku++;
+            controladoresDetalheSku.forEach(controller => controller.abort());
+            document.getElementById('meta').textContent = '';
+            document.querySelector('.layout').replaceChildren();
+            statusCacheSku(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar o SKU.');
+        }
+        window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheSku);
+        const limparContextoSku = () => negarAcessoCacheSku('Cliente ou permissões alterados. Abra o SKU novamente.');
+        window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoSku(); });
+        ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoSku));
 
         promessaCotacaoTopo = carregarFxTopo();
         atualizarHorarioBrasilia();

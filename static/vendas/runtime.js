@@ -43,9 +43,6 @@ const btnOciosos60d = document.getElementById('btnOciosos60d');
 const btnOciosos90d = document.getElementById('btnOciosos90d');
 const spinnerHtml = '<span class="spinner"></span>';
 const REQUEST_TIMEOUT_MS = 15000;
-const VENDAS_VIEW_CACHE_KEY = 'vendas_view_cache_v2';
-const VENDAS_VIEW_CACHE_TTL_MS = 10 * 60 * 1000;
-const VENDAS_VIEW_CACHE_MAX_ROWS = 5000;
 const IA_MAX_ANEXOS = 4;
 const IA_MAX_ANEXO_BYTES = 5 * 1024 * 1024;
 
@@ -117,6 +114,8 @@ let devolucaoItens = [];
 let dadosModoResumo = false;
 let resumoTotaisVendas = null;
 let vendasResumoMeta = null;
+let dadosVendasDeCache = false;
+let contextoDadosVendas = null;
 let clientId = null;
 let lojaSelecionada = '__todas';
 let lojasDisponiveis = [];
@@ -603,6 +602,45 @@ window.addEventListener('pageshow', event => {
     }
 });
 window.addEventListener('storage', event => {
-    if (!event.key || ['user_data', 'access_token'].includes(event.key)) cancelarLeiturasDaSessaoVendas();
+    if (!event.key || ['user_data', 'permissions'].includes(event.key)) limparDadosDaSessaoVendas();
+    else if (event.key === 'access_token') cancelarLeiturasDaSessaoVendas();
 });
-['jk-auth-changed', 'jk-tenant-changed'].forEach(event => window.addEventListener(event, () => cancelarLeiturasDaSessaoVendas()));
+['jk-auth-changed', 'jk-tenant-changed'].forEach(event => window.addEventListener(event, () => limparDadosDaSessaoVendas()));
+function limparDadosDaSessaoVendas(mensagem) {
+    cancelarLeiturasDaSessaoVendas();
+    dados = []; dadosFiltrados = []; devolucaoItens = []; notasEntrada = [];
+    resumoTotaisVendas = null; vendasResumoMeta = null;
+    dadosVendasDeCache = false; contextoDadosVendas = null;
+    if (tBody) tBody.textContent = '';
+    if (resumo) resumo.textContent = '';
+    if (lojaBotoes) lojaBotoes.textContent = '';
+    lojasDisponiveis = [];
+    for (const chart of [typeof chartInstance !== 'undefined' && chartInstance,
+        typeof chartEstoqueInstance !== 'undefined' && chartEstoqueInstance,
+        typeof chartSkusEstoqueInstance !== 'undefined' && chartSkusEstoqueInstance]) chart?.destroy?.();
+    if (typeof chartInstance !== 'undefined') chartInstance = null;
+    if (typeof chartEstoqueInstance !== 'undefined') chartEstoqueInstance = null;
+    if (typeof chartSkusEstoqueInstance !== 'undefined') chartSkusEstoqueInstance = null;
+    for (const painel of [graficoObservacoesVendas, graficoRankingVendas, graficoOciososVendas]) {
+        if (painel) painel.textContent = '';
+    }
+    window.JKVendasCache?.limpar();
+    exibirErroLeituraVendas(typeof mensagem === 'string' ? mensagem : 'Sessão alterada. Carregue os dados novamente.');
+}
+['jk:cache-persistente-auth-negado', 'jk:vendas-acesso-negado'].forEach(evento => window.addEventListener(evento,
+    () => limparDadosDaSessaoVendas('Acesso negado ou sessão expirada. Entre novamente para consultar os dados.')));
+let revalidacaoCacheVendasTimer = null;
+window.addEventListener('jk:cache-persistente-invalidado', event => {
+    const tags = event.detail?.tags;
+    if (!Array.isArray(tags) || !tags.some(tag => tag === 'vendas' || tag === '*') || event.detail?.origem === 'auth'
+        || window.JKVendasReadState.isClosed() || document.visibilityState === 'hidden') return;
+    window.JKVendasReadState.cancel();
+    const geracao = window.JKVendasReadState.epoch;
+    if (revalidacaoCacheVendasTimer) clearTimeout(revalidacaoCacheVendasTimer);
+    revalidacaoCacheVendasTimer = setTimeout(() => {
+        revalidacaoCacheVendasTimer = null;
+        if (geracao === window.JKVendasReadState.epoch && !window.JKVendasReadState.isClosed()) {
+            void recarregarDadosDisponiveisVendas();
+        }
+    }, 100);
+});

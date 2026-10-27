@@ -566,6 +566,7 @@ function alinharSerieComparativa(labelsBase, labelsComparativo, serieComparativo
 
 async function carregarGrafico() {
     if (window.JKVendasReadState?.isClosed()) return;
+    const contextoCache = window.JKVendasCache?.contexto();
     const params = new URLSearchParams({ periodo: periodoGrafico, intervalo: intervaloGrafico });
     const dataInicioAtual = getDataIniISO();
     const dataFimAtual = getDataFimISO();
@@ -616,9 +617,22 @@ async function carregarGrafico() {
     carregarGraficoRequestKey = requestKey;
     window.JKVendasReadState?.begin('grafico', tokenAtual);
     const leituraAtual = () => !controller.signal.aborted && tokenAtual === carregarGraficoToken
+        && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contextoCache))
         && (!window.JKVendasReadState || window.JKVendasReadState.valid('grafico', tokenAtual));
+    const chaveCache = JSON.stringify(['/api/vendas/grafico', params.toString(), paramsComp?.toString() || '']);
     carregarGraficoPromise = (async () => {
         try {
+            window.JKVendasCache?.estado('Gráfico', null);
+            try {
+                const salvo = await window.JKVendasCache?.ler(chaveCache, contextoCache);
+                if (!leituraAtual()) return;
+                if (salvo?.dados?.data && Array.isArray(salvo.dados.data.labels)) {
+                    renderizarGrafico(salvo.dados.data, salvo.dados.dataComparativo || null);
+                    atualizarObservacoesGraficoVendas(salvo.dados.data);
+                    graficoConfirmadoRequestKey = requestKey;
+                    window.JKVendasCache?.estado('Gráfico', 'atualizando', salvo.salvoEm);
+                }
+            } catch (_erroCache) { /* Uma cópia inválida não impede a leitura atual. */ }
             const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
                 headers: obterAuthHeaders(),
                 cache: 'no-store',
@@ -635,7 +649,8 @@ async function carregarGrafico() {
                     cache: 'no-store',
                     signal: controller.signal
                 }, Math.max(0, requestDeadline - Date.now()));
-                if (respComp.ok) dataComparativo = await respComp.json();
+                if (!respComp.ok) throw new Error(`HTTP ${respComp.status} ao carregar a comparação`);
+                dataComparativo = await respComp.json();
             }
 
             if (!leituraAtual()) return;
@@ -643,12 +658,15 @@ async function carregarGrafico() {
             atualizarObservacoesGraficoVendas(data);
             graficoConfirmadoRequestKey = requestKey;
             window.JKVendasReadState?.finish('grafico', tokenAtual, 'success');
+            window.JKVendasCache?.estado('Gráfico', null);
+            void window.JKVendasCache?.salvar(chaveCache, { data, dataComparativo }, contextoCache);
             agendarSegundoPlano(() => carregarOciososSidebarVendas(), 180);
         } catch (error) {
             if (!leituraAtual() || error.name === 'AbortError') return;
             const mensagem = error.name === 'TimeoutError'
                 ? 'O gráfico excedeu o tempo de resposta. Tente novamente.' : 'Não foi possível carregar o gráfico para estes filtros.';
             const preservarDados = graficoConfirmadoRequestKey === requestKey;
+            if (preservarDados) window.JKVendasCache?.estado('Gráfico', 'erro');
             if (!preservarDados) {
                 chartEstoqueInstance?.destroy();
                 chartEstoqueInstance = null;
@@ -680,13 +698,13 @@ async function carregarGrafico() {
             }
             window.JKVendasReadState?.finish('grafico', tokenAtual, 'error', mensagem);
             console.error('Erro ao carregar gráfico:', error);
-            if (graficoObservacoesVendas) {
+            if (graficoObservacoesVendas && !preservarDados) {
                 exibirErroLeituraVendas(mensagem, graficoObservacoesVendas);
             }
-            if (graficoRankingVendas) {
+            if (graficoRankingVendas && !preservarDados) {
                 graficoRankingVendas.innerHTML = '<li>Não foi possível carregar o ranking de SKUs.</li>';
             }
-            if (graficoOciososVendas) {
+            if (graficoOciososVendas && !preservarDados) {
                 graficoOciososVendas.innerHTML = '<li>Não foi possível carregar SKUs ociosos.</li>';
             }
         }
