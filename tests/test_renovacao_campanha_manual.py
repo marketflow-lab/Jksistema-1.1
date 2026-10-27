@@ -176,7 +176,8 @@ def test_criar_campanha_manual_preserva_erro_do_mercado_livre(monkeypatch):
     assert chamadas[0][1]["json"]["start_date"] == f"{inicio}T00:00:00"
     assert chamadas[0][1]["json"]["finish_date"] == f"{fim}T23:59:59"
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "Maximum period cannot exceed the allowed limit."
+    assert exc_info.value.detail.startswith("Erro ao criar campanha no Mercado Livre: ")
+    assert "Maximum period cannot exceed the allowed limit." in exc_info.value.detail
     assert invalidacoes == []
 
 

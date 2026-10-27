@@ -1100,6 +1100,15 @@
         atualizarCampanhasDestinoRenovacao();
     }
 
+    function resumoFalhasRenovacao(result) {
+        const total = Number(result.falhas_total || 0);
+        if (!total) return '';
+        const exemplos = (Array.isArray(result.falhas) ? result.falhas : []).slice(0, 3)
+            .map(item => `${item.item_id || 'Anuncio'}: ${item.erro || 'Falha sem detalhe'}`)
+            .join('; ');
+        return ` ${total} item(ns) tiveram falha.${exemplos ? ` Primeiras falhas: ${exemplos}.` : ''}`;
+    }
+
     async function criarCampanhaMesSeguinte() {
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const campanhaId = document.getElementById('renovacao-campanha')?.value || '';
@@ -1130,7 +1139,7 @@
             const result = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(result.detail || 'Erro ao criar campanha.');
             const nova = result.nova_campanha || {};
-            const falhas = result.falhas_total ? ` ${result.falhas_total} item(ns) tiveram falha.` : '';
+            const falhas = resumoFalhasRenovacao(result);
             const acao = result.campanha_existente ? 'Campanha já existia; MLBs conferidos' : 'Campanha criada';
             setRenovacaoApiStatus(`${acao}: ${nova.nome || nome} (${nova.id}). Já presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluídos: ${result.incluidos}/${result.total_origem}.${falhas}`, result.falhas_total ? 'info' : 'ok');
             carregarCampanhasRenovacao();
@@ -1159,7 +1168,7 @@
             if (status === 'done') {
                 pararPollingRenovacaoSync();
                 const result = job.result || {};
-                const falhas = result.falhas_total ? ` ${result.falhas_total} item(ns) tiveram falha.` : '';
+                const falhas = resumoFalhasRenovacao(result);
                 const destinoRetorno = result.campanha_destino || {};
                 const mensagemFinal = `Sincronizacao concluida para ${destinoRetorno.nome || destinoNome}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}/${result.total_origem || 0}.${falhas}`;
                 setRenovacaoSyncProgress(mensagemFinal, 100, result.falhas_total ? 'info' : 'ok');

@@ -24,19 +24,24 @@ from backend.services.renovacao_agendamento_store import (
 )
 from backend.services.renovacao_promocoes_helpers import (
     _renovacao_datas_proximo_mes,
+    _renovacao_contagem_esperada,
     _renovacao_desconto_item,
     _renovacao_emitir_progresso,
     _renovacao_encontrar_campanha_destino,
+    _renovacao_exigir_coleta_completa,
     _renovacao_json_response,
     _renovacao_listar_itens_campanha,
     _renovacao_ml_listar_campanhas_usuario,
     _renovacao_nome_proximo_mes,
     _renovacao_normalizar_nome,
     _renovacao_parse_data_ml,
+    _renovacao_participante_campanha,
     _renovacao_preco_base_atual,
     _renovacao_preco_com_desconto,
     _renovacao_sync_job_update,
+    _renovacao_status_participacao,
     _renovacao_sync_jobs_limpar_antigos,
+    _renovacao_tipo_campanha,
 )
 
 def _renovacao_criar_campanha_ml(
@@ -66,7 +71,8 @@ def _renovacao_criar_campanha_ml(
         timeout=30,
     )
     if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=resp.status_code, detail=ctx._ml_parse_error_detail(resp, "Erro ao criar campanha no Mercado Livre"))
+        detalhe = ctx._ml_parse_error_detail(resp, "Falha na solicitacao")
+        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao criar campanha no Mercado Livre: {detalhe}")
     data = _renovacao_json_response(resp)
     nova_id = str(data.get("id") or data.get("promotion_id") or data.get("campaign_id") or "").strip()
     if not nova_id:
@@ -195,7 +201,7 @@ def _renovacao_atualizar_periodo_campanha_ml(
 ) -> dict:
     nome_loja = str(loja or "").strip()
     campanha_id = str(campanha_id or "").strip()
-    promotion_type = str(promotion_type or "SELLER_CAMPAIGN").strip() or "SELLER_CAMPAIGN"
+    promotion_type = _renovacao_tipo_campanha(campanha_id, promotion_type)
     if not nome_loja or not campanha_id:
         raise HTTPException(status_code=400, detail="Selecione a loja e a campanha.")
 
@@ -204,7 +210,7 @@ def _renovacao_atualizar_periodo_campanha_ml(
     if not inicio and not fim:
         raise HTTPException(status_code=400, detail="Informe pelo menos uma data para alterar o periodo.")
 
-    payload = {}
+    payload = {"promotion_type": promotion_type}
     if str(nome or "").strip():
         payload["name"] = str(nome or "").strip()
     if inicio:
@@ -229,7 +235,8 @@ def _renovacao_atualizar_periodo_campanha_ml(
         timeout=30,
     )
     if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=resp.status_code, detail=ctx._ml_parse_error_detail(resp, "Erro ao alterar periodo da campanha no Mercado Livre"))
+        detalhe = ctx._ml_parse_error_detail(resp, "Falha na solicitacao")
+        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao alterar periodo da campanha no Mercado Livre: {detalhe}")
     resposta_put = _renovacao_json_response(resp)
     campanha_verificada, cfg = _renovacao_buscar_campanha_ml(client_id, nome_loja, cfg, campanha_id, promotion_type)
     if not campanha_verificada or not (
@@ -290,7 +297,7 @@ def _renovacao_deletar_campanha_ml(
 ) -> dict:
     nome_loja = str(loja or "").strip()
     campanha_id = str(campanha_id or "").strip()
-    promotion_type = str(promotion_type or "SELLER_CAMPAIGN").strip() or "SELLER_CAMPAIGN"
+    promotion_type = _renovacao_tipo_campanha(campanha_id, promotion_type)
     if not nome_loja or not campanha_id:
         raise HTTPException(status_code=400, detail="Selecione a loja e a campanha.")
 
@@ -305,7 +312,8 @@ def _renovacao_deletar_campanha_ml(
         timeout=30,
     )
     if resp.status_code not in (200, 202, 204):
-        raise HTTPException(status_code=resp.status_code, detail=ctx._ml_parse_error_detail(resp, "Erro ao deletar campanha no Mercado Livre"))
+        detalhe = ctx._ml_parse_error_detail(resp, "Falha na solicitacao")
+        raise HTTPException(status_code=resp.status_code, detail=f"Erro ao excluir campanha no Mercado Livre: {detalhe}")
     _renovacao_remover_agendamento_campanha(client_id, nome_loja, campanha_id)
     return {
         "success": True,
@@ -318,8 +326,8 @@ def _renovacao_deletar_campanha_ml(
 def _renovacao_identidade_participacao_valida(raw: dict, item_id: str, campanha_id: str) -> bool:
     if not isinstance(raw, dict) or raw.get("error"):
         return False
-    status = str(raw.get("status") or "").strip().lower()
-    if status and status not in {"active", "started", "pending", "programmed", "scheduled", "ready_to_start"}:
+    status = _renovacao_status_participacao(raw)
+    if status and status not in {"active", "started", "approved", "pending", "programmed", "programada", "scheduled", "ready_to_start"}:
         return False
     if raw.get("item_id") and str(raw["item_id"]) != item_id:
         return False
@@ -394,7 +402,9 @@ def _renovacao_adicionar_item_campanha(
             timeout=20,
         )
         if resp.status_code not in (200, 201):
-            return False, ctx._ml_parse_error_detail(resp, f"Erro {resp.status_code} ao aplicar desconto"), cfg
+            detalhe = ctx._ml_parse_error_detail(resp, f"Erro {resp.status_code}")
+            acao = "atualizar" if metodo == "PUT" else "incluir"
+            return False, f"Erro ao {acao} anuncio na campanha: {detalhe}", cfg
         aplicado = _renovacao_json_response(resp)
         if not _renovacao_identidade_participacao_valida(aplicado, item_id, nova_campanha_id):
             return False, "Mercado Livre retornou uma participacao com identidade ou status divergente", cfg
@@ -431,6 +441,8 @@ def _renovacao_copiar_mlbs_campanha(
     expected_origem_count: int | None = None,
     progress_callback: Optional[Callable[[dict], None]] = None,
     verificar_destino: bool = True,
+    origem_preparada: tuple[list[dict], dict] | None = None,
+    expected_destino_count: int | None = None,
 ) -> tuple[dict, dict]:
     _renovacao_emitir_progresso(
         progress_callback,
@@ -440,19 +452,18 @@ def _renovacao_copiar_mlbs_campanha(
         campanha_id=campanha_origem_id,
         esperado=expected_origem_count or 0,
     )
-    itens_ref, raw_por_item, cfg = _renovacao_listar_itens_campanha(
-        client_id,
-        loja,
-        cfg,
-        campanha_origem_id,
-        promotion_type_origem or "SELLER_CAMPAIGN",
-        expected_count=expected_origem_count,
-        progress_callback=progress_callback,
-        progress_start=18,
-        progress_end=48,
-    )
+    if origem_preparada is not None:
+        itens_ref, raw_por_item = origem_preparada
+    else:
+        itens_ref, raw_por_item, cfg = _renovacao_listar_itens_campanha(
+            client_id, loja, cfg, campanha_origem_id,
+            _renovacao_tipo_campanha(campanha_origem_id, promotion_type_origem),
+            expected_count=expected_origem_count, progress_callback=progress_callback,
+            progress_start=18, progress_end=48,
+        )
     item_ids = [str(item.get("id") or "").strip() for item in itens_ref if str(item.get("id") or "").strip()]
     item_ids = list(dict.fromkeys(item_ids))
+    _renovacao_exigir_coleta_completa(itens_ref, expected_origem_count, campanha_origem_id)
     if not item_ids:
         raise HTTPException(status_code=400, detail="Nao encontrei MLBs ativos ou programados nessa campanha para copiar.")
     _renovacao_emitir_progresso(
@@ -479,6 +490,7 @@ def _renovacao_copiar_mlbs_campanha(
             cfg,
             campanha_destino_id,
             promotion_type_destino or "SELLER_CAMPAIGN",
+            expected_count=expected_destino_count,
             progress_callback=progress_callback,
             progress_start=53,
             progress_end=58,
@@ -540,9 +552,10 @@ def _renovacao_copiar_mlbs_campanha(
                     client_id, loja, cfg, campanha_origem_id,
                     promotion_type_origem or "SELLER_CAMPAIGN", item_id,
                 )
-                desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
-                    item_id, raw_exato, detalhe,
-                )
+                if _renovacao_participante_campanha(raw_exato, campanha_origem_id, item_id, contexto_campanha=True):
+                    desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
+                        item_id, raw_exato, detalhe,
+                    )
             if desconto is None:
                 falhas.append({"item_id": item_id, "erro": "Nao foi possivel identificar o percentual da origem"})
                 continue
@@ -572,6 +585,8 @@ def _renovacao_copiar_mlbs_campanha(
                 (atualizados if existente else sucessos).append({"item_id": item_id, "desconto": desconto})
             else:
                 falhas.append({"item_id": item_id, "erro": erro})
+        except HTTPException as exc:
+            falhas.append({"item_id": item_id, "erro": str(exc.detail)})
         except Exception:
             falhas.append({"item_id": item_id, "erro": "Falha ao consultar ou aplicar o desconto deste item"})
 
@@ -605,7 +620,7 @@ def _renovacao_criar_ou_completar_proximo_mes(
     loja = str(loja or "").strip()
     campanha_id = str(campanha_id or "").strip()
     nome = str(nome or "").strip()
-    promotion_type = str(promotion_type or "SELLER_CAMPAIGN").strip() or "SELLER_CAMPAIGN"
+    promotion_type = _renovacao_tipo_campanha(campanha_id, promotion_type)
     if not loja or not campanha_id:
         raise HTTPException(status_code=400, detail="Informe loja e campanha de origem.")
 
@@ -618,6 +633,15 @@ def _renovacao_criar_ou_completar_proximo_mes(
     if not nome:
         raise HTTPException(status_code=400, detail="Informe o nome da nova campanha.")
 
+    esperado_origem = _renovacao_contagem_esperada(campanha_fonte)
+    itens_origem, raw_origem, cfg = _renovacao_listar_itens_campanha(
+        client_id, loja, cfg, campanha_id, promotion_type,
+        expected_count=esperado_origem,
+    )
+    _renovacao_exigir_coleta_completa(itens_origem, esperado_origem, campanha_id)
+    if not itens_origem:
+        raise HTTPException(status_code=400, detail="Nao encontrei MLBs ativos ou programados nessa campanha para copiar.")
+
     inicio_alvo, fim_alvo = _renovacao_datas_proximo_mes(campanha_fonte)
     campanha_destino = _renovacao_encontrar_campanha_destino(campanhas, nome, inicio_alvo)
     campanha_existente = bool(campanha_destino)
@@ -628,7 +652,9 @@ def _renovacao_criar_ou_completar_proximo_mes(
             "start_date": campanha_destino.get("start_date") or inicio_alvo,
             "finish_date": campanha_destino.get("finish_date") or fim_alvo,
         }
-        promotion_type_destino = str(campanha_destino.get("promotion_type") or campanha_destino.get("type") or "SELLER_CAMPAIGN").strip() or "SELLER_CAMPAIGN"
+        promotion_type_destino = _renovacao_tipo_campanha(
+            nova_campanha_id, campanha_destino.get("promotion_type") or campanha_destino.get("type"),
+        )
     else:
         nova_campanha_id, payload_campanha, cfg = _renovacao_criar_campanha_ml(
             client_id,
@@ -644,6 +670,9 @@ def _renovacao_criar_ou_completar_proximo_mes(
         client_id, loja, cfg, campanha_id, nova_campanha_id,
         promotion_type, promotion_type_destino,
         verificar_destino=campanha_existente,
+        expected_origem_count=esperado_origem,
+        origem_preparada=(itens_origem, raw_origem),
+        expected_destino_count=_renovacao_contagem_esperada(campanha_destino or {}),
     )
 
     ctx._cache_invalidar_loja(client_id, loja)
@@ -704,16 +733,13 @@ def _renovacao_sincronizar_promocao_existente(
         "id": campanha_destino_id,
         "promotion_type": promotion_type_destino,
     }
-    promotion_type_origem = str(campanha_origem.get("promotion_type") or campanha_origem.get("type") or promotion_type_origem).strip() or "SELLER_CAMPAIGN"
-    promotion_type_destino = str(campanha_destino.get("promotion_type") or campanha_destino.get("type") or promotion_type_destino).strip() or "SELLER_CAMPAIGN"
-    active_origem = ctx._parse_float_flex(campanha_origem.get("active_count"))
-    programados_origem = ctx._parse_float_flex(campanha_origem.get("programmed_count"))
-    if programados_origem is None:
-        programados_origem = ctx._parse_float_flex(campanha_origem.get("scheduled_count"))
-    expected_origem_count = int(active_origem or 0) + int(programados_origem or 0)
-    if expected_origem_count <= 0:
-        total_origem = ctx._parse_float_flex(campanha_origem.get("total_count"))
-        expected_origem_count = int(total_origem or 0)
+    promotion_type_origem = _renovacao_tipo_campanha(
+        campanha_origem_id, campanha_origem.get("promotion_type") or campanha_origem.get("type") or promotion_type_origem,
+    )
+    promotion_type_destino = _renovacao_tipo_campanha(
+        campanha_destino_id, campanha_destino.get("promotion_type") or campanha_destino.get("type") or promotion_type_destino,
+    )
+    expected_origem_count = _renovacao_contagem_esperada(campanha_origem)
     _renovacao_emitir_progresso(
         progress_callback,
         "Campanhas",
@@ -731,6 +757,7 @@ def _renovacao_sincronizar_promocao_existente(
         promotion_type_destino,
         preferir_percentual=True,
         expected_origem_count=expected_origem_count or None,
+        expected_destino_count=_renovacao_contagem_esperada(campanha_destino),
         progress_callback=progress_callback,
     )
 
