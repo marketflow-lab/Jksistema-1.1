@@ -146,7 +146,22 @@ class LiveNavigationAudit {
         };
         const productionCategoryUrl = this.runner.officialCategoryUrl.bind(this.runner);
         this.runner.officialCategoryUrl = async node => {
-            const dependency = snapshot.pathFromRoot(node.key).find(item => this.state.dependencyFailures[item.key]);
+            const ancestry = snapshot.pathFromRoot(node.key);
+            let parentUrl = '', knownThrough = -1;
+            for (const [index, item] of ancestry.entries()) {
+                let route = this.navigation.routes.get(item.key);
+                if (!route && index && parentUrl) {
+                    try { route = this.navigation.choose(this.navigation.links.get(ancestry[index - 1].key), item, parentUrl).url; }
+                    catch (_error) { /* An absent or ambiguous cached edge cannot bypass a failed dependency. */ }
+                }
+                if (route) knownThrough = index;
+                parentUrl = route || '';
+            }
+            // A known parent URL alone cannot bypass its failed filters. A
+            // descendant route/positive edge must carry this path beyond it.
+            // These remain route candidates, never live document evidence.
+            const dependency = knownThrough === ancestry.length - 1 ? null : ancestry.find((item, index) =>
+                index >= Math.max(0, knownThrough) && this.state.dependencyFailures[item.key]);
             if (dependency) {
                 const error = new Error('The previously observed ancestor route remains unresolved.');
                 error.code = this.state.dependencyFailures[dependency.key];
@@ -530,6 +545,18 @@ class LiveNavigationAudit {
             } catch (error) {
                 const code = this.classify(error);
                 this.state.nodeOutcomes[key] = { outcome: 'unresolved', code };
+                if (error.categoryPage && typeof error.categoryPage === 'object') {
+                    const failed = safePage(error.categoryPage);
+                    if (failed.url) this.state.nodeOutcomes[key].failedDocument = {
+                        url: failed.url, effectiveCategoryId: failed.effectiveCategoryId,
+                        documentCategoryId: failed.documentCategoryId,
+                        categoryDocumentIdentity: failed.categoryDocumentIdentity,
+                        categoryIdentityConflict: failed.categoryIdentityConflict,
+                        listingCount: failed.listingCount,
+                        reportedExactItemCount: (Array.isArray(error.categoryPage.categoryItems) ? error.categoryPage.categoryItems : [])
+                            .filter(item => item && item.categoryId === key).length
+                    };
+                }
                 if (code === 'category_access_denied' || code === 'login_required' || code === 'audit_interrupted') {
                     this.state.status = code === 'category_access_denied' ? 'paused_access_denied' : code === 'login_required' ? 'paused_login'
                         : this.cancelReason === 'cancel_file' ? 'paused_cancel_file' : 'paused_interrupted';

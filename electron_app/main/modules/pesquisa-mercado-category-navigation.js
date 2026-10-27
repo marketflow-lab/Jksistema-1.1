@@ -161,7 +161,7 @@ class OfficialCategoryNavigation {
             // A previously read filter can be incomplete. Refresh it once for
             // this requested child; never retain a negative cache entry.
             try { if (links) selected = this.choose(links, expected, parentUrl); }
-            catch (_error) { this.links.delete(parentKey); }
+            catch (_error) { /* Keep known siblings until a validated refresh replaces the list. */ }
             if (!selected && OBSERVED_ROUTES[key]) {
                 // Remembered fallbacks have no fresh parent-document evidence.
                 selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl, false);
@@ -177,9 +177,40 @@ class OfficialCategoryNavigation {
                     }
                 }
                 catch (error) {
-                    if (!error.navigationDependencyKey) error.navigationDependencyKey = parentKey;
-                    if (['category_filters_unavailable', 'category_not_found'].includes(error.code) || error.categoryScopeMismatch) error.sharedCategoryFailure = true;
-                    throw error;
+                    const failed = error.categoryPage, seen = new Set();
+                    let ancestor = this.parents.get(parentKey), ancestorMismatch = false;
+                    while (ancestor && !seen.has(ancestor)) {
+                        seen.add(ancestor);
+                        if (failed?.effectiveCategoryId === ancestor) { ancestorMismatch = true; break; }
+                        ancestor = this.parents.get(ancestor);
+                    }
+                    if ((error.categoryScopeMismatch || error.code === 'category_scope_mismatch') && !error.waitingLogin
+                        && error.name !== 'AbortError' && ![401, 403, 429].includes(error.status)
+                        && failed?.categoryDocumentIdentity && !failed.categoryIdentityConflict && !failed.authRequired && !failed.avantAuthRequired
+                        && ancestorMismatch) {
+                        const landing = new URL(parentUrl);
+                        if (!landing.search && !landing.hash && /\/\*_NoIndex_True\/?$/.test(landing.pathname)) {
+                            landing.pathname = landing.pathname.replace(/\/\*_NoIndex_True\/?$/, '/');
+                            if (landing.pathname !== '/' && neutralCategoryPage(parentUrl, landing.href)) {
+                                try {
+                                    const landingPage = await this.read(landing.href, 'navigation', parentKey, { ...expected, preferTrendsChildren: true });
+                                    this.choose(landingPage.categories, expected, landingPage.url || landing.href);
+                                    page = landingPage;
+                                }
+                                catch (landingError) {
+                                    if (landingError.name === 'AbortError' || landingError.waitingLogin || [401, 403, 429].includes(landingError.status)
+                                        || !['category_scope_mismatch', 'category_load_timeout', 'category_not_found', 'category_link_missing',
+                                            'category_link_ambiguous', 'category_filters_unavailable'].includes(landingError.code)) throw landingError;
+                                    error.categoryLandingCode = landingError.code;
+                                }
+                            }
+                        }
+                    }
+                    if (!page) {
+                        if (!error.navigationDependencyKey) error.navigationDependencyKey = parentKey;
+                        if (['category_filters_unavailable', 'category_not_found'].includes(error.code) || error.categoryScopeMismatch) error.sharedCategoryFailure = true;
+                        throw error;
+                    }
                 }
                 links = page.categories || [];
                 try { selected = this.choose(links, expected, parentUrl); }

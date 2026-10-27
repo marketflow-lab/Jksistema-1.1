@@ -294,9 +294,9 @@ async function testResumableProductionNavigation() {
     assert.equal(itemSummary.completeSelectedCoverage, true);
     assert.equal(itemSummary.completeSelectedDocumentCoverage, false);
     assert.equal(itemSummary.completeLiveCoverage, false);
-    assert.equal(itemSummary.transportPageReadAttempts, 2);
+    assert.equal(itemSummary.transportPageReadAttempts, 0, 'a confirmed current ancestor needs no extra transport read');
     assert.deepEqual(firstScopedPage.anuncios.map(ad => ad.id), ['MLB900001'], 'matching category metadata cannot retain an ad whose URL belongs to another item ID');
-    assert.equal(transportVisits.length, 4, 'each leaf receives a real official-route attempt and a confirmed ancestor read');
+    assert.equal(transportVisits.length, 2, 'each leaf receives a real official-route attempt and reuses its confirmed ancestor redirect');
     assert.equal(itemAudit.runner.checkpoint.currentCategory.key, 'MLB102');
     assert.deepEqual(itemAudit.functionalEvidence().exactItemScopes.map(proof => [proof.categoryKey, proof.documentCategoryId, proof.verifiedExactItemCount]),
         [['MLB101', 'MLB100', 1], ['MLB102', 'MLB100', 1]]);
@@ -316,6 +316,21 @@ async function testResumableProductionNavigation() {
     assert.equal(wrongLeafSummary.failureCodes.item_filter_not_leaf_document, 1);
     assert.equal(wrongLeaf.runner.checkpoint.currentCategory.key, 'MLB102');
 
+    const failedAudit = new LiveNavigationAudit({ snapshot: itemSnapshot, snapshotSha256: itemHash, browser: transportBrowser,
+        onlyKeys: ['MLB102'], wait: async () => {}, intervalMs: 0 });
+    failedAudit.runner.readCategory = async () => {
+        const error = new Error('Wrong category');
+        error.code = 'category_scope_mismatch';
+        error.categoryPage = { ...firstScopedPage, categoryItems: [{ id: 'MLB900001', categoryId: 'MLB102' }] };
+        throw error;
+    };
+    const failedSummary = await failedAudit.run();
+    assert.equal(failedAudit.state.nodeOutcomes.MLB102.failedDocument.documentCategoryId, 'MLB100');
+    assert.equal(failedAudit.state.nodeOutcomes.MLB102.failedDocument.reportedExactItemCount, 1);
+    assert.equal(failedSummary.functionalVerifiedNodes, 0, 'failed document diagnostics cannot become successful navigation evidence');
+    assert.equal(failedSummary.verifiedDocumentNodes, 0);
+    assert(!JSON.stringify(failedAudit.state).includes('MLB900001'), 'failure diagnostics retain counts without ad IDs');
+
     const contextFixture = fixture(true);
     const contextAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: contextFixture.browser, wait: async () => {}, intervalMs: 0 });
     contextAudit.selectCategory('MLB101');
@@ -327,6 +342,66 @@ async function testResumableProductionNavigation() {
     assert.equal(contextAudit.runner.checkpoint.scope, originalScope);
     assert.equal(contextAudit.runner.checkpoint.officialTaxonomy.ancestry, originalAncestry);
     assert.equal(contextAudit.activeReadKey, '');
+    await cachedPositivePathsBypassOnlyEarlierFailures();
     console.log('Pesquisa de Mercado live navigation audit: online groups, real leaf documents, priority, progress, cancellation and resumable block pause OK');
 }
+async function cachedPositivePathsBypassOnlyEarlierFailures() {
+    const { LiveNavigationAudit } = require('../scripts/pesquisa_mercado_live_navigation_audit');
+    const frozen = { version: 1, updatedAt: cache.updatedAt, fetchedAt: cache.fetchedAt, records: [
+        ['MLB200', 'Root', 'https://www.mercadolivre.com.br/c/positive-root', ['MLB210', 'MLB220'], ['MLB200']],
+        ['MLB210', 'Branch', 'https://lista.mercadolivre.com.br/_CatId_MLB210', ['MLB211'], ['MLB200', 'MLB210']],
+        ['MLB211', 'Leaf', 'https://lista.mercadolivre.com.br/_CatId_MLB211', [], ['MLB200', 'MLB210', 'MLB211']],
+        ['MLB220', 'Sibling', 'https://lista.mercadolivre.com.br/_CatId_MLB220', [], ['MLB200', 'MLB220']]
+    ] };
+    const tree = snapshotFromCache(frozen), hash = createHash('sha256').update(JSON.stringify(frozen)).digest('hex');
+    const rootUrl = 'https://lista.mercadolivre.com.br/positive-root/';
+    const branch = { ...tree.get('MLB210'), url: rootUrl + 'branch/' };
+    const leaf = { ...tree.get('MLB211'), url: branch.url + 'leaf/' };
+    const fixture = () => {
+        let calls = 0;
+        const forbidden = async () => { calls += 1; throw new Error('Cached route checks cannot use transport'); };
+        const scanner = new LiveNavigationAudit({ snapshot: tree, snapshotSha256: hash, onlyKeys: [leaf.key], wait: async () => {}, intervalMs: 0,
+            browser: { navigate: forbidden, executeJavaScript: forbidden, getURL: () => '', getNavigationStatus: () => null } });
+        scanner.state.dependencyFailures.MLB200 = 'category_filters_unavailable';
+        scanner.state.documentContexts.MLB210 = { url: branch.url, documentCategoryId: branch.key, statusCode: 200, observedAt: cache.updatedAt };
+        return { scanner, calls: () => calls };
+    };
+    for (const mode of ['target_route', 'descendant_route', 'positive_chain']) {
+        const { scanner, calls } = fixture();
+        if (mode === 'target_route') scanner.navigation.routes.set(leaf.key, leaf.url);
+        if (mode === 'descendant_route') scanner.navigation.routes.set(branch.key, branch.url);
+        if (mode === 'positive_chain') {
+            scanner.navigation.routes.set('MLB200', rootUrl);
+            scanner.navigation.links.set('MLB200', [branch]);
+        }
+        if (mode !== 'target_route') scanner.navigation.links.set(branch.key, [leaf]);
+        const contexts = JSON.stringify(scanner.state.documentContexts);
+        assert.equal(await scanner.runner.officialCategoryUrl(tree.get(leaf.key)), leaf.url, mode);
+        assert.equal(calls(), 0, mode + ' follows only existing route candidates or a positive cached chain');
+        assert.equal(JSON.stringify(scanner.state.documentContexts), contexts, 'route-cache use cannot alter verified document contexts');
+        assert.equal(scanner.state.observations.length, 0, 'route-cache use cannot fabricate a live document observation');
+        assert.equal(scanner.summary().functionalVerifiedNodes, 0, 'a candidate route is not online coverage');
+    }
+    for (const [description, links] of [
+        ['parent URL alone', []],
+        ['unrelated sibling', [{ ...tree.get('MLB220'), url: rootUrl + 'sibling/' }]],
+        ['conflicting child ID', [{ ...branch, key: 'MLB999' }]],
+        ['ambiguous child links', [branch, { ...branch, url: rootUrl + 'branch-alternative/' }]],
+        ['unresolved alias', [{ ...branch, url: tree.get(branch.key).url }]]
+    ]) {
+        const { scanner, calls } = fixture();
+        scanner.navigation.routes.set('MLB200', rootUrl); scanner.navigation.links.set('MLB200', links);
+        await assert.rejects(scanner.runner.officialCategoryUrl(tree.get(leaf.key)), error =>
+            error.code === 'category_filters_unavailable' && error.navigationDependencyKey === 'MLB200', description);
+        assert.equal(calls(), 0, description + ' must not bypass the failed filter dependency');
+    }
+    const { scanner, calls } = fixture();
+    scanner.navigation.routes.set('MLB200', rootUrl); scanner.navigation.links.set('MLB200', [branch]);
+    scanner.state.dependencyFailures.MLB210 = 'category_filters_unavailable';
+    await assert.rejects(scanner.runner.officialCategoryUrl(tree.get(leaf.key)), error =>
+        error.code === 'category_filters_unavailable' && error.navigationDependencyKey === branch.key,
+    'passing an earlier failure cannot bypass a later failed parent using only that parent URL');
+    assert.equal(calls(), 0);
+}
+
 testResumableProductionNavigation().catch(error => { console.error(error); process.exitCode = 1; });

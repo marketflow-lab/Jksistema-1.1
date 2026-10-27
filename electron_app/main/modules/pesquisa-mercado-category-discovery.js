@@ -163,8 +163,19 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
     const ancestors = ancestry.at(-1).key === expected.key ? ancestry.slice(0, -1) : ancestry;
     if (!ancestors.length || ancestors.some(node => node.key === expected.key)) return null;
     const parentName = ancestors.at(-1).nome;
-    const terms = [...new Set([label(expected.nome) === 'outros' ? `${expected.nome} ${parentName}` : expected.nome, parentName]
-        .map(value => value.replace(/\s+/g, ' ').trim()))];
+    const domainName = (ancestors[1] || ancestors[0]).nome;
+    const contextualTerm = names => {
+        const seen = new Set();
+        return names.map(name => name.replace(/\s+/g, ' ').trim()).filter(name => {
+            const key = label(name);
+            if (seen.has(key)) return false;
+            seen.add(key); return true;
+        }).join(' ');
+    };
+    // A broad parent label (for example, Freios) can leave the requested
+    // domain. Both bounded queries retain the leaf and its taxonomy context.
+    const terms = [...new Map([contextualTerm([expected.nome, parentName, domainName]), contextualTerm([expected.nome, domainName])]
+        .filter(term => term.length <= 800).map(term => [label(term), term])).values()];
     const controller = new AbortController();
     const abortError = () => Object.assign(new Error('Descoberta de categoria interrompida.'), { name: 'AbortError' });
     const timeoutError = () => Object.assign(new Error('Tempo de descoberta de categoria esgotado.'), { discoveryTimedOut: true });

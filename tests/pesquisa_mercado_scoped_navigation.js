@@ -29,6 +29,8 @@ const page2 = parts + '*_Desde_49_NoIndex_True';
 const page3 = parts + '*_Desde_97_NoIndex_True';
 const sellerUrl = 'https://www.mercadolivre.com.br/perfil/public-fixture';
 const defaultPages = () => ({
+    [cycling]: { ...raw(cycling, ['MLB100009'], '', [pair('MLB100009', 'MLB1292')]), effectiveCategoryId: 'MLB1292',
+        categoryContext: { key: 'MLB1292', nome: 'Ciclismo', baseUrl: cycling } },
     [leafUrl]: raw(leafUrl, ['MLB100001'], '', [pair('MLB100001', parent.key)]),
     [parts]: raw(parts, ['MLB100001', 'MLB100002'], page2, [pair('MLB100001'), pair('MLB100002', parent.key)]),
     [page2]: raw(page2, ['MLB100003'], page3, [pair('MLB100003', parent.key)]),
@@ -187,7 +189,7 @@ async function boundedOpeningNeedsAnExactItem() {
     assert(accepted, 'a rare exact category can be proved after the first unmatched ancestor page');
     assert.equal(accepted.url, page2);
     assert.deepEqual(accepted.anuncios.map(ad => ad.id), ['MLB100001']);
-    assert.deepEqual(laterMatch.visits, [parts, page2], 'only observed, neutral ancestor pagination is used to seek the first proof');
+    assert.deepEqual(laterMatch.visits, [parts, cycling, page2], 'each known ancestor gets one neutral page before further pagination');
     assert.deepEqual(laterMatch.snapshots, [], 'unmatched opening probes do not become completed research pages');
     const buttonPages = copy(pages);
     buttonPages[parts].nextUrl = ''; buttonPages[parts].hasNext = true; buttonPages[parts].clickNext = page2;
@@ -196,18 +198,25 @@ async function boundedOpeningNeedsAnExactItem() {
     assert(buttonAccepted, 'the first exact item can also be reached through an ancestor button without an href');
     assert.equal(buttonAccepted.url, page2);
     assert.deepEqual(buttonAccepted.anuncios.map(ad => ad.id), ['MLB100001']);
-    assert.deepEqual(buttonMatch.visits, [parts, parts, page2], 'opening probes restore the ancestor before using its own JavaScript control');
+    assert.deepEqual(buttonMatch.visits, [parts, cycling, parts, page2], 'opening probes restore the ancestor before using its own JavaScript control');
     assert.deepEqual(buttonMatch.snapshots, []);
 
-    const missing = { [leafUrl]: pages[leafUrl] };
+    const missing = { [leafUrl]: pages[leafUrl], [cycling]: pages[cycling] };
     const transportUrls = [parts, ...Array.from({ length: 11 }, (_, index) => parts + '*_Desde_' + (49 + index * 48) + '_NoIndex_True')];
     for (let index = 0; index < transportUrls.length; index += 1) {
         const url = transportUrls[index];
         missing[url] = raw(url, ['MLB100002'], transportUrls[index + 1] || '', [pair('MLB100002', parent.key)]);
     }
     const bounded = harness(missing); bounded.initDirect(); await bounded.browser.prepare();
-    assert.equal(await bounded.runner.tryCategoryItemScope(leaf, missing[leafUrl], leafUrl), null, 'absence within the bounded probe remains inconclusive');
-    assert.equal(bounded.visits.length, 10, 'the ten-page limit includes the first ancestor page and never opens an unexamined eleventh page');
+    const budget = { remaining: 10 };
+    assert.equal(await bounded.runner.tryCategoryItemScope(leaf, missing[leafUrl], leafUrl, { budget }), null, 'absence within the bounded probe remains inconclusive');
+    assert.equal(bounded.visits.length, 10, 'the ten-page limit is shared by all ancestors, never reset for each one');
+    assert.equal(bounded.visits.filter(url => url.startsWith(parts)).length, 9,
+        'one reserved page for another ancestor reduces the remaining pagination budget');
+    assert.equal(bounded.visits.filter(url => url === cycling).length, 1, 'an exhausted closer ancestor does not hide another known ancestor');
+    assert.equal(budget.remaining, 0);
+    assert.equal(await bounded.runner.tryCategoryItemScope(leaf, missing[leafUrl], leafUrl, { budget }), null);
+    assert.equal(bounded.visits.length, 10, 'a second distinct route cannot reset the category-wide ancestor budget');
     assert.deepEqual(bounded.snapshots, []);
     const pending = harness(missing);
     pending.runner.discoverOfficialCategoryRoute = async () => null;
@@ -273,6 +282,75 @@ async function hrefPaginationRejectsKeywordRedirect() {
     assert.deepEqual(h.snapshots, []);
 }
 
+async function openingCanUseAnotherConfirmedAncestor() {
+    const pages = defaultPages();
+    pages[parts] = raw(parts, ['MLB100002'], '', [pair('MLB100002', parent.key)]);
+    pages[cycling] = { ...raw(cycling, ['MLB100001', 'MLB100009'], '', [pair('MLB100001'), pair('MLB100009', 'MLB1292')]),
+        effectiveCategoryId: 'MLB1292', categoryContext: { key: 'MLB1292', nome: 'Ciclismo', baseUrl: cycling } };
+    const h = harness(pages); h.initDirect(); await h.browser.prepare();
+    const scoped = await h.runner.tryCategoryItemScope(leaf, pages[leafUrl], leafUrl);
+    assert(scoped, 'a closer ancestor without an exact item cannot prevent probing another confirmed ancestor');
+    assert.deepEqual(h.visits, [parts, cycling]);
+    assert.equal(scoped.categoryItemScope.transportCategoryId, 'MLB1292');
+    assert.equal(scoped.effectiveCategoryId, 'MLB1292', 'the source keeps its actual ancestor identity');
+    assert.deepEqual(scoped.anuncios.map(ad => ad.id), ['MLB100001']);
+    assert.deepEqual(h.snapshots, []);
+
+    const absentPage = harness(); absentPage.initDirect(); await absentPage.browser.prepare();
+    const recovered = await absentPage.runner.tryCategoryItemScope(leaf, undefined, leafUrl);
+    assert(recovered, 'a typed navigation timeout without HTML can still probe a frozen ancestor route');
+    assert.deepEqual(absentPage.visits, [parts]);
+    const quickOnly = harness(); quickOnly.initDirect(); await quickOnly.browser.prepare();
+    assert.equal(await quickOnly.runner.tryCategoryItemScope(leaf, pages[leafUrl], leafUrl, { maxPages: 0 }), null);
+    assert.deepEqual(quickOnly.visits, [], 'a quick reuse check must not start ancestor navigation');
+    for (const flags of [{ authRequired: true }, { avantAuthRequired: true }, { categoryIdentityConflict: true },
+        { categoryDocumentIdentity: true, effectiveCategoryId: 'MLB999' }]) {
+        const blocked = harness(); blocked.initDirect(); await blocked.browser.prepare();
+        assert.equal(await blocked.runner.tryCategoryItemScope(leaf, { ...pages[leafUrl], ...flags }, leafUrl), null);
+        assert.deepEqual(blocked.visits, [], 'auth or an unrelated own identity cannot authorize ancestor probes');
+    }
+}
+
+async function openingReusesOnlyTheCurrentProvenTransport() {
+    const h = harness(); h.initDirect(); await h.browser.prepare(); await h.browser.navigate(parts);
+    const observed = defaultPages()[parts];
+    const scoped = await h.runner.tryCategoryItemScope(leaf, observed, leafUrl);
+    assert(scoped);
+    assert.deepEqual(h.visits, [parts], 'an already observed neutral ancestor with exact items needs no reload');
+    assert.equal(scoped.effectiveCategoryId, parent.key);
+    for (const patch of [{ readyState: 'loading' }, { url: leafUrl }]) {
+        const fresh = harness(); fresh.initDirect(); await fresh.browser.prepare(); await fresh.browser.navigate(parts);
+        const stale = { ...observed, ...patch, anuncios: [item('MLB900001')], categoryItems: [pair('MLB900001')] };
+        const result = await fresh.runner.tryCategoryItemScope(leaf, stale, leafUrl);
+        assert(result);
+        assert.deepEqual(result.anuncios.map(ad => ad.id), ['MLB100001'], 'loading or non-neutral snapshots cannot replace a fresh confirmed ancestor read');
+        assert.deepEqual(fresh.visits, [parts, parts]);
+    }
+}
+
+async function recoveryKeepsThePrimaryFailurePage() {
+    for (const code of ['category_scope_mismatch', 'category_load_timeout', 'category_not_found']) {
+        const h = harness(); h.initDirect(); await h.browser.prepare();
+        const primaryPage = defaultPages()[leafUrl];
+        const primary = Object.assign(new Error('Primary destination mismatch'), { code: 'category_scope_mismatch', categoryScopeMismatch: true, categoryPage: primaryPage });
+        h.runner.read = async () => { throw primary; };
+        h.runner.tryCategoryItemScope = async () => { throw Object.assign(new Error('Secondary probe failed'), { code }); };
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        await assert.rejects(h.runner.readCategory(leaf), error => error === primary && error.categoryPage === primaryPage && error.categoryFallbackCode === code,
+            'an inconclusive secondary probe cannot discard the original destination evidence');
+    }
+    for (const secondary of [Object.assign(new Error('Manual login'), { waitingLogin: true }),
+        Object.assign(new Error('Blocked'), { code: 'category_access_denied' }),
+        Object.assign(new Error('Cancelled'), { name: 'AbortError' }), new Error('Unexpected error')]) {
+        const h = harness(); h.initDirect(); await h.browser.prepare();
+        const primary = Object.assign(new Error('Primary timeout'), { code: 'category_load_timeout' });
+        h.runner.read = async () => { throw primary; };
+        h.runner.tryCategoryItemScope = async () => { throw secondary; };
+        h.runner.discoverOfficialCategoryRoute = async () => { assert.fail('fatal recovery errors must stop discovery'); };
+        await assert.rejects(h.runner.readCategory(leaf), error => error === secondary);
+    }
+}
+
 (async () => {
     await nextPageRestoresScope();
     await persistEveryPageAndReopenedAlias();
@@ -280,6 +358,9 @@ async function hrefPaginationRejectsKeywordRedirect() {
     await boundedOpeningNeedsAnExactItem();
     await javascriptNextStopsOnAccessDenied();
     await hrefPaginationRejectsKeywordRedirect();
+    await openingCanUseAnotherConfirmedAncestor();
+    await openingReusesOnlyTheCurrentProvenTransport();
+    await recoveryKeepsThePrimaryFailurePage();
     resumedCheckpointCannotChangeTransport();
     console.log('Pesquisa de Mercado scoped navigation: seller restoration, unmatched pagination, safe URLs and all checkpoint paths OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

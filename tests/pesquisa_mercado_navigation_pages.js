@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert/strict');
 const { normalizeCategory, PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
-const { OfficialCategoryNavigation, officialCategoryMoreUrl, categoryBasePath, neutralCategoryPage } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, CategoryNavigationError, officialCategoryMoreUrl, categoryBasePath, neutralCategoryPage } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
 const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({ key, nome, url });
 const navigation = options => new OfficialCategoryNavigation({ ancestry: [], children: {}, normalize: normalizeCategory,
     read: async () => { throw new Error('Unexpected navigation'); }, ...options });
@@ -181,7 +181,8 @@ async function runnerExpandedOptionsWaitForDestination() {
     const conflict = runnerFixture({ [modal]: { categories: [wanted], categoryDocumentIdentity: true,
         effectiveCategoryId: 'MLB999' } }, selected);
     await assert.rejects(conflict.runner.read(modal, 'category-options', selected.key, wanted),
-        error => error.code === 'category_scope_mismatch', 'an explicitly different parent cannot supply the expanded list');
+        error => error.code === 'category_scope_mismatch' && error.categoryPage.effectiveCategoryId === 'MLB999',
+        'an explicitly different parent cannot supply the expanded list and remains available as error evidence');
 }
 
 async function observedMissingRoutesStayCandidates() {
@@ -313,6 +314,246 @@ async function staticHubOnlySuppliesObservedChildLinks() {
     assert.equal(verification.polls(), 1, 'the verification wall stops category retries immediately');
 }
 
+async function navigationChildLinksDoNotReplaceDocumentIdentity() {
+    const hub = node('MLB1292', 'Ciclismo', cycling + '*_NoIndex_True');
+    const child = node('MLB1934', 'Peças', cycling + 'pecas/*_NoIndex_True');
+    // Public Ciclismo failure: five valid filters were already visible while
+    // its own document ID and listing had not finished arriving.
+    const filters = [node('MLB6790', 'Acessórios', cycling + 'acessorios/*_NoIndex_True'),
+        node('MLB459679', 'Bicicletas', cycling + 'bicicletas/*_NoIndex_True'),
+        node('MLB439159', 'Bicicletas Ergométricas', cycling + 'bicicletas-ergometricas/*_NoIndex_True'),
+        child, node('MLB1935', 'Roupas', cycling + 'roupas/*_NoIndex_True')];
+    const partial = { categoryDocumentIdentity: false, effectiveCategoryId: '', categoryIdentityConflict: false,
+        categoryContext: { key: hub.key, nome: hub.nome, baseUrl: cycling }, categories: filters, anuncios: [] };
+    const children = { [hub.key]: [child], [child.key]: [] };
+    const fixture = (patch = {}, source = hub.url) => {
+        const h = runnerFixture({ [source]: poll => typeof patch === 'function' ? patch(partial, poll) : { ...partial, ...patch } }, child);
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [hub, child], children };
+        h.runner.officialNavigation = navigation({ ancestry: [hub, child], children, read: (...args) => h.runner.read(...args) });
+        h.runner.officialNavigation.routes.set(hub.key, source);
+        return h;
+    };
+    for (const [source, transition] of [[hub.url, false], [cycling, true]]) {
+        const h = fixture({}, source);
+        assert.equal(h.runner.officialNavigation.choose(filters, child, source).url, child.url);
+        await assert.rejects(h.runner.read(source, 'navigation', hub.key, child, transition), error =>
+            error.code === 'category_load_timeout' && error.name === 'CategoryNavigationError' && error.categoryUnavailable
+            && error.navigationDependencyKey === hub.key && error.categoryPage.effectiveCategoryId === ''
+            && error.categoryPage.categoryDocumentIdentity === false && error.categoryPage.categories.length === 5,
+        'an observed child cannot supply the still-missing parent document identity');
+        assert.equal(h.polls(), 34);
+        assert.deepEqual(h.visited, [source], 'the typed timeout does not introduce three internal retries');
+    }
+    const eventual = fixture((page, poll) => poll <= 34 ? page : { ...page, categoryDocumentIdentity: true,
+        effectiveCategoryId: hub.key, anuncios: [{ id: 'confirmed-parent-item' }] });
+    assert.equal(await eventual.runner.officialNavigation.resolve(child.key), child.url);
+    assert.equal(eventual.polls(), 36, 'the second parent read must independently settle its own ID');
+    assert.deepEqual(eventual.visited, [hub.url, hub.url], 'the existing resolver gets one additional attempt');
+    const stalled = fixture();
+    await assert.rejects(stalled.runner.officialNavigation.resolve(child.key), error => error.code === 'category_load_timeout');
+    assert.equal(stalled.polls(), 68);
+    assert.deepEqual(stalled.visited, [hub.url, hub.url], 'persistent missing identity remains bounded to two resolver attempts');
+
+    for (const [description, categories] of [
+        ['missing child', filters.filter(item => item.key !== child.key)],
+        ['ambiguous child', [child, { ...child, url: cycling + 'pecas-alternativas/*_NoIndex_True' }]],
+        ['conflicting child ID', [{ ...child, key: 'MLB999' }]],
+        ['conflicting child path ID', [{ ...child, url: cycling + 'pecas/_CATEGORY_MLB999/*_NoIndex_True' }]]
+    ]) {
+        const h = fixture({ categories });
+        await assert.rejects(h.runner.read(hub.url, 'navigation', hub.key, child), error =>
+            error.code === 'category_link_missing' && error.categoryPage.categories.length === categories.length, description);
+        assert.deepEqual(h.visited, [hub.url], description + ' cannot acquire a new retry');
+    }
+    const unscoped = fixture({}, cycling);
+    const bareNavigation = await unscoped.runner.read(cycling, 'navigation', hub.key, child);
+    assert.equal(bareNavigation.categoryDocumentIdentity, false,
+        'ordinary bare-route child navigation retains its existing behavior without inventing an own ID');
+    assert.deepEqual(unscoped.visited, [cycling]);
+    const wrongDocument = fixture({ categoryDocumentIdentity: true, effectiveCategoryId: 'MLB999' });
+    await assert.rejects(wrongDocument.runner.read(hub.url, 'navigation', hub.key, child), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(wrongDocument.visited, [hub.url], 'a different own ID must not become a timeout retry');
+    const conflict = fixture({ categoryIdentityConflict: true });
+    await assert.rejects(conflict.runner.read(hub.url, 'navigation', hub.key, child), error => error.code !== 'category_load_timeout');
+    const auth = fixture({ authRequired: true });
+    await assert.rejects(auth.runner.read(hub.url, 'navigation', hub.key, child), error => error.waitingLogin === true);
+    assert.equal(auth.polls(), 1);
+    const blocked = fixture();
+    blocked.runner.browser.getNavigationStatus = () => ({ url: hub.url, statusCode: 403 });
+    await assert.rejects(blocked.runner.read(hub.url, 'navigation', hub.key, child), error => error.code === 'category_access_denied');
+    assert.equal(blocked.polls(), 1);
+}
+
+async function cachedSiblingLinksSurviveFailedRefresh() {
+    const hub = node('MLB1292', 'Ciclismo', cycling);
+    const known = node('MLB1934', 'Peças', cycling + 'pecas/*_NoIndex_True');
+    const wanted = node('MLB1935', 'Roupas', cycling + 'roupas/*_NoIndex_True');
+    const children = { [hub.key]: [known, wanted], [known.key]: [], [wanted.key]: [] };
+    for (const ambiguous of [false, true]) for (const failure of ['filters', 'auth', 'access']) {
+        const previous = [known, ...(ambiguous ? [wanted, { ...wanted, url: cycling + 'roupas-alternativas/*_NoIndex_True' }] : [])];
+        const refreshed = [wanted];
+        let reads = 0, failRefresh = true;
+        const error = failure === 'auth' ? Object.assign(new Error('Manual login required'), { waitingLogin: true })
+            : new CategoryNavigationError(failure === 'access' ? 'category_access_denied' : 'category_filters_unavailable', hub.key);
+        if (failure === 'access') error.status = 403;
+        const resolver = navigation({ ancestry: [hub], children, read: async (url, purpose, key, expected) => {
+            reads += 1;
+            assert.equal(url, hub.url); assert.equal(purpose, 'navigation'); assert.equal(key, hub.key); assert.equal(expected.key, wanted.key);
+            if (failRefresh) throw error;
+            return { url, categories: refreshed, categoryDocumentIdentity: false, effectiveCategoryId: '' };
+        } });
+        resolver.routes.set(hub.key, hub.url); resolver.links.set(hub.key, previous);
+        assert.equal(resolver.choose(previous, known, hub.url).url, known.url);
+        await assert.rejects(resolver.resolve(wanted.key), actual => actual === error,
+            'missing/ambiguous siblings must retain the refresh failure, including login and HTTP blocks');
+        const failedReads = failure === 'filters' ? 2 : 1;
+        assert.equal(reads, failedReads, 'auth/access errors interrupt immediately; loading retains the existing retry bound');
+        assert.equal(resolver.links.get(hub.key), previous, 'failed refresh must preserve previously observed sibling links');
+        assert.equal(resolver.routes.has(wanted.key), false, 'a failed refresh cannot resolve the missing sibling');
+        assert.equal(await resolver.resolve(known.key), known.url);
+        assert.equal(reads, failedReads, 'an unresolved sibling with a known href needs no repeated parent request');
+        failRefresh = false;
+        assert.equal(await resolver.resolve(wanted.key), wanted.url);
+        assert.equal(reads, failedReads + 1, 'a later explicit retry still refreshes the missing or ambiguous child');
+        assert.equal(resolver.links.get(hub.key), refreshed, 'a validated refresh replaces the old list without merging aliases');
+    }
+}
+
+async function neutralLandingMustProveTheLeaf() {
+    const brakeUrl = cycling + 'pecas/freios/';
+    const brakes = node('MLB9888', 'Freios', brakeUrl);
+    const landing = brakeUrl + 'kits-cabos-cambios/';
+    const wildcard = landing + '*_NoIndex_True';
+    const kits = node('MLB459353', 'Kits de cabos e câmbios', wildcard);
+    const parentPage = { categoryDocumentIdentity: true, effectiveCategoryId: brakes.key,
+        categoryContext: { key: brakes.key, baseUrl: brakeUrl }, anuncios: [{ id: 'mixed-parent-item' }], categoryItems: [] };
+    const leafPage = { categoryDocumentIdentity: true, effectiveCategoryId: kits.key,
+        categoryContext: { key: kits.key, baseUrl: landing }, anuncios: [{ id: 'confirmed-leaf-item' }] };
+    const fixture = pages => {
+        const h = runnerFixture({ [wildcard]: parentPage, [brakeUrl]: parentPage, ...pages }, kits);
+        const children = { [brakes.key]: [kits], [kits.key]: [] };
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [brakes, kits], children };
+        h.runner.officialNavigation = navigation({ ancestry: [brakes, kits], children });
+        h.runner.officialNavigation.routes.set(brakes.key, brakeUrl); h.runner.officialNavigation.routes.set(kits.key, wildcard);
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        return h;
+    };
+    const recovered = fixture({ [landing]: leafPage });
+    recovered.runner.discoverOfficialCategoryRoute = async () => assert.fail('a confirmed neutral landing needs no keyword discovery');
+    const page = await recovered.runner.readCategory(kits);
+    assert.equal(page.effectiveCategoryId, kits.key);
+    assert.deepEqual(recovered.visited, [wildcard, landing], 'only the exact observed neutral suffix is removed before extensive probes');
+
+    let transitioning;
+    transitioning = fixture({ [landing]: { categoryTrends: true, categoryBrowse: { key: kits.key, url: wildcard }, categoryDocumentIdentity: false, anuncios: [] },
+        [wildcard]: () => transitioning.visited.filter(url => url === wildcard).length === 1 ? parentPage : leafPage });
+    assert.equal((await transitioning.runner.readCategory(kits)).effectiveCategoryId, kits.key);
+    assert.deepEqual(transitioning.visited, [wildcard, landing, wildcard], 'a landing may use only its emitted, ID-coupled Trends template');
+
+    const wrong = fixture({ [landing]: parentPage });
+    let primary;
+    const read = wrong.runner.read.bind(wrong.runner);
+    wrong.runner.read = async (...args) => { try { return await read(...args); } catch (error) { if (!primary) primary = error; throw error; } };
+    wrong.runner.discoverOfficialCategoryRoute = async () => ({ ...kits, url: landing });
+    await assert.rejects(wrong.runner.readCategory(kits), error => error === primary && error.categoryPage.effectiveCategoryId === brakes.key,
+        'a neutral spelling cannot turn parent results into the requested leaf or discard the primary mismatch');
+    assert.equal(wrong.visited.filter(url => url === landing).length, 1, 'discovery cannot repeat a normalized route already rejected');
+    assert.deepEqual(wrong.visited, [wildcard, landing, brakeUrl]);
+
+    for (const source of [landing, wildcard + '?q=kits', landing + 'keyword_NoIndex_True']) {
+        const h = fixture({ [source]: parentPage });
+        h.runner.officialCategoryUrl = async () => source;
+        await assert.rejects(h.runner.readCategory(kits), error => error.code === 'category_scope_mismatch');
+        assert.equal(h.visited.filter(url => url === source).length, 1, 'bare, query and keyword routes cannot produce another normalized guess');
+        assert(h.visited.every(url => url === source || url === brakeUrl));
+    }
+    for (const kind of ['auth', 'access', 'abort']) {
+        const h = fixture({ [landing]: { ...leafPage, ...(kind === 'auth' ? { authRequired: true } : {}) } });
+        if (kind === 'access') h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: h.runner.browser.getURL() === landing ? 403 : 200 });
+        if (kind === 'abort') { const navigate = h.runner.browser.navigate; h.runner.browser.navigate = async url => { await navigate(url); if (url === landing) throw Object.assign(new Error('Cancelled'), { name: 'AbortError' }); }; }
+        await assert.rejects(h.runner.readCategory(kits), error => kind === 'auth' ? error.waitingLogin === true
+            : kind === 'access' ? error.code === 'category_access_denied' : error.name === 'AbortError');
+        assert.deepEqual(h.visited, [wildcard, landing], 'a security or cancellation barrier stops before ancestor probes');
+    }
+}
+
+async function failedWildcardCanUseStableTrendsChildLinks() {
+    const parts = node('MLB1934', 'Peças', cycling + 'pecas/');
+    const base = parts.url + 'kits-motor/', wildcard = base + '*_NoIndex_True';
+    const hub = node('MLB417791', 'Kits de Motor', wildcard);
+    const child = node('MLB420386', 'Kits Elétricos', base + 'eletricos/');
+    const sibling = node('MLB420395', 'Kits a Combustão', base + 'combustao/');
+    const parentPage = { categoryDocumentIdentity: true, effectiveCategoryId: parts.key,
+        categoryContext: { key: parts.key, baseUrl: parts.url }, anuncios: [{ id: 'ancestor-item' }] };
+    const trends = { categoryTrends: true, categoryDocumentIdentity: false, effectiveCategoryId: '',
+        categoryContext: { key: hub.key, baseUrl: base }, categoryBrowse: { key: hub.key, url: wildcard }, categories: [child, sibling], anuncios: [] };
+    const fixture = (patch = {}) => {
+        const h = runnerFixture({ [wildcard]: parentPage, [base]: poll => typeof patch === 'function' ? patch(trends, poll) : { ...trends, ...patch },
+            [child.url]: { categoryDocumentIdentity: true, effectiveCategoryId: child.key, anuncios: [{ id: 'leaf-item' }] },
+            [sibling.url]: { categoryDocumentIdentity: true, effectiveCategoryId: sibling.key, anuncios: [{ id: 'sibling-item' }] } }, child);
+        const children = { [parts.key]: [hub], [hub.key]: [child, sibling], [child.key]: [], [sibling.key]: [] };
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [parts, hub, child], children };
+        h.runner.officialNavigation = navigation({ ancestry: [parts, hub, child], children, read: (...args) => h.runner.read(...args) });
+        h.runner.officialNavigation.routes.set(parts.key, parts.url); h.runner.officialNavigation.routes.set(hub.key, wildcard);
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        return h;
+    };
+    const valid = fixture();
+    const page = await valid.runner.readCategory(node(child.key, child.nome));
+    assert.equal(page.effectiveCategoryId, child.key, 'the destination still proves its own leaf identity');
+    assert.deepEqual(valid.visited, [wildcard, base, child.url], 'the fallback follows one neutral landing and its observed child without reopening the failed wildcard');
+    assert.equal(valid.runner.officialNavigation.links.get(hub.key)[0].key, child.key);
+    assert.equal(trends.categoryDocumentIdentity, false); assert.equal(trends.effectiveCategoryId, '', 'Trends never receives the frozen parent ID as document proof');
+    assert.equal(await valid.runner.officialNavigation.resolve(sibling.key), sibling.url);
+    assert.deepEqual(valid.visited, [wildcard, base, child.url], 'the other observed child remains available without reloading the parent');
+    const ordinaryDocument = fixture({ categoryTrends: false, categoryBrowse: null, categoryDocumentIdentity: true, effectiveCategoryId: hub.key });
+    assert.equal(await ordinaryDocument.runner.officialNavigation.resolve(child.key), child.url,
+        'the fallback also retains normal navigation when a real parent document proves its own ID');
+    let reads = 0;
+    const changing = fixture(value => ({ ...value, categories: ++reads === 2 ? [{ ...child, url: base + 'alternative/' }] : [child, sibling] }));
+    assert.equal(await changing.runner.officialNavigation.resolve(child.key), child.url);
+    assert.equal(reads, 4, 'an inconsistent child href resets the two-read stability guard');
+    for (const [description, patch] of [
+        ['missing child', { categories: [sibling] }],
+        ['ambiguous child', { categories: [child, { ...child, url: base + 'alternative/' }] }],
+        ['conflicting child ID', { categories: [{ ...child, key: 'MLB999' }] }],
+        ['different context ID', { categoryContext: { key: parts.key, baseUrl: base } }],
+        ['different context route', { categoryContext: { key: hub.key, baseUrl: parts.url } }],
+        ['different browse ID', { categoryBrowse: { key: parts.key, url: wildcard } }],
+        ['different browse route', { categoryBrowse: { key: hub.key, url: parts.url + '*_NoIndex_True' } }],
+        ['conflicting own ID', { categoryDocumentIdentity: true, effectiveCategoryId: 'MLB999' }],
+        ['identity conflict', { categoryIdentityConflict: true }],
+        ['ordinary incomplete document', { categoryTrends: false, categoryBrowse: null }]
+    ]) {
+        const h = fixture(patch);
+        await assert.rejects(h.runner.officialNavigation.resolve(child.key), error => error.code === 'category_scope_mismatch'
+            && error.categoryPage.url === wildcard && error.categoryPage.effectiveCategoryId === parts.key, description);
+        assert.deepEqual(h.visited, [wildcard, base], description + ' preserves the primary failure instead of forcing its wildcard');
+    }
+    const unrelatedAncestor = fixture();
+    const execute = unrelatedAncestor.runner.browser.executeJavaScript;
+    unrelatedAncestor.runner.browser.executeJavaScript = async (...args) => {
+        const page = await execute(...args);
+        return page.url === wildcard ? { ...page, effectiveCategoryId: 'MLB999', categoryContext: { key: 'MLB999', baseUrl: parts.url } } : page;
+    };
+    await assert.rejects(unrelatedAncestor.runner.officialNavigation.resolve(child.key), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(unrelatedAncestor.visited, [wildcard], 'an unrelated own ID cannot authorize the parent landing fallback');
+    for (const kind of ['auth', 'access', 'abort']) {
+        const h = fixture(kind === 'auth' ? { authRequired: true } : {});
+        if (kind === 'access') h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: h.runner.browser.getURL() === base ? 403 : 200 });
+        if (kind === 'abort') { const navigate = h.runner.browser.navigate; h.runner.browser.navigate = async url => { await navigate(url); if (url === base) throw Object.assign(new Error('Cancelled'), { name: 'AbortError' }); }; }
+        await assert.rejects(h.runner.officialNavigation.resolve(child.key), error => kind === 'auth' ? error.waitingLogin === true
+            : kind === 'access' ? error.code === 'category_access_denied' : error.name === 'AbortError');
+        assert.deepEqual(h.visited, [wildcard, base]);
+    }
+    const ordinary = fixture();
+    await assert.rejects(ordinary.runner.read(base, 'navigation', hub.key, child), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(ordinary.visited, [base, wildcard], 'ordinary navigation retains its existing Trends transition behavior');
+    const strict = fixture();
+    await assert.rejects(strict.runner.read(base, 'category-transport', hub.key, { ...child, preferTrendsChildren: true }),
+        error => error.code === 'category_scope_mismatch', 'the private navigation flag cannot verify a parent listing');
+}
+
 (async () => {
     await expandedCategoryPages();
     await runnerTrendsTransition();
@@ -320,5 +561,9 @@ async function staticHubOnlySuppliesObservedChildLinks() {
     await observedMissingRoutesStayCandidates();
     await observedLegacyPathRequiresDestinationIdentity();
     await staticHubOnlySuppliesObservedChildLinks();
+    await navigationChildLinksDoNotReplaceDocumentIdentity();
+    await cachedSiblingLinksSurviveFailedRefresh();
+    await neutralLandingMustProveTheLeaf();
+    await failedWildcardCanUseStableTrendsChildLinks();
     console.log('Pesquisa de Mercado navigation: observed NoIndex routes, category IDs, safe expanded filters and proven Trends transitions OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -12,6 +12,7 @@ const LEAF = BASE + 'elastomeros/';
 const expected = { key: 'MLB122194', nome: 'Elastômeros' };
 const ancestry = [{ key: 'MLB1276', nome: 'Esportes e Fitness', url: 'https://www.mercadolivre.com.br/c/esportes-e-fitness' }, { key: 'MLB1292', nome: 'Ciclismo' },
     { key: 'MLB1934', nome: 'Peças' }, expected];
+const contextualTerms = ['Elastômeros Peças Ciclismo', 'Elastômeros Ciclismo'];
 const itemUrl = id => 'https://www.mercadolivre.com.br/up/MLBU123?wid=' + id + '#D[A:fixture]';
 const seed = (id = 'MLB999', categoryId = expected.key) => ({ id, categoryId, url: itemUrl(id) });
 const escape = value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -86,21 +87,26 @@ async function main() {
     try {
         await fixture(browser, { hydrationDelay: 35, check: async ({ run, terms, navigations, searchReads, diagnostics }) => {
             assert.deepEqual(await run(), { ...expected, url: LEAF }, JSON.stringify(diagnostics()));
-            assert.deepEqual(terms, ['Elastômeros']);
+            assert.deepEqual(terms, [contextualTerms[0]]);
             assert.equal(navigations[1], itemUrl('MLB999'), 'the original observed item URL and wid are retained');
             assert.ok(searchReads() >= 3, 'literal item metadata must wait for hydrated DOM ads and two stable reads');
             assert.equal(navigations.length, 2, 'the returned category is never opened or counted by discovery');
         } });
-        await fixture(browser, { rowsFor: term => term === 'Peças' ? [seed()] : [], check: async ({ run, terms }) => {
+        await fixture(browser, { rowsFor: term => term === contextualTerms[1] ? [seed()] : [], check: async ({ run, terms }) => {
             assert.deepEqual(await run(), { ...expected, url: LEAF });
-            assert.deepEqual(terms, ['Elastômeros', 'Peças'], 'the parent search is bounded and used only without an exact first seed or route');
+            assert.deepEqual(terms, contextualTerms, 'both bounded searches retain the requested leaf and its domain');
         } });
         await fixture(browser, { expected: { ...expected, nome: 'Outros' }, rows: [], check: async ({ run, terms }) => {
             assert.equal(await run(), null);
-            assert.deepEqual(terms, ['Outros Peças', 'Peças'], 'generic leaf labels retain their parent in the first search');
+            assert.deepEqual(terms, ['Outros Peças Ciclismo', 'Outros Ciclismo'], 'generic leaf labels never become an isolated parent query');
+        } });
+        await fixture(browser, { ancestry: [ancestry[0], ancestry[1], expected], rows: [], check: async ({ run, terms }) => {
+            assert.equal(await run(), null);
+            assert.deepEqual(terms, ['Elastômeros Ciclismo'], 'identical parent/domain labels and resulting terms are deduplicated');
         } });
         const cables = { key: 'MLB459353', nome: 'Kits de cabos e câmbios' };
         const cableAncestry = [...ancestry.slice(0, -1), { key: 'MLB9888', nome: 'Freios' }, cables];
+        const cableTerms = [cables.nome + ' Freios Ciclismo', cables.nome + ' Ciclismo'];
         const cableBase = BASE + 'freios/kits-cabos-cambios/';
         const typed = { ...cables, url: cableBase + 'cabo-de-freio_NoIndex_True' };
         const globalResult = 'https://lista.mercadolivre.com.br/cabo-de-freio?sb=all_mercadolibre#D[A:fixture]';
@@ -109,12 +115,15 @@ async function main() {
                 const candidate = await run();
                 assert.deepEqual(candidate, { ...cables, url: cableBase }, 'only the exact observed query suffix is removed from an ID-coupled filter URL');
                 assert.deepEqual(Object.keys(candidate).sort(), ['key', 'nome', 'url'], 'a discovered filter route does not promote document identity');
-                assert.deepEqual(terms, [cables.nome]); assert.deepEqual(navigations, [INDEX], 'typed routes are returned before opening item seeds or final categories');
+                assert.deepEqual(terms, [cableTerms[0]]); assert.deepEqual(navigations, [INDEX], 'typed routes are returned before opening item seeds or final categories');
             } });
         }
-        await fixture(browser, { expected: cables, ancestry: cableAncestry, resultUrl: globalResult, categoriesFor: term => term === 'Freios' ? [typed] : [], rows: [], check: async ({ run, terms }) => {
+        await fixture(browser, { expected: cables, ancestry: cableAncestry, resultUrl: globalResult,
+            categoriesFor: term => term === cableTerms[1] ? [typed] : [],
+            rowsFor: term => term === cableTerms[0] ? [seed('MLB999', 'MLB47097')] : [], check: async ({ run, terms, navigations }) => {
             assert.deepEqual(await run(), { ...cables, url: cableBase });
-            assert.deepEqual(terms, [cables.nome, 'Freios'], 'the parent query can expose an otherwise missing exact category filter');
+            assert.deepEqual(terms, cableTerms, 'a second contextual query cannot broaden to car brakes through the isolated parent label');
+            assert.deepEqual(navigations, [INDEX, INDEX], 'wrong-domain item metadata cannot authorize opening a PDP');
         } });
         for (const [description, options] of [
             ['different category ID', { categories: [{ ...typed, key: 'MLB9888' }] }],
@@ -187,6 +196,14 @@ async function main() {
         } });
         const during = new AbortController();
         await fixture(browser, { abortOnWait: () => during.abort(), check: async ({ run }) => { await assert.rejects(run(during.signal), error => error.name === 'AbortError'); } });
+        await fixture(browser, { rows: [], check: async ({ run, terms, navigations }) => {
+            const original = global.setTimeout;
+            global.setTimeout = (callback, delay, ...args) => original(callback, delay === 60000 ? 0 : delay, ...args);
+            try { assert.equal(await run(), null, 'the discovery deadline remains inconclusive rather than creating a route'); }
+            finally { global.setTimeout = original; }
+            assert.equal(terms.length, 0);
+            assert(navigations.length <= 1, 'timeout cannot start another search');
+        } });
         console.log('Category discovery: observed form, hydration, exact item membership, bounded seeds, public breadcrumbs, ambiguity, source identity, login/access and abort OK');
     } finally { await browser.close(); }
 }

@@ -832,6 +832,31 @@ class PesquisaMercadoRunner {
                         throw error;
                     }
                 } else { mismatchSignature = ''; mismatchReads = 0; }
+                if (purpose === 'navigation' && expectedChild?.preferTrendsChildren === true
+                    && (page.categoryTrends || !page.categoryDocumentIdentity || page.effectiveCategoryId !== categoryId)) {
+                    let signature = '';
+                    const navigation = this.officialNavigation, context = page.categoryContext, browse = page.categoryBrowse;
+                    const child = navigation && navigation.records.get(expectedChild.key);
+                    if (!loading && page.categoryTrends && !page.categoryIdentityConflict && !page.categoryNotFound
+                        && (!page.categoryDocumentIdentity || page.effectiveCategoryId === categoryId)
+                        && (!page.effectiveCategoryId || page.effectiveCategoryId === categoryId)
+                        && context?.key === categoryId && browse?.key === categoryId && child && child.nome === expectedChild.nome
+                        && navigation.parents.get(child.key) === categoryId
+                        && canonicalUrl(page.url) === canonicalUrl(this.browser.getURL())
+                        && neutralCategoryPage(url, page.url) && neutralCategoryPage(context.baseUrl, page.url)
+                        && neutralCategoryPage(browse.url, page.url)) {
+                        try {
+                            const selected = navigation.choose(page.categories, child, page.url);
+                            signature = JSON.stringify([page.url, context.baseUrl, browse.url, selected.key, selected.url]);
+                        } catch (_error) { /* Missing or ambiguous hrefs cannot become child navigation. */ }
+                    }
+                    hubReads = signature && signature === hubSignature ? hubReads + 1 : signature ? 1 : 0;
+                    hubSignature = signature;
+                    if (hubReads >= 2) return page;
+                    // This fallback must not force the wildcard that already
+                    // returned an ancestor instead of the requested parent.
+                    continue;
+                }
                 if (isCategory && page.categoryBrowse && !browseTransition && !loading
                     && canonicalUrl(page.url) === canonicalUrl(this.browser.getURL())) {
                     const browse = page.categoryBrowse;
@@ -885,6 +910,7 @@ class PesquisaMercadoRunner {
                             const error = new Error('O Mercado Livre nao reconheceu o endereco da categoria.');
                             error.code = 'category_not_found';
                             error.categoryUnavailable = true;
+                            error.categoryPage = page;
                             throw error;
                         }
                         return page;
@@ -899,12 +925,32 @@ class PesquisaMercadoRunner {
                 throw error;
             }
             if (purpose === 'index' && !isOfficialIndex && !page.authRequired && !page.avantAuthRequired) return page; // The homepage can link to the full category index instead.
-            if (isCategoryOptions) throw new CategoryNavigationError(page && (page.categoryIdentityConflict
-                || page.categoryDocumentIdentity && page.effectiveCategoryId && navigationCategoryId && page.effectiveCategoryId !== navigationCategoryId)
-                ? 'category_scope_mismatch' : 'category_link_missing', expectedChild && expectedChild.key || navigationCategoryId);
+            if (isCategoryOptions) {
+                const error = new CategoryNavigationError(page && (page.categoryIdentityConflict
+                    || page.categoryDocumentIdentity && page.effectiveCategoryId && navigationCategoryId && page.effectiveCategoryId !== navigationCategoryId)
+                    ? 'category_scope_mismatch' : 'category_link_missing', expectedChild && expectedChild.key || navigationCategoryId);
+                error.categoryPage = page;
+                throw error;
+            }
             if (purpose === 'navigation' && expectedChild) {
-                throw new CategoryNavigationError((page && page.categories || []).length ? 'category_link_missing' : 'category_filters_unavailable',
+                if (page && !page.categoryDocumentIdentity && !page.categoryIdentityConflict && !page.categoryNotFound
+                    && !page.authRequired && !page.avantAuthRequired && this.officialNavigation
+                    && (browseTransition || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname))) {
+                    let child = null;
+                    try { child = this.officialNavigation.choose(page.categories, expectedChild, page.url || url); }
+                    catch (_error) { /* Invalid or ambiguous links keep their existing classification below. */ }
+                    if (child) {
+                        // The child href is ready; its parent's own document ID
+                        // is still missing. Keep the resolver's bounded retry.
+                        const error = new CategoryNavigationError('category_load_timeout', navigationCategoryId);
+                        error.categoryPage = page;
+                        throw error;
+                    }
+                }
+                const error = new CategoryNavigationError((page && page.categories || []).length ? 'category_link_missing' : 'category_filters_unavailable',
                     (page && page.categories || []).length ? expectedChild.key : navigationCategoryId);
+                error.categoryPage = page;
+                throw error;
             }
             const error = new Error('A pagina ainda nao apresentou os dados para continuar a pesquisa.');
             error.code = 'category_load_timeout';
@@ -1004,12 +1050,13 @@ class PesquisaMercadoRunner {
         return { ...route, categoryBaseUrl: route.url, source: 'official_category_href' };
     }
 
-    async tryCategoryItemScope(category, page, categoryUrl) {
-        if (!page || page.categoryIdentityConflict || page.authRequired || page.avantAuthRequired) return null;
+    async tryCategoryItemScope(category, page, categoryUrl, { maxPages = 10, budget = null } = {}) {
+        if (page && (page.categoryIdentityConflict || page.authRequired || page.avantAuthRequired)) return null;
         const ancestry = officialTaxonomyPath(this.checkpoint, category.key);
         const base = value => { const parsed = new URL(value); parsed.pathname = categoryBasePath(parsed.pathname) + '/'; return parsed.href; };
         const ancestors = ancestry.slice(0, -1);
-        if (page.categoryDocumentIdentity && !ancestors.some(node => node.key === page.effectiveCategoryId)) return null;
+        if (page && page.categoryDocumentIdentity && !ancestors.some(node => node.key === page.effectiveCategoryId)) return null;
+        const candidates = [];
         for (const transport of [...ancestors].reverse()) {
             const known = this.officialNavigation && this.officialNavigation.routes.get(transport.key);
             if (!known) continue;
@@ -1017,27 +1064,56 @@ class PesquisaMercadoRunner {
                 transportBaseUrl: base(known), categoryBaseUrl: base(categoryUrl) };
             const path = itemScopeAncestry(this.checkpoint, descriptor);
             if (!validateCategoryItemScope(descriptor, path)) continue;
+            candidates.push({ transport, descriptor, path });
+        }
+        if (page && page.readyState === 'complete' && !(typeof this.browser.isLoading === 'function' && this.browser.isLoading())
+            && canonicalUrl(page.url) && canonicalUrl(page.url) === canonicalUrl(this.browser.getURL())) {
+            for (const { transport, path } of candidates) {
+                const scoped = scopeCategoryItems(page, { categoryKey: category.key, documentCategoryId: transport.key,
+                    categoryBaseUrl: categoryUrl }, path);
+                if (scoped) return scoped;
+            }
+        }
+        let remaining = Number.isSafeInteger(maxPages) ? Math.max(0, Math.min(10, maxPages)) : 10;
+        const sharedBudget = budget && Number.isSafeInteger(budget.remaining) && budget.remaining >= 0 ? budget : null;
+        if (sharedBudget) remaining = Math.min(remaining, sharedBudget.remaining);
+        const pending = [];
+        // Reserve one first page per known ancestor before spending the shared
+        // budget on pagination of the closest confirmed source.
+        for (const candidate of candidates) {
+            if (!remaining) break;
+            remaining -= 1;
+            if (sharedBudget) sharedBudget.remaining -= 1;
+            const { transport, descriptor, path } = candidate;
             let observed;
             try { observed = await this.read(descriptor.transportBaseUrl, 'category-transport', transport.key); }
             catch (error) {
                 if (['category_scope_mismatch', 'category_load_timeout', 'category_not_found'].includes(error.code)) continue;
                 throw error;
             }
+            const scoped = scopeCategoryItems(observed, { categoryKey: category.key, documentCategoryId: transport.key,
+                categoryBaseUrl: categoryUrl }, path);
+            if (scoped) return scoped;
+            pending.push({ ...candidate, observed });
+        }
+        const closest = pending[0];
+        if (closest) {
+            const { transport, descriptor, path } = closest;
+            let observed = closest.observed;
             const seen = new Set([observed.url]);
-            for (let index = 0; index < 10; index += 1) {
-                const scoped = scopeCategoryItems(observed, { categoryKey: category.key, documentCategoryId: transport.key,
-                    categoryBaseUrl: categoryUrl }, path);
-                if (scoped) return scoped;
-                // No exact items on this page does not prove an empty leaf.
-                if (index === 9 || !observed.nextUrl && !observed.hasNext) break;
+            while (remaining > 0 && (observed.nextUrl || observed.hasNext)) {
                 const next = canonicalUrl(observed.nextUrl);
                 if (next && (seen.has(next) || !categoryItemScopeUrlAllowed(next, descriptor))) break;
+                remaining -= 1;
+                if (sharedBudget) sharedBudget.remaining -= 1;
                 const advanced = await this.nextCategoryPage(observed, transport.key);
                 if (!advanced || seen.has(advanced.url) || !categoryItemScopeUrlAllowed(advanced.url, descriptor)) break;
                 seen.add(advanced.url);
+                const scoped = scopeCategoryItems(advanced, { categoryKey: category.key, documentCategoryId: transport.key,
+                    categoryBaseUrl: categoryUrl }, path);
+                if (scoped) return scoped;
                 observed = advanced;
             }
-            return null;
         }
         return null;
     }
@@ -1065,24 +1141,65 @@ class PesquisaMercadoRunner {
             }
             if (children.length) return { url: category.url, categories: children, hasChildren: true };
             let url = '';
+            let landingAttempted = false;
+            const attemptedRoutes = new Set();
+            const ancestorBudget = { remaining: 10 };
+            const recoverable = error => error.name !== 'AbortError' && !error.waitingLogin && ![401, 403, 429].includes(error.status)
+                && ['category_scope_mismatch', 'category_load_timeout', 'category_not_found'].includes(error.code);
+            const validateRoutePage = (route, page) => {
+                const renamedCategoryBase = page.categoryDocumentIdentity && !page.categoryIdentityConflict
+                    && page.effectiveCategoryId === category.key && page.categoryContext?.key === category.key
+                    && neutralCategoryPage(page.categoryContext.baseUrl, page.url);
+                if (!neutralCategoryPage(route, page.url) && !renamedCategoryBase) {
+                    const error = new CategoryNavigationError('category_scope_mismatch', category.key);
+                    error.categoryScopeMismatch = true;
+                    error.categoryPage = page;
+                    throw error;
+                }
+                return page;
+            };
             const readRoute = async (route, strict = false) => {
+                attemptedRoutes.add(route);
                 try {
                     const page = await this.read(route, strict ? 'category-transport' : 'category', strict ? category.key : '');
-                    const renamedCategoryBase = page.categoryDocumentIdentity && !page.categoryIdentityConflict
-                        && page.effectiveCategoryId === category.key && page.categoryContext?.key === category.key
-                        && neutralCategoryPage(page.categoryContext.baseUrl, page.url);
-                    if (!neutralCategoryPage(route, page.url) && !renamedCategoryBase) {
-                        const error = new CategoryNavigationError('category_scope_mismatch', category.key);
-                        error.categoryScopeMismatch = true;
-                        error.categoryPage = page;
-                        throw error;
-                    }
-                    return page;
+                    return validateRoutePage(route, page);
                 }
                 catch (error) {
                     if (error.categoryScopeMismatch || error.code === 'category_load_timeout') {
-                        const scoped = await this.tryCategoryItemScope(category, error.categoryPage, route);
-                        if (scoped) return scoped;
+                        let fallbackPage = error.categoryPage;
+                        try {
+                            const reused = await this.tryCategoryItemScope(category, fallbackPage, route, { maxPages: 0 });
+                            if (reused) return reused;
+                        } catch (fallbackError) {
+                            if (!recoverable(fallbackError)) throw fallbackError;
+                            error.categoryFallbackCode = fallbackError.code;
+                        }
+                        const knownAncestor = fallbackPage?.categoryDocumentIdentity && !fallbackPage.categoryIdentityConflict
+                            && !fallbackPage.authRequired && !fallbackPage.avantAuthRequired
+                            && officialTaxonomyPath(this.checkpoint, category.key).slice(0, -1).some(node => node.key === fallbackPage.effectiveCategoryId);
+                        const landing = new URL(route);
+                        if (!landingAttempted && knownAncestor && !landing.search && !landing.hash && /\/\*_NoIndex_True\/?$/.test(landing.pathname)) {
+                            landing.pathname = landing.pathname.replace(/\/\*_NoIndex_True\/?$/, '/');
+                            if (landing.pathname !== '/' && neutralCategoryPage(route, landing.href) && !attemptedRoutes.has(landing.href)) {
+                                landingAttempted = true; attemptedRoutes.add(landing.href);
+                                try {
+                                    // Removing a neutral suffix supplies only a route candidate.
+                                    // The landing/template must still prove this leaf's own ID.
+                                    return validateRoutePage(route, await this.read(landing.href, 'category-transport', category.key));
+                                } catch (landingError) {
+                                    if (!recoverable(landingError)) throw landingError;
+                                    error.categoryLandingCode = landingError.code;
+                                    fallbackPage = landingError.categoryPage || fallbackPage;
+                                }
+                            }
+                        }
+                        try {
+                            const scoped = await this.tryCategoryItemScope(category, fallbackPage, route, { budget: ancestorBudget });
+                            if (scoped) return scoped;
+                        } catch (fallbackError) {
+                            if (!recoverable(fallbackError)) throw fallbackError;
+                            error.categoryFallbackCode = fallbackError.code;
+                        }
                     }
                     throw error;
                 }
@@ -1092,7 +1209,7 @@ class PesquisaMercadoRunner {
             catch (error) {
                 if (!['category_link_missing', 'category_filters_unavailable', 'category_scope_mismatch', 'category_load_timeout', 'category_not_found'].includes(error.code)) throw error;
                 const discovered = await this.discoverOfficialCategoryRoute(category);
-                if (!discovered || discovered.url === url) throw error;
+                if (!discovered || attemptedRoutes.has(discovered.url)) throw error;
                 page = await readRoute(discovered.url, true);
                 this.officialNavigation.routes.set(category.key, discovered.url);
             }
