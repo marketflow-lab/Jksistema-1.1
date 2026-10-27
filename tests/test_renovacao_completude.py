@@ -50,8 +50,18 @@ def _campaigns(include_destination=False):
 
 @pytest.fixture(autouse=True)
 def offline_runtime(monkeypatch):
+    state = {"destination": {}}
+
     def forbidden(*args, **kwargs):
         pytest.fail("Unexpected network or mutation outside the simulated boundary")
+
+    def exact_item(client, store, cfg, item, **kwargs):
+        assert kwargs.get("strict") is True
+        assert kwargs.get("force_refresh") is True
+        records = [_entry(item)]
+        if item in state["destination"]:
+            records.append(copy.deepcopy(state["destination"][item]))
+        return records, cfg
 
     monkeypatch.setattr(requests.sessions.Session, "request", forbidden)
     monkeypatch.setattr(helpers.ctx, "_ml_api_request", forbidden)
@@ -59,8 +69,9 @@ def offline_runtime(monkeypatch):
                         lambda value: None if value is None else float(value))
     monkeypatch.setattr(helpers.ctx, "_ml_extrair_preco_promocao_raw",
                         lambda raw, **kwargs: (raw.get("price"), raw.get("discount_percentage")))
-    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item",
-                        lambda client, store, cfg, item, **kwargs: ([], cfg))
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", exact_item)
+    monkeypatch.setattr(helpers.ctx, "_ml_listar_ids_anuncios_ativos",
+                        lambda client, store, cfg, seller, **kwargs: ([], cfg))
     monkeypatch.setattr(helpers.ctx, "_ml_extrair_ids_promocoes_item",
                         lambda records: {str(entry.get("campaign_id") or entry.get("id") or "").lower()
                                          for entry in records if isinstance(entry, dict)})
@@ -75,6 +86,7 @@ def offline_runtime(monkeypatch):
                             "id": item, "price": 80, "original_price": 100, "currency_id": "BRL",
                         } for item in items], cfg))
     monkeypatch.setattr(helpers.ctx, "_cache_invalidar_loja", lambda *args: None)
+    return state
 
 
 def _patch_direct(monkeypatch, item_ids, raw=None):
@@ -139,7 +151,7 @@ def test_partial_61_of_908_still_incomplete_after_complement_raises_409(monkeypa
     assert set(scans[0]) == set(IDS[:61])
 
 
-def test_partial_page_is_completed_before_any_item_mutation(monkeypatch):
+def test_partial_page_is_completed_before_any_item_mutation(monkeypatch, offline_runtime):
     _patch_direct(monkeypatch, IDS[:61])
     state = {"completed": False, "mutations": []}
 
@@ -153,6 +165,7 @@ def test_partial_page_is_completed_before_any_item_mutation(monkeypatch):
     def apply(client, store, cfg, item, *args, **kwargs):
         assert state["completed"]
         state["mutations"].append(item)
+        offline_runtime["destination"][item] = _entry(item, "pending", campaign_id=DESTINATION)
         return True, "", cfg
 
     monkeypatch.setattr(helpers, "_renovacao_complementar_itens_campanha_por_varredura", complement)
@@ -172,6 +185,13 @@ def test_candidates_do_not_make_a_partial_source_look_complete(monkeypatch):
            for index, item in enumerate(IDS)}
     _patch_direct(monkeypatch, IDS, raw)
     scans = _patch_incomplete_complement(monkeypatch)
+
+    def exact_item(client, store, cfg, item, **kwargs):
+        assert kwargs.get("strict") is True
+        assert kwargs.get("force_refresh") is True
+        return [copy.deepcopy(raw[item])], cfg
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", exact_item)
     with pytest.raises(HTTPException) as error:
         helpers._renovacao_listar_itens_campanha(
             TENANT, STORE, CFG, SOURCE, "SELLER_CAMPAIGN", expected_count=908
@@ -186,6 +206,7 @@ def test_missing_direct_raw_can_be_confirmed_pending_by_fresh_exact_item_get(mon
 
     def exact_item(client, store, cfg, item, **kwargs):
         assert (client, store, item) == (TENANT, STORE, IDS[0])
+        assert kwargs.get("strict") is True
         assert kwargs.get("force_refresh") is True
         lookups.append(item)
         return [{"id": SOURCE, "type": "SELLER_CAMPAIGN", "status": "pending",
@@ -206,6 +227,7 @@ def test_complement_uses_fresh_item_state_and_filters_candidates(monkeypatch):
     lookups = []
 
     def exact_item(client, store, cfg, item, **kwargs):
+        assert kwargs.get("strict") is True
         assert kwargs.get("force_refresh") is True
         lookups.append(item)
         return [{"id": SOURCE, "type": "SELLER_CAMPAIGN",
@@ -254,7 +276,7 @@ def test_monthly_incomplete_source_blocks_campaign_creation_and_all_item_mutatio
     _assert_incomplete(error, 908, 61)
 
 
-def test_monthly_passes_expected_count_and_reuses_complete_preflight(monkeypatch):
+def test_monthly_passes_expected_count_and_reuses_complete_preflight(monkeypatch, offline_runtime):
     source_calls = []
     items, raw = _snapshot(IDS)
 
@@ -270,8 +292,11 @@ def test_monthly_passes_expected_count_and_reuses_complete_preflight(monkeypatch
     monkeypatch.setattr(operations, "_renovacao_criar_campanha_ml",
                         lambda client, store, cfg, *args, **kwargs:
                         (DESTINATION, {"name": "Promo Novembro"}, cfg))
-    monkeypatch.setattr(operations, "_renovacao_adicionar_item_campanha",
-                        lambda client, store, cfg, *args, **kwargs: (True, "", cfg))
+    def apply(client, store, cfg, item, *args, **kwargs):
+        offline_runtime["destination"][item] = _entry(item, "pending", campaign_id=DESTINATION)
+        return True, "", cfg
+
+    monkeypatch.setattr(operations, "_renovacao_adicionar_item_campanha", apply)
     result = operations._renovacao_criar_ou_completar_proximo_mes(
         TENANT, STORE, SOURCE, "Promo Novembro"
     )
@@ -306,7 +331,7 @@ def test_expected_count_covers_active_programmed_and_total_fallback():
     assert helpers._renovacao_contagem_esperada({"total_count": 908}) == 908
 
 
-def test_complete_908_source_keeps_31_item_failures_separate_from_missing_collection(monkeypatch):
+def test_complete_908_source_keeps_31_item_failures_separate_from_missing_collection(monkeypatch, offline_runtime):
     items, raw = _snapshot(IDS)
     failed = set(IDS[:31])
 
@@ -314,7 +339,10 @@ def test_complete_908_source_keeps_31_item_failures_separate_from_missing_collec
         return (copy.deepcopy(items), copy.deepcopy(raw), cfg) if campaign == SOURCE else ([], {}, cfg)
 
     def apply(client, store, cfg, item, *args, **kwargs):
-        return (False, "Simulated participation failure", cfg) if item in failed else (True, "", cfg)
+        if item in failed:
+            return False, "Simulated participation failure", cfg
+        offline_runtime["destination"][item] = _entry(item, "pending", campaign_id=DESTINATION)
+        return True, "", cfg
 
     monkeypatch.setattr(operations, "_renovacao_listar_itens_campanha", listing)
     monkeypatch.setattr(operations, "_renovacao_adicionar_item_campanha", apply)
@@ -326,38 +354,51 @@ def test_complete_908_source_keeps_31_item_failures_separate_from_missing_collec
     assert result["incluidos"] == 877
     assert result["falhas_total"] == 31
     assert {entry["item_id"] for entry in result["falhas"]} == failed
-    assert {entry["erro"] for entry in result["falhas"]} == {"Simulated participation failure"}
+    assert result["erros_operacao"] == {item: "Simulated participation failure" for item in failed}
+    assert result["conferencia"]["pendentes"] == 31
 
 
 @pytest.mark.parametrize("status_fields", [
-    {"status_item": "active"},
-    {"statusItem": "pending"},
+    {"state": "pending"},
     {"status": {"id": "pending"}},
 ])
-def test_participant_gate_accepts_explicit_status_aliases(status_fields):
+def test_exact_participant_gate_accepts_explicit_promotion_state(status_fields):
     raw = _entry(IDS[0])
     raw.pop("status")
     raw.update(status_fields)
-    assert helpers._renovacao_participante_campanha(
-        raw, SOURCE, IDS[0], contexto_campanha=True
-    )
+    result = helpers._renovacao_selecionar_participacao_exata([raw], SOURCE, IDS[0])
+    assert result["situacao"] == "participante"
 
 
-def test_pending_status_alias_is_collected_without_an_extra_item_get(monkeypatch):
+def test_listing_status_alone_is_inconclusive_for_exact_campaign_membership():
+    raw = _entry(IDS[0])
+    raw.pop("status")
+    raw["status_item"] = "active"
+    result = helpers._renovacao_selecionar_participacao_exata([raw], SOURCE, IDS[0])
+    assert result["situacao"] == "inconclusivo"
+
+
+def test_pending_direct_alias_requires_strict_item_get_before_counting_participation(monkeypatch):
     raw = _entry(IDS[0])
     raw.pop("status")
     raw["statusItem"] = "pending"
     _patch_direct(monkeypatch, IDS[:1], {IDS[0]: raw})
 
-    def unnecessary_lookup(*args, **kwargs):
-        pytest.fail("An explicit pending status alias already confirms participation")
+    lookups = []
 
-    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", unnecessary_lookup)
+    def exact_item(client, store, cfg, item, **kwargs):
+        assert kwargs.get("strict") is True
+        assert kwargs.get("force_refresh") is True
+        lookups.append(item)
+        return [_entry(item, "pending")], cfg
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", exact_item)
     items, collected, _ = helpers._renovacao_listar_itens_campanha(
         TENANT, STORE, CFG, SOURCE, "SELLER_CAMPAIGN", expected_count=1
     )
     assert items == [{"id": IDS[0]}]
-    assert collected[IDS[0]]["statusItem"] == "pending"
+    assert collected[IDS[0]]["status"] == "pending"
+    assert lookups == IDS[:1]
 
 
 def test_partly_unknown_metadata_refreshes_both_counts_before_accepting_908_items(monkeypatch):

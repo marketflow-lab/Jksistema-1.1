@@ -65,6 +65,7 @@ def offline_runtime(monkeypatch):
         helpers.ctx, "_ml_extrair_preco_promocao_raw", pricing._ml_extrair_preco_promocao_raw
     )
     monkeypatch.setattr(helpers.ctx, "_ml_api_request", unexpected)
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", unexpected)
     monkeypatch.setattr(
         helpers.ctx,
         "_ml_obter_item_promocao_raw",
@@ -72,6 +73,27 @@ def offline_runtime(monkeypatch):
     )
     monkeypatch.setattr(helpers.ctx, "_ml_parse_error_detail", lambda response, message: message)
     monkeypatch.setattr(helpers.ctx, "_cache_invalidar_loja", lambda *args: None)
+
+
+def _patch_offer_state(monkeypatch, destination=None):
+    state = SimpleNamespace(
+        source=_participation(80, 100, SOURCE),
+        destination=copy.deepcopy(destination),
+        lookups=[],
+    )
+
+    def fresh(client, store, cfg, item, **kwargs):
+        assert (client, store, item) == (TENANT, STORE, ITEM)
+        assert kwargs.get("strict") is True
+        assert kwargs.get("force_refresh") is True
+        state.lookups.append(copy.deepcopy(state.destination))
+        records = [copy.deepcopy(state.source)]
+        if state.destination is not None:
+            records.append(copy.deepcopy(state.destination))
+        return records, cfg
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", fresh)
+    return state
 
 
 @pytest.mark.parametrize("base,percentage,expected", [
@@ -166,33 +188,38 @@ def test_missing_conflicting_or_foreign_standard_price_is_not_replaced_by_sale_p
 @pytest.mark.parametrize("prefer_percentage", [False, True])
 def test_inclusion_recalculates_documented_price_from_source_percentage(monkeypatch, prefer_percentage):
     calls = []
+    state = _patch_offer_state(monkeypatch)
 
     def request(client, store, cfg, method, url, **kwargs):
         assert (client, store, method) == (TENANT, STORE, "POST")
         assert url == f"https://api.mercadolibre.com/seller-promotions/items/{ITEM}"
         calls.append(kwargs["json"])
+        state.destination = _participation(160, 200)
         return _response(_participation(160, 200)), cfg
 
     monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     ok, _, _ = promotions._renovacao_adicionar_item_campanha(
         TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80,
-        preferir_percentual=prefer_percentage,
+        preferir_percentual=prefer_percentage, campanha_origem_id=SOURCE,
     )
     assert ok
     assert calls == [{"promotion_id": DESTINATION, "promotion_type": "SELLER_CAMPAIGN", "deal_price": 160}]
+    assert state.lookups[0] is None and state.lookups[-1]["price"] == 160
 
 
 def test_http_success_with_a_divergent_discount_is_not_reported_as_preserved(monkeypatch):
     calls = []
+    state = _patch_offer_state(monkeypatch)
 
     def request(client, store, cfg, method, url, **kwargs):
         assert method in {"POST", "PUT"}
         calls.append(method)
+        state.destination = _participation(180, 200)
         return _response(_participation(180, 200)), cfg
 
     monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     ok, error, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert not ok
     assert error
@@ -200,43 +227,46 @@ def test_http_success_with_a_divergent_discount_is_not_reported_as_preserved(mon
 
 
 def test_empty_http_success_requires_confirmed_destination_prices(monkeypatch):
+    state = _patch_offer_state(monkeypatch)
     monkeypatch.setattr(promotions.ctx, "_ml_api_request",
                         lambda client, store, cfg, *args, **kwargs: (_response({}), cfg))
     ok, error, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert not ok
     assert error
+    assert state.lookups and all(raw is None for raw in state.lookups)
 
 
 def test_empty_http_success_can_be_confirmed_by_exact_destination_lookup(monkeypatch):
-    lookups = []
-    monkeypatch.setattr(promotions.ctx, "_ml_api_request",
-                        lambda client, store, cfg, *args, **kwargs: (_response({}), cfg))
+    state = _patch_offer_state(monkeypatch)
 
-    def lookup(client, store, cfg, campaign, kind, item):
-        lookups.append((client, store, campaign, kind, item))
-        return _participation(160, 200), cfg
+    def request(client, store, cfg, method, url, **kwargs):
+        assert method == "POST"
+        state.destination = _participation(160, 200)
+        return _response({}), cfg
 
-    monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw", lookup)
+    monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     ok, _, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert ok
-    assert lookups == [(TENANT, STORE, DESTINATION, "SELLER_CAMPAIGN", ITEM)]
+    assert state.lookups[0] is None and state.lookups[-1] == _participation(160, 200)
 
 
 def test_concurrent_base_change_allows_one_recalculation_without_delete(monkeypatch):
     calls = []
+    state = _patch_offer_state(monkeypatch)
 
     def request(client, store, cfg, method, url, **kwargs):
         calls.append((method, kwargs["json"]["deal_price"]))
         body = _participation(160, 250) if len(calls) == 1 else _participation(200, 250)
+        state.destination = copy.deepcopy(body)
         return _response(body), cfg
 
     monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     ok, _, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert ok
     assert calls == [("POST", 160), ("PUT", 200)]
@@ -244,13 +274,13 @@ def test_concurrent_base_change_allows_one_recalculation_without_delete(monkeypa
 
 def _patch_copy_flow(monkeypatch, destination_price=None):
     calls = []
-    source = _participation(80, 100, SOURCE)
-    source["discount_percentage"] = 20
     destination = _participation(destination_price, 200) if destination_price else None
+    state = _patch_offer_state(monkeypatch, destination)
+    state.source["discount_percentage"] = 20
 
     def listing(client, store, cfg, campaign, *args, **kwargs):
         assert (client, store) == (TENANT, STORE)
-        raw = source if campaign == SOURCE else destination
+        raw = state.source if campaign == SOURCE else state.destination
         return ([{"id": ITEM}], {ITEM: copy.deepcopy(raw)}, cfg) if raw else ([], {}, cfg)
 
     def request(client, store, cfg, method, url, **kwargs):
@@ -258,6 +288,7 @@ def _patch_copy_flow(monkeypatch, destination_price=None):
         assert method in {"POST", "PUT"}
         assert url == f"https://api.mercadolibre.com/seller-promotions/items/{ITEM}"
         calls.append((method, copy.deepcopy(kwargs["json"])))
+        state.destination = _participation(160, 200)
         return _response(_participation(160, 200)), cfg
 
     monkeypatch.setattr(promotions, "_renovacao_listar_itens_campanha", listing)
@@ -266,9 +297,6 @@ def _patch_copy_flow(monkeypatch, destination_price=None):
                         lambda client, store, cfg, ids: ([{
                             "id": ITEM, "price": 80, "original_price": 200, "currency_id": "BRL",
                         }], cfg))
-    monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw",
-                        lambda client, store, cfg, campaign, kind, item:
-                        (copy.deepcopy(source if campaign == SOURCE else destination or {}), cfg))
     return calls
 
 
@@ -276,7 +304,7 @@ def _patch_copy_flow(monkeypatch, destination_price=None):
 def test_existing_items_are_compared_and_only_divergent_prices_are_updated(monkeypatch, destination_price, expected_updates):
     calls = _patch_copy_flow(monkeypatch, destination_price)
     result, _ = promotions._renovacao_copiar_mlbs_campanha(
-        TENANT, STORE, CFG, SOURCE, DESTINATION
+        TENANT, STORE, CFG, SOURCE, DESTINATION, expected_origem_count=1, expected_destino_count=1,
     )
     assert result["mlbs_ja_presentes"] == 1
     assert result["incluidos"] == 0
@@ -291,9 +319,10 @@ def test_monthly_renewal_and_synchronization_preserve_the_same_source_percentage
     calls = _patch_copy_flow(monkeypatch)
     campaigns = [{"id": SOURCE, "name": "Promo Outubro", "promotion_type": "SELLER_CAMPAIGN",
                   "start_date": "2030-10-01T00:00:00", "finish_date": "2030-11-01T00:00:00",
-                  "active_count": 1}]
+                  "active_count": 1, "programmed_count": 0}]
     if operation == "synchronization":
-        campaigns.append({"id": DESTINATION, "name": "Promo Novembro", "promotion_type": "SELLER_CAMPAIGN"})
+        campaigns.append({"id": DESTINATION, "name": "Promo Novembro", "promotion_type": "SELLER_CAMPAIGN",
+                          "active_count": 0, "programmed_count": 0})
     monkeypatch.setattr(promotions, "_renovacao_ml_listar_campanhas_usuario",
                         lambda client, store: (copy.deepcopy(campaigns), CFG))
     monkeypatch.setattr(promotions, "_renovacao_criar_campanha_ml",
@@ -315,28 +344,41 @@ def test_monthly_renewal_and_synchronization_preserve_the_same_source_percentage
 
 
 @pytest.mark.parametrize("status", ["candidate", "eligible", "finished"])
-def test_explicit_nonparticipating_http_success_is_rejected_even_if_readback_looks_valid(monkeypatch, status):
+def test_nonparticipating_fresh_state_is_not_overridden_by_http_success_or_cached_readback(monkeypatch, status):
+    state = _patch_offer_state(monkeypatch)
     body = {**_participation(160, 200), "status": status}
-    monkeypatch.setattr(promotions.ctx, "_ml_api_request",
-                        lambda client, store, cfg, *args, **kwargs: (_response(body), cfg))
+
+    def request(client, store, cfg, method, url, **kwargs):
+        assert method == "POST"
+        state.destination = copy.deepcopy(body)
+        return _response(_participation(160, 200)), cfg
+
+    monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw",
                         lambda client, store, cfg, *args: (_participation(160, 200), cfg))
     ok, error, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert not ok
     assert error
 
 
-def test_documented_response_without_status_can_confirm_discount(monkeypatch):
+def test_documented_response_without_status_requires_fresh_membership_to_confirm_discount(monkeypatch):
+    state = _patch_offer_state(monkeypatch)
     body = _participation(160, 200)
     body.pop("status")
-    monkeypatch.setattr(promotions.ctx, "_ml_api_request",
-                        lambda client, store, cfg, *args, **kwargs: (_response(body), cfg))
+
+    def request(client, store, cfg, method, url, **kwargs):
+        assert method == "POST"
+        state.destination = _participation(160, 200)
+        return _response(body), cfg
+
+    monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     ok, _, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert ok
+    assert len(state.lookups) >= 2 and state.lookups[-1]["status"] == "pending"
 
 
 @pytest.mark.parametrize("conflict", [
@@ -344,14 +386,20 @@ def test_documented_response_without_status_can_confirm_discount(monkeypatch):
     {"promotion": {"id": SOURCE}},
     {"item": {"id": "MLB999000999"}},
 ])
-def test_nested_identity_conflict_is_rejected_even_if_readback_looks_valid(monkeypatch, conflict):
+def test_nested_fresh_identity_conflict_is_not_overridden_by_http_success_or_cached_readback(monkeypatch, conflict):
+    state = _patch_offer_state(monkeypatch)
     body = {**_participation(160, 200), **conflict}
-    monkeypatch.setattr(promotions.ctx, "_ml_api_request",
-                        lambda client, store, cfg, *args, **kwargs: (_response(body), cfg))
+
+    def request(client, store, cfg, method, url, **kwargs):
+        assert method == "POST"
+        state.destination = copy.deepcopy(body)
+        return _response(_participation(160, 200)), cfg
+
+    monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
     monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw",
                         lambda client, store, cfg, *args: (_participation(160, 200), cfg))
     ok, error, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert not ok
     assert error
@@ -359,17 +407,24 @@ def test_nested_identity_conflict_is_rejected_even_if_readback_looks_valid(monke
 
 def test_stale_readback_with_old_base_cannot_hide_wrong_applied_percentage(monkeypatch):
     calls = []
+    legacy_lookups = []
+    state = _patch_offer_state(monkeypatch)
 
     def request(client, store, cfg, method, url, **kwargs):
         calls.append((method, kwargs["json"]["deal_price"]))
+        state.destination = _participation(100, 200)
         return _response(_participation(100, 200)), cfg
 
+    def cached_lookup(client, store, cfg, *args):
+        legacy_lookups.append(args)
+        return _participation(80, 100), cfg
+
     monkeypatch.setattr(promotions.ctx, "_ml_api_request", request)
-    monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw",
-                        lambda client, store, cfg, *args: (_participation(80, 100), cfg))
+    monkeypatch.setattr(promotions.ctx, "_ml_obter_item_promocao_raw", cached_lookup)
     ok, error, _ = promotions._renovacao_adicionar_item_campanha(
-        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80
+        TENANT, STORE, CFG, ITEM, DESTINATION, 20, 200, 80, campanha_origem_id=SOURCE,
     )
     assert not ok
     assert error
-    assert calls == [("POST", 160)]
+    assert calls == [("POST", 160), ("PUT", 160)]
+    assert legacy_lookups == []

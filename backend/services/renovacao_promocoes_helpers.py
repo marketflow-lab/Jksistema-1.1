@@ -37,6 +37,8 @@ def _renovacao_tipo_campanha(campanha_id: str, tipo: str = "") -> str:
 
 
 def _renovacao_contagem_esperada(campanha: dict) -> Optional[int]:
+    if campanha.get("contagens_verificadas") is False:
+        return None
     def numero(valor):
         n = ctx._parse_float_flex(valor)
         return int(n) if n is not None and math.isfinite(float(n)) and n >= 0 else None
@@ -95,9 +97,91 @@ def _renovacao_participante_campanha(
     return not identificador.upper().startswith("MLB") or identificador == item_id
 
 
+def _renovacao_selecionar_participacao_exata(
+    promocoes: list, campanha_id: str, item_id: str, seller_id=None,
+) -> dict:
+    if not isinstance(promocoes, list) or any(not isinstance(raw, dict) for raw in promocoes):
+        return {"situacao": "inconclusivo", "erro": "Resposta de participacoes invalida"}
+    participantes = []
+    for raw in promocoes:
+        refs = [str(raw[key]) for key in ("promotion_id", "campaign_id", "promotionId", "campaignId") if raw.get(key)]
+        for key in ("promotion", "campaign"):
+            nested = raw.get(key)
+            if isinstance(nested, dict) and nested.get("id"):
+                refs.append(str(nested["id"]))
+        identificador = str(raw.get("id") or "")
+        if identificador.upper().startswith("C-MLB"):
+            refs.append(identificador)
+        if campanha_id not in refs:
+            tipos = {str(raw[key]).strip().upper() for key in ("type", "promotion_type") if raw.get(key)}
+            if not refs and (not tipos or "SELLER_CAMPAIGN" in tipos):
+                return {"situacao": "inconclusivo", "erro": "Registro sem identificador da campanha"}
+            continue
+        if any(ref != campanha_id for ref in refs):
+            return {"situacao": "inconclusivo", "erro": "Identificadores de campanha conflitantes"}
+        if identificador.upper().startswith("MLB") and identificador != item_id:
+            return {"situacao": "inconclusivo", "erro": "Participacao pertence a outro anuncio"}
+        for key in ("item_id", "itemId", "item_id_to"):
+            if raw.get(key) and str(raw[key]) != item_id:
+                return {"situacao": "inconclusivo", "erro": "Participacao pertence a outro anuncio"}
+        nested = raw.get("item")
+        explicit_item = nested.get("id") if isinstance(nested, dict) else nested
+        if explicit_item and str(explicit_item) != item_id:
+            return {"situacao": "inconclusivo", "erro": "Participacao pertence a outro anuncio"}
+        for key in ("seller_id", "user_id"):
+            if seller_id is not None and raw.get(key) and str(raw[key]) != str(seller_id):
+                return {"situacao": "inconclusivo", "erro": "Participacao pertence a outra conta"}
+        tipos = {str(raw[key]).strip().upper() for key in ("promotion_type", "type") if raw.get(key)}
+        if tipos - {"SELLER_CAMPAIGN"}:
+            return {"situacao": "inconclusivo", "erro": "Tipo de campanha conflitante"}
+        # status_item indica o estado do anuncio e nao comprova participacao.
+        status = _renovacao_status_participacao({"status": raw.get("status") or raw.get("state")})
+        if status in {"candidate", "eligible", "finished", "ended", "inactive", "cancelled", "canceled"}:
+            continue
+        if status not in {"started", "active", "approved", "pending", "programmed", "programada", "scheduled", "ready_to_start"}:
+            return {"situacao": "inconclusivo", "erro": "Estado de participacao nao confirmado"}
+        participantes.append(dict(raw, status=status))
+    if not participantes:
+        return {"situacao": "ausente"}
+    assinaturas = set()
+    for raw in participantes:
+        percentual, base, preco = _renovacao_desconto_item(item_id, raw, {})
+        assinaturas.add((percentual, base, preco))
+    if len(assinaturas) != 1:
+        return {"situacao": "inconclusivo", "erro": "Participacoes com termos financeiros conflitantes"}
+    return {"situacao": "participante", "raw": participantes[0]}
+
+
+def _renovacao_consultar_participacoes(client_id, loja, cfg, item_id, campanhas) -> tuple[dict, dict]:
+    if not re.fullmatch(r"ML[A-Z]\d+", str(item_id)):
+        return {campaign: {"situacao": "inconclusivo", "erro": "Identificador do anuncio invalido"} for campaign in campanhas}, cfg
+    try:
+        promocoes, cfg = ctx._ml_obter_promocoes_item(
+            client_id, loja, cfg, item_id, strict=True, force_refresh=True,
+        )
+    except Exception as exc:
+        status = getattr(exc, "status_code", None)
+        erro = f"Consulta de participacoes recebeu HTTP {status}" if status else "Falha na consulta de participacoes"
+        return {campaign: {"situacao": "inconclusivo", "erro": erro} for campaign in campanhas}, cfg
+    resultados = {}
+    for campaign in campanhas:
+        try:
+            resultados[campaign] = _renovacao_selecionar_participacao_exata(
+                promocoes, campaign, item_id, (cfg or {}).get("user_id"))
+        except (ValueError, TypeError, OverflowError):
+            resultados[campaign] = {"situacao": "inconclusivo", "erro": "Termos da participacao invalidos"}
+    return resultados, cfg
+
+
 def _renovacao_exigir_coleta_completa(itens: list[dict], esperado: int | None, campanha_id: str) -> None:
     encontrados = len({str(item.get("id") or "") for item in itens if item.get("id")})
-    if esperado is not None and encontrados < esperado:
+    if esperado is not None and encontrados != esperado:
+        if encontrados > esperado:
+            raise HTTPException(
+                status_code=409,
+                detail=(f"Contagem divergente da campanha {campanha_id}: confirmados {encontrados}, esperados {esperado}. "
+                        "A copia nao foi iniciada. Confira os participantes e atualize as contagens."),
+            )
         raise HTTPException(
             status_code=409,
             detail=(f"Coleta incompleta da campanha {campanha_id}: encontrados {encontrados} de {esperado} "
@@ -169,16 +253,16 @@ def _renovacao_ml_listar_campanhas_usuario(client_id: str, loja: str) -> tuple[l
             )
 
         active_count = 0 if status_programado else active_count_api
-        if programmed_count is None:
-            programmed_count, cfg = ctx._ml_contar_itens_promocao_status(
-                client_id, nome_loja, cfg, campanha_id, tipo, "pending"
-            )
-            if status_programado:
-                if programmed_count is None:
-                    for candidato in (total_count, active_count_api, eligible_count):
-                        if candidato is not None:
-                            programmed_count = candidato
-                            break
+        programados_api, cfg = ctx._ml_contar_itens_promocao_status(
+            client_id, nome_loja, cfg, campanha_id, tipo, "pending"
+        )
+        if programados_api is not None:
+            programmed_count = programados_api
+        elif programmed_count is None and status_programado:
+            for candidato in (total_count, active_count_api, eligible_count):
+                if candidato is not None:
+                    programmed_count = candidato
+                    break
         campanhas.append({
             "id": campanha_id,
             "name": str(item.get("name") or item.get("title") or campanha_id).strip(),
@@ -194,6 +278,7 @@ def _renovacao_ml_listar_campanhas_usuario(client_id: str, loja: str) -> tuple[l
             "programmed_count": programmed_count,
             "scheduled_count": programmed_count,
             "total_count": total_count,
+            "contagens_verificadas": programados_api is not None and (status_programado or active_count_api is not None),
             "raw": item,
         })
 
@@ -495,241 +580,105 @@ def _renovacao_sync_jobs_limpar_antigos(max_age_seconds: int = 24 * 60 * 60) -> 
             ctx.RENOVACAO_SYNC_JOBS.pop(job_id, None)
 
 
+def _renovacao_confirmar_lote(client_id, loja, cfg, item_ids, campanhas, estatisticas=None,
+                              progress_callback=None, progress_start=20, progress_end=48):
+    stats = estatisticas if estatisticas is not None else {}
+    consultas = stats.setdefault("consultas", {})
+    inconclusivos = stats.setdefault("inconclusivos", {})
+    ids = list(dict.fromkeys(str(item) for item in item_ids if item))
+    pendentes = [item for item in ids if item not in consultas]
+    if pendentes:
+        with ThreadPoolExecutor(max_workers=min(6, len(pendentes))) as executor:
+            futures = {executor.submit(_renovacao_consultar_participacoes, client_id, loja,
+                                      dict(cfg), item, campanhas): item for item in pendentes}
+            for numero, future in enumerate(as_completed(futures), start=1):
+                item = futures[future]
+                resultado, _cfg_tmp = future.result()
+                consultas[item] = resultado
+                for campaign, registro in resultado.items():
+                    if registro.get("situacao") == "inconclusivo":
+                        inconclusivos.setdefault(item, {})[campaign] = registro.get("erro") or "Participacao inconclusiva"
+                if numero == 1 or numero == len(pendentes) or numero % 25 == 0:
+                    pct = progress_start + (progress_end-progress_start)*numero/max(1,len(pendentes))
+                    _renovacao_emitir_progresso(progress_callback, "Conferencia", pct,
+                        f"Conferindo participacoes exatas: {numero}/{len(pendentes)} anuncios.")
+    estados = {}
+    for resultado in consultas.values():
+        for campaign, registro in resultado.items():
+            if registro.get("situacao") == "participante":
+                status = _renovacao_status_participacao(registro.get("raw") or {})
+                by_status = estados.setdefault(campaign, {})
+                by_status[status] = by_status.get(status, 0) + 1
+    stats["estados"] = estados
+    return consultas, cfg
+
+
 def _renovacao_complementar_itens_campanha_por_varredura(
-    client_id: str,
-    loja: str,
-    cfg: dict,
-    campanha_id: str,
-    ids_existentes: list[str],
-    raw_por_item: dict[str, dict],
-    max_items: int = 5000,
+    client_id: str, loja: str, cfg: dict, campanha_id: str,
+    ids_existentes: list[str], raw_por_item: dict[str, dict], max_items: int = 5000,
     progress_callback: Optional[Callable[[dict], None]] = None,
-    progress_start: int = 30,
-    progress_end: int = 55,
+    progress_start: int = 30, progress_end: int = 55, estatisticas: dict | None = None,
 ) -> tuple[list[str], dict[str, dict], dict]:
+    stats = estatisticas if estatisticas is not None else {}
     user_id = str((cfg or {}).get("user_id") or "").strip()
     if not user_id:
-        return ids_existentes, raw_por_item, cfg
-
-    ids = list(dict.fromkeys([str(item_id or "").strip() for item_id in ids_existentes if str(item_id or "").strip()]))
-    vistos = set(ids)
-    raw_total = dict(raw_por_item or {})
+        raise HTTPException(502, "Conta da loja nao confirmada para consultar participantes.")
     limite = max(1, min(int(max_items or 5000), 20000))
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Varredura",
-        progress_start,
-        "Listando anuncios ativos da loja para completar a campanha de origem...",
-        campanha_id=campanha_id,
-        ja_encontrados=len(ids),
-    )
     todos_ids, cfg = ctx._ml_listar_ids_anuncios_ativos(client_id, loja, cfg, user_id, limite=limite)
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Varredura",
-        progress_start,
-        f"Endpoint direto incompleto. Verificando {len(todos_ids)} anuncio(s) ativos da loja...",
-        campanha_id=campanha_id,
-        encontrados=len(ids),
-        total=len(todos_ids),
-    )
-    ctx.logger.info(
-        "[RENOVACAO ML] Varredura da campanha %s em %s anuncio(s) ativos para completar sincronizacao.",
-        campanha_id,
-        len(todos_ids),
-    )
-
-    candidatos = [str(item_id or "").strip() for item_id in todos_ids if str(item_id or "").strip() and str(item_id or "").strip() not in vistos]
-    max_workers = min(6, max(2, len(candidatos))) if candidatos else 0
-    if not max_workers:
-        return ids, raw_total, cfg
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(
-                ctx._ml_obter_promocoes_item, client_id, loja, dict(cfg), item_id,
-                force_refresh=True,
-            ): item_id
-            for item_id in candidatos
-        }
-        processados = 0
-        ultimo_emitido = 0
-        intervalo_emit = max(1, min(50, max(1, len(candidatos) // 20)))
-        for future in as_completed(future_map):
-            processados += 1
-            item_id = future_map[future]
-            try:
-                promocoes_item, _cfg_tmp = future.result()
-            except Exception:
-                promocoes_item = []
-            if (
-                processados == 1
-                or processados == len(candidatos)
-                or processados - ultimo_emitido >= intervalo_emit
-            ):
-                ultimo_emitido = processados
-                pct = progress_start
-                if candidatos:
-                    pct = progress_start + ((progress_end - progress_start) * processados / len(candidatos))
-                _renovacao_emitir_progresso(
-                    progress_callback,
-                    "Varredura",
-                    pct,
-                    f"Verificando anuncios ativos: {processados}/{len(candidatos)}. Encontrados na campanha: {len(ids)}.",
-                    campanha_id=campanha_id,
-                    processados=processados,
-                    total=len(candidatos),
-                    encontrados=len(ids),
-                )
-            raw_encontrado = ctx._ml_encontrar_promocao_raw_item(promocoes_item, campanha_id)
-            if not _renovacao_participante_campanha(raw_encontrado, campanha_id, item_id):
-                continue
-            vistos.add(item_id)
-            ids.append(item_id)
-            raw_total[item_id] = raw_encontrado
-            if len(ids) >= limite:
-                ctx.logger.warning("[RENOVACAO ML] Varredura da campanha %s limitada a %s anuncios", campanha_id, limite)
-                break
-
-    ctx.logger.info("[RENOVACAO ML] Campanha %s: %s item(ns) apos complemento por varredura.", campanha_id, len(ids))
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Varredura",
-        progress_end,
-        f"Varredura concluida. {len(ids)} MLB(s) encontrados na campanha de origem.",
-        campanha_id=campanha_id,
-        encontrados=len(ids),
-    )
-    return ids, raw_total, cfg
+    candidatos = list(dict.fromkeys(list(ids_existentes) + [str(item) for item in todos_ids if item]))
+    campanhas = stats.get("campanhas_consulta") or [campanha_id]
+    consultas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg, candidatos, campanhas, stats,
+        progress_callback, progress_start, progress_end)
+    raw_total = {}
+    for item in candidatos:
+        registro = (consultas.get(item) or {}).get(campanha_id) or {}
+        if registro.get("situacao") == "participante":
+            raw_total[item] = registro["raw"]
+    return list(raw_total), raw_total, cfg
 
 
 def _renovacao_listar_itens_campanha(
-    client_id: str,
-    loja: str,
-    cfg: dict,
-    campanha_id: str,
-    promotion_type: str,
-    expected_count: int | None = None,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-    progress_start: int = 15,
-    progress_end: int = 55,
+    client_id: str, loja: str, cfg: dict, campanha_id: str, promotion_type: str,
+    expected_count: int | None = None, progress_callback: Optional[Callable[[dict], None]] = None,
+    progress_start: int = 15, progress_end: int = 55,
+    validar_quantidade: bool = True, estatisticas: dict | None = None,
 ) -> tuple[list[dict], dict[str, dict], dict]:
+    stats = estatisticas if estatisticas is not None else {}
     promotion_type = _renovacao_tipo_campanha(campanha_id, promotion_type)
     if expected_count is None:
-        ativos, cfg = ctx._ml_contar_itens_promocao_status(
-            client_id, loja, cfg, campanha_id, promotion_type, "started",
-        )
-        programados, cfg = ctx._ml_contar_itens_promocao_status(
-            client_id, loja, cfg, campanha_id, promotion_type, "pending",
-        )
+        ativos, cfg = ctx._ml_contar_itens_promocao_status(client_id, loja, cfg, campanha_id, promotion_type, "started")
+        programados, cfg = ctx._ml_contar_itens_promocao_status(client_id, loja, cfg, campanha_id, promotion_type, "pending")
         if ativos is None or programados is None:
-            raise HTTPException(status_code=502, detail="Nao foi possivel confirmar a quantidade de participantes da campanha.")
-        expected_count = int(ativos) + int(programados)
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Listagem",
-        progress_start,
-        f"Carregando MLBs da campanha {campanha_id}...",
-        campanha_id=campanha_id,
-    )
-    tentativas = [
-        {"status_item_preferencial": "active", "status_promocao": ""},
-        {"status_item_preferencial": "", "status_promocao": "started"},
-        {"status_item_preferencial": "", "status_promocao": "pending"},
-        {"status_item_preferencial": "", "status_promocao": ""},
-    ]
-    ids = []
-    raw_total = {}
-    sem_status = set()
-    for idx_tentativa, tentativa in enumerate(tentativas):
-        pct_tentativa = progress_start + (
-            max(1, progress_end - progress_start) * (idx_tentativa + 1) / (len(tentativas) + 1)
-        )
-        _renovacao_emitir_progresso(
-            progress_callback,
-            "Listagem",
-            pct_tentativa,
-            f"Consultando itens da campanha no Mercado Livre ({idx_tentativa + 1}/{len(tentativas)})...",
-            campanha_id=campanha_id,
-            tentativa=idx_tentativa + 1,
-        )
-        itens, raw_por_item, cfg = ctx._ml_listar_itens_promocao_com_raw(
-            client_id,
-            loja,
-            cfg,
-            campanha_id,
-            promotion_type=promotion_type or "SELLER_CAMPAIGN",
-            usar_fallback_pesado=False,
-            max_items=5000,
-            buscar_detalhes=False,
-            status_item_preferencial=tentativa["status_item_preferencial"],
-            status_promocao=tentativa["status_promocao"],
-        )
-        for item in itens or []:
-            item_id = str((item or {}).get("id") or "").strip()
-            raw = (raw_por_item or {}).get(item_id) or {}
-            if item_id and _renovacao_participante_campanha(raw, campanha_id, item_id, contexto_campanha=True):
-                raw_total[item_id] = raw
-            elif item_id and not _renovacao_status_participacao(raw):
-                sem_status.add(item_id)
-        for item_id in raw_total:
-            if item_id not in ids:
-                ids.append(item_id)
-    pendentes = sem_status - set(ids)
-    if pendentes:
-        with ThreadPoolExecutor(max_workers=min(6, len(pendentes))) as executor:
-            futures = {
-                executor.submit(ctx._ml_obter_promocoes_item, client_id, loja, dict(cfg), item_id, force_refresh=True): item_id
-                for item_id in pendentes
-            }
-            for future in as_completed(futures):
-                item_id = futures[future]
-                try:
-                    promocoes, _cfg_tmp = future.result()
-                    raw = ctx._ml_encontrar_promocao_raw_item(promocoes, campanha_id)
-                except Exception:
-                    continue
-                if _renovacao_participante_campanha(raw, campanha_id, item_id):
-                    ids.append(item_id)
-                    raw_total[item_id] = raw
-    alvo = int(expected_count or 0)
-    if alvo and len(ids) < alvo:
-        ctx.logger.warning(
-            "[RENOVACAO ML] Campanha %s retornou %s/%s itens pelo endpoint direto; complementando por varredura.",
-            campanha_id,
-            len(ids),
-            alvo,
-        )
-        _renovacao_emitir_progresso(
-            progress_callback,
-            "Listagem",
-            min(progress_end - 5, progress_start + 20),
-            f"Endpoint direto retornou {len(ids)}/{alvo}. Complementando por varredura nos anuncios ativos...",
-            campanha_id=campanha_id,
-            encontrados=len(ids),
-            esperado=alvo,
-        )
+            if validar_quantidade:
+                raise HTTPException(502, "Nao foi possivel confirmar a quantidade de participantes da campanha.")
+        else:
+            expected_count = int(ativos) + int(programados)
+    candidatos = []
+    for status_item, status in (("active", ""), ("", "started"), ("", "pending"), ("", "")):
+        itens, _raw, cfg = ctx._ml_listar_itens_promocao_com_raw(
+            client_id, loja, cfg, campanha_id, promotion_type=promotion_type,
+            usar_fallback_pesado=False, max_items=5000, buscar_detalhes=False,
+            status_item_preferencial=status_item, status_promocao=status)
+        candidatos.extend(str(item.get("id")) for item in itens or [] if isinstance(item,dict) and item.get("id"))
+    candidatos = list(dict.fromkeys(candidatos))
+    campanhas = stats.get("campanhas_consulta") or [campanha_id]
+    consultas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg, candidatos, campanhas, stats,
+        progress_callback, progress_start, max(progress_start, progress_end-20))
+    raw_total = {item: consultas[item][campanha_id]["raw"] for item in candidatos
+                 if consultas[item].get(campanha_id, {}).get("situacao") == "participante"}
+    ids = list(raw_total)
+    if not validar_quantidade or (expected_count is not None and len(ids) < expected_count):
         ids, raw_total, cfg = _renovacao_complementar_itens_campanha_por_varredura(
-            client_id,
-            loja,
-            cfg,
-            campanha_id,
-            ids,
-            raw_total,
-            max_items=max(5000, alvo),
-            progress_callback=progress_callback,
-            progress_start=min(progress_end - 20, progress_start + 22),
-            progress_end=progress_end,
-        )
-        _renovacao_exigir_coleta_completa([{"id": item_id} for item_id in ids], alvo, campanha_id)
-    else:
-        _renovacao_emitir_progresso(
-            progress_callback,
-            "Listagem",
-            progress_end,
-            f"Campanha carregada com {len(ids)} MLB(s).",
-            campanha_id=campanha_id,
-            encontrados=len(ids),
-            esperado=alvo,
-        )
-    return [{"id": item_id} for item_id in ids], raw_total, cfg
+            client_id, loja, cfg, campanha_id, ids, raw_total,
+            max_items=max(5000, expected_count or 0), progress_callback=progress_callback,
+            progress_start=max(progress_start, progress_end-20), progress_end=progress_end,
+            estatisticas=stats)
+    itens = [{"id": item} for item in ids]
+    inconclusivos = [item for item, erros in stats.get("inconclusivos", {}).items() if campanha_id in erros]
+    if validar_quantidade and inconclusivos:
+        raise HTTPException(409, f"Participacao inconclusiva em {len(inconclusivos)} anuncio(s) da campanha {campanha_id}. A copia nao foi iniciada.")
+    if validar_quantidade:
+        _renovacao_exigir_coleta_completa(itens, expected_count, campanha_id)
+    _renovacao_emitir_progresso(progress_callback, "Conferencia", progress_end,
+        f"Campanha {campanha_id}: {len(ids)} participantes confirmados por anuncio.", encontrados=len(ids), esperado=expected_count)
+    return itens, raw_total, cfg

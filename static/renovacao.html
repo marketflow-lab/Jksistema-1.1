@@ -252,6 +252,8 @@
             </div>
             <div class="api-actions">
                 <button class="btn-process btn-api" id="btn-sincronizar-renovacao" onclick="sincronizarPromocaoRenovacao()">Sincronizar promoção</button>
+                <button class="btn-secondary btn-api" id="btn-conferir-renovacao" onclick="sincronizarPromocaoRenovacao(true)">Conferir descontos</button>
+                <button class="btn-secondary" id="btn-baixar-conferencia-renovacao" style="display:none" onclick="baixarConferenciaRenovacao()">Baixar relatório</button>
             </div>
             <div id="renovacao-sync-progress" class="sync-progress">
                 <div class="sync-progress-row">
@@ -351,7 +353,11 @@
     function resetarBotaoSincronizacaoRenovacao(botao) {
         if (!botao) return;
         botao.disabled = false;
-        botao.textContent = 'Sincronizar promoção';
+        botao.textContent = botao.id === 'btn-conferir-renovacao' ? 'Conferir descontos' : 'Sincronizar promoção';
+        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao']) {
+            const controle = document.getElementById(id);
+            if (controle) controle.disabled = false;
+        }
     }
 
     function nomeLojaRenovacao(loja) {
@@ -995,7 +1001,8 @@
                     campanha_id: campanha.id,
                     start_date: inicio || null,
                     finish_date: fim || null,
-                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN',
+                    quantidade_origem_esperada: quantidadeOrigemRenovacao(campanha)
                 })
             });
             const result = await response.json().catch(() => ({}));
@@ -1044,7 +1051,8 @@
                 body: JSON.stringify({
                     loja,
                     campanha_id: campanha.id,
-                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN',
+                    quantidade_origem_esperada: quantidadeOrigemRenovacao(campanha)
                 })
             });
             const result = await response.json().catch(() => ({}));
@@ -1100,6 +1108,26 @@
         atualizarCampanhasDestinoRenovacao();
     }
 
+    let ultimaConferenciaRenovacao = null;
+
+    function quantidadeOrigemRenovacao(campanha) {
+        if (campanha.contagens_verificadas === false) return null;
+        const programados = campanha.programmed_count ?? campanha.scheduled_count;
+        if (!temNumeroRenovacao(campanha.active_count) || !temNumeroRenovacao(programados)) return null;
+        return Number(campanha.active_count) + Number(programados);
+    }
+
+    function baixarConferenciaRenovacao() {
+        if (!ultimaConferenciaRenovacao) return;
+        const blob = new Blob([JSON.stringify(ultimaConferenciaRenovacao, null, 2)], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `conferencia-promocao-${Date.now()}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    }
+
     function resumoFalhasRenovacao(result) {
         const total = Number(result.falhas_total || 0);
         if (!total) return '';
@@ -1133,7 +1161,8 @@
                     loja,
                     campanha_id: campanhaId,
                     nome,
-                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN'
+                    promotion_type: campanha.promotion_type || campanha.type || 'SELLER_CAMPAIGN',
+                    quantidade_origem_esperada: quantidadeOrigemRenovacao(campanha)
                 })
             });
             const result = await response.json().catch(() => ({}));
@@ -1170,10 +1199,19 @@
                 const result = job.result || {};
                 const falhas = resumoFalhasRenovacao(result);
                 const destinoRetorno = result.campanha_destino || {};
-                const mensagemFinal = `Sincronizacao concluida para ${destinoRetorno.nome || destinoNome}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}/${result.total_origem || 0}.${falhas}`;
-                setRenovacaoSyncProgress(mensagemFinal, 100, result.falhas_total ? 'info' : 'ok');
+                const conferencia = result.conferencia || {};
+                const completa = result.success === true && conferencia.completa === true;
+                const acao = result.somente_conferir ? 'Conferencia' : 'Sincronizacao';
+                const titulo = completa ? `${acao} concluida` : `${acao} encerrada com pendencias`;
+                const contagem = conferencia.contagem_coerente === false ? ` Total esperado na origem: ${conferencia.esperado ?? 'nao confirmado'}; encontrado: ${conferencia.total_origem || 0}.` : '';
+                const extras = conferencia.extras_destino?.length ? ` ${conferencia.extras_destino.length} anuncio(s) no destino sem participacao confirmada na origem.` : '';
+                const mensagemFinal = `${titulo} para ${destinoRetorno.nome || destinoNome}. Descontos confirmados: ${conferencia.confirmados || 0}/${conferencia.total_origem || 0}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}.${contagem}${extras}${falhas}`;
+                ultimaConferenciaRenovacao = result;
+                const download = document.getElementById('btn-baixar-conferencia-renovacao');
+                if (download) download.style.display = '';
+                setRenovacaoSyncProgress(mensagemFinal, 100, completa ? 'ok' : 'error');
                 await carregarCampanhasRenovacao();
-                setRenovacaoApiStatus(mensagemFinal, result.falhas_total ? 'info' : 'ok');
+                setRenovacaoApiStatus(mensagemFinal, completa ? 'ok' : 'error');
                 resetarBotaoSincronizacaoRenovacao(botao);
                 return true;
             }
@@ -1211,13 +1249,13 @@
         }, 1000);
     }
 
-    async function sincronizarPromocaoRenovacao() {
+    async function sincronizarPromocaoRenovacao(somenteConferir = false) {
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const origemId = document.getElementById('renovacao-sync-origem')?.value || '';
         const destinoId = document.getElementById('renovacao-campanha-destino')?.value || '';
         const origem = campanhasRenovacao.find((item) => item.id === origemId) || {};
         const destino = campanhasRenovacao.find((item) => item.id === destinoId) || {};
-        const botao = document.getElementById('btn-sincronizar-renovacao');
+        const botao = document.getElementById(somenteConferir ? 'btn-conferir-renovacao' : 'btn-sincronizar-renovacao');
         if (!loja || !origemId || !destinoId) {
             setRenovacaoApiStatus('Selecione a loja, a campanha de origem e a campanha nova.', 'error');
             return;
@@ -1228,15 +1266,23 @@
         }
         const origemNome = origem.name || origem.title || origemId;
         const destinoNome = destino.name || destino.title || destinoId;
-        if (!confirm(`Sincronizar os MLBs de "${origemNome}" para "${destinoNome}" mantendo a mesma porcentagem de desconto?`)) {
+        if (!somenteConferir && quantidadeOrigemRenovacao(origem) === null) {
+            setRenovacaoApiStatus('Atualize as campanhas para confirmar a quantidade da origem antes de sincronizar.', 'error');
+            return;
+        }
+        if (!somenteConferir && !confirm(`Sincronizar os MLBs de "${origemNome}" para "${destinoNome}" mantendo a mesma porcentagem de desconto? Anuncios esperados: ${quantidadeOrigemRenovacao(origem) ?? "nao confirmado"}.`)) {
             return;
         }
         botao.disabled = true;
-        botao.textContent = 'Sincronizando...';
-        setRenovacaoSyncProgress('Iniciando sincronizacao da promocao...', 0, 'info');
-        setRenovacaoApiStatus('Iniciando sincronizacao da promocao...', 'info');
+        botao.textContent = somenteConferir ? 'Conferindo...' : 'Sincronizando...';
+        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao']) {
+            const controle = document.getElementById(id);
+            if (controle) controle.disabled = true;
+        }
+        setRenovacaoSyncProgress(somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...', 0, 'info');
+        setRenovacaoApiStatus(somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...', 'info');
         try {
-            const response = await fetch('/api/renovacao/sincronizar-promocao/iniciar', {
+            const response = await fetch(somenteConferir ? '/api/renovacao/conferir-promocao/iniciar' : '/api/renovacao/sincronizar-promocao/iniciar', {
                 method: 'POST',
                 headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1244,7 +1290,9 @@
                     campanha_origem_id: origemId,
                     campanha_destino_id: destinoId,
                     promotion_type_origem: origem.promotion_type || origem.type || 'SELLER_CAMPAIGN',
-                    promotion_type_destino: destino.promotion_type || destino.type || 'SELLER_CAMPAIGN'
+                    promotion_type_destino: destino.promotion_type || destino.type || 'SELLER_CAMPAIGN',
+                    quantidade_origem_esperada: quantidadeOrigemRenovacao(origem),
+                    somente_conferir: somenteConferir
                 })
             });
             const result = await response.json().catch(() => ({}));

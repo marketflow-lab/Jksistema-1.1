@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RenovacaoCampanhaCriarRequest(BaseModel):
@@ -10,6 +10,7 @@ class RenovacaoCampanhaCriarRequest(BaseModel):
     campanha_id: str
     nome: str = ""
     promotion_type: str | None = None
+    quantidade_origem_esperada: int | None = Field(default=None, ge=0, le=20000)
 
 
 class RenovacaoCampanhaManualCriarRequest(BaseModel):
@@ -25,6 +26,8 @@ class RenovacaoCampanhaSincronizarRequest(BaseModel):
     campanha_destino_id: str
     promotion_type_origem: str | None = None
     promotion_type_destino: str | None = None
+    quantidade_origem_esperada: int | None = Field(default=None, ge=0, le=20000)
+    somente_conferir: bool = False
 
 
 class RenovacaoCampanhaPeriodoRequest(BaseModel):

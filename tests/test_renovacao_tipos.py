@@ -76,9 +76,10 @@ def test_seller_campaign_list_uses_canonical_type_for_counts_and_frontend(monkey
         return Response(200, {"results": [raw]}), cfg
 
     def count(client, store, cfg, campaign, kind, status):
-        assert (client, store, campaign, status) == (TENANT, STORE, SOURCE, "started")
-        counts.append(kind)
-        return 908, cfg
+        assert (client, store, campaign) == (TENANT, STORE, SOURCE)
+        assert status in {"started", "pending"}
+        counts.append((kind, status))
+        return (908 if status == "started" else 194), cfg
 
     monkeypatch.setattr(helpers.ctx, "_ml_api_request", request)
     monkeypatch.setattr(helpers.ctx, "_ml_contar_itens_promocao_status", count)
@@ -88,10 +89,12 @@ def test_seller_campaign_list_uses_canonical_type_for_counts_and_frontend(monkey
     )
     campaigns, cfg = helpers._renovacao_ml_listar_campanhas_usuario(TENANT, STORE)
 
-    assert counts == ["SELLER_CAMPAIGN"]
+    assert counts == [("SELLER_CAMPAIGN", "started"), ("SELLER_CAMPAIGN", "pending")]
     assert campaigns[0]["promotion_type"] == "SELLER_CAMPAIGN"
     assert campaigns[0]["type"] == "SELLER_CAMPAIGN"
     assert campaigns[0]["active_count"] == 908
+    assert campaigns[0]["programmed_count"] == 194
+    assert helpers._renovacao_contagem_esperada(campaigns[0]) == 1102
     assert cfg == CFG
     assert raw["type"] == raw_type
 

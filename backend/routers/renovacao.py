@@ -50,12 +50,15 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
         req: RenovacaoCampanhaCriarRequest,
         client_id: str = Depends(config.get_tenant_id),
     ):
+        if req.quantidade_origem_esperada is None:
+            raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de criar a campanha.")
         return config.criar_ou_completar_proximo_mes(
             client_id,
             req.loja,
             req.campanha_id,
             req.nome,
             req.promotion_type or "SELLER_CAMPAIGN",
+            quantidade_origem_esperada=req.quantidade_origem_esperada,
         )
 
     @router.post("/api/renovacao/campanha", name="renovacao_criar_campanha_manual")
@@ -103,6 +106,8 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
         req: RenovacaoCampanhaSincronizarRequest,
         client_id: str = Depends(config.get_tenant_id),
     ):
+        if not req.somente_conferir and req.quantidade_origem_esperada is None:
+            raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de sincronizar.")
         return config.sincronizar_promocao_existente(
             client_id,
             req.loja,
@@ -110,13 +115,28 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
             req.campanha_destino_id,
             req.promotion_type_origem or "SELLER_CAMPAIGN",
             req.promotion_type_destino or "SELLER_CAMPAIGN",
+            quantidade_origem_esperada=req.quantidade_origem_esperada,
+            somente_conferir=req.somente_conferir,
         )
+
+    @router.post("/api/renovacao/conferir-promocao/iniciar", name="renovacao_conferir_promocao_iniciar")
+    def renovacao_conferir_promocao_iniciar(
+        req: RenovacaoCampanhaSincronizarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        if hasattr(req, "model_copy"):
+            consulta = req.model_copy(update={"somente_conferir": True})
+        else:
+            consulta = req.copy(update={"somente_conferir": True})
+        return config.iniciar_sincronizacao_promocao(client_id, consulta)
 
     @router.post("/api/renovacao/sincronizar-promocao/iniciar", name="renovacao_sincronizar_promocao_iniciar")
     def renovacao_sincronizar_promocao_iniciar(
         req: RenovacaoCampanhaSincronizarRequest,
         client_id: str = Depends(config.get_tenant_id),
     ):
+        if not req.somente_conferir and req.quantidade_origem_esperada is None:
+            raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de sincronizar.")
         return config.iniciar_sincronizacao_promocao(client_id, req)
 
     @router.get("/api/renovacao/sincronizar-promocao/progresso/{job_id}", name="renovacao_sincronizar_promocao_progresso")

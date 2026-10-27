@@ -6,7 +6,9 @@ from backend.services.central_accounts_client import with_request_context
 import datetime as dt
 import json
 import math
+import os
 import re
+import tempfile
 import threading
 import uuid
 from typing import Callable, Optional
@@ -25,6 +27,8 @@ from backend.services.renovacao_agendamento_store import (
 from backend.services.renovacao_promocoes_helpers import (
     _renovacao_datas_proximo_mes,
     _renovacao_contagem_esperada,
+    _renovacao_consultar_participacoes,
+    _renovacao_confirmar_lote,
     _renovacao_desconto_item,
     _renovacao_emitir_progresso,
     _renovacao_encontrar_campanha_destino,
@@ -364,250 +368,252 @@ def _renovacao_participacao_mantem_desconto(raw, item_id, campanha_id, desconto,
     if valores is None:
         return False
     preco, base = valores
+    declarado = raw.get("discount_percentage")
+    if declarado is None:
+        declarado = raw.get("discount_percent")
+    if declarado is not None:
+        declarado = ctx._parse_float_flex(declarado)
+        if declarado is None or not math.isfinite(float(declarado)) or abs(float(declarado) - desconto) > 0.005:
+            return False
     if round(preco, 2) != _renovacao_preco_com_desconto(base, desconto):
         return False
     return preco_base is None or round(preco, 2) == _renovacao_preco_com_desconto(preco_base, desconto)
 
 
 def _renovacao_adicionar_item_campanha(
-    client_id: str,
-    loja: str,
-    cfg: dict,
-    item_id: str,
-    nova_campanha_id: str,
-    desconto: float,
-    preco_base: float,
-    preco_promocional: Optional[float],
-    preferir_percentual: bool = False,
-    metodo: str = "POST",
+    client_id: str, loja: str, cfg: dict, item_id: str, nova_campanha_id: str,
+    desconto: float, preco_base: float, preco_promocional: Optional[float],
+    preferir_percentual: bool = False, metodo: str = "POST", campanha_origem_id: str | None = None,
 ) -> tuple[bool, str, dict]:
-    """Aplica o percentual via deal_price; aceita os argumentos legados."""
-    for tentativa in range(2):
-        deal_price = _renovacao_preco_com_desconto(preco_base, desconto)
-        if deal_price is None:
-            return False, "preco base ou percentual de desconto invalido", cfg
-        payload = {
-            "promotion_id": nova_campanha_id,
-            "promotion_type": "SELLER_CAMPAIGN",
-            "deal_price": deal_price,
-        }
-        resp, cfg = ctx._ml_api_request(
-            client_id,
-            loja,
-            cfg,
-            metodo,
+    if _renovacao_preco_com_desconto(preco_base, desconto) is None:
+        return False, "preco base ou percentual de desconto invalido", cfg
+    campanhas = [nova_campanha_id] + ([campanha_origem_id] if campanha_origem_id else [])
+
+    def ler_atual(cfg_atual):
+        return _renovacao_consultar_participacoes(client_id, loja, cfg_atual, item_id, campanhas)
+
+    def origem_confirmada(estado):
+        if not campanha_origem_id:
+            return True
+        origem = estado.get(campanha_origem_id) or {}
+        if origem.get("situacao") != "participante":
+            return False
+        percentual, _, _ = _renovacao_desconto_item(item_id, origem.get("raw") or {}, {})
+        return percentual is not None and abs(percentual - desconto) < 0.0001
+
+    estado, cfg = ler_atual(cfg)
+    if not origem_confirmada(estado):
+        return False, "Participacao ou percentual da origem nao confirmado antes da alteracao", cfg
+    destino = estado.get(nova_campanha_id) or {}
+    if destino.get("situacao") == "inconclusivo":
+        return False, "Participacao no destino inconclusiva; nenhuma alteracao foi aplicada", cfg
+    if destino.get("situacao") == "participante":
+        if _renovacao_participacao_mantem_desconto(destino.get("raw") or {}, item_id, nova_campanha_id, desconto):
+            return True, "", cfg
+        metodo = "PUT"
+    elif destino.get("situacao") == "ausente":
+        metodo = "POST"
+    else:
+        return False, "Nao foi possivel confirmar a participacao no destino", cfg
+
+    ajuste_usado = False
+    recuperacao_usada = False
+    for _tentativa in range(3):
+        payload = {"promotion_id": nova_campanha_id, "promotion_type": "SELLER_CAMPAIGN",
+                   "deal_price": _renovacao_preco_com_desconto(preco_base, desconto)}
+        resp, cfg = ctx._ml_api_request(client_id, loja, cfg, metodo,
             f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
-            params={"app_version": "v2"},
-            json=payload,
-            timeout=20,
-        )
+            params={"app_version": "v2"}, json=payload, timeout=20)
         if resp.status_code not in (200, 201):
             detalhe = ctx._ml_parse_error_detail(resp, f"Erro {resp.status_code}")
+            sem_oferta = "no offers found" in str(detalhe).lower()
+            if metodo == "PUT" and resp.status_code in (400, 404) and sem_oferta and not recuperacao_usada:
+                estado, cfg = ler_atual(cfg)
+                destino = estado.get(nova_campanha_id) or {}
+                if not origem_confirmada(estado):
+                    return False, "A origem nao foi confirmada apos a oferta desaparecer", cfg
+                if destino.get("situacao") == "participante" and _renovacao_participacao_mantem_desconto(
+                    destino.get("raw") or {}, item_id, nova_campanha_id, desconto):
+                    return True, "", cfg
+                if destino.get("situacao") == "ausente":
+                    recuperacao_usada = True
+                    metodo = "POST"
+                    continue
             acao = "atualizar" if metodo == "PUT" else "incluir"
             return False, f"Erro ao {acao} anuncio na campanha: {detalhe}", cfg
-        aplicado = _renovacao_json_response(resp)
-        if not _renovacao_identidade_participacao_valida(aplicado, item_id, nova_campanha_id):
-            return False, "Mercado Livre retornou uma participacao com identidade ou status divergente", cfg
-        if _renovacao_participacao_mantem_desconto(aplicado, item_id, nova_campanha_id, desconto):
+
+        # O 2xx e provisório: somente a participacao exata lida depois confirma
+        # existencia e percentual. Nunca envia PUT apenas com base no 2xx.
+        for _leitura in range(2):
+            estado, cfg = ler_atual(cfg)
+            destino = estado.get(nova_campanha_id) or {}
+            if not origem_confirmada(estado):
+                return False, "A origem mudou ou ficou inconclusiva durante a confirmacao", cfg
+            if destino.get("situacao") != "ausente":
+                break
+        if destino.get("situacao") == "inconclusivo":
+            return False, "Alteracao recebida, mas a participacao no destino ficou inconclusiva", cfg
+        if destino.get("situacao") != "participante":
+            return False, "Inclusao recebida, mas a oferta ainda nao foi confirmada no destino", cfg
+        raw = destino.get("raw") or {}
+        if _renovacao_participacao_mantem_desconto(raw, item_id, nova_campanha_id, desconto):
             return True, "", cfg
-        valores_resposta = _renovacao_valores_participacao(aplicado, item_id, nova_campanha_id)
-        confirmado, cfg = ctx._ml_obter_item_promocao_raw(
-            client_id, loja, cfg, nova_campanha_id, "SELLER_CAMPAIGN", item_id,
-        )
-        base_confirmacao = valores_resposta[1] if valores_resposta else preco_base
-        if _renovacao_participacao_mantem_desconto(
-            confirmado, item_id, nova_campanha_id, desconto, base_confirmacao,
-        ):
-            return True, "", cfg
-        if tentativa == 0 and valores_resposta and round(valores_resposta[1], 2) != round(float(preco_base), 2):
-            # A base pode mudar entre consulta e inclusao. A participacao ja
-            # existe depois do 2xx, portanto a unica correcao usa PUT.
-            preco_base = valores_resposta[1]
+        valores = _renovacao_valores_participacao(raw, item_id, nova_campanha_id)
+        if valores and not ajuste_usado:
+            preco_base = valores[1]
+            ajuste_usado = True
             metodo = "PUT"
             continue
         break
     return False, "Mercado Livre nao confirmou o percentual de desconto da origem no destino", cfg
 
 
+def _renovacao_montar_conferencia(consultas, campanha_origem_id, campanha_destino_id, esperado):
+    def numero(valor):
+        try:
+            n = ctx._parse_float_flex(valor)
+            return n if n is not None and math.isfinite(float(n)) else None
+        except (ValueError, TypeError, OverflowError):
+            return None
+
+    linhas, extras, inconclusivos = [], [], []
+    estados_origem = {}
+    for item_id, resultado in consultas.items():
+        origem = resultado.get(campanha_origem_id) or {"situacao": "inconclusivo"}
+        destino = resultado.get(campanha_destino_id) or {"situacao": "inconclusivo"}
+        if origem.get("situacao") == "inconclusivo":
+            inconclusivos.append({"item_id": item_id, "erro": origem.get("erro") or "Origem inconclusiva"})
+            continue
+        if origem.get("situacao") != "participante":
+            if destino.get("situacao") == "participante":
+                extras.append(item_id)
+            elif destino.get("situacao") == "inconclusivo":
+                inconclusivos.append({"item_id": item_id, "erro": destino.get("erro") or "Destino inconclusivo"})
+            continue
+        raw_origem, raw_destino = origem.get("raw") or {}, destino.get("raw") or {}
+        status = _renovacao_status_participacao(raw_origem)
+        estados_origem[status] = estados_origem.get(status, 0) + 1
+        percentual, _, _ = _renovacao_desconto_item(item_id, raw_origem, {})
+        percentual_destino, _, _ = _renovacao_desconto_item(item_id, raw_destino, {}) if raw_destino else (None,None,None)
+        confirmado = (percentual is not None and destino.get("situacao") == "participante" and
+            _renovacao_participacao_mantem_desconto(raw_destino, item_id, campanha_destino_id, percentual))
+        erro = ""
+        if percentual is None:
+            erro = "Percentual da origem inconclusivo"
+        elif destino.get("situacao") == "inconclusivo":
+            erro = destino.get("erro") or "Destino inconclusivo"
+        elif destino.get("situacao") != "participante":
+            erro = "Participacao ausente no destino"
+        elif not confirmado:
+            erro = "Preco ou percentual do destino diverge da origem"
+        linhas.append({"item_id": item_id, "status_origem": status,
+            "status_destino": _renovacao_status_participacao(raw_destino),
+            "percentual_origem": percentual, "percentual_destino": percentual_destino,
+            "preco_origem": numero(raw_origem.get("price") or raw_origem.get("deal_price")),
+            "preco_destino": numero(raw_destino.get("price") or raw_destino.get("deal_price")),
+            "base_destino": numero(raw_destino.get("original_price")),
+            "confirmado": confirmado, "erro": erro})
+    confirmados = sum(bool(item["confirmado"]) for item in linhas)
+    contagem_coerente = esperado is not None and len(linhas) == esperado
+    completa = contagem_coerente and not inconclusivos and confirmados == len(linhas)
+    return {"completa": completa, "esperado": esperado, "total_origem": len(linhas),
+        "confirmados": confirmados, "pendentes": len(linhas)-confirmados,
+        "contagem_coerente": contagem_coerente, "estados_origem": estados_origem,
+        "inconclusivos": inconclusivos, "extras_destino": sorted(extras), "itens": linhas}
+
+
 def _renovacao_copiar_mlbs_campanha(
-    client_id: str,
-    loja: str,
-    cfg: dict,
-    campanha_origem_id: str,
-    campanha_destino_id: str,
-    promotion_type_origem: str = "SELLER_CAMPAIGN",
-    promotion_type_destino: str = "SELLER_CAMPAIGN",
-    preferir_percentual: bool = False,
-    expected_origem_count: int | None = None,
-    progress_callback: Optional[Callable[[dict], None]] = None,
-    verificar_destino: bool = True,
-    origem_preparada: tuple[list[dict], dict] | None = None,
-    expected_destino_count: int | None = None,
+    client_id: str, loja: str, cfg: dict, campanha_origem_id: str, campanha_destino_id: str,
+    promotion_type_origem: str = "SELLER_CAMPAIGN", promotion_type_destino: str = "SELLER_CAMPAIGN",
+    preferir_percentual: bool = False, expected_origem_count: int | None = None,
+    progress_callback: Optional[Callable[[dict], None]] = None, verificar_destino: bool = True,
+    origem_preparada: tuple[list[dict], dict] | None = None, expected_destino_count: int | None = None,
+    somente_conferir: bool = False,
 ) -> tuple[dict, dict]:
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Origem",
-        15,
-        "Carregando MLBs ativos ou programados da campanha de origem...",
-        campanha_id=campanha_origem_id,
-        esperado=expected_origem_count or 0,
-    )
+    stats = {"campanhas_consulta": [campanha_origem_id, campanha_destino_id]}
     if origem_preparada is not None:
-        itens_ref, raw_por_item = origem_preparada
+        candidatos = [str(item.get("id")) for item in origem_preparada[0] if item.get("id")]
+        consultas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg, candidatos,
+            stats["campanhas_consulta"], stats, progress_callback, 18, 48)
+        raw_por_item = {item: estado[campanha_origem_id]["raw"] for item,estado in consultas.items()
+            if estado.get(campanha_origem_id,{}).get("situacao") == "participante"}
+        itens_ref = [{"id": item} for item in raw_por_item]
     else:
         itens_ref, raw_por_item, cfg = _renovacao_listar_itens_campanha(
-            client_id, loja, cfg, campanha_origem_id,
-            _renovacao_tipo_campanha(campanha_origem_id, promotion_type_origem),
+            client_id, loja, cfg, campanha_origem_id, promotion_type_origem,
             expected_count=expected_origem_count, progress_callback=progress_callback,
-            progress_start=18, progress_end=48,
-        )
-    item_ids = [str(item.get("id") or "").strip() for item in itens_ref if str(item.get("id") or "").strip()]
-    item_ids = list(dict.fromkeys(item_ids))
-    _renovacao_exigir_coleta_completa(itens_ref, expected_origem_count, campanha_origem_id)
-    if not item_ids:
-        raise HTTPException(status_code=400, detail="Nao encontrei MLBs ativos ou programados nessa campanha para copiar.")
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Origem",
-        50,
-        f"Campanha de origem carregada com {len(item_ids)} MLB(s).",
-        total=len(item_ids),
-    )
-
-    ids_destino: set[str] = set()
-    raw_destino = {}
-    if verificar_destino:
-        _renovacao_emitir_progresso(
-            progress_callback,
-            "Destino",
-            52,
-            "Conferindo MLBs que ja estao na campanha nova...",
-            campanha_id=campanha_destino_id,
-        )
-        itens_destino, raw_destino, cfg = _renovacao_listar_itens_campanha(
-            client_id,
-            loja,
-            cfg,
-            campanha_destino_id,
-            promotion_type_destino or "SELLER_CAMPAIGN",
-            expected_count=expected_destino_count,
-            progress_callback=progress_callback,
-            progress_start=53,
-            progress_end=58,
-        )
-        ids_destino = {
-            str(item.get("id") or "").strip()
-            for item in itens_destino
-            if str(item.get("id") or "").strip()
-        }
-
-    item_ids_para_incluir = [item_id for item_id in item_ids if item_id not in ids_destino]
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Comparacao",
-        60,
-        f"{len(item_ids_para_incluir)} MLB(s) faltam na campanha nova. Conferindo tambem o desconto dos ja presentes.",
-        faltantes=len(item_ids_para_incluir),
-        ja_presentes=len(ids_destino.intersection(set(item_ids))),
-    )
-    detalhes_por_id = {}
-    if item_ids:
-        _renovacao_emitir_progresso(
-            progress_callback,
-            "Detalhes",
-            62,
-            f"Buscando detalhes de {len(item_ids)} MLB(s) para conferir preco e desconto...",
-            total=len(item_ids),
-        )
+            progress_start=18, progress_end=48, validar_quantidade=not somente_conferir,
+            estatisticas=stats)
+    item_ids = list(dict.fromkeys(str(item.get("id")) for item in itens_ref if item.get("id")))
+    if not somente_conferir:
+        _renovacao_exigir_coleta_completa(itens_ref, expected_origem_count, campanha_origem_id)
+        if not item_ids:
+            raise HTTPException(400, "Nao encontrei participantes confirmados na campanha de origem.")
+        if stats.get("inconclusivos"):
+            raise HTTPException(409, "Existem consultas de participacao inconclusivas. Nenhuma copia foi iniciada.")
+    consultas_iniciais = stats.get("consultas", {})
+    # Mesmo uma coleta preparada so pode decidir POST/PUT por associacao exata.
+    faltando_snapshot = [item for item in item_ids if item not in consultas_iniciais]
+    if faltando_snapshot:
+        _novas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg, faltando_snapshot,
+            stats["campanhas_consulta"], stats, progress_callback, 49, 58)
+        consultas_iniciais = stats["consultas"]
+    ids_destino = {item for item in item_ids if
+        consultas_iniciais.get(item,{}).get(campanha_destino_id,{}).get("situacao") == "participante"}
+    erros_operacao = {}
+    atualizados = set()
+    if not somente_conferir:
         detalhes, cfg = ctx._ml_buscar_itens_batch(client_id, loja, cfg, item_ids)
-        detalhes_por_id = {str(item.get("id") or "").strip(): item for item in detalhes if isinstance(item, dict)}
-
-    sucessos = []
-    atualizados = []
-    falhas = []
-    total_para_incluir = len(item_ids)
-    intervalo_emit = max(1, min(25, max(1, total_para_incluir // 50))) if total_para_incluir else 1
-    for idx_item, item_id in enumerate(item_ids, start=1):
-        if idx_item == 1 or idx_item == total_para_incluir or idx_item % intervalo_emit == 0:
-            pct = 65 + (28 * idx_item / max(1, total_para_incluir))
-            _renovacao_emitir_progresso(
-                progress_callback,
-                "Inclusao",
-                pct,
-                f"Sincronizando MLB {idx_item}/{total_para_incluir}: {item_id}",
-                item_id=item_id,
-                processados=idx_item,
-                total=total_para_incluir,
-                incluidos=len(sucessos),
-                atualizados=len(atualizados),
-                falhas=len(falhas),
-            )
-        try:
-            detalhe = detalhes_por_id.get(item_id) or {}
-            desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
-                item_id, raw_por_item.get(item_id) or {}, detalhe,
-            )
-            if desconto is None:
-                raw_exato, cfg = ctx._ml_obter_item_promocao_raw(
-                    client_id, loja, cfg, campanha_origem_id,
-                    promotion_type_origem or "SELLER_CAMPAIGN", item_id,
-                )
-                if _renovacao_participante_campanha(raw_exato, campanha_origem_id, item_id, contexto_campanha=True):
-                    desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
-                        item_id, raw_exato, detalhe,
-                    )
-            if desconto is None:
-                falhas.append({"item_id": item_id, "erro": "Nao foi possivel identificar o percentual da origem"})
-                continue
-            preco_base, cfg = _renovacao_preco_base_atual(client_id, loja, cfg, item_id, detalhe)
-            if preco_base is None:
-                falhas.append({"item_id": item_id, "erro": "Nao foi possivel confirmar o preco base atual"})
-                continue
-            existente = item_id in ids_destino
-            if existente:
-                raw_atual = raw_destino.get(item_id) or {}
-                if not _renovacao_valores_participacao(raw_atual, item_id, campanha_destino_id):
-                    raw_atual, cfg = ctx._ml_obter_item_promocao_raw(
-                        client_id, loja, cfg, campanha_destino_id,
-                        promotion_type_destino or "SELLER_CAMPAIGN", item_id,
-                    )
-                if _renovacao_participacao_mantem_desconto(
-                    raw_atual, item_id, campanha_destino_id, desconto, preco_base,
-                ):
+        detalhes_por_id = {str(item.get("id")): item for item in detalhes if isinstance(item,dict)}
+        for numero, item_id in enumerate(item_ids, start=1):
+            if numero == 1 or numero == len(item_ids) or numero % 20 == 0:
+                _renovacao_emitir_progresso(progress_callback, "Sincronizacao",
+                    60+30*numero/max(1,len(item_ids)), f"Conferindo e sincronizando {numero}/{len(item_ids)}: {item_id}")
+            try:
+                percentual, _, preco_origem = _renovacao_desconto_item(item_id, raw_por_item[item_id], {})
+                if percentual is None:
+                    erros_operacao[item_id] = "Percentual da origem nao confirmado"
                     continue
-            ok, erro, cfg = _renovacao_adicionar_item_campanha(
-                client_id, loja, cfg, item_id, campanha_destino_id,
-                desconto, preco_base, preco_promocional,
-                preferir_percentual=preferir_percentual,
-                metodo="PUT" if existente else "POST",
-            )
-            if ok:
-                (atualizados if existente else sucessos).append({"item_id": item_id, "desconto": desconto})
-            else:
-                falhas.append({"item_id": item_id, "erro": erro})
-        except HTTPException as exc:
-            falhas.append({"item_id": item_id, "erro": str(exc.detail)})
-        except Exception:
-            falhas.append({"item_id": item_id, "erro": "Falha ao consultar ou aplicar o desconto deste item"})
-
-    _renovacao_emitir_progresso(
-        progress_callback,
-        "Finalizando",
-        96,
-        f"Finalizando sincronizacao. Incluidos: {len(sucessos)}. Atualizados: {len(atualizados)}. Falhas: {len(falhas)}.",
-        incluidos=len(sucessos),
-        atualizados=len(atualizados),
-        falhas=len(falhas),
-    )
-    return {
-        "total_origem": len(item_ids),
-        "mlbs_ja_presentes": len(ids_destino.intersection(set(item_ids))),
-        "faltantes": len(item_ids_para_incluir),
-        "incluidos": len(sucessos),
-        "atualizados": len(atualizados),
-        "falhas": falhas[:50],
-        "falhas_total": len(falhas),
-    }, cfg
+                destino = consultas_iniciais.get(item_id,{}).get(campanha_destino_id,{})
+                if destino.get("situacao") == "participante" and _renovacao_participacao_mantem_desconto(
+                    destino.get("raw") or {}, item_id, campanha_destino_id, percentual):
+                    continue
+                base, cfg = _renovacao_preco_base_atual(client_id, loja, cfg, item_id, detalhes_por_id.get(item_id) or {})
+                if base is None:
+                    erros_operacao[item_id] = "Preco base atual nao confirmado"
+                    continue
+                ok, erro, cfg = _renovacao_adicionar_item_campanha(client_id, loja, cfg, item_id,
+                    campanha_destino_id, percentual, base, preco_origem, preferir_percentual=preferir_percentual,
+                    metodo="PUT" if item_id in ids_destino else "POST", campanha_origem_id=campanha_origem_id)
+                if not ok:
+                    erros_operacao[item_id] = erro
+                elif item_id in ids_destino:
+                    atualizados.add(item_id)
+            except HTTPException as exc:
+                erros_operacao[item_id] = str(exc.detail)
+            except Exception:
+                erros_operacao[item_id] = "Falha ao consultar ou aplicar o desconto deste item"
+        # Verificacao final independente das respostas de POST/PUT.
+        final_stats = {}
+        consultas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg,
+            list(consultas_iniciais), stats["campanhas_consulta"], final_stats,
+            progress_callback, 91, 97)
+    else:
+        consultas = consultas_iniciais
+    conferencia = _renovacao_montar_conferencia(consultas, campanha_origem_id,
+                                              campanha_destino_id, expected_origem_count)
+    rows = conferencia["itens"]
+    falhas = [{"item_id": row["item_id"], "erro": row["erro"]} for row in rows if not row["confirmado"]]
+    falhas.extend(conferencia["inconclusivos"])
+    finais_confirmados = {row["item_id"] for row in rows if row["confirmado"]}
+    resumo = {"success": conferencia["completa"], "somente_conferir": somente_conferir,
+        "total_origem": conferencia["total_origem"], "total_origem_esperado": expected_origem_count,
+        "mlbs_ja_presentes": len(ids_destino), "faltantes": len(set(item_ids)-ids_destino),
+        "incluidos": 0 if somente_conferir else len(finais_confirmados-ids_destino),
+        "atualizados": len(atualizados & finais_confirmados),
+        "falhas": falhas[:50], "falhas_total": len(falhas),
+        "conferencia": conferencia, "erros_operacao": erros_operacao}
+    return _renovacao_sanitizar_relatorio(resumo), cfg
 
 
 def _renovacao_criar_ou_completar_proximo_mes(
@@ -616,6 +622,7 @@ def _renovacao_criar_ou_completar_proximo_mes(
     campanha_id: str,
     nome: str = "",
     promotion_type: str = "SELLER_CAMPAIGN",
+    quantidade_origem_esperada: int | None = None,
 ) -> dict:
     loja = str(loja or "").strip()
     campanha_id = str(campanha_id or "").strip()
@@ -634,6 +641,10 @@ def _renovacao_criar_ou_completar_proximo_mes(
         raise HTTPException(status_code=400, detail="Informe o nome da nova campanha.")
 
     esperado_origem = _renovacao_contagem_esperada(campanha_fonte)
+    if quantidade_origem_esperada is not None:
+        if esperado_origem is not None and esperado_origem != quantidade_origem_esperada:
+            raise HTTPException(409, f"A contagem da origem mudou de {quantidade_origem_esperada} para {esperado_origem}. Atualize as campanhas e confira antes de copiar.")
+        esperado_origem = quantidade_origem_esperada
     itens_origem, raw_origem, cfg = _renovacao_listar_itens_campanha(
         client_id, loja, cfg, campanha_id, promotion_type,
         expected_count=esperado_origem,
@@ -700,6 +711,8 @@ def _renovacao_sincronizar_promocao_existente(
     promotion_type_origem: str = "SELLER_CAMPAIGN",
     promotion_type_destino: str = "SELLER_CAMPAIGN",
     progress_callback: Optional[Callable[[dict], None]] = None,
+    quantidade_origem_esperada: int | None = None,
+    somente_conferir: bool = False,
 ) -> dict:
     _renovacao_emitir_progresso(
         progress_callback,
@@ -740,6 +753,12 @@ def _renovacao_sincronizar_promocao_existente(
         campanha_destino_id, campanha_destino.get("promotion_type") or campanha_destino.get("type") or promotion_type_destino,
     )
     expected_origem_count = _renovacao_contagem_esperada(campanha_origem)
+    contagens_origem_api = {"ativos": campanha_origem.get("active_count"),
+        "programados": campanha_origem.get("programmed_count"), "total": expected_origem_count}
+    if quantidade_origem_esperada is not None:
+        if not somente_conferir and expected_origem_count is not None and expected_origem_count != quantidade_origem_esperada:
+            raise HTTPException(409, f"A contagem da origem mudou de {quantidade_origem_esperada} para {expected_origem_count}. Atualize as campanhas e confira antes de copiar.")
+        expected_origem_count = quantidade_origem_esperada
     _renovacao_emitir_progresso(
         progress_callback,
         "Campanhas",
@@ -756,9 +775,10 @@ def _renovacao_sincronizar_promocao_existente(
         promotion_type_origem,
         promotion_type_destino,
         preferir_percentual=True,
-        expected_origem_count=expected_origem_count or None,
+        expected_origem_count=expected_origem_count,
         expected_destino_count=_renovacao_contagem_esperada(campanha_destino),
         progress_callback=progress_callback,
+        somente_conferir=somente_conferir,
     )
 
     _renovacao_emitir_progresso(
@@ -767,7 +787,8 @@ def _renovacao_sincronizar_promocao_existente(
         98,
         "Atualizando cache local das campanhas...",
     )
-    ctx._cache_invalidar_loja(client_id, loja)
+    if not somente_conferir:
+        ctx._cache_invalidar_loja(client_id, loja)
     return {
         "success": True,
         "loja": loja,
@@ -775,6 +796,7 @@ def _renovacao_sincronizar_promocao_existente(
             "id": campanha_origem_id,
             "nome": campanha_origem.get("name") or campanha_origem.get("title") or campanha_origem_id,
         },
+        "contagens_origem_api": contagens_origem_api,
         "campanha_destino": {
             "id": campanha_destino_id,
             "nome": campanha_destino.get("name") or campanha_destino.get("title") or campanha_destino_id,
@@ -806,6 +828,51 @@ def _renovacao_listar_campanhas_usuario_payload(client_id: str, loja: str):
     return {"success": True, "loja": loja, "campaigns": campanhas, "total": len(campanhas)}
 
 
+def _renovacao_sanitizar_relatorio(valor):
+    secretos = {"authorization", "access_token", "refresh_token", "cookie", "set-cookie", "password",
+                "client_secret", "secret", "api_key", "cfg", "headers", "raw", "request", "response"}
+    if isinstance(valor, dict):
+        return {str(key): _renovacao_sanitizar_relatorio(item) for key, item in valor.items()
+                if str(key).lower() not in secretos}
+    if isinstance(valor, (list, tuple)):
+        return [_renovacao_sanitizar_relatorio(item) for item in valor]
+    if isinstance(valor, str):
+        texto = re.sub(r"(?i)Bearer\s+[^\s\"',;]+", "[credencial omitida]", valor)
+        texto = re.sub(r"(?i)\b(?:access_token|refresh_token|client_secret|api_key|password)\b[\"']?\s*[:=]\s*[\"']?[^\s\"',;}]+", "[credencial omitida]", texto)
+        texto = re.sub(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b", "[credencial omitida]", texto)
+        texto = re.sub(r"\bAPP_USR-[A-Za-z0-9_-]+", "[credencial omitida]", texto)
+        texto = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[email omitido]", texto)
+        texto = re.sub(r"(?i)\b[A-Z]:[\\/][^\r\n]*", "[caminho omitido]", texto)
+        texto = re.sub(r"\\\\[^\\\s]+\\[^\r\n]*", "[caminho omitido]", texto)
+        return re.sub(r"/(?:srv|home|root|tmp|var|etc|opt|app|workspace|usr|Users)/[^\r\n]*", "[caminho omitido]", texto)
+    if isinstance(valor, float) and not math.isfinite(valor):
+        return None
+    return valor if valor is None or isinstance(valor, (bool, int, float)) else None
+
+
+def _renovacao_salvar_conferencia(client_id: str, job_id: str, payload: dict, resultado: dict) -> None:
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", job_id):
+        raise ValueError("Identificador de conferencia invalido")
+    pasta = os.path.join(ctx.get_tenant_path(client_id), "renovacao_auditorias")
+    os.makedirs(pasta, exist_ok=True)
+    relatorio = {
+        "job_id": job_id, "conferido_em": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "loja": payload.get("loja"), "campanha_origem_id": payload.get("campanha_origem_id"),
+        "campanha_destino_id": payload.get("campanha_destino_id"),
+        "somente_conferir": bool(payload.get("somente_conferir")), "resultado": resultado,
+    }
+    fd, temporario = tempfile.mkstemp(prefix=job_id + "-", suffix=".tmp", dir=pasta)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as arquivo:
+            json.dump(_renovacao_sanitizar_relatorio(jsonable_encoder(relatorio)), arquivo, ensure_ascii=False, allow_nan=False)
+            arquivo.flush()
+            os.fsync(arquivo.fileno())
+        os.replace(temporario, os.path.join(pasta, job_id + ".json"))
+    finally:
+        if os.path.exists(temporario):
+            os.unlink(temporario)
+
+
 def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload: dict) -> None:
     def progress_hook(data: dict) -> None:
         _renovacao_sync_job_update(job_id, status="running", **(data or {}))
@@ -820,19 +887,33 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             payload.get("promotion_type_origem") or "SELLER_CAMPAIGN",
             payload.get("promotion_type_destino") or "SELLER_CAMPAIGN",
             progress_callback=progress_hook,
+            quantidade_origem_esperada=payload.get("quantidade_origem_esperada"),
+            somente_conferir=bool(payload.get("somente_conferir")),
         )
+        resultado = _renovacao_sanitizar_relatorio(resultado)
+        try:
+            _renovacao_salvar_conferencia(client_id, job_id, payload, resultado)
+            resultado["relatorio_id"] = job_id
+        except Exception:
+            resultado["aviso_relatorio"] = "A conferencia terminou, mas o relatorio nao foi salvo. Baixe o resultado nesta tela."
+        completa = resultado.get("success") is True
         _renovacao_sync_job_update(
             job_id,
             status="done",
-            etapa="Concluido",
+            etapa="Concluido" if completa else "Pendencias",
             percentual=100,
             progress=100,
-            mensagem="Sincronizacao concluida.",
+            mensagem=("Conferencia concluida." if payload.get("somente_conferir") else "Sincronizacao concluida.") if completa else "Operacao encerrada com pendencias. Confira o relatorio.",
             result=jsonable_encoder(resultado),
             error="",
         )
     except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        detail = _renovacao_sanitizar_relatorio(exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False))
+        try:
+            _renovacao_salvar_conferencia(client_id, job_id, payload, {
+                "success": False, "somente_conferir": bool(payload.get("somente_conferir")), "erro": detail})
+        except Exception:
+            pass
         _renovacao_sync_job_update(
             job_id,
             status="error",
@@ -843,8 +924,13 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             error=detail or "Erro ao sincronizar promocao.",
         )
     except Exception as exc:
-        ctx.logger.exception("[RENOVACAO ML] Falha no job de sincronizacao %s", job_id)
-        msg = str(exc) or "Erro ao sincronizar promocao."
+        ctx.logger.error("[RENOVACAO ML] Falha no processamento da conferencia: %s", type(exc).__name__)
+        msg = _renovacao_sanitizar_relatorio(str(exc) or "Erro ao sincronizar promocao.")
+        try:
+            _renovacao_salvar_conferencia(client_id, job_id, payload, {
+                "success": False, "somente_conferir": bool(payload.get("somente_conferir")), "erro": msg})
+        except Exception:
+            pass
         _renovacao_sync_job_update(
             job_id,
             status="error",
