@@ -106,6 +106,8 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
         req: RenovacaoCampanhaSincronizarRequest,
         client_id: str = Depends(config.get_tenant_id),
     ):
+        if req.corrigir_divergencias:
+            raise HTTPException(409, "Use a acao Conferir e corrigir para iniciar a correcao de divergencias.")
         if not req.somente_conferir and req.quantidade_origem_esperada is None:
             raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de sincronizar.")
         return config.sincronizar_promocao_existente(
@@ -125,16 +127,27 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
         client_id: str = Depends(config.get_tenant_id),
     ):
         if hasattr(req, "model_copy"):
-            consulta = req.model_copy(update={"somente_conferir": True})
+            consulta = req.model_copy(update={"somente_conferir": True, "corrigir_divergencias": False})
         else:
-            consulta = req.copy(update={"somente_conferir": True})
+            consulta = req.copy(update={"somente_conferir": True, "corrigir_divergencias": False})
         return config.iniciar_sincronizacao_promocao(client_id, consulta)
+
+    @router.post("/api/renovacao/corrigir-divergencias/iniciar", name="renovacao_corrigir_divergencias_iniciar")
+    def renovacao_corrigir_divergencias_iniciar(
+        req: RenovacaoCampanhaSincronizarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        modo = {"somente_conferir": False, "corrigir_divergencias": True}
+        correcao = req.model_copy(update=modo) if hasattr(req, "model_copy") else req.copy(update=modo)
+        return config.iniciar_sincronizacao_promocao(client_id, correcao)
 
     @router.post("/api/renovacao/sincronizar-promocao/iniciar", name="renovacao_sincronizar_promocao_iniciar")
     def renovacao_sincronizar_promocao_iniciar(
         req: RenovacaoCampanhaSincronizarRequest,
         client_id: str = Depends(config.get_tenant_id),
     ):
+        if req.corrigir_divergencias:
+            raise HTTPException(409, "Use a acao Conferir e corrigir para iniciar a correcao de divergencias.")
         if not req.somente_conferir and req.quantidade_origem_esperada is None:
             raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de sincronizar.")
         return config.iniciar_sincronizacao_promocao(client_id, req)

@@ -28,6 +28,7 @@ class RenovacaoCampanhaSincronizarRequest(BaseModel):
     promotion_type_destino: str | None = None
     quantidade_origem_esperada: int | None = Field(default=None, ge=0, le=20000)
     somente_conferir: bool = False
+    corrigir_divergencias: bool = False
 
 
 class RenovacaoCampanhaPeriodoRequest(BaseModel):

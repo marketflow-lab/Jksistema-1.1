@@ -253,6 +253,7 @@
             <div class="api-actions">
                 <button class="btn-process btn-api" id="btn-sincronizar-renovacao" onclick="sincronizarPromocaoRenovacao()">Sincronizar promoção</button>
                 <button class="btn-secondary btn-api" id="btn-conferir-renovacao" onclick="sincronizarPromocaoRenovacao(true)">Conferir descontos</button>
+                <button class="btn-process btn-api" id="btn-corrigir-renovacao" onclick="sincronizarPromocaoRenovacao(false, true)">Conferir e corrigir</button>
                 <button class="btn-secondary" id="btn-baixar-conferencia-renovacao" style="display:none" onclick="baixarConferenciaRenovacao()">Baixar relatório</button>
             </div>
             <div id="renovacao-sync-progress" class="sync-progress">
@@ -353,8 +354,9 @@
     function resetarBotaoSincronizacaoRenovacao(botao) {
         if (!botao) return;
         botao.disabled = false;
-        botao.textContent = botao.id === 'btn-conferir-renovacao' ? 'Conferir descontos' : 'Sincronizar promoção';
-        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao']) {
+        const rotulos = { 'btn-conferir-renovacao': 'Conferir descontos', 'btn-corrigir-renovacao': 'Conferir e corrigir' };
+        botao.textContent = rotulos[botao.id] || 'Sincronizar promoção';
+        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao', 'btn-corrigir-renovacao']) {
             const controle = document.getElementById(id);
             if (controle) controle.disabled = false;
         }
@@ -1191,7 +1193,7 @@
             const status = job.status || 'running';
             const percentual = Number(job.percentual ?? job.progress ?? 0);
             const mensagem = job.mensagem || 'Sincronizando promocao...';
-            const tipo = status === 'error' ? 'error' : (status === 'done' ? 'ok' : 'info');
+            const tipo = status === 'error' || (status === 'done' && job.result?.success !== true) ? 'error' : (status === 'done' ? 'ok' : 'info');
             setRenovacaoSyncProgress(mensagem, percentual, tipo);
             setRenovacaoApiStatus(mensagem, tipo);
             if (status === 'done') {
@@ -1201,11 +1203,13 @@
                 const destinoRetorno = result.campanha_destino || {};
                 const conferencia = result.conferencia || {};
                 const completa = result.success === true && conferencia.completa === true;
-                const acao = result.somente_conferir ? 'Conferencia' : 'Sincronizacao';
+                const acao = result.corrigir_divergencias ? 'Conferencia e correcao' : (result.somente_conferir ? 'Conferencia' : 'Sincronizacao');
                 const titulo = completa ? `${acao} concluida` : `${acao} encerrada com pendencias`;
                 const contagem = conferencia.contagem_coerente === false ? ` Total esperado na origem: ${conferencia.esperado ?? 'nao confirmado'}; encontrado: ${conferencia.total_origem || 0}.` : '';
                 const extras = conferencia.extras_destino?.length ? ` ${conferencia.extras_destino.length} anuncio(s) no destino sem participacao confirmada na origem.` : '';
-                const mensagemFinal = `${titulo} para ${destinoRetorno.nome || destinoNome}. Descontos confirmados: ${conferencia.confirmados || 0}/${conferencia.total_origem || 0}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}.${contagem}${extras}${falhas}`;
+                const correcao = result.correcao || {};
+                const ajustes = result.corrigir_divergencias ? ` Correcoes confirmadas: ${correcao.corrigidos || 0}. Pendencias da correcao: ${correcao.pendentes || 0}.` : '';
+                const mensagemFinal = `${titulo} para ${destinoRetorno.nome || destinoNome}. Descontos confirmados: ${conferencia.confirmados || 0}/${conferencia.total_origem || 0}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}.${ajustes}${contagem}${extras}${falhas}`;
                 ultimaConferenciaRenovacao = result;
                 const download = document.getElementById('btn-baixar-conferencia-renovacao');
                 if (download) download.style.display = '';
@@ -1249,13 +1253,17 @@
         }, 1000);
     }
 
-    async function sincronizarPromocaoRenovacao(somenteConferir = false) {
+    async function sincronizarPromocaoRenovacao(somenteConferir = false, corrigirDivergencias = false) {
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const origemId = document.getElementById('renovacao-sync-origem')?.value || '';
         const destinoId = document.getElementById('renovacao-campanha-destino')?.value || '';
         const origem = campanhasRenovacao.find((item) => item.id === origemId) || {};
         const destino = campanhasRenovacao.find((item) => item.id === destinoId) || {};
-        const botao = document.getElementById(somenteConferir ? 'btn-conferir-renovacao' : 'btn-sincronizar-renovacao');
+        const botao = document.getElementById(corrigirDivergencias ? 'btn-corrigir-renovacao' : (somenteConferir ? 'btn-conferir-renovacao' : 'btn-sincronizar-renovacao'));
+        if (somenteConferir && corrigirDivergencias) {
+            setRenovacaoApiStatus('Escolha conferir descontos ou conferir e corrigir.', 'error');
+            return;
+        }
         if (!loja || !origemId || !destinoId) {
             setRenovacaoApiStatus('Selecione a loja, a campanha de origem e a campanha nova.', 'error');
             return;
@@ -1266,23 +1274,31 @@
         }
         const origemNome = origem.name || origem.title || origemId;
         const destinoNome = destino.name || destino.title || destinoId;
-        if (!somenteConferir && quantidadeOrigemRenovacao(origem) === null) {
+        if (!somenteConferir && !corrigirDivergencias && quantidadeOrigemRenovacao(origem) === null) {
             setRenovacaoApiStatus('Atualize as campanhas para confirmar a quantidade da origem antes de sincronizar.', 'error');
             return;
         }
-        if (!somenteConferir && !confirm(`Sincronizar os MLBs de "${origemNome}" para "${destinoNome}" mantendo a mesma porcentagem de desconto? Anuncios esperados: ${quantidadeOrigemRenovacao(origem) ?? "nao confirmado"}.`)) {
+        const pergunta = corrigirDivergencias
+            ? `Conferir "${origemNome}" e tentar corrigir os descontos de "${destinoNome}"? Os precos podem aumentar ou diminuir para manter a porcentagem da origem. Os anuncios faltantes com participacao confirmada na origem serao incluidos.`
+            : `Sincronizar os MLBs de "${origemNome}" para "${destinoNome}" mantendo a mesma porcentagem de desconto? Anuncios esperados: ${quantidadeOrigemRenovacao(origem) ?? "nao confirmado"}.`;
+        if (!somenteConferir && !confirm(pergunta)) {
             return;
         }
         botao.disabled = true;
-        botao.textContent = somenteConferir ? 'Conferindo...' : 'Sincronizando...';
-        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao']) {
+        botao.textContent = corrigirDivergencias ? 'Conferindo e corrigindo...' : (somenteConferir ? 'Conferindo...' : 'Sincronizando...');
+        for (const id of ['btn-sincronizar-renovacao', 'btn-conferir-renovacao', 'btn-corrigir-renovacao']) {
             const controle = document.getElementById(id);
             if (controle) controle.disabled = true;
         }
-        setRenovacaoSyncProgress(somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...', 0, 'info');
-        setRenovacaoApiStatus(somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...', 'info');
+        ultimaConferenciaRenovacao = null;
+        const download = document.getElementById('btn-baixar-conferencia-renovacao');
+        if (download) download.style.display = 'none';
+        const inicio = corrigirDivergencias ? 'Conferindo anuncios para corrigir as divergencias...' : (somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...');
+        setRenovacaoSyncProgress(inicio, 0, 'info');
+        setRenovacaoApiStatus(inicio, 'info');
+        const endpoint = corrigirDivergencias ? '/api/renovacao/corrigir-divergencias/iniciar' : (somenteConferir ? '/api/renovacao/conferir-promocao/iniciar' : '/api/renovacao/sincronizar-promocao/iniciar');
         try {
-            const response = await fetch(somenteConferir ? '/api/renovacao/conferir-promocao/iniciar' : '/api/renovacao/sincronizar-promocao/iniciar', {
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1292,12 +1308,13 @@
                     promotion_type_origem: origem.promotion_type || origem.type || 'SELLER_CAMPAIGN',
                     promotion_type_destino: destino.promotion_type || destino.type || 'SELLER_CAMPAIGN',
                     quantidade_origem_esperada: quantidadeOrigemRenovacao(origem),
-                    somente_conferir: somenteConferir
+                    somente_conferir: somenteConferir,
+                    corrigir_divergencias: corrigirDivergencias
                 })
             });
             const result = await response.json().catch(() => ({}));
             if (!response.ok || !result.job_id) throw new Error(result.detail || 'Erro ao iniciar sincronizacao.');
-            setRenovacaoSyncProgress('Sincronizacao iniciada. Preparando leitura das campanhas...', 3, 'info');
+            setRenovacaoSyncProgress('Operacao iniciada. Preparando leitura das campanhas...', 3, 'info');
             await acompanharSincronizacaoRenovacao(result.job_id, botao, destinoNome);
         } catch (error) {
             pararPollingRenovacaoSync();

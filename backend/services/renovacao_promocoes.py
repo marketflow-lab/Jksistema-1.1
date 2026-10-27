@@ -410,6 +410,10 @@ def _renovacao_adicionar_item_campanha(
     if destino.get("situacao") == "participante":
         if _renovacao_participacao_mantem_desconto(destino.get("raw") or {}, item_id, nova_campanha_id, desconto):
             return True, "", cfg
+        valores_destino = _renovacao_valores_participacao(destino.get("raw") or {}, item_id, nova_campanha_id)
+        if valores_destino is None:
+            return False, "Preco base da participacao no destino nao confirmado", cfg
+        preco_base = valores_destino[1]
         metodo = "PUT"
     elif destino.get("situacao") == "ausente":
         metodo = "POST"
@@ -859,7 +863,8 @@ def _renovacao_salvar_conferencia(client_id: str, job_id: str, payload: dict, re
         "job_id": job_id, "conferido_em": dt.datetime.now(dt.timezone.utc).isoformat(),
         "loja": payload.get("loja"), "campanha_origem_id": payload.get("campanha_origem_id"),
         "campanha_destino_id": payload.get("campanha_destino_id"),
-        "somente_conferir": bool(payload.get("somente_conferir")), "resultado": resultado,
+        "somente_conferir": bool(payload.get("somente_conferir")),
+        "corrigir_divergencias": bool(payload.get("corrigir_divergencias")), "resultado": resultado,
     }
     fd, temporario = tempfile.mkstemp(prefix=job_id + "-", suffix=".tmp", dir=pasta)
     try:
@@ -878,8 +883,19 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
         _renovacao_sync_job_update(job_id, status="running", **(data or {}))
 
     try:
-        _renovacao_emitir_progresso(progress_hook, "Preparando", 2, "Iniciando sincronizacao da promocao...")
-        resultado = _renovacao_sincronizar_promocao_existente(
+        if payload.get("somente_conferir") and payload.get("corrigir_divergencias"):
+            raise HTTPException(400, "Os modos de conferencia somente leitura e correcao sao exclusivos.")
+        corrigir = bool(payload.get("corrigir_divergencias"))
+        if corrigir:
+            from backend.services.renovacao_correcao import _renovacao_corrigir_divergencias_promocao
+            executar = _renovacao_corrigir_divergencias_promocao
+            modo = {}
+        else:
+            executar = _renovacao_sincronizar_promocao_existente
+            modo = {"somente_conferir": bool(payload.get("somente_conferir"))}
+        inicio = "Iniciando conferencia e correcao das divergencias..." if corrigir else "Iniciando sincronizacao da promocao..."
+        _renovacao_emitir_progresso(progress_hook, "Preparando", 2, inicio)
+        resultado = executar(
             client_id,
             payload.get("loja") or "",
             payload.get("campanha_origem_id") or "",
@@ -888,7 +904,7 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             payload.get("promotion_type_destino") or "SELLER_CAMPAIGN",
             progress_callback=progress_hook,
             quantidade_origem_esperada=payload.get("quantidade_origem_esperada"),
-            somente_conferir=bool(payload.get("somente_conferir")),
+            **modo,
         )
         resultado = _renovacao_sanitizar_relatorio(resultado)
         try:
@@ -903,7 +919,9 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             etapa="Concluido" if completa else "Pendencias",
             percentual=100,
             progress=100,
-            mensagem=("Conferencia concluida." if payload.get("somente_conferir") else "Sincronizacao concluida.") if completa else "Operacao encerrada com pendencias. Confira o relatorio.",
+            mensagem=("Conferencia e correcao concluidas." if corrigir else
+                      "Conferencia concluida." if payload.get("somente_conferir") else
+                      "Sincronizacao concluida.") if completa else "Operacao encerrada com pendencias. Confira o relatorio.",
             result=jsonable_encoder(resultado),
             error="",
         )
@@ -911,7 +929,8 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
         detail = _renovacao_sanitizar_relatorio(exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False))
         try:
             _renovacao_salvar_conferencia(client_id, job_id, payload, {
-                "success": False, "somente_conferir": bool(payload.get("somente_conferir")), "erro": detail})
+                "success": False, "somente_conferir": bool(payload.get("somente_conferir")),
+                "corrigir_divergencias": bool(payload.get("corrigir_divergencias")), "erro": detail})
         except Exception:
             pass
         _renovacao_sync_job_update(
@@ -928,7 +947,8 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
         msg = _renovacao_sanitizar_relatorio(str(exc) or "Erro ao sincronizar promocao.")
         try:
             _renovacao_salvar_conferencia(client_id, job_id, payload, {
-                "success": False, "somente_conferir": bool(payload.get("somente_conferir")), "erro": msg})
+                "success": False, "somente_conferir": bool(payload.get("somente_conferir")),
+                "corrigir_divergencias": bool(payload.get("corrigir_divergencias")), "erro": msg})
         except Exception:
             pass
         _renovacao_sync_job_update(
@@ -943,6 +963,8 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
 
 
 def _renovacao_sincronizar_promocao_iniciar_payload(client_id: str, req: RenovacaoCampanhaSincronizarRequest):
+    if req.somente_conferir and req.corrigir_divergencias:
+        raise HTTPException(400, "Os modos de conferencia somente leitura e correcao sao exclusivos.")
     _renovacao_sync_jobs_limpar_antigos()
     job_id = uuid.uuid4().hex
     payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
