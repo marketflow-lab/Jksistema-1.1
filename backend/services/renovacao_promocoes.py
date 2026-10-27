@@ -5,6 +5,7 @@ from backend.services.central_accounts_client import with_request_context
 
 import datetime as dt
 import json
+import math
 import re
 import threading
 import uuid
@@ -32,6 +33,8 @@ from backend.services.renovacao_promocoes_helpers import (
     _renovacao_nome_proximo_mes,
     _renovacao_normalizar_nome,
     _renovacao_parse_data_ml,
+    _renovacao_preco_base_atual,
+    _renovacao_preco_com_desconto,
     _renovacao_sync_job_update,
     _renovacao_sync_jobs_limpar_antigos,
 )
@@ -312,6 +315,52 @@ def _renovacao_deletar_campanha_ml(
     }
 
 
+def _renovacao_identidade_participacao_valida(raw: dict, item_id: str, campanha_id: str) -> bool:
+    if not isinstance(raw, dict) or raw.get("error"):
+        return False
+    status = str(raw.get("status") or "").strip().lower()
+    if status and status not in {"active", "started", "pending", "programmed", "scheduled", "ready_to_start"}:
+        return False
+    if raw.get("item_id") and str(raw["item_id"]) != item_id:
+        return False
+    for chave in ("promotion_id", "campaign_id"):
+        if raw.get(chave) and str(raw[chave]) != campanha_id:
+            return False
+    for chave, esperado in (("item", item_id), ("campaign", campanha_id), ("promotion", campanha_id)):
+        nested = raw.get(chave)
+        if isinstance(nested, dict) and nested.get("id") and str(nested["id"]) != esperado:
+            return False
+    identificador = str(raw.get("id") or "")
+    if identificador.startswith("MLB") and identificador != item_id:
+        return False
+    if identificador.startswith("C-MLB") and identificador != campanha_id:
+        return False
+    tipo = str(raw.get("promotion_type") or raw.get("type") or "")
+    if tipo and tipo != "SELLER_CAMPAIGN":
+        return False
+    return True
+
+
+def _renovacao_valores_participacao(raw: dict, item_id: str, campanha_id: str):
+    if not _renovacao_identidade_participacao_valida(raw, item_id, campanha_id):
+        return None
+    preco = ctx._parse_float_flex(raw.get("price") or raw.get("deal_price"))
+    base = ctx._parse_float_flex(raw.get("original_price"))
+    if any(v is None or not math.isfinite(float(v)) or v <= 0 for v in (preco, base)):
+        return None
+    return float(preco), float(base)
+
+
+def _renovacao_participacao_mantem_desconto(raw, item_id, campanha_id, desconto, preco_base=None):
+    valores = _renovacao_valores_participacao(raw, item_id, campanha_id)
+    if valores is None:
+        return False
+    preco, base = valores
+    if round(preco, 2) != _renovacao_preco_com_desconto(base, desconto):
+        return False
+    return preco_base is None or round(preco, 2) == _renovacao_preco_com_desconto(preco_base, desconto)
+
+
 def _renovacao_adicionar_item_campanha(
     client_id: str,
     loja: str,
@@ -322,40 +371,52 @@ def _renovacao_adicionar_item_campanha(
     preco_base: float,
     preco_promocional: Optional[float],
     preferir_percentual: bool = False,
+    metodo: str = "POST",
 ) -> tuple[bool, str, dict]:
-    deal_price = preco_promocional
-    if deal_price is None and preco_base:
-        deal_price = round(float(preco_base) * (1 - (float(desconto) / 100)), 2)
-    if deal_price is None or deal_price <= 0:
-        return False, "preco promocional invalido", cfg
-
-    payload_preco = {
-        "promotion_id": nova_campanha_id,
-        "promotion_type": "SELLER_CAMPAIGN",
-        "deal_price": round(float(deal_price), 2),
-    }
-    payload_percentual = {
-        "promotion_id": nova_campanha_id,
-        "promotion_type": "SELLER_CAMPAIGN",
-        "discount_percentage": round(float(desconto), 4),
-    }
-    payloads = [payload_percentual, payload_preco] if preferir_percentual else [payload_preco, payload_percentual]
-    ultimo_erro = ""
-    for payload in payloads:
+    """Aplica o percentual via deal_price; aceita os argumentos legados."""
+    for tentativa in range(2):
+        deal_price = _renovacao_preco_com_desconto(preco_base, desconto)
+        if deal_price is None:
+            return False, "preco base ou percentual de desconto invalido", cfg
+        payload = {
+            "promotion_id": nova_campanha_id,
+            "promotion_type": "SELLER_CAMPAIGN",
+            "deal_price": deal_price,
+        }
         resp, cfg = ctx._ml_api_request(
             client_id,
             loja,
             cfg,
-            "POST",
+            metodo,
             f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
             params={"app_version": "v2"},
             json=payload,
             timeout=20,
         )
-        if resp.status_code in (200, 201):
+        if resp.status_code not in (200, 201):
+            return False, ctx._ml_parse_error_detail(resp, f"Erro {resp.status_code} ao aplicar desconto"), cfg
+        aplicado = _renovacao_json_response(resp)
+        if not _renovacao_identidade_participacao_valida(aplicado, item_id, nova_campanha_id):
+            return False, "Mercado Livre retornou uma participacao com identidade ou status divergente", cfg
+        if _renovacao_participacao_mantem_desconto(aplicado, item_id, nova_campanha_id, desconto):
             return True, "", cfg
-        ultimo_erro = ctx._ml_parse_error_detail(resp, f"Erro {resp.status_code} ao incluir item")
-    return False, ultimo_erro, cfg
+        valores_resposta = _renovacao_valores_participacao(aplicado, item_id, nova_campanha_id)
+        confirmado, cfg = ctx._ml_obter_item_promocao_raw(
+            client_id, loja, cfg, nova_campanha_id, "SELLER_CAMPAIGN", item_id,
+        )
+        base_confirmacao = valores_resposta[1] if valores_resposta else preco_base
+        if _renovacao_participacao_mantem_desconto(
+            confirmado, item_id, nova_campanha_id, desconto, base_confirmacao,
+        ):
+            return True, "", cfg
+        if tentativa == 0 and valores_resposta and round(valores_resposta[1], 2) != round(float(preco_base), 2):
+            # A base pode mudar entre consulta e inclusao. A participacao ja
+            # existe depois do 2xx, portanto a unica correcao usa PUT.
+            preco_base = valores_resposta[1]
+            metodo = "PUT"
+            continue
+        break
+    return False, "Mercado Livre nao confirmou o percentual de desconto da origem no destino", cfg
 
 
 def _renovacao_copiar_mlbs_campanha(
@@ -369,6 +430,7 @@ def _renovacao_copiar_mlbs_campanha(
     preferir_percentual: bool = False,
     expected_origem_count: int | None = None,
     progress_callback: Optional[Callable[[dict], None]] = None,
+    verificar_destino: bool = True,
 ) -> tuple[dict, dict]:
     _renovacao_emitir_progresso(
         progress_callback,
@@ -402,7 +464,8 @@ def _renovacao_copiar_mlbs_campanha(
     )
 
     ids_destino: set[str] = set()
-    try:
+    raw_destino = {}
+    if verificar_destino:
         _renovacao_emitir_progresso(
             progress_callback,
             "Destino",
@@ -410,7 +473,7 @@ def _renovacao_copiar_mlbs_campanha(
             "Conferindo MLBs que ja estao na campanha nova...",
             campanha_id=campanha_destino_id,
         )
-        itens_destino, _raw_destino, cfg = _renovacao_listar_itens_campanha(
+        itens_destino, raw_destino, cfg = _renovacao_listar_itens_campanha(
             client_id,
             loja,
             cfg,
@@ -425,94 +488,100 @@ def _renovacao_copiar_mlbs_campanha(
             for item in itens_destino
             if str(item.get("id") or "").strip()
         }
-    except Exception as exc:
-        ctx.logger.warning("[RENOVACAO ML] Falha ao verificar itens da campanha destino %s: %s", campanha_destino_id, exc)
-        ids_destino = set()
 
     item_ids_para_incluir = [item_id for item_id in item_ids if item_id not in ids_destino]
     _renovacao_emitir_progresso(
         progress_callback,
         "Comparacao",
         60,
-        f"{len(item_ids_para_incluir)} MLB(s) faltam na campanha nova. {len(ids_destino.intersection(set(item_ids)))} ja estavam presentes.",
+        f"{len(item_ids_para_incluir)} MLB(s) faltam na campanha nova. Conferindo tambem o desconto dos ja presentes.",
         faltantes=len(item_ids_para_incluir),
         ja_presentes=len(ids_destino.intersection(set(item_ids))),
     )
     detalhes_por_id = {}
-    if item_ids_para_incluir:
+    if item_ids:
         _renovacao_emitir_progresso(
             progress_callback,
             "Detalhes",
             62,
-            f"Buscando detalhes de {len(item_ids_para_incluir)} MLB(s) para calcular preco e desconto...",
-            total=len(item_ids_para_incluir),
+            f"Buscando detalhes de {len(item_ids)} MLB(s) para conferir preco e desconto...",
+            total=len(item_ids),
         )
-        detalhes, cfg = ctx._ml_buscar_itens_batch(client_id, loja, cfg, item_ids_para_incluir)
+        detalhes, cfg = ctx._ml_buscar_itens_batch(client_id, loja, cfg, item_ids)
         detalhes_por_id = {str(item.get("id") or "").strip(): item for item in detalhes if isinstance(item, dict)}
 
     sucessos = []
+    atualizados = []
     falhas = []
-    total_para_incluir = len(item_ids_para_incluir)
+    total_para_incluir = len(item_ids)
     intervalo_emit = max(1, min(25, max(1, total_para_incluir // 50))) if total_para_incluir else 1
-    for idx_item, item_id in enumerate(item_ids_para_incluir, start=1):
+    for idx_item, item_id in enumerate(item_ids, start=1):
         if idx_item == 1 or idx_item == total_para_incluir or idx_item % intervalo_emit == 0:
             pct = 65 + (28 * idx_item / max(1, total_para_incluir))
             _renovacao_emitir_progresso(
                 progress_callback,
                 "Inclusao",
                 pct,
-                f"Incluindo MLB {idx_item}/{total_para_incluir}: {item_id}",
+                f"Sincronizando MLB {idx_item}/{total_para_incluir}: {item_id}",
                 item_id=item_id,
                 processados=idx_item,
                 total=total_para_incluir,
                 incluidos=len(sucessos),
+                atualizados=len(atualizados),
                 falhas=len(falhas),
             )
-        desconto, preco_base, preco_promocional = _renovacao_desconto_item(
-            item_id,
-            raw_por_item.get(item_id) or {},
-            detalhes_por_id.get(item_id) or {},
-        )
-        if desconto is None or preco_base is None:
-            raw_exato, cfg = ctx._ml_obter_item_promocao_raw(
-                client_id,
-                loja,
-                cfg,
-                campanha_origem_id,
-                promotion_type_origem or "SELLER_CAMPAIGN",
-                item_id,
+        try:
+            detalhe = detalhes_por_id.get(item_id) or {}
+            desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
+                item_id, raw_por_item.get(item_id) or {}, detalhe,
             )
-            if raw_exato:
-                desconto, preco_base, preco_promocional = _renovacao_desconto_item(
-                    item_id,
-                    raw_exato,
-                    detalhes_por_id.get(item_id) or {},
+            if desconto is None:
+                raw_exato, cfg = ctx._ml_obter_item_promocao_raw(
+                    client_id, loja, cfg, campanha_origem_id,
+                    promotion_type_origem or "SELLER_CAMPAIGN", item_id,
                 )
-        if desconto is None or preco_base is None:
-            falhas.append({"item_id": item_id, "erro": "Nao foi possivel identificar desconto/preco base"})
-            continue
-        ok, erro, cfg = _renovacao_adicionar_item_campanha(
-            client_id,
-            loja,
-            cfg,
-            item_id,
-            campanha_destino_id,
-            desconto,
-            preco_base,
-            preco_promocional,
-            preferir_percentual=preferir_percentual,
-        )
-        if ok:
-            sucessos.append({"item_id": item_id, "desconto": desconto})
-        else:
-            falhas.append({"item_id": item_id, "erro": erro})
+                desconto, _base_origem, preco_promocional = _renovacao_desconto_item(
+                    item_id, raw_exato, detalhe,
+                )
+            if desconto is None:
+                falhas.append({"item_id": item_id, "erro": "Nao foi possivel identificar o percentual da origem"})
+                continue
+            preco_base, cfg = _renovacao_preco_base_atual(client_id, loja, cfg, item_id, detalhe)
+            if preco_base is None:
+                falhas.append({"item_id": item_id, "erro": "Nao foi possivel confirmar o preco base atual"})
+                continue
+            existente = item_id in ids_destino
+            if existente:
+                raw_atual = raw_destino.get(item_id) or {}
+                if not _renovacao_valores_participacao(raw_atual, item_id, campanha_destino_id):
+                    raw_atual, cfg = ctx._ml_obter_item_promocao_raw(
+                        client_id, loja, cfg, campanha_destino_id,
+                        promotion_type_destino or "SELLER_CAMPAIGN", item_id,
+                    )
+                if _renovacao_participacao_mantem_desconto(
+                    raw_atual, item_id, campanha_destino_id, desconto, preco_base,
+                ):
+                    continue
+            ok, erro, cfg = _renovacao_adicionar_item_campanha(
+                client_id, loja, cfg, item_id, campanha_destino_id,
+                desconto, preco_base, preco_promocional,
+                preferir_percentual=preferir_percentual,
+                metodo="PUT" if existente else "POST",
+            )
+            if ok:
+                (atualizados if existente else sucessos).append({"item_id": item_id, "desconto": desconto})
+            else:
+                falhas.append({"item_id": item_id, "erro": erro})
+        except Exception:
+            falhas.append({"item_id": item_id, "erro": "Falha ao consultar ou aplicar o desconto deste item"})
 
     _renovacao_emitir_progresso(
         progress_callback,
         "Finalizando",
         96,
-        f"Finalizando sincronizacao. Incluidos: {len(sucessos)}. Ja presentes: {len(ids_destino.intersection(set(item_ids)))}. Falhas: {len(falhas)}.",
+        f"Finalizando sincronizacao. Incluidos: {len(sucessos)}. Atualizados: {len(atualizados)}. Falhas: {len(falhas)}.",
         incluidos=len(sucessos),
+        atualizados=len(atualizados),
         falhas=len(falhas),
     )
     return {
@@ -520,6 +589,7 @@ def _renovacao_copiar_mlbs_campanha(
         "mlbs_ja_presentes": len(ids_destino.intersection(set(item_ids))),
         "faltantes": len(item_ids_para_incluir),
         "incluidos": len(sucessos),
+        "atualizados": len(atualizados),
         "falhas": falhas[:50],
         "falhas_total": len(falhas),
     }, cfg
@@ -570,58 +640,11 @@ def _renovacao_criar_ou_completar_proximo_mes(
         )
         promotion_type_destino = "SELLER_CAMPAIGN"
 
-    itens_ref, raw_por_item, cfg = _renovacao_listar_itens_campanha(client_id, loja, cfg, campanha_id, promotion_type)
-    item_ids = [str(item.get("id") or "").strip() for item in itens_ref if str(item.get("id") or "").strip()]
-    item_ids = list(dict.fromkeys(item_ids))
-    if not item_ids:
-        raise HTTPException(status_code=400, detail="Nao encontrei MLBs ativos ou programados nessa campanha para copiar.")
-
-    ids_destino: set[str] = set()
-    if campanha_existente:
-        try:
-            itens_destino, _raw_destino, cfg = _renovacao_listar_itens_campanha(
-                client_id,
-                loja,
-                cfg,
-                nova_campanha_id,
-                promotion_type_destino,
-            )
-            ids_destino = {
-                str(item.get("id") or "").strip()
-                for item in itens_destino
-                if str(item.get("id") or "").strip()
-            }
-        except Exception as exc:
-            ctx.logger.warning("[RENOVACAO ML] Falha ao verificar itens da campanha existente %s: %s", nova_campanha_id, exc)
-            ids_destino = set()
-
-    item_ids_para_incluir = [item_id for item_id in item_ids if item_id not in ids_destino]
-    detalhes_por_id = {}
-    if item_ids_para_incluir:
-        detalhes, cfg = ctx._ml_buscar_itens_batch(client_id, loja, cfg, item_ids_para_incluir)
-        detalhes_por_id = {str(item.get("id") or "").strip(): item for item in detalhes if isinstance(item, dict)}
-
-    sucessos = []
-    falhas = []
-    for item_id in item_ids_para_incluir:
-        desconto, preco_base, preco_promocional = _renovacao_desconto_item(item_id, raw_por_item.get(item_id) or {}, detalhes_por_id.get(item_id) or {})
-        if desconto is None or preco_base is None:
-            falhas.append({"item_id": item_id, "erro": "Nao foi possivel identificar desconto/preco base"})
-            continue
-        ok, erro, cfg = _renovacao_adicionar_item_campanha(
-            client_id,
-            loja,
-            cfg,
-            item_id,
-            nova_campanha_id,
-            desconto,
-            preco_base,
-            preco_promocional,
-        )
-        if ok:
-            sucessos.append({"item_id": item_id, "desconto": desconto})
-        else:
-            falhas.append({"item_id": item_id, "erro": erro})
+    copia, cfg = _renovacao_copiar_mlbs_campanha(
+        client_id, loja, cfg, campanha_id, nova_campanha_id,
+        promotion_type, promotion_type_destino,
+        verificar_destino=campanha_existente,
+    )
 
     ctx._cache_invalidar_loja(client_id, loja)
     return {
@@ -636,12 +659,7 @@ def _renovacao_criar_ou_completar_proximo_mes(
             "existente": campanha_existente,
         },
         "campanha_existente": campanha_existente,
-        "total_origem": len(item_ids),
-        "mlbs_ja_presentes": len(ids_destino.intersection(set(item_ids))),
-        "faltantes": len(item_ids_para_incluir),
-        "incluidos": len(sucessos),
-        "falhas": falhas[:50],
-        "falhas_total": len(falhas),
+        **copia,
     }
 
 

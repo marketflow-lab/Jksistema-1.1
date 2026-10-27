@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Optional
 
 from fastapi import HTTPException
@@ -275,31 +277,94 @@ def _renovacao_buscar_numero_em_obj(obj, chaves: set[str]):
 def _renovacao_desconto_item(item_id: str, raw: dict, detalhe: dict) -> tuple[Optional[float], Optional[float], Optional[float]]:
     raw = raw if isinstance(raw, dict) else {}
     detalhe = detalhe if isinstance(detalhe, dict) else {}
-    preco_promo, desconto = ctx._ml_extrair_preco_promocao_raw(raw)
+    preco_promo, desconto = ctx._ml_extrair_preco_promocao_raw(raw, priorizar_percentual_total_api=True)
     preco_base = _renovacao_buscar_numero_em_obj(raw, {
         "original_price", "regular_price", "base_price", "standard_price", "price_before_discount",
     })
-    if preco_base is None:
-        preco_base = ctx._parse_float_flex(detalhe.get("original_price"))
-    preco_item = ctx._parse_float_flex(detalhe.get("price"))
-    if preco_base is None and preco_item is not None:
-        preco_base = float(preco_item)
     if preco_promo is None and raw:
         preco_promo = _renovacao_buscar_numero_em_obj(raw, {
             "deal_price", "promotion_price", "campaign_price", "final_price",
         })
 
+    # A porcentagem pertence a origem. O preco atual do anuncio pode ja incluir
+    # outra promocao e nao serve como divisor para reconstruir esse desconto.
     if desconto is None and preco_base and preco_promo and preco_base > preco_promo:
         desconto = round((1 - (float(preco_promo) / float(preco_base))) * 100, 4)
-    if preco_base is None and preco_promo and desconto is not None and 0 < desconto < 100:
-        preco_base = round(float(preco_promo) / (1 - (float(desconto) / 100)), 2)
-    if preco_promo is None and preco_base and desconto is not None and 0 < desconto < 100:
-        preco_promo = round(float(preco_base) * (1 - (float(desconto) / 100)), 2)
-
-    if desconto is None or desconto <= 0:
+    if desconto is None or not math.isfinite(float(desconto)) or not 0 < desconto < 100:
         ctx.logger.warning(f"[RENOVACAO ML] Sem desconto identificavel para {item_id}")
         return None, preco_base, preco_promo
+    if preco_base is None and preco_promo and math.isfinite(float(preco_promo)) and preco_promo > 0:
+        preco_base = round(float(preco_promo) / (1 - (float(desconto) / 100)), 2)
+    if preco_promo is None:
+        preco_promo = _renovacao_preco_com_desconto(preco_base, desconto)
     return round(float(desconto), 4), preco_base, preco_promo
+
+
+def _renovacao_preco_com_desconto(preco_base, desconto) -> Optional[float]:
+    try:
+        if isinstance(preco_base, bool) or isinstance(desconto, bool):
+            return None
+        base = Decimal(str(preco_base))
+        percentual = Decimal(str(desconto))
+        if not base.is_finite() or not percentual.is_finite() or base <= 0 or not 0 < percentual < 100:
+            return None
+        preco = (base * (1 - percentual / 100)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(preco) if preco > 0 else None
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _renovacao_preco_base_atual(
+    client_id: str, loja: str, cfg: dict, item_id: str, detalhe: dict,
+) -> tuple[Optional[float], dict]:
+    detalhe = detalhe if isinstance(detalhe, dict) else {}
+    if str(detalhe.get("id") or item_id) != item_id:
+        return None, cfg
+    original = ctx._parse_float_flex(detalhe.get("original_price"))
+    if original is not None and math.isfinite(float(original)) and original > 0:
+        return float(original), cfg
+
+    # /items.price pode ser o preco promocional. Confirma o preco standard antes
+    # de aplicar novamente a porcentagem, evitando desconto sobre desconto.
+    resp, cfg = ctx._ml_api_request(
+        client_id, loja, cfg, "GET",
+        f"https://api.mercadolibre.com/items/{item_id}/prices", timeout=12,
+    )
+    body = _renovacao_json_response(resp)
+    if resp.status_code != 200 or not isinstance(body, dict) or str(body.get("id") or "") != item_id:
+        return None, cfg
+    moeda = str(detalhe.get("currency_id") or ("BRL" if item_id.startswith("MLB") else ""))
+    agora = dt.datetime.now(dt.timezone.utc)
+    precos = set()
+    for entry in body.get("prices") or []:
+        if not isinstance(entry, dict) or str(entry.get("type") or "").lower() != "standard":
+            continue
+        if moeda and entry.get("currency_id") != moeda:
+            continue
+        conditions = entry.get("conditions") or {}
+        if not isinstance(conditions, dict):
+            continue
+        quantidade = conditions.get("min_purchase_unit", 1)
+        contextos = conditions.get("context_restrictions") or []
+        if isinstance(quantidade, bool) or quantidade != 1 or not isinstance(contextos, list):
+            continue
+        if set(contextos) - {"channel_marketplace"}:
+            continue
+        if entry.get("net_amount") is not None or str(entry.get("amount_tax_inclusion_type") or "").lower() == "net":
+            continue
+        vigente = True
+        for chave, inicio in (("start_time", True), ("end_time", False)):
+            if conditions.get(chave):
+                try:
+                    limite = dt.datetime.fromisoformat(str(conditions[chave]).replace("Z", "+00:00"))
+                    if limite.tzinfo is None or (agora < limite if inicio else agora >= limite):
+                        vigente = False
+                except (ValueError, TypeError):
+                    vigente = False
+        preco = ctx._parse_float_flex(entry.get("amount"))
+        if vigente and preco is not None and math.isfinite(float(preco)) and preco > 0:
+            precos.add(float(preco))
+    return (precos.pop() if len(precos) == 1 else None), cfg
 
 
 def _renovacao_emitir_progresso(
