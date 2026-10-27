@@ -1950,6 +1950,104 @@
             #listaWrap .meta-usd strong { font-size: 15px; }
             #listaWrap .lista-card-atualizacao { flex-basis: 100%; margin-top: 0; }
         }
+
+        /* Layout aprovado apenas para a lista principal; os controles mantêm seus editores. */
+        #tabelaListasImportacoes {
+            --lista-colunas: minmax(220px, 1.65fr) minmax(150px, 1.2fr) minmax(85px, .65fr) minmax(142px, 1fr) minmax(145px, 1.1fr) 180px 22px;
+            border-color: #253243;
+            background: #131d2a;
+        }
+        #tabelaListasImportacoes .listas-colunas-cabecalho {
+            display: grid;
+            gap: 14px;
+            padding: 12px 17px;
+            background: #182332;
+            border-color: #253243;
+            color: #8e9fb4;
+            font-size: 10px;
+        }
+        #tabelaListasImportacoes #listaWrap .lista-item--compacta {
+            grid-template-columns: var(--lista-colunas);
+            grid-template-areas: 'pedido parceiros quantidade transporte valores documentos acoes';
+            gap: 14px;
+            min-height: 106px;
+            padding: 14px 17px;
+            background: #131d2a;
+        }
+        #tabelaListasImportacoes.is-compacta #listaWrap .lista-item--compacta { min-height: 90px; padding-top: 11px; padding-bottom: 11px; }
+        #tabelaListasImportacoes #listaWrap .lista-item + .lista-item { border-color: #253243; }
+        #tabelaListasImportacoes #listaWrap .lista-item:hover { background: #1a2a3d; }
+        #tabelaListasImportacoes .lista-coluna-transporte { grid-area: transporte; min-width: 0; }
+        #tabelaListasImportacoes #listaWrap .lista-titulo-linha { margin-bottom: 5px; }
+        #tabelaListasImportacoes #listaWrap .nome-lista { font-size: 14px; color: #e9eff7; }
+        #tabelaListasImportacoes #listaWrap .lista-abrir { flex-basis: 20px; width: 20px; min-height: 24px; font-size: 16px; }
+        #tabelaListasImportacoes #listaWrap .lista-metadados { gap: 4px 8px; margin-top: 0; align-items: center; }
+        #tabelaListasImportacoes #listaWrap .meta-pill { padding: 2px 0; background: transparent; border-color: transparent; border-radius: 3px; }
+        #tabelaListasImportacoes #listaWrap .meta-pill strong { color: #8e9fb4; font-size: 10px; }
+        #tabelaListasImportacoes #listaWrap .meta-pill:hover { border-color: #537799; background: #203248; }
+        #tabelaListasImportacoes #listaWrap .meta-invoice { max-width: 100%; }
+        #tabelaListasImportacoes #listaWrap .meta-invoice::before { display: none; }
+        #tabelaListasImportacoes #listaWrap .meta-data-pedido { flex: 0 0 auto; overflow: visible; }
+        #tabelaListasImportacoes #listaWrap .meta-data-pedido strong { white-space: nowrap; overflow: visible; text-overflow: clip; }
+        #tabelaListasImportacoes #listaWrap .meta-invoice + .meta-data-pedido { padding-left: 8px; border-left-color: #354354; border-radius: 0; }
+        #tabelaListasImportacoes #listaWrap .meta-loja[data-loja-pill] { max-width: 100%; }
+        #tabelaListasImportacoes #listaWrap .meta-loja[data-loja-pill] strong { display: inline-flex; align-items: center; gap: 5px; color: #a5c4fa; }
+        #tabelaListasImportacoes #listaWrap .meta-loja[data-loja-pill] strong::before { content: ''; width: 4px; height: 4px; border-radius: 50%; background: currentColor; flex: 0 0 4px; }
+        #tabelaListasImportacoes #listaWrap .meta-pill:has(input) { padding: 3px 4px; border-color: #84caff; background: #0a1b2e; }
+        #tabelaListasImportacoes #listaWrap .meta-invoice:has(input) { flex: 1 0 100%; }
+        #tabelaListasImportacoes #listaWrap .meta-data-pedido:has(input) { width: 154px; flex-basis: 154px; border-radius: 4px; }
+        #tabelaListasImportacoes #listaWrap .lista-campo-comercial > .lista-campo-rotulo { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+        #tabelaListasImportacoes #listaWrap .meta-cadastro-lista { width: 100%; }
+        #tabelaListasImportacoes #listaWrap .meta-cadastro-lista strong { font-size: 12px; }
+        #tabelaListasImportacoes #listaWrap [data-fornecedor-pill] strong { color: #e0e9f5; font-weight: 600; }
+        #tabelaListasImportacoes #listaWrap .lista-campo-comercial + .lista-campo-comercial { margin-top: 3px; }
+        #tabelaListasImportacoes #listaWrap .lista-quantidades-grid { flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 0; }
+        #tabelaListasImportacoes #listaWrap .lista-quantidades-grid > div { gap: 4px; }
+        #tabelaListasImportacoes #listaWrap .lista-quantidade-valor { font-size: 14px; font-weight: 600; }
+        #tabelaListasImportacoes #listaWrap .lista-quantidades-grid > div + div .lista-quantidade-valor { font-size: 10px; font-weight: 400; color: #8e9fb4; }
+        #tabelaListasImportacoes #listaWrap .lista-quantidade-rotulo { margin-top: 0; font-size: 9px; color: #8e9fb4; }
+        #tabelaListasImportacoes #listaWrap .status { margin-top: 5px; font-size: 8px; line-height: 1.3; }
+        #tabelaListasImportacoes .lista-transporte { display: flex; flex-direction: column; gap: 4px; padding: 0; background: transparent; border: 0; }
+        #tabelaListasImportacoes .lista-transporte-fonte { order: 2; font-size: 8px; line-height: 1.3; margin-bottom: 0; }
+        #tabelaListasImportacoes .lista-transporte-fonte::before { width: 3px; height: 3px; flex-basis: 3px; }
+        #tabelaListasImportacoes .lista-transporte-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 4px 8px; }
+        #tabelaListasImportacoes .lista-transporte-grid > div:first-child { grid-column: 1 / -1; }
+        #tabelaListasImportacoes .lista-transporte-valor { font-size: 12px; font-weight: 500; line-height: 1.3; }
+        #tabelaListasImportacoes #listaWrap .lista-transporte .meta-m3 strong { font-size: 14px; font-weight: 600; color: #d8e6f6; }
+        #tabelaListasImportacoes .lista-transporte-rotulo { font-size: 8px; margin-top: 1px; color: #8e9fb4; }
+        #tabelaListasImportacoes .lista-transporte-grid > div:first-child .lista-transporte-rotulo { display: none; }
+        #tabelaListasImportacoes .lista-transporte-trays { font-size: 8px; margin-top: 2px; }
+        #tabelaListasImportacoes #listaWrap .lista-coluna-valores > .lista-campo-rotulo,
+        #tabelaListasImportacoes #listaWrap .lista-valor-brl > .lista-campo-rotulo { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+        #tabelaListasImportacoes #listaWrap .meta-usd strong { font-size: 14px; color: #e3edf9; }
+        #tabelaListasImportacoes #listaWrap .lista-valor-brl { margin-top: 4px; }
+        #tabelaListasImportacoes #listaWrap .meta-brl strong { font-size: 10px; color: #8e9fb4; }
+        #tabelaListasImportacoes #listaWrap .lista-card-atualizacao { margin-top: 4px; font-size: 8px; }
+        #tabelaListasImportacoes #listaWrap .documentos-lista-cards { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 5px; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card { min-height: 32px; padding: 6px 4px; background: transparent; border: 1px solid #2c3c50; border-radius: 7px; color: #b7c8dc; font-size: 9px; font-weight: 500; box-shadow: none; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card:hover:not(:disabled) { background: #203248; border-color: #537799; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card--packing { grid-column: 1 / -1; grid-row: 1; background: #172a40; border-color: #2f4d6a; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card--packing.documento-lista-card--anexado { color: #78d0b0; background: #19332e; border-color: #32604e; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card--packing.documento-lista-card--anexado:hover:not(:disabled) { background: #204439; border-color: #408068; }
+        #tabelaListasImportacoes #listaWrap .documento-lista-card--packing.documento-lista-card--anexado::before { content: '✓'; margin-right: 5px; }
+        @media (max-width: 1160px) {
+            #tabelaListasImportacoes .listas-colunas-cabecalho { display: none; }
+            #tabelaListasImportacoes #listaWrap .lista-item--compacta { grid-template-columns: minmax(220px, 1.4fr) minmax(170px, 1fr) 180px; grid-template-areas: 'pedido parceiros documentos' 'quantidade transporte valores'; gap: 16px 18px; padding: 15px; }
+            #tabelaListasImportacoes #listaWrap .lista-coluna-pedido { padding-right: 18px; }
+            #tabelaListasImportacoes #listaWrap .lista-coluna-acoes { position: absolute; top: 12px; right: 8px; }
+            #tabelaListasImportacoes .lista-transporte-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
+        }
+        @media (max-width: 780px) {
+            #tabelaListasImportacoes #listaWrap .lista-item--compacta { grid-template-columns: minmax(0, 1fr) 136px; grid-template-areas: 'pedido pedido' 'parceiros documentos' 'quantidade transporte' 'valores valores'; gap: 14px 12px; padding: 15px; }
+            #tabelaListasImportacoes.is-compacta #listaWrap .lista-item--compacta { padding-top: 11px; padding-bottom: 11px; }
+            #tabelaListasImportacoes #listaWrap .nome-lista { font-size: 16px; }
+            #tabelaListasImportacoes #listaWrap .lista-metadados { gap: 4px 7px; }
+            #tabelaListasImportacoes #listaWrap .lista-coluna-quantidade { padding-top: 0; border-top: 0; }
+            #tabelaListasImportacoes #listaWrap .lista-coluna-valores { border-top: 1px solid #253243; padding-top: 12px; gap: 5px 12px; }
+            #tabelaListasImportacoes #listaWrap .lista-valor-brl { margin-top: 0; }
+            #tabelaListasImportacoes #listaWrap .documento-lista-card { min-height: 32px; }
+            #tabelaListasImportacoes #listaWrap .meta-cadastro-lista strong { font-size: 11px; }
+        }
     </style>
 </head>
 <body>
@@ -2127,7 +2225,7 @@
                     <div class="listas-principal-ferramentas"><span class="listas-principal-ajuda">Dois cliques para editar os campos</span><button type="button" id="btnDensidadeListas" aria-pressed="true">Visualização confortável</button></div>
                 </div>
                 <div id="tabelaListasImportacoes" class="is-compacta">
-                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidades e transporte</span><span>Valores</span><span>Documentos</span><span></span></div>
+                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidade</span><span>Transporte</span><span>Valores</span><span>Documentos</span><span></span></div>
                     <div id="listaWrap" class="lista-wrap"></div>
                 </div>
                 <div class="listas-rodape">Enter salva · Esc cancela a edição</div>
@@ -3563,8 +3661,7 @@
                     '<div class="lista-card-topo">' +
                         '<div class="lista-coluna lista-coluna-pedido">' +
                             '<div class="lista-titulo-linha"><div class="nome-lista" role="button" tabindex="0">' + escaparHtml(nomeLista) + '</div><button type="button" class="lista-abrir" data-abrir-lista title="Abrir lista" aria-label="Abrir lista ' + escaparHtml(nomeLista) + '">→</button></div>' +
-                            '<span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' +
-                            '<div class="lista-metadados">' + lojaPill + window.JKDataPedidoLista.html(l) + '</div>' +
+                            '<div class="lista-metadados"><span class="meta-pill meta-invoice" data-invoice-pill tabindex="0">N° Invoice: <strong>' + escaparHtml(obterInvoiceLista(l, listaId) || '-') + '</strong></span>' + window.JKDataPedidoLista.html(l) + lojaPill + '</div>' +
                         '</div>' +
                         '<div class="lista-coluna lista-coluna-parceiros">' +
                             '<div class="lista-campo-comercial"><span class="lista-campo-rotulo">Fornecedor</span>' + metaFornecedorListaHtml(l) + '</div>' +
@@ -3583,9 +3680,11 @@
                     '<div class="lista-card-base">' +
                         '<div class="lista-coluna lista-coluna-quantidade">' +
                             '<div class="meta lista-card-quantidade lista-quantidades-grid">' +
-                                '<div><strong class="lista-quantidade-valor">' + numero(l.total_itens || 0) + '</strong><span class="lista-quantidade-rotulo">itens</span></div>' +
                                 '<div><strong class="lista-quantidade-valor">' + numero(l.total_quantidade || 0) + '</strong><span class="lista-quantidade-rotulo">unidades</span></div>' +
-                            '</div>' + resumoTransporteListaHtml(l) + '<span class="status">Analisando orçamento</span>' +
+                                '<div><strong class="lista-quantidade-valor">' + numero(l.total_itens || 0) + '</strong><span class="lista-quantidade-rotulo">itens</span></div>' +
+                            '</div><span class="status">Analisando orçamento</span>' +
+                        '</div>' +
+                        '<div class="lista-coluna lista-coluna-transporte">' + resumoTransporteListaHtml(l) +
                         '</div>' +
                         '<div class="lista-coluna lista-coluna-valores">' +
                             '<span class="lista-campo-rotulo">Total USD</span><span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
