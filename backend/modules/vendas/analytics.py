@@ -47,6 +47,7 @@ from .performance import (
     cached_file_value,
     cached_table_columns,
     legacy_store_conflicts,
+    mark_vendas_read_incomplete,
     select_compatible_column,
     open_vendas_readonly,
     vendas_source_paths,
@@ -135,9 +136,13 @@ def _filtrar_vendas_lojas_ativas(rows: list[tuple], client_id: str, loja: str | 
         caminho = os.path.join(get_tenant_path(client_id), "lojas_config.json")
         with open(caminho, "r", encoding="utf-8-sig") as arquivo:
             payload = json.load(arquivo)
+    except FileNotFoundError:
+        return rows
     except (OSError, ValueError, TypeError, RuntimeError):
+        mark_vendas_read_incomplete()
         return rows
     if not isinstance(payload, list):
+        mark_vendas_read_incomplete()
         return rows
 
     def chave_loja(value: Any) -> str:
@@ -187,7 +192,7 @@ def _calcular_previsao_mes_atual(rows: list[tuple], hoje: datetime) -> dict[str,
     }
 
 
-@cache_vendas_response("grafico", _grafico_cache_paths)
+@cache_vendas_response("grafico", _grafico_cache_paths, persistent=True)
 def grafico_vendas(
     periodo: str = "3m",
     intervalo: str = "dia",
@@ -503,9 +508,10 @@ def grafico_vendas(
                 query_nf += " ORDER BY data_emissao"
                 cur_nf.execute(query_nf, params_nf)
                 returns_rows.extend(dict(zip(fields_nf, row)) for row in cur_nf.fetchall())
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as error:
                 # Alguns bancos podem não ter tabela de notas ainda.
-                pass
+                if not ("no such table" in str(error).lower() and "notas_entrada_itens" in str(error).lower()):
+                    mark_vendas_read_incomplete()
             finally:
                 conn_nf.close()
 
@@ -582,6 +588,8 @@ def grafico_vendas(
         }
         if previsao_mes_atual is not None:
             resultado["previsao_mes_atual"] = previsao_mes_atual
+        if catalog.metadata.get("incomplete"):
+            mark_vendas_read_incomplete()
         return resultado
     except HTTPException:
         raise

@@ -5,8 +5,12 @@ if (data_inicio_param && data_fim_param) {
 }
 agendarSegundoPlano(() => iaRestaurarOuCriarConversa().catch(() => {}), 900);
 aplicarPreferenciaGraficoUI();
-const restauracaoInicialVendas = typeof restaurarCacheTelaVendasSeValido === 'function'
-    ? restaurarCacheTelaVendasSeValido({ restaurarFiltro: true }) : Promise.resolve(false);
+const restauracaoInicialVendas = (async () => {
+    const restaurouLista = typeof restaurarCacheTelaVendasSeValido === 'function'
+        ? await restaurarCacheTelaVendasSeValido({ restaurarFiltro: true }) : false;
+    if (typeof restaurarCacheGraficoVendasSeValido === 'function') await restaurarCacheGraficoVendasSeValido();
+    return restaurouLista;
+})().catch(() => false);
 carregarLojas()
     .then(async () => {
         await restauracaoInicialVendas;

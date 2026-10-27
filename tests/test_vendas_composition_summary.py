@@ -61,7 +61,7 @@ def sales(tmp_path, monkeypatch):
     monkeypatch.setattr(notes, "load_composition_catalog", lambda *_: holder.catalog)
     monkeypatch.setattr(repository, "_listar_bancos_vendas_tenant", lambda *_: holder.paths)
     monkeypatch.setattr(notes, "_listar_bancos_vendas_tenant", lambda *_: holder.paths)
-    monkeypatch.setattr(performance, "get_tenant_path", lambda *_: str(tmp_path))
+    monkeypatch.setattr(performance, "get_tenant_path", lambda *_: paths.tenant_path("fixture"))
     monkeypatch.setattr(repository, "_carregar_mapeamento_lojas_virtuais_cliente", lambda *_: {})
     monkeypatch.setattr(repository, "_resolver_nome_loja_virtual", lambda *_args, **_kw: "Canal A")
     monkeypatch.setattr(repository, "_sql_filtro_loja_vendas", lambda store: (" AND loja_conta = ?", [store]))

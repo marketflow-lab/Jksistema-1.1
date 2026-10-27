@@ -23,7 +23,7 @@ from backend.services.medias_compras_leitura import consulta_medias
 from backend.services.retired_store_names import (
     TOMBSTONES_FILE, RetiredStoreNames, parse_retired_store_names,
 )
-from .performance import cache_vendas_response
+from .performance import cache_vendas_response, mark_vendas_read_incomplete
 
 
 def _sku(value: Any) -> str:
@@ -628,6 +628,7 @@ def load_composition_catalog(client_id: str) -> CompositionCatalog:
         legacy_ids, legacy_compositions = _store_field_proofs(products, sources, catalog, records)
     except Exception:
         # Failure to prove legacy origin cannot disable canonical store rows.
+        mark_vendas_read_incomplete()
         legacy_ids, legacy_compositions = frozenset(), frozenset()
     result = CompositionCatalog.from_products(
         products, stores=stores, _verified_legacy_ids=legacy_ids,

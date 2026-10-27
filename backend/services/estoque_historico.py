@@ -969,6 +969,12 @@ def _vendas_series_estoque_eventos(
         ):
             return None
 
+        if conn.execute("SELECT 1 FROM estoque_sync_eventos WHERE status = 'pending' LIMIT 1").fetchone():
+            # Recovery can depend on a staged CSV being published/removed. Keep
+            # the current fallback available without freezing it after restart.
+            from backend.modules.vendas.performance import mark_vendas_read_incomplete
+            mark_vendas_read_incomplete()
+
         loja_txt = str(loja or "").strip()
         loja_especifica = bool(loja_txt and loja_txt != "__todas")
         lojas_ativas = [] if loja_especifica else _lojas_estoque_ativas(client_id)
@@ -1229,6 +1235,8 @@ def _vendas_series_estoque_historico(
             pareto_skus_norm,
         )
     except sqlite3.OperationalError as exc:
+        from backend.modules.vendas.performance import mark_vendas_read_incomplete
+        mark_vendas_read_incomplete()
         logger.warning(f"Falha ao consultar eventos de estoque; usando fallback legado: {exc}")
         serie_eventos = None
     if serie_eventos is not None:

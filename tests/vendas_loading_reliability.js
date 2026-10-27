@@ -100,7 +100,7 @@ function harness() {
         function formatDate(value){return value;}
     `, context);
     vm.runInContext(data.slice(data.indexOf('function aplicarResumoVendas('), data.indexOf("filtroTexto.addEventListener('input'")), context);
-    vm.runInContext(graph.slice(graph.indexOf('async function carregarGrafico()'), graph.indexOf('function compactarDadosGrafico(')), context);
+    vm.runInContext(graph.slice(graph.indexOf('function prepararConsultaGraficoVendas()'), graph.indexOf('function compactarDadosGrafico(')), context);
     vm.runInContext(graph.slice(graph.indexOf('function renderizarGraficoEstoque('), graph.indexOf('async function obterLimitesComVendasServidor(')), context);
     vm.runInContext(graph.slice(graph.indexOf('function atualizarSkuGraficoPeloInput()')), context);
     vm.runInContext(graph.slice(graph.indexOf('function deslocarAnoIso('), graph.indexOf('function alinharSerieComparativa(')), context);

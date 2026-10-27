@@ -50,6 +50,7 @@ from .performance import (
     cache_vendas_response,
     cached_table_columns,
     invalidate_vendas_cache,
+    mark_vendas_read_incomplete,
     legacy_store_conflicts,
     open_vendas_readonly,
     select_compatible_column,
@@ -461,7 +462,7 @@ def _vendas_resumo_cache_paths(arguments: dict) -> list[str]:
     return vendas_source_paths(client_id, db_paths, include_compositions=True)
 
 
-@cache_vendas_response("resumo", _vendas_resumo_cache_paths)
+@cache_vendas_response("resumo", _vendas_resumo_cache_paths, persistent=True)
 def resumo_vendas(
     client_id: str,
     data_inicio: str = None,
@@ -617,6 +618,7 @@ def resumo_vendas(
 
             bancos_processados += 1
         except Exception as e:
+            mark_vendas_read_incomplete()
             logger.warning("[VENDAS] Falha ao gerar resumo no banco %s: %s", alvo, e)
         finally:
             if conn:
@@ -756,6 +758,7 @@ def resumo_vendas(
                 totals["itensDevolucao"] += qtd_dev
                 totals["valorDevolucao"] += valor_dev
         except Exception as e:
+            mark_vendas_read_incomplete()
             logger.warning("[VENDAS] Falha ao somar devolucoes no resumo %s: %s", alvo, e)
         finally:
             if conn:
@@ -781,6 +784,8 @@ def resumo_vendas(
         reverse=True,
     )
 
+    if catalog.metadata.get("incomplete"):
+        mark_vendas_read_incomplete()
     return {
         "success": True,
         "rows": rows,

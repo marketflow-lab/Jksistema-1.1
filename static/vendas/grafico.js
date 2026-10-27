@@ -564,9 +564,7 @@ function alinharSerieComparativa(labelsBase, labelsComparativo, serieComparativo
     });
 }
 
-async function carregarGrafico() {
-    if (window.JKVendasReadState?.isClosed()) return;
-    const contextoCache = window.JKVendasCache?.contexto();
+function prepararConsultaGraficoVendas() {
     const params = new URLSearchParams({ periodo: periodoGrafico, intervalo: intervaloGrafico });
     const dataInicioAtual = getDataIniISO();
     const dataFimAtual = getDataFimISO();
@@ -578,8 +576,8 @@ async function carregarGrafico() {
         params.append('unidade_negocio', unidadeNegocioSelect.value);
     }
 
-    skuAtualGrafico = String(graficoEstoqueSkuInput?.value || '').trim() || null;
-    const skuGraficoConsulta = mostrarEstoqueSkuGrafico ? skuAtualGrafico : null;
+    const skuAtual = String(graficoEstoqueSkuInput?.value || '').trim() || null;
+    const skuGraficoConsulta = mostrarEstoqueSkuGrafico ? skuAtual : null;
     if (mostrarEstoqueGeralGrafico) params.append('mostrar_estoque_geral', 'true');
     if (mostrarEstoqueSkuGrafico) params.append('mostrar_estoque_sku', 'true');
     if (skuGraficoConsulta) params.append('sku', skuGraficoConsulta);
@@ -604,8 +602,46 @@ async function carregarGrafico() {
     }
 
     const presentationScope = window.JKVendasReadState?.scope('grafico')
-        || JSON.stringify([tipoGrafico, metricaGrafico, mostrarEstoqueSkuGrafico ? skuAtualGrafico : null]);
+        || JSON.stringify([tipoGrafico, metricaGrafico, mostrarEstoqueSkuGrafico ? skuAtual : null]);
     const requestKey = `${obterClientId()}|${params.toString()}|compare=${paramsComp?.toString() || ''}|view=${presentationScope}`;
+    const chaveCache = JSON.stringify(['/api/vendas/grafico', params.toString(), paramsComp?.toString() || '']);
+    return { params, paramsComp, dataInicioAtual, dataFimAtual, requestKey, chaveCache, skuAtual };
+}
+
+async function restaurarCacheGraficoVendasSeValido(opcoes = {}) {
+    if (window.JKVendasReadState?.isClosed() || !getDataIniISO() || !getDataFimISO()) return false;
+    const contexto = opcoes.contexto || window.JKVendasCache?.contexto();
+    const consulta = opcoes.consulta || prepararConsultaGraficoVendas();
+    const token = carregarGraficoToken;
+    const vigente = () => !window.JKVendasReadState?.isClosed() && token === carregarGraficoToken
+        && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contexto))
+        && consulta.requestKey === prepararConsultaGraficoVendas().requestKey
+        && (!opcoes.leituraAtual || opcoes.leituraAtual());
+    try {
+        const salvo = await window.JKVendasCache?.ler(consulta.chaveCache, contexto);
+        const data = salvo?.dados?.data;
+        const comparativo = salvo?.dados?.dataComparativo || null;
+        if (!vigente() || !data || !Array.isArray(data.labels)
+            || (consulta.paramsComp && (!comparativo || !Array.isArray(comparativo.labels)))) return false;
+        skuAtualGrafico = consulta.skuAtual;
+        if (!chartInstance || graficoConfirmadoRequestKey !== consulta.requestKey) {
+            renderizarGrafico(data, comparativo);
+            atualizarObservacoesGraficoVendas(data);
+        }
+        graficoConfirmadoRequestKey = consulta.requestKey;
+        window.JKVendasCache?.estado('Gráfico', 'atualizando', salvo.salvoEm);
+        return true;
+    } catch (_erroCache) {
+        return false;
+    }
+}
+
+async function carregarGrafico() {
+    if (window.JKVendasReadState?.isClosed()) return;
+    const contextoCache = window.JKVendasCache?.contexto();
+    const consulta = prepararConsultaGraficoVendas();
+    const { params, paramsComp, dataInicioAtual, dataFimAtual, requestKey, chaveCache } = consulta;
+    skuAtualGrafico = consulta.skuAtual;
     if (carregarGraficoPromise && carregarGraficoRequestKey === requestKey) return carregarGraficoPromise;
     if (carregarGraficoController) carregarGraficoController.abort();
 
@@ -619,25 +655,22 @@ async function carregarGrafico() {
     const leituraAtual = () => !controller.signal.aborted && tokenAtual === carregarGraficoToken
         && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contextoCache))
         && (!window.JKVendasReadState || window.JKVendasReadState.valid('grafico', tokenAtual));
-    const chaveCache = JSON.stringify(['/api/vendas/grafico', params.toString(), paramsComp?.toString() || '']);
     carregarGraficoPromise = (async () => {
         try {
             window.JKVendasCache?.estado('Gráfico', null);
-            try {
-                const salvo = await window.JKVendasCache?.ler(chaveCache, contextoCache);
-                if (!leituraAtual()) return;
-                if (salvo?.dados?.data && Array.isArray(salvo.dados.data.labels)) {
-                    renderizarGrafico(salvo.dados.data, salvo.dados.dataComparativo || null);
-                    atualizarObservacoesGraficoVendas(salvo.dados.data);
-                    graficoConfirmadoRequestKey = requestKey;
-                    window.JKVendasCache?.estado('Gráfico', 'atualizando', salvo.salvoEm);
-                }
-            } catch (_erroCache) { /* Uma cópia inválida não impede a leitura atual. */ }
+            await restaurarCacheGraficoVendasSeValido({ consulta, contexto: contextoCache, leituraAtual });
+            if (!leituraAtual()) return;
             const response = await fetchComTimeout(`/api/vendas/grafico?${params.toString()}`, {
                 headers: obterAuthHeaders(),
                 cache: 'no-store',
                 signal: controller.signal
             }, Math.max(0, requestDeadline - Date.now()));
+            if (!leituraAtual()) return;
+            if (response.status === 401) {
+                void window.JKCachePersistente?.invalidar(['vendas']);
+                window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
+                return;
+            }
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
             if (!leituraAtual()) return;
@@ -649,6 +682,12 @@ async function carregarGrafico() {
                     cache: 'no-store',
                     signal: controller.signal
                 }, Math.max(0, requestDeadline - Date.now()));
+                if (!leituraAtual()) return;
+                if (respComp.status === 401) {
+                    void window.JKCachePersistente?.invalidar(['vendas']);
+                    window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
+                    return;
+                }
                 if (!respComp.ok) throw new Error(`HTTP ${respComp.status} ao carregar a comparação`);
                 dataComparativo = await respComp.json();
             }
@@ -1483,27 +1522,56 @@ function renderizarGraficoSkusComEstoque(
     });
 }
 
+function prepararConsultaLimitesVendas() {
+    const params = new URLSearchParams();
+    if (lojaSelecionada && lojaSelecionada !== '__todas') params.append('loja', lojaSelecionada);
+    if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
+        params.append('unidade_negocio', unidadeNegocioSelect.value);
+    }
+    return {
+        url: '/api/vendas/limites' + (params.toString() ? `?${params.toString()}` : ''),
+        chave: JSON.stringify(['/api/vendas/limites', params.toString()])
+    };
+}
+
+function limitesVendasValidos(limites) {
+    const dataValida = valor => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(valor || ''))) return false;
+        const data = new Date(`${valor}T00:00:00.000Z`);
+        return Number.isFinite(data.getTime()) && data.toISOString().slice(0, 10) === valor;
+    };
+    return dataValida(limites?.inicio) && dataValida(limites?.fim) && limites.inicio <= limites.fim;
+}
+
 async function obterLimitesComVendasServidor() {
+    const contexto = window.JKVendasCache?.contexto();
+    const consulta = prepararConsultaLimitesVendas();
+    const geracao = window.JKVendasReadState?.epoch;
+    const vigente = () => !window.JKVendasReadState?.isClosed()
+        && geracao === window.JKVendasReadState?.epoch
+        && consulta.chave === prepararConsultaLimitesVendas().chave
+        && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contexto));
+    let salvo = null;
+    try { salvo = await window.JKVendasCache?.ler(consulta.chave, contexto); } catch (_erroCache) {}
+    if (!vigente()) return null;
     try {
-        const params = new URLSearchParams();
-        if (lojaSelecionada && lojaSelecionada !== '__todas') {
-            params.append('loja', lojaSelecionada);
-        }
-        if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
-            params.append('unidade_negocio', unidadeNegocioSelect.value);
-        }
-        const url = '/api/vendas/limites' + (params.toString() ? `?${params.toString()}` : '');
-        const resp = await fetchComTimeout(url, { headers: obterAuthHeaders() });
-        if (!resp.ok) return null;
-        const data = await resp.json();
-        const inicio = String(data?.inicio || '').trim();
-        const fim = String(data?.fim || '').trim();
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(inicio) || !/^\d{4}-\d{2}-\d{2}$/.test(fim)) {
+        const resp = await fetchComTimeout(consulta.url, { headers: obterAuthHeaders() });
+        if (!vigente()) return null;
+        if (resp.status === 401) {
+            void window.JKCachePersistente?.invalidar(['vendas']);
+            window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
             return null;
         }
-        return { inicio, fim };
+        if (resp.status === 403) return null;
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const limites = { inicio: String(data?.inicio || '').trim(), fim: String(data?.fim || '').trim() };
+        if (!limitesVendasValidos(limites)) throw new Error('Limites de vendas inválidos.');
+        if (!vigente()) return null;
+        await window.JKVendasCache?.salvar(consulta.chave, limites, contexto);
+        return vigente() ? limites : null;
     } catch (_e) {
-        return null;
+        return vigente() && limitesVendasValidos(salvo?.dados) ? salvo.dados : null;
     }
 }
 
@@ -1545,6 +1613,8 @@ function removerDatasExplicitasUrlAposAtalho() {
 async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
     const tokenAtual = ++periodoGraficoSelecaoToken;
     const assinaturaContexto = obterAssinaturaContextoPeriodoGrafico();
+    const contextoCache = window.JKVendasCache?.contexto();
+    const geracao = window.JKVendasReadState?.epoch;
     const hoje = opcoes.hoje instanceof Date ? opcoes.hoje : new Date();
     const periodosCompletos = window.JKVendasPeriodosCompletos;
     const periodoFallback = periodosCompletos.calcularPeriodoComMesAtual('3m', hoje);
@@ -1563,6 +1633,8 @@ async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
         tokenAtual !== periodoGraficoSelecaoToken
         || periodoGrafico !== periodo
         || assinaturaContexto !== obterAssinaturaContextoPeriodoGrafico()
+        || geracao !== window.JKVendasReadState?.epoch
+        || (window.JKVendasCache && !window.JKVendasCache.dadosVigentes(contextoCache))
     ) {
         return false;
     }
@@ -1651,7 +1723,8 @@ async function normalizarPeriodoGraficoRestaurado() {
         recarregar: false
     });
     if (resultado === null && periodoGrafico === periodoNormalizado && periodoNormalizado === 'max') {
-        return aplicarFallbackPeriodoGraficoCompleto();
+        // A indisponibilidade temporária do servidor preserva o intervalo máximo já selecionado.
+        return null;
     }
     return resultado;
 }

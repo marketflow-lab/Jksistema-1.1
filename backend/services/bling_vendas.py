@@ -951,6 +951,8 @@ def _carregar_mapeamento_lojas_virtuais_cliente(client_id: str):
     try:
         tenant_path = get_tenant_path(client_id)
     except Exception:
+        from backend.modules.vendas.performance import mark_vendas_read_incomplete
+        mark_vendas_read_incomplete()
         tenant_path = os.path.join(PASTA_INFO, str(client_id or ""))
         os.makedirs(tenant_path, exist_ok=True)
 
@@ -983,6 +985,8 @@ def _carregar_mapeamento_lojas_virtuais_cliente(client_id: str):
             with open(path_map, "r", encoding="utf-8") as f:
                 mapa = json.load(f) or {}
         except Exception:
+            from backend.modules.vendas.performance import mark_vendas_read_incomplete
+            mark_vendas_read_incomplete()
             mapa = {}
 
     changed = False
@@ -1000,7 +1004,8 @@ def _carregar_mapeamento_lojas_virtuais_cliente(client_id: str):
             with open(path_map, "w", encoding="utf-8") as f:
                 json.dump(mapa, f, indent=2, ensure_ascii=False)
         except Exception:
-            pass
+            from backend.modules.vendas.performance import mark_vendas_read_incomplete
+            mark_vendas_read_incomplete()
 
     return mapa
 

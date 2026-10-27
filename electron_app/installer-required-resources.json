@@ -325,7 +325,8 @@
     "backend/services/bling_accounts.py",
     "backend/modules/vendas/sync_config.py",
     "static/cache-persistente.js",
-    "static/vendas/cache-dados.js"
+    "static/vendas/cache-dados.js",
+    "backend/modules/vendas/persistent_cache.py"
   ],
   "requiredSourceGlobs": [
     {
@@ -970,7 +971,8 @@
     "local_app/backend/services/cofre_auth.py",
     "local_app/backend/services/cofre_session_store.py",
     "local_app/static/cache-persistente.js",
-    "local_app/static/vendas/cache-dados.js"
+    "local_app/static/vendas/cache-dados.js",
+    "local_app/backend/modules/vendas/persistent_cache.py"
   ],
   "requiredPackagedSourceParity": [
     "backend/modules/context_hub/product_evidence_editorial.py",
@@ -1220,7 +1222,8 @@
     "backend/services/bling_accounts.py",
     "backend/modules/vendas/sync_config.py",
     "static/cache-persistente.js",
-    "static/vendas/cache-dados.js"
+    "static/vendas/cache-dados.js",
+    "backend/modules/vendas/persistent_cache.py"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",

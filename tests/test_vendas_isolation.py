@@ -104,10 +104,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # As duas novas rotas aprovadas do Cofre acrescem duas rotas e pares.
-        # O contrato isolado de Vendas mantem o hash congelado.
-        "routes": 525,
-        "pairs": 523,
+        # Renovacao acrescentou conferir-promocao (2a5528cb) e corrigir-divergencias
+        # (a1a19e1d): duas rotas/pares sobre 525/523. Vendas mantem seu hash e 20 rotas.
+        "routes": 527,
+        "pairs": 525,
         "duplicates": [],
         "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
     }

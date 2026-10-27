@@ -435,7 +435,8 @@ function getHojeISO() {
 }
 
 function chavePreferenciaPeriodoData() {
-    const cid = clientId || obterClientId() || 'anon';
+    // Esta preferência é lida antes de sync.js definir obterClientId().
+    const cid = clientId || JSON.parse(localStorage.getItem('user_data') || 'null')?.client_id || 'anon';
     return `vendas_periodo_pref_${cid}`;
 }
 
