@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 const scripts = require('../static/pesquisa-mercado/page-scripts');
-const { sellerFromPage, sameSeller } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { PesquisaMercadoRunner, sellerFromPage, sameSeller } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 
 const PDP = 'https://carro.mercadolivre.com.br/MLB-100000001-veiculo-de-teste-_JM';
 const OWNER_ID = '700001';
@@ -15,6 +15,106 @@ const escape = value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quo
 const stockLink = (url = STOCK, name = BRAND) => `<a class="ui-vip-profile-info__info-link" href="${escape(url)}">${escape(name)}</a>`;
 const profile = (links = stockLink()) => `<section class="ui-vip-seller-profile">${links}</section>`;
 const main = body => `<main><h1 class="ui-pdp-title">Veículo de teste</h1>${body}</main>`;
+
+async function captchaStockPreservesDiscovery(browser) {
+    const page = await browser.newPage();
+    const copy = value => JSON.parse(JSON.stringify(value));
+    const captchaUrl = 'https://www.mercadolivre.com.br/captcha/wall/logged';
+    const category = { key: 'MLB1744', nome: 'Carros e Caminhonetes', url: 'https://lista.mercadolivre.com.br/veiculos/carros-caminhonetes/' };
+    const seed = { id: 'MLB100000001', url: PDP };
+    const previousSeeds = ['MLB100000098', 'MLB100000099'];
+    const checkpoint = {
+        scope: { category }, currentCategory: category, categories: [category], categoryIndex: 0,
+        discoveryInitialized: true, seenSeedIds: previousSeeds, seenSellerKeys: [], incompleteCategories: [],
+        progress: { phase: 'discovery', detail: '', warning: '' },
+        page: { categoryKey: category.key, url: category.url, index: 2, hasNext: false, nextUrl: '',
+            anuncios: [...previousSeeds.map(id => ({ id, url: `https://carro.mercadolivre.com.br/MLB-${id.slice(3)}-anterior-_JM` })), seed] }
+    };
+    let saved = { id: 'vehicle-captcha-offline', status: 'running', revision: 0, generation: 0,
+        checkpoint: copy(checkpoint), counters: { categories: 1, pages: 1, sellers: 0, ads: 0, pending: 0 } };
+    const navigations = [], snapshots = [], checkpointWrites = [], servedFixtures = [];
+    let avantCalls = 0, collectionCalls = 0, publications = 0;
+    try {
+        await page.route('**/*', route => {
+            const url = route.request().url();
+            servedFixtures.push(url);
+            if (url === PDP) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: main(profile()) });
+            if (url === captchaUrl) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body:
+                '<!doctype html><title>Segurança — Mercado Livre</title><main><h1>Verificação de segurança</h1>'
+                + '<p>Confirme a verificação para continuar.</p><button type="button" disabled>Continuar</button></main>' });
+            return route.fulfill({ status: 404, body: '' });
+        });
+        const api = async (method, pathname, body) => {
+            if (method === 'GET' && pathname.includes('/descoberta?')) return { seen: false };
+            if (method === 'GET' && pathname.includes('/vendedores?')) return { items: [] };
+            if (method === 'PATCH' && pathname.endsWith('/checkpoint')) {
+                checkpointWrites.push(copy(body));
+                saved = { ...saved, ...copy(body), revision: saved.revision + 1 };
+                return { job: copy(saved) };
+            }
+            if (method === 'PUT') {
+                publications += 1;
+                throw new Error('A verification wall must not publish a seller or listing.');
+            }
+            throw new Error('Unexpected route in offline vehicle discovery.');
+        };
+        const runner = new PesquisaMercadoRunner({ api, pageScripts: scripts, wait: async () => {},
+            browser: {
+                async navigate(url) {
+                    navigations.push(url);
+                    // Model the observed stock-to-verification outcome without
+                    // following any live or fixture HTTP redirect chain.
+                    await page.goto(url === STOCK ? captchaUrl : url);
+                },
+                getURL: () => page.url(), isLoading: () => false,
+                async executeJavaScript(code) {
+                    const snapshot = await page.evaluate(code);
+                    snapshots.push(snapshot);
+                    return snapshot;
+                },
+                async ensureAvantSession() { avantCalls += 1; throw new Error('Mercado Livre verification is manual.'); }
+            },
+            collector: { async collectFirstPage() { collectionCalls += 1; throw new Error('The seller stock has not been read.'); } }
+        });
+        runner.job = copy(saved);
+        runner.checkpoint = copy(checkpoint);
+        runner.controller = new AbortController();
+        runner.seenSeeds = new Set(previousSeeds);
+        runner.seenSellers = new Set();
+
+        await assert.rejects(runner.processSeed(seed), error => error.waitingLogin === true,
+            'the real parser and runner propagate manual verification before recording a generic discovery failure');
+        assert.deepEqual(navigations, [PDP, STOCK], 'discovery follows the public stock href without manufacturing another profile');
+        assert.equal(snapshots[0].sellerId, OWNER_ID, 'the public vehicle component identifies its own seller before navigation');
+        assert.equal(snapshots[0].perfilUrl, STOCK);
+        assert(snapshots.some(snapshot => snapshot.url === captchaUrl && snapshot.authRequired === true),
+            'scriptless verification is recognized without password fields or captcha frames');
+        assert.equal(page.url(), captchaUrl);
+        assert(servedFixtures.includes(PDP) && servedFixtures.includes(captchaUrl), 'both documents are fulfilled by local fixture routes');
+        assert.equal(await page.evaluate(() => document.scripts.length), 0);
+        assert.equal(page.frames().length, 1);
+        assert.equal(await page.getByRole('button', { name: 'Continuar' }).isDisabled(), true);
+        assert.equal(avantCalls, 0);
+        assert.equal(collectionCalls, 0);
+        assert.equal(publications, 0);
+        assert.equal(runner.checkpoint.page.index, checkpoint.page.index);
+        assert.equal(runner.checkpoint.categoryIndex, checkpoint.categoryIndex);
+        assert.deepEqual(runner.checkpoint.page.anuncios, checkpoint.page.anuncios);
+        assert.deepEqual(runner.checkpoint.seenSeedIds, previousSeeds);
+        assert.deepEqual([...runner.seenSeeds], previousSeeds);
+        assert.equal(runner.seenSellers.size, 0);
+        assert.deepEqual(runner.checkpoint.seenSellerKeys, []);
+        assert.equal(runner.job.counters.sellers, 0);
+        assert.equal(runner.job.counters.ads, 0);
+        assert.equal(runner.checkpoint.discoveredSeed, undefined, 'verification does not mark this seed as failed or consulted');
+        assert.deepEqual(runner.checkpoint.incompleteCategories, []);
+        assert(checkpointWrites.length > 0, 'the transition to the seller phase still preserves a checkpoint');
+        assert(checkpointWrites.every(write => write.checkpoint.page.index === checkpoint.page.index
+            && !write.checkpoint.discoveredSeed && write.counters.sellers === 0 && write.counters.ads === 0));
+    } finally {
+        await page.close();
+    }
+}
 
 async function run() {
     const browser = await chromium.launch({ headless: true });
@@ -123,6 +223,8 @@ async function run() {
         await check('vehicle and conventional owner components cannot disagree', main(profile()
             + `<section class="ui-pdp-seller"><a class="ui-pdp-seller__link" href="${OTHER_STOCK}">Outra Garagem</a></section>`), assertConflict);
 
+        await captchaStockPreservesDiscovery(browser);
+        cases += 1;
         console.log(`Pesquisa de Mercado vehicle seller: ${cases} offline DOM/runner identity cases passed.`);
     } finally {
         await browser.close();
