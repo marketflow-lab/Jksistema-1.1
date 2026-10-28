@@ -1,6 +1,6 @@
 """Pydantic schemas for etiquetas."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -20,11 +20,13 @@ class EtiquetaAvulsaItem(BaseModel):
 
 class ImpressaoAvulsaPayload(BaseModel):
     formato: Optional[str] = "grande"
+    orientacao: Optional[Literal["retrato", "paisagem"]] = None
     itens: list[EtiquetaAvulsaItem]
 
 
 class ImpressaoEditorPayload(BaseModel):
     tamanho: Optional[str] = "grande"
+    orientacao: Optional[Literal["retrato", "paisagem"]] = None
     etiquetas: list[str]
 
 
@@ -34,6 +36,7 @@ class EtiquetaQrCodePayload(BaseModel):
     quantidade: Optional[int] = 1
     tamanho: Optional[str] = "grande"
     layout: Optional[str] = "a4"
+    orientacao: Optional[Literal["retrato", "paisagem"]] = None
 
 
 __all__ = [

@@ -5,363 +5,290 @@ from __future__ import annotations
 import io
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from reportlab.lib.units import mm
-from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfbase.pdfmetrics import getAscentDescent, stringWidth
 from reportlab.pdfgen import canvas
 
 from backend.services.etiquetas_pdf_common import (
-    _desenhar_texto_centralizado,
+    _ajustar_texto_pdf,
+    _dimensoes_pagina_pdf,
     _fontes_etiqueta_avulsa,
-    _quebrar_texto_continuo_pdf,
-    _quebrar_texto_pdf,
     _texto_item_avulso,
 )
 
-def _gerar_pdf_impressao_avulsa_grande(itens):
+
+def _desenhar_bloco_avulso(c, texto, x, y, largura, altura, fonte, tamanho,
+                          sublinhar=False, uma_linha=False):
+    if uma_linha:
+        texto = _texto_item_avulso(texto)
+        if not texto:
+            return
+        tamanho = min(tamanho, largura / stringWidth(texto, fonte, 1), altura / 1.4)
+        linhas = [texto]
+    else:
+        linhas, tamanho = _ajustar_texto_pdf(texto, fonte, tamanho, largura, altura, entrelinha=1.4)
+    if not linhas:
+        return
+    entrelinha = tamanho * 1.4
+    ascendente, descendente = getAscentDescent(fonte, tamanho)
+    altura_texto = ascendente - descendente + (len(linhas) - 1) * entrelinha
+    baseline = y + (altura + altura_texto) / 2 - ascendente
+    c.setFont(fonte, tamanho)
+    for linha in linhas:
+        c.drawCentredString(x + largura / 2, baseline, linha)
+        if sublinhar:
+            texto_w = stringWidth(linha, fonte, tamanho)
+            c.setLineWidth(max(0.2, tamanho * 0.035))
+            c.line(x + (largura - texto_w) / 2, baseline - tamanho * 0.08,
+                   x + (largura + texto_w) / 2, baseline - tamanho * 0.08)
+        baseline -= entrelinha
+
+
+def _dados_etiquetas_avulsas(itens):
+    campos = ("sequencia", "sku", "quantidade", "caixa", "torre", "paletes", "corredor", "conta")
     etiquetas = []
     for item in itens:
-        dados = {
-            "sequencia": _texto_item_avulso(item.sequencia),
-            "sku": _texto_item_avulso(item.sku),
-            "quantidade": _texto_item_avulso(item.quantidade),
-            "caixa": _texto_item_avulso(item.caixa),
-            "torre": _texto_item_avulso(item.torre),
-            "paletes": _texto_item_avulso(item.paletes),
-            "corredor": _texto_item_avulso(item.corredor),
-            "conta": _texto_item_avulso(item.conta),
-        }
+        dados = {campo: _texto_item_avulso(getattr(item, campo)) for campo in campos}
         if any(dados.values()):
             etiquetas.append(dados)
+    if len(etiquetas) > 1000:
+        raise ValueError("Limite máximo de 1000 etiquetas por PDF avulso.")
+    return etiquetas
 
+
+def _geometria_avulsa(pequena, orientacao):
+    dimensoes = (80 * mm, 25 * mm) if pequena else (150 * mm, 80 * mm)
+    page_w, page_h = _dimensoes_pagina_pdf(*dimensoes, orientacao)
+    empilhadas = pequena and page_h > page_w
+    label_w = page_w if empilhadas or not pequena else page_w / 2
+    label_h = page_h / 2 if empilhadas else page_h
+    return page_w, page_h, label_w, label_h, empilhadas
+
+
+def _posicao_avulsa(indice, label_w, label_h, empilhadas):
+    if empilhadas:
+        return 0, (1 - indice % 2) * label_h
+    return (indice % 2) * label_w, 0
+
+
+def _desenhar_borda_avulsa(c, x, y, largura, altura):
+    c.setStrokeColorRGB(0.86, 0.86, 0.86)
+    c.rect(x, y, largura, altura, stroke=1, fill=0)
+
+
+def _gerar_pdf_campos_avulsos(itens, pequena=False, orientacao=None):
+    page_w, page_h, label_w, label_h, empilhadas = _geometria_avulsa(pequena, orientacao)
+    etiquetas = _dados_etiquetas_avulsas(itens)
     if not etiquetas:
         return None, 0
-    if len(etiquetas) > 1000:
-        raise ValueError("Limite mÃƒÂ¡ximo de 1000 etiquetas por PDF avulso.")
-
-    page_w = 150 * mm
-    page_h = 80 * mm
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(page_w, page_h))
     fonte_normal, fonte_negrito = _fontes_etiqueta_avulsa()
+    por_pagina = 2 if pequena else 1
+    pad = (0.8 if pequena else 4) * mm
+    gap = (0.6 if pequena else 2) * mm
+    largura = label_w - 2 * pad
+    altura_linha = (label_h - 2 * pad - 3 * gap) / 4
 
     for idx, etiqueta in enumerate(etiquetas):
-        if idx:
+        if idx and idx % por_pagina == 0:
             c.showPage()
+        x0, y0 = _posicao_avulsa(idx, label_w, label_h, empilhadas) if pequena else (0, 0)
+        if pequena:
+            _desenhar_borda_avulsa(c, x0, y0, label_w, label_h)
+        tamanho_sku = 10.6 if pequena else 34
+        tamanho_texto = 9.8 if pequena else 32
 
-        sku = etiqueta["sku"]
-        sequencia = etiqueta["sequencia"]
-        quantidade = etiqueta["quantidade"]
-        torre = etiqueta["torre"]
-        paletes = etiqueta["paletes"]
-        corredor = etiqueta["corredor"]
-        caixa = etiqueta["caixa"]
-        conta = etiqueta["conta"]
+        def bloco(texto, linha, fonte=fonte_normal, tamanho=tamanho_texto,
+                  x=0, w=largura, sublinhar=False, uma_linha=False):
+            y = y0 + label_h - pad - (linha + 1) * altura_linha - linha * gap
+            _desenhar_bloco_avulso(c, texto, x0 + pad + x, y, w, altura_linha,
+                                   fonte, tamanho, sublinhar, uma_linha)
 
-        _desenhar_texto_centralizado(c, f"SKU: {sku}" if sku else "SKU:", 63 * mm, fonte_negrito, 34, page_w)
-
-        c.setFont(fonte_normal, 32)
-        linha_y = 42 * mm
-        x_seq = page_w * 0.34
-        x_qtd = page_w * 0.64
-        c.drawCentredString(x_seq, linha_y, sequencia)
-        if sequencia:
-            seq_w = stringWidth(sequencia, fonte_normal, 32)
-            c.setLineWidth(1.4)
-            c.line(x_seq - seq_w / 2, linha_y - 2, x_seq + seq_w / 2, linha_y - 2)
-        c.drawCentredString(x_qtd, linha_y, f"QTD:{quantidade}" if quantidade else "QTD:")
-
-        partes_local = []
-        if torre:
-            partes_local.append(f"T{torre}")
-        if paletes:
-            partes_local.append(f"P{paletes}")
-        if corredor:
-            partes_local.append(f"C{corredor}")
-        if caixa:
-            partes_local.append(f"CX{caixa}")
-        _desenhar_texto_centralizado(c, " ".join(partes_local), 24 * mm, fonte_normal, 32, page_w)
-        _desenhar_texto_centralizado(c, conta, 9 * mm, fonte_normal, 32, page_w)
+        bloco(f"SKU: {etiqueta['sku']}", 0, fonte_negrito, tamanho_sku)
+        metade = (largura - gap) / 2
+        bloco(etiqueta["sequencia"], 1, w=metade, sublinhar=True, uma_linha=True)
+        bloco(f"QTD:{etiqueta['quantidade']}", 1, x=metade + gap, w=metade, uma_linha=True)
+        partes_local = [f"{prefixo}{etiqueta[campo]}"
+                        for campo, prefixo in (("torre", "T"), ("paletes", "P"),
+                                               ("corredor", "C"), ("caixa", "CX"))
+                        if etiqueta[campo]]
+        bloco(" ".join(partes_local), 2)
+        bloco(etiqueta["conta"], 3)
 
     c.save()
-    buffer.seek(0)
     return buffer.getvalue(), len(etiquetas)
 
 
-def _gerar_pdf_impressao_avulsa_pequena(itens):
-    etiquetas = []
-    for item in itens:
-        dados = {
-            "sequencia": _texto_item_avulso(item.sequencia),
-            "sku": _texto_item_avulso(item.sku),
-            "quantidade": _texto_item_avulso(item.quantidade),
-            "caixa": _texto_item_avulso(item.caixa),
-            "torre": _texto_item_avulso(item.torre),
-            "paletes": _texto_item_avulso(item.paletes),
-            "corredor": _texto_item_avulso(item.corredor),
-            "conta": _texto_item_avulso(item.conta),
-        }
-        if any(dados.values()):
-            etiquetas.append(dados)
-
-    if not etiquetas:
-        return None, 0
-    if len(etiquetas) > 1000:
-        raise ValueError("Limite mÃƒÂ¡ximo de 1000 etiquetas por PDF avulso.")
-
-    page_w = 80 * mm
-    page_h = 25 * mm
-    label_w = 40 * mm
-    label_h = 25 * mm
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=(page_w, page_h))
-    fonte_normal, fonte_negrito = _fontes_etiqueta_avulsa()
-
-    def draw_center(texto, x0, y, fonte, tamanho):
-        c.setFont(fonte, tamanho)
-        c.drawCentredString(x0 + (label_w / 2), y, str(texto or ""))
-
-    for idx, etiqueta in enumerate(etiquetas):
-        pos = idx % 2
-        if idx and pos == 0:
-            c.showPage()
-        x0 = pos * label_w
-
-        c.setStrokeColorRGB(0.86, 0.86, 0.86)
-        c.rect(x0, 0, label_w, label_h, stroke=1, fill=0)
-        if pos == 0:
-            c.setDash(1, 2)
-            c.line(label_w, 0, label_w, page_h)
-            c.setDash()
-
-        sku = etiqueta["sku"]
-        sequencia = etiqueta["sequencia"]
-        quantidade = etiqueta["quantidade"]
-        torre = etiqueta["torre"]
-        paletes = etiqueta["paletes"]
-        corredor = etiqueta["corredor"]
-        caixa = etiqueta["caixa"]
-        conta = etiqueta["conta"]
-
-        # Mantem a mesma hierarquia visual da etiqueta grande, reduzida para 4 x 2,5 cm.
-        draw_center(f"SKU: {sku}" if sku else "SKU:", x0, 18.9 * mm, fonte_negrito, 10.6)
-
-        c.setFont(fonte_normal, 9.8)
-        linha_y = 12.9 * mm
-        x_seq = x0 + (label_w * 0.34)
-        x_qtd = x0 + (label_w * 0.64)
-        c.drawCentredString(x_seq, linha_y, sequencia)
-        if sequencia:
-            seq_w = stringWidth(sequencia, fonte_normal, 9.8)
-            c.setLineWidth(0.5)
-            c.line(x_seq - seq_w / 2, linha_y - 1, x_seq + seq_w / 2, linha_y - 1)
-        c.drawCentredString(x_qtd, linha_y, f"QTD:{quantidade}" if quantidade else "QTD:")
-
-        partes_local = []
-        if torre:
-            partes_local.append(f"T{torre}")
-        if paletes:
-            partes_local.append(f"P{paletes}")
-        if corredor:
-            partes_local.append(f"C{corredor}")
-        if caixa:
-            partes_local.append(f"CX{caixa}")
-        draw_center(" ".join(partes_local), x0, 7.2 * mm, fonte_normal, 9.8)
-        draw_center(conta, x0, 2.4 * mm, fonte_normal, 9.8)
-
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue(), len(etiquetas)
+def _gerar_pdf_impressao_avulsa_grande(itens, orientacao=None):
+    return _gerar_pdf_campos_avulsos(itens, orientacao=orientacao)
 
 
-def gerar_pdf_impressao_avulsa(itens, formato="grande"):
+def _gerar_pdf_impressao_avulsa_pequena(itens, orientacao=None):
+    return _gerar_pdf_campos_avulsos(itens, pequena=True, orientacao=orientacao)
+
+
+def gerar_pdf_impressao_avulsa(itens, formato="grande", orientacao=None):
     formato = str(formato or "grande").strip().lower()
     usa_layout_planilha = any(bool(getattr(item, "layout_planilha", False)) for item in itens)
     if formato == "grande":
-        return _gerar_pdf_impressao_avulsa_grande(itens)
+        return _gerar_pdf_impressao_avulsa_grande(itens, orientacao)
     if formato == "pequena" or usa_layout_planilha:
-        return _gerar_pdf_impressao_avulsa_pequena(itens)
+        return _gerar_pdf_impressao_avulsa_pequena(itens, orientacao)
 
     etiquetas = []
     for item in itens:
         sku = (item.sku or "").strip()
         descricao = (item.descricao or "").strip()
         quantidade = max(1, min(int(item.quantidade or 1), 500))
-        if not sku and not descricao:
-            continue
-        etiquetas.extend([{"sku": sku, "descricao": descricao}] * quantidade)
-
+        if sku or descricao:
+            etiquetas.extend([{"sku": sku, "descricao": descricao}] * quantidade)
     if not etiquetas:
         return None, 0
     if len(etiquetas) > 1000:
-        raise ValueError("Limite mÃƒÂ¡ximo de 1000 etiquetas por PDF avulso.")
+        raise ValueError("Limite máximo de 1000 etiquetas por PDF avulso.")
 
-    formato = str(formato or "grande").strip().lower()
-    if formato not in {"grande", "pequena"}:
-        formato = "grande"
-
-    etiqueta_w = 80 * mm
-    etiqueta_h = 25 * mm if formato == "pequena" else 150 * mm
+    etiqueta_w, etiqueta_h = _dimensoes_pagina_pdf(80 * mm, 150 * mm, orientacao)
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(etiqueta_w, etiqueta_h))
-
+    pad = 6 * mm
+    largura = etiqueta_w - 2 * pad
+    altura = etiqueta_h - 2 * pad
     for idx, etiqueta in enumerate(etiquetas):
         if idx:
             c.showPage()
-        x = 0
-        y = 0
-
         c.setStrokeColorRGB(0.80, 0.86, 0.92)
-        c.roundRect(x, y, etiqueta_w, etiqueta_h, 4, stroke=1, fill=0)
-
-        pad = 3 * mm if formato == "pequena" else 6 * mm
-        text_x = x + pad
-        top_y = y + etiqueta_h - pad
-        largura_texto = etiqueta_w - (2 * pad)
-
-        sku = etiqueta["sku"]
-        descricao = etiqueta["descricao"]
-        if sku:
-            fonte_sku = 13 if formato == "pequena" else 18
-            max_linhas_sku = 1 if formato == "pequena" else 3
-            c.setFont("Helvetica-Bold", fonte_sku)
-            for linha in _quebrar_texto_pdf(sku, "Helvetica-Bold", fonte_sku, largura_texto, max_linhas_sku):
-                c.drawString(text_x, top_y, linha)
-                top_y -= (5 * mm if formato == "pequena" else 8 * mm)
-
-        if descricao:
-            top_y -= 1 * mm
-            fonte_desc = 8 if formato == "pequena" else 12
-            max_linhas_desc = 2 if formato == "pequena" else 12
-            c.setFont("Helvetica", fonte_desc)
-            for linha in _quebrar_texto_pdf(descricao, "Helvetica", fonte_desc, largura_texto, max_linhas_desc):
-                if top_y <= (5 * mm if formato == "pequena" else 12 * mm):
-                    break
-                c.drawString(text_x, top_y, linha)
-                top_y -= (3.5 * mm if formato == "pequena" else 5.5 * mm)
-
-        c.setFont("Helvetica", 6 if formato == "pequena" else 8)
+        c.roundRect(0, 0, etiqueta_w, etiqueta_h, 4, stroke=1, fill=0)
+        altura_sku = altura * 0.25 if etiqueta["sku"] else 0
+        if etiqueta["sku"]:
+            _desenhar_bloco_avulso(c, etiqueta["sku"], pad,
+                                   etiqueta_h - pad - altura_sku, largura, altura_sku,
+                                   "Helvetica-Bold", 18)
+        if etiqueta["descricao"]:
+            _desenhar_bloco_avulso(c, etiqueta["descricao"], pad, pad,
+                                   largura, altura - altura_sku, "Helvetica", 12)
+        c.setFont("Helvetica", 8)
         c.setFillColorRGB(0.45, 0.45, 0.45)
-        c.drawRightString(x + etiqueta_w - pad, y + (2 * mm if formato == "pequena" else 4 * mm), f"#{idx + 1}")
+        c.drawRightString(etiqueta_w - pad, 2 * mm, f"#{idx + 1}")
         c.setFillColorRGB(0, 0, 0)
-
     c.save()
-    buffer.seek(0)
     return buffer.getvalue(), len(etiquetas)
 
 
-def gerar_pdf_editor_livre(etiquetas_html, tamanho="grande"):
+def gerar_pdf_editor_livre(etiquetas_html, tamanho="grande", orientacao=None):
     etiquetas = [str(html or "").strip() for html in etiquetas_html if str(html or "").strip()]
     if not etiquetas:
         return None, 0
     if len(etiquetas) > 100:
-        raise ValueError("Limite mÃƒÂ¡ximo de 100 etiquetas livres por PDF.")
-
+        raise ValueError("Limite máximo de 100 etiquetas livres por PDF.")
     tamanho = str(tamanho or "grande").strip().lower()
-    tamanho = "pequena" if tamanho.startswith("p") else "grande"
-
-    def _sanitize_editor_html(html):
-        html = re.sub(r"<script[\s\S]*?</script>", "", html, flags=re.IGNORECASE)
-        html = re.sub(r"\son\w+\s*=\s*(['\"]).*?\1", "", html, flags=re.IGNORECASE)
-        return html
-
+    pequena = tamanho.startswith("p")
+    page_w, page_h, label_w, label_h, empilhadas = _geometria_avulsa(pequena, orientacao)
     fonte_normal, fonte_negrito = _fontes_etiqueta_avulsa()
 
     def _style_value_px(tag, prop, default_px):
         for node in [tag] + list(tag.find_all(True)):
-            style = str(node.get("style") or "")
-            match = re.search(rf"{prop}\s*:\s*([\d.]+)px", style, flags=re.IGNORECASE)
+            match = re.search(rf"{prop}\s*:\s*([\d.]+)px", str(node.get("style") or ""), re.I)
             if match:
                 return max(6, min(96, float(match.group(1))))
         return default_px
 
-    def _line_align(tag):
-        style = str(tag.get("style") or "")
-        match = re.search(r"text-align\s*:\s*(left|center|right)", style, flags=re.IGNORECASE)
-        return (match.group(1).lower() if match else "center")
+    def _blocos_editor(html):
+        soup = BeautifulSoup(html, "html.parser")
+        for node in soup.find_all(["script", "style"]):
+            node.decompose()
+        blocos = []
+        inline = []
 
-    def _draw_editor_label(c, html, x0, y0, w, h, scale=1.0):
-        soup = BeautifulSoup(_sanitize_editor_html(html), "html.parser")
-        linhas = [node for node in soup.find_all(["div", "p"], recursive=False)]
-        if not linhas:
-            linhas = [soup]
+        def flush_inline():
+            if inline and any(str(node).strip() for node in inline):
+                bloco = soup.new_tag("div")
+                for node in inline:
+                    bloco.append(node)
+                blocos.append(bloco)
+            inline.clear()
 
-        css_w = 720.0
-        css_h = 384.0
-        css_padding = 18.0
-        point_per_px = min(w / css_w, h / css_h)
-        draw_w = css_w * point_per_px
-        draw_h = css_h * point_per_px
-        offset_x = (w - draw_w) / 2
-        offset_y = (h - draw_h) / 2
-
-        c.saveState()
-        c.translate(x0, y0)
-        c.scale(scale, scale)
-        default_px = 36.0
-        cursor_y_px = css_padding
-        for idx, linha in enumerate(linhas[:40]):
-            font_size_px = _style_value_px(linha, "font-size", default_px)
-            line_height_px = max(font_size_px * 1.35, _style_value_px(linha, "line-height", font_size_px * 1.35))
-            texto = linha.get_text(" ", strip=True)
-            if not texto:
-                cursor_y_px += line_height_px
-                continue
-            bold = bool(linha.find(["b", "strong"])) or "font-weight: bold" in str(linha).lower()
-            underline = bool(linha.find("u")) or "text-decoration-line: underline" in str(linha).lower() or "text-decoration: underline" in str(linha).lower()
-            font_name = fonte_negrito if bold else fonte_normal
-            font_size = font_size_px * point_per_px
-            baseline_px = cursor_y_px + ((line_height_px - font_size_px) / 2) + (font_size_px * 0.82)
-            y = offset_y + draw_h - (baseline_px * point_per_px)
-            align = _line_align(linha)
-            c.setFont(font_name, font_size)
-            text_w = stringWidth(texto, font_name, font_size)
-            if align == "left":
-                x = offset_x + (css_padding * point_per_px)
-                c.drawString(x, y, texto)
-            elif align == "right":
-                x = offset_x + draw_w - (css_padding * point_per_px)
-                c.drawRightString(x, y, texto)
-                x = x - text_w
+        for node in list(soup.contents):
+            if not isinstance(node, NavigableString) and node.name in {"div", "p"}:
+                flush_inline()
+                blocos.append(node)
             else:
-                x_center = offset_x + (draw_w / 2)
-                c.drawCentredString(x_center, y, texto)
-                x = x_center - (text_w / 2)
-            if underline:
-                c.setLineWidth(max(0.5, 1.2 * point_per_px))
-                c.line(x, y - (3 * point_per_px), x + text_w, y - (3 * point_per_px))
-            cursor_y_px += line_height_px
-        c.restoreState()
+                inline.append(node)
+        flush_inline()
+        resultado = []
+        for bloco in blocos:
+            for br in bloco.find_all("br"):
+                br.replace_with("\n")
+            texto = bloco.get_text("", strip=False)
+            texto = "\n".join(re.sub(r"[^\S\n]+", " ", linha).strip() for linha in texto.split("\n"))
+            fonte_px = _style_value_px(bloco, "font-size", 36)
+            altura_px = max(fonte_px * 1.35, _style_value_px(bloco, "line-height", fonte_px * 1.35))
+            estilo = str(bloco).lower()
+            negrito = bool(bloco.find(["b", "strong"])) or bool(re.search(r"font-weight\s*:\s*(bold|[7-9]00)", estilo))
+            sublinhar = bool(bloco.find("u")) or bool(re.search(r"text-decoration(?:-line)?\s*:\s*underline", estilo))
+            alinhamento = re.search(r"text-align\s*:\s*(left|center|right)", str(bloco.get("style") or ""), re.I)
+            resultado.append((texto, fonte_negrito if negrito else fonte_normal, fonte_px,
+                              altura_px / fonte_px, sublinhar,
+                              alinhamento.group(1).lower() if alinhamento else "center"))
+        return resultado
 
-    if tamanho == "pequena":
-        page_w, page_h = 80 * mm, 25 * mm
-        label_w, label_h = 40 * mm, 25 * mm
-    else:
-        page_w, page_h = 150 * mm, 80 * mm
-        label_w, label_h = page_w, page_h
+    def _draw_editor_label(c, html, x0, y0, w, h):
+        blocos = _blocos_editor(html)
+        point_per_px = min(w / 720, h / 384)
+        pad = 18 * point_per_px
+        largura = w - 2 * pad
+        altura = h - 2 * pad
+
+        def compor(escala):
+            linhas = []
+            for texto, fonte, fonte_px, espacamento, sublinhar, align in blocos:
+                tamanho_fonte = fonte_px * point_per_px * escala
+                for paragrafo in texto.split("\n"):
+                    quebradas, fonte_real = _ajustar_texto_pdf(
+                        paragrafo, fonte, tamanho_fonte, largura,
+                        max(altura, (len(paragrafo) + 1) * tamanho_fonte * 2))
+                    for linha in quebradas or [""]:
+                        linhas.append((linha, fonte, fonte_real, fonte_real * espacamento, sublinhar, align))
+            return linhas
+
+        escala = 1.0
+        linhas = compor(escala)
+        for _ in range(40):
+            altura_total = sum(linha[3] for linha in linhas)
+            if altura_total <= altura + 0.0001:
+                break
+            escala *= min(0.95, altura / altura_total)
+            linhas = compor(escala)
+
+        y = y0 + h - pad
+        for texto, fonte, fonte_tamanho, entrelinha, sublinhar, align in linhas:
+            ascendente, descendente = getAscentDescent(fonte, fonte_tamanho)
+            y_baseline = y - (entrelinha - ascendente + descendente) / 2 - ascendente
+            texto_w = stringWidth(texto, fonte, fonte_tamanho)
+            if align == "left":
+                x = x0 + pad
+            elif align == "right":
+                x = x0 + w - pad - texto_w
+            else:
+                x = x0 + (w - texto_w) / 2
+            c.setFont(fonte, fonte_tamanho)
+            c.drawString(x, y_baseline, texto)
+            if sublinhar and texto:
+                c.setLineWidth(max(0.15, fonte_tamanho * 0.035))
+                c.line(x, y_baseline - fonte_tamanho * 0.08,
+                       x + texto_w, y_baseline - fonte_tamanho * 0.08)
+            y -= entrelinha
 
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=(page_w, page_h))
-
+    por_pagina = 2 if pequena else 1
     for idx, html in enumerate(etiquetas):
-        if tamanho == "pequena":
-            pos = idx % 2
-            if idx and pos == 0:
-                c.showPage()
-            x0 = pos * label_w
-            c.setStrokeColorRGB(0.86, 0.86, 0.86)
-            c.rect(x0, 0, label_w, label_h, stroke=1, fill=0)
-            if pos == 0:
-                c.setDash(1, 2)
-                c.line(label_w, 0, label_w, page_h)
-                c.setDash()
-            scale = min(label_w / (150 * mm), label_h / (80 * mm))
-            _draw_editor_label(c, html, x0, 0, 150 * mm, 80 * mm, scale)
-        else:
-            if idx:
-                c.showPage()
-            _draw_editor_label(c, html, 0, 0, page_w, page_h, 1.0)
-
+        if idx and idx % por_pagina == 0:
+            c.showPage()
+        x0, y0 = _posicao_avulsa(idx, label_w, label_h, empilhadas) if pequena else (0, 0)
+        if pequena:
+            _desenhar_borda_avulsa(c, x0, y0, label_w, label_h)
+        _draw_editor_label(c, html, x0, y0, label_w, label_h)
     c.save()
-    buffer.seek(0)
     return buffer.getvalue(), len(etiquetas)

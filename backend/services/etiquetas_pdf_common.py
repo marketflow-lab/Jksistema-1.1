@@ -9,6 +9,74 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfbase.ttfonts import TTFont
 
+
+def _dimensoes_pagina_pdf(largura, altura, orientacao=None):
+    """Resolve the selected page orientation, preserving legacy defaults."""
+    if orientacao is None:
+        return largura, altura
+    if orientacao == "retrato":
+        return min(largura, altura), max(largura, altura)
+    if orientacao == "paisagem":
+        return max(largura, altura), min(largura, altura)
+    raise ValueError("Escolha a orientação da página: retrato ou paisagem.")
+
+
+def _ajustar_texto_pdf(texto, fonte, tamanho_max, largura, altura, entrelinha=1.2):
+    """Wrap complete text and find the largest font that fits its text box."""
+    texto = str(texto or "").strip()
+    if not texto:
+        return [], tamanho_max
+    if min(tamanho_max, largura, altura, entrelinha) <= 0:
+        raise ValueError("A área de texto da etiqueta deve ser positiva.")
+    paragrafos = [re.sub(r"[^\S\n]+", " ", linha).strip() for linha in texto.splitlines()]
+    larguras = {char: stringWidth(char, fonte, 1) for char in set(texto + " ")}
+
+    def quebrar(tamanho):
+        limite = largura / tamanho
+        linhas = []
+        for paragrafo in paragrafos:
+            atual = ""
+            atual_w = 0.0
+            for palavra in paragrafo.split():
+                palavra_w = sum(larguras[char] for char in palavra)
+                espaco_w = larguras[" "] if atual else 0
+                if atual and atual_w + espaco_w + palavra_w > limite:
+                    linhas.append(atual)
+                    atual, atual_w = "", 0.0
+                if palavra_w <= limite:
+                    if atual:
+                        atual += " "
+                        atual_w += larguras[" "]
+                    atual += palavra
+                    atual_w += palavra_w
+                else:
+                    for char in palavra:
+                        char_w = larguras[char]
+                        if char_w > limite:
+                            return None
+                        if atual and atual_w + char_w > limite:
+                            linhas.append(atual)
+                            atual, atual_w = "", 0.0
+                        atual += char
+                        atual_w += char_w
+            linhas.append(atual)
+        return linhas
+
+    teto = min(float(tamanho_max), altura / entrelinha)
+    linhas = quebrar(teto)
+    if linhas is not None and len(linhas) * teto * entrelinha <= altura:
+        return linhas, teto
+    minimo, maximo = 0.0, teto
+    for _ in range(24):
+        tamanho = (minimo + maximo) / 2
+        linhas = quebrar(tamanho)
+        if linhas is not None and len(linhas) * tamanho * entrelinha <= altura:
+            minimo = tamanho
+        else:
+            maximo = tamanho
+    return quebrar(minimo), minimo
+
+
 def _quebrar_texto_pdf(texto, fonte, tamanho, largura_max, max_linhas):
     texto = re.sub(r"\s+", " ", str(texto or "")).strip()
     if not texto:

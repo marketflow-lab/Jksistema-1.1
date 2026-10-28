@@ -39,7 +39,9 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
         client_id: str = Depends(config.get_tenant_id),
     ):
         try:
-            pdf_bytes, qtd = gerar_pdf_editor_livre(payload.etiquetas, payload.tamanho)
+            pdf_bytes, qtd = gerar_pdf_editor_livre(
+                payload.etiquetas, payload.tamanho, orientacao=payload.orientacao
+            )
             if not pdf_bytes:
                 return {"success": False, "message": "Informe pelo menos uma etiqueta para imprimir."}
             file_id = str(uuid.uuid4())
@@ -55,7 +57,9 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
         client_id: str = Depends(config.get_tenant_id),
     ):
         try:
-            pdf_bytes, qtd = gerar_pdf_impressao_avulsa(payload.itens, payload.formato)
+            pdf_bytes, qtd = gerar_pdf_impressao_avulsa(
+                payload.itens, payload.formato, orientacao=payload.orientacao
+            )
             if not pdf_bytes:
                 return {"success": False, "message": "Informe pelo menos um item para imprimir."}
             file_id = str(uuid.uuid4())
@@ -77,6 +81,7 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
                 payload.quantidade,
                 payload.tamanho,
                 payload.layout,
+                orientacao=payload.orientacao,
             )
             if not pdf_bytes:
                 return {"success": False, "message": "Informe o link para gerar o QR Code."}

@@ -338,13 +338,13 @@
     </div>
 </main>
 
-<div class="pdf-choice-backdrop" id="pdf-choice-backdrop">
-    <div class="pdf-choice-modal">
-        <p class="pdf-choice-title">Escolha o formato do PDF</p>
+<div class="pdf-choice-backdrop" id="pdf-choice-backdrop" aria-hidden="true">
+    <div class="pdf-choice-modal" role="dialog" aria-modal="true" aria-labelledby="pdf-choice-title">
+        <p class="pdf-choice-title" id="pdf-choice-title">Escolha o formato do PDF</p>
         <div class="pdf-choice-options">
             <button class="pdf-choice-option" type="button" data-pdf-choice="grande">
                 Etiqueta Grande
-                <span>15x10cm</span>
+                <span>15x8cm</span>
             </button>
             <button class="pdf-choice-option" type="button" data-pdf-choice="pequena">
                 Etiqueta Pequena
@@ -1096,30 +1096,33 @@
 
     async function gerarImpressaoAvulsa() {
         const btn = document.getElementById('btn-avulsa');
+        if (btn.disabled) return;
         const loader = document.getElementById('loader-avulsa');
         const errorMsg = document.getElementById('error-avulsa');
         const successMsg = document.getElementById('success-avulsa');
         const resultSection = document.getElementById('result-avulsa');
         const formato = document.querySelector('input[name="formato-avulsa"]:checked')?.value || 'grande';
         const itens = formato === 'editor' ? montarItensEditorAvulsa() : montarItensGrandeAvulsa();
-        const formatoPdf = formato === 'editor' ? await escolherTamanhoPdfEditor() : formato;
-        if (!formatoPdf) return;
-        errorMsg.style.display = 'none';
-        successMsg.style.display = 'none';
-        limparPreviewAvulsa();
-        resultSection.style.display = 'none';
         if (!itens.length) return alert('Informe pelo menos um item para imprimir.');
         btn.disabled = true;
-        loader.style.display = 'block';
 
         try {
+            const formatoPdf = formato === 'editor' ? await escolherTamanhoPdfEditor() : formato;
+            if (!formatoPdf) return;
+            const orientacao = await escolherOrientacaoPdf();
+            if (!orientacao) return;
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+            limparPreviewAvulsa();
+            resultSection.style.display = 'none';
+            loader.style.display = 'block';
             const token = localStorage.getItem('access_token');
             const headers = { 'Content-Type': 'application/json' };
             if (token) headers.Authorization = `Bearer ${token}`;
             const url = formato === 'editor' ? '/api/etiquetas/impressao-editor' : '/api/etiquetas/impressao-avulsa';
             const body = formato === 'editor'
-                ? JSON.stringify({ tamanho: formatoPdf, etiquetas: itens })
-                : JSON.stringify({ formato: formatoPdf, itens });
+                ? JSON.stringify({ tamanho: formatoPdf, etiquetas: itens, orientacao })
+                : JSON.stringify({ formato: formatoPdf, itens, orientacao });
             const response = await fetch(url, {
                 method: 'POST',
                 headers,
@@ -1142,6 +1145,7 @@
         } finally {
             btn.disabled = false;
             loader.style.display = 'none';
+            btn.focus({ preventScroll: true });
         }
     }
 
@@ -1190,6 +1194,7 @@
 
     async function gerarQrCodeLink() {
         const btn = document.getElementById('btn-qrcode');
+        if (btn.disabled) return;
         const loader = document.getElementById('loader-qrcode');
         const errorMsg = document.getElementById('error-qrcode');
         const successMsg = document.getElementById('success-qrcode');
@@ -1200,22 +1205,24 @@
         const tamanho = document.querySelector('input[name="formato-qrcode"]:checked')?.value || 'grande';
         const layout = document.getElementById('qrcode-layout').value || 'a4';
 
-        errorMsg.style.display = 'none';
-        successMsg.style.display = 'none';
-        resultSection.style.display = 'none';
-        limparPreviewQrCode();
         if (!link) return alert('Informe o link para gerar o QR Code.');
 
         btn.disabled = true;
-        loader.style.display = 'block';
         try {
+            const orientacao = await escolherOrientacaoPdf();
+            if (!orientacao) return;
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+            resultSection.style.display = 'none';
+            limparPreviewQrCode();
+            loader.style.display = 'block';
             const token = localStorage.getItem('access_token');
             const headers = { 'Content-Type': 'application/json' };
             if (token) headers.Authorization = `Bearer ${token}`;
             const response = await fetch('/api/etiquetas/qrcode-link', {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ link, titulo, quantidade, tamanho, layout })
+                body: JSON.stringify({ link, titulo, quantidade, tamanho, layout, orientacao })
             });
             const data = await response.json();
             if (!response.ok || !data.success) throw new Error(data.detail || data.message || 'Erro ao gerar QR Code.');
@@ -1241,30 +1248,79 @@
         } finally {
             btn.disabled = false;
             loader.style.display = 'none';
+            btn.focus({ preventScroll: true });
         }
     }
 
-    async function escolherTamanhoPdfEditor() {
+    function escolherTamanhoPdfEditor() {
+        return escolherOpcaoPdf('Escolha o formato do PDF', [
+            { valor: 'grande', texto: 'Etiqueta Grande', detalhe: '15x8cm' },
+            { valor: 'pequena', texto: 'Etiqueta Pequena', detalhe: '8x2,5cm' }
+        ]);
+    }
+
+    function escolherOrientacaoPdf() {
+        return escolherOpcaoPdf('Escolha a orientação da página', [
+            { valor: 'retrato', texto: 'Retrato', detalhe: 'Página na vertical' },
+            { valor: 'paisagem', texto: 'Paisagem', detalhe: 'Página na horizontal' }
+        ]);
+    }
+
+    function escolherOpcaoPdf(titulo, opcoes) {
         const backdrop = document.getElementById('pdf-choice-backdrop');
+        if (backdrop.style.display === 'flex') return Promise.resolve('');
+        const focoAnterior = document.activeElement;
+        document.getElementById('pdf-choice-title').textContent = titulo;
+        const container = backdrop.querySelector('.pdf-choice-options');
+        container.replaceChildren();
+        opcoes.forEach((opcao) => {
+            const botao = document.createElement('button');
+            botao.className = 'pdf-choice-option';
+            botao.type = 'button';
+            botao.dataset.pdfChoice = opcao.valor;
+            botao.textContent = opcao.texto;
+            const detalhe = document.createElement('span');
+            detalhe.textContent = opcao.detalhe;
+            botao.appendChild(detalhe);
+            container.appendChild(botao);
+        });
         backdrop.style.display = 'flex';
+        backdrop.setAttribute('aria-hidden', 'false');
         return new Promise((resolve) => {
+            const fechar = (valor) => {
+                backdrop.style.display = 'none';
+                backdrop.setAttribute('aria-hidden', 'true');
+                backdrop.removeEventListener('click', escolher);
+                document.removeEventListener('keydown', teclado, true);
+                if (focoAnterior?.isConnected && !focoAnterior.disabled) focoAnterior.focus();
+                resolve(valor);
+            };
             const escolher = (ev) => {
                 const botao = ev.target.closest('[data-pdf-choice]');
-                if (!botao) return;
-                backdrop.style.display = 'none';
-                backdrop.removeEventListener('click', escolher);
-                document.removeEventListener('keydown', cancelar);
-                resolve(botao.dataset.pdfChoice || '');
+                if (botao && backdrop.contains(botao)) fechar(botao.dataset.pdfChoice || '');
             };
-            const cancelar = (ev) => {
-                if (ev.key !== 'Escape') return;
-                backdrop.style.display = 'none';
-                backdrop.removeEventListener('click', escolher);
-                document.removeEventListener('keydown', cancelar);
-                resolve('');
+            const teclado = (ev) => {
+                if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    fechar('');
+                    return;
+                }
+                if (ev.key !== 'Tab') return;
+                const botoes = [...backdrop.querySelectorAll('button')];
+                const primeiro = botoes[0];
+                const ultimo = botoes[botoes.length - 1];
+                if (ev.shiftKey && (document.activeElement === primeiro || !backdrop.contains(document.activeElement))) {
+                    ev.preventDefault();
+                    ultimo.focus();
+                } else if (!ev.shiftKey && (document.activeElement === ultimo || !backdrop.contains(document.activeElement))) {
+                    ev.preventDefault();
+                    primeiro.focus();
+                }
             };
             backdrop.addEventListener('click', escolher);
-            document.addEventListener('keydown', cancelar);
+            document.addEventListener('keydown', teclado, true);
+            container.querySelector('button').focus();
         });
     }
 
