@@ -32,6 +32,105 @@ from .legacy import (
 from .compositions import load_composition_catalog
 from .performance import append_indexable_date_filter, cached_table_columns, open_vendas_readonly, select_compatible_column
 
+from .return_reason_queue import RESULT_STATUSES
+
+
+def _return_reason_metadata(row=None):
+    """Expose only report fields, keeping queue progress separate from evidence."""
+    result = {
+        "status": "not_identified", "descricao": "", "codigo": "",
+        "fonte": "", "status_coleta": "",
+    }
+    if row is None:
+        return result
+    result["status_coleta"] = row["status"]
+    if row["result_status"] in RESULT_STATUSES:
+        result["status"] = row["result_status"]
+    if result["status"] == "identified":
+        result["descricao"] = str(row["reason_description"] or "")
+        result["codigo"] = str(row["reason_id"] or "")
+        if not (result["descricao"].strip() or result["codigo"].strip()):
+            # An invalid saved result cannot prove that the provider omitted it.
+            result.update(status="not_identified", descricao="", codigo="")
+    if row["reason_source"] in {"bling", "mercado_livre"}:
+        result["fonte"] = row["reason_source"]
+    return result
+
+
+
+def _complete_return_reason_from_mirror(current, candidate):
+    """Fill missing evidence without replacing the selected commercial row."""
+    previous = current["motivo_devolucao"]
+    incoming = candidate["motivo_devolucao"]
+    if previous["status"] != "not_identified" or incoming["status"] != "identified":
+        return
+    # Pending evidence may reflect a changed documentary link. An older mirror
+    # must not override that deliberate invalidation or an in-flight refresh.
+    if previous["status_coleta"] in {"pending", "processing", "retry"}:
+        return
+    for field in ("store_id", "id_unico"):
+        value = current.get(field)
+        if not isinstance(value, str) or not value.strip() or candidate.get(field) != value:
+            return
+    # The commercial deduplication accepts legacy/casefolded owners. Enrichment
+    # deliberately requires both exact persisted IDs instead of those fallbacks.
+    current["motivo_devolucao"] = dict(incoming)
+
+
+def _enrich_return_reasons(conn, db_path, rows, client_id, *, catalog=None):
+    """Read saved evidence by exact store/item identity without provider calls."""
+    for item in rows:
+        item["motivo_devolucao"] = _return_reason_metadata()
+    if not rows:
+        return rows
+    try:
+        columns = cached_table_columns(db_path, "devolucao_motivos", conn)
+        if not {"store_id", "item_id_unico", "status", "result_status"}.issubset(columns):
+            return rows
+        identities = {}
+        for item in rows:
+            item_id = str(item.get("id_unico") or "")
+            if not item_id.strip():
+                continue
+            store_id = str(item.get("store_id") or "")
+            if not store_id.strip() and item.get("loja_conta"):
+                # Old rows may lack the stable ID. Reuse the local catalog's
+                # unambiguous aliases and retired-name safeguards, never a
+                # provider lookup or the requested filter as proof of ownership.
+                if catalog is None:
+                    catalog = load_composition_catalog(client_id)
+                store_id = catalog._row_store(item, None)
+            if store_id:
+                identities.setdefault((store_id, item_id), []).append(item)
+        by_store = {}
+        for store_id, item_id in identities:
+            by_store.setdefault(store_id, []).append(item_id)
+        fields = ", ".join(select_compatible_column(columns, field) for field in (
+            "item_id_unico", "status", "result_status", "reason_id",
+            "reason_description", "reason_source",
+        ))
+        evidence = {}
+        for store_id, item_ids in by_store.items():
+            # Stay below the variable limit of older SQLite builds.
+            for offset in range(0, len(item_ids), 400):
+                batch = item_ids[offset:offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                query = (
+                    f"SELECT {fields} FROM devolucao_motivos WHERE store_id=? "
+                    f"AND item_id_unico IN ({placeholders}) "
+                    "AND status IN ('pending','processing','retry','done')"
+                )
+                for row in conn.execute(query, [store_id, *batch]).fetchall():
+                    evidence[(store_id, row["item_id_unico"])] = _return_reason_metadata(row)
+        for identity, reason in evidence.items():
+            for item in identities.get(identity, []):
+                item["motivo_devolucao"] = dict(reason)
+    except sqlite3.DatabaseError:
+        # Optional enrichment must not discard already-read commercial rows if
+        # an old/temporarily unavailable metadata table cannot be queried.
+        pass
+    return rows
+
 
 def listar_notas_entrada(client_id: str, data_inicio: str = None, data_fim: str = None, agrupado: bool = False, unidade_negocio: str = None, loja: str = None):
     db_path = _get_vendas_db_path(client_id, loja)
@@ -122,8 +221,12 @@ def listar_itens_devolucoes(client_id: str, data_inicio: str = None, data_fim: s
             conn = open_vendas_readonly(db_path, row_factory=sqlite3.Row)
             try:
                 cur = conn.cursor()
+                columns = cached_table_columns(db_path, "notas_entrada_itens", conn)
+                if not columns:
+                    continue
+                identity = ", ".join(select_compatible_column(columns, name) for name in ("id_unico", "store_id"))
 
-                query = "SELECT numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
+                query = "SELECT " + identity + ", numero_nota, origem_codigo, data_emissao, sku, descricao, quantidade, valor_unitario, valor_total, fornecedor, unidade_negocio_virtual, unidade_negocio, natureza_operacao, finalidade_operacao, loja_conta FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
                 params = []
 
                 date_conditions: list[str] = []
@@ -140,9 +243,9 @@ def listar_itens_devolucoes(client_id: str, data_inicio: str = None, data_fim: s
                     params.extend(filtro_loja_params)
 
                 query += " ORDER BY date(data_emissao) DESC"
-                rows = cur.execute(query, params).fetchall()
-                for r in rows:
-                    item = dict(r)
+                rows = [dict(row) for row in cur.execute(query, params).fetchall()]
+                _enrich_return_reasons(conn, db_path, rows, client_id)
+                for item in rows:
                     item["unidade_negocio_virtual"] = _classificar_unidade_virtual_devolucao(
                         item.get("unidade_negocio_virtual"),
                         item.get("natureza_operacao"),
@@ -200,14 +303,17 @@ def listar_notas_entrada_por_sku(sku: str, client_id: str, data_inicio: str = No
                     params.extend(filtro_loja_params)
 
                 query += " ORDER BY date(data_emissao) DESC"
-                for row in cur.execute(query, params).fetchall():
-                    item = dict(row)
+                rows = [dict(row) for row in cur.execute(query, params).fetchall()]
+                _enrich_return_reasons(conn, db_path, rows, client_id, catalog=catalog)
+                for item in rows:
                     unique_id = str(item.get("id_unico") or "").strip()
                     owner = str(item.get("store_id") or item.get("loja_conta") or "").strip().casefold()
                     key = (owner, unique_id) if unique_id else tuple(
                         str(item.get(field) or "") for field in identity_fields
                     )
-                    unique_returns.setdefault(key, item)
+                    current = unique_returns.setdefault(key, item)
+                    if current is not item:
+                        _complete_return_reason_from_mirror(current, item)
             finally:
                 conn.close()
 

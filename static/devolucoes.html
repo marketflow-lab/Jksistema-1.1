@@ -3,310 +3,53 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Devoluções por SKU</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        .header {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-        .header h1 {
-            color: #333;
-            font-size: 24px;
-        }
-        .header-actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-            font-size: 14px;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-        .btn-secondary {
-            background: #f0f0f0;
-            color: #333;
-        }
-        .btn-secondary:hover {
-            background: #e0e0e0;
-        }
-        .filters {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-        .input-group {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        input[type="date"], input[type="text"], select {
-            padding: 8px 12px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 14px;
-            font-family: inherit;
-        }
-        input[type="date"]:focus, input[type="text"]:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        .summary-cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        .card {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-        }
-        .card-label {
-            color: #666;
-            font-size: 12px;
-            text-transform: uppercase;
-            margin-bottom: 8px;
-            font-weight: 600;
-        }
-        .card-value {
-            font-size: 28px;
-            font-weight: bold;
-            color: #667eea;
-        }
-        .card-subtext {
-            color: #999;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        .status-bar {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 12px 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-            font-size: 14px;
-            color: #666;
-        }
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #666;
-        }
-        .spinner {
-            border: 3px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top: 3px solid white;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .table-container {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-        thead {
-            background: #f8f9fa;
-            border-bottom: 2px solid #e9ecef;
-        }
-        th {
-            padding: 15px;
-            text-align: left;
-            font-weight: 600;
-            color: #495057;
-            text-transform: uppercase;
-            font-size: 12px;
-        }
-        td {
-            padding: 15px;
-            border-bottom: 1px solid #e9ecef;
-            color: #333;
-        }
-        tbody tr {
-            transition: background 0.3s;
-            cursor: pointer;
-        }
-        tbody tr:hover {
-            background: #f8f9fa;
-        }
-        tbody tr.group-row {
-            background: #f0f0f0;
-            font-weight: 600;
-            cursor: pointer;
-        }
-        tbody tr.group-row:hover {
-            background: #e0e0e0;
-        }
-        .sku-badge {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-weight: 600;
-            font-size: 12px;
-            display: inline-block;
-        }
-        .expandable-content {
-            display: none;
-        }
-        .expandable-content.visible {
-            display: table-row;
-        }
-        .expand-icon {
-            display: inline-block;
-            transition: transform 0.3s;
-        }
-        .expand-icon.expanded {
-            transform: rotate(90deg);
-        }
-        .details-row {
-            background: #f8f9fa;
-        }
-        .empty {
-            text-align: center;
-            padding: 40px 20px;
-            color: #999;
-        }
-        @media (max-width: 768px) {
-            .header {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            .filters {
-                width: 100%;
-            }
-            th, td {
-                padding: 10px;
-                font-size: 12px;
-            }
-            .card-value {
-                font-size: 20px;
-            }
-        }
-    </style>
+    <title>Devoluções · Motivos e SKUs</title>
+    <link rel="stylesheet" href="/devolucoes/relatorio.css?v=20261028-1">
+    <script src="/devolucoes/relatorio.js?v=20261028-1"></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 Devoluções por SKU</h1>
+    <main class="container">
+        <header class="header">
+            <div><p class="eyebrow">Vendas / Pós-venda</p><h1>Devoluções</h1>
+                <p class="subtitle">Entenda os motivos de devolução e acompanhe cada SKU.</p></div>
             <div class="header-actions">
-                <button class="btn btn-secondary" onclick="navegarComTransicao('/dashboard.html')">🏠 Home</button>
+                <button class="btn btn-secondary" onclick="navegarComTransicao('/dashboard.html')">Home</button>
                 <button class="btn btn-secondary" onclick="voltarVendas()">← Voltar</button>
             </div>
-        </div>
-
+        </header>
         <div class="filters">
-            <div class="input-group">
-                <label for="lojaSelect">Loja:</label>
-                <select id="lojaSelect" aria-label="Selecionar loja">
-                    <option value="__todas">Todas as lojas</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label for="unidadeNegocioSelect">Loja virtual:</label>
-                <select id="unidadeNegocioSelect" aria-label="Selecionar loja virtual">
-                    <option value="__todos">Todas as lojas virtuais</option>
-                </select>
-            </div>
-            <div class="input-group">
-                <label for="dataInicio">De:</label>
-                <input type="date" id="dataInicio">
-            </div>
-            <div class="input-group">
-                <label for="dataFim">Até:</label>
-                <input type="date" id="dataFim">
-            </div>
-            <button class="btn btn-primary" onclick="carregarDevolucoes()">🔍 Filtrar</button>
+            <div class="input-group"><label for="lojaSelect">Loja</label>
+                <select id="lojaSelect" aria-label="Selecionar loja"><option value="__todas">Todas as lojas</option></select></div>
+            <div class="input-group"><label for="unidadeNegocioSelect">Loja virtual</label>
+                <select id="unidadeNegocioSelect" aria-label="Selecionar loja virtual"><option value="__todos">Todas as lojas virtuais</option></select></div>
+            <div class="input-group"><label for="dataInicio">De</label><input type="date" id="dataInicio"></div>
+            <div class="input-group"><label for="dataFim">Até</label><input type="date" id="dataFim"></div>
+            <button class="btn btn-primary" onclick="carregarDevolucoes()">Filtrar</button>
         </div>
-
-        <div class="status-bar" id="statusBar" style="display: none;"></div>
-
+        <div class="status-bar" id="statusBar" role="status" style="display:none"></div>
         <div class="summary-cards">
-            <div class="card">
-                <div class="card-label">Total de SKUs com Devoluções</div>
-                <div class="card-value" id="totalSkus">0</div>
-            </div>
-            <div class="card">
-                <div class="card-label">Total de Devoluções</div>
-                <div class="card-value" id="totalDevolucoes">0</div>
-            </div>
-            <div class="card">
-                <div class="card-label">Valor Total Devolvido</div>
-                <div class="card-value" id="valorTotal">R$ 0,00</div>
-            </div>
+            <div class="card"><div class="card-label">SKUs com devoluções</div><div class="card-value" id="totalSkus">0</div></div>
+            <div class="card"><div class="card-label">Total de devoluções</div><div class="card-value" id="totalDevolucoes">0</div><div class="card-subtext">Registros de itens devolvidos</div></div>
+            <div class="card"><div class="card-label">Itens devolvidos</div><div class="card-value" id="totalItens">0</div><div class="card-subtext">Quantidade de unidades</div></div>
+            <div class="card"><div class="card-label">Valor devolvido</div><div class="card-value" id="valorTotal">R$ 0,00</div></div>
         </div>
-
-        <div class="table-container">
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 30px;"></th>
-                        <th>SKU</th>
-                        <th>Descrição</th>
-                        <th>Devoluções</th>
-                        <th>Valor Total</th>
-                        <th>Fornecedores</th>
-                    </tr>
-                </thead>
-                <tbody id="tabelaCorpo">
-                    <tr class="empty">
-                        <td colspan="6">Carregando...</td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
+        <section class="report-panel" aria-labelledby="tituloMotivos">
+            <div class="panel-heading"><div><h2 id="tituloMotivos">Motivos de devolução · Geral</h2>
+                <p id="coberturaMotivos" class="coverage">Selecione um período para consultar.</p></div></div>
+            <div id="relatorioMotivos"><p class="empty-report">Os motivos aparecerão após a consulta.</p></div>
+            <p class="report-note">Participação calculada sobre os registros de devolução do período e das lojas selecionadas. Motivos ainda não identificados também entram no total.</p>
+        </section>
+        <section class="table-container" aria-labelledby="tituloSkus">
+            <div class="panel-heading"><div><h2 id="tituloSkus">Devoluções por SKU</h2><p id="contagemSkus">Expanda uma linha para ver os motivos.</p></div>
+                <div class="search-group"><label class="search-label" for="buscaSku">Buscar na lista de SKUs</label><input type="search" id="buscaSku" placeholder="SKU ou descrição" autocomplete="off"></div></div>
+            <div class="table-scroll"><table class="sku-table">
+                <colgroup><col><col><col><col><col><col></colgroup>
+                <thead><tr><th aria-label="Expandir"></th><th>SKU</th><th>Descrição</th><th class="numeric">Devoluções</th><th class="numeric">Valor devolvido</th><th>Motivo mais frequente</th></tr></thead>
+                <tbody id="tabelaCorpo"><tr class="empty"><td colspan="6">Selecione um período para consultar.</td></tr></tbody>
+            </table></div>
+        </section>
+    </main>
     <script>
         if (typeof verificarSessao === 'function' && !verificarSessao()) {
             // verificarSessao já faz o redirecionamento quando necessário.
@@ -320,7 +63,8 @@
         let consultaUnidadesToken = 0;
         let devolucoesPorSku = [];
         let devolucoesItensPeriodo = [];
-        let skuSelecionados = new Set();
+        const relatorio = window.JKDevolucoesRelatorio;
+        const escapeHtml = relatorio.escapeHtml;
 
         function normSku(v) {
             return String(v || '').trim().toUpperCase();
@@ -328,36 +72,21 @@
 
         function agruparDevolucoesPorSku(itens) {
             const mapa = new Map();
-            (Array.isArray(itens) ? itens : []).forEach((item) => {
-                const skuRaw = String(item && item.sku ? item.sku : '').trim();
-                if (!skuRaw) return;
-                const chave = normSku(skuRaw);
-                if (!mapa.has(chave)) {
-                    mapa.set(chave, {
-                        sku: skuRaw,
-                        descricao: String(item && item.descricao ? item.descricao : '').trim(),
-                        total_devolucoes: 0,
-                        valor_total: 0,
-                        _fornecedores: new Set()
-                    });
-                }
-                const g = mapa.get(chave);
-                g.total_devolucoes += 1;
-                g.valor_total += Number(item && item.valor_total ? item.valor_total : 0) || 0;
-                if (!g.descricao && item && item.descricao) g.descricao = String(item.descricao).trim();
-                const forn = String(item && item.fornecedor ? item.fornecedor : '').trim();
-                if (forn) g._fornecedores.add(forn);
+            (Array.isArray(itens) ? itens : []).forEach(item => {
+                const sku = String(item && item.sku != null ? item.sku : '').trim();
+                if (!sku) return;
+                const chave = normSku(sku);
+                if (!mapa.has(chave)) mapa.set(chave, {sku, descricao: '', itens: []});
+                const grupo = mapa.get(chave);
+                grupo.itens.push(item);
+                if (!grupo.descricao && item.descricao) grupo.descricao = String(item.descricao).trim();
             });
-
-            return Array.from(mapa.values())
-                .map((g) => ({
-                    sku: g.sku,
-                    descricao: g.descricao || 'Sem descrição',
-                    total_devolucoes: g.total_devolucoes,
-                    valor_total: g.valor_total,
-                    fornecedores: Array.from(g._fornecedores).join(', ')
-                }))
-                .sort((a, b) => (Number(b.total_devolucoes || 0) - Number(a.total_devolucoes || 0)));
+            return [...mapa.values()].map(grupo => {
+                const total = relatorio.resumir(grupo.itens);
+                return {...grupo, descricao: grupo.descricao || 'Sem descrição',
+                    total_devolucoes: total.devolucoes, valor_total: total.valor,
+                    motivos: relatorio.motivos(grupo.itens)};
+            }).sort((a, b) => b.total_devolucoes - a.total_devolucoes || b.valor_total - a.valor_total);
         }
 
         function formatarData(dataString) {
@@ -539,8 +268,9 @@
                 const itens = await consultarJsonDevolucoes(`/api/notas-entrada/itens?${parametrosDevolucoes(filtros)}`, controller.signal);
                 if (token !== consultaDevolucoesToken || assinatura !== assinaturaFiltrosDevolucoes()) return;
                 if (!Array.isArray(itens)) throw new Error('Resposta de devoluções inválida.');
-                devolucoesItensPeriodo = itens;
-                devolucoesPorSku = agruparDevolucoesPorSku(itens);
+                // Keep the existing SKU eligibility rule identical in every report.
+                devolucoesItensPeriodo = itens.filter(item => normSku(item && item.sku));
+                devolucoesPorSku = agruparDevolucoesPorSku(devolucoesItensPeriodo);
                 renderizarTabela();
                 statusBar.style.display = 'none';
             } catch (erro) {
@@ -575,91 +305,80 @@
 
         function renderizarTabela() {
             const corpo = document.getElementById('tabelaCorpo');
-            skuSelecionados.clear();
-
-            if (!devolucoesPorSku || devolucoesPorSku.length === 0) {
-                corpo.innerHTML = '<tr class="empty"><td colspan="6">Nenhuma devolução encontrada no período.</td></tr>';
-                document.getElementById('totalSkus').textContent = '0';
-                document.getElementById('totalDevolucoes').textContent = '0';
-                document.getElementById('valorTotal').textContent = 'R$ 0,00';
+            const total = relatorio.resumir(devolucoesItensPeriodo);
+            document.getElementById('totalSkus').textContent = devolucoesPorSku.length;
+            document.getElementById('totalDevolucoes').textContent = total.devolucoes;
+            document.getElementById('totalItens').textContent = relatorio.formatarQuantidade(total.quantidade);
+            document.getElementById('valorTotal').textContent = formatarMoeda(total.valor);
+            document.getElementById('coberturaMotivos').textContent = relatorio.cobertura(devolucoesItensPeriodo);
+            document.getElementById('relatorioMotivos').innerHTML = relatorio.tabelaMotivos(devolucoesItensPeriodo);
+            const busca = document.getElementById('buscaSku').value.trim().toLocaleLowerCase('pt-BR');
+            const grupos = devolucoesPorSku.map((grupo, index) => ({grupo, index})).filter(({grupo}) =>
+                !busca || (grupo.sku + ' ' + grupo.descricao).toLocaleLowerCase('pt-BR').includes(busca));
+            document.getElementById('contagemSkus').textContent =
+                grupos.length + ' de ' + devolucoesPorSku.length + ' SKUs · Expanda uma linha para ver os motivos.';
+            if (!grupos.length) {
+                corpo.innerHTML = '<tr class="empty"><td colspan="6">'
+                    + (devolucoesPorSku.length ? 'Nenhum SKU corresponde à busca.' : 'Nenhuma devolução encontrada no período.') + '</td></tr>';
                 return;
             }
-
-            let totalDevolucoes = 0;
-            let valorTotalDevolvido = 0;
-            let html = '';
-
-            devolucoesPorSku.forEach((grupo, index) => {
-                totalDevolucoes += grupo.total_devolucoes || 0;
-                valorTotalDevolvido += grupo.valor_total || 0;
-
-                const sku = grupo.sku || 'N/A';
-                const descricao = grupo.descricao || 'Sem descrição';
-                const qtd = grupo.total_devolucoes || 0;
-                const valor = grupo.valor_total || 0;
-                const fornecedores = grupo.fornecedores || '';
-
-                html += `
-                    <tr class="group-row" onclick="toggleDetalhes('${index}')">
-                        <td><span class="expand-icon" id="expand-${index}">▶</span></td>
-                        <td><span class="sku-badge">${sku}</span></td>
-                        <td>${descricao}</td>
-                        <td>${qtd}</td>
-                        <td>${formatarMoeda(valor)}</td>
-                        <td>${fornecedores}</td>
-                    </tr>
-                    <tr class="expandable-content details-row" id="details-${index}" style="display: none;">
-                        <td colspan="6">
-                            <div style="padding: 20px; background: #fff;">
-                                <div id="itens-${index}" style="min-height: 50px;">Carregando itens...</div>
-                            </div>
-                        </td>
-                    </tr>
-                `;
-            });
-
-            corpo.innerHTML = html;
-
-            document.getElementById('totalSkus').textContent = devolucoesPorSku.length;
-            document.getElementById('totalDevolucoes').textContent = totalDevolucoes;
-            document.getElementById('valorTotal').textContent = formatarMoeda(valorTotalDevolvido);
+            corpo.innerHTML = grupos.map(({grupo, index}) => {
+                const principal = grupo.motivos[0];
+                const descricaoMotivo = principal ? principal.titulo : 'Motivo ainda não identificado';
+                const detalheMotivo = principal ? relatorio.formatarQuantidade(principal.devolucoes)
+                    + ' de ' + relatorio.formatarQuantidade(grupo.total_devolucoes) + ' devoluções' : '';
+                return `<tr class="group-row" onclick="toggleDetalhes(${index})">
+                    <td><button type="button" class="expand-icon" id="expand-${index}" aria-expanded="false"
+                        aria-controls="details-${index}" aria-label="Ver motivos do SKU ${escapeHtml(grupo.sku)}"
+                        onclick="event.stopPropagation(); toggleDetalhes(${index})"><span aria-hidden="true">▶</span></button></td>
+                    <td><span class="sku-badge" title="${escapeHtml(grupo.sku)}">${escapeHtml(grupo.sku)}</span></td>
+                    <td><span class="truncate-two" title="${escapeHtml(grupo.descricao)}">${escapeHtml(grupo.descricao)}</span></td>
+                    <td class="numeric">${relatorio.formatarQuantidade(grupo.total_devolucoes)}</td>
+                    <td class="numeric">${formatarMoeda(grupo.valor_total)}</td>
+                    <td><span class="truncate-one" title="${escapeHtml(descricaoMotivo)}">${escapeHtml(descricaoMotivo)}</span>
+                        <small class="muted">${escapeHtml(detalheMotivo)}</small></td>
+                </tr>
+                <tr class="expandable-content details-row" id="details-${index}" hidden>
+                    <td colspan="6"><div class="detail-content" id="itens-${index}"></div></td>
+                </tr>`;
+            }).join('');
         }
 
-        async function toggleDetalhes(index) {
+        function toggleDetalhes(index) {
             const detalhe = document.getElementById(`details-${index}`);
             const expand = document.getElementById(`expand-${index}`);
             const grupo = devolucoesPorSku[index];
-
-            if (detalhe.classList.contains('visible')) {
-                detalhe.classList.remove('visible');
-                expand.classList.remove('expanded');
-            } else {
-                detalhe.classList.add('visible');
-                expand.classList.add('expanded');
-
-                const itensDiv = document.getElementById(`itens-${index}`);
-                if (!itensDiv.classList.contains('loaded')) {
-                    const itens = await carregarItensDoSku(grupo.sku);
-                    let tabelaItens = '<table style="width: 100%; font-size: 12px;"><thead><tr style="background: #f0f0f0;"><th style="padding: 8px; text-align: left;">NF</th><th>Data</th><th>Quantidade</th><th>Valor Unit.</th><th>Valor Total</th><th>Fornecedor</th></tr></thead><tbody>';
-                    
-                    itens.forEach(item => {
-                        tabelaItens += `
-                            <tr style="border-bottom: 1px solid #eee;">
-                                <td style="padding: 8px;">${item.numero_nota || '-'}</td>
-                                <td>${formatarData(item.data_emissao) || '-'}</td>
-                                <td>${item.quantidade || 0}</td>
-                                <td>${formatarMoeda(item.valor_unitario || 0)}</td>
-                                <td>${formatarMoeda(item.valor_total || 0)}</td>
-                                <td>${item.fornecedor || '-'}</td>
-                            </tr>
-                        `;
-                    });
-                    
-                    tabelaItens += '</tbody></table>';
-                    itensDiv.innerHTML = tabelaItens;
-                    itensDiv.classList.add('loaded');
-                }
-            }
+            if (!detalhe || !expand || !grupo) return;
+            const abrir = detalhe.hidden;
+            detalhe.hidden = !abrir;
+            detalhe.classList.toggle('visible', abrir);
+            expand.classList.toggle('expanded', abrir);
+            expand.setAttribute('aria-expanded', String(abrir));
+            if (!abrir) return;
+            const itensDiv = document.getElementById(`itens-${index}`);
+            if (itensDiv.classList.contains('loaded')) return;
+            const itens = [...grupo.itens].sort((a, b) => String(b.data_emissao || '').localeCompare(String(a.data_emissao || '')));
+            const params = parametrosDevolucoes();
+            params.set('sku', grupo.sku);
+            itensDiv.innerHTML = `<div class="detail-heading">
+                <h3>Motivos do SKU ${escapeHtml(grupo.sku)}</h3>
+                <a href="/devolucoes_sku.html?${escapeHtml(params.toString())}">Abrir detalhes do SKU ↗</a>
+            </div>
+            <div class="sku-reasons">${relatorio.tabelaMotivos(itens)}</div>
+            <details class="registros-devolucao"><summary>Ver devoluções e compradores (${itens.length})</summary>
+                <div class="records-scroll"><table class="records-table"><thead><tr>
+                    <th>NF</th><th>Data</th><th class="numeric">Quantidade</th>
+                    <th class="numeric">Valor total</th><th>Comprador</th><th>Motivo</th>
+                </tr></thead><tbody>${itens.map(item => `<tr>
+                    <td>${escapeHtml(item.numero_nota || '-')}</td>
+                    <td>${escapeHtml(formatarData(item.data_emissao) || '-')}</td>
+                    <td class="numeric">${relatorio.formatarQuantidade(item.quantidade)}</td>
+                    <td class="numeric">${formatarMoeda(item.valor_total)}</td>
+                    <td><span class="record-buyer">${escapeHtml(item.fornecedor || '-')}</span></td>
+                    <td>${relatorio.motivoRegistro(item)}</td>
+                </tr>`).join('')}</tbody></table></div>
+            </details>`;
+            itensDiv.classList.add('loaded');
         }
 
         function voltarVendas() {
@@ -688,6 +407,7 @@
             const filtros = obterFiltrosDevolucoes();
             if (filtros.data_inicio && filtros.data_fim) void carregarDevolucoes();
         });
+        document.getElementById('buscaSku').addEventListener('input', renderizarTabela);
         void inicializarDevolucoes();
 
         window.jkGetContextoIA = async function() {

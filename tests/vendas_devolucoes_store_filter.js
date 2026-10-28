@@ -23,6 +23,10 @@ const query = values => new URLSearchParams(values).toString();
 const inline = source => '<script>'+source.replace(/<\/script/gi,'<\\/script')+'</script>';
 const stripExternal = html => html.replace(/<script\b[^>]*\bsrc=[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<link\b[^>]*>/gi,'');
 const allScriptsRemoved = html => stripExternal(html).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'');
+// Serve the report's actual assets while keeping auth/sidebar isolated offline.
+const reportHtml = name => read(name)
+    .replace(/<script\b[^>]*\bsrc=[^>]*>[\s\S]*?<\/script>/gi, tag => /src=["']\/devolucoes\//i.test(tag) ? tag : '')
+    .replace(/<link\b[^>]*>/gi, tag => /href=["']\/devolucoes\//i.test(tag) ? tag : '');
 const unitsFor = store => store === storeA ? {'Canal A':'Canal A','Canal extra':'Canal extra'} : store === storeB ? {'Canal B':'Canal B'} : {'Canal A':'Canal A','Canal extra':'Canal extra','Canal B':'Canal B'};
 const selectedItems = (url, records = items) => records.filter(item => {
     const store = url.searchParams.get('loja'), unit = url.searchParams.get('unidade_negocio');
@@ -89,14 +93,17 @@ async function fixture(browser, options={}) {
         if (url.origin!==origin) return route.abort();
         const pathname=url.pathname;
         if (pathname==='/vendas.html') return route.fulfill({contentType:'text/html',body:salesHtml()});
-        if (['/devolucoes.html','/devolucoes_sku.html'].includes(pathname)) return route.fulfill({contentType:'text/html',body:stripExternal(read('static'+pathname))});
+        if (['/devolucoes.html','/devolucoes_sku.html'].includes(pathname)) return route.fulfill({contentType:'text/html',body:reportHtml('static'+pathname)});
+        if (['/devolucoes/relatorio.js','/devolucoes/relatorio.css'].includes(pathname)) {
+            return route.fulfill({contentType:pathname.endsWith('.js')?'application/javascript':'text/css',body:read('static'+pathname)});
+        }
         if (!pathname.startsWith('/api/')) return route.abort();
         requests.push({url:url.href,headers:route.request().headers()});
         let body,status=200;
         if (pathname==='/api/lojas') {status=state.failStores?503:200;body=state.failStores?{detail:'Fixture unavailable'}:(options.stores||stores);}
         else if (pathname==='/api/unidades-negocios') {const nomes=Object.values(unitsFor(url.searchParams.get('loja')));body={mapeamento:{'123':'Canal A','456':'Canal extra','999':'Canal B'},unidades:nomes.map(nome=>({nome}))};}
         else if (pathname==='/api/notas-entrada/itens') {status=state.itemStatus;body=status!==200?{detail:'Fixture item failure'}:state.emptyItems?[]:selectedItems(url,options.items||items);}
-        else if (pathname.startsWith('/api/notas-entrada/sku/')) body=selectedItems(url).filter(item=>item.sku===decodeURIComponent(pathname.split('/').pop()));
+        else if (pathname.startsWith('/api/notas-entrada/sku/')) body=selectedItems(url,options.items||items).filter(item=>String(item.sku).trim().toUpperCase()===decodeURIComponent(pathname.split('/').pop()).trim().toUpperCase());
         else if (pathname==='/api/vendas/resumo') body=options.emptySalesSummary?{rows:[],totals:{pedidos:0,itens:0,valor:0,devolucoes:0,itensDevolucao:0,valorDevolucao:0,itensLiquidos:0,valorLiquido:0},meta:{unidades:[],dias_com_dados:[]}}:summary(url);
         else throw new Error('Unexpected API in offline fixture: '+pathname);
         const fulfill=async()=>{try{await route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});}catch(error){if(!/closed|handled|intercepted|aborted/i.test(String(error)))throw error;}};
@@ -354,4 +361,5 @@ async function main() {
         console.log('vendas_devolucoes_store_filter: OK (12 browser scenarios; click-time filters, URL/storage, tenant, race, error/timeout, literal data, IA and roundtrip)');
     } finally {await browser.close();}
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+module.exports = { fixture, origin, range, query, storeA, storeB, items, stores, listReady, itemCalls, assertScope, read, until };
+if (require.main === module) main().catch(error=>{console.error(error);process.exitCode=1;});
