@@ -12,6 +12,7 @@ from backend.services.bling_oauth import requires_bling_reauthorization
 from backend.services.bling_return_references import document_number, explicit_reason, extract_reference, numeric_id
 
 from .legacy import _bling_executar_com_refresh, buscar_loja
+from .return_reasons_xml import XmlReferenceError, access_key, referenced_invoice_keys
 
 
 _BASE = "https://api.bling.com.br/Api/v3"
@@ -72,11 +73,14 @@ class _Lookup:
         self.config = config
         if status == 401:
             raise _Stop("bling_reconnect_required", status="reconnect_required", after=900)
+        self.validate_identity()
+        return data
+
+    def validate_identity(self):
         store = buscar_loja(self.client_id, self.loja, store_id=self.store_id)
         if (not store or str(store.get("store_id") or "") != self.store_id
-                or dict((store.get("integracoes") or {}).get("bling") or {}) != config):
+                or dict((store.get("integracoes") or {}).get("bling") or {}) != self.config):
             raise _Stop("bling_identity_changed", retry=True, after=60)
-        return data
 
     def document(self, resource, identifier):
         result = self.get(f"/{resource}/{identifier}")
@@ -106,6 +110,49 @@ class _Lookup:
             raise _Stop("bling_document_mismatch")
         return detail
 
+    def by_access_key(self, key):
+        rows = self.get("/nfe", params={"chaveAcesso": key, "tipo": 1, "limite": 2, "pagina": 1})
+        if not isinstance(rows, list):
+            raise _Stop("bling_incomplete_response", retry=True, after=60)
+        if len(rows) > 1:
+            raise _Stop("bling_ambiguous_document", status="ambiguous")
+        if not rows:
+            return None
+        row = rows[0]
+        # List results may omit the key/type. Their identity is always verified
+        # again in the mandatory detail response from this same Bling account.
+        if (not isinstance(row, dict) or not numeric_id(row.get("id"))
+                or ("chaveAcesso" in row and access_key(row["chaveAcesso"]) != key)
+                or ("tipo" in row and str(row["tipo"]) != "1")):
+            raise _Stop("bling_document_mismatch")
+        detail = self.document("nfe", numeric_id(row["id"]))
+        if access_key(detail.get("chaveAcesso")) != key or str(detail.get("tipo")) != "1":
+            raise _Stop("bling_document_mismatch")
+        return detail
+
+    def original_from_xml(self, document, sku):
+        keys = referenced_invoice_keys(document, sku, deadline=self.deadline)
+        self.validate_identity()
+        matches, missing = [], False
+        for key in keys:
+            detail = self.by_access_key(key)
+            if detail is None:
+                missing = True
+                continue
+            items = detail.get("itens")
+            if (not isinstance(items, list) or not items
+                    or any(not isinstance(item, dict)
+                           or not str(item.get("codigo") or item.get("sku") or "").strip() for item in items)):
+                raise _Stop("bling_incomplete_response", retry=True, after=60)
+            if any(str(item.get("codigo") or item.get("sku") or "").strip().upper() == sku.strip().upper()
+                   for item in items):
+                matches.append(detail)
+        # A missing referenced invoice could also contain this SKU; it cannot
+        # establish uniqueness among several original invoices.
+        if len(matches) > 1 or (len(keys) > 1 and missing):
+            raise _Stop("bling_ambiguous_document", status="ambiguous")
+        return matches[0] if matches else None
+
 
 def resolve_reference(client_id: str, store_id: str, loja: str, job: dict) -> dict:
     """Return a documented shop order ID or an explicitly labelled Bling reason."""
@@ -130,9 +177,11 @@ def resolve_reference(client_id: str, store_id: str, loja: str, job: dict) -> di
         reference = extract_reference(document)
         if reference.get("reference_conflict"):
             return _result("ambiguous", "bling_conflicting_reference")
-        if numeric_id(job.get("order_id")) and reference.get("order_id") != numeric_id(job["order_id"]):
+        if (numeric_id(job.get("order_id")) and reference.get("order_id")
+                and reference["order_id"] != numeric_id(job["order_id"])):
             return _result("ambiguous", "bling_order_reference_changed")
-        reason = explicit_reason(document, str(job.get("sku") or ""))
+        sku = str(job.get("sku") or "")
+        reason = explicit_reason(document, sku)
         if not reference.get("order_id"):
             linked = None
             if reference.get("bling_order_id"):
@@ -146,12 +195,22 @@ def resolve_reference(client_id: str, store_id: str, loja: str, job: dict) -> di
                 if linked_reference.get("reference_conflict"):
                     return _result("ambiguous", "bling_conflicting_reference")
                 reference.update(linked_reference)
-                reason = reason or explicit_reason(linked, str(job.get("sku") or ""))
+                reason = reason or explicit_reason(linked, sku)
+        if not reference.get("order_id"):
+            linked = lookup.original_from_xml(document, sku)
+            if linked:
+                linked_reference = extract_reference(linked)
+                if linked_reference.get("reference_conflict"):
+                    return _result("ambiguous", "bling_conflicting_reference")
+                reference.update(linked_reference)
+                reason = reason or explicit_reason(linked, sku)
+        if numeric_id(job.get("order_id")) and reference.get("order_id") != numeric_id(job["order_id"]):
+            return _result("ambiguous", "bling_order_reference_changed")
         result["order_id"] = reference.get("order_id", "")
         if reason:
             result.update(result_status="identified", reason_id="explicit_text", reason_description=reason)
         return result
-    except _Stop as exc:
+    except (_Stop, XmlReferenceError) as exc:
         result.update(result_status=exc.status, error_code=exc.code,
                       retryable=exc.retry, retry_after_seconds=exc.after)
     except requests.exceptions.Timeout:

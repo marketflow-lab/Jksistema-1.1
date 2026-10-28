@@ -852,6 +852,10 @@ def _persistir_periodo_atomico(
             validate_collection_context()
             conn.commit()
             committed = True
+            if store_id:
+                from .return_reason_worker import remember_authorization, wake as wake_return_reasons
+                remember_authorization(client_id, store_id)
+                wake_return_reasons(client_id)
             return {
                 "vendas": len(vendas_para_salvar) + len(identified_sales),
                 "notas": len(payload_notas),

@@ -4,8 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Devoluções · Motivos e SKUs</title>
-    <link rel="stylesheet" href="/devolucoes/relatorio.css?v=20261028-1">
+    <link rel="stylesheet" href="/devolucoes/relatorio.css?v=20261028-2">
     <script src="/devolucoes/relatorio.js?v=20261028-1"></script>
+    <script defer src="/devolucoes/busca-motivos.js?v=20261028-2"></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
@@ -36,7 +37,12 @@
         </div>
         <section class="report-panel" aria-labelledby="tituloMotivos">
             <div class="panel-heading"><div><h2 id="tituloMotivos">Motivos de devolução · Geral</h2>
-                <p id="coberturaMotivos" class="coverage">Selecione um período para consultar.</p></div></div>
+                <p id="coberturaMotivos" class="coverage">Selecione um período para consultar.</p></div>
+                <button type="button" class="btn btn-primary" id="buscarMotivos">Buscar motivos de todas as devoluções</button></div>
+            <div class="reason-collection">
+                <p id="buscaMotivosStatus" role="status" aria-live="polite">Busca em todo o histórico com loja identificada e autorizada. Novas devoluções são consultadas automaticamente.</p>
+                <progress id="buscaMotivosProgresso" aria-label="Andamento da busca de motivos" max="1" value="0" hidden></progress>
+            </div>
             <div id="relatorioMotivos"><p class="empty-report">Os motivos aparecerão após a consulta.</p></div>
             <p class="report-note">Participação calculada sobre os registros de devolução do período e das lojas selecionadas. Motivos ainda não identificados também entram no total.</p>
         </section>
@@ -290,6 +296,40 @@
                 }
             }
         }
+
+        window.atualizarMotivosDoRelatorio = async function() {
+            if (consultaDevolucoesController) return false;
+            const filtros = obterFiltrosDevolucoes();
+            if (!filtros.data_inicio || !filtros.data_fim || filtros.data_inicio > filtros.data_fim) return true;
+            const token = ++consultaDevolucoesToken;
+            const assinatura = assinaturaFiltrosDevolucoes();
+            const controller = new AbortController();
+            consultaDevolucoesController = controller;
+            try {
+                const itens = await consultarJsonDevolucoes(`/api/notas-entrada/itens?${parametrosDevolucoes(filtros)}`, controller.signal);
+                if (token !== consultaDevolucoesToken || assinatura !== assinaturaFiltrosDevolucoes()) return false;
+                if (!Array.isArray(itens)) return false;
+                const abertos = new Map();
+                devolucoesPorSku.forEach((grupo, index) => {
+                    const detalhe = document.getElementById(`details-${index}`);
+                    if (detalhe && !detalhe.hidden) abertos.set(normSku(grupo.sku), Boolean(detalhe.querySelector('details[open]')));
+                });
+                devolucoesItensPeriodo = itens.filter(item => normSku(item && item.sku));
+                devolucoesPorSku = agruparDevolucoesPorSku(devolucoesItensPeriodo);
+                renderizarTabela();
+                devolucoesPorSku.forEach((grupo, index) => {
+                    if (!abertos.has(normSku(grupo.sku))) return;
+                    toggleDetalhes(index);
+                    const registros = document.querySelector(`#details-${index} details`);
+                    if (registros) registros.open = abertos.get(normSku(grupo.sku));
+                });
+                return true;
+            } catch (_) {
+                return false;
+            } finally {
+                if (token === consultaDevolucoesToken) consultaDevolucoesController = null;
+            }
+        };
 
         async function carregarItensDoSku(sku) {
             try {

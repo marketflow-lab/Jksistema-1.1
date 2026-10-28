@@ -44,6 +44,8 @@ EXPECTED_ROUTES = {
     ("POST", "/api/vendas/sync", "sincronizar_vendas"),
     ("GET", "/api/notas-entrada", "listar_notas_entrada"),
     ("GET", "/api/notas-entrada/itens", "listar_itens_devolucoes"),
+    ("POST", "/api/notas-entrada/motivos/buscar", "buscar_motivos_devolucoes"),
+    ("GET", "/api/notas-entrada/motivos/status", "status_motivos_devolucoes"),
     ("GET", "/api/notas-entrada/sku/{sku}", "listar_notas_entrada_por_sku"),
     ("GET", "/api/unidades-negocios", "listar_unidades_negocios"),
     ("POST", "/api/unidades-negocios/atualizar", "atualizar_unidade_negocio"),
@@ -104,12 +106,11 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Renovacao acrescentou conferir-promocao (2a5528cb) e corrigir-divergencias
-        # (a1a19e1d): duas rotas/pares sobre 525/523. Vendas mantem seu hash e 20 rotas.
-        "routes": 527,
-        "pairs": 525,
+        # Busca explicita de motivos acrescenta iniciar/status ao contrato de Vendas.
+        "routes": 529,
+        "pairs": 527,
         "duplicates": [],
-        "openapi": "4592ad7b7431ffb069c65eca1874b0f26010549fab41b2836d740e8cc037d0f1",
+        "openapi": "3cc445a8ab5d54097beb60b0fe690cc9b1a5644065ec11e9caccc9958bd5b636",
     }
 
 
@@ -127,7 +128,7 @@ def test_domain_has_no_dynamic_runtime_bridge_or_wildcard_imports() -> None:
             assert "from fastapi" not in source and "import fastapi" not in source, path.name
 
 
-def test_module_factory_preserves_the_twenty_route_contracts(tmp_path: Path) -> None:
+def test_module_factory_preserves_the_twenty_two_route_contracts(tmp_path: Path) -> None:
     module = _create_module(tmp_path)
     actual = set()
     for route in module.router.routes:

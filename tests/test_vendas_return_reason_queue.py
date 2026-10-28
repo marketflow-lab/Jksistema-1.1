@@ -327,3 +327,21 @@ def test_dispatcher_limit_bounds_work_and_other_tenant_database_is_independent(d
     assert queue.process_due(other, "store-a", lambda _: identified())["finished"] == 1
     with sqlite3.connect(database) as conn:
         assert conn.execute("SELECT count(*) FROM devolucao_motivos WHERE status='pending'").fetchone()[0] == 1
+
+
+def test_rule_revision_migration_keeps_old_success_and_only_claims_selected_history_item(database):
+    with sqlite3.connect(database) as conn:
+        add(conn, rows=[item("item-a"), item("item-b")])
+        job = queue.claim(conn, "store-a", now=100, item_ids=["item-b"])
+        assert job["item_id_unico"] == "item-b"
+        queue.finish(conn, job, identified(), now=101)
+        conn.execute("ALTER TABLE devolucao_motivos DROP COLUMN rule_version")
+        queue.ensure_schema(conn)
+        old = record(conn, item_id="item-b")
+        assert old["rule_version"] == 1 and old["result_status"] == "identified"
+        # Resolver version changes do not manufacture new commercial evidence.
+        assert add(conn, rows=[item("item-a"), item("item-b")], now=102) == 0
+        assert record(conn, item_id="item-b")["reason_id"] == "damaged"
+        assert queue.claim(conn, "store-a", now=103, item_ids=["item-b"]) is None
+        assert queue.claim(conn, "store-a", now=103, item_ids=[]) is None
+        assert queue.claim(conn, "store-a", now=103, item_ids=["item-a"])["rule_version"] == queue.RULE_VERSION

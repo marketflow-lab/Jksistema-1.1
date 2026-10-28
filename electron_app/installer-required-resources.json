@@ -83,6 +83,8 @@
     "backend/modules/vendas/return_reasons_ml.py",
     "backend/modules/vendas/return_reasons_bling.py",
     "backend/modules/vendas/return_reason_worker.py",
+    "backend/modules/vendas/return_reason_actions.py",
+    "backend/modules/vendas/return_reasons_xml.py",
     "backend/services/bling_return_references.py",
     "backend/routers/__init__.py",
     "backend/routers/codex_console.py",
@@ -329,6 +331,7 @@
     "static/vendas/cache-dados.js",
     "backend/modules/vendas/persistent_cache.py",
     "static/devolucoes/relatorio.js",
+    "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css"
   ],
   "requiredSourceGlobs": [
@@ -743,6 +746,8 @@
     "local_app/backend/modules/vendas/return_reasons_ml.py",
     "local_app/backend/modules/vendas/return_reasons_bling.py",
     "local_app/backend/modules/vendas/return_reason_worker.py",
+    "local_app/backend/modules/vendas/return_reason_actions.py",
+    "local_app/backend/modules/vendas/return_reasons_xml.py",
     "local_app/backend/services/bling_return_references.py",
     "local_app/backend/routers/__init__.py",
     "local_app/backend/routers/codex_console.py",
@@ -978,6 +983,7 @@
     "local_app/static/vendas/cache-dados.js",
     "local_app/backend/modules/vendas/persistent_cache.py",
     "local_app/static/devolucoes/relatorio.js",
+    "local_app/static/devolucoes/busca-motivos.js",
     "local_app/static/devolucoes/relatorio.css"
   ],
   "requiredPackagedSourceParity": [
@@ -1004,6 +1010,8 @@
     "backend/modules/vendas/return_reasons_ml.py",
     "backend/modules/vendas/return_reasons_bling.py",
     "backend/modules/vendas/return_reason_worker.py",
+    "backend/modules/vendas/return_reason_actions.py",
+    "backend/modules/vendas/return_reasons_xml.py",
     "backend/services/bling_return_references.py",
     "backend/services/bling_vendas.py",
     "static/medias_compras/editor-produtos.js",
@@ -1231,6 +1239,7 @@
     "static/vendas/cache-dados.js",
     "backend/modules/vendas/persistent_cache.py",
     "static/devolucoes/relatorio.js",
+    "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css"
   ],
   "requiredPackagedRootFileExtensions": [

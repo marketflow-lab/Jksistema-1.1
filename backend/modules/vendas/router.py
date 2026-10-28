@@ -255,6 +255,16 @@ def create_vendas_router(
     ):
         return _transport(service.listar_itens_devolucoes, client_id=client_id, data_inicio=data_inicio, data_fim=data_fim, unidade_negocio=unidade_negocio, loja=loja)
 
+    @router.post("/api/notas-entrada/motivos/buscar", name="buscar_motivos_devolucoes")
+    def buscar_motivos_devolucoes(client_id: str = Depends(tenant_dependency)):
+        from .return_reason_actions import start_search
+        return _transport(start_search, client_id)
+
+    @router.get("/api/notas-entrada/motivos/status", name="status_motivos_devolucoes")
+    def status_motivos_devolucoes(client_id: str = Depends(tenant_dependency)):
+        from .return_reason_actions import search_status
+        return _transport(search_status, client_id)
+
     @router.get("/api/notas-entrada/sku/{sku}", name="listar_notas_entrada_por_sku")
     def listar_notas_entrada_por_sku(
         sku: str,

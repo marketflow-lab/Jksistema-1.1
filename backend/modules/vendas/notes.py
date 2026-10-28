@@ -32,7 +32,7 @@ from .legacy import (
 from .compositions import load_composition_catalog
 from .performance import append_indexable_date_filter, cached_table_columns, open_vendas_readonly, select_compatible_column
 
-from .return_reason_queue import RESULT_STATUSES
+from .return_reason_queue import RESULT_STATUSES, _legacy_matches
 
 
 def _return_reason_metadata(row=None):
@@ -107,7 +107,8 @@ def _enrich_return_reasons(conn, db_path, rows, client_id, *, catalog=None):
             by_store.setdefault(store_id, []).append(item_id)
         fields = ", ".join(select_compatible_column(columns, field) for field in (
             "item_id_unico", "status", "result_status", "reason_id",
-            "reason_description", "reason_source",
+            "reason_description", "reason_source", "source_kind",
+            "source_fingerprint", "nota_id", "sku",
         ))
         evidence = {}
         for store_id, item_ids in by_store.items():
@@ -121,6 +122,16 @@ def _enrich_return_reasons(conn, db_path, rows, client_id, *, catalog=None):
                     "AND status IN ('pending','processing','retry','done')"
                 )
                 for row in conn.execute(query, [store_id, *batch]).fetchall():
+                    if row["source_kind"] == "legacy":
+                        # Legacy ownership and the commercial source can change
+                        # after collection has completed. Revalidate the saved
+                        # proof against the current local row before reporting.
+                        if catalog is None:
+                            catalog = load_composition_catalog(client_id)
+                        proof = dict(row)
+                        proof["store_id"] = store_id
+                        if not _legacy_matches(conn, proof, lambda source: catalog._row_store(source, None)):
+                            continue
                     evidence[(store_id, row["item_id_unico"])] = _return_reason_metadata(row)
         for identity, reason in evidence.items():
             for item in identities.get(identity, []):

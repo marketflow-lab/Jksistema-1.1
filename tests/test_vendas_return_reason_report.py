@@ -90,12 +90,27 @@ def report(tmp_path, monkeypatch):
                                  ",".join("?" for _ in item) + ")", list(item.values()))
         return path
 
-    def read(mode="items", tenant="tenant-a", **filters):
+    def read(mode="items", tenant="tenant-a", sku="200", **filters):
         if mode == "sku":
-            return notes.listar_notas_entrada_por_sku("200", tenant, **filters)
+            return notes.listar_notas_entrada_por_sku(sku, tenant, **filters)
         return notes.listar_itens_devolucoes(tenant, **filters)
 
-    return SimpleNamespace(create=create, read=read, state=state)
+    def enrich_legacy(path, ident):
+        owner = lambda source: state.catalog._row_store(source, None)
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            source = dict(conn.execute("SELECT * FROM notas_entrada_itens WHERE id_unico=?", (ident,)).fetchone())
+            assert return_reason_queue.prepare_legacy_saved_item(
+                conn, "store-a", "Loja A", ident, source["id_nota"], source["sku"], owner, now=1,
+            )
+            job = return_reason_queue.claim(conn, "store-a", now=2, legacy_owner=owner)
+            assert job is not None
+            assert return_reason_queue.finish(conn, job, {
+                "result_status": "identified", "reason_id": "PDD1",
+                "reason_description": "Produto danificado", "reason_source": "mercado_livre",
+            }, now=3, legacy_owner=owner)
+
+    return SimpleNamespace(create=create, read=read, enrich_legacy=enrich_legacy, state=state)
 
 
 @pytest.mark.parametrize("mode", ["items", "sku"])
@@ -183,6 +198,57 @@ def test_legacy_table_without_store_id_can_use_proven_local_owner(report, mode):
     item = report.read(mode)[0]
     assert item["store_id"] == ""
     assert item["motivo_devolucao"]["status"] == "identified"
+
+
+@pytest.mark.parametrize("mode", ["items", "sku"])
+@pytest.mark.parametrize("omit", [(), ("store_id",)])
+def test_completed_legacy_enrichment_appears_with_current_local_proof_without_writing(report, mode, omit):
+    ident = "  legado ' com acento \u00ed  "
+    path = report.create(rows=[returned(ident, store_id="", id_nota="101")], omit=omit)
+    assert report.read(mode)[0]["motivo_devolucao"] == EMPTY
+    report.enrich_legacy(path, ident)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    item = report.read(mode)[0]
+    assert item["id_unico"] == ident
+    assert item["motivo_devolucao"] == {
+        "status": "identified", "descricao": "Produto danificado", "codigo": "PDD1",
+        "fonte": "mercado_livre", "status_coleta": "done",
+    }
+    assert item["quantidade"] == 2 and item["valor_total"] == 20
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("mode", ["items", "sku"])
+@pytest.mark.parametrize("change", ["invoice", "sku", "owner", "owner_alias", "source_hash", "canonicalized", "missing_proof"])
+def test_completed_legacy_reason_is_hidden_after_source_or_owner_changes(report, mode, change):
+    path = report.create(rows=[returned("legacy", store_id="", id_nota="101")])
+    report.enrich_legacy(path, "legacy")
+    assert report.read(mode)[0]["motivo_devolucao"]["status"] == "identified"
+    updates = {
+        "invoice": ("id_nota", "102"), "sku": ("sku", "201"),
+        "owner": ("loja_conta", "Loja B"), "source_hash": ("quantidade", 3),
+        "canonicalized": ("store_id", "store-a"),
+    }
+    with sqlite3.connect(path) as conn:
+        if change in updates:
+            field, value = updates[change]
+            conn.execute(f"UPDATE notas_entrada_itens SET {field}=? WHERE id_unico='legacy'", (value,))
+        elif change == "missing_proof":
+            conn.execute("UPDATE devolucao_motivos SET source_fingerprint=NULL")
+        else:
+            report.state.catalog = CompositionCatalog.from_products([], stores=[
+                {"store_id": "store-a", "nome": "Loja A"},
+                {"store_id": "store-b", "nome": "Loja A"},
+            ])
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    items = report.read(mode, sku="201" if change == "sku" else "200")
+    assert len(items) == 1
+    assert items[0]["motivo_devolucao"] == EMPTY
+    assert items[0]["quantidade"] == (3 if change == "source_hash" else 2)
+    assert items[0]["valor_total"] == 20
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT status,result_status FROM devolucao_motivos").fetchone() == ("done", "identified")
 
 
 @pytest.mark.parametrize("mode", ["items", "sku"])

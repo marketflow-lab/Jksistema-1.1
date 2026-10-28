@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from backend.modules.vendas import return_reason_queue as queue, sync_period
+from backend.modules.vendas import return_reason_queue as queue, return_reason_worker as worker, sync_period
 from backend.modules.vendas.errors import VendasDomainError
 from backend.schemas import VendasSyncRequest
 from backend.services import vendas_collection_checkpoint as checkpoint
@@ -14,6 +14,8 @@ from backend.services.bling_return_references import reference_from_note, store_
 
 @pytest.fixture
 def source(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, "remember_authorization", lambda *_: None)
+    monkeypatch.setattr(worker, "wake", lambda *_: None)
     monkeypatch.setattr(sync_period, "_verificar_cancelamento", lambda *_: None)
     monkeypatch.setattr(sync_period, "_legado_loja_nao_ambiguo", lambda *_: True)
     req = VendasSyncRequest(loja="Loja A", store_id="store-a", data_inicio="2026-10-20", data_fim="2026-10-20")
@@ -127,3 +129,24 @@ def test_checkpoint_rejects_untyped_or_sensitive_return_reference(value):
         "id_nota": "101", "item_id": "1", "data_emissao": day, "quantidade": 1, "valor_total": 100,
     }]}
     assert not checkpoint._valid_payload(payload, "nfe_entrada", "101", day)
+
+
+def test_new_download_wakes_worker_only_after_committed_queue_and_never_after_rollback(source, monkeypatch):
+    path, req, note, item = source
+    calls = []
+    monkeypatch.setattr(worker, "remember_authorization", lambda tenant, store: calls.append((tenant, store)))
+    def wake(tenant):
+        with sqlite3.connect(path, timeout=.1) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            assert conn.execute("SELECT store_id,status FROM devolucao_motivos").fetchall() == [("store-a", "pending")]
+        calls.append((tenant, "wake"))
+    monkeypatch.setattr(worker, "wake", wake)
+    sync_period._persistir_periodo_atomico(str(path), req, [], [note], [item], "tenant-a")
+    assert calls == [("tenant-a", "store-a"), ("tenant-a", "wake")]
+    calls.clear()
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("synthetic rollback")
+    monkeypatch.setattr(queue, "enqueue", fail)
+    with pytest.raises(VendasDomainError):
+        sync_period._persistir_periodo_atomico(str(path), req, [], [note], [item], "tenant-a")
+    assert calls == []

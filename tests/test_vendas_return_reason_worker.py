@@ -10,6 +10,7 @@ import pytest
 
 from backend.modules.vendas import return_reason_queue as queue
 from backend.modules.vendas import return_reason_worker as worker
+from backend.modules.vendas import return_reason_actions as actions
 
 
 ORDER = "2000000000001"
@@ -34,6 +35,12 @@ def isolated_worker(monkeypatch):
     monkeypatch.setattr(worker, "_STOP", threading.Event())
     monkeypatch.setattr(worker, "_RUNNING", {})
     monkeypatch.setattr(worker, "_AUTH", {})
+    monkeypatch.setattr(worker, "_BULK_AUTH", {})
+    monkeypatch.setattr(worker, "_BULK_TURN", {})
+    monkeypatch.setattr(worker, "_BULK_THREAD", None)
+    monkeypatch.setattr(worker, "_BULK_WAKE", threading.Event())
+    monkeypatch.setattr(worker, "_WAKE_TENANTS", set())
+    monkeypatch.setattr(actions, "pending_operations", lambda tenant: [])
     monkeypatch.setattr(worker, "SYNC_CANCEL_FLAGS", {})
     monkeypatch.setattr(worker, "with_request_context", lambda function: function)
 
@@ -182,6 +189,9 @@ def fake_threads(monkeypatch):
 
     monkeypatch.setattr(worker.threading, "Thread", Thread)
     monkeypatch.setattr(worker, "_due_stores", lambda tenant: [(tenant + ".db", "store-a"), (tenant + ".db", "store-b")])
+    for tenant in ("tenant-a", "tenant-b", "tenant-c"):
+        worker.remember_authorization(tenant, "store-a")
+        worker.remember_authorization(tenant, "store-b")
     return threads
 
 
@@ -270,7 +280,7 @@ def test_worker_failure_keeps_committed_lease_for_later_recovery(tmp_path, monke
         connection.execute("CREATE TABLE notas_entrada_itens (store_id TEXT,id_unico TEXT,devolucao INTEGER)")
         connection.execute("INSERT INTO notas_entrada_itens VALUES ('store-a','item-a',1)")
 
-    def crash_after_lease(db_path, store_id, resolver, limit):
+    def crash_after_lease(db_path, store_id, resolver, limit, *, legacy_owner=None):
         assert limit == 5
         with sqlite3.connect(db_path) as connection:
             assert queue.claim(connection, store_id, now=100, lease_seconds=10)
@@ -285,3 +295,56 @@ def test_worker_failure_keeps_committed_lease_for_later_recovery(tmp_path, monke
         recovered = queue.claim(connection, "store-a", now=110)
         assert recovered and recovered["lease_token"] != lease
     assert caplog.text == ""
+
+
+@pytest.mark.parametrize("captured", [False, True])
+def test_oauth_failure_is_not_presented_as_bling_reason(providers, captured):
+    providers.ml_result = result("reconnect_required", reason_id=None, reason_description=None)
+    providers.bling_result = result(source="bling")
+    actual = worker.resolve_job("tenant-a", job(references={"order_id": ORDER} if captured else {}))
+    assert actual["result_status"] == "reconnect_required"
+    if captured:
+        assert providers.bling_calls == []
+
+
+def test_restart_without_captured_authorization_never_falls_back_to_local_context(fake_threads, monkeypatch):
+    worker._AUTH.clear()
+    monkeypatch.setattr(actions, "pending_operations", lambda tenant: [("scope", True)])
+    monkeypatch.setattr(worker, "_due_stores", lambda tenant: pytest.fail("Unauthenticated queue discovery"))
+    for bulk_only in (True, False):
+        worker.dispatch("tenant-a", bulk_only=bulk_only)
+    assert fake_threads == [] and worker._RUNNING == {}
+
+
+def test_historical_dispatch_uses_captured_context_and_does_not_dispatch_unrelated_queue(fake_threads, monkeypatch):
+    monkeypatch.setattr(actions, "pending_operations", lambda tenant: [("scope", True)])
+    monkeypatch.setattr(worker, "_due_stores", lambda tenant: pytest.fail("Bulk loop entered automatic queue"))
+    worker.remember_bulk_authorization("tenant-a", "scope")
+    worker.dispatch("tenant-a", bulk_only=True)
+    assert len(fake_threads) == 1
+    assert fake_threads[0].target is worker._BULK_AUTH[("tenant-a", "scope")]
+    assert fake_threads[0].args == ("tenant-a", "scope")
+
+
+def test_expired_captured_central_context_never_reaches_bulk_resolver(fake_threads, monkeypatch):
+    from backend.services import central_accounts_client as central
+    from backend.modules.vendas.errors import VendasDomainError
+    monkeypatch.setattr(worker, "with_request_context", central.with_request_context)
+    monkeypatch.setattr(actions, "pending_operations", lambda tenant: [("scope", True)])
+    marker = SimpleNamespace(tenant="tenant-a", expires_at=1)
+    seen = []
+    def advance(tenant, scope, resolver):
+        captured = central.current(tenant)
+        seen.append(captured)
+        assert captured is marker
+        raise VendasDomainError(401, "Sessão expirada")
+    monkeypatch.setattr(actions, "advance_search", advance)
+    monkeypatch.setattr(worker, "resolve_job", lambda *args: pytest.fail("Expired context reached provider"))
+    token = central._current.set(marker)
+    try:
+        worker.remember_bulk_authorization("tenant-a", "scope")
+    finally:
+        central._current.reset(token)
+    worker.dispatch("tenant-a", bulk_only=True)
+    fake_threads[0].target(*fake_threads[0].args)
+    assert seen == [marker]

@@ -94,7 +94,7 @@ async function fixture(browser, options={}) {
         const pathname=url.pathname;
         if (pathname==='/vendas.html') return route.fulfill({contentType:'text/html',body:salesHtml()});
         if (['/devolucoes.html','/devolucoes_sku.html'].includes(pathname)) return route.fulfill({contentType:'text/html',body:reportHtml('static'+pathname)});
-        if (['/devolucoes/relatorio.js','/devolucoes/relatorio.css'].includes(pathname)) {
+        if (['/devolucoes/relatorio.js','/devolucoes/relatorio.css','/devolucoes/busca-motivos.js'].includes(pathname)) {
             return route.fulfill({contentType:pathname.endsWith('.js')?'application/javascript':'text/css',body:read('static'+pathname)});
         }
         if (!pathname.startsWith('/api/')) return route.abort();
@@ -102,11 +102,13 @@ async function fixture(browser, options={}) {
         let body,status=200;
         if (pathname==='/api/lojas') {status=state.failStores?503:200;body=state.failStores?{detail:'Fixture unavailable'}:(options.stores||stores);}
         else if (pathname==='/api/unidades-negocios') {const nomes=Object.values(unitsFor(url.searchParams.get('loja')));body={mapeamento:{'123':'Canal A','456':'Canal extra','999':'Canal B'},unidades:nomes.map(nome=>({nome}))};}
+        else if (pathname==='/api/notas-entrada/motivos/status') body={phase:'idle',running:false,total:0,processed:0,identified:0,pending:0,reconnect_required:0};
         else if (pathname==='/api/notas-entrada/itens') {status=state.itemStatus;body=status!==200?{detail:'Fixture item failure'}:state.emptyItems?[]:selectedItems(url,options.items||items);}
         else if (pathname.startsWith('/api/notas-entrada/sku/')) body=selectedItems(url,options.items||items).filter(item=>String(item.sku).trim().toUpperCase()===decodeURIComponent(pathname.split('/').pop()).trim().toUpperCase());
         else if (pathname==='/api/vendas/resumo') body=options.emptySalesSummary?{rows:[],totals:{pedidos:0,itens:0,valor:0,devolucoes:0,itensDevolucao:0,valorDevolucao:0,itensLiquidos:0,valorLiquido:0},meta:{unidades:[],dias_com_dados:[]}}:summary(url);
         else throw new Error('Unexpected API in offline fixture: '+pathname);
-        const fulfill=async()=>{try{await route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});}catch(error){if(!/closed|handled|intercepted|aborted/i.test(String(error)))throw error;}};
+        const responseBody=JSON.stringify(body);
+        const fulfill=async()=>{try{await route.fulfill({status,contentType:'application/json',body:responseBody});}catch(error){if(!/closed|handled|intercepted|aborted/i.test(String(error)))throw error;}};
         if (state.hold && pathname==='/api/notas-entrada/itens') {
             await new Promise(resolve=>held.push({url:url.href,release:async()=>{await fulfill();resolve();}}));
         } else await fulfill();

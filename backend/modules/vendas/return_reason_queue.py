@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import unicodedata
 import uuid
 
 from backend.services.sqlite_coordination import sqlite_lock_for_path
@@ -22,7 +23,7 @@ from backend.services.sqlite_coordination import sqlite_lock_for_path
 REFRESH_SECONDS = 24 * 60 * 60
 RECONNECT_SECONDS = 15 * 60
 MAX_RETRY_SECONDS = 15 * 60
-RULE_VERSION = 1
+RULE_VERSION = 2
 RESULT_STATUSES = frozenset({
     "identified", "not_linked", "not_informed", "ambiguous", "unavailable",
     "reconnect_required",
@@ -48,6 +49,15 @@ def _time(value=None):
 def _id(value):
     text = str(value if value is not None else "").strip()
     return text if _IDENTIFIER.fullmatch(text) else ""
+
+
+def _item_id(value):
+    # Commercial item identities are opaque text; unlike provider IDs they may
+    # contain spaces and accents. Preserve exact bytes/characters for SQL joins.
+    text = str(value if value is not None else "")
+    if not text.strip() or len(text) > 512 or any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in text):
+        return ""
+    return text
 
 
 def _description(value):
@@ -93,6 +103,9 @@ def ensure_schema(conn):
             sku TEXT NOT NULL,
             reference_json TEXT NOT NULL,
             fingerprint TEXT NOT NULL,
+            rule_version INTEGER NOT NULL DEFAULT 1,
+            source_kind TEXT NOT NULL DEFAULT 'canonical',
+            source_fingerprint TEXT,
             status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending','processing','retry','done','obsolete')),
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -115,6 +128,13 @@ def ensure_schema(conn):
             PRIMARY KEY (store_id, item_id_unico)
         )
     """)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(devolucao_motivos)")}
+    if "rule_version" not in columns:
+        conn.execute("ALTER TABLE devolucao_motivos ADD COLUMN rule_version INTEGER NOT NULL DEFAULT 1")
+    if "source_kind" not in columns:
+        conn.execute("ALTER TABLE devolucao_motivos ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'canonical'")
+    if "source_fingerprint" not in columns:
+        conn.execute("ALTER TABLE devolucao_motivos ADD COLUMN source_fingerprint TEXT")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_devolucao_motivos_due
         ON devolucao_motivos(store_id, status, next_attempt_at, lease_until)""")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_devolucao_motivos_note
@@ -152,7 +172,7 @@ def enqueue(conn, store_id, loja, payload_notas, payload_itens, *, references_by
     for row in payload_itens:
         if len(row) != 17:
             raise ValueError("Invalid return item tuple")
-        item_id, note_id = _id(row[0]), _id(row[1])
+        item_id, note_id = _item_id(row[0]), _id(row[1])
         if not item_id or not note_id:
             raise ValueError("Return item requires stable document identifiers")
         active.setdefault(note_id, set())
@@ -162,13 +182,14 @@ def enqueue(conn, store_id, loja, payload_notas, payload_itens, *, references_by
         refs = _references(references_by_note.get(note_id))
         reference_json = json.dumps(refs, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         sku = str(row[5] or "").strip()[:128]
-        material = [RULE_VERSION, store_id, item_id, note_id, sku, row[3], row[4],
+        # Resolver revisions must not invalidate unchanged commercial evidence.
+        material = [1, store_id, item_id, note_id, sku, row[3], row[4],
                     row[7], row[9], refs]
         fingerprint = hashlib.sha256(json.dumps(
             material, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
         ).encode("utf-8")).hexdigest()
         jobs.append((store_id, item_id, note_id, str(loja or "").strip()[:160],
-                     sku, reference_json, fingerprint, stamp, stamp, stamp))
+                     sku, reference_json, fingerprint, RULE_VERSION, stamp, stamp, stamp))
 
     # Updating instead of replacing invalidates a lease without deleting history
     # or changing any of the commercial source tables.
@@ -176,12 +197,13 @@ def enqueue(conn, store_id, loja, payload_notas, payload_itens, *, references_by
     for values in jobs:
         cursor = conn.execute("""
             INSERT INTO devolucao_motivos (
-                store_id,item_id_unico,nota_id,loja,sku,reference_json,fingerprint,
+                store_id,item_id_unico,nota_id,loja,sku,reference_json,fingerprint,rule_version,
                 next_attempt_at,created_at,updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(store_id,item_id_unico) DO UPDATE SET
                 nota_id=excluded.nota_id,loja=excluded.loja,sku=excluded.sku,
-                reference_json=excluded.reference_json,fingerprint=excluded.fingerprint,
+                reference_json=excluded.reference_json,fingerprint=excluded.fingerprint,rule_version=excluded.rule_version,
+                source_kind='canonical',source_fingerprint=NULL,
                 status='pending',attempts=0,next_attempt_at=excluded.next_attempt_at,
                 lease_token=NULL,lease_until=NULL,result_status=NULL,reason_id=NULL,
                 reason_description=NULL,reason_source=NULL,order_id=NULL,claim_id=NULL,
@@ -208,7 +230,37 @@ def _obsolete(conn, store_id, item_id, stamp):
         WHERE store_id=? AND item_id_unico=?""", (stamp, store_id, item_id))
 
 
-def _live_item(conn, store_id, item_id):
+def _legacy_source(conn, item_id, owner_resolver, store_id):
+    if owner_resolver is None:
+        return None
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notas_entrada_itens)")}
+    if not {"id_unico", "id_nota", "sku", "devolucao", "loja_conta"} <= columns:
+        return None
+    fields = [name for name in ("id_unico", "id_nota", "store_id", "sku", "devolucao", "loja_conta",
+                               "data_emissao", "numero_nota", "quantidade", "valor_unitario", "valor_total") if name in columns]
+    owner_clause = " AND (store_id IS NULL OR trim(store_id)='')" if "store_id" in columns else ""
+    rows = conn.execute("SELECT " + ",".join(fields) + " FROM notas_entrada_itens WHERE id_unico=? AND devolucao=1" + owner_clause,
+                        (item_id,)).fetchall()
+    if len(rows) != 1:
+        return None
+    source = dict(zip(fields, rows[0]))
+    if owner_resolver(source) != store_id:
+        return None
+    digest = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True,
+                                      separators=(",", ":"), default=str).encode()).hexdigest()
+    return source, digest
+
+
+def _legacy_matches(conn, job, owner_resolver):
+    source = _legacy_source(conn, job["item_id_unico"], owner_resolver, job["store_id"])
+    return bool(source and source[1] == job.get("source_fingerprint")
+                and _id(source[0]["id_nota"]) == job.get("nota_id")
+                and str(source[0]["sku"] or "").strip() == job.get("sku"))
+
+
+def _live_item(conn, store_id, item_id, job=None, legacy_owner=None):
+    if job and job.get("source_kind") == "legacy":
+        return _legacy_matches(conn, job, legacy_owner)
     return conn.execute("""SELECT 1 FROM notas_entrada_itens
         WHERE store_id=? AND id_unico=? AND devolucao=1 LIMIT 1""", (store_id, item_id)).fetchone() is not None
 
@@ -223,11 +275,15 @@ def _job(cursor, row):
     return result
 
 
-def claim(conn, store_id, now=None, lease_seconds=120):
+def claim(conn, store_id, now=None, lease_seconds=120, *, item_ids=None, legacy_owner=None):
     """Lease one due item; expired leases and 24-hour refreshes are resumable."""
     store_id = _store_id(store_id)
     stamp = _time(now)
     duration = min(3600, max(1, int(lease_seconds)))
+    selected = None if item_ids is None else sorted({_item_id(value) for value in item_ids if _item_id(value)})[:100]
+    if selected == []:
+        return None
+    clause = "" if selected is None else " AND item_id_unico IN (" + ",".join("?" for _ in selected) + ")"
     _begin(conn)
     ensure_schema(conn)
     while True:
@@ -235,25 +291,25 @@ def claim(conn, store_id, now=None, lease_seconds=120):
             WHERE store_id=? AND (
                 (status IN ('pending','retry','done') AND next_attempt_at<=?)
                 OR (status='processing' AND lease_until<=?)
-            ) ORDER BY next_attempt_at,created_at,item_id_unico LIMIT 1""", (store_id, stamp, stamp))
+            ) """ + clause + " ORDER BY next_attempt_at,created_at,item_id_unico LIMIT 1", (store_id, stamp, stamp, *(selected or [])))
         row = cursor.fetchone()
         if row is None:
             return None
         job = _job(cursor, row)
-        if not _live_item(conn, store_id, job["item_id_unico"]):
+        if not _live_item(conn, store_id, job["item_id_unico"], job, legacy_owner):
             _obsolete(conn, store_id, job["item_id_unico"], stamp)
             continue
         token = uuid.uuid4().hex
         cursor = conn.execute("""UPDATE devolucao_motivos
-            SET status='processing',lease_token=?,lease_until=?,attempts=attempts+1,updated_at=?
+            SET status='processing',lease_token=?,lease_until=?,attempts=attempts+1,updated_at=?,rule_version=?
             WHERE store_id=? AND item_id_unico=? AND fingerprint=? AND (
                 (status IN ('pending','retry','done') AND next_attempt_at<=?)
                 OR (status='processing' AND lease_until<=?)
-            )""", (token, stamp + duration, stamp, store_id, job["item_id_unico"],
+            )""", (token, stamp + duration, stamp, RULE_VERSION, store_id, job["item_id_unico"],
                     job["fingerprint"], stamp, stamp))
         if cursor.rowcount:
             job.update(status="processing", lease_token=token, lease_until=stamp + duration,
-                       attempts=job["attempts"] + 1, updated_at=stamp)
+                       attempts=job["attempts"] + 1, updated_at=stamp, rule_version=RULE_VERSION)
             return job
 
 
@@ -273,11 +329,11 @@ def _result(value):
     return result
 
 
-def finish(conn, claim, result, now=None):
+def finish(conn, claim, result, now=None, *, legacy_owner=None):
     """Accept only the current live lease and evidence; leave commit to caller."""
     stamp = _time(now)
     store_id = _store_id(claim.get("store_id"))
-    item_id = _id(claim.get("item_id_unico"))
+    item_id = _item_id(claim.get("item_id_unico"))
     _begin(conn)
     ensure_schema(conn)
     cursor = conn.execute("""SELECT * FROM devolucao_motivos WHERE store_id=? AND item_id_unico=?
@@ -287,7 +343,7 @@ def finish(conn, claim, result, now=None):
     if row is None:
         return False
     old = dict(zip((column[0] for column in cursor.description), row))
-    if not _live_item(conn, store_id, item_id):
+    if not _live_item(conn, store_id, item_id, old, legacy_owner):
         _obsolete(conn, store_id, item_id, stamp)
         return False
     sanitized = _result(result)
@@ -319,7 +375,7 @@ def finish(conn, claim, result, now=None):
     return cursor.rowcount == 1
 
 
-def process_due(db_path, store_id, resolver, limit=10):
+def process_due(db_path, store_id, resolver, limit=10, *, item_ids=None, legacy_owner=None):
     """Resolve bounded work outside SQLite transactions and local DB locks."""
     store_id = _store_id(store_id)
     path = Path(db_path).resolve(strict=True)
@@ -329,7 +385,7 @@ def process_due(db_path, store_id, resolver, limit=10):
         conn.execute("PRAGMA busy_timeout=15000")
         for _ in range(max(0, min(100, int(limit)))):
             with sqlite_lock_for_path(path), conn:
-                job = claim(conn, store_id)
+                job = claim(conn, store_id, item_ids=item_ids, legacy_owner=legacy_owner)
             if job is None:
                 break
             summary["claimed"] += 1
@@ -338,7 +394,7 @@ def process_due(db_path, store_id, resolver, limit=10):
             except Exception:
                 result = {"result_status": "unavailable", "retryable": True, "error_code": "resolver_exception"}
             with sqlite_lock_for_path(path), conn:
-                accepted = finish(conn, job, result)
+                accepted = finish(conn, job, result, legacy_owner=legacy_owner)
                 state = conn.execute("""SELECT status,result_status FROM devolucao_motivos
                     WHERE store_id=? AND item_id_unico=?""", (store_id, job["item_id_unico"])).fetchone()
             if not accepted:
@@ -350,3 +406,87 @@ def process_due(db_path, store_id, resolver, limit=10):
     finally:
         conn.close()
     return summary
+
+
+def prepare_saved_item(conn, store_id, loja, item_id, nota_id, sku, *, requested_at=None, now=None):
+    """Explicit history request: enqueue one exact saved identity, never a display number.
+
+    No business row is written. Identified results and active leases survive
+    repeated clicks. Callers bound their batches and own commit/rollback.
+    """
+    store_id = _store_id(store_id)
+    item_id, nota_id = _item_id(item_id), _id(nota_id)
+    sku = str(sku or "").strip()[:128]
+    if not item_id or not nota_id or not sku:
+        return False
+    stamp = _time(now)
+    _begin(conn)
+    ensure_schema(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notas_entrada_itens)")}
+    if not {"store_id", "id_unico", "id_nota", "sku", "devolucao"} <= columns:
+        return False
+    source = conn.execute("""SELECT id_nota,sku FROM notas_entrada_itens
+        WHERE store_id=? AND id_unico=? AND devolucao=1""", (store_id,item_id)).fetchall()
+    if len(source) != 1 or str(source[0][0] or "").strip() != nota_id or str(source[0][1] or "").strip() != sku:
+        return False
+    fingerprint = hashlib.sha256(json.dumps([RULE_VERSION,store_id,item_id,nota_id,sku],
+        ensure_ascii=False,separators=(",", ":")).encode()).hexdigest()
+    conn.execute("""INSERT INTO devolucao_motivos
+        (store_id,item_id_unico,nota_id,loja,sku,reference_json,fingerprint,rule_version,
+         next_attempt_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,'{}',?,?,?,?,?) ON CONFLICT(store_id,item_id_unico) DO NOTHING""",
+        (store_id,item_id,nota_id,str(loja or "").strip()[:160],sku,fingerprint,RULE_VERSION,stamp,stamp,stamp))
+    cutoff = stamp if requested_at is None else _time(requested_at)
+    # Explicit reprocessing changes only availability; never steals a live lease
+    # or overwrites existing documentary links/evidence.
+    conn.execute("""UPDATE devolucao_motivos SET status='pending',next_attempt_at=?,updated_at=?,
+        lease_token=NULL,lease_until=NULL WHERE store_id=? AND item_id_unico=?
+        AND nota_id=? AND sku=? AND coalesce(result_status,'')!='identified'
+        AND (status='obsolete' OR (status IN ('done','retry')
+            AND (completed_at IS NULL OR completed_at<?)))""",
+        (stamp,stamp,store_id,item_id,nota_id,sku,cutoff))
+    return True
+
+
+def prepare_legacy_saved_item(conn, store_id, loja, item_id, nota_id, sku, owner_resolver, *, requested_at=None, now=None):
+    """Queue a legacy row only with current canonical owner proof and source hash."""
+    store_id = _store_id(store_id)
+    item_id, nota_id = _item_id(item_id), _id(nota_id)
+    sku = str(sku or "").strip()[:128]
+    if not item_id or not nota_id or not sku:
+        return False
+    stamp = _time(now)
+    cutoff = stamp if requested_at is None else _time(requested_at)
+    _begin(conn)
+    ensure_schema(conn)
+    source = _legacy_source(conn, item_id, owner_resolver, store_id)
+    if not source or _id(source[0]["id_nota"]) != nota_id or str(source[0]["sku"] or "").strip() != sku:
+        return False
+    digest = source[1]
+    fingerprint = hashlib.sha256(json.dumps([1, store_id, item_id, nota_id, sku, "legacy", digest],
+                                           ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    conn.execute("""INSERT INTO devolucao_motivos
+        (store_id,item_id_unico,nota_id,loja,sku,reference_json,fingerprint,rule_version,
+         source_kind,source_fingerprint,next_attempt_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,'{}',?,?,'legacy',?,?,?,?)
+        ON CONFLICT(store_id,item_id_unico) DO UPDATE SET
+            nota_id=excluded.nota_id,loja=excluded.loja,sku=excluded.sku,
+            source_fingerprint=excluded.source_fingerprint,fingerprint=excluded.fingerprint,
+            reference_json='{}',rule_version=excluded.rule_version,
+            status='pending',attempts=0,next_attempt_at=excluded.next_attempt_at,
+            lease_token=NULL,lease_until=NULL,result_status=NULL,reason_id=NULL,
+            reason_description=NULL,reason_source=NULL,order_id=NULL,claim_id=NULL,
+            return_id=NULL,seller_id=NULL,site_id=NULL,error_code=NULL,
+            completed_at=NULL,updated_at=excluded.updated_at
+        WHERE devolucao_motivos.source_kind='legacy' AND
+            (devolucao_motivos.source_fingerprint!=excluded.source_fingerprint OR devolucao_motivos.status='obsolete')""",
+        (store_id, item_id, nota_id, str(loja or "").strip()[:160], sku, fingerprint,
+         RULE_VERSION, digest, stamp, stamp, stamp))
+    row = conn.execute("SELECT source_kind FROM devolucao_motivos WHERE store_id=? AND item_id_unico=?", (store_id, item_id)).fetchone()
+    if row[0] != "legacy":
+        return False
+    conn.execute("""UPDATE devolucao_motivos SET status='pending',next_attempt_at=?,updated_at=?,lease_token=NULL,lease_until=NULL
+        WHERE store_id=? AND item_id_unico=? AND source_kind='legacy'
+            AND coalesce(result_status,'')!='identified' AND status IN ('done','retry')
+            AND (completed_at IS NULL OR completed_at<?)""", (stamp, stamp, store_id, item_id, cutoff))
+    return True
