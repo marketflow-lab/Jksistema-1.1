@@ -136,7 +136,7 @@ async function fixture(browser, tenant, { twoItems = false, materializedLegacy =
       if (url.origin !== 'http://jk.test') return route.fulfill({ status: 200, contentType: 'text/css', body: '' });
       if (url.pathname === '/synthetic-photo.gif') return route.fulfill({ contentType: 'image/gif', body: Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64') });
       if (url.pathname === '/medias_compras.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
-      if (url.pathname.startsWith('/medias_compras/')) return route.fulfill({ status: 200,
+      if (url.pathname.startsWith('/medias_compras/') || url.pathname === '/cache-persistente.js') return route.fulfill({ status: 200,
         contentType: url.pathname.endsWith('.css') ? 'text/css' : 'application/javascript',
         body: fs.readFileSync(path.join(root, 'static', url.pathname.slice(1))) });
       if (url.pathname === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript', body:
@@ -214,7 +214,7 @@ async function clean(test) {
     assert.strictEqual(call.headers.authorization, 'Bearer synthetic-' + test.tenant);
     assert.strictEqual(call.headers['x-client-id'], test.tenant);
     const url = new URL(call.url);
-    assert.deepStrictEqual([...url.searchParams.entries()], call.fast ? [['somente_salvos', 'true'], ['cache_mode', 'stale']] : [['cache_mode', 'stale']]);
+    assert.deepStrictEqual([...url.searchParams.entries()], call.fast ? [['somente_salvos', 'true']] : [['cache_mode', 'stale']]);
   }
 }
 

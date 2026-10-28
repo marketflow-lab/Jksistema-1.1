@@ -17,6 +17,7 @@ const moduleFiles = [
   'state.js',
   'api.js',
   'resultados.js',
+  'listas-cache.js',
   'visao-carregamento.js',
   'transito.js',
   'filtros.js',

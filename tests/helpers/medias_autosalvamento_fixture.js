@@ -83,7 +83,7 @@ async function fixture(browser, options = {}) {
         const url=new URL(route.request().url());
         if(url.origin!=='http://jk.test')return route.fulfill({status:200,contentType:'text/css',body:''});
         if(url.pathname==='/medias_compras.html')return route.fulfill({status:200,contentType:'text/html',body:source('static/medias_compras.html')});
-        if(url.pathname.startsWith('/medias_compras/'))return route.fulfill({status:200,contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',body:source('static'+url.pathname)});
+        if(url.pathname.startsWith('/medias_compras/')||url.pathname==='/cache-persistente.js')return route.fulfill({status:200,contentType:url.pathname.endsWith('.css')?'text/css':'application/javascript',body:source('static'+url.pathname)});
         if(url.pathname==='/auth.js')return route.fulfill({status:200,contentType:'application/javascript',body:'window.verificarSessao=()=>true;window.obterAuthHeaders=(extra)=>({Authorization:"Bearer synthetic-token","X-Client-ID":"tenant-autosave",...(extra||{})});'});
         return route.fulfill({status:200,contentType:'application/javascript',body:''});
     });
@@ -116,8 +116,7 @@ async function waitServer(page,predicate,arg){
             modalValues:['addSkuInput','addSkuQtdInput','addSkuValorInput'].map(id=>document.getElementById(id)?.value),
             calls:__autosaveFixture.calls.slice(-8).map(({key,done,failed,payload})=>({key,done,failed,payload})),
         }));
-        error.message+='\nSynthetic fixture state: '+JSON.stringify(state);
-        throw error;
+        throw new Error(error.message+'\nSynthetic fixture state: '+JSON.stringify(state), {cause:error});
     }
 }
 async function clean(test){assert.deepStrictEqual(test.errors,[]);await test.context.close();}

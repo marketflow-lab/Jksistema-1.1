@@ -1,7 +1,7 @@
 (function installJKMediasEditorSalvamento(global) {
     'use strict';
 
-    global.JKMedias.defineModule('editor-salvamento', ['core', 'state', 'api', 'editor', 'editor-produtos', 'resultados'], context => {
+    global.JKMedias.defineModule('editor-salvamento', ['core', 'state', 'api', 'editor', 'editor-produtos', 'resultados', 'listas-cache'], context => {
         const filas = new Map();
         let sessao = null;
         let renderizandoEditor = 0;
@@ -170,6 +170,8 @@
                     if (!await skusProntos) throw new Error('Não foi possível confirmar o SKU. Corrija o campo e tente salvar novamente.');
                     context.modules.resultados.exigirSessao(registro.identidade);
                     status(registro, 'Salvando alterações...');
+                    const cache = context.modules['listas-cache'].cacheListasPedidos;
+                    const leituraCache = cache.capturarDetalhe(registro.id);
                     const resposta = await context.modules.api.request('/api/medias-compras/listas-pedidos/' + encodeURIComponent(registro.id), {
                         method: 'PUT', headers: { ...registro.headers, 'Content-Type': 'application/json' }, body: JSON.stringify(dados),
                     });
@@ -180,6 +182,11 @@
                     if (registro.revisao !== tarefa.revisao || fila.tarefas.length || registro.pendentes.size) {
                         status(registro, fila.tarefas.length ? 'Salvando alterações...' : 'Alterações pendentes de confirmação.');
                         return true;
+                    }
+                    if (retorno.lista && Array.isArray(retorno.lista.itens)) {
+                        const confirmada = cache.confirmarMutacao(leituraCache, resposta);
+                        if (confirmada) await cache.salvar(confirmada, { lista: retorno.lista, meta: null, baseSalva: JSON.stringify(retorno.lista) });
+                        if (!contextoEdicaoListaPedidoVigente(registro) || registro.revisao !== tarefa.revisao || fila.tarefas.length || registro.pendentes.size) return true;
                     }
                     listaPedidoAtual = retorno.lista || { ...listaPedidoAtual, ...copiar(dados) };
                     listasPedidosResumo = (listasPedidosResumo || []).map(lista => String(lista.id) === registro.id

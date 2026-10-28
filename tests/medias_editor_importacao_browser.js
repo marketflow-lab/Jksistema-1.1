@@ -53,7 +53,7 @@ const json = (route, body, status = 200) => route.fulfill({
         await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
         return;
       }
-      if (url.pathname.startsWith('/medias_compras/')) {
+      if (url.pathname.startsWith('/medias_compras/') || url.pathname === '/cache-persistente.js') {
         const relativePath = url.pathname.replace(/^\//, '');
         const body = fs.readFileSync(path.join(root, 'static', relativePath));
         await route.fulfill({

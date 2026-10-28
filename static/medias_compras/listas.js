@@ -2,9 +2,10 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('listas', ['core', 'state', 'api', 'resultados', 'editor', 'editor-salvamento', 'importacao', 'listas-carregamento'], (context) => {
+    app.defineModule('listas', ['core', 'state', 'api', 'resultados', 'listas-cache', 'editor', 'editor-salvamento', 'importacao', 'listas-carregamento'], (context) => {
         const fetch = context.modules.api.request;
         const obterAuthHeaders = context.modules.api.authHeaders;
+        const cache = context.modules['listas-cache'].cacheListasPedidos;
 
         function setStatusListaPedido(msg) {
             const el = document.getElementById('statusListaPedido');
@@ -119,24 +120,56 @@
             const headers = { ...obterAuthHeaders() };
             const escopo = JSON.stringify([tenantKey, userScopeKey, url, headers]);
             return context.modules.api.executarTarefa('listas-resumo', escopo, async tarefa => {
+                const leitura = cache.capturar(['indice', url]);
+                let salvo = null;
+                const ativa = () => tarefa.ativa() && cache.vigente(leitura);
                 try {
                     setStatusListaPedido('Carregando listas de pedidos...');
-                    const resp = await fetch(url, { method: 'GET', headers, signal: tarefa.signal });
-                    const data = await resp.json();
+                    salvo = await cache.ler(leitura);
+                    if (!ativa()) return;
+                    if (Array.isArray(salvo?.dados?.listas)) {
+                        listasPedidosResumo = context.modules.resultados.copiarResultado(salvo.dados.listas);
+                        renderListaPedidosResumo();
+                        setStatusListaPedido(cache.texto(salvo));
+                    } else salvo = null;
+                    const { resp, data } = await context.modules.resultados.consultarResultado(url, headers, tarefa.signal, 10000);
+                    context.modules.resultados.exigirSessao(leitura.sessao);
                     if (!tarefa.ativa()) return;
-                    if (!resp.ok) throw new Error(data.detail || 'Falha ao carregar listas de pedidos.');
-                    listasPedidosResumo = Array.isArray(data.listas) ? data.listas : [];
+                    if (!resp.ok) {
+                        const erro = new Error(typeof data?.detail === 'string' ? data.detail : data?.detail?.message || 'Falha ao carregar listas de pedidos.');
+                        erro.status = resp.status;
+                        throw erro;
+                    }
+                    if (!ativa()) return;
+                    if (!Array.isArray(data.listas)) throw new Error('A resposta não contém as listas solicitadas.');
+                    listasPedidosResumo = data.listas;
+                    void cache.salvar(leitura, { listas: data.listas });
                     renderListaPedidosResumo();
                     if (!listasPedidosResumo.length) {
+                        cancelarAberturaListaPedido();
                         listaPedidoAtual = null;
                         renderEditorListaPedido();
                         setStatusListaPedido('Nenhuma lista salva ainda.');
                     } else if (!listaPedidoAtual) {
                         renderEditorListaPedido();
                         setStatusListaPedido('Clique em uma lista para visualizar e editar.');
+                    } else {
+                        setStatusListaPedido('Listas atualizadas.');
                     }
                 } catch (e) {
-                    if (tarefa.ativa()) setStatusListaPedido(e.message || 'Erro ao carregar listas de pedidos.');
+                    if (!tarefa.ativa()) return;
+                    const sessaoMudou = e.name === 'SessionChangedError';
+                    if (!sessaoMudou && !ativa()) return;
+                    if (sessaoMudou || [401, 403, 404].includes(e.status)) {
+                        void cache.invalidar(leitura);
+                        cancelarAberturaListaPedido();
+                        listaPedidoAtual = null;
+                        listasPedidosResumo = [];
+                        renderListaPedidosResumo();
+                        renderEditorListaPedido();
+                    }
+                    setStatusListaPedido(salvo && !sessaoMudou && ![401, 403, 404].includes(e.status)
+                        ? cache.texto(salvo, true) : e.message || 'Erro ao carregar listas de pedidos.');
                 }
             }, forcar);
         }
