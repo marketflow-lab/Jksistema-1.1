@@ -211,6 +211,7 @@ async function addSkuWaitsForPendingPut(browser) {
         await page.waitForFunction(()=>__autosaveFixture.calls.some(call=>call.key==='save:list-a'&&!call.done));
         const old=(await calls(page,'save:list-a'))[0];
         await page.locator('#btnAdicionarSkuPedido').click();
+        await page.waitForFunction(()=>document.activeElement===document.querySelector('#addSkuInput'));
         await page.locator('#addSkuInput').fill('ADDED-01');await page.locator('#addSkuQtdInput').fill('4');await page.locator('#addSkuValorInput').fill('3,50');
         await page.locator('#btnConfirmarAdicionarSku').click();
         await page.waitForTimeout(100);
@@ -232,6 +233,7 @@ async function existingSkuModalUpdateSurvivesAutosave(browser) {
     try {
         const count=(await serverList(page)).itens.length;
         await page.locator('#btnAdicionarSkuPedido').click();
+        await page.waitForFunction(()=>document.activeElement===document.querySelector('#addSkuInput'));
         await page.locator('#addSkuInput').fill('SKU-A-01');
         await page.locator('#addSkuQtdInput').fill('88');
         await page.locator('#addSkuValorInput').fill('6,75');
@@ -255,6 +257,7 @@ async function addedSkuSurvivesDraftAndManualSave(browser) {
         const count=(await serverList(page)).itens.length;
         await plan(page,'add:list-a',{hold:true});
         await page.locator('#btnAdicionarSkuPedido').click();
+        await page.waitForFunction(()=>document.activeElement===document.querySelector('#addSkuInput'));
         await page.locator('#addSkuInput').fill('DRAFT-ADDED-01');
         await page.locator('#addSkuQtdInput').fill('4');
         await page.locator('#addSkuValorInput').fill('3,50');
