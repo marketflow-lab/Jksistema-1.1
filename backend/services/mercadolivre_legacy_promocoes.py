@@ -1422,7 +1422,7 @@ def _ml_listar_ids_anuncios_ativos(
         raise HTTPException(status_code=400, detail="ID do usuario Mercado Livre nao encontrado")
 
     limite = max(100, min(int(limite or 5000), 20000))
-    cache_key = f"promo:ml_ids_ativos:{client_id}:{loja}:{user}:{limite}"
+    cache_key = f"promo:ml_ids_ativos:v2:{client_id}:{loja}:{user}:{limite}"
     cached = _ml_cache_get(cache_key)
     if cached is not None:
         return cached, cfg_local
@@ -1446,10 +1446,11 @@ def _ml_listar_ids_anuncios_ativos(
     scan_ok = False
     scroll_id = ""
     try:
-        params = {"search_type": "scan", "limit": 100, "status": "active"}
         for _pagina in range(max(1, math.ceil(limite / 100))):
+            # O scroll nao preserva o filtro de status entre as requisicoes.
+            params = {"search_type": "scan", "limit": 100, "status": "active"}
             if scroll_id:
-                params = {"search_type": "scan", "scroll_id": scroll_id, "limit": 100}
+                params["scroll_id"] = scroll_id
             resp, cfg_local = _ml_api_request_com_retry(
                 client_id,
                 loja,
@@ -1534,6 +1535,7 @@ def _ml_listar_itens_promocao_com_raw(
         return [], {}, cfg
 
     item_ids = []
+    item_ids_vistos = set()
     raw_por_item = {}
     promotion_type = str(promotion_type or "").strip()
     is_lightning = promotion_type.upper() == "LIGHTNING"
@@ -1615,7 +1617,7 @@ def _ml_listar_itens_promocao_com_raw(
                 logger.warning(f"[PROMO API] Interrompendo paginacao da promocao {campaign_id}: limite de paginas atingido")
                 break
             sep = "&" if "?" in promo_url_tpl else "?"
-            if is_lightning and search_after:
+            if search_after:
                 url = f"{promo_url_tpl}{sep}search_after={quote_plus(search_after)}&limit={limit}"
             else:
                 url = f"{promo_url_tpl}{sep}offset={offset}&limit={limit}"
@@ -1660,7 +1662,7 @@ def _ml_listar_itens_promocao_com_raw(
                 return str(entry or "")
 
             assinatura = tuple(_entry_assinatura(entry) for entry in (entries if is_lightning else entries[:20]))
-            if assinatura and assinatura in assinaturas_paginas and not (is_lightning and search_after):
+            if assinatura and assinatura in assinaturas_paginas and not search_after:
                 logger.warning(f"[PROMO API] Interrompendo paginacao repetida da promocao {campaign_id}")
                 break
             if assinatura:
@@ -1694,23 +1696,29 @@ def _ml_listar_itens_promocao_com_raw(
                             _mesclar_item_raw(item_id, entry_contextualizado)
                 else:
                     item_id = str(entry or "").strip()
-                if item_id:
+                if item_id and item_id not in item_ids_vistos:
                     item_ids.append(item_id)
+                    item_ids_vistos.add(item_id)
                 if _limite_atingido():
                     logger.warning(f"[PROMO API] Promocao {campaign_id} limitada a {max_items} anuncios para evitar travamento")
                     break
-            if _limite_atingido():
+            if _limite_atingido() or not entries:
                 break
             paging = data.get("paging") or {}
-            next_cursor = str(data.get("search_after") or paging.get("search_after") or "").strip() if is_lightning else ""
+            next_cursor = str(
+                data.get("search_after") or data.get("searchAfter")
+                or paging.get("search_after") or paging.get("searchAfter") or ""
+            ).strip()
             if next_cursor:
+                # Com cursor, uma pagina curta ainda pode ter continuacao.
+                max_paginas = max(1, max_items + 1)
                 if next_cursor in cursores_vistos:
                     logger.warning("[PROMO API] Interrompendo cursor repetido da promocao %s", campaign_id)
                     break
                 cursores_vistos.add(next_cursor)
                 search_after = next_cursor
                 continue
-            if is_lightning and search_after:
+            if search_after:
                 break
             total = int(paging.get("total") or 0)
             offset += limit
