@@ -453,7 +453,9 @@ def _carregar_usuarios_sql(seed_if_empty: bool = True):
                 permissoes = {}
             username_norm = str(row["username"] or "").strip().lower()
             permissoes_norm = _normalizar_permissoes(permissoes)
-            if not any(permissoes_norm.values()):
+            # A nonempty policy is explicit, even when every permission is denied.
+            # Only missing or malformed legacy policies may recover cached grants.
+            if not isinstance(permissoes, dict) or not permissoes:
                 permissoes_fallback = _fallback_permissoes_armazenadas(username_norm)
                 if isinstance(permissoes_fallback, dict) and any(permissoes_fallback.values()):
                     permissoes_norm = _normalizar_permissoes(permissoes_fallback)
