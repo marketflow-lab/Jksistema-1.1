@@ -290,7 +290,7 @@ def _quoted(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _sqlite(data: bytes, rel: str, ids: dict, names: dict) -> bytes:
+def _sqlite(data: bytes, rel: str, ids: dict, names: dict, *, references_only=False) -> bytes | bool:
     database = sqlite3.connect(":memory:")
     try:
         database.setlimit(sqlite3.SQLITE_LIMIT_ATTACHED, 0)
@@ -319,6 +319,8 @@ def _sqlite(data: bytes, rel: str, ids: dict, names: dict) -> bytes:
                 relevant = {key: value for key, value in replacements.items() if key in present}
                 if not relevant:
                     continue
+                if references_only:
+                    return True
                 if table not in allowed:
                     _fail("unknown_sqlite_table")
                 if column != "store_id":
@@ -327,7 +329,7 @@ def _sqlite(data: bytes, rel: str, ids: dict, names: dict) -> bytes:
                     _fail("sqlite_name_identity_unverified")
                 plans.append((table, column, relevant))
         if not plans:
-            return data
+            return False if references_only else data
         if database.execute(
             "SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1"
         ).fetchone():
@@ -356,6 +358,39 @@ def _sqlite(data: bytes, rel: str, ids: dict, names: dict) -> bytes:
         _fail("sqlite_remap_failed")
     finally:
         database.close()
+
+
+def sources_reference_store(scope, sources, store_id, name):
+    """Detect typed references even when an alias keeps the same display name.
+
+    A legacy sale can belong to an alias without requiring any rewritten byte.
+    This inspection shares the projection parsers and never opens local files.
+    """
+    ids = {store_id: store_id} if store_id else {}
+    labels = {name: name} if name else {}
+    for rel, data in sources:
+        if not isinstance(rel, str) or not isinstance(data, bytes):
+            _fail("invalid_source")
+        if rel in _PROTECTED_FILES:
+            continue
+        if rel.endswith((".db", ".sqlite", ".sqlite3")):
+            if _sqlite(data, rel, ids, labels, references_only=True):
+                return True
+        elif rel in _CSV_FILES.get(scope, set()):
+            rows, _, _ = _read_csv(data)
+            if not rows:
+                continue
+            columns = [_column(column) for column in rows[0]]
+            if len(set(columns)) != len(columns) or any(len(row) != len(columns) for row in rows[1:]):
+                _fail("invalid_csv_rows")
+            for row in rows[1:]:
+                if any((column == "store_id" and value in ids)
+                       or (column in _NAME_FIELDS | {"loja"} and value in labels)
+                       for column, value in zip(columns, row)):
+                    return True
+        elif rel.endswith(".json") and _has_unknown_reference(_json(data), ids, labels):
+            return True
+    return False
 
 
 def remap_store_sources(

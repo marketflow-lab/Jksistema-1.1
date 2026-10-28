@@ -594,32 +594,42 @@ def test_iam_permissions_probe_accepts_all_required_permissions(monkeypatch, ser
     service._test_required_iam_permissions(service_account, PROJECT_ID)
 
 
-def test_status_marks_restart_required_when_runtime_flags_are_inactive(
+@pytest.mark.parametrize("runtime_active", [False, True])
+@pytest.mark.parametrize("live_features", [False, True])
+def test_status_manual_sync_readiness_is_independent_of_live_features(
     tmp_path,
     monkeypatch,
     service_account,
+    runtime_active,
+    live_features,
 ):
     from backend.services import admin_usuarios_firebase
 
     base, info = _paths(tmp_path)
-    (info / service.CANONICAL_FILENAME).write_bytes(_encoded(service_account))
+    canonical = info / service.CANONICAL_FILENAME
+    canonical.write_bytes(_encoded(service_account))
+    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_FILE", str(canonical))
+    service.initialize_firebase_provisioning_runtime(base_dir=base, info_dir=info)
     _probe_ok(monkeypatch)
-    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_deve_usar", lambda: True)
-    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_live_features_ativas", lambda: False)
+    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_deve_usar", lambda: runtime_active)
+    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_live_features_ativas", lambda: live_features)
 
     result = service.firebase_provisioning_status(base_dir=base, info_dir=info)
 
     assert result.status_code == 200
     assert result.payload["configured"] is True
-    assert result.payload["ready"] is False
-    assert result.payload["restart_required"] is True
-    assert result.payload["code"] == "restart_required"
+    assert result.payload["ready"] is runtime_active
+    assert result.payload["restart_required"] is (not runtime_active)
+    assert result.payload["code"] == ("ready" if runtime_active else "restart_required")
+    assert set(result.payload) == RESPONSE_KEYS
 
 
+@pytest.mark.parametrize("live_features", [False, True])
 def test_status_requires_restart_when_canonical_file_changes_after_startup(
     tmp_path,
     monkeypatch,
     service_account,
+    live_features,
 ):
     from backend.services import admin_usuarios_firebase
 
@@ -633,7 +643,7 @@ def test_status_requires_restart_when_canonical_file_changes_after_startup(
     canonical.write_bytes(_encoded(replacement))
     _probe_ok(monkeypatch)
     monkeypatch.setattr(admin_usuarios_firebase, "_firebase_deve_usar", lambda: True)
-    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_live_features_ativas", lambda: True)
+    monkeypatch.setattr(admin_usuarios_firebase, "_firebase_live_features_ativas", lambda: live_features)
 
     result = service.firebase_provisioning_status(base_dir=base, info_dir=info)
 

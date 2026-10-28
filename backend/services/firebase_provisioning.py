@@ -614,8 +614,7 @@ def _runtime_requires_restart(
 
         if not bool(admin_usuarios_firebase._firebase_deve_usar()):
             return True
-        if not bool(admin_usuarios_firebase._firebase_live_features_ativas()):
-            return True
+        # Manual Firestore sync does not require the optional chat/presence channels.
     except Exception:
         return True
     return False

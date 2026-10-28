@@ -52,8 +52,9 @@ def _read_ledger(tenant, peer):
             raise ValueError()
         for remote_id, row in (entry or {}).get('stores', {}).items():
             if (not isinstance(remote_id, str) or not remote_id or not isinstance(row, dict)
-                    or set(row) not in ({'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash'},
-                                        {'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash', 'remote_connection_hash'})
+                    or set(row) - {'unverified_providers'} not in (
+                        {'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash'},
+                        {'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash', 'remote_connection_hash'})
                     or not isinstance(row['local_id'], str) or not row['local_id']
                     or not isinstance(row['remote_name'], str)
                     or not isinstance(row['local_name'], str)
@@ -62,6 +63,13 @@ def _read_ledger(tenant, peer):
                     or ('remote_connection_hash' in row
                         and not re.fullmatch(r'[0-9a-f]{64}', str(row['remote_connection_hash'])))):
                 raise ValueError()
+            if 'unverified_providers' in row:
+                providers = row['unverified_providers']
+                if (not isinstance(providers, list) or not providers
+                        or any(not isinstance(provider, str) or provider not in {'mercadolivre', 'bling'}
+                               for provider in providers)
+                        or providers != sorted(set(providers))):
+                    raise ValueError()
             for provider, identity in row['accounts'].items():
                 if (provider not in {'mercadolivre', 'bling'} or not isinstance(identity, list)
                         or len(identity) != 2 or not all(isinstance(value, str) for value in identity)
@@ -76,6 +84,15 @@ def _configs(store):
     from backend.services.shared_sync_merge_integracoes import _shared_sync_servico_key
     configs = store.get('integracoes') or {}
     return {_shared_sync_servico_key(key): value for key, value in configs.items() if isinstance(value, dict)}
+
+
+def _unidentified_inactive_account(config):
+    # An explicitly invalid connection without an account claim is not proof
+    # of a second account. It can only be set aside after another integration
+    # of this same store has been authenticated; never trust its old tokens.
+    return (config.get('connected') is False and config.get('oauth_invalid') is True
+            and not any(config.get(key) is not None and str(config[key]).strip()
+                        for key in ('user_id', 'seller_id', 'account_id', 'empresa_id')))
 
 
 def _account_providers(store):
@@ -99,8 +116,12 @@ def _connection_hash(store):
     keys = ('app_id', 'client_id', 'id', 'client_secret', 'secret_key', 'secret',
             'access_token', 'token', 'refresh_token', 'user_id', 'seller_id',
             'account_id', 'empresa_id', 'site_id', 'connected')
-    return _hash({provider: {key: cfg[key] for key in keys if key in cfg}
-                  for provider, cfg in _configs(store).items() if provider in {'mercadolivre', 'bling'}})
+    return _hash({provider: {
+        **{key: cfg[key] for key in keys if key in cfg},
+        # Keep existing hashes for normal connections, while invalidating an
+        # optional-provider proof if only its invalid state changes later.
+        **({'oauth_invalid': True} if _unidentified_inactive_account(cfg) else {}),
+    } for provider, cfg in _configs(store).items() if provider in {'mercadolivre', 'bling'}})
 
 
 def source_connection_hashes(data):
@@ -132,10 +153,13 @@ def _verify_accounts(local, remote, pairs, *, remote_keys=()):
     for remote_key, local_key in pairs:
         selected['local'].add(local_key)
         selected['remote'].add(remote_key)
-    tasks, references = {}, []
+    tasks, references, needs_other_account = {}, [], set()
     for side in selected:
         for key in selected[side]:
             for provider, config in _configs(records[side][key]).items():
+                if provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config):
+                    needs_other_account.add((side, key))
+                    continue
                 if provider not in _account_providers(records[side][key]):
                     continue
                 access = str(config.get('access_token') or (config.get('token') if provider == 'bling' else '') or '').strip()
@@ -162,6 +186,8 @@ def _verify_accounts(local, remote, pairs, *, remote_keys=()):
         _fail('Não foi possível confirmar as contas das lojas. Confira as conexões e tente receber novamente.', 'shared_sync_store_account_unverifiable')
     except Exception:
         _fail('Não foi possível confirmar as contas das lojas. Tente receber novamente.', 'shared_sync_store_account_unverifiable')
+    if any(not result[side].get(key) for side, key in needs_other_account):
+        _fail('Conecte ao menos uma conta desta loja antes de confirmar sua correspondência.', 'shared_sync_store_account_unverifiable')
     return result
 
 
@@ -214,6 +240,13 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
         for provider in _account_providers(incoming):
             remote_providers.setdefault(provider, set()).add(_remote_key(incoming))
     remote_candidates = {key for keys in remote_providers.values() if len(keys) > 1 for key in keys}
+    # The optional-provider exception also needs fresh proof for a single new
+    # store arriving at an empty destination, where no pair exists yet.
+    remote_candidates.update(
+        _remote_key(row) for row in remote
+        if any(provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config)
+               for provider, config in _configs(row).items())
+    )
     accounts = _verify_accounts(local, remote, pairs, remote_keys=remote_candidates)
     for remote_key, local_key in pairs:
         if not (accounts['local'].get(local_key, {}).keys() & accounts['remote'].get(remote_key, {}).keys()):
@@ -259,6 +292,18 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
         records[key] = {'local_id': local_id, 'local_name': original['nome'], 'remote_name': originals[key]['nome'],
                         'accounts': accounts['local'][local_id], 'connection_hash': _connection_hash(original),
                         'remote_connection_hash': _connection_hash(originals[key])}
+        unverified = set(entry['stores'].get(key, {}).get('unverified_providers', []))
+        unverified.update(provider for row in (original, originals[key])
+                          for provider, config in _configs(row).items()
+                          if provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config))
+        # Removing a disconnected configuration is not proof of the company
+        # behind its historical data. Clear a restriction only after both
+        # current connections authenticate as the same account.
+        unverified = sorted(provider for provider in unverified
+                            if not accounts['local'].get(local_id, {}).get(provider)
+                            or accounts['local'][local_id][provider] != accounts['remote'].get(key, {}).get(provider))
+        if unverified:
+            records[key]['unverified_providers'] = unverified
     ledger['peers'][_hash(peer)] = {'identity': peer, 'stores': records}
     changed = records != entry['stores']
     plan['binding_bytes'] = json.dumps(ledger, sort_keys=True, ensure_ascii=False, indent=2).encode() if records or changed else previous_bytes
@@ -269,7 +314,7 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
 def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connections=None):
     from backend.services import integracoes
     from backend.services.shared_sync_merge_sqlite import _shared_sync_store_ids_tombstonados
-    from backend.services.shared_sync_store_remap import remap_store_sources
+    from backend.services.shared_sync_store_remap import remap_store_sources, sources_reference_store
     peer = validate_peer(client_id, peer)
     _, entry, _ = _read_ledger(tenant, peer)
     if not entry['stores']:
@@ -284,6 +329,13 @@ def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connecti
         candidate_ids = {} if remote_id.startswith('legacy:') else {remote_id: local_id}
         current = by_id.get(local_id)
         candidate_labels = {record['remote_name']: current['nome'] if current else record['local_name']}
+        # Matching Mercado Livre does not prove the company behind historical
+        # Bling sales. Include unchanged name-only legacy references here too.
+        if (scope == 'vendas' and 'bling' in record.get('unverified_providers', [])
+                and sources_reference_store(scope, sources, '' if remote_id.startswith('legacy:') else remote_id,
+                                            record['remote_name'])):
+            _fail('Reconecte o Bling nas lojas afetadas e confirme a mesma conta nas duas máquinas. Depois envie e receba Lojas e integrações e Vendas novamente.',
+                  'shared_sync_store_sales_account_unverified')
         if remap_store_sources(scope, sources, candidate_ids, candidate_labels) == sources:
             continue
         # A tombstone for the remote alias stays intact; only the active local
