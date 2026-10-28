@@ -96,12 +96,23 @@
         .sync-progress { display: none; margin-top: 14px; padding: 12px 14px; border: 1px solid #4facfe; border-radius: 8px; background: #0f1a2a; }
         .sync-progress.show { display: block; }
         .sync-progress.error { border-color: #ff7675; }
+        .sync-progress.warning { border-color: #d8a854; }
         .sync-progress.ok { border-color: #00b894; }
-        .sync-progress-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #b8d4ff; font-weight: 800; }
+        .sync-progress-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #dce8ff; font-weight: 700; line-height: 1.5; }
         .sync-progress.error .sync-progress-row { color: #ffb3b3; }
+        .sync-progress.warning .sync-progress-row { color: #f3ce8b; }
         .sync-progress.ok .sync-progress-row { color: #8ff7d7; }
         .sync-progress-track { height: 11px; border-radius: 999px; overflow: hidden; background: #0a1220; border: 1px solid #24425f; }
         .sync-progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #27d3ff, #66f0b8); transition: width .25s ease; }
+        .sync-progress.finished .sync-progress-track, .sync-progress.finished #renovacao-sync-progress-percent, .sync-progress [hidden] { display: none; }
+        .sync-result-stats { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 12px 0; }
+        .sync-result-stat { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; color: #b8c7df; font-size: .95em; }
+        .sync-result-stat strong { color: #fff; font-size: 1.3em; font-variant-numeric: tabular-nums; }
+        .sync-result-stat.pending strong { color: #f3ce8b; }
+        .sync-result-details { border-top: 1px solid #2d425a; padding-top: 10px; color: #b8c7df; font-size: .92em; line-height: 1.6; }
+        .sync-result-details summary { width: fit-content; cursor: pointer; color: #9fd7ff; }
+        .sync-result-details summary:focus-visible { outline: 2px solid #4facfe; outline-offset: 4px; }
+        .sync-result-details-text { margin-top: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
         .campaign-info { margin-top: 12px; color: #b8c7df; font-size: .95em; }
         .btn-process { background-color: #00b894; color: white; padding: 15px 30px; font-size: 1.1em; border: none; border-radius: 8px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 20px; }
         .btn-process:hover { background-color: #00a884; }
@@ -257,13 +268,18 @@
                 <button class="btn-secondary" id="btn-baixar-conferencia-renovacao" style="display:none" onclick="baixarConferenciaRenovacao()">Baixar relatório</button>
             </div>
             <div id="renovacao-sync-progress" class="sync-progress">
-                <div class="sync-progress-row">
+                <div class="sync-progress-row" role="status" aria-live="polite">
                     <span id="renovacao-sync-progress-text">Preparando sincronizacao...</span>
                     <span id="renovacao-sync-progress-percent">0%</span>
                 </div>
                 <div class="sync-progress-track">
                     <div id="renovacao-sync-progress-fill" class="sync-progress-fill"></div>
                 </div>
+                <div id="renovacao-sync-result-stats" class="sync-result-stats" hidden></div>
+                <details id="renovacao-sync-details" class="sync-result-details" hidden>
+                    <summary>Ver detalhes</summary>
+                    <div id="renovacao-sync-details-text" class="sync-result-details-text"></div>
+                </details>
             </div>
         </div>
         <div id="renovacao-campanha-info" class="campaign-info"></div>
@@ -333,15 +349,62 @@
     }
 
     function setRenovacaoSyncProgress(texto, percentual = 0, tipo = 'info') {
+        setRenovacaoApiStatus('');
         const box = document.getElementById('renovacao-sync-progress');
         const label = document.getElementById('renovacao-sync-progress-text');
         const percentLabel = document.getElementById('renovacao-sync-progress-percent');
         const fill = document.getElementById('renovacao-sync-progress-fill');
+        const stats = document.getElementById('renovacao-sync-result-stats');
+        const detalhes = document.getElementById('renovacao-sync-details');
+        if (stats) stats.hidden = true;
+        if (detalhes) { detalhes.hidden = true; detalhes.open = false; }
         const pct = Math.max(0, Math.min(100, Number(percentual || 0)));
         if (box) box.className = `sync-progress show ${tipo || 'info'}`;
         if (label) label.textContent = texto || 'Processando sincronizacao...';
         if (percentLabel) percentLabel.textContent = `${Math.round(pct)}%`;
         if (fill) fill.style.width = `${pct}%`;
+    }
+
+    function mostrarResultadoSincronizacaoRenovacao(result, destinoNome) {
+        const conferencia = result.conferencia || {};
+        const correcao = result.correcao || {};
+        const completa = result.success === true && conferencia.completa === true;
+        const nome = result.campanha_destino?.nome || destinoNome;
+        const numero = valor => Number(valor || 0).toLocaleString('pt-BR');
+        const inconclusivos = (conferencia.inconclusivos || []).length;
+        const pendencias = Number(result.falhas_total ?? (Number(conferencia.pendentes || 0) + inconclusivos));
+        const situacao = completa ? 'Concluído' : (pendencias === 0 && conferencia.contagem_coerente === false ? 'Confira a contagem da origem' : 'Finalizado com pendências');
+        setRenovacaoSyncProgress(`${nome} · ${situacao}`, 100, completa ? 'ok' : 'warning');
+        const box = document.getElementById('renovacao-sync-progress');
+        if (box) box.className += ' finished';
+        const indicadores = [[conferencia.confirmados, 'descontos confirmados']];
+        if (result.corrigir_divergencias) indicadores.push([correcao.corrigidos, 'corrigidos']);
+        else if (!result.somente_conferir) indicadores.push([result.incluidos, 'incluídos']);
+        indicadores.push([pendencias, 'anúncios pendentes']);
+        const stats = document.getElementById('renovacao-sync-result-stats');
+        if (stats) {
+            stats.innerHTML = indicadores.map(([valor, rotulo]) => `<div class="sync-result-stat${rotulo === 'anúncios pendentes' && pendencias ? ' pending' : ''}"><strong>${numero(valor)}</strong><span>${rotulo}</span></div>`).join('');
+            stats.hidden = false;
+        }
+        const linhas = [
+            `Descontos confirmados: ${numero(conferencia.confirmados)} de ${numero(conferencia.total_origem)} anúncios com participação confirmada na origem.`,
+            `Pendências: ${numero(conferencia.pendentes)} entre os anúncios da origem; ${numero(inconclusivos)} consultas sem confirmação.`,
+        ];
+        if (!result.somente_conferir) {
+            linhas.push(`Nesta execução: ${numero(result.atualizados)} atualizados e ${numero(result.incluidos)} incluídos.`);
+            linhas.push(`Já presentes antes da execução: ${numero(result.mlbs_ja_presentes)}.`);
+        }
+        if (result.corrigir_divergencias) linhas.push(`Entre os itens selecionados para correção: ${numero(correcao.pendentes)} ainda pendentes.`);
+        if (conferencia.contagem_coerente === false) linhas.push(`Contagem da origem divergente: ${conferencia.esperado == null ? 'não confirmada' : numero(conferencia.esperado)} esperados; ${numero(conferencia.total_origem)} encontrados.`);
+        if (conferencia.extras_destino?.length) linhas.push(`No destino: ${numero(conferencia.extras_destino.length)} anúncios sem participação confirmada na origem.`);
+        const exemplos = (Array.isArray(result.falhas) ? result.falhas : []).slice(0, 5);
+        if (exemplos.length) linhas.push('Primeiras pendências:\n' + exemplos.map(item => `${item.item_id || 'Anúncio'}: ${result.erros_operacao?.[item.item_id] || item.erro || 'Sem detalhe'}`).join('\n'));
+        if (result.aviso_relatorio) linhas.push(result.aviso_relatorio);
+        linhas.push('Baixe o relatório para consultar todos os anúncios.');
+        const texto = document.getElementById('renovacao-sync-details-text');
+        if (texto) texto.textContent = linhas.join('\n\n');
+        const detalhes = document.getElementById('renovacao-sync-details');
+        if (detalhes) detalhes.hidden = false;
     }
 
     function pararPollingRenovacaoSync() {
@@ -562,7 +625,7 @@
         }
     }
 
-    async function carregarCampanhasRenovacao() {
+    async function carregarCampanhasRenovacao(silencioso = false) {
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const selectCampanha = document.getElementById('renovacao-campanha');
         const selectSyncOrigem = document.getElementById('renovacao-sync-origem');
@@ -587,7 +650,7 @@
         selectCampanha.innerHTML = '<option value="">Carregando campanhas...</option>';
         if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Carregando campanhas...</option>';
         if (selectDestino) selectDestino.innerHTML = '<option value="">Carregando campanhas...</option>';
-        setRenovacaoApiStatus('Buscando campanhas criadas pelo usuario...', 'info');
+        if (!silencioso) setRenovacaoApiStatus('Buscando campanhas criadas pelo usuario...', 'info');
         try {
             const response = await fetch(`/api/renovacao/campanhas-usuario?loja=${encodeURIComponent(loja)}`, {
                 headers: { ...obterAuthHeaders() }
@@ -600,7 +663,7 @@
                 if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Nenhuma campanha disponivel</option>';
                 if (selectDestino) selectDestino.innerHTML = '<option value="">Nenhuma campanha disponivel</option>';
                 renderizarCampanhasRenovacao([], 'Nenhuma campanha criada pelo usuario foi encontrada nesta loja.');
-                setRenovacaoApiStatus('Nenhuma campanha do vendedor foi encontrada para esta loja.', 'info');
+                if (!silencioso) setRenovacaoApiStatus('Nenhuma campanha do vendedor foi encontrada para esta loja.', 'info');
                 return;
             }
             selectCampanha.innerHTML = campanhasRenovacao.map((campanha) => {
@@ -619,7 +682,7 @@
             renderizarCampanhasRenovacao(campanhasRenovacao);
             selecionarCampanhaRenovacao();
             atualizarCampanhasDestinoRenovacao();
-            setRenovacaoApiStatus(`${campanhasRenovacao.length} campanha(s) encontrada(s).`, 'ok');
+            if (!silencioso) setRenovacaoApiStatus(`${campanhasRenovacao.length} campanha(s) encontrada(s).`, 'ok');
         } catch (error) {
             selectCampanha.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
             if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
@@ -1194,28 +1257,14 @@
             const percentual = Number(job.percentual ?? job.progress ?? 0);
             const mensagem = job.mensagem || 'Sincronizando promocao...';
             const tipo = status === 'error' || (status === 'done' && job.result?.success !== true) ? 'error' : (status === 'done' ? 'ok' : 'info');
-            setRenovacaoSyncProgress(mensagem, percentual, tipo);
-            setRenovacaoApiStatus(mensagem, tipo);
             if (status === 'done') {
                 pararPollingRenovacaoSync();
                 const result = job.result || {};
-                const falhas = resumoFalhasRenovacao(result);
-                const destinoRetorno = result.campanha_destino || {};
-                const conferencia = result.conferencia || {};
-                const completa = result.success === true && conferencia.completa === true;
-                const acao = result.corrigir_divergencias ? 'Conferencia e correcao' : (result.somente_conferir ? 'Conferencia' : 'Sincronizacao');
-                const titulo = completa ? `${acao} concluida` : `${acao} encerrada com pendencias`;
-                const contagem = conferencia.contagem_coerente === false ? ` Total esperado na origem: ${conferencia.esperado ?? 'nao confirmado'}; encontrado: ${conferencia.total_origem || 0}.` : '';
-                const extras = conferencia.extras_destino?.length ? ` ${conferencia.extras_destino.length} anuncio(s) no destino sem participacao confirmada na origem.` : '';
-                const correcao = result.correcao || {};
-                const ajustes = result.corrigir_divergencias ? ` Correcoes confirmadas: ${correcao.corrigidos || 0}. Pendencias da correcao: ${correcao.pendentes || 0}.` : '';
-                const mensagemFinal = `${titulo} para ${destinoRetorno.nome || destinoNome}. Descontos confirmados: ${conferencia.confirmados || 0}/${conferencia.total_origem || 0}. Ja presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluidos: ${result.incluidos || 0}.${ajustes}${contagem}${extras}${falhas}`;
                 ultimaConferenciaRenovacao = result;
                 const download = document.getElementById('btn-baixar-conferencia-renovacao');
                 if (download) download.style.display = '';
-                setRenovacaoSyncProgress(mensagemFinal, 100, completa ? 'ok' : 'error');
-                await carregarCampanhasRenovacao();
-                setRenovacaoApiStatus(mensagemFinal, completa ? 'ok' : 'error');
+                mostrarResultadoSincronizacaoRenovacao(result, destinoNome);
+                await carregarCampanhasRenovacao(true);
                 resetarBotaoSincronizacaoRenovacao(botao);
                 return true;
             }
@@ -1223,10 +1272,10 @@
                 pararPollingRenovacaoSync();
                 const erro = job.error || mensagem || 'Erro ao sincronizar promocao.';
                 setRenovacaoSyncProgress(erro, 100, 'error');
-                setRenovacaoApiStatus(erro, 'error');
                 resetarBotaoSincronizacaoRenovacao(botao);
                 return true;
             }
+            setRenovacaoSyncProgress(mensagem, percentual, tipo);
             return false;
         };
 
@@ -1236,7 +1285,6 @@
         } catch (error) {
             pararPollingRenovacaoSync();
             setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
-            setRenovacaoApiStatus(error.message || 'Erro ao acompanhar sincronizacao.', 'error');
             resetarBotaoSincronizacaoRenovacao(botao);
             return;
         }
@@ -1247,7 +1295,6 @@
             } catch (error) {
                 pararPollingRenovacaoSync();
                 setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
-                setRenovacaoApiStatus(error.message || 'Erro ao acompanhar sincronizacao.', 'error');
                 resetarBotaoSincronizacaoRenovacao(botao);
             }
         }, 1000);
@@ -1295,7 +1342,6 @@
         if (download) download.style.display = 'none';
         const inicio = corrigirDivergencias ? 'Conferindo anuncios para corrigir as divergencias...' : (somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...');
         setRenovacaoSyncProgress(inicio, 0, 'info');
-        setRenovacaoApiStatus(inicio, 'info');
         const endpoint = corrigirDivergencias ? '/api/renovacao/corrigir-divergencias/iniciar' : (somenteConferir ? '/api/renovacao/conferir-promocao/iniciar' : '/api/renovacao/sincronizar-promocao/iniciar');
         try {
             const response = await fetch(endpoint, {
@@ -1319,7 +1365,6 @@
         } catch (error) {
             pararPollingRenovacaoSync();
             setRenovacaoSyncProgress(error.message || 'Erro ao sincronizar promocao.', 100, 'error');
-            setRenovacaoApiStatus(error.message || 'Erro ao sincronizar promocao.', 'error');
             resetarBotaoSincronizacaoRenovacao(botao);
         }
     }
