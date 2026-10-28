@@ -344,6 +344,8 @@ function renderBotoesLojas(lojas) {
 }
 
 async function atualizarSelecao() {
+    if (periodoApplyTimer) clearTimeout(periodoApplyTimer);
+    periodoApplyTimer = null;
     unidadeNegocioSelect.value = '__todos';
     Array.from(lojaBotoes.children).forEach(btn => {
         btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
@@ -356,6 +358,7 @@ async function atualizarSelecao() {
     }
 
     autoSyncAoTrocarLoja = true;
+    void carregarGrafico();
     try {
         // Sempre recarrega os dados da loja selecionada para manter as lojas virtuais atualizadas.
         await carregarVendas({ retornoRapido: true });
@@ -368,7 +371,6 @@ async function atualizarSelecao() {
     } finally {
         autoSyncAoTrocarLoja = false;
     }
-    agendarSegundoPlano(() => carregarGrafico(), 80);
 }
 
 function atualizarUnidadesNegocio(lista, mapeamento) {

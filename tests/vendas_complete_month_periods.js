@@ -233,7 +233,7 @@ assert.match(source, /estimativa, não valor realizado/);
 assert.match(aplicarPeriodoSource, /removerDatasExplicitasUrlAposAtalho\(\)/);
 assert.match(dadosRenderSource, /let periodoAtualizadoPromise = Promise\.resolve\(true\)/);
 assert.match(dadosRenderSource, /periodoAtualizadoPromise = reaplicarPeriodoGraficoAposMudancaFiltro\(\)/);
-assert.match(dadosRenderSource, /periodoAtualizado = await periodoAtualizadoPromise;\s*if \(periodoAtualizado === false\) return;\s*await carregarVendas/);
+assert.match(dadosRenderSource, /periodoAtualizado = await periodoAtualizadoPromise;\s*if \(periodoAtualizado === false\) return;\s*void carregarGrafico\(\);\s*await carregarVendas/);
 assert.match(syncSource, /periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltro\(\);\s*if \(periodoAtualizado === false\) return;[\s\S]*await carregarVendas/);
 assert.ok(
     syncSource.indexOf("unidadeNegocioSelect.value = '__todos'")
@@ -260,10 +260,10 @@ assert.strictEqual(dadosCompactados.labels.at(-1), 'dia-319', 'compactação dev
 assert.strictEqual(dadosCompactados.series[0].at(-1), 319, 'séries devem preservar o valor do último ponto');
 
 assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
-assert.match(htmlStatic, /periodo-cache\.js\?v=20261027-cache-servidor-v2/);
-assert.match(htmlStatic, /sync\.js\?v=20261022-vendas-firebase-sessao-v1/);
-assert.match(htmlStatic, /dados-render\.js\?v=20261027-cache-persistente-v1/);
-assert.match(htmlStatic, /grafico\.js\?v=20261027-cache-servidor-v2/);
+assert.match(htmlStatic, /periodo-cache\.js\?v=20261028-grafico-filtros-v1/);
+assert.match(htmlStatic, /sync\.js\?v=20261028-grafico-filtros-v1/);
+assert.match(htmlStatic, /dados-render\.js\?v=20261028-grafico-filtros-v1/);
+assert.match(htmlStatic, /grafico\.js\?v=20261028-grafico-filtros-v1/);
 assert.match(htmlStatic, /init\.js\?v=20261027-cache-servidor-v2/);
 assert.match(htmlStatic, /data-periodo="3m" title="3 meses completos \+ mês atual" aria-label="3 meses completos \+ mês atual"/);
 assert.match(htmlStatic, /data-periodo="6m" title="6 meses completos \+ mês atual" aria-label="6 meses completos \+ mês atual"/);

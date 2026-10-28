@@ -28,9 +28,9 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const [asset, expectedCacheKey] of Object.entries({
   'styles.css': '20261020-vendas-status-compacto-v2',
   'runtime.js': '20261027-cache-persistente-v1',
-  'periodo-cache.js': '20261027-cache-servidor-v2',
-  'sync.js': '20261022-vendas-firebase-sessao-v1',
-  'dados-render.js': '20261027-cache-persistente-v1',
+  'periodo-cache.js': '20261028-grafico-filtros-v1',
+  'sync.js': '20261028-grafico-filtros-v1',
+  'dados-render.js': '20261028-grafico-filtros-v1',
 })) {
   assert.ok(
     canonicalHtml.includes(`/vendas/${asset}?v=${expectedCacheKey}`),

@@ -58,7 +58,10 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false, preferen
         clearTimeout(periodoApplyTimer);
     }
     periodoApplyTimer = setTimeout(() => {
-        carregarVendas().then(() => agendarSegundoPlano(() => carregarGrafico(), 220));
+        periodoApplyTimer = null;
+        // O gráfico salvo pode aparecer enquanto a lista confere os dados no servidor.
+        void carregarGrafico();
+        void carregarVendas();
     }, 250);
 }
 
@@ -662,6 +665,7 @@ async function restaurarCacheTelaVendasSeValido(opcoes = {}) {
         renderBotoesLojas(lojasDisponiveis || []);
         await filtrar();
         if (!vigente()) return false;
+        if (typeof atualizarObservacoesGraficoVigente === 'function') atualizarObservacoesGraficoVigente();
         window.JKVendasCache?.estado('Lista', 'atualizando', salvo.salvoEm);
         if (!syncEmAndamento) {
             statusEl.className = 'status-bar';

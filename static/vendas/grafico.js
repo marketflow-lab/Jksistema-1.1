@@ -14,8 +14,10 @@ let carregarGraficoController = null;
 let carregarGraficoPromise = null;
 let carregarGraficoRequestKey = '';
 let graficoConfirmadoRequestKey = null;
+let dadosConfirmadosGraficoVendas = null;
 let periodoGraficoSelecaoToken = 0;
 let periodoGraficoAtalhoPendente = null;
+let limitesVendasLeitura = null;
 const PERIODOS_GRAFICO_COM_MES_ATUAL = Object.freeze(['3m', '6m', '1a', '2a']);
 let rankingSidebarModo = 'vendidos';
 let compararAnoPassado = false;
@@ -307,6 +309,14 @@ function normalizarPrevisaoMesAtual(data) {
     };
 }
 
+function atualizarObservacoesGraficoVigente() {
+    if (!dadosConfirmadosGraficoVendas || window.JKVendasReadState?.isClosed()
+        || graficoConfirmadoRequestKey !== prepararConsultaGraficoVendas().requestKey
+        || (window.JKVendasReadState && !window.JKVendasReadState.canCache())
+        || (window.JKVendasCache && !window.JKVendasCache.dadosVigentes(contextoDadosVendas))) return;
+    atualizarObservacoesGraficoVendas(dadosConfirmadosGraficoVendas);
+}
+
 function atualizarObservacoesGraficoVendas(data) {
     if (!graficoObservacoesVendas) return;
     const labels = Array.isArray(data?.labels) ? data.labels : [];
@@ -342,7 +352,9 @@ function atualizarObservacoesGraficoVendas(data) {
         return true;
     };
 
-    const vendasContexto = (Array.isArray(dados) ? dados : []).filter(row => {
+    const listaAtual = (!window.JKVendasReadState || window.JKVendasReadState.canCache())
+        && (!window.JKVendasCache || window.JKVendasCache.dadosVigentes(contextoDadosVendas));
+    const vendasContexto = (listaAtual && Array.isArray(dados) ? dados : []).filter(row => {
         if (!dentroPeriodo(row?.data)) return false;
         if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(row?.loja_conta, lojaSelecionada)) return false;
         if (unidadeSel && unidadeSel !== '__todos' && !mesmaUnidade(row?.unidade_negocio, unidadeSel)) return false;
@@ -365,7 +377,7 @@ function atualizarObservacoesGraficoVendas(data) {
                 unidade_negocio: row?.unidade_negocio || '',
                 ocorrencias: row?.devolucoes || 0
             }))
-        : (Array.isArray(devolucaoItens) ? devolucaoItens : []).filter(dev => {
+        : (listaAtual && Array.isArray(devolucaoItens) ? devolucaoItens : []).filter(dev => {
         if (!dentroPeriodo(dev?.data_emissao)) return false;
         if (lojaSelecionada && lojaSelecionada !== '__todas' && !mesmaLoja(dev?.loja_conta, lojaSelecionada)) return false;
         if (unidadeSel && unidadeSel !== '__todos') {
@@ -419,7 +431,7 @@ function atualizarObservacoesGraficoVendas(data) {
     rankingDevolTodos = devolOrdenados;
     renderRankingSidebarVendas();
 
-    const totaisContexto = dadosModoResumo && typeof resumoTotaisVendas !== 'undefined' ? resumoTotaisVendas : null;
+    const totaisContexto = listaAtual && dadosModoResumo && typeof resumoTotaisVendas !== 'undefined' ? resumoTotaisVendas : null;
     const qtdDevolTotalContexto = Number(totaisContexto?.itensDevolucao ?? devolContexto.reduce((acc, cur) => acc + Number(cur?.quantidade_componentes ?? cur?.quantidade ?? 0), 0));
     const qtdVendasContexto = Number(totaisContexto?.itens ?? vendasContexto.reduce((acc, cur) => acc + Number(cur?.itensComponentes ?? cur?.quantidade ?? 0), 0));
     const taxaContexto = qtdVendasContexto > 0 ? (qtdDevolTotalContexto / qtdVendasContexto) * 100 : 0;
@@ -626,6 +638,7 @@ async function restaurarCacheGraficoVendasSeValido(opcoes = {}) {
         skuAtualGrafico = consulta.skuAtual;
         if (!chartInstance || graficoConfirmadoRequestKey !== consulta.requestKey) {
             renderizarGrafico(data, comparativo);
+            dadosConfirmadosGraficoVendas = data;
             atualizarObservacoesGraficoVendas(data);
         }
         graficoConfirmadoRequestKey = consulta.requestKey;
@@ -694,6 +707,7 @@ async function carregarGrafico() {
 
             if (!leituraAtual()) return;
             renderizarGrafico(data, dataComparativo);
+            dadosConfirmadosGraficoVendas = data;
             atualizarObservacoesGraficoVendas(data);
             graficoConfirmadoRequestKey = requestKey;
             window.JKVendasReadState?.finish('grafico', tokenAtual, 'success');
@@ -1543,7 +1557,7 @@ function limitesVendasValidos(limites) {
     return dataValida(limites?.inicio) && dataValida(limites?.fim) && limites.inicio <= limites.fim;
 }
 
-async function obterLimitesComVendasServidor() {
+async function obterLimitesComVendasServidor(opcoes = {}) {
     const contexto = window.JKVendasCache?.contexto();
     const consulta = prepararConsultaLimitesVendas();
     const geracao = window.JKVendasReadState?.epoch;
@@ -1554,25 +1568,51 @@ async function obterLimitesComVendasServidor() {
     let salvo = null;
     try { salvo = await window.JKVendasCache?.ler(consulta.chave, contexto); } catch (_erroCache) {}
     if (!vigente()) return null;
-    try {
-        const resp = await fetchComTimeout(consulta.url, { headers: obterAuthHeaders() });
-        if (!vigente()) return null;
-        if (resp.status === 401) {
-            void window.JKCachePersistente?.invalidar(['vendas']);
-            window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
-            return null;
-        }
-        if (resp.status === 403) return null;
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
-        const limites = { inicio: String(data?.inicio || '').trim(), fim: String(data?.fim || '').trim() };
-        if (!limitesVendasValidos(limites)) throw new Error('Limites de vendas inválidos.');
-        if (!vigente()) return null;
-        await window.JKVendasCache?.salvar(consulta.chave, limites, contexto);
-        return vigente() ? limites : null;
-    } catch (_e) {
-        return vigente() && limitesVendasValidos(salvo?.dados) ? salvo.dados : null;
+
+    let leitura = limitesVendasLeitura;
+    if (!leitura || leitura.chave !== consulta.chave || !leitura.vigente()) {
+        limitesVendasLeitura?.controller.abort();
+        leitura = { chave: consulta.chave, controller: new AbortController() };
+        leitura.vigente = () => !leitura.controller.signal.aborted && vigente();
+        limitesVendasLeitura = leitura;
+        leitura.promise = (async () => {
+            try {
+                const resp = await fetchComTimeout(consulta.url, {
+                    headers: obterAuthHeaders(), signal: leitura.controller.signal
+                });
+                if (!leitura.vigente()) return null;
+                if (resp.status === 401) {
+                    void window.JKCachePersistente?.invalidar(['vendas']);
+                    window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
+                    return null;
+                }
+                if (resp.status === 403) return null;
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                const limites = { inicio: String(data?.inicio || '').trim(), fim: String(data?.fim || '').trim() };
+                if (!limitesVendasValidos(limites)) throw new Error('Limites de vendas inválidos.');
+                if (!leitura.vigente()) return null;
+                await window.JKVendasCache?.salvar(consulta.chave, limites, contexto);
+                return leitura.vigente() ? limites : null;
+            } catch (_e) {
+                return leitura.vigente() && limitesVendasValidos(salvo?.dados) ? salvo.dados : null;
+            } finally {
+                if (limitesVendasLeitura === leitura) limitesVendasLeitura = null;
+            }
+        })();
     }
+    const atualizacao = leitura.promise;
+    if (opcoes.usarSalvo && limitesVendasValidos(salvo?.dados)) {
+        void atualizacao.then(limites => {
+            if (vigente() && leitura.vigente() && limitesVendasValidos(limites)
+                && (limites.inicio !== salvo.dados.inicio || limites.fim !== salvo.dados.fim)) {
+                opcoes.aoAtualizar?.(limites);
+            }
+        });
+        return salvo.dados;
+    }
+    const limites = await atualizacao;
+    return vigente() && leitura.vigente() ? limites : null;
 }
 
 function invalidarPeriodoGraficoPendente() {
@@ -1618,6 +1658,7 @@ async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
     const hoje = opcoes.hoje instanceof Date ? opcoes.hoje : new Date();
     const periodosCompletos = window.JKVendasPeriodosCompletos;
     const periodoFallback = periodosCompletos.calcularPeriodoComMesAtual('3m', hoje);
+    let assinaturaAplicada = null;
     let periodoCompleto = ['3m', '6m', '1a', '2a'].includes(periodo)
         ? periodosCompletos.calcularPeriodoComMesAtual(periodo, hoje)
         : periodosCompletos.calcularPeriodoMesesCompletos(periodo, hoje);
@@ -1625,7 +1666,24 @@ async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
     if (periodo === 'max') {
         const limites = Object.prototype.hasOwnProperty.call(opcoes, 'limites')
             ? opcoes.limites
-            : await obterLimitesComVendasServidor();
+            : await obterLimitesComVendasServidor({
+                usarSalvo: true,
+                aoAtualizar(limitesAtualizados) {
+                    // A seleção salva entra primeiro; somente a mesma seleção recebe a revalidação.
+                    setTimeout(() => {
+                        if (!assinaturaAplicada || tokenAtual !== periodoGraficoSelecaoToken
+                            || periodoGrafico !== periodo
+                            || assinaturaAplicada !== obterAssinaturaContextoPeriodoGrafico()
+                            || geracao !== window.JKVendasReadState?.epoch
+                            || window.JKVendasReadState?.isClosed()
+                            || (window.JKVendasCache && !window.JKVendasCache.dadosVigentes(contextoCache))) return;
+                        const atualizado = periodosCompletos.calcularPeriodoMaximoMesesCompletos(limitesAtualizados, hoje);
+                        if (atualizado && (atualizado.inicio !== getDataIniISO() || atualizado.fim !== getDataFimISO())) {
+                            void aplicarPeriodoGraficoMesesCompletos(periodo, { limites: limitesAtualizados, hoje });
+                        }
+                    }, 0);
+                }
+            });
         periodoCompleto = periodosCompletos.calcularPeriodoMaximoMesesCompletos(limites, hoje);
     }
 
@@ -1644,6 +1702,7 @@ async function aplicarPeriodoGraficoMesesCompletos(periodo, opcoes = {}) {
         periodoCompleto = periodoFallback;
     }
     sincronizarPeriodoTopo(periodoCompleto.inicio, periodoCompleto.fim);
+    assinaturaAplicada = obterAssinaturaContextoPeriodoGrafico();
     periodoSelecionadoPeloUsuario = true;
     const preferencia = { origem: 'atalho', periodo };
     if (opcoes.recarregar === false) {

@@ -395,6 +395,7 @@ async function carregarVendas(opcoes = {}) {
         atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
         await filtrar();
         if (!leituraAtual()) return;
+        if (typeof atualizarObservacoesGraficoVigente === 'function') atualizarObservacoesGraficoVigente();
         window.JKVendasReadState?.finish('resumo', stateKey, 'success');
         window.JKVendasCache?.estado('Lista', null);
         if (typeof salvarCacheTelaVendas === 'function') {
@@ -486,10 +487,11 @@ unidadeNegocioSelect.addEventListener('change', () => {
     }
     if (periodoApplyTimer) clearTimeout(periodoApplyTimer);
     periodoApplyTimer = setTimeout(async () => {
+        periodoApplyTimer = null;
         const periodoAtualizado = await periodoAtualizadoPromise;
         if (periodoAtualizado === false) return;
+        void carregarGrafico();
         await carregarVendas({ retornoRapido: true });
-        agendarSegundoPlano(() => carregarGrafico(), 120);
     }, 250);
 });
 dataIni.addEventListener('change', () => { atualizarPeriodoComRecarregamento(true); });

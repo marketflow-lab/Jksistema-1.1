@@ -88,6 +88,23 @@ async function open(context, url) {
 async function savedMain(page) {
     return page.evaluate(async () => JKCachePersistente.ler(chaveCacheTelaVendas(), { contexto: JKCachePersistente.contexto() }));
 }
+async function settledMain(page) {
+    // Filtering also schedules a save after 180 ms + an idle callback (up to 900 ms) + 60 ms.
+    // Capture the baseline after those live writes, before closing the browser or restoring cache.
+    await page.evaluate(() => Promise.allSettled([carregarVendasPromise, carregarGraficoPromise]));
+    let previous, stableSince = performance.now();
+    const deadline = performance.now() + 5000;
+    while (performance.now() < deadline) {
+        const snapshot = await savedMain(page);
+        if (snapshot?.salvoEm !== previous) {
+            previous = snapshot?.salvoEm;
+            stableSince = performance.now();
+        }
+        if (snapshot && performance.now() - stableSince >= 1300) return snapshot;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('The live list cache did not finish its scheduled saves before restart');
+}
 async function release(status, predicate = () => true) {
     const selected = state.held.filter(predicate);
     state.held = state.held.filter(route => !selected.includes(route));
@@ -125,7 +142,6 @@ async function main() {
         await sku.waitForFunction(async () => !!await JKCachePersistente.ler(prepararConsultaVendasSku().chave,
             { contexto: JKCachePersistente.contexto() }));
         assert.match(await sku.locator('#btnTransferenciaFull').textContent(), /1/);
-        const savedAt = (await savedMain(page)).salvoEm;
         const maxPage = await open(context, maxUrl);
         await maxPage.waitForFunction(() => lojasDisponiveis.length > 0);
         await maxPage.evaluate(async () => {
@@ -147,6 +163,7 @@ async function main() {
         assert.deepEqual(await maxPage.evaluate(() => {
             const pref = carregarPreferenciaPeriodoData(); return [pref?.inicio, pref?.fim];
         }), maxDates, 'Preparing a second cached graph must retain the saved max range');
+        const savedAt = (await settledMain(page)).salvoEm;
         await context.close();
 
         // A new browser process has no previous JavaScript state or sessionStorage.
@@ -214,6 +231,8 @@ async function main() {
         });
         state.mode = 'live';
         await page.evaluate(async () => { await carregarLojas(); await Promise.all([carregarVendas(), carregarGrafico()]); });
+        // Table chunks render on animation frames after carregarVendas resolves.
+        await page.locator('#tBody tr[data-sku="001"]').waitFor();
         await json(takeHeld(oldLimitsRoute), { detail: 'Token de autenticação inválido.' }, 401);
         await oldLimits;
         assert.equal(await page.locator('#tBody tr[data-sku="001"]').count(), 1);
