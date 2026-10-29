@@ -248,6 +248,12 @@ async function abrirCenario(browser, opcoes = {}) {
   await page.goto('http://jk.test/medias_compras.html');
   await aguardarPeriodo(
     page,
+    6,
+    controle.periodosVazios.has(6) ? 0 : controle.quantidadeItens,
+  );
+  // Os cenarios de largura exercitam 12 meses por selecao explicita.
+  await trocarPeriodo(
+    page,
     12,
     controle.periodosVazios.has(12) ? 0 : controle.quantidadeItens,
   );
@@ -588,7 +594,8 @@ async function trocarUsuario(page, clientId, username, quantidadeItens = 24) {
     }));
   }, { clientIdNovo: clientId, usernameNovo: username });
   await page.reload();
-  await aguardarPeriodo(page, 12, quantidadeItens);
+  await aguardarPeriodo(page, 6, quantidadeItens);
+  await trocarPeriodo(page, 12, quantidadeItens);
 }
 
 async function validarCabecalhoFixo(page) {
@@ -691,7 +698,8 @@ async function testarReloadPreservaAutoFit(browser) {
 
     controle.variante = 'curto';
     await page.reload();
-    await aguardarPeriodo(page, 12, controle.quantidadeItens);
+    await aguardarPeriodo(page, 6, controle.quantidadeItens);
+    await trocarPeriodo(page, 12, controle.quantidadeItens);
 
     const perfilDepois = await lerPerfil(page, 12);
     const metricasDepois = await lerMetricas(page, 12);
@@ -727,10 +735,10 @@ async function testarPeriodosIndependentes(browser) {
 
     await trocarPeriodo(page, 6);
     const perfil6Auto = await lerPerfil(page, 6);
-    assertPerfilValido(perfil6Auto, 6, 'primeiro uso de 6 meses', { clientId, username });
+    assertPerfilValido(perfil6Auto, 6, 'perfil automatico de 6 meses', { clientId, username });
     assert.ok(
       Math.abs(perfil6Auto.perfil.widths.titulo_anuncio - perfil12.perfil.widths.titulo_anuncio) >= 50,
-      'o primeiro uso de 6 meses nao deve herdar o resize manual de 12 meses',
+      'o perfil automatico de 6 meses nao deve herdar o resize manual de 12 meses',
     );
 
     const resize6 = await arrastarColuna(page, 'titulo_anuncio', 45);
@@ -826,25 +834,25 @@ async function testarCorridaRapidaPeriodos(browser) {
     controle,
   }, async ({ page }) => {
     const perfil12Antes = await lerPerfil(page, 12);
-    controle.atrasosMs[6] = 180;
+    controle.atrasosMs[3] = 180;
     controle.atrasosMs[12] = 20;
 
     await page.evaluate(() => {
       const carregarVisao = window.JKMedias.modules.tabela.carregarVisao;
-      void carregarVisao(6);
+      void carregarVisao(3);
       void carregarVisao(12);
     });
     await page.waitForTimeout(260);
     await aguardarPeriodo(page, 12, controle.quantidadeItens);
 
     const perfil12Depois = await lerPerfil(page, 12);
-    const perfil6 = await lerPerfil(page, 6);
+    const perfil3 = await lerPerfil(page, 3);
     assert.deepStrictEqual(
       perfil12Depois.perfil,
       perfil12Antes.perfil,
-      'a corrida 12-6-12 deve terminar no perfil original de 12 meses',
+      'a corrida 12-3-12 deve terminar no perfil original de 12 meses',
     );
-    assert.strictEqual(perfil6.raw, null, 'resposta obsoleta de 6 meses nao deve inicializar perfil');
+    assert.strictEqual(perfil3.raw, null, 'resposta obsoleta de 3 meses nao deve inicializar perfil');
     const chavesAtuais = await page.locator('#tblResultado thead th[data-col-key]').evaluateAll(
       ths => ths.map(th => th.dataset.colKey),
     );

@@ -175,7 +175,7 @@ async function testRecoveryAndIsolation(browser) {
     const fixture = await openFixture(browser, { tenant, timers: index === 0 ? 'real' : 'fast',
       respond: (call, state) => state.calls.length === 1 ? unavailable(code, undefined, retryAfter) : success(tenant, call) });
     try {
-      await ready(fixture.page, tenant + '-TODAS-12');
+      await ready(fixture.page, tenant + '-TODAS-6');
       assert.strictEqual(fixture.state.calls.length, 2);
       assert.strictEqual(fixture.state.calls[0].url, fixture.state.calls[1].url, 'Retry preserva período e loja solicitados.');
       assert.deepStrictEqual(await fixture.page.evaluate(() => window.__retryTimers.delays), [1000]);
@@ -232,19 +232,19 @@ async function testPeriodAndStoreChanges(browser) {
     (state.calls.length === 1 || call.storeId === 'store-a') ? unavailable(knownCodes[0]) : success(tenant, call) });
   try {
     await fixture.page.waitForFunction(() => window.__retryTimers?.pending.length === 1);
-    await fixture.page.locator('#btnPeriodo6').click();
-    await ready(fixture.page, tenant + '-TODAS-6');
+    await fixture.page.locator('#btnPeriodo12').click();
+    await ready(fixture.page, tenant + '-TODAS-12');
     await releaseWaitingRetries(fixture.page);
-    assert.deepStrictEqual(fixture.state.calls.map(call => call.months), [12, 6], 'O período anterior não pode repetir.');
+    assert.deepStrictEqual(fixture.state.calls.map(call => call.months), [6, 12], 'O período anterior não pode repetir.');
     await fixture.page.locator('#lojaBotoes button').filter({ hasText: 'Loja A' }).click();
     await fixture.page.waitForFunction(() => window.__retryTimers?.pending.length === 1);
     await fixture.page.locator('#lojaBotoes button').filter({ hasText: 'Loja B' }).click();
-    await ready(fixture.page, tenant + '-store-b-6');
+    await ready(fixture.page, tenant + '-store-b-12');
     await releaseWaitingRetries(fixture.page);
-    assert.deepStrictEqual(fixture.state.calls.map(call => [call.months, call.storeId]), [[12, ''], [6, ''], [6, 'store-a'], [6, 'store-b']]);
+    assert.deepStrictEqual(fixture.state.calls.map(call => [call.months, call.storeId]), [[6, ''], [12, ''], [12, 'store-a'], [12, 'store-b']]);
     assert.match(await fixture.page.locator('#status').innerText(), /^Dados atualizados em /);
     assert(!(await fixture.page.locator('#tblResultado tbody').innerText()).includes('store-a'));
-    assert.strictEqual(await fixture.page.locator('#btnPeriodo6').evaluate(button => button.classList.contains('active')), true);
+    assert.strictEqual(await fixture.page.locator('#btnPeriodo12').evaluate(button => button.classList.contains('active')), true);
     await assertClean(fixture);
   } finally { await fixture.context.close(); }
   console.log('PASS geração: mudar período ou loja descarta repetições antigas sem sobrescrever resultado/status novos.');

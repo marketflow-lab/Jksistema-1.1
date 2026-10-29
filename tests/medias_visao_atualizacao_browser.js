@@ -334,7 +334,7 @@ async function testLateNavigationCancellation(browser, destination) {
     if (destination === 'pagehide') await page.evaluate(() => dispatchEvent(new Event('pagehide')));
     else {
       await plan(page, { body: payload('Resultado do novo período', 'new-scope') });
-      await page.locator('#btnPeriodo6').click();
+      await page.locator('#btnPeriodo12').click();
       await page.waitForFunction(() => itensVisaoAtual[0]?.titulo_anuncio === 'Resultado do novo período');
     }
     assert.strictEqual(await page.evaluate(index => __view.calls[index].aborted, index), true);

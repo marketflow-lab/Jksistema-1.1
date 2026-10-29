@@ -121,7 +121,7 @@
             alvoBalaoEstoqueEmTransitoAtual: null,
             frameBalaoEstoqueEmTransito: null,
             eventosGlobaisBalaoEstoqueEmTransitoConfigurados: false,
-            periodoAtual: 12,
+            periodoAtual: 6,
             carregandoSkusPesquisaListas: false,
         });
 

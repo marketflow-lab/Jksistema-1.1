@@ -85,6 +85,10 @@ async function installRoutes(page) {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
           body: fs.readFileSync(path.join(root, 'static', 'importacoes.html')) });
       }
+      if (pathname === '/cache-persistente.js') {
+        return route.fulfill({ status: 200, contentType: 'application/javascript',
+          body: fs.readFileSync(path.join(root, 'static', 'cache-persistente.js')) });
+      }
       if (pathname === '/auth.js') {
         return route.fulfill({ status: 200, contentType: 'application/javascript',
           body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer fixture"});' });

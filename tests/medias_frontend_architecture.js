@@ -92,7 +92,7 @@ for (const file of moduleFiles.filter(name => name !== 'init.js')) {
 assert(context.JKMedias, 'namespace JKMedias ausente');
 assert(context.JKMedias.state, 'estado central de Médias ausente');
 assert.strictEqual(context.JKMedias.state.lojaSelecionada, '__todas');
-assert.strictEqual(context.JKMedias.state.periodoAtual, 12);
+assert.strictEqual(context.JKMedias.state.periodoAtual, 6);
 assert.match(context.JKMedias.state.LS_COL_WIDTHS_KEY, /^medias_compras_larguras_colunas_v3_[0-9a-f]{16}$/);
 assert(!context.JKMedias.state.LS_COL_WIDTHS_KEY.includes('tenant-arquitetura'), 'a chave de preferencia nao deve expor o cliente');
 assert(!context.JKMedias.state.LS_COL_WIDTHS_KEY.includes('operador'), 'a chave de preferencia nao deve expor o usuario');

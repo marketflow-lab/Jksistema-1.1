@@ -117,10 +117,10 @@ async function testInitInteractionGate(browser) {
   try {
     await test.page.waitForFunction(() => __performanceHarness.calls.length === 2);
     await release(test.page, 1);
-    await store(test.page, 'A'); await test.page.locator('#btnPeriodo6').click(); await settle(test.page);
+    await store(test.page, 'A'); await test.page.locator('#btnPeriodo12').click(); await settle(test.page);
     assert.strictEqual((await calls(test.page, 'view:')).length, 0, 'Store/period clicks must await preferences.');
     await release(test.page, 0); await ready(test.page);
-    assert.strictEqual((await calls(test.page, 'view:store-a:6')).length, 1);
+    assert.strictEqual((await calls(test.page, 'view:store-a:12')).length, 1);
     await assertClean(test);
   } finally { await test.context.close(); }
 }
@@ -158,10 +158,10 @@ async function testActiveTab(browser) {
     const before = (await calls(test.page, 'view:')).length;
     await store(test.page, 'A');
     await test.page.locator('.lista-item').filter({ hasText: 'Pedido store-a' }).waitFor();
-    await test.page.locator('#btnPeriodo6').click(); await settle(test.page);
+    await test.page.locator('#btnPeriodo12').click(); await settle(test.page);
     assert.strictEqual((await calls(test.page, 'view:')).length, before, 'Lists must not load hidden view.');
     await test.page.locator('#btnAbaLista').click(); await ready(test.page);
-    assert.strictEqual((await calls(test.page, 'view:store-a:6')).length, 1);
+    assert.strictEqual((await calls(test.page, 'view:store-a:12')).length, 1);
     await test.page.locator('#btnAbaOcultados').click(); await settle(test.page);
     assert.strictEqual((await calls(test.page, 'view:')).length, before + 1);
     assert.deepStrictEqual(test.errors, []);
@@ -172,15 +172,15 @@ async function testNoOldScopeFlash(browser) {
   try {
     await lists(test.page); await store(test.page, 'A');
     await test.page.locator('.lista-item').filter({ hasText: 'Pedido store-a' }).waitFor();
-    await plan(test.page, 'view:store-a:12', { phase: 'body', ignoreAbort: true });
+    await plan(test.page, 'view:store-a:6', { phase: 'body', ignoreAbort: true });
     await test.page.locator('#btnAbaLista').click(); await settle(test.page);
     assert(!(await test.page.locator('#tblResultado tbody').textContent()).includes('SKU-VISIBLE'), 'Previous store must not appear under the new filter.');
     assert.strictEqual(await test.page.evaluate(() => itensVisaoAtual.length), 0, 'Purchase actions must not use rows from the previous store.');
-    const pending = (await calls(test.page, 'view:store-a:12')).at(-1);
+    const pending = (await calls(test.page, 'view:store-a:6')).at(-1);
     await release(test.page, pending.index); await ready(test.page);
-    await plan(test.page, 'view:store-a:12', { phase: 'body', ignoreAbort: true });
+    await plan(test.page, 'view:store-a:6', { phase: 'body', ignoreAbort: true });
     await store(test.page, 'A'); await settle(test.page);
-    const sameScope = (await calls(test.page, 'view:store-a:12')).at(-1);
+    const sameScope = (await calls(test.page, 'view:store-a:6')).at(-1);
     assert(sameScope.index > pending.index, 'Clicking current store after completion must still allow a fresh read.');
     assert((await test.page.locator('#tblResultado tbody').textContent()).includes('SKU-VISIBLE'), 'Same-scope refresh should preserve visible rows.');
     await release(test.page, sameScope.index); await ready(test.page);
@@ -191,8 +191,8 @@ async function testDedupe(browser) {
   const test = await fixture(browser);
   try {
     const before = (await calls(test.page, 'view:')).length;
-    await plan(test.page, 'view::12', { phase: 'body', ignoreAbort: true });
-    await test.page.evaluate(() => { void carregarVisao(12); void carregarVisao(12); void carregarVisao(12); });
+    await plan(test.page, 'view::6', { phase: 'body', ignoreAbort: true });
+    await test.page.evaluate(() => { void carregarVisao(6); void carregarVisao(6); void carregarVisao(6); });
     await settle(test.page);
     const pending = await calls(test.page, 'view:');
     assert.strictEqual(pending.length, before + 1, 'Same view must share pending work.');
@@ -246,8 +246,8 @@ async function testForceRefresh(browser) {
 async function testCancelViewAndInitNavigation(browser) {
   const test = await fixture(browser);
   try {
-    await plan(test.page, 'view::12', { phase: 'body', ignoreAbort: true });
-    await test.page.evaluate(() => { void carregarVisao(12); }); await settle(test.page);
+    await plan(test.page, 'view::6', { phase: 'body', ignoreAbort: true });
+    await test.page.evaluate(() => { void carregarVisao(6); }); await settle(test.page);
     const old = (await calls(test.page, 'view:')).at(-1);
     await lists(test.page);
     assert.strictEqual((await calls(test.page, 'view:')).at(-1).aborted, true);
@@ -258,11 +258,11 @@ async function testCancelViewAndInitNavigation(browser) {
   const initial = await fixture(browser, { holdInit: true });
   try {
     await initial.page.waitForFunction(() => __performanceHarness.calls.length === 2);
-    await lists(initial.page); await initial.page.locator('#btnPeriodo6').click();
+    await lists(initial.page); await initial.page.locator('#btnPeriodo12').click();
     await release(initial.page, 0); await release(initial.page, 1);
     assert.strictEqual((await calls(initial.page, 'view:')).length, 0);
     await initial.page.locator('#btnAbaLista').click(); await ready(initial.page);
-    assert.strictEqual((await calls(initial.page, 'view::6')).length, 1);
+    assert.strictEqual((await calls(initial.page, 'view::12')).length, 1);
     await assertClean(initial);
   } finally { await initial.context.close(); }
 }
