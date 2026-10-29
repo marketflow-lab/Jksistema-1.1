@@ -173,8 +173,23 @@ def _verify_accounts(local, remote, pairs, *, remote_keys=()):
         # Only GET identity calls from the existing integration are used here.
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {task: pool.submit(_identity, *task) for task in tasks}
-            identities = {task: future.result() for task, future in futures.items()}
+            identities, unavailable = {}, set()
+            for task, future in futures.items():
+                try:
+                    identities[task] = future.result()
+                except HTTPException as exc:
+                    if (exc.status_code not in {401, 429, 503}
+                            or (isinstance(exc.detail, dict)
+                                and str(exc.detail.get('code', '')).startswith('shared_sync_store_'))):
+                        raise
+                    # A failed platform lookup is not an account identity.
+                    # Keep other proofs, requiring another authenticated
+                    # account for every affected store below.
+                    unavailable.add(task)
         for side, key, provider, config, task in references:
+            if task in unavailable:
+                needs_other_account.add((side, key))
+                continue
             account, site = identities[task]
             expected, expected_site = _expected_identity(config, provider)
             if not account or (expected and str(account) != expected) or (expected_site and str(site) != expected_site):
@@ -189,6 +204,39 @@ def _verify_accounts(local, remote, pairs, *, remote_keys=()):
     if any(not result[side].get(key) for side, key in needs_other_account):
         _fail('Conecte ao menos uma conta desta loja antes de confirmar sua correspondência.', 'shared_sync_store_account_unverifiable')
     return result
+
+
+def _validate_partial_account_claims(local, remote, local_accounts, remote_accounts, *, remote_pair=False):
+    from backend.services.central_accounts_migration import _expected_identity
+    relation = _relation(local_accounts, remote_accounts)
+    for provider in {'mercadolivre', 'bling'} - (local_accounts.keys() & remote_accounts.keys()):
+        identities = []
+        for store, verified in ((local, local_accounts), (remote, remote_accounts)):
+            config = _configs(store).get(provider, {})
+            claimed = _expected_identity(config, provider)
+            if (provider not in verified and not claimed[0]
+                    and any(config.get(key) is not None and str(config[key]).strip()
+                            for key in ('user_id', 'seller_id', 'account_id', 'empresa_id'))):
+                _fail('A conta pendente possui uma identidade inválida. Confira a conexão antes de receber novamente.',
+                      'shared_sync_store_account_unverifiable')
+            identities.append(verified.get(provider, claimed))
+        left, right = identities
+        same_account = (left[0] and left[0] == right[0]
+                        and (not left[1] or not right[1] or left[1] == right[1]))
+        # Unverified claims can rule out an ambiguous import, but they must
+        # never establish a match or authorize projecting another store's data.
+        if same_account and remote_pair:
+            raise HTTPException(409, {
+                'code': 'shared_sync_store_reconciliation_ambiguous',
+                'reason': 'duplicate_remote_account',
+                'message': 'O envio contém lojas com contas repetidas ou conflitantes. Revise as lojas na origem antes de receber novamente.',
+            })
+        if ((relation == 'match' and (
+                (left[0] and right[0] and left[0] != right[0])
+                or (left[1] and right[1] and left[1] != right[1])))
+                or (relation == 'different' and same_account)):
+            _fail('As contas declaradas para a loja são diferentes. Confira as conexões antes de receber novamente.',
+                  'shared_sync_store_account_mismatch')
 
 
 def _same_claim(left, right):
@@ -248,9 +296,18 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
                for provider, config in _configs(row).items())
     )
     accounts = _verify_accounts(local, remote, pairs, remote_keys=remote_candidates)
+    local_by_id = {row['store_id']: row for row in local}
+    remote_by_id = {_remote_key(row): row for row in remote}
     for remote_key, local_key in pairs:
         if not (accounts['local'].get(local_key, {}).keys() & accounts['remote'].get(remote_key, {}).keys()):
             _fail('Não foi possível comprovar a conta de duas lojas com identidades diferentes.', 'shared_sync_store_account_unverifiable')
+        _validate_partial_account_claims(local_by_id[local_key], remote_by_id[remote_key],
+                                         accounts['local'].get(local_key, {}), accounts['remote'].get(remote_key, {}))
+    for index, incoming in enumerate(remote):
+        for other in remote[index + 1:]:
+            _validate_partial_account_claims(incoming, other,
+                                             accounts['remote'].get(_remote_key(incoming), {}),
+                                             accounts['remote'].get(_remote_key(other), {}), remote_pair=True)
     for key in rebuild:
         candidates = {row['store_id'] for row in local if row['store_id'] not in removed
                       and _relation(accounts['local'].get(row['store_id'], {}), accounts['remote'].get(key, {})) == 'match'}
@@ -293,6 +350,8 @@ def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
                         'accounts': accounts['local'][local_id], 'connection_hash': _connection_hash(original),
                         'remote_connection_hash': _connection_hash(originals[key])}
         unverified = set(entry['stores'].get(key, {}).get('unverified_providers', []))
+        for side, row_key, row in (('local', local_id, original), ('remote', key, originals[key])):
+            unverified.update(_account_providers(row) - accounts[side].get(row_key, {}).keys())
         unverified.update(provider for row in (original, originals[key])
                           for provider, config in _configs(row).items()
                           if provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config))
