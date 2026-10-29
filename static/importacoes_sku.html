@@ -964,6 +964,7 @@
         let custoComplementosPendente = true;
         let analiseComplementosPronta = false;
         const COMPLEMENTO_SKU_TIMEOUT_MS = 5000;
+        const ATUALIZACAO_SKU_LIMITE_MS = 120000;
         const controladoresDetalheSku = new Set();
 
         function detalheSkuVigente(contexto) {
@@ -982,27 +983,35 @@
             if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
             const urlLista = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId);
             const consultaLista = String(url).split('?')[0] === urlLista;
+            const { timeoutMs = COMPLEMENTO_SKU_TIMEOUT_MS, salvarCache = true,
+                mensagemTimeout = null, ...opcoesFetch } = opcoes;
+            const leitura = !opcoesFetch.method || String(opcoesFetch.method).toUpperCase() === 'GET';
             const controller = new AbortController();
             controladoresDetalheSku.add(controller);
-            const timeout = setTimeout(() => controller.abort(), opcoes.timeoutMs || COMPLEMENTO_SKU_TIMEOUT_MS);
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
             try {
                 const resp = await fetch(url, {
-                    ...opcoes, headers: { ...obterAuthHeaders(), ...opcoes.headers },
+                    ...opcoesFetch, headers: { ...obterAuthHeaders(), ...opcoesFetch.headers },
                     cache: 'no-store', signal: controller.signal,
                 });
-                if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
-                if (resp.status === 403 && consultaLista) {
+                if (!detalheSkuVigente(contexto) || (leitura && !dadosSkuVigentes(contexto))) throw new Error('Carregamento substituído.');
+                if ([401, 403].includes(resp.status) && consultaLista) {
                     negarAcessoCacheSku();
                     await window.JKCachePersistente?.invalidar(['importacoes']);
                     throw new Error('Acesso à lista negado.');
                 }
                 const dados = await resp.json();
                 if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
-                if (!resp.ok) throw new Error(typeof dados.detail === 'string' ? dados.detail : dados.detail?.message || 'Consulta indisponível.');
-                if ((!opcoes.method || String(opcoes.method).toUpperCase() === 'GET') && !dadosSkuVigentes(contexto)) {
+                if (!resp.ok) {
+                    const erro = new Error(typeof dados.detail === 'string' ? dados.detail : dados.detail?.message || 'Consulta indisponível.');
+                    erro.status = resp.status;
+                    erro.code = dados.detail?.code;
+                    throw erro;
+                }
+                if (leitura && !dadosSkuVigentes(contexto)) {
                     throw new Error('Os dados foram alterados durante o carregamento.');
                 }
-                if (contexto.persistencia && opcoes.method && String(opcoes.method).toUpperCase() !== 'GET') {
+                if (contexto.persistencia && !leitura) {
                     const novo = window.JKCachePersistente?.confirmarMutacao?.(contexto.persistencia, resp);
                     if (novo) contexto.persistencia = novo;
                     else contexto.podeSalvar = false;
@@ -1010,14 +1019,17 @@
                 const metaCache = dados?._cache;
                 const resultadoCompleto = resp.status !== 202 && dados?.dados !== null
                     && (!metaCache || (metaCache.estado === 'ready' && metaCache.completo !== false && !metaCache.stale && !metaCache.atualizando));
-                if (resultadoCompleto && contexto.persistencia && (!opcoes.method || String(opcoes.method).toUpperCase() === 'GET')) {
+                if (salvarCache && resultadoCompleto && contexto.persistencia && leitura) {
                     await window.JKCachePersistente?.salvar('importacoes:GET:' + (consultaLista ? urlLista : url), dados,
                         { contexto: contexto.persistencia, tags: ['importacoes'] });
                 }
                 return dados;
             } catch (erro) {
                 if (controller.signal.aborted && detalheSkuVigente(contexto)) {
-                    throw new Error(consultaLista ? 'Tempo limite ao consultar os dados da lista.' : 'Tempo limite ao carregar informações complementares.');
+                    const limite = new Error(mensagemTimeout || (consultaLista
+                        ? 'Tempo limite ao consultar os dados da lista.' : 'Tempo limite ao carregar informações complementares.'));
+                    limite.name = 'TimeoutError';
+                    throw limite;
                 }
                 throw erro;
             } finally {
@@ -3026,7 +3038,9 @@
             completo = completo && dados.versao === 1 && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
             completo = completo && dados.impostos.every(entrada => Array.isArray(entrada) && entrada.length === 2)
                 && dados.mapaM3.every(entrada => Array.isArray(entrada) && entrada.length === 2);
+            if (!dadosSkuVigentes(contexto)) return false;
             contexto.restaurado = true;
+            contexto.temDados = true;
             contexto.snapshot = completo ? dados : null;
             if (completo) {
                 cacheImpostosProdutos = new Map(dados.impostos);
@@ -3063,23 +3077,47 @@
                 { lista }, { contexto: contextoAtual, tags: ['importacoes'] });
         }
 
-        async function mostrarDadosSalvosSku(contexto) {
-            const data = await consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/'
-                + encodeURIComponent(contexto.listaId) + '?somente_salvos=true', contexto);
-            if (!dadosSkuVigentes(contexto)) return;
+        function validarListaSku(data, contexto) {
             const lista = data?.lista;
             if (!lista || String(lista.id) !== contexto.listaId || !Array.isArray(lista.itens)
-                || lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return;
+                || lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+                throw new Error('Dados da lista inválidos.');
+            }
             const item = lista.itens.find(row => normSku(row.SKU) === contexto.sku);
-            if (!item) return;
-            atualizarFxCompraTopo(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
-            montarMeta(String(lista.nome_lista || '-'), contexto.sku);
-            await preencherCampos(item, lista, null, lista.itens, new Map(), { somenteDadosLista: true });
+            if (!item) throw new Error('SKU não encontrado nesta lista.');
+            return { lista, item };
+        }
+
+        async function salvarListaCacheSku(data, contexto) {
+            if (!dadosSkuVigentes(contexto) || !contexto.persistencia || contexto.podeSalvar === false) return;
+            await window.JKCachePersistente?.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/'
+                + encodeURIComponent(contexto.listaId), data, { contexto: contexto.persistencia, tags: ['importacoes'] });
+        }
+
+        async function exibirListaSalvaSku(data, contexto) {
             if (!dadosSkuVigentes(contexto)) return;
-            configurarAprovacaoCompra(lista, item);
-            aplicarAnaliseConcorrentes(item.analise_concorrentes);
-            contexto.salvosVisiveis = true;
-            statusCacheSku('Dados salvos da lista · Atualizando informações complementares...');
+            const { lista, item } = validarListaSku(data, contexto);
+            if (!contexto.temDados) {
+                atualizarFxCompraTopo(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
+                montarMeta(String(lista.nome_lista || '-'), contexto.sku);
+                await preencherCampos(item, lista, null, lista.itens, new Map(), { somenteDadosLista: true });
+                if (!dadosSkuVigentes(contexto)) return;
+                configurarAprovacaoCompra(lista, item);
+                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                contexto.temDados = true;
+                contexto.salvosVisiveis = true;
+                statusCacheSku('Dados salvos da lista · Atualizando cálculos...');
+                if (!data._cache) await salvarListaCacheSku(data, contexto);
+            }
+        }
+
+        async function mostrarDadosSalvosSku(contexto) {
+            const data = await consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/'
+                + encodeURIComponent(contexto.listaId) + '?somente_salvos=true', contexto, {
+                    salvarCache: false, mensagemTimeout: 'Tempo limite ao consultar os dados salvos do SKU.',
+                });
+            if (!data?.lista) return;
+            await exibirListaSalvaSku(data, contexto);
         }
 
         function aguardarConsultaListaSku(contexto, espera) {
@@ -3103,43 +3141,80 @@
 
         async function consultarListaAtualizadaSku(contexto) {
             const inicio = Date.now();
-            const limiteMs = 120000;
+            const limiteMs = ATUALIZACAO_SKU_LIMITE_MS;
             const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId) + '?cache_mode=stale';
+            const transitorios = new Set(['sources_changing', 'cache_capacity', 'stores_snapshot_initializing',
+                'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
             for (let tentativa = 0; tentativa < 32 && Date.now() - inicio < limiteMs; tentativa++) {
-                if (!dadosSkuVigentes(contexto)) throw new Error('Carregamento substituído.');
-                const data = await consultarJsonDetalheSku(url, contexto, { timeoutMs: Math.min(15000, limiteMs - (Date.now() - inicio)) });
-                const meta = data?._cache;
-                const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
-                if (data?.lista && pronta) return data;
-                if (!meta) throw new Error('Dados da lista inválidos.');
-                if (meta.erro && !meta.atualizando) throw new Error(meta.erro.message || 'Não foi possível atualizar a lista.');
-                if (!dadosSkuVigentes(contexto)) throw new Error('Carregamento substituído.');
-                statusCacheSku((contexto.restaurado ? 'Cópia salva · ' : contexto.salvosVisiveis ? 'Dados salvos da lista · ' : '')
+                if (!dadosSkuVigentes(contexto)) return null;
+                let data, esperaMinima = 0;
+                try {
+                    data = await consultarJsonDetalheSku(url, contexto, {
+                        salvarCache: false,
+                        timeoutMs: Math.min(COMPLEMENTO_SKU_TIMEOUT_MS, limiteMs - (Date.now() - inicio)),
+                        mensagemTimeout: 'A atualização dos cálculos continua pendente.',
+                    });
+                } catch (erro) {
+                    if (erro.name !== 'TimeoutError' && !([409, 503].includes(erro.status) && transitorios.has(erro.code))) throw erro;
+                    if (erro.code === 'sources_changing') esperaMinima = 5000;
+                }
+                if (!dadosSkuVigentes(contexto)) return null;
+                if (data) {
+                    const meta = data._cache;
+                    if (data.lista) {
+                        validarListaSku(data, contexto);
+                        const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
+                        if (pronta) {
+                            await salvarListaCacheSku(data, contexto);
+                            return dadosSkuVigentes(contexto) ? data : null;
+                        }
+                        await exibirListaSalvaSku(data, contexto);
+                    } else if (!meta) {
+                        throw new Error('Dados da lista inválidos.');
+                    }
+                    if (meta?.erro && !meta.atualizando) {
+                        if (!transitorios.has(meta.erro.code)) throw new Error(meta.erro.message || 'Não foi possível atualizar a lista.');
+                        esperaMinima = 5000;
+                    }
+                    esperaMinima = Math.max(esperaMinima, Math.min(10000, Number(meta?.retry_after_ms) || 0));
+                }
+                if (!dadosSkuVigentes(contexto)) return null;
+                statusCacheSku((contexto.restaurado ? 'Cópia salva · ' : contexto.temDados ? 'Dados salvos da lista · ' : '')
                     + 'Atualizando informações complementares...');
                 const intervalo = tentativa < 5 ? 1000 : tentativa < 10 ? 2000 : 5000;
-                const espera = Math.min(Math.max(intervalo, Math.min(10000, Number(meta.retry_after_ms) || 0)), limiteMs - (Date.now() - inicio));
+                const espera = Math.min(Math.max(intervalo, esperaMinima), limiteMs - (Date.now() - inicio));
                 if (espera <= 0) break;
                 await aguardarConsultaListaSku(contexto, espera);
             }
-            throw new Error('A atualização da lista continua pendente. Atualize a página para tentar novamente.');
+            if (dadosSkuVigentes(contexto)) {
+                statusCacheSku(contexto.temDados ? 'Exibindo os dados salvos. Não foi possível atualizar agora; os cálculos continuam pendentes.'
+                    : 'Atualização dos dados pendente. Tente novamente.');
+            }
+            return null;
         }
 
         async function carregarDetalheSku() {
             const { listaId, sku } = getParams();
             const candidato = window.JKCachePersistente?.contexto();
+            const anterior = contextoDetalheSku;
+            const preservar = anterior && dadosSkuVigentes(anterior) && anterior.listaId === listaId && anterior.sku === normSku(sku);
             const contexto = { geracao: ++geracaoDetalheSku, listaId, sku: normSku(sku),
-                persistencia: window.JKCachePersistente?.vigente(candidato) ? candidato : null, restaurado: false };
+                persistencia: window.JKCachePersistente?.vigente(candidato) ? candidato : null,
+                restaurado: !!(preservar && anterior.restaurado), temDados: !!(preservar && anterior.temDados),
+                snapshot: preservar ? anterior.snapshot : null };
             contextoDetalheSku = contexto;
             controladoresDetalheSku.forEach(controller => controller.abort());
-            cacheImpostosProdutos = null;
-            custoComplementosPendente = true;
             analiseComplementosPronta = false;
-            ultimoValorUnitarioProduto = null;
-            ultimaAnaliseConcorrentes = null;
-            ultimaVersaoFontesConcorrentes = null;
-            setText('vCustoTotalProduto', '-');
-            setText('vValorUnitarioProduto', '-');
-            setText('vDespesasNacionais', '-');
+            if (!contexto.temDados) {
+                cacheImpostosProdutos = null;
+                custoComplementosPendente = true;
+                ultimoValorUnitarioProduto = null;
+                ultimaAnaliseConcorrentes = null;
+                ultimaVersaoFontesConcorrentes = null;
+                setText('vCustoTotalProduto', '-');
+                setText('vValorUnitarioProduto', '-');
+                setText('vDespesasNacionais', '-');
+            }
             const btnVoltar = document.getElementById('btnVoltar');
             if (btnVoltar && listaId) btnVoltar.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
             if (!listaId || !sku) {
@@ -3148,30 +3223,34 @@
             }
             try {
                 setErro('');
-                try { await restaurarCacheSku(contexto); }
-                catch (_cacheError) { contexto.restaurado = false; contexto.snapshot = null; }
-                if (!detalheSkuVigente(contexto)) return;
-                if (!contexto.restaurado) {
-                    try { await mostrarDadosSalvosSku(contexto); }
-                    catch (_snapshotError) { /* A revalidação também atende listas ainda sem dados salvos. */ }
+                if (!contexto.temDados) {
+                    try { await restaurarCacheSku(contexto); }
+                    catch (_cacheError) { contexto.restaurado = false; contexto.snapshot = null; }
                 }
-                if (!detalheSkuVigente(contexto)) return;
-                cacheImpostosProdutos = null;
+                if (!dadosSkuVigentes(contexto)) return;
+                try {
+                    await mostrarDadosSalvosSku(contexto);
+                } catch (erroSalvos) {
+                    if ([401, 403, 404].includes(erroSalvos.status) || !dadosSkuVigentes(contexto)) throw erroSalvos;
+                    // A atualização também recupera o detalhe quando a leitura salva falha.
+                }
+                if (!dadosSkuVigentes(contexto)) return;
                 const data = await consultarListaAtualizadaSku(contexto);
-                if (!detalheSkuVigente(contexto)) return;
-                const lista = data && data.lista ? data.lista : {};
-                if (String(lista.id) !== listaId || !Array.isArray(lista.itens)) throw new Error('Dados da lista inválidos.');
+                if (!data || !dadosSkuVigentes(contexto)) return;
+                const { lista } = validarListaSku(data, contexto);
+                cacheImpostosProdutos = null;
                 atualizarFxCompraTopo(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
                 const itens = Array.isArray(lista.itens) ? lista.itens : [];
                 const skuNorm = normSku(sku);
                 const item = itens.find(i => normSku(i && i.SKU) === skuNorm);
                 montarMeta(String(lista.nome_lista || '-'), skuNorm);
                 if (!item) throw new Error('SKU não encontrado nesta lista.');
-                if (!contexto.restaurado) {
+                if (!contexto.snapshot) {
                     preencherCampos(item, lista, null, itens, new Map(), { somenteDadosLista: true });
                     configurarAprovacaoCompra(lista, item);
                     aplicarAnaliseConcorrentes(item.analise_concorrentes);
                 }
+                contexto.temDados = true;
                 const storeId = String(lista.store_id || '').trim();
                 const promessaConcorrentes = buscarLinksConcorrentes(skuNorm, contexto).then(
                     value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })
@@ -3182,15 +3261,15 @@
                     carregarMapaProdutosImpostos(contexto),
                     (getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
                 ]);
-                if (!detalheSkuVigente(contexto)) return;
-                let resultadoConcorrentes = contexto.restaurado ? await promessaConcorrentes : null;
-                if (!detalheSkuVigente(contexto)) return;
-                if (contexto.restaurado && [...resultados, resultadoConcorrentes].some(resultado => resultado.status === 'rejected')) {
+                if (!dadosSkuVigentes(contexto)) return;
+                let resultadoConcorrentes = contexto.snapshot ? await promessaConcorrentes : null;
+                if (!dadosSkuVigentes(contexto)) return;
+                if (contexto.snapshot && [...resultados, resultadoConcorrentes].some(resultado => resultado.status === 'rejected')) {
                     if (contexto.snapshot) cacheImpostosProdutos = new Map(contexto.snapshot.impostos);
                     statusCacheSku('Exibindo a cópia salva. Algumas informações não puderam ser atualizadas.');
                     return;
                 }
-                if (!detalheSkuVigente(contexto)) return;
+                if (!dadosSkuVigentes(contexto)) return;
                 configurarAprovacaoCompra(lista, item);
                 const cad = resultados[0].status === 'fulfilled' ? resultados[0].value : null;
                 const mapaM3Cadastro = resultados[1].status === 'fulfilled' ? resultados[1].value : new Map();
@@ -3205,7 +3284,7 @@
                     && ((getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
                 const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
                 if (!resultadoConcorrentes) resultadoConcorrentes = await promessaConcorrentes;
-                if (!detalheSkuVigente(contexto)) return;
+                if (!dadosSkuVigentes(contexto)) return;
                 const falhas = [...resultados, resultadoConcorrentes].filter(resultado => resultado.status === 'rejected');
                 if (falhas.length) setErro('Algumas informações complementares estão indisponíveis. Os dados da lista continuam disponíveis. Atualize a página para tentar novamente.');
                 if (resultadoConcorrentes.status !== 'fulfilled') { await promessaDadosImposto; return; }
@@ -3217,29 +3296,29 @@
                     promessaDadosImposto,
                     enriquecerPrecosAnalise(linksConc),
                 ]);
-                if (!detalheSkuVigente(contexto)) return;
+                if (!dadosSkuVigentes(contexto)) return;
                 analiseComplementosPronta = !!storeId && !custoComplementosPendente && ultimoValorUnitarioProduto !== null;
                 if (!analiseComplementosPronta) {
                     if (!falhas.length) {
                         await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
-                        if (detalheSkuVigente(contexto)) statusCacheSku('Dados atualizados.');
+                        if (dadosSkuVigentes(contexto)) statusCacheSku('Dados atualizados.');
                     }
                     return;
                 }
                 try {
                     const resultadoAnalise = await salvarAnaliseConcorrentes(listaId, skuNorm);
-                    if (detalheSkuVigente(contexto)) {
+                    if (dadosSkuVigentes(contexto)) {
                         item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;
                         aplicarAnaliseConcorrentes(item.analise_concorrentes);
                         await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
                         statusCacheSku('Dados atualizados.');
                     }
                 } catch (erroPersistencia) {
-                    if (detalheSkuVigente(contexto)) setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
+                    if (dadosSkuVigentes(contexto)) setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
                 }
             } catch (e) {
-                if (detalheSkuVigente(contexto)) {
-                    if (contexto.restaurado || contexto.salvosVisiveis) statusCacheSku('Exibindo os dados salvos. Não foi possível atualizar agora.');
+                if (dadosSkuVigentes(contexto)) {
+                    if (contexto.temDados || contexto.salvosVisiveis) statusCacheSku('Exibindo os dados salvos. Não foi possível atualizar agora.');
                     else setErro(e.message || 'Erro ao carregar detalhe do SKU.');
                 }
             }
