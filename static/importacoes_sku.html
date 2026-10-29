@@ -956,6 +956,7 @@
         let ultimoValorUnitarioProduto = null;
         let ultimaAnaliseConcorrentes = null;
         let ultimosAnunciosLojaConcorrentes = {};
+        let ultimaVersaoFontesConcorrentes = null;
         let cacheImpostosProdutos = null;
         let ultimosPrecosOfertas = {};
         let geracaoDetalheSku = 0;
@@ -1830,6 +1831,7 @@
             return {
                 precos_concorrentes: precosConcorrentes,
                 anuncios_loja: { ...ultimosAnunciosLojaConcorrentes },
+                fontes_versao: ultimaVersaoFontesConcorrentes,
             };
         }
 
@@ -2912,7 +2914,9 @@
             if (!skuNorm) return vazio;
 
             try {
-                const url = '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm);
+                const listaId = contexto && contexto.listaId;
+                const url = '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm)
+                    + (listaId ? '&lista_id=' + encodeURIComponent(listaId) : '');
                 let data;
                 if (contexto) data = await consultarJsonDetalheSku(url, contexto);
                 else {
@@ -2935,6 +2939,7 @@
                 const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
                 const p = data && data.concorrentes_preco ? data.concorrentes_preco : {};
                 return {
+                    fontes_versao: data.fontes_versao || null,
                     links: {
                         concorrente_1: String(c.concorrente_1 || '').trim(),
                         concorrente_2: String(c.concorrente_2 || '').trim(),
@@ -2978,6 +2983,7 @@
         }
 
         function aplicarLinksCacheSku(linksConc) {
+            ultimaVersaoFontesConcorrentes = linksConc.fontes_versao || null;
             ultimosAnunciosLojaConcorrentes = {};
             [1, 2, 3, 4, 5].forEach(function(n) {
                 const chave = 'concorrente_' + n;
@@ -3063,6 +3069,7 @@
             analiseComplementosPronta = false;
             ultimoValorUnitarioProduto = null;
             ultimaAnaliseConcorrentes = null;
+            ultimaVersaoFontesConcorrentes = null;
             setText('vCustoTotalProduto', '-');
             setText('vValorUnitarioProduto', '-');
             setText('vDespesasNacionais', '-');

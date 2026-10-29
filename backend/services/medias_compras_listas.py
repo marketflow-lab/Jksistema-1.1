@@ -531,24 +531,44 @@ def _api_medias_compras_preferencias_colunas_put_sync(
 async def api_medias_compras_concorrentes_links(
     sku: str,
     client_id: str = Depends(medias_common.get_tenant_id),
+    lista_id: str | None = None,
 ):
     from backend.services.blocking_workers import run_heavy
 
-    return await run_heavy(_api_medias_compras_concorrentes_links_sync, sku=sku, client_id=client_id)
+    return await run_heavy(
+        _api_medias_compras_concorrentes_links_sync,
+        sku=sku, client_id=client_id, lista_id=lista_id,
+    )
 
 
 def _api_medias_compras_concorrentes_links_sync(
     sku: str,
     client_id: str = Depends(medias_common.get_tenant_id),
+    lista_id: str | None = None,
 ):
     sku_in = str(sku or "").strip()
     if not sku_in:
         raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio")
 
+    lista = None
+    if lista_id is not None:
+        listas = _carregar_listas_pedidos(client_id)
+        lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
+        if not lista:
+            raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
+        sku_norm = _normalizar_sku_planilha_concorrentes(_normalizar_sku_mes(sku_in))
+        if not any(
+            _normalizar_sku_planilha_concorrentes(_sku_item_lista_pedido(item)) == sku_norm
+            for item in (lista.get("itens") or []) if isinstance(item, dict)
+        ):
+            raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+
     try:
-        rows = _carregar_linhas_planilha_concorrentes()
-        indice = _indexar_linhas_planilha_concorrentes(rows)
-        return _payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in)))
+        indice, fontes_versao = _indice_concorrentes_lista(client_id, lista)
+        return {
+            **_payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in))),
+            "fontes_versao": fontes_versao,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -561,16 +581,45 @@ def _normalizar_sku_planilha_concorrentes(valor: Any) -> str:
     return re.sub(r"\.0+$", "", texto)
 
 
-def _carregar_linhas_planilha_concorrentes() -> list[list[str]]:
+def _carregar_linhas_planilha_concorrentes(spreadsheet_id: str | None = None) -> list[list[str]]:
     gc = autenticar_google_sheets()
     if not gc:
         raise HTTPException(status_code=500, detail="Não foi possível autenticar no Google Sheets")
 
-    sh = gc.open_by_key(SPREADSHEET_ID_CONCORRENTES)
+    sh = gc.open_by_key(spreadsheet_id or SPREADSHEET_ID_CONCORRENTES)
     ws = sh.get_worksheet(0)
     if ws is None:
         raise HTTPException(status_code=404, detail="Aba da planilha não encontrada")
     return list(ws.get_all_values() or [])
+
+
+SPREADSHEET_ID_CONCORRENTES_JK_PECAS = "1QTJ0i-Y1nYGdu3yRdRuJ7PpAn0KfuGaE8AYozuI6mEY"
+
+
+def _versao_fontes_concorrentes_lista(client_id: str, lista: dict | None) -> int:
+    incluir_jk = False
+    if lista is not None:
+        escopo = medias_common._resolver_escopo_loja_medias(
+            client_id, lista.get("loja"), lista.get("store_id"),
+        )
+        nome = unicodedata.normalize("NFKD", escopo["loja"])
+        nome = "".join(ch for ch in nome if not unicodedata.combining(ch))
+        incluir_jk = re.sub(r"[^a-z0-9]+", " ", nome.casefold()).strip() == "jk pecas"
+    return 2 if incluir_jk else 1
+
+
+def _indice_concorrentes_lista(client_id: str, lista: dict | None) -> tuple[dict[str, list[str]], int]:
+    fontes_versao = _versao_fontes_concorrentes_lista(client_id, lista)
+    indice = _indexar_linhas_planilha_concorrentes(_carregar_linhas_planilha_concorrentes())
+    if fontes_versao == 2:
+        adicionais = _indexar_linhas_planilha_concorrentes(
+            _carregar_linhas_planilha_concorrentes(SPREADSHEET_ID_CONCORRENTES_JK_PECAS),
+        )
+        # Cada linha conserva os cinco pares de anuncio/preco da mesma fonte.
+        # A fonte atual continua prioritaria se um SKU surgir nas duas planilhas.
+        for sku, linha in adicionais.items():
+            indice.setdefault(sku, linha)
+    return indice, fontes_versao
 
 
 def _indexar_linhas_planilha_concorrentes(rows: list[list[str]]) -> dict[str, list[str]]:
@@ -658,13 +707,15 @@ def _api_medias_compras_lista_pedido_concorrentes_links_lote_sync(
             skus.append(sku)
 
     try:
-        rows = _carregar_linhas_planilha_concorrentes()
-        indice = _indexar_linhas_planilha_concorrentes(rows)
+        indice, fontes_versao = _indice_concorrentes_lista(client_id, lista)
         resultados = {
-            sku: _payload_concorrentes_planilha(
-                sku,
-                indice.get(_normalizar_sku_planilha_concorrentes(sku)),
-            )
+            sku: {
+                **_payload_concorrentes_planilha(
+                    sku,
+                    indice.get(_normalizar_sku_planilha_concorrentes(sku)),
+                ),
+                "fontes_versao": fontes_versao,
+            }
             for sku in skus
         }
         return {
@@ -916,6 +967,12 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
 
     with medir_etapa("resumo"):
         resumo = _resumo_lista_pedido(alvo, client_id=client_id)
+    # Apenas o detalhe completo resolve a loja; restaurar uma copia salva
+    # continua sem consultas complementares. Nenhuma planilha e lida aqui.
+    try:
+        resumo["analise_concorrentes_fontes_versao"] = _versao_fontes_concorrentes_lista(client_id, alvo)
+    except (HTTPException, RuntimeError):
+        resumo["analise_concorrentes_fontes_versao"] = 0
     return {
         "success": True,
         "lista": {
@@ -1315,6 +1372,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         "custo_unitario": round(custo_unitario_cadastro, 2) if custo_unitario_cadastro is not None else None,
         "fonte_custo": "cadastro_sku_loja",
         "metodo": "analise_promocoes_ml_liquida",
+        "fontes_versao": req.fontes_versao,
         "margens": margens,
         "atualizado_em": atualizado_em,
     }
@@ -1333,7 +1391,10 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
 
     lista_atual = listas_atuais[idx_lista_atual]
     medias_common._exigir_lista_pedido_editavel(lista_atual)
-    if str(lista_atual.get("loja") or "").strip() != str(lista.get("loja") or "").strip():
+    if any(
+        str(lista_atual.get(campo) or "").strip() != str(lista.get(campo) or "").strip()
+        for campo in ("loja", "store_id")
+    ):
         raise HTTPException(
             status_code=409,
             detail="A loja da lista mudou durante a análise. Recarregue para calcular novamente.",

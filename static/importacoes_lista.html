@@ -1372,6 +1372,7 @@
             return {
                 precos_concorrentes: precosConcorrentes,
                 anuncios_loja: anunciosLoja,
+                fontes_versao: fonte && fonte.fontes_versao || null,
             };
         }
 
@@ -1416,9 +1417,15 @@
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
             const cicloAtual = ++cicloAnaliseMargensAutomaticas;
             const contexto = contextoCarregamentoAtual(listaId);
+            const versaoFontes = ultimaListaCarregada && ultimaListaCarregada.analise_concorrentes_fontes_versao;
+            const lojaJkPecas = versaoFontes !== undefined && versaoFontes !== null
+                ? Number(versaoFontes) === 2
+                : normTxt(ultimaListaCarregada && ultimaListaCarregada.loja) === 'jk pecas';
             const pendentes = (Array.isArray(itens) ? itens : []).filter((item) => (
                 obterSkuItemMargensAutomaticas(item)
-                && (!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')
+                && ((!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')
+                    || (lojaJkPecas && !item.analise_concorrentes.fontes_versao
+                        && !Object.keys(item.analise_concorrentes.margens || {}).length))
             ));
             if (!pendentes.length) return;
 

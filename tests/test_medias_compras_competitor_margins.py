@@ -430,6 +430,10 @@ def test_endpoint_em_lote_carrega_planilha_uma_vez_e_isola_lista(monkeypatch):
         return [header, linha_001, linha_002]
 
     monkeypatch.setattr(listas_service, "_carregar_linhas_planilha_concorrentes", carregar_planilha)
+    monkeypatch.setattr(
+        listas_service.medias_common, "_resolver_escopo_loja_medias",
+        lambda client_id, loja, store_id: {"loja": "Loja A", "store_id": "store-a", "scope": "store"},
+    )
 
     resultado = asyncio.run(
         listas_service.api_medias_compras_lista_pedido_concorrentes_links_lote(

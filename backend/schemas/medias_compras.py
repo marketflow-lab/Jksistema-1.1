@@ -1,6 +1,6 @@
 """Pydantic schemas for medias compras."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -99,6 +99,7 @@ class ListaPedidoSkuAprovacaoRequest(BaseModel):
 
 
 class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
+    fontes_versao: Literal[1, 2] | None = None
     custo_unitario: float | None = None
     precos_concorrentes: dict[str, float] = Field(default_factory=dict)
     anuncios_loja: dict[str, str] = Field(default_factory=dict)
