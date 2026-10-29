@@ -4,6 +4,9 @@
 
     const DATABASE = 'jk-ui-snapshots-v1';
     const REVISION_KEY = 'jk.ui.cache.revisao.v1:';
+    const REVOCATION_KEY = 'jk.ui.cache.revogacao.v1:';
+    const DATA_REVISION_PREFIX = 'data:';
+    const LEGACY_REVOCATION_PREFIX = 'legacy:';
     const SCHEMA = 1;
     const MAX_ENTRY_BYTES = 12 * 1024 * 1024;
     const MAX_BYTES = 128 * 1024 * 1024;
@@ -17,6 +20,7 @@
     let generation = 0;
     let deniedSession = '';
     let lastSession;
+    let storageUnavailable = false;
 
     function canonical(value) {
         if (Array.isArray(value)) return value.map(canonical);
@@ -56,42 +60,68 @@
         return current;
     }
 
-    function revisions() {
+    function revisions(prefix = REVISION_KEY) {
         try {
             return Object.fromEntries(['*', 'vendas', 'importacoes'].map(tag =>
-                [tag, global.localStorage.getItem(REVISION_KEY + tag) || '']));
-        } catch (_error) { return {}; }
+                [tag, global.localStorage.getItem(prefix + tag) || '']));
+        } catch (_error) { return null; }
     }
 
     function contexto() {
         const current = identity();
         const context = Object.freeze({});
-        contexts.set(context, { ...current, generation, revisions: revisions() });
+        contexts.set(context, { ...current, generation, revisions: revisions(), revocations: revisions(REVOCATION_KEY) });
         return context;
     }
 
     function vigente(context) {
         const captured = contexts.get(context);
         const current = identity();
-        return Boolean(current && captured?.scope && captured.generation === generation
+        return Boolean(!storageUnavailable && current && captured?.scope && captured.revisions && captured.revocations
+            && captured.generation === generation
             && current.session === captured.session && deniedSession !== current.session);
     }
 
+    function revisionMap(value) {
+        return Boolean(value && Object.getPrototypeOf(value) === Object.prototype
+            && Object.entries(value).every(([tag, revision]) => ['*', 'vendas', 'importacoes'].includes(tag)
+                && typeof revision === 'string'));
+    }
+
     function sameRevisions(before, after, tags) {
-        return ['*', ...tags].every(tag => (before[tag] || '') === (after[tag] || ''));
+        return Boolean(before && after) && ['*', ...tags].every(tag => (before[tag] || '') === (after[tag] || ''));
+    }
+
+    function dataOnlyChanges(before, after, tags) {
+        return Boolean(before && after) && ['*', ...tags].every(tag => (before[tag] || '') === (after[tag] || '')
+            || String(after[tag] || '').startsWith(DATA_REVISION_PREFIX));
+    }
+
+    function legacyRevisionPromoted(revision, revocation) {
+        if (typeof revocation !== 'string' || !revocation.startsWith(LEGACY_REVOCATION_PREFIX)) return false;
+        try {
+            const marker = JSON.parse(revocation.slice(LEGACY_REVOCATION_PREFIX.length));
+            return Array.isArray(marker) && marker.length === 2 && marker[0] === revision
+                && typeof marker[1] === 'string' && marker[1].startsWith(DATA_REVISION_PREFIX);
+        } catch (_error) { return false; }
     }
 
     function dadosVigentes(context, tags = ['vendas', 'importacoes']) {
-        return vigente(context) && sameRevisions(contexts.get(context).revisions, revisions(), tags);
+        const captured = contexts.get(context);
+        return !storageUnavailable && vigente(context)
+            && sameRevisions(captured.revisions, revisions(), tags)
+            && sameRevisions(captured.revocations, revisions(REVOCATION_KEY), tags);
     }
 
     function confirmarMutacao(previous, response) {
         const receipt = mutationReceipts.get(response);
         const captured = contexts.get(previous);
         const tags = ['vendas', 'importacoes'];
-        if (!receipt || !vigente(previous) || captured.session !== receipt.session
+        if (!receipt || storageUnavailable || !vigente(previous) || captured.session !== receipt.session
             || !sameRevisions(captured.revisions, receipt.before, tags)
-            || !sameRevisions(receipt.after, revisions(), tags)) return null;
+            || !sameRevisions(receipt.after, revisions(), tags)
+            || !sameRevisions(captured.revocations, receipt.revocationsBefore, tags)
+            || !sameRevisions(receipt.revocationsAfter, revisions(REVOCATION_KEY), tags)) return null;
         return contexto();
     }
 
@@ -172,6 +202,7 @@
     }
 
     async function ler(chave, options = {}) {
+        if (storageUnavailable) return null;
         const context = options.contexto || contexto();
         const scope = await scopeKey(context);
         if (!scope || typeof chave !== 'string' || !chave || chave.length > 4096) return null;
@@ -180,14 +211,23 @@
             const request = tx.objectStore('snapshots').get(scope + ':' + chave);
             request.onsuccess = () => done(request.result);
         }, null);
-        if (!vigente(context) || !entry || entry.schema !== SCHEMA || entry.scope !== scope
-            || !Array.isArray(entry.tags) || !Number.isFinite(entry.salvoEm)
-            || entry.salvoEm > Date.now() + 60000 || !sameRevisions(entry.revisions || {}, revisions(), entry.tags)
-            || !sameRevisions(contexts.get(context).revisions, revisions(), entry.tags)) return null;
-        return { dados: entry.dados, salvoEm: entry.salvoEm };
+        if (!entry || entry.schema !== SCHEMA || entry.scope !== scope
+            || !Array.isArray(entry.tags) || !entry.tags.length
+            || entry.tags.some(tag => !['vendas', 'importacoes'].includes(tag))
+            || !revisionMap(entry.revisions)
+            || (entry.revocations !== undefined && !revisionMap(entry.revocations))
+            || !Number.isFinite(entry.salvoEm) || entry.salvoEm > Date.now() + 60000
+            || !dadosVigentes(context, entry.tags)
+            || !sameRevisions(entry.revocations || {}, revisions(REVOCATION_KEY), entry.tags)) return null;
+        const desatualizado = !sameRevisions(entry.revisions || {}, revisions(), entry.tags);
+        // Legacy entries have no proof distinguishing old data from a manual/auth revocation.
+        if (desatualizado && (options.permitirDesatualizado !== true || !entry.revocations
+            || !dataOnlyChanges(entry.revisions, revisions(), entry.tags))) return null;
+        return { dados: entry.dados, salvoEm: entry.salvoEm, desatualizado };
     }
 
     async function salvar(chave, dados, options = {}) {
+        if (storageUnavailable) return false;
         const context = options.contexto || contexto();
         const tags = [...new Set((options.tags || []).filter(tag => ['vendas', 'importacoes'].includes(tag)))];
         const scope = await scopeKey(context);
@@ -199,11 +239,12 @@
             if (bytes > MAX_ENTRY_BYTES) return false;
             const database = await openDatabase();
             const captured = contexts.get(context);
-            if (!vigente(context) || !sameRevisions(captured.revisions, revisions(), tags)) return false;
+            if (!dadosVigentes(context, tags)) return false;
             const entry = { id: scope + ':' + chave, scope, schema: SCHEMA, tags,
-                revisions: captured.revisions, salvoEm: Date.now(), bytes, dados: JSON.parse(serialized) };
+                revisions: captured.revisions, revocations: captured.revocations,
+                salvoEm: Date.now(), bytes, dados: JSON.parse(serialized) };
             const saved = await transaction(database, 'readwrite', (tx, done) => {
-                if (!vigente(context) || !sameRevisions(captured.revisions, revisions(), tags)) return;
+                if (!dadosVigentes(context, tags)) return;
                 tx.objectStore('snapshots').put(entry);
                 const index = tx.objectStore('indices');
                 const { dados: _data, ...metadata } = entry;
@@ -227,27 +268,57 @@
                     done(true);
                 };
             }, false);
-            return saved && vigente(context) && sameRevisions(captured.revisions, revisions(), tags);
+            return saved && dadosVigentes(context, tags);
         } catch (_error) { return false; }
     }
 
     async function invalidate(tags, origin = 'manual', receipt = null) {
         const selected = Array.isArray(tags) ? tags.filter(tag => ['vendas', 'importacoes'].includes(tag)) : ['*'];
         if (!selected.length) return true;
-        const nonce = global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36);
-        if (receipt) receipt.after = { ...receipt.before, ...Object.fromEntries(selected.map(tag => [tag, nonce])) };
+        const revoked = !['sync', 'mutation'].includes(origin);
+        const nonce = (revoked ? '' : DATA_REVISION_PREFIX)
+            + (global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36));
+        const before = revisions(), revocations = revisions(REVOCATION_KEY);
+        if (receipt) {
+            receipt.before = before;
+            receipt.revocationsBefore = revocations;
+            receipt.after = { ...before, ...Object.fromEntries(selected.map(tag => [tag, nonce])) };
+        }
         let saved = true;
+        let compatibilityRevocation = false;
         // Independent keys prevent concurrent updates of different families from rolling each other back.
-        try { selected.forEach(tag => global.localStorage.setItem(REVISION_KEY + tag, nonce)); }
+        try {
+            // Publish authorization fences first, so a partial write cannot permit a stale read.
+            if (revoked) selected.forEach(tag => global.localStorage.setItem(REVOCATION_KEY + tag, nonce));
+            else {
+                if (!before || !revocations) throw new Error('Cache revisions unavailable');
+                // An older tab cannot identify data-only invalidations. Retain its unknown fence
+                // before overwriting freshness, or a later sync could revive manually revoked data.
+                for (const tag of new Set(['*', ...selected])) {
+                    if (before[tag] && !before[tag].startsWith(DATA_REVISION_PREFIX) && before[tag] !== revocations[tag]
+                        && !legacyRevisionPromoted(before[tag], revocations[tag])) {
+                        // Every promoter gets a unique fence: a delayed writer must never restore
+                        // a value that authorized an entry revoked by another tab in the meantime.
+                        const fence = LEGACY_REVOCATION_PREFIX + JSON.stringify([before[tag], nonce]);
+                        global.localStorage.setItem(REVOCATION_KEY + tag, fence);
+                        compatibilityRevocation = true;
+                    }
+                }
+            }
+            selected.forEach(tag => global.localStorage.setItem(REVISION_KEY + tag, nonce));
+        }
         catch (_error) {
             saved = false;
+            storageUnavailable = true;
             generation++;
             const database = await openDatabase();
             await transaction(database, 'readwrite', (tx, done) => {
                 tx.objectStore('snapshots').clear(); tx.objectStore('indices').clear(); done(true);
             }, false);
         }
-        emit('jk:cache-persistente-invalidado', { tags: selected, origem: origin });
+        if (receipt) receipt.revocationsAfter = revisions(REVOCATION_KEY);
+        emit('jk:cache-persistente-invalidado', { tags: selected, origem: origin,
+            revogado: revoked || compatibilityRevocation || !saved });
         return saved;
     }
 
@@ -305,7 +376,10 @@
 
     global.addEventListener?.('storage', event => {
         if (!event.key || ['access_token', 'user_data', 'permissions'].includes(event.key)) { generation++; deniedSession = ''; }
-        if (event.key?.startsWith(REVISION_KEY)) emit('jk:cache-persistente-invalidado', { tags: ['vendas', 'importacoes'], origem: 'storage' });
+        if (event.key?.startsWith(REVISION_KEY) || event.key?.startsWith(REVOCATION_KEY)) {
+            emit('jk:cache-persistente-invalidado', { tags: ['vendas', 'importacoes'], origem: 'storage',
+                revogado: event.key.startsWith(REVOCATION_KEY) || !event.newValue?.startsWith(DATA_REVISION_PREFIX) });
+        }
     });
     ['jk-auth-changed', 'jk-tenant-changed'].forEach(name => global.addEventListener?.(name, () => { generation++; deniedSession = ''; }));
     ['jk:vendas-sync-finished', 'jk:cadastro-operation-finished', 'jk-photo-policy-changed'].forEach(name => {

@@ -392,6 +392,7 @@ async def api_medias_compras_listas_pedidos(
     return await run_heavy(_api_medias_compras_listas_pedidos_sync, loja=loja, store_id=store_id, client_id=client_id)
 
 
+@consulta_medias
 def _api_medias_compras_listas_pedidos_sync(
     loja: str = "__todas",
     store_id: str = "",

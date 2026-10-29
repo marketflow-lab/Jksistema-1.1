@@ -98,7 +98,9 @@ def test_resumos_agrupam_skus_por_loja_e_preservam_saida_completa(ambiente, monk
         return construir(client_id, **kwargs)
 
     monkeypatch.setattr(listas, "_construir_mapa_m3_sku", mapa)
+    leituras, _ = _contar_cadastro(monkeypatch)
     assert _resumos() == esperado
+    assert leituras == ["cliente-a"]
     assert consultas == [
         ("cliente-a", "store-a", ["001", "002"]),
         ("cliente-a", "store-b", ["001"]),
@@ -144,7 +146,8 @@ def test_filtro_preserva_sku_zero_e_quantidade_zero(ambiente):
     assert resumo["m3_completo"] is True
 
 
-def test_resumos_releem_cadastro_entre_gets_e_isolam_tenant(ambiente):
+def test_resumos_releem_cadastro_entre_gets_e_isolam_tenant(ambiente, monkeypatch):
+    leituras, _ = _contar_cadastro(monkeypatch)
     assert _resumos()[0]["total_m3"] == 0.25
     assert _resumos("cliente-b")[0]["total_m3"] == 0.5
     _csv(ambiente["root"] / "cliente-a" / "cadastro_produtos_lojas.csv", [
@@ -152,6 +155,7 @@ def test_resumos_releem_cadastro_entre_gets_e_isolam_tenant(ambiente):
     ])
     assert _resumos()[0]["total_m3"] == 1.5
     assert _resumos("cliente-b")[0]["total_m3"] == 0.5
+    assert leituras == ["cliente-a", "cliente-b", "cliente-a", "cliente-b"]
 
 
 def test_resumos_preservam_pendencia_exclusao_e_alias_de_loja(ambiente):

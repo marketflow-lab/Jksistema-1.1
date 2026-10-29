@@ -4,14 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - JK Sistema</title>
-    <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
+    <script src="/auth.js?v=20261029-importacoes-cache-v2"></script>
+    <script src="/cache-persistente.js?v=20261029-importacoes-v2"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
     <script src="/medias_compras/data-pedido-lista.js?v=20261006-data-pedido-v2"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap');
-
         :root {
             --bg-a: #04070f;
             --bg-b: #0a1322;
@@ -3905,20 +3903,32 @@
         }
 
         let geracaoListasImportacoes = 0;
+        let controladorListasImportacoes = null;
+        let timerAtualizacaoListasImportacoes = null;
+        let listasImportacoesExibidas = false;
+        let acessoNegadoListasImportacoes = false;
+        let gravacaoCacheListasImportacoes = Promise.resolve();
         function statusCacheImportacoes(texto) {
             const el = document.getElementById('cacheImportacoesStatus');
             if (el) el.textContent = texto;
         }
 
         async function carregarListasImportacoes() {
+            acessoNegadoListasImportacoes = false;
+            clearTimeout(timerAtualizacaoListasImportacoes);
+            timerAtualizacaoListasImportacoes = null;
             const geracao = ++geracaoListasImportacoes;
+            controladorListasImportacoes?.abort();
+            const controller = new AbortController();
+            controladorListasImportacoes = controller;
+            let timeout = null;
             const persistencia = window.JKCachePersistente;
             const candidato = persistencia?.contexto();
             const contexto = persistencia?.vigente(candidato) ? candidato : null;
             const vigente = () => geracao === geracaoListasImportacoes && (!contexto || persistencia.vigente(contexto));
             const dadosVigentes = () => vigente() && (!contexto || !persistencia.dadosVigentes || persistencia.dadosVigentes(contexto, ['importacoes']));
             const chave = 'importacoes:GET:/api/medias-compras/listas-pedidos';
-            let copiaVisivel = false;
+            let copiaVisivel = listasImportacoesExibidas;
             const aplicar = async (data, aguardarEdicao = false) => {
                 while (aguardarEdicao && vigente() && (document.querySelector('#listaWrap input, #listaWrap [aria-busy="true"]') || invoicesSalvando.size)) {
                     await new Promise(resolve => setTimeout(resolve, 120));
@@ -3928,23 +3938,30 @@
                 todasListasCache = data.listas.filter(l => !l.unida_em_lista_id && String(l.status || '').trim() === 'Analisando orçamento');
                 renderFiltroLojasImportacoes(todasListasCache);
                 aplicarFiltroListasImportacoes();
+                listasImportacoesExibidas = true;
                 return true;
             };
             try {
-                setStatus('Carregando listas...');
+                if (!copiaVisivel) setStatus('Carregando listas...');
+                else statusCacheImportacoes('Atualizando em segundo plano...');
                 try {
-                    const copia = contexto ? await persistencia.ler(chave, { contexto }) : null;
+                    const copia = !copiaVisivel && contexto
+                        ? await persistencia.ler(chave, { contexto, permitirDesatualizado: true }) : null;
                     if (!vigente()) return;
                     if (copia && await aplicar(copia.dados)) {
                         copiaVisivel = true;
-                        statusCacheImportacoes('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
+                        statusCacheImportacoes('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando em segundo plano...');
                     }
                 } catch (_cacheError) { /* A rede permanece disponível quando a cópia está inválida. */ }
+                if (!dadosVigentes()) return;
+                timeout = setTimeout(() => controller.abort(), 15000);
                 const resp = await fetch('/api/medias-compras/listas-pedidos', {
                     method: 'GET',
-                    headers: { ...obterAuthHeaders() }
+                    headers: { ...obterAuthHeaders() },
+                    signal: controller.signal
                 });
-                if (resp.status === 403) {
+                if (!vigente()) return;
+                if (resp.status === 401 || resp.status === 403) {
                     negarAcessoCacheImportacoes();
                     await persistencia?.invalidar(['importacoes']);
                     return;
@@ -3955,27 +3972,67 @@
                 }
 
                 const data = await resp.json();
+                clearTimeout(timeout);
                 if (!dadosVigentes()) return;
-                if (!Array.isArray(data?.listas)) throw new Error('Lista de importações inválida.');
-                if (contexto) await persistencia.salvar(chave, data, { contexto, tags: ['importacoes'] });
-                if (await aplicar(data, copiaVisivel)) statusCacheImportacoes('Dados atualizados.');
+                if (!Array.isArray(data?.listas) || data.listas.some(lista => !lista || typeof lista !== 'object' || Array.isArray(lista))) {
+                    throw new Error('Lista de importações inválida.');
+                }
+                if (await aplicar(data, copiaVisivel)) {
+                    statusCacheImportacoes('Dados atualizados.');
+                    // Persistir não deve atrasar a apresentação da resposta já recebida.
+                    if (contexto) {
+                        gravacaoCacheListasImportacoes = gravacaoCacheListasImportacoes.catch(() => {}).then(() => {
+                            if (dadosVigentes()) return persistencia.salvar(chave, data, { contexto, tags: ['importacoes'] });
+                        });
+                    }
+                }
             } catch (e) {
                 if (!vigente()) return;
                 if (copiaVisivel) {
                     statusCacheImportacoes('Exibindo a cópia salva. Não foi possível atualizar agora.');
                     return;
                 }
-                setStatus(e.message || 'Erro ao carregar listas para importações.');
+                setStatus(e.name === 'AbortError' ? 'A consulta demorou mais que o esperado. Use Atualizar listas para tentar novamente.'
+                    : e.message || 'Erro ao carregar listas para importações.');
                 todasListasCache = [];
                 renderFiltroLojasImportacoes([]);
                 renderListas([]);
                 renderEmbarques([]);
+            } finally {
+                clearTimeout(timeout);
+                if (controladorListasImportacoes === controller) controladorListasImportacoes = null;
             }
         }
 
-        window.addEventListener('jk:machine-sync-updated', () => { void carregarListasImportacoes(); });
-        function negarAcessoCacheImportacoes(mensagem) {
+        function agendarAtualizacaoListasImportacoes() {
+            if (acessoNegadoListasImportacoes) return;
             geracaoListasImportacoes++;
+            controladorListasImportacoes?.abort();
+            clearTimeout(timerAtualizacaoListasImportacoes);
+            timerAtualizacaoListasImportacoes = setTimeout(() => { void carregarListasImportacoes(); }, 120);
+        }
+        window.addEventListener('jk:cache-persistente-invalidado', evento => {
+            const detail = evento.detail || {};
+            if (Array.isArray(detail.tags) && !detail.tags.some(tag => tag === '*' || tag === 'importacoes')) return;
+            if (detail.origem === 'auth' || acessoNegadoListasImportacoes) {
+                negarAcessoCacheImportacoes();
+                return;
+            }
+            if (detail.revogado || detail.origem === 'manual') {
+                negarAcessoCacheImportacoes('Os dados salvos precisam ser atualizados. Consultando as listas...', false);
+            }
+            agendarAtualizacaoListasImportacoes();
+        });
+        window.addEventListener('jk:machine-sync-updated', () => {
+            if (!window.JKCachePersistente) agendarAtualizacaoListasImportacoes();
+        });
+        function negarAcessoCacheImportacoes(mensagem, bloquearAtualizacao = true) {
+            if (bloquearAtualizacao) acessoNegadoListasImportacoes = true;
+            geracaoListasImportacoes++;
+            controladorListasImportacoes?.abort();
+            clearTimeout(timerAtualizacaoListasImportacoes);
+            timerAtualizacaoListasImportacoes = null;
+            listasImportacoesExibidas = false;
             todasListasCache = [];
             renderFiltroLojasImportacoes([]);
             renderListas([]);
@@ -3987,7 +4044,13 @@
         }
         window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheImportacoes);
         const limparContextoImportacoes = () => negarAcessoCacheImportacoes('Cliente ou permissões alterados. Abra as listas novamente.');
-        window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoImportacoes(); });
+        window.addEventListener('storage', evento => {
+            if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoImportacoes();
+            else if (evento.key === 'access_token') {
+                if (evento.newValue) agendarAtualizacaoListasImportacoes();
+                else negarAcessoCacheImportacoes();
+            }
+        });
         ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoImportacoes));
 
 
@@ -5304,6 +5367,12 @@
                 var emb = carregarEmbarques().find(function(e) { return String(e.id) === String(openEmbId); });
                 if (emb) abrirDetalheEmbarque(emb, todasListasCache);
             }
+        });
+        requestAnimationFrame(() => {
+            const fonte = document.createElement('link');
+            fonte.rel = 'stylesheet';
+            fonte.href = 'https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap';
+            document.head.appendChild(fonte);
         });
     </script>
 <script src="/ia-sidebar.js"></script>

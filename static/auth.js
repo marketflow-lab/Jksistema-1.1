@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '20261027-cache-persistente-v1';
+  const VERSION = '20261029-cache-persistente-v2';
   const COFRE_CHUNKS = ['session.js', 'navigation.js', 'guards.js'];
   const CHUNKS = document.documentElement?.getAttribute('data-jk-module') === 'cofre' ? COFRE_CHUNKS : [
     "session.js",
