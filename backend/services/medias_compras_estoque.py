@@ -89,7 +89,8 @@ def _ler_transito_sku(
         snapshot = common._carregar_listas_pedidos(client_id)
         selecionadas = [
             lista for lista in snapshot
-            if isinstance(lista, dict) and _pertence_loja(lista, client_id, store_id, lojas)
+            if isinstance(lista, dict) and not lista.get("unida_em_lista_id")
+            and _pertence_loja(lista, client_id, store_id, lojas)
         ]
         for lista in selecionadas:
             if common._normalizar_status_lista_pedido(lista.get("status")) not in common.LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO:

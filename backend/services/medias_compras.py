@@ -26,6 +26,7 @@ from backend.services.medias_compras_visao import configure_medias_compras_visao
 from backend.services.medias_compras_sugestoes import *
 from backend.services.medias_compras_sugestoes import configure_medias_compras_sugestoes_runtime
 from backend.services.medias_compras_listas import *
+from backend.services.medias_compras_uniao import *
 from backend.services.medias_compras_packing import *
 from backend.services.medias_compras_listas import configure_medias_compras_listas_runtime
 from backend.services.medias_compras_importacao import *
@@ -74,6 +75,8 @@ __all__ = [
     "api_medias_compras_gerar_lista_sugestao",
     "api_medias_compras_produtos_sem_venda",
     "api_medias_compras_listas_pedidos",
+    "api_medias_compras_listas_uniao_previa",
+    "api_medias_compras_listas_uniao",
     "api_medias_compras_skus_ocultos_get",
     "api_medias_compras_skus_ocultos_put",
     "api_medias_compras_preferencias_colunas_get",

@@ -26,6 +26,7 @@ def ambiente(tmp_path, monkeypatch):
     for tenant in lojas:
         (tmp_path / tenant).mkdir()
     monkeypatch.setattr(common, "get_tenant_path", lambda tenant: str(tmp_path / tenant))
+    monkeypatch.setattr(cadastro_compat._store, "get_tenant_path", lambda tenant: str(tmp_path / tenant))
     monkeypatch.setattr(cadastro_compat, "_lojas_atuais", lambda tenant: lojas.get(tenant, []))
     return tmp_path, lojas
 
@@ -163,6 +164,19 @@ def test_transito_corrompido_preserva_saldo_real(ambiente):
 def test_quantidade_em_transito_invalida_nao_vira_zero(ambiente, quantidade):
     _pedidos(ambiente, [_lista("invalida", quantidade=quantidade)])
     assert _consultar()["estoque_em_transito"] is None
+
+
+@pytest.mark.parametrize("quantidade", [7, "invalido", "nan"])
+def test_origem_unida_nao_duplica_nem_invalida_transito_ativo(ambiente, quantidade):
+    _pedidos(ambiente, [
+        {**_lista("origem", quantidade=quantidade, status="Analisando orçamento"),
+         "unida_em_lista_id": "consolidada"},
+        _lista("consolidada", quantidade=7, status="Analisando orçamento"),
+        _lista("outra-loja", store_id="store-b", quantidade=200),
+    ])
+    resposta = _consultar()
+    assert resposta["estoque_em_transito"] == 7
+    assert [row["lista_id"] for row in resposta["estoque_em_transito_listas"]] == ["consolidada"]
 
 
 def test_transito_soma_somente_sku_e_status_canonicos_sem_reler_snapshot(ambiente, monkeypatch):

@@ -2,7 +2,7 @@
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MediasComprasItem(BaseModel):
@@ -61,6 +61,33 @@ class ListaPedidoStatusRequest(BaseModel):
     status: str
 
 
+class ListasPedidosUniaoPreviaRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lista_ids: list[str] = Field(min_length=2, max_length=100)
+
+    @field_validator("lista_ids")
+    @classmethod
+    def validar_ids(cls, values):
+        ids = [value.strip() for value in values]
+        if any(not value or len(value) > 128 for value in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Selecione pelo menos duas listas distintas com identificadores válidos.")
+        return sorted(ids)
+
+
+class ListasPedidosUniaoRequest(ListasPedidosUniaoPreviaRequest):
+    nome_lista: str = Field(min_length=1, max_length=160)
+    previa_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operacao_id: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    escolhas: dict[str, str] = Field(default_factory=dict, max_length=20000)
+
+    @field_validator("nome_lista")
+    @classmethod
+    def validar_nome(cls, value):
+        if not value.strip():
+            raise ValueError("Informe o nome da lista unificada.")
+        return value.strip()
+
+
 class ListaPedidoAddSkuRequest(BaseModel):
     sku: str
     quantidade: float
@@ -92,6 +119,8 @@ __all__ = [
     "ListaCompraRequest",
     "ListaPedidoUpdateRequest",
     "ListaPedidoStatusRequest",
+    "ListasPedidosUniaoPreviaRequest",
+    "ListasPedidosUniaoRequest",
     "ListaPedidoAddSkuRequest",
     "ListaPedidoSkuAprovacaoRequest",
     "ListaPedidoSkuAnaliseConcorrentesRequest",

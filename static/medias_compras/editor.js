@@ -21,7 +21,7 @@
                 const valorSelecionado = opcoes.value;
                 select.replaceChildren(...Array.from(opcoes.children));
                 select.value = valorSelecionado;
-                select.disabled = opcoes.disabled;
+                select.disabled = opcoes.disabled || !!context.modules['listas-uniao']?.listaPedidoUnida(lista);
             } catch (e) {
                 if (carga === cargaFornecedorEditor && listaPedidoAtual === lista) {
                     select.title = e.message || 'Não foi possível carregar os fornecedores.';
@@ -52,6 +52,7 @@
         }
 
         function abrirModalAdicionarSkuPedido() {
+            if (context.modules['listas-uniao']?.listaPedidoUnida()) return;
             if (!listaPedidoAtual || !listaPedidoAtual.id) {
                 setStatusListaPedido('Selecione uma lista para adicionar SKU.');
                 return;
@@ -80,7 +81,10 @@
         }
 
         function renderEditorListaPedido() {
-            return renderizarEditorSemSalvar(renderConteudoEditorListaPedido);
+            return renderizarEditorSemSalvar(() => {
+                renderConteudoEditorListaPedido();
+                context.modules['listas-uniao']?.aplicarLeituraListaUnida();
+            });
         }
 
         function renderConteudoEditorListaPedido() {

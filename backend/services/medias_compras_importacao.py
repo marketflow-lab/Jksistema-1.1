@@ -121,6 +121,7 @@ def _api_medias_compras_lista_pedido_importar_excel_precos_sync(
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
+    medias_common._exigir_lista_pedido_editavel(listas[idx])
     if not conteudo:
         raise HTTPException(status_code=400, detail="Arquivo Excel vazio")
 

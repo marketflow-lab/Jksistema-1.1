@@ -31,13 +31,14 @@ const moduleFiles = [
   'importacao.js',
   'tabela-virtual.js',
   'tabela.js',
+  'listas-uniao.js',
   'init.js',
 ];
 
 assert.strictEqual(mirror, canonical, 'o HTML da raiz deve espelhar a fonte oficial em static');
 assert(!/<style(?:\s|>)/i.test(canonical), 'o HTML não pode conter CSS embutido');
 assert(
-  canonical.includes('/medias_compras/styles.css?v=20261023-status-duplo-clique-v1'),
+  canonical.includes('/medias_compras/styles.css?v=20261029-uniao-listas-v1'),
   'o stylesheet responsivo deve ser carregado com cache-bust atualizado',
 );
 assert(!/\son(?:click|input|change|mouseover|mouseout)=/i.test(canonical), 'o HTML não pode conter handlers inline');
@@ -145,6 +146,11 @@ assert.strictEqual(typeof context.JKMedias.modules.api.cancelarRequisicao, 'func
 assert(context.JKMedias.assertReady(), 'dependências dos módulos não foram satisfeitas');
 
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'electron_app', 'installer-required-resources.json'), 'utf8'));
+assert(manifest.requiredSourceFiles.includes('backend/services/medias_compras_uniao.py'), 'a união exige o serviço no pacote de origem');
+assert(manifest.requiredPackagedFiles.includes('local_app/backend/services/medias_compras_uniao.py'), 'a união exige o serviço no aplicativo empacotado');
+for (const file of ['backend/services/medias_compras_uniao.py', 'static/medias_compras/listas-uniao.js']) {
+  assert(manifest.requiredPackagedSourceParity.includes(file), 'a união exige verificação de paridade do arquivo: ' + file);
+}
 for (const file of ['styles.css', ...moduleFiles]) {
   assert(
     manifest.requiredSourceFiles.includes(`static/medias_compras/${file}`),

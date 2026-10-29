@@ -24,6 +24,22 @@ class CodexAdvancedReportTest(unittest.TestCase):
         tenant.mkdir(parents=True, exist_ok=True)
         return tenant
 
+    def test_purchase_pipeline_excludes_merged_sources_and_preserves_store_filter(self):
+        with tempfile.TemporaryDirectory() as root:
+            tenant = self._tenant(root)
+            original = {"id": "source", "nome_lista": "Origem", "loja": "Loja A",
+                        "status": "Pedido aprovado", "unida_em_lista_id": "merged",
+                        "itens": [{"SKU": "001", "Quantidade": 10}]}
+            merged = {"id": "merged", "nome_lista": "Unificada", "loja": "Loja A",
+                      "status": "Pedido aprovado", "itens": [{"SKU": "001", "Quantidade": 25}]}
+            other = {"id": "other", "loja": "Loja B", "status": "Pedido aprovado",
+                     "itens": [{"SKU": "001", "Quantidade": 200}]}
+            (tenant / "listas_pedidos.json").write_text(json.dumps([original, merged, other]), encoding="utf-8")
+            indexed, rows, warnings = codex_reports_advanced._load_purchase_pipeline(str(tenant), "Loja A")
+            self.assertEqual(warnings, [])
+            self.assertEqual([row["order_id"] for row in rows], ["merged"])
+            self.assertEqual(sum(value["open"] for value in indexed.values()), 25)
+
     def test_cost_map_fails_closed_for_duplicate_store_display_names(self):
         with tempfile.TemporaryDirectory() as root:
             tenant = self._tenant(root)

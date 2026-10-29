@@ -3899,7 +3899,7 @@
                 }
                 if (!dadosVigentes() || !Array.isArray(data?.listas)
                     || data.listas.some(lista => !lista || typeof lista !== 'object' || Array.isArray(lista))) return false;
-                todasListasCache = data.listas.filter(l => String(l.status || '').trim() === 'Analisando orçamento');
+                todasListasCache = data.listas.filter(l => !l.unida_em_lista_id && String(l.status || '').trim() === 'Analisando orçamento');
                 renderFiltroLojasImportacoes(todasListasCache);
                 aplicarFiltroListasImportacoes();
                 return true;

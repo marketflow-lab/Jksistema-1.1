@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'editor-salvamento', 'importacao', 'tabela'], () => {
+    app.defineModule('init', ['core', 'state', 'api', 'transito', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'editor-salvamento', 'importacao', 'tabela', 'listas-uniao'], () => {
         function executarAcao(elemento) {
             const action = elemento.dataset.jkAction;
             if (action === 'periodo') return carregarVisao(Number(elemento.dataset.periodo));
@@ -39,6 +39,7 @@
         function iniciar() {
             app.assertReady();
             ligarEventos();
+            app.modules['listas-uniao'].iniciarUniaoListas();
             if (global.JKAuthenticatedMedia?.configurarCacheRaiz) {
                 const liberar = global.JKAuthenticatedMedia.configurarCacheRaiz(document, img => ({
                     tenantId: tenantKey === 'default' ? '' : tenantKey,

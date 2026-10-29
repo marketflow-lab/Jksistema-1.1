@@ -556,7 +556,7 @@ def _load_purchase_pipeline(tenant: str, store: str = "") -> tuple[dict[tuple[st
     indexed: dict[tuple[str, str], dict[str, float]] = {}
     rows: list[dict[str, Any]] = []
     for order in lists:
-        if not isinstance(order, dict):
+        if not isinstance(order, dict) or order.get("unida_em_lista_id"):
             continue
         order = normalize_text_tree(order)
         order_store = str(order.get("loja") or "Sem loja").strip()

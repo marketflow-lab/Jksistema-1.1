@@ -21,6 +21,8 @@
         }
 
         function configurarEdicaoStatusListaPedido(badge, listaId, status) {
+            const lista = String(listaPedidoAtual?.id) === String(listaId) ? listaPedidoAtual : listasPedidosResumo.find(item => String(item.id) === String(listaId));
+            if (context.modules['listas-uniao']?.listaPedidoUnida(lista)) return;
             const sessao = context.modules.resultados.identidadeSessao();
             badge.classList.add('status-editavel');
             badge.title = 'Clique duas vezes para editar o status';
@@ -175,6 +177,7 @@
         }
 
         function renderListaPedidosResumo() {
+            context.modules['listas-uniao']?.atualizarSelecaoUniao();
             const box = document.getElementById('listasPedidosLista');
             if (!box) return;
             const select = box.querySelector('.status-lista-select');
@@ -278,6 +281,7 @@
                         excluirListaPedido(l.id, l.nome_lista || 'Sem nome', status);
                     });
                 }
+                context.modules['listas-uniao']?.decorarListaParaUniao(div, l);
                 box.appendChild(div);
             });
         }
@@ -326,7 +330,8 @@
                 URL.revokeObjectURL(objectUrl);
 
                 try {
-                    await atualizarStatusListaPedido(listaId, 'Em Orçamento');
+                    const lista = listasPedidosResumo.find(item => String(item.id) === String(listaId));
+                    if (!context.modules['listas-uniao']?.listaPedidoUnida(lista)) await atualizarStatusListaPedido(listaId, 'Em Orçamento');
                 } catch (_e) {
                     // Não bloqueia download se atualização de status falhar.
                 }

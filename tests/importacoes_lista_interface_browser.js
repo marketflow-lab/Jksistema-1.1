@@ -41,6 +41,8 @@ function fixture() {
         loja: stores[1].nome, store_id: stores[1].store_id },
       { ...structuredClone(base), id: 'excluded', nome_lista: 'Pedido já aprovado', numero_invoice: 'INV-EXCLUDED',
         status: 'Aprovado' },
+      { ...structuredClone(base), id: 'merged', nome_lista: 'Origem já unida', numero_invoice: 'INV-MERGED',
+        unida_em_lista_id: 'alpha', unida_em_lista_nome: 'Pedido Águas' },
     ],
     updates: [], deletions: [], detailReads: [], unexpected: [], routeErrors: [], putGates: {},
   };
@@ -171,6 +173,7 @@ async function closed(page, id, selector, text) {
 
 async function testSearchAndDensity(page, state) {
   await waitCount(page, 3);
+  assert.strictEqual(await card(page, 'merged').count(), 0, 'Originais unidas não aparecem como pedidos ativos.');
   const before = state.updates.length;
   const filters = await page.locator('#lojaFiltroListas').innerText();
   const boarding = await page.locator('#embarquesWrap').innerText();

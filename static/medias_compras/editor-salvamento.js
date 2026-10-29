@@ -55,6 +55,7 @@
         }
 
         function obterContextoEdicaoListaPedido() {
+            if (context.modules['listas-uniao']?.listaPedidoUnida()) { sessao = null; return null; }
             if (sessao && sessao.identidade !== identidade()) return null;
             prepararEditorSalvamentoListaPedido();
             return contextoEdicaoListaPedidoVigente(sessao) ? sessao : null;
@@ -245,7 +246,7 @@
             const painel = document.getElementById('editorListaPedido');
             if (!painel || painel.dataset.salvamentoLigado) return;
             painel.dataset.salvamentoLigado = '1';
-            const editavel = alvo => !renderizandoEditor && alvo?.matches?.(campos);
+            const editavel = alvo => !renderizandoEditor && !context.modules['listas-uniao']?.listaPedidoUnida() && alvo?.matches?.(campos);
             painel.addEventListener('input', evento => {
                 if (!editavel(evento.target)) return;
                 delete evento.target.dataset.skuRejeitado;

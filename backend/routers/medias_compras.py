@@ -104,6 +104,18 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_importar_excel_nova_lista",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/uniao/previa",
+        medias_compras.api_medias_compras_listas_uniao_previa,
+        methods=["POST"],
+        name="api_medias_compras_listas_uniao_previa",
+    )
+    medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/uniao",
+        medias_compras.api_medias_compras_listas_uniao,
+        methods=["POST"],
+        name="api_medias_compras_listas_uniao",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}/landed-cost",
         medias_compras.api_medias_compras_lista_pedido_custo_posto,
         methods=["GET"],

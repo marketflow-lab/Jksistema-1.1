@@ -817,6 +817,12 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
     if not alvo:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
+    if alvo.get("unida_em_lista_id"):
+        return {
+            "success": True,
+            "lista": {**_resumo_lista_pedido(alvo, client_id=client_id), "itens": copy.deepcopy(alvo.get("itens") or [])},
+        }
+
     if somente_salvos:
         itens_salvos = _itens_salvos_lista_pedido_no_escopo(client_id, alvo)
         return {
@@ -1039,6 +1045,7 @@ def _api_medias_compras_lista_pedido_editar_sync(
     if idx < 0:
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
     lista = dict(listas[idx])
+    medias_common._exigir_lista_pedido_editavel(lista)
     cubagem_historica_antes = _cubagem_lista_historica(lista)
     campos_informados = (
         getattr(req, "model_fields_set", None)
@@ -1171,6 +1178,7 @@ def _api_medias_compras_lista_pedido_atualizar_aprovacao_sku_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
 
     lista = listas[idx_lista]
+    medias_common._exigir_lista_pedido_editavel(lista)
     sku_ref = _normalizar_sku_mes(str(sku or "").strip())
     if not sku_ref:
         raise HTTPException(status_code=400, detail="SKU invalido para aprovacao")
@@ -1233,6 +1241,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
 
     lista = listas[idx_lista]
+    medias_common._exigir_lista_pedido_editavel(lista)
     sku_ref = _normalizar_sku_mes(str(sku or "").strip())
     if not sku_ref:
         raise HTTPException(status_code=400, detail="SKU invalido para analise de concorrentes")
@@ -1322,6 +1331,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
 
     lista_atual = listas_atuais[idx_lista_atual]
+    medias_common._exigir_lista_pedido_editavel(lista_atual)
     if str(lista_atual.get("loja") or "").strip() != str(lista.get("loja") or "").strip():
         raise HTTPException(
             status_code=409,
@@ -1385,6 +1395,7 @@ def _api_medias_compras_lista_pedido_adicionar_sku_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
     lista = listas[idx]
 
+    medias_common._exigir_lista_pedido_editavel(lista)
     sku_input = str(req.sku or "").strip()
     from backend.services.cadastro_cubagem import normalizar_sku_cubagem
     sku_in = normalizar_sku_cubagem(sku_input)
@@ -1571,6 +1582,7 @@ def _api_medias_compras_lista_pedido_atualizar_status_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
     lista = listas[idx]
+    medias_common._exigir_lista_pedido_editavel(lista)
     lista["status"] = _normalizar_status_lista_pedido(req.status)
     lista["updated_at"] = datetime.now().isoformat(timespec="seconds")
     listas[idx] = lista
@@ -1613,6 +1625,7 @@ def _api_medias_compras_lista_pedido_excluir_sync(
         raise HTTPException(status_code=404, detail="Lista de pedidos nÃ£o encontrada")
 
     lista = listas[idx]
+    medias_common._exigir_lista_pedido_editavel(lista)
     origem_delete = str(request.headers.get("x-jk-delete-origin", "") or "").strip().lower()
     if _lista_pedido_esta_em_importacoes(lista) and origem_delete != "importacoes":
         raise HTTPException(
@@ -1641,6 +1654,8 @@ def _lista_pedido_com_links_atuais(lista: dict, client_id: str) -> dict:
     quantities, prices and approvals. The refreshed links also enter the
     existing content-based XLSX cache key.
     """
+    if lista.get("unida_em_lista_id"):
+        return lista
     itens = lista.get("itens") or []
     referencia = str(lista.get("store_id") or lista.get("loja") or "").strip()
     if not client_id or not itens or not _loja_lista_definida(referencia):

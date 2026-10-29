@@ -334,6 +334,19 @@ def test_upload_repetido_nao_substitui_original(tenants):
     assert {p.name: p.read_bytes() for p in (arquivo.parent / "packing_lists").glob("*.xlsx")} == docs
 
 
+def test_upload_em_origem_unida_rejeita_antes_de_gravar_documento(tenants):
+    arquivo = tenants / "cliente-a" / "listas_pedidos.json"
+    lista = _salvo(tenants)
+    lista["unida_em_lista_id"] = "lista-consolidada"
+    arquivo.write_text(json.dumps([lista]), encoding="utf-8")
+    antes = arquivo.read_bytes()
+    with pytest.raises(HTTPException) as erro:
+        packing._importar_packing_list_sync("lista-1", _modelo(), "packing.xlsx", "cliente-a")
+    assert erro.value.status_code == 409
+    assert arquivo.read_bytes() == antes
+    assert not (arquivo.parent / "packing_lists").exists()
+
+
 def test_upload_mesmo_id_em_tenants_distintos_fica_isolado(tenants):
     packing._importar_packing_list_sync("lista-1", _modelo(), "same.xlsx", "cliente-a")
     packing._importar_packing_list_sync("lista-1", _modelo(fotos=False), "same.xlsx", "cliente-b")

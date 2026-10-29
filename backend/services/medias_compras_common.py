@@ -471,6 +471,22 @@ class _ListaPedidoConflict(HTTPException):
         super().__init__(409, "A lista foi alterada durante o calculo. Recarregue e tente novamente.")
 
 
+def _exigir_lista_pedido_editavel(lista: dict) -> None:
+    if lista.get("unida_em_lista_id"):
+        raise HTTPException(409, "Esta lista foi unida a outra e esta disponivel apenas para consulta.")
+
+
+def _proteger_historico_listas_unidas(current, proposed) -> None:
+    candidatas = {str(row.get("id") or ""): row for row in proposed if isinstance(row, dict)}
+    for original in current:
+        if not isinstance(original, dict) or not original.get("unida_em_lista_id"):
+            continue
+        if candidatas.get(str(original.get("id") or "")) != original:
+            _exigir_lista_pedido_editavel(original)
+        if str(original["unida_em_lista_id"]) not in candidatas:
+            raise HTTPException(409, "Esta lista possui listas de origem vinculadas. Cancele o pedido para preservar o historico.")
+
+
 class _ListasPedidosSnapshot(list):
     """A list-compatible snapshot whose source is checked at commit time."""
 
@@ -581,6 +597,8 @@ def _mapa_estoque_em_transito_detalhado_por_sku(
 
     for lista in listas:
         lista = lista if isinstance(lista, dict) else {}
+        if lista.get("unida_em_lista_id"):
+            continue
         if _normalizar_status_lista_pedido(lista.get("status")) not in LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO:
             continue
 
@@ -716,6 +734,7 @@ def _salvar_listas_pedidos_no_caminho(caminho: str, listas: list[dict]) -> None:
                 if listas.require_unchanged:
                     raise _ListaPedidoConflict()
                 proposed = _mesclar_listas_pedidos_snapshot(listas, proposed, current)
+        _proteger_historico_listas_unidas(current, proposed)
         pasta = os.path.dirname(caminho)
         os.makedirs(pasta, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(prefix=".listas-pedidos-", suffix=".tmp", dir=pasta)
@@ -937,7 +956,7 @@ def _normalizar_item_lista_pedido(item: dict) -> dict:
 
 
 def _cubagem_lista_historica(lista: dict) -> bool:
-    return _normalizar_status_lista_pedido(lista.get("status")) not in {
+    return bool(lista.get("unida_em_lista_id")) or _normalizar_status_lista_pedido(lista.get("status")) not in {
         "Lista gerada", "Em Orçamento", "Analisando orçamento",
     }
 
@@ -945,7 +964,9 @@ def _cubagem_lista_historica(lista: dict) -> bool:
 def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None, *, client_id: str | None = None) -> dict:
     from backend.services.cadastro_cubagem import decimal_cubagem, normalizar_sku_cubagem
     from backend.services.medias_compras_fiscal import _campo_cubagem_historica
+    from backend.services.medias_compras_uniao import motivo_bloqueio_uniao
     import math
+    bloqueio_uniao = motivo_bloqueio_uniao(lista)
     itens = lista.get("itens") or []
     total_usd = 0.0
     total_m3 = 0.0
@@ -989,6 +1010,8 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None, *, client_i
         "loja": str(lista.get("loja", "") or "").strip() or "__todas",
         "store_id": str(lista.get("store_id", "") or "").strip(),
         "status": _normalizar_status_lista_pedido(lista.get("status")),
+        "pode_unir": not bool(bloqueio_uniao),
+        "motivo_bloqueio_uniao": bloqueio_uniao,
         "created_at": str(lista.get("created_at", "") or ""),
         "updated_at": str(lista.get("updated_at", "") or ""),
         "total_itens": len(itens),
@@ -1026,6 +1049,12 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None, *, client_i
         "eta_date": str(lista.get("eta_date") or ""),
         "customs_clearance_date": str(lista.get("customs_clearance_date") or ""),
         "received_at": str(lista.get("received_at") or ""),
+        **({
+            "unida_em_lista_id": str(lista["unida_em_lista_id"]),
+            "unida_em_lista_nome": str(lista.get("unida_em_lista_nome") or ""),
+            "unida_em": str(lista.get("unida_em") or ""),
+        } if lista.get("unida_em_lista_id") else {}),
+        **({"uniao_origens": copy.deepcopy(lista["uniao_origens"])} if lista.get("uniao_origens") else {}),
     }
 
 

@@ -686,6 +686,7 @@ def _importar_packing_list_sync(lista_id, conteudo, filename, client_id):
         lista = next((row for row in listas if str(row.get("id", "")) == str(lista_id)), None)
         if lista is None:
             raise HTTPException(404, "Lista de pedidos não encontrada.")
+        common._exigir_lista_pedido_editavel(lista)
         if _documento_packing_existe(client_id, lista.get("packing_list")):
             raise HTTPException(409, "Esta lista já tem um Packing List. Clique novamente para baixar.")
         os.makedirs(os.path.dirname(caminho), exist_ok=True)

@@ -1,0 +1,15 @@
+{
+  "models": {
+    "MediasComprasItem": "644dac944f618a554bc04e98cb5ee1d370f3e57a31f61ed67781ff67d4479df2",
+    "MediasComprasRequest": "c38c7cd93d089ba1aa3f94deb54dbb9ce82dc1240c101348e4fc1e88f0bcd7c7",
+    "ListaCompraRequest": "6347605587c378e962cd1b4de353816686ce9b856f77d4fd4410d3d1be2d16cf",
+    "ListaPedidoUpdateRequest": "b6360dbe78256d44c8636246986264a5d2d66bc20aa91f3b713517a57645cf6a",
+    "ListaPedidoStatusRequest": "7b376f623574517734cff36b9529c8fda7d95eed2739bf823313c600d5928b26",
+    "ListaPedidoAddSkuRequest": "3ba1702d8e59c01bca82a214202cf89d2bfa82c21411d0f8aef61ec30b1bf7c0",
+    "ListaPedidoSkuAprovacaoRequest": "af1cb3288979fec7bf919fe8dab48e8a668ddf9d49ffe3942a4f3008eeaf05ec",
+    "ListaPedidoSkuAnaliseConcorrentesRequest": "30dc11021afb30cc630563827098c895dfcfc4c563a467a44daf99db8b63e929",
+    "ListaPedidoPreferenciasColunasRequest": "caf03eb999a34b35d74798d6ecb1c9186adbdf12f726da7350eacae3dd216003",
+    "MediasComprasSkusOcultosRequest": "1d37fa5557b090f21376a4eaf2d8b46ee987df79cc512572783ce3eed133b2b2"
+  },
+  "routes_sha256": "6fe179575cc48e8a527b46cc4ba2f9df544e4dc5a5638960894a457a9eaab1e7"
+}

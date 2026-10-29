@@ -1545,3 +1545,29 @@
             line-height: 0;
             pointer-events: none;
         }
+.uniao-botao { width: 100%; margin-bottom: 8px; }
+.uniao-botao:disabled { opacity: .55; cursor: not-allowed; }
+.uniao-selecao { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; font-size: 12px; color: #b6d5f5; cursor: pointer; }
+.uniao-selecao input { width: 16px; height: 16px; accent-color: #4facfe; }
+.uniao-selecao:has(input:disabled) { color: #a0a5b0; cursor: default; }
+.uniao-origem-aviso { padding: 9px 10px; border-radius: 6px; background: #25394c; color: #c0e0ff; font-size: 12px; line-height: 1.5; }
+.lista-unida { border-style: dashed; }
+.uniao-link { padding: 0; border: none; background: transparent; color: #77c4ff; text-decoration: underline; cursor: pointer; font: inherit; }
+.uniao-modal { width: min(960px, calc(100vw - 32px)); max-width: 960px; max-height: calc(100vh - 32px); overflow-y: auto; }
+.uniao-origens { color: #c4cede; font-size: 12px; overflow-wrap: anywhere; }
+.uniao-resumo { font-weight: 600; color: #99d3ff; }
+.uniao-tabela-wrap { max-height: 290px; overflow: auto; border: 1px solid #394456; border-radius: 6px; }
+.uniao-tabela-wrap table { width: 100%; }
+.uniao-tabela-wrap th { position: sticky; top: 0; background: #243042; }
+.uniao-tabela-wrap td { overflow-wrap: anywhere; }
+.uniao-total { font-weight: 600; }
+.uniao-conflitos { display: grid; gap: 10px; }
+.uniao-conflito { display: grid; gap: 5px; padding: 10px; border-left: 3px solid #e7b84f; background: #252735; font-size: 13px; }
+.uniao-conflito select { width: 100%; min-width: 0; padding: 8px; background: #111822; border: 1px solid #556072; border-radius: 5px; color: #f1f4f9; }
+.uniao-modal .modal-actions { position: sticky; bottom: -1px; background: #1d2230; padding: 12px 0 2px; }
+.uniao-modal button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 600px) {
+    .uniao-modal { width: calc(100vw - 20px); padding: 14px; }
+    .uniao-modal .modal-actions { flex-wrap: wrap; }
+    .uniao-modal .modal-actions button { flex: 1 1 130px; }
+}
