@@ -1,4 +1,4 @@
-"""Deleted remote copies can bind to a live, account-proven survivor."""
+"""Historical aliases respect deletions without new account reconciliation."""
 from copy import deepcopy
 import json
 
@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from fastapi import HTTPException
 
-from test_shared_sync_store_reconciliation import existing_account, new_machine, store  # noqa: F401
+from test_shared_sync_store_reconciliation import bound_account, existing_account, new_machine, seed_binding, store  # noqa: F401
 from backend.services import central_accounts_migration, integracoes
 from backend.services import shared_sync_apply_scope as apply_scope
 from backend.services import shared_sync_operations as operations
@@ -89,30 +89,27 @@ def _ledger(env):
     return json.loads((env.tenant / bindings.BINDINGS_FILE).read_bytes())
 
 
-def test_deleted_remote_copy_maps_to_live_same_account_and_repeats(existing_account):
-    env, local, remote, calls = existing_account
+def test_deleted_remote_copy_reuses_historical_live_alias_and_repeats(bound_account):
+    env, local, remote, calls = bound_account
     tombstones = _delete_remote_copy(env, local, remote)
-    remote_source = dict(env.bundles)
+    historical = (env.tenant / bindings.BINDINGS_FILE).read_bytes()
     for _ in range(2):
-        calls.clear()
         _receive(env)
         _assert_store(env, local)
-        assert calls  # Every explicit Lojas reception verifies the live account.
+        assert calls == []
         assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
-        assert env.bundles == remote_source
-    record = next(iter(_ledger(env)["peers"].values()))["stores"][remote["store_id"]]
-    assert record["local_id"] == local["store_id"]
-    assert record["remote_connection_hash"] == bindings._connection_hash(remote)
+        assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == historical
 
 
 @pytest.mark.parametrize("source_client", ["tenant-a", "another-source-tenant"])
-def test_receive_b_then_c_with_different_remote_ids_keeps_one_local_identity(existing_account, source_client):
-    env, local, remote, _ = existing_account
+def test_two_historical_peer_aliases_keep_one_local_identity(bound_account, source_client):
+    env, local, remote, calls = bound_account
     tombstones = _delete_remote_copy(env, local, remote)
     _receive(env)
     incoming = store("remote-c", "remote-c")
     env.link.update(id="link-user-c", source_username="charlie", source_client_id=source_client)
     env.permissions["charlie"] = dict(env.permissions["alice"])
+    seed_binding(env, local, incoming)
     _publish(env, incoming)
     _receive(env)
     _receive(env)
@@ -123,102 +120,96 @@ def test_receive_b_then_c_with_different_remote_ids_keeps_one_local_identity(exi
     assert {key: row["local_id"] for entry in peers for key, row in entry["stores"].items()} == {
         remote["store_id"]: local["store_id"], incoming["store_id"]: local["store_id"],
     }
+    assert calls == []
     assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
 
 
 @pytest.mark.parametrize("survivor_id", ["live-survivor", "store-a"])
-def test_deleted_binding_target_rebuilds_only_after_new_store_account_proof(existing_account, survivor_id):
-    env, local, remote, calls = existing_account
-    _receive(env, ["lojas_integracoes"])
+def test_deleted_binding_target_does_not_reconcile_to_a_different_survivor(bound_account, survivor_id):
+    env, local, remote, calls = bound_account
     survivor = store(survivor_id, "survivor")
     _set_stores(env, [local, survivor])
     tombstones = _delete(env, local)
     before = _snapshot(env)
-    with pytest.raises(HTTPException):
-        env.execute(env.preview(["cadastro"]), ["cadastro"])
-    assert _snapshot(env) == before
-    calls.clear()
+    if survivor_id != remote["store_id"]:
+        with pytest.raises(HTTPException):
+            env.execute(env.preview(["cadastro"]), ["cadastro"])
+        assert _snapshot(env) == before
     _receive(env)
-    _assert_store(env, survivor)
-    assert calls
+    saved = {row["store_id"]: row for row in json.loads((env.tenant / "lojas_config.json").read_bytes())}
+    assert set(saved) == {survivor_id, remote["store_id"]}
+    assert saved[survivor_id]["integracoes"]["bling"]["access_token"] == "survivor-bling"
+    assert local["store_id"] not in saved
+    assert pd.read_csv(env.tenant / REL, dtype=str)["store_id"].tolist() == [remote["store_id"]]
+    assert calls == []
     assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
-    entry = next(iter(_ledger(env)["peers"].values()))
-    if survivor_id == remote["store_id"]:
-        assert remote["store_id"] not in entry["stores"]
-    else:
-        assert entry["stores"][remote["store_id"]]["local_id"] == survivor_id
+    assert next(iter(_ledger(env)["peers"].values()))["stores"] == {}
     _receive(env, ["cadastro"])
-    _assert_store(env, survivor)
+    assert pd.read_csv(env.tenant / REL, dtype=str)["store_id"].tolist() == [remote["store_id"]]
 
 
-def test_deleted_target_without_live_survivor_is_not_recreated(existing_account):
-    env, local, _, _ = existing_account
+def test_deleted_target_stays_deleted_when_original_remote_id_is_imported(bound_account):
+    env, local, remote, calls = bound_account
+    tombstones = _delete(env, local)
+    _receive(env)
+    _assert_store(env, remote)
+    assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
+    assert next(iter(_ledger(env)["peers"].values()))["stores"] == {}
+    assert calls == []
+
+
+def test_deleted_legacy_receipt_is_not_recreated_with_a_new_id(existing_account):
+    env, _, remote, calls = existing_account
+    _set_stores(env, [])
+    remote = deepcopy(remote)
+    remote.pop("store_id")
+    payload = json.dumps([remote]).encode()
+    env.publish("lojas_integracoes", [("lojas_config.json", payload)],
+                source_connections=bindings.source_connection_hashes(payload))
     _receive(env, ["lojas_integracoes"])
-    _delete(env, local)
-    before = _snapshot(env)
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview(), None)
-    assert error.value.status_code == 409
-    assert _snapshot(env) == before
+    imported = json.loads((env.tenant / "lojas_config.json").read_bytes())[0]
+    ledger_before = (env.tenant / bindings.BINDINGS_FILE).read_bytes()
+    record = next(iter(next(iter(_ledger(env)["peers"].values()))["stores"].values()))
+    assert record["receipt_only"] is True
+    assert record["local_id"] == imported["store_id"]
+    tombstones = _delete(env, imported)
+
+    for _ in range(2):
+        _receive(env, ["lojas_integracoes"])
+        assert json.loads((env.tenant / "lojas_config.json").read_bytes()) == []
+        assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
+        assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == ledger_before
+    assert calls == []
 
 
-def test_tombstoned_local_target_is_never_used_even_if_still_in_store_file(existing_account):
-    env, local, _, calls = existing_account
-    _removed(env, local["store_id"])
-    before = _snapshot(env)
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview(), None)
-    assert error.value.status_code == 409 and calls == []
-    assert _snapshot(env) == before
-
-
-def test_rebuilding_target_requires_fresh_successful_account_lookup(existing_account, monkeypatch):
-    env, local, _, calls = existing_account
-    _receive(env, ["lojas_integracoes"])
-    _set_stores(env, [local, store("survivor", "survivor")])
-    _delete(env, local)
-    before = _snapshot(env)
-    monkeypatch.setattr(central_accounts_migration, "_identity", lambda *args: (_ for _ in ()).throw(HTTPException(503, "unavailable")))
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview(), None)
-    assert error.value.status_code == 409
-    assert error.value.detail["code"] == "shared_sync_store_account_unverifiable"
-    assert _snapshot(env) == before
-
-
-def test_other_user_same_name_different_account_remains_distinct(existing_account, monkeypatch):
-    env, local, remote, _ = existing_account
+@pytest.mark.parametrize("seller", ["123", "456"])
+def test_another_peer_without_alias_keeps_its_original_id(bound_account, seller):
+    env, local, remote, calls = bound_account
     _delete_remote_copy(env, local, remote)
     _receive(env)
-    incoming = store("foreign-account-store", "foreign", seller="456")
-    env.link.update(id="link-different-account", source_username="charlie")
+    incoming = store("other-peer-store", "foreign", seller=seller)
+    env.link.update(id="link-other-peer", source_username="charlie")
     env.permissions["charlie"] = dict(env.permissions["alice"])
     _publish(env, incoming)
-
-    def identity(provider, token):
-        account = "456" if token.startswith("foreign") else "123"
-        return (account, "MLB") if provider == "mercadolivre" else ("company-" + account, "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
     _receive(env)
     saved = {row["store_id"]: row for row in json.loads((env.tenant / "lojas_config.json").read_bytes())}
     assert set(saved) == {local["store_id"], incoming["store_id"]}
-    assert saved[local["store_id"]]["integracoes"]["mercadolivre"]["access_token"] == local["integracoes"]["mercadolivre"]["access_token"]
-    assert saved[incoming["store_id"]]["integracoes"]["mercadolivre"]["user_id"] == "456"
+    assert saved[local["store_id"]]["integracoes"]["mercadolivre"]["access_token"] == "local-ml"
+    assert saved[incoming["store_id"]]["integracoes"]["mercadolivre"]["user_id"] == seller
     assert set(pd.read_csv(env.tenant / REL, dtype=str)["store_id"]) == set(saved)
+    assert len(_ledger(env)["peers"]) == 1
+    assert calls == []
 
 
-@pytest.mark.parametrize("invalid", ["peer", "source_proof", "local_target"])
-def test_deleted_remote_alias_keeps_peer_proof_and_live_target_guards(existing_account, invalid):
-    env, local, remote, _ = existing_account
+@pytest.mark.parametrize("invalid", ["peer", "local_target"])
+def test_deleted_remote_alias_keeps_peer_and_live_target_guards(bound_account, invalid):
+    env, local, remote, calls = bound_account
     _delete_remote_copy(env, local, remote)
     _receive(env)
     entry = next(iter(_ledger(env)["peers"].values()))
     peer = deepcopy(entry["identity"])
     if invalid == "peer":
         peer["link_id"] = "unrelated-link"
-    elif invalid == "source_proof":
-        env.publish("cadastro", env.product_files, source_connections={remote["store_id"]: "b" * 64})
     else:
         _removed(env, local["store_id"], remote["store_id"])
     before = _snapshot(env)
@@ -229,83 +220,43 @@ def test_deleted_remote_alias_keeps_peer_proof_and_live_target_guards(existing_a
         )
     assert error.value.status_code == 409
     assert _snapshot(env) == before
+    assert calls == []
 
 
-@pytest.mark.parametrize("survivors", ["different_account", "ambiguous_account"])
-def test_deleted_binding_target_requires_one_matching_active_survivor(existing_account, monkeypatch, survivors):
-    env, local, _, calls = existing_account
-    _receive(env, ["lojas_integracoes"])
-    if survivors == "different_account":
-        rows = [store("different-survivor", "foreign", seller="456")]
-    else:
-        rows = [store("first-survivor", "first"), store("second-survivor", "second")]
+@pytest.mark.parametrize("survivors", ["different_account", "same_account"])
+def test_stale_alias_does_not_select_a_survivor_by_account(bound_account, survivors):
+    env, local, remote, calls = bound_account
+    rows = ([store("different-survivor", "foreign", seller="456")] if survivors == "different_account"
+            else [store("first-survivor", "first"), store("second-survivor", "second")])
     _set_stores(env, [local, *rows])
-    _delete(env, local)
-    before = _snapshot(env)
-    calls.clear()
-
-    def identity(provider, token):
-        calls.append((provider, token))
-        account = "456" if token.startswith("foreign") else "123"
-        return (account, "MLB") if provider == "mercadolivre" else ("company-" + account, "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview())
-    assert error.value.status_code == 409
-    assert error.value.detail["code"] == "shared_sync_store_binding_invalid"
-    assert calls
-    assert _snapshot(env) == before
+    tombstones = _delete(env, local)
+    _receive(env)
+    saved = json.loads((env.tenant / "lojas_config.json").read_bytes())
+    assert {row["store_id"] for row in saved} == {remote["store_id"], *(row["store_id"] for row in rows)}
+    assert pd.read_csv(env.tenant / REL, dtype=str)["store_id"].tolist() == [remote["store_id"]]
+    assert next(iter(_ledger(env)["peers"].values()))["stores"] == {}
+    assert (env.tenant / "lojas_sync_tombstones.json").read_bytes() == tombstones
+    assert calls == []
 
 
 @pytest.mark.parametrize("same_name", [False, True])
-def test_empty_destination_rejects_two_remote_ids_for_same_authenticated_account(existing_account, same_name):
+@pytest.mark.parametrize("seller", ["123", "456"])
+def test_empty_destination_keeps_each_remote_id_regardless_of_account_or_name(existing_account, same_name, seller):
     env, _, _, calls = existing_account
     _set_stores(env, [])
-    rows = [store("remote-one", "first"), store("remote-two", "second")]
+    rows = [store("remote-one", "first"), store("remote-two", "second", seller=seller)]
     if not same_name:
         rows[1]["nome"] = "Another remote name"
     payload = json.dumps(rows).encode()
     env.publish("lojas_integracoes", [("lojas_config.json", payload)],
                 source_connections=bindings.source_connection_hashes(payload))
-    before = _snapshot(env)
-    original_bundles = dict(env.bundles)
-
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview(["lojas_integracoes"]), ["lojas_integracoes"])
-
-    assert error.value.status_code == 409
-    assert error.value.detail["reason"] == "duplicate_remote_account"
-    assert "contas repetidas ou conflitantes" in error.value.detail["message"]
-    assert len(calls) == 4
-    assert _snapshot(env) == before
-    assert env.bundles == original_bundles
-
-
-@pytest.mark.parametrize("same_name", [False, True])
-def test_empty_destination_accepts_two_different_remote_accounts(existing_account, monkeypatch, same_name):
-    env, _, _, calls = existing_account
-    _set_stores(env, [])
-    rows = [store("remote-one", "first"), store("remote-two", "second", seller="456")]
-    if not same_name:
-        rows[1]["nome"] = "Another remote name"
-    payload = json.dumps(rows).encode()
-    env.publish("lojas_integracoes", [("lojas_config.json", payload)],
-                source_connections=bindings.source_connection_hashes(payload))
-
-    def identity(provider, token):
-        calls.append((provider, token))
-        account = "456" if token.startswith("second") else "123"
-        return (account, "MLB") if provider == "mercadolivre" else ("company-" + account, "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
     _receive(env, ["lojas_integracoes"])
     saved = {row["store_id"]: row for row in json.loads((env.tenant / "lojas_config.json").read_bytes())}
     assert set(saved) == {row["store_id"] for row in rows}
     for row in rows:
         for provider, expected in row["integracoes"].items():
             assert {key: saved[row["store_id"]]["integracoes"][provider][key] for key in expected} == expected
-    assert len(calls) == 4
+    assert calls == []
     assert not (env.tenant / bindings.BINDINGS_FILE).exists()
 
 
@@ -314,7 +265,7 @@ def test_empty_destination_accepts_two_different_remote_accounts(existing_accoun
     "bling": {"id": "same-bling-app", "secret": "synthetic-app-secret"},
 }])
 @pytest.mark.parametrize("first_connected", [False, True])
-def test_empty_remote_configs_are_not_account_evidence(existing_account, configs, first_connected):
+def test_empty_remote_configs_are_received_without_lookup(existing_account, configs, first_connected):
     env, _, _, calls = existing_account
     _set_stores(env, [])
     rows = [store("remote-one", "first"), store("remote-two", "second")]
@@ -324,9 +275,7 @@ def test_empty_remote_configs_are_not_account_evidence(existing_account, configs
     payload = json.dumps(rows).encode()
     env.publish("lojas_integracoes", [("lojas_config.json", payload)],
                 source_connections=bindings.source_connection_hashes(payload))
-
     _receive(env, ["lojas_integracoes"])
-
     saved = json.loads((env.tenant / "lojas_config.json").read_bytes())
     assert {row["store_id"] for row in saved} == {"remote-one", "remote-two"}
     assert calls == []
@@ -334,27 +283,21 @@ def test_empty_remote_configs_are_not_account_evidence(existing_account, configs
 
 
 @pytest.mark.parametrize("failure", ["missing_token", "unavailable"])
-def test_remote_account_candidates_require_successful_authentication(existing_account, monkeypatch, failure):
+def test_remote_store_receipt_does_not_require_account_authentication(existing_account, monkeypatch, failure):
     env, _, _, calls = existing_account
     _set_stores(env, [])
     rows = [store("remote-one", "first"), store("remote-two", "second")]
     if failure == "missing_token":
         rows[1]["integracoes"]["mercadolivre"].pop("access_token")
-    else:
-        def unavailable(*args):
-            raise HTTPException(503, "synthetic unavailable")
-        monkeypatch.setattr(central_accounts_migration, "_identity", unavailable)
+    def unavailable(*args):
+        calls.append(args)
+        raise HTTPException(503, "synthetic unavailable")
+    monkeypatch.setattr(central_accounts_migration, "_identity", unavailable)
     payload = json.dumps(rows).encode()
     env.publish("lojas_integracoes", [("lojas_config.json", payload)],
                 source_connections=bindings.source_connection_hashes(payload))
-    before = _snapshot(env)
-    original_bundles = dict(env.bundles)
-
-    with pytest.raises(HTTPException) as error:
-        env.execute(env.preview(["lojas_integracoes"]), ["lojas_integracoes"])
-
-    assert error.value.status_code == 409
-    assert error.value.detail["code"] == "shared_sync_store_account_unverifiable"
+    _receive(env, ["lojas_integracoes"])
+    saved = json.loads((env.tenant / "lojas_config.json").read_bytes())
+    assert {row["store_id"] for row in saved} == {"remote-one", "remote-two"}
     assert calls == []
-    assert _snapshot(env) == before
-    assert env.bundles == original_bundles
+    assert not (env.tenant / bindings.BINDINGS_FILE).exists()

@@ -1,4 +1,4 @@
-"""Private, directional store bindings for validated user-share imports."""
+"""Durable store mappings for authorized user-share receipts."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -11,8 +11,8 @@ import re
 from fastapi import HTTPException
 
 from backend.services.shared_sync_common import _shared_sync_resolve_tenant_path
-from backend.services.shared_sync_merge_integracoes import _shared_sync_loja_key, _shared_sync_validar_identidades_lojas
-from backend.services.shared_sync_store_identity import _remote_key, _relation, plan_store_reconciliation
+from backend.services.shared_sync_merge_integracoes import _shared_sync_validar_identidades_lojas
+from backend.services.shared_sync_store_identity import _remote_key
 
 
 BINDINGS_FILE = 'shared_sync_store_bindings.json'
@@ -52,13 +52,15 @@ def _read_ledger(tenant, peer):
             raise ValueError()
         for remote_id, row in (entry or {}).get('stores', {}).items():
             if (not isinstance(remote_id, str) or not remote_id or not isinstance(row, dict)
-                    or set(row) - {'unverified_providers'} not in (
+                    or set(row) - {'unverified_providers', 'receipt_only'} not in (
                         {'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash'},
                         {'local_id', 'local_name', 'remote_name', 'accounts', 'connection_hash', 'remote_connection_hash'})
                     or not isinstance(row['local_id'], str) or not row['local_id']
                     or not isinstance(row['remote_name'], str)
                     or not isinstance(row['local_name'], str)
-                    or not isinstance(row['accounts'], dict) or not row['accounts']
+                    or not isinstance(row['accounts'], dict)
+                    or (not row['accounts'] and row.get('receipt_only') is not True)
+                    or ('receipt_only' in row and row['receipt_only'] is not True)
                     or not re.fullmatch(r'[0-9a-f]{64}', str(row['connection_hash']))
                     or ('remote_connection_hash' in row
                         and not re.fullmatch(r'[0-9a-f]{64}', str(row['remote_connection_hash'])))):
@@ -206,168 +208,73 @@ def _verify_accounts(local, remote, pairs, *, remote_keys=()):
     return result
 
 
-def _validate_partial_account_claims(local, remote, local_accounts, remote_accounts, *, remote_pair=False):
-    from backend.services.central_accounts_migration import _expected_identity
-    relation = _relation(local_accounts, remote_accounts)
-    for provider in {'mercadolivre', 'bling'} - (local_accounts.keys() & remote_accounts.keys()):
-        identities = []
-        for store, verified in ((local, local_accounts), (remote, remote_accounts)):
-            config = _configs(store).get(provider, {})
-            claimed = _expected_identity(config, provider)
-            if (provider not in verified and not claimed[0]
-                    and any(config.get(key) is not None and str(config[key]).strip()
-                            for key in ('user_id', 'seller_id', 'account_id', 'empresa_id'))):
-                _fail('A conta pendente possui uma identidade inválida. Confira a conexão antes de receber novamente.',
-                      'shared_sync_store_account_unverifiable')
-            identities.append(verified.get(provider, claimed))
-        left, right = identities
-        same_account = (left[0] and left[0] == right[0]
-                        and (not left[1] or not right[1] or left[1] == right[1]))
-        # Unverified claims can rule out an ambiguous import, but they must
-        # never establish a match or authorize projecting another store's data.
-        if same_account and remote_pair:
-            raise HTTPException(409, {
-                'code': 'shared_sync_store_reconciliation_ambiguous',
-                'reason': 'duplicate_remote_account',
-                'message': 'O envio contém lojas com contas repetidas ou conflitantes. Revise as lojas na origem antes de receber novamente.',
-            })
-        if ((relation == 'match' and (
-                (left[0] and right[0] and left[0] != right[0])
-                or (left[1] and right[1] and left[1] != right[1])))
-                or (relation == 'different' and same_account)):
-            _fail('As contas declaradas para a loja são diferentes. Confira as conexões antes de receber novamente.',
-                  'shared_sync_store_account_mismatch')
-
-
-def _same_claim(left, right):
-    from backend.services.central_accounts_migration import _expected_identity
-    for provider in ('mercadolivre', 'bling'):
-        a, _ = _expected_identity(_configs(left).get(provider, {}), provider)
-        b, _ = _expected_identity(_configs(right).get(provider, {}), provider)
-        if a and a == b:
-            return True
-    return False
-
 def prepare_store_import(client_id, tenant, local_bytes, remote_bytes, peer):
+    """Receive authorized store data by durable IDs, without platform lookups."""
     from backend.services import integracoes
+    from backend.services.shared_sync_merge_sqlite import _shared_sync_store_ids_tombstonados
+
     peer = validate_peer(client_id, peer)
     local, remote = json.loads(local_bytes or b'[]'), json.loads(remote_bytes)
     if not isinstance(local, list) or not isinstance(remote, list):
         _fail('A lista de lojas recebida é inválida.')
     _shared_sync_validar_identidades_lojas(local, origem='Lojas locais', status_code=409)
     _shared_sync_validar_identidades_lojas(remote, origem='Snapshot remoto', status_code=502)
-    local = deepcopy(local)
+    local, remote = deepcopy(local), deepcopy(remote)
     for row in local:
         integracoes._integracoes_store_id(client_id, row)
     ledger, entry, previous_bytes = _read_ledger(tenant, peer)
-    from backend.services.shared_sync_merge_sqlite import _shared_sync_store_ids_tombstonados
     removed = _shared_sync_store_ids_tombstonados(integracoes._integracoes_ler_tombstones_estrito(client_id))
-    remote_keys = {_remote_key(row) for row in remote}
-    previous = {key: item['local_id'] for key, item in entry['stores'].items() if key in remote_keys}
-    local_ids = {row['store_id'] for row in local}
-    # A deleted target is not authority for restoring its old ID. Rebuild
-    # only during Lojas reception, using fresh proof of an active survivor.
-    rebuild = {key for key, target in previous.items()
-               if target in removed and target not in local_ids}
-    pairs = []
-    for incoming in remote:
-        key = _remote_key(incoming)
-        for existing in local:
-            same_name = _shared_sync_loja_key(existing.get('nome')) == _shared_sync_loja_key(incoming.get('nome'))
-            common_providers = _account_providers(existing) & _account_providers(incoming)
-            if (previous.get(key) == existing['store_id']
-                    or ((existing['store_id'] != key or key in rebuild)
-                        and (common_providers or same_name or _same_claim(existing, incoming)))):
-                pairs.append((key, existing['store_id']))
-                if existing['store_id'] in removed:
-                    _fail('Uma das lojas foi excluída nesta máquina. Revise o vínculo antes de receber novamente.')
-    # Even an empty destination must reject a snapshot that names the same
-    # authenticated account twice. Empty/app-only configurations are not proof.
-    remote_providers = {}
-    for incoming in remote:
-        for provider in _account_providers(incoming):
-            remote_providers.setdefault(provider, set()).add(_remote_key(incoming))
-    remote_candidates = {key for keys in remote_providers.values() if len(keys) > 1 for key in keys}
-    # The optional-provider exception also needs fresh proof for a single new
-    # store arriving at an empty destination, where no pair exists yet.
-    remote_candidates.update(
-        _remote_key(row) for row in remote
-        if any(provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config)
-               for provider, config in _configs(row).items())
-    )
-    accounts = _verify_accounts(local, remote, pairs, remote_keys=remote_candidates)
-    local_by_id = {row['store_id']: row for row in local}
-    remote_by_id = {_remote_key(row): row for row in remote}
-    for remote_key, local_key in pairs:
-        if not (accounts['local'].get(local_key, {}).keys() & accounts['remote'].get(remote_key, {}).keys()):
-            _fail('Não foi possível comprovar a conta de duas lojas com identidades diferentes.', 'shared_sync_store_account_unverifiable')
-        _validate_partial_account_claims(local_by_id[local_key], remote_by_id[remote_key],
-                                         accounts['local'].get(local_key, {}), accounts['remote'].get(remote_key, {}))
-    for index, incoming in enumerate(remote):
-        for other in remote[index + 1:]:
-            _validate_partial_account_claims(incoming, other,
-                                             accounts['remote'].get(_remote_key(incoming), {}),
-                                             accounts['remote'].get(_remote_key(other), {}), remote_pair=True)
-    for key in rebuild:
-        candidates = {row['store_id'] for row in local if row['store_id'] not in removed
-                      and _relation(accounts['local'].get(row['store_id'], {}), accounts['remote'].get(key, {})) == 'match'}
-        if len(candidates) != 1:
-            _fail('A loja vinculada foi removida e não há uma única loja ativa com a mesma conta confirmada.')
-        previous[key] = next(iter(candidates))
-    for incoming in remote:
-        key = _remote_key(incoming)
-        candidates = {row['store_id'] for row in local if row['store_id'] != key
-                      and _relation(accounts['local'].get(row['store_id'], {}), accounts['remote'].get(key, {})) == 'match'}
-        if any(row['store_id'] == key for row in local) and candidates:
-            # Empty-looking copies are not safe to remove during a live import:
-            # queued sales, purchase lists and editorial writers may still hold
-            # this ID. Consolidation needs its own quiescent data transaction.
-            _fail('Já existem cópias desta loja nesta máquina. A consolidação precisa ser revisada antes de retirar qualquer cópia ou importar seus dados.', 'shared_sync_store_consolidation_required')
-    try:
-        plan = plan_store_reconciliation(local, remote, verified_accounts=accounts,
-                                        previous_mapping=previous)
-    except HTTPException as exc:
-        if isinstance(exc.detail, dict) and exc.detail.get('reason') == 'duplicate_remote_account':
-            raise HTTPException(exc.status_code, {
-                **exc.detail,
-                'message': 'O envio contém lojas com contas repetidas ou conflitantes. Revise as lojas na origem antes de receber novamente.',
-            }) from exc
-        raise
-    by_id = {row['store_id']: row for row in plan['local_stores']}
-    for incoming in plan['remote_stores']:
-        if incoming['store_id'] in plan['matched_local_ids']:
-            original = by_id[incoming['store_id']]
-            incoming['nome'] = original['nome']
-            incoming['integracoes'] = deepcopy(original.get('integracoes') or {})
+    by_id = {row['store_id']: row for row in local}
     records = deepcopy(entry['stores'])
-    originals = {_remote_key(row): row for row in remote}
-    for key, local_id in plan['mapping'].items():
-        if key == local_id:
+    mapping, matched = {}, set()
+    for incoming in remote:
+        key = _remote_key(incoming)
+        record = records.get(key)
+        incoming_id = str(incoming.get('store_id') or '').strip()
+        if incoming_id in by_id:
+            target = incoming_id
             records.pop(key, None)
-            continue
-        original = by_id[local_id]
-        records[key] = {'local_id': local_id, 'local_name': original['nome'], 'remote_name': originals[key]['nome'],
-                        'accounts': accounts['local'][local_id], 'connection_hash': _connection_hash(original),
-                        'remote_connection_hash': _connection_hash(originals[key])}
-        unverified = set(entry['stores'].get(key, {}).get('unverified_providers', []))
-        for side, row_key, row in (('local', local_id, original), ('remote', key, originals[key])):
-            unverified.update(_account_providers(row) - accounts[side].get(row_key, {}).keys())
-        unverified.update(provider for row in (original, originals[key])
-                          for provider, config in _configs(row).items()
-                          if provider in {'mercadolivre', 'bling'} and _unidentified_inactive_account(config))
-        # Removing a disconnected configuration is not proof of the company
-        # behind its historical data. Clear a restriction only after both
-        # current connections authenticate as the same account.
-        unverified = sorted(provider for provider in unverified
-                            if not accounts['local'].get(local_id, {}).get(provider)
-                            or accounts['local'][local_id][provider] != accounts['remote'].get(key, {}).get(provider))
-        if unverified:
-            records[key]['unverified_providers'] = unverified
+        elif record and record['local_id'] in by_id and record['local_id'] not in removed:
+            target = record['local_id']
+            record['remote_name'] = incoming['nome']
+            record['local_name'] = by_id[target]['nome']
+            incoming['nome'] = by_id[target]['nome']
+            matched.add(target)
+            # This receipt is not fresh authentication. Historical account
+            # proofs remain unchanged for scopes that still require them.
+        elif record and not incoming_id:
+            # A legacy snapshot has no independent ID. Reuse its assigned ID
+            # even after local deletion so tombstones can suppress reimports.
+            target = record['local_id']
+            record['remote_name'] = incoming['nome']
+        else:
+            records.pop(key, None)
+            target = incoming_id or integracoes._integracoes_store_id(client_id, incoming)
+            if not incoming_id:
+                # Persist the opaque ID so a repeated legacy snapshot does
+                # not create another store. This is explicitly not OAuth proof.
+                records[key] = {
+                    'local_id': target, 'local_name': incoming['nome'],
+                    'remote_name': incoming['nome'], 'accounts': {},
+                    'connection_hash': _connection_hash(incoming),
+                    'remote_connection_hash': _connection_hash(incoming),
+                    'receipt_only': True,
+                    'unverified_providers': ['bling', 'mercadolivre'],
+                }
+        if target in mapping.values():
+            _fail('O mapa do vínculo associa duas lojas recebidas à mesma loja local.')
+        incoming['store_id'] = target
+        mapping[key] = target
     ledger['peers'][_hash(peer)] = {'identity': peer, 'stores': records}
     changed = records != entry['stores']
-    plan['binding_bytes'] = json.dumps(ledger, sort_keys=True, ensure_ascii=False, indent=2).encode() if records or changed else previous_bytes
-    plan['binding_preimage'] = previous_bytes
-    return plan
+    return {
+        'mapping': mapping, 'remove_imported_ids': [],
+        'local_stores': local, 'remote_stores': remote,
+        'matched_local_ids': sorted(matched),
+        'binding_bytes': (json.dumps(ledger, sort_keys=True, ensure_ascii=False, indent=2).encode()
+                          if changed else previous_bytes),
+        'binding_preimage': previous_bytes,
+    }
 
 
 def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connections=None):
@@ -390,10 +297,10 @@ def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connecti
         candidate_labels = {record['remote_name']: current['nome'] if current else record['local_name']}
         # Matching Mercado Livre does not prove the company behind historical
         # Bling sales. Include unchanged name-only legacy references here too.
-        if (scope == 'vendas' and 'bling' in record.get('unverified_providers', [])
+        if (scope == 'vendas' and (record.get('receipt_only') or 'bling' in record.get('unverified_providers', []))
                 and sources_reference_store(scope, sources, '' if remote_id.startswith('legacy:') else remote_id,
                                             record['remote_name'])):
-            _fail('Reconecte o Bling nas lojas afetadas e confirme a mesma conta nas duas máquinas. Depois envie e receba Lojas e integrações e Vendas novamente.',
+            _fail('A conta Bling deste vínculo não está confirmada para receber Vendas. Lojas e Cadastro podem ser recebidos sem essa confirmação.',
                   'shared_sync_store_sales_account_unverified')
         if remap_store_sources(scope, sources, candidate_ids, candidate_labels) == sources:
             continue
@@ -401,13 +308,13 @@ def remap_bound_sources(client_id, tenant, peer, scope, sources, source_connecti
         # target receives data, under the peer and source-connection proof.
         if local_id not in by_id or local_id in removed:
             _fail('A loja vinculada foi removida. Receba Lojas e integrações novamente.')
-        if (remote_id.startswith('legacy:') or not record.get('remote_connection_hash')
+        if scope != 'cadastro' and (record.get('receipt_only') or remote_id.startswith('legacy:') or not record.get('remote_connection_hash')
                 or not isinstance(source_connections, dict)
                 or source_connections.get(remote_id) != record['remote_connection_hash']):
             _fail('A conexão de origem não corresponde à conferida. Atualize as duas máquinas e envie e receba Lojas e integrações junto com estes dados novamente.',
                   'shared_sync_store_binding_stale')
         row = by_id[local_id]
-        if _connection_hash(row) != record.get('connection_hash'):
+        if scope != 'cadastro' and _connection_hash(row) != record.get('connection_hash'):
             evidence = _verify_accounts([row], [{**row, 'store_id': remote_id}], [(remote_id, local_id)])
             actual = evidence['local'].get(local_id)
             expected = {key: tuple(value) for key, value in record['accounts'].items()}

@@ -1608,6 +1608,50 @@ def _shared_sync_legacy_root_pertence_ao_cliente(
     )
 
 
+def _shared_sync_incorporar_contas_legadas_remotas(lojas: list, legacy_bytes: bytes) -> list:
+    """Materialize legacy accounts inside their source stores before ID mapping."""
+    from backend.services import integracoes
+    from backend.services.shared_sync_merge_integracoes import (
+        _shared_sync_integracao_tem_dados,
+        _shared_sync_loja_key,
+        _shared_sync_servico_key,
+        _shared_sync_validar_identidades_lojas,
+        _shared_sync_validar_integracoes_legacy,
+    )
+
+    try:
+        legacy = json.loads(legacy_bytes.decode("utf-8-sig"))
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(502, "integracoes.json remoto invalido.") from exc
+    if not isinstance(legacy, dict):
+        raise HTTPException(502, "integracoes.json remoto nao contem um objeto.")
+    _shared_sync_validar_integracoes_legacy(legacy, origem="integracoes.json remoto", status_code=502)
+    _shared_sync_validar_identidades_lojas(lojas, origem="Snapshot remoto", status_code=502)
+    for name, providers in legacy.items():
+        # Legacy names identify stores only within this source snapshot. Never
+        # match them against destination names or overwrite a canonical block.
+        matches = [row for row in lojas if str(row.get("nome") or "").strip() == str(name).strip()]
+        if not matches:
+            matches = [row for row in lojas if _shared_sync_loja_key(row.get("nome")) == _shared_sync_loja_key(name)]
+        if len(matches) > 1:
+            raise HTTPException(502, "integracoes.json remoto contem uma loja ambigua.")
+        if matches:
+            row = matches[0]
+        else:
+            row = {"nome": name, "integracoes": {}}
+            lojas.append(row)
+        target = row.setdefault("integracoes", {})
+        existing = {_shared_sync_servico_key(provider): provider for provider in target}
+        for provider, config in providers.items():
+            key = _shared_sync_servico_key(provider)
+            destination_key = existing.get(key, key)
+            if not _shared_sync_integracao_tem_dados(target.get(destination_key)):
+                converted = integracoes._integracoes_converter_legado(key, config)
+                target[destination_key] = {**config, **(converted or {})}
+                existing[key] = destination_key
+    return lojas
+
+
 def _shared_sync_aplicar_lojas_integracoes(
     client_id: str,
     fontes: list[tuple[str, bytes]],
@@ -1680,6 +1724,12 @@ def _shared_sync_aplicar_lojas_integracoes(
             status_code=502,
             detail="lojas_config.json remoto nao contem uma lista.",
         )
+
+    if preserve_local_connections and "integracoes.json" in por_rel:
+        lojas_remotas = _shared_sync_incorporar_contas_legadas_remotas(
+            lojas_remotas, por_rel["integracoes.json"],
+        )
+        por_rel["lojas_config.json"] = json.dumps(lojas_remotas, ensure_ascii=False).encode("utf-8")
 
     rels = [rel for rel in canonical_order if rel in por_rel]
     public_rels = list(rels)
@@ -1861,7 +1911,8 @@ def _shared_sync_aplicar_lojas_integracoes(
                 add_only=True,
                 current_bytes=recovered_local_lojas,
                 local_tombstones_bytes=effective_tombstones_bytes,
-                strict_oauth_conflicts=True,
+                strict_oauth_conflicts=(strict_oauth_conflicts if preserve_local_connections else True),
+                preserve_local_connections=preserve_local_connections,
                 client_id=client_id,
             )
 
@@ -1902,8 +1953,9 @@ def _shared_sync_aplicar_lojas_integracoes(
                 )
             elif rel == "integracoes.json":
                 if preserve_local_connections or (reconciliation and reconciliation["matched_local_ids"]):
-                    # The canonical store snapshot already carries new stores.
-                    # Never let a legacy file reimport old credentials over it.
+                    # Remote legacy accounts were folded into source stores
+                    # before mapping. Keep the destination legacy file intact
+                    # so a later maintenance pass cannot overwrite local OAuth.
                     prepared[rel] = preimages.get(rel) or b"{}"
                     continue
 
@@ -2377,9 +2429,10 @@ def _shared_sync_aplicar_pacote_conteudo(client_id, scope, username, scope_confi
             base_tombstones_bytes=base_tombstones_bytes,
             preserve_local_connections=bool(
                 (scope_config or {}).get("preserve_local_connections")
+                or (user_share and (scope_config or {}).get("store_peer"))
             ),
             strict_oauth_conflicts=bool(
-                (scope_config or {}).get("strict_oauth_conflicts")
+                (scope_config or {}).get("strict_oauth_conflicts") and not user_share
             ),
             store_peer=(scope_config or {}).get("store_peer"),
         )

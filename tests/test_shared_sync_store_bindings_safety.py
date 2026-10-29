@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from fastapi import HTTPException
 
-from test_shared_sync_store_reconciliation import existing_account, new_machine  # noqa: F401
+from test_shared_sync_store_reconciliation import bound_account, existing_account, new_machine, seed_binding  # noqa: F401
 from backend.services import central_accounts_migration
 from backend.services import shared_sync_apply_scope as apply_scope
 from backend.services import shared_sync_store_bindings as bindings
@@ -84,8 +84,8 @@ def _duplicate(env, local, remote, *, backup=True):
     ("source_username", "other-source-user"),
     ("target_username", "other-target-user"),
 ])
-def test_binding_is_not_reused_for_another_peer_context(existing_account, key, value):
-    env, local, remote, calls = existing_account
+def test_binding_is_not_reused_for_another_peer_context(bound_account, key, value):
+    env, local, remote, calls = bound_account
     _, entry = _bind(env)
     before = _snapshot(env)
     sources = deepcopy(env.product_files)
@@ -102,8 +102,8 @@ def test_binding_is_not_reused_for_another_peer_context(existing_account, key, v
     assert _snapshot(env) == before
 
 
-def test_binding_rejects_different_target_tenant(existing_account):
-    env, *_ = existing_account
+def test_binding_rejects_different_target_tenant(bound_account):
+    env, *_ = bound_account
     _, entry = _bind(env)
     before = _snapshot(env)
     peer = {**entry["identity"], "target_client_id": "foreign-tenant"}
@@ -114,8 +114,8 @@ def test_binding_rejects_different_target_tenant(existing_account):
     assert _snapshot(env) == before
 
 
-def test_apply_rejects_binding_for_another_recipient(existing_account):
-    env, *_ = existing_account
+def test_apply_rejects_binding_for_another_recipient(bound_account):
+    env, *_ = bound_account
     _, entry = _bind(env)
     before = _snapshot(env)
     peer = {**entry["identity"], "target_username": "other-recipient"}
@@ -128,8 +128,8 @@ def test_apply_rejects_binding_for_another_recipient(existing_account):
     assert _snapshot(env) == before
 
 
-def test_new_link_cannot_import_cadastro_using_another_link_binding(existing_account):
-    env, *_ = existing_account
+def test_new_link_cannot_import_cadastro_using_another_link_binding(bound_account):
+    env, *_ = bound_account
     _bind(env)
     env.link["id"] = "new-link-without-binding"
     _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_identity_invalid")
@@ -141,8 +141,8 @@ def test_new_link_cannot_import_cadastro_using_another_link_binding(existing_acc
     "bad_connection_hash", "unknown_provider", "missing_account", "bad_local_id",
     "missing_local_name", "bad_local_name",
 ])
-def test_corrupt_current_binding_rejects_before_cadastro_write(existing_account, corruption):
-    env, *_ = existing_account
+def test_corrupt_current_binding_rejects_before_cadastro_write(bound_account, corruption):
+    env, *_ = bound_account
     ledger, entry = _bind(env)
     record = next(iter(entry["stores"].values()))
     if corruption == "invalid_json":
@@ -170,18 +170,24 @@ def test_corrupt_current_binding_rejects_before_cadastro_write(existing_account,
     _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_binding_invalid")
 
 
-@pytest.mark.parametrize("scopes", [["cadastro"], ["lojas_integracoes"]])
-def test_orphan_binding_rejects_instead_of_recreating_local_store(existing_account, scopes):
-    env, *_ = existing_account
+@pytest.mark.parametrize("scope", ["cadastro", "lojas_integracoes"])
+def test_orphan_binding_is_not_used_to_recreate_its_former_target(bound_account, scope):
+    env, local, remote, calls = bound_account
     ledger, entry = _bind(env)
-    next(iter(entry["stores"].values()))["local_id"] = "deleted-local-store"
+    next(iter(entry["stores"].values()))["local_id"] = "missing-local-store"
     _write_ledger(env, ledger)
-    code = "shared_sync_store_binding_invalid" if scopes == ["cadastro"] else "shared_sync_store_reconciliation_invalid"
-    _expect_unchanged_failure(env, scopes, code=code)
+    if scope == "cadastro":
+        _expect_unchanged_failure(env, [scope], code="shared_sync_store_binding_invalid")
+    else:
+        assert _run(env, [scope])["success"]
+        ids = {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())}
+        assert ids == {local["store_id"], remote["store_id"]}
+        assert _ledger(env)[1]["stores"] == {}
+    assert calls == []
 
 
 @pytest.mark.parametrize("reference", ["csv", "json", "json_utf16", "photo_path", "sqlite"])
-def test_existing_references_block_duplicate_removal(existing_account, reference):
+def test_receipt_preserves_references_of_distinct_store_ids(existing_account, reference):
     env, local, remote, _ = existing_account
     backup = _duplicate(env, local, remote)
     backup_before = backup.read_bytes()
@@ -207,7 +213,8 @@ def test_existing_references_block_duplicate_removal(existing_account, reference
             connection.execute("INSERT INTO synthetic_reference VALUES (?)", [remote["store_id"]])
     reference_before = reference_file.read_bytes()
 
-    _expect_unchanged_failure(env, ["lojas_integracoes"], code="shared_sync_store_consolidation_required")
+    assert _run(env, ["lojas_integracoes"])["success"]
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], remote["store_id"]}
 
     assert reference_file.read_bytes() == reference_before
     assert backup.read_bytes() == backup_before
@@ -216,7 +223,8 @@ def test_existing_references_block_duplicate_removal(existing_account, reference
 def test_duplicate_without_preimport_backup_is_not_removed(existing_account):
     env, local, remote, _ = existing_account
     _duplicate(env, local, remote, backup=False)
-    _expect_unchanged_failure(env, ["lojas_integracoes"], code="shared_sync_store_consolidation_required")
+    assert _run(env, ["lojas_integracoes"])["success"]
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], remote["store_id"]}
 
 
 def test_duplicate_edited_after_import_is_not_removed(existing_account):
@@ -224,19 +232,22 @@ def test_duplicate_edited_after_import_is_not_removed(existing_account):
     edited = deepcopy(remote)
     edited["user_note"] = "synthetic local edit"
     _duplicate(env, local, edited)
-    _expect_unchanged_failure(env, ["lojas_integracoes"], code="shared_sync_store_consolidation_required")
+    assert _run(env, ["lojas_integracoes"])["success"]
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], remote["store_id"]}
 
 
 @pytest.mark.parametrize("existing_binding", [False, True])
 def test_partial_binding_write_restores_config_backup_and_ledger(existing_account, monkeypatch, existing_binding):
-    env, local, remote, _ = existing_account
-    if existing_binding:
-        _bind(env)
+    env, local, remote, calls = existing_account
     remote = deepcopy(remote)
-    remote["nome"] = "Synthetic renamed remote"
-    _publish_stores(env, [
-        remote, {"store_id": "new-store", "nome": "Other synthetic store", "integracoes": {}},
-    ])
+    if existing_binding:
+        ledger, entry = seed_binding(env, local, remote)
+        entry["stores"][remote["store_id"]]["local_id"] = "missing-target"
+        _write_ledger(env, ledger)
+    else:
+        # A legacy receipt creates a durable ID, explicitly without OAuth proof.
+        remote.pop("store_id")
+    _publish_stores(env, [remote, {"store_id": "new-store", "nome": "Other synthetic store", "integracoes": {}}])
     before = _snapshot(env)
     original_write = apply_scope._shared_sync_atomic_write
     attempts = []
@@ -245,7 +256,6 @@ def test_partial_binding_write_restores_config_backup_and_ledger(existing_accoun
         original_write(path, content)
         if Path(path).name == bindings.BINDINGS_FILE and not attempts:
             attempts.append(True)
-            # The canonical write has happened: rollback must restore real edits.
             rows = json.loads((env.tenant / "lojas_config.json").read_bytes())
             assert "new-store" in {row["store_id"] for row in rows}
             assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() != before[bindings.BINDINGS_FILE]
@@ -257,32 +267,28 @@ def test_partial_binding_write_restores_config_backup_and_ledger(existing_accoun
     assert caught.value.status_code == 500
     assert attempts == [True]
     assert _snapshot(env) == before
+    assert calls == []
 
 
-def test_changed_local_account_blocks_cadastro_without_store_import(existing_account, monkeypatch):
-    env, *_ = existing_account
+def test_changed_local_connection_does_not_block_cadastro_historical_id_mapping(bound_account, monkeypatch):
+    env, local, _, _ = bound_account
     _bind(env)
     path = env.tenant / "lojas_config.json"
     rows = json.loads(path.read_bytes())
-    configs = rows[0]["integracoes"]
-    configs["mercadolivre"].update(user_id="456", access_token="changed-ml", refresh_token="changed-ml-refresh")
-    configs["bling"].update(access_token="changed-bling", refresh_token="changed-bling-refresh")
+    rows[0]["integracoes"]["mercadolivre"].update(user_id="456", access_token="changed-ml")
+    rows[0]["integracoes"]["bling"].update(access_token="changed-bling")
     path.write_text(json.dumps(rows), encoding="utf-8")
-    lookups = []
-
-    def identity(provider, token):
-        lookups.append(provider)
-        return ("456", "MLB") if provider == "mercadolivre" else ("company-456", "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
-    _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_binding_invalid")
-    assert set(lookups) == {"mercadolivre", "bling"}
-    assert [scope for scope, _ in env.calls] == ["cadastro"]
-    assert not (env.tenant / CADASTRO).exists()
+    before_connections = path.read_bytes()
+    before_map = (env.tenant / bindings.BINDINGS_FILE).read_bytes()
+    monkeypatch.setattr(central_accounts_migration, "_identity", lambda *args: pytest.fail("Cadastro must not query a provider"))
+    assert _run(env, ["cadastro"])["success"]
+    assert pd.read_csv(env.tenant / CADASTRO, dtype=str)["store_id"].tolist() == [local["store_id"]]
+    assert path.read_bytes() == before_connections
+    assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == before_map
 
 
-def test_token_rotation_for_same_account_keeps_binding_usable(existing_account):
-    env, local, _, calls = existing_account
+def test_token_rotation_for_same_account_keeps_binding_usable(bound_account):
+    env, local, _, calls = bound_account
     _bind(env)
     path = env.tenant / "lojas_config.json"
     rows = json.loads(path.read_bytes())
@@ -293,52 +299,47 @@ def test_token_rotation_for_same_account_keeps_binding_usable(existing_account):
 
     assert _run(env, ["cadastro"])["success"]
 
-    assert calls
+    assert calls == []
     assert pd.read_csv(env.tenant / CADASTRO, dtype=str)["store_id"].tolist() == [local["store_id"]]
     assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == before_map
 
 
-def test_even_unused_duplicate_with_backup_requires_separate_consolidation(existing_account):
+def test_receipt_keeps_distinct_ids_and_original_backup(existing_account):
     env, local, remote, _ = existing_account
     backup = _duplicate(env, local, remote)
     backup_before = backup.read_bytes()
-    _expect_unchanged_failure(env, ["lojas_integracoes"], code="shared_sync_store_consolidation_required")
+    assert _run(env, ["lojas_integracoes"])["success"]
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], remote["store_id"]}
     assert backup.read_bytes() == backup_before
 
 
 @pytest.mark.parametrize("stage", ["prepare", "cadastro"])
-def test_tombstone_on_local_binding_target_blocks_its_use(existing_account, stage):
-    env, local, remote, calls = existing_account
+def test_tombstone_on_local_binding_target_prevents_reuse(bound_account, stage):
+    env, local, remote, calls = bound_account
     _, entry = _bind(env)
     removed_id = local["store_id"]
-    tombstones = [{
-        "type": "store", "key": "store:" + removed_id + ":", "store_id": removed_id,
-        "version": 2, "deleted_at": "2026-10-20T00:00:00Z",
-    }]
-    tombstone_path = env.tenant / "lojas_sync_tombstones.json"
-    tombstone_path.write_text(json.dumps(tombstones), encoding="utf-8")
-    tombstone_before = tombstone_path.read_bytes()
+    tombstones = [{"type": "store", "key": "store:" + removed_id + ":", "store_id": removed_id,
+                   "version": 2, "deleted_at": "2026-10-20T00:00:00Z"}]
+    path = env.tenant / "lojas_sync_tombstones.json"
+    path.write_text(json.dumps(tombstones), encoding="utf-8")
     before = _snapshot(env)
-    calls.clear()
+    tombstone_before = path.read_bytes()
     if stage == "prepare":
-        with pytest.raises(HTTPException) as caught:
-            bindings.prepare_store_import(
-                "tenant-a", str(env.tenant), before["lojas_config.json"],
-                json.dumps([remote]).encode(), entry["identity"],
-            )
-        assert caught.value.status_code == 409
-        assert caught.value.detail["code"] == "shared_sync_store_binding_invalid"
+        plan = bindings.prepare_store_import("tenant-a", str(env.tenant), before["lojas_config.json"],
+                                             json.dumps([remote]).encode(), entry["identity"])
+        assert plan["mapping"] == {remote["store_id"]: remote["store_id"]}
+        assert plan["matched_local_ids"] == []
         assert _snapshot(env) == before
     else:
         _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_binding_invalid")
     assert calls == []
-    assert tombstone_path.read_bytes() == tombstone_before
+    assert path.read_bytes() == tombstone_before
 
 
 @pytest.mark.parametrize("scope", ["cadastro", "favoritos_planilhas"])
 @pytest.mark.parametrize("proof_kind", ["valid", "absent", "different"])
-def test_orphan_binding_does_not_block_sources_for_another_store(existing_account, scope, proof_kind):
-    env, _, remote, calls = existing_account
+def test_orphan_binding_does_not_block_sources_for_another_store(bound_account, scope, proof_kind):
+    env, _, remote, calls = bound_account
     _, entry = _bind(env)
     # The old remote store remains in the peer ledger, but its former local
     # target no longer exists. This package refers only to an independent B.
@@ -375,76 +376,42 @@ def test_orphan_binding_does_not_block_sources_for_another_store(existing_accoun
 
 
 @pytest.mark.parametrize("same_name", [False, True])
-@pytest.mark.parametrize("same_account", [False, True])
-def test_bling_without_claims_matches_only_authenticated_account(existing_account, monkeypatch, same_name, same_account):
+def test_bling_connections_without_prior_binding_do_not_merge_distinct_ids(existing_account, monkeypatch, same_name):
     env, local, remote, _ = existing_account
     local, remote = deepcopy(local), deepcopy(remote)
     local["nome"] = "Local Bling store"
     remote["nome"] = local["nome"] if same_name else "Distinct remote Bling store"
     for row in (local, remote):
         row["integracoes"] = {"bling": row["integracoes"]["bling"]}
-        assert not set(row["integracoes"]["bling"]) & {"empresa_id", "account_id", "user_id"}
     (env.tenant / "lojas_config.json").write_text(json.dumps([local]), encoding="utf-8")
     _publish_stores(env, [remote])
-    calls = []
-
-    def identity(provider, token):
-        calls.append((provider, token))
-        assert provider == "bling"
-        side = "shared" if same_account else "local" if token.startswith("local-") else "remote"
-        return ("company-" + side, "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
+    monkeypatch.setattr(central_accounts_migration, "_identity", lambda *args: pytest.fail("Receipt must not query a provider"))
     assert _run(env, ["lojas_integracoes"])["success"]
-
     saved = {row["store_id"]: row for row in json.loads((env.tenant / "lojas_config.json").read_bytes())}
-    assert set(saved) == ({local["store_id"]} if same_account else {local["store_id"], remote["store_id"]})
-    for key, value in local["integracoes"]["bling"].items():
-        assert saved[local["store_id"]]["integracoes"]["bling"][key] == value
-    assert sorted(calls) == sorted([
-        ("bling", local["integracoes"]["bling"]["access_token"]),
-        ("bling", remote["integracoes"]["bling"]["access_token"]),
-    ])
-    if same_account:
-        _, entry = _ledger(env)
-        assert entry["stores"][remote["store_id"]]["local_id"] == local["store_id"]
-        assert entry["stores"][remote["store_id"]]["accounts"] == {"bling": ["company-shared", ""]}
-    else:
-        assert not (env.tenant / bindings.BINDINGS_FILE).exists()
-        for key, value in remote["integracoes"]["bling"].items():
-            assert saved[remote["store_id"]]["integracoes"]["bling"][key] == value
+    assert set(saved) == {local["store_id"], remote["store_id"]}
+    for original in (local, remote):
+        for key, value in original["integracoes"]["bling"].items():
+            assert saved[original["store_id"]]["integracoes"]["bling"][key] == value
+    assert not (env.tenant / bindings.BINDINGS_FILE).exists()
 
 
-def test_bling_identity_queries_are_deduplicated_across_candidates(existing_account, monkeypatch):
+def test_unrelated_connected_stores_are_not_identity_lookup_candidates(existing_account, monkeypatch):
     env, local, remote, _ = existing_account
     local, remote = deepcopy(local), deepcopy(remote)
-    for row in (local, remote):
-        row["integracoes"] = {"bling": row["integracoes"]["bling"]}
-        row["integracoes"]["bling"]["access_token"] = "shared-synthetic-access"
-    local["nome"], remote["nome"] = "Local Bling", "Remote Bling"
     other = deepcopy(local)
     other.update(store_id="other-local", nome="Other Bling")
-    other["integracoes"]["bling"]["access_token"] = "other-synthetic-access"
+    other["integracoes"]["bling"]["access_token"] = "expired-other-account"
     (env.tenant / "lojas_config.json").write_text(json.dumps([local, other]), encoding="utf-8")
     _publish_stores(env, [remote])
-    calls = []
-
-    def identity(provider, token):
-        calls.append((provider, token))
-        return ("company-shared" if token == "shared-synthetic-access" else "company-other", "")
-
-    monkeypatch.setattr(central_accounts_migration, "_identity", identity)
+    monkeypatch.setattr(central_accounts_migration, "_identity", lambda *args: pytest.fail("Unrelated account lookup"))
     assert _run(env, ["lojas_integracoes"])["success"]
-
-    assert sorted(calls) == [("bling", "other-synthetic-access"), ("bling", "shared-synthetic-access")]
-    _, entry = _ledger(env)
-    assert entry["stores"][remote["store_id"]]["local_id"] == local["store_id"]
-    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], other["store_id"]}
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], other["store_id"], remote["store_id"]}
+    assert not (env.tenant / bindings.BINDINGS_FILE).exists()
 
 
 @pytest.mark.parametrize("unrelated_orphan", [False, True])
-def test_name_only_favorites_follow_current_local_name_after_rename(existing_account, unrelated_orphan):
-    env, local, remote, calls = existing_account
+def test_name_only_favorites_follow_current_local_name_after_rename(bound_account, unrelated_orphan):
+    env, local, remote, calls = bound_account
     ledger, entry = _bind(env)
     record = entry["stores"][remote["store_id"]]
     assert record["remote_name"] == record["local_name"] == local["nome"]
@@ -501,51 +468,45 @@ def test_unrelated_empty_or_app_only_local_configs_do_not_block_new_account(exis
 
     rows = json.loads((env.tenant / "lojas_config.json").read_bytes())
     assert {row["store_id"] for row in rows} == {local["store_id"], remote["store_id"]}
-    assert all(token for _, token in calls)
+    assert calls == []
     assert not (env.tenant / bindings.BINDINGS_FILE).exists()
 
 
 @pytest.mark.parametrize("empty_side", ["local", "remote", "both"])
-def test_valid_ml_identity_matches_despite_additional_empty_bling(existing_account, empty_side):
-    env, local, remote, calls = existing_account
+def test_historical_binding_works_despite_empty_connection_configuration(bound_account, empty_side):
+    env, local, remote, calls = bound_account
     local, remote = deepcopy(local), deepcopy(remote)
-    local["nome"], remote["nome"] = "Local ML", "Remote ML"
     if empty_side in {"local", "both"}:
         local["integracoes"]["bling"] = {}
     if empty_side in {"remote", "both"}:
         remote["integracoes"]["bling"] = {}
     (env.tenant / "lojas_config.json").write_text(json.dumps([local]), encoding="utf-8")
     _publish_stores(env, [remote])
-
+    before_map = (env.tenant / bindings.BINDINGS_FILE).read_bytes()
     assert _run(env, ["lojas_integracoes"])["success"]
-
     rows = json.loads((env.tenant / "lojas_config.json").read_bytes())
     assert [row["store_id"] for row in rows] == [local["store_id"]]
     assert rows[0]["integracoes"]["mercadolivre"]["access_token"] == local["integracoes"]["mercadolivre"]["access_token"]
-    _, entry = _ledger(env)
-    assert entry["stores"][remote["store_id"]]["local_id"] == local["store_id"]
-    assert all(token for _, token in calls)
-    if empty_side == "both":
-        assert {provider for provider, _ in calls} == {"mercadolivre"}
+    assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == before_map
+    assert calls == []
 
 
-def test_same_name_without_any_account_proof_still_fails(existing_account):
+def test_same_name_without_account_proof_keeps_distinct_ids(existing_account):
     env, local, remote, calls = existing_account
     local, remote = deepcopy(local), deepcopy(remote)
     for row in (local, remote):
         row["integracoes"] = {"mercadolivre": {}, "bling": {"id": "only-app-id"}}
     (env.tenant / "lojas_config.json").write_text(json.dumps([local]), encoding="utf-8")
     _publish_stores(env, [remote])
-
-    _expect_unchanged_failure(env, ["lojas_integracoes"], code="shared_sync_store_account_unverifiable")
-
+    assert _run(env, ["lojas_integracoes"])["success"]
+    assert {row["store_id"] for row in json.loads((env.tenant / "lojas_config.json").read_bytes())} == {local["store_id"], remote["store_id"]}
     assert calls == []
 
 
 @pytest.mark.parametrize("proof_kind", ["absent", "missing_id", "different"])
 @pytest.mark.parametrize("scope", ["cadastro", "favoritos_planilhas"])
-def test_used_binding_requires_matching_source_connection_proof(existing_account, proof_kind, scope):
-    env, local, remote, calls = existing_account
+def test_connection_proof_is_required_only_outside_cadastro(bound_account, proof_kind, scope):
+    env, local, remote, calls = bound_account
     _, entry = _bind(env)
     proof = None if proof_kind == "absent" else (
         {} if proof_kind == "missing_id" else {remote["store_id"]: "0" * 64}
@@ -553,7 +514,8 @@ def test_used_binding_requires_matching_source_connection_proof(existing_account
     calls.clear()
     if scope == "cadastro":
         env.publish(scope, env.product_files, source_connections=proof)
-        _expect_unchanged_failure(env, [scope], code="shared_sync_store_binding_stale")
+        assert _run(env, [scope])["success"]
+        assert pd.read_csv(env.tenant / CADASTRO, dtype=str)["store_id"].tolist() == [local["store_id"]]
     else:
         # A rename makes the name-only reference an effective projection too.
         rows = json.loads((env.tenant / "lojas_config.json").read_bytes())
@@ -576,15 +538,13 @@ def test_used_binding_requires_matching_source_connection_proof(existing_account
     assert calls == []
 
 
-def test_legacy_binding_without_remote_proof_cannot_be_used(existing_account):
-    env, _, _, calls = existing_account
+def test_historical_binding_without_remote_proof_still_serves_cadastro(bound_account):
+    env, local, _, calls = bound_account
     ledger, entry = _bind(env)
     next(iter(entry["stores"].values())).pop("remote_connection_hash")
     _write_ledger(env, ledger)
-    calls.clear()
-
-    _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_binding_stale")
-
+    assert _run(env, ["cadastro"])["success"]
+    assert pd.read_csv(env.tenant / CADASTRO, dtype=str)["store_id"].tolist() == [local["store_id"]]
     assert calls == []
 
 
@@ -608,22 +568,14 @@ def test_store_manifest_proof_must_match_original_store_bytes(existing_account, 
     assert calls == []
 
 
-def test_reconnected_remote_account_with_same_store_id_cannot_reuse_alias(existing_account):
-    env, _, remote, calls = existing_account
-    _, entry = _bind(env)
-    remote_id = remote["store_id"]
-    observed_hash = entry["stores"][remote_id]["remote_connection_hash"]
-    remote["integracoes"]["mercadolivre"].update(
-        user_id="456", access_token="reconnected-ml", refresh_token="reconnected-ml-refresh",
-    )
-    remote["integracoes"]["bling"].update(
-        access_token="reconnected-bling", refresh_token="reconnected-bling-refresh",
-    )
-    assert remote["store_id"] == remote_id
-    assert env.source_connections()[remote_id] != observed_hash
+def test_reconnected_remote_store_keeps_cadastro_id_mapping_without_rewriting_proof(bound_account):
+    env, local, remote, calls = bound_account
+    _bind(env)
+    original_map = (env.tenant / bindings.BINDINGS_FILE).read_bytes()
+    remote["integracoes"]["mercadolivre"].update(user_id="456", access_token="reconnected-ml")
+    remote["integracoes"]["bling"].update(access_token="reconnected-bling")
     env.publish("cadastro", env.product_files)
-    calls.clear()
-
-    _expect_unchanged_failure(env, ["cadastro"], code="shared_sync_store_binding_stale")
-
+    assert _run(env, ["cadastro"])["success"]
+    assert pd.read_csv(env.tenant / CADASTRO, dtype=str)["store_id"].tolist() == [local["store_id"]]
+    assert (env.tenant / bindings.BINDINGS_FILE).read_bytes() == original_map
     assert calls == []

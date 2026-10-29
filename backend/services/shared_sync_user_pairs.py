@@ -470,7 +470,8 @@ def _shared_sync_pull_pair_scope_serialized(
         "user_share": True,
         "share_between_users": True,
         "base_bundle": base_bundle,
-        "strict_oauth_conflicts": scope == "lojas_integracoes",
+        "strict_oauth_conflicts": False,
+        "preserve_local_connections": scope == "lojas_integracoes",
     }
     from_client, from_user, to_client, to_user = _shared_sync_link_direction_parts(link, receive_direction)
     scope_config["store_peer"] = {
