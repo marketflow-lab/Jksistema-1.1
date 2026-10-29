@@ -33,6 +33,7 @@ class RenovacaoRouterConfig:
     sync_job_get: Callable[[str], dict]
     agendamento_atual: Callable[..., dict]
     agendamento_put: Callable[..., dict]
+    iniciar_criacao_proximo_mes: Callable[..., dict] | None = None
 
 
 def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
@@ -60,6 +61,28 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
             req.promotion_type or "SELLER_CAMPAIGN",
             quantidade_origem_esperada=req.quantidade_origem_esperada,
         )
+
+    @router.post("/api/renovacao/criar-proximo-mes/iniciar", name="renovacao_criar_proximo_mes_iniciar")
+    def renovacao_criar_proximo_mes_iniciar(
+        req: RenovacaoCampanhaCriarRequest,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        if req.quantidade_origem_esperada is None:
+            raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de criar a campanha.")
+        if config.iniciar_criacao_proximo_mes is None:
+            raise HTTPException(503, "Criacao com acompanhamento indisponivel.")
+        return config.iniciar_criacao_proximo_mes(client_id, req)
+
+    @router.get("/api/renovacao/criar-proximo-mes/progresso/{job_id}", name="renovacao_criar_proximo_mes_progresso")
+    def renovacao_criar_proximo_mes_progresso(
+        job_id: str,
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        job = dict(config.sync_job_get(job_id) or {})
+        if not job or job.get("client_id") != client_id or job.get("operacao") != "criar_proximo_mes":
+            raise HTTPException(status_code=404, detail="Job de criacao nao encontrado.")
+        job.pop("client_id", None)
+        return job
 
     @router.post("/api/renovacao/campanha", name="renovacao_criar_campanha_manual")
     def renovacao_criar_campanha_manual(
@@ -157,8 +180,8 @@ def create_renovacao_router(config: RenovacaoRouterConfig) -> APIRouter:
         job_id: str,
         client_id: str = Depends(config.get_tenant_id),
     ):
-        job = config.sync_job_get(job_id)
-        if not job or job.get("client_id") != client_id:
+        job = dict(config.sync_job_get(job_id) or {})
+        if not job or job.get("client_id") != client_id or job.get("operacao") == "criar_proximo_mes":
             raise HTTPException(status_code=404, detail="Job de sincronizacao nao encontrado.")
         job.pop("client_id", None)
         return job

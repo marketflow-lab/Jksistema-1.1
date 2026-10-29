@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from backend.schemas.renovacao import RenovacaoCampanhaSincronizarRequest
+from backend.schemas.renovacao import RenovacaoCampanhaCriarRequest, RenovacaoCampanhaSincronizarRequest
 from backend.services import renovacao_context as ctx
 from backend.services.renovacao_agendamento_store import (
     _renovacao_agendamento_key,
@@ -55,6 +55,8 @@ def _renovacao_criar_campanha_ml(
     nome: str,
     campanha_fonte: dict,
     datas_alvo: tuple[str, str] | None = None,
+    *,
+    confirmar_periodo: bool = False,
 ) -> tuple[str, dict, dict]:
     inicio, fim = datas_alvo or _renovacao_datas_proximo_mes(campanha_fonte or {})
     payload = {
@@ -81,6 +83,23 @@ def _renovacao_criar_campanha_ml(
     nova_id = str(data.get("id") or data.get("promotion_id") or data.get("campaign_id") or "").strip()
     if not nova_id:
         raise HTTPException(status_code=500, detail="Mercado Livre criou a campanha, mas nao retornou o ID.")
+    if confirmar_periodo:
+        ctx._cache_invalidar_loja(client_id, loja)
+        try:
+            campanha_confirmada, cfg = _renovacao_buscar_campanha_ml(
+                client_id, loja, cfg, nova_id, "SELLER_CAMPAIGN",
+            )
+        except Exception:
+            campanha_confirmada = {}
+        if not _renovacao_periodo_campanha_igual(campanha_confirmada, inicio, fim):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A campanha {nova_id} foi criada, mas nao foi possivel confirmar o periodo completo "
+                    f"de {inicio[:10]} ate {fim[:10]}. Nenhum anuncio foi copiado. "
+                    "Atualize as campanhas e confira ou ajuste o periodo dessa campanha antes de continuar."
+                ),
+            )
     return nova_id, payload, cfg
 
 
@@ -163,6 +182,16 @@ def _renovacao_data_periodo_igual(enviada: str, retornada: str | None) -> bool:
     return str(enviada or "")[:10] == str(retornada or "")[:10]
 
 
+def _renovacao_periodo_campanha_igual(campanha: dict, inicio: str, fim: str) -> bool:
+    """A whole-month destination must include the full first and last days."""
+    inicio_retornado = campanha.get("start_date") or campanha.get("date_start") or campanha.get("begin_date")
+    fim_retornado = campanha.get("finish_date") or campanha.get("end_date") or campanha.get("date_end")
+    return (
+        _renovacao_parse_data_ml(inicio_retornado) == _renovacao_parse_data_ml(inicio)
+        and _renovacao_parse_data_ml(fim_retornado) == _renovacao_parse_data_ml(fim)
+    )
+
+
 def _renovacao_buscar_campanha_ml(
     client_id: str,
     loja: str,
@@ -191,7 +220,9 @@ def _renovacao_descrever_periodo_campanha(campanha: dict | None) -> str:
     campanha = campanha if isinstance(campanha, dict) else {}
     inicio = campanha.get("start_date") or campanha.get("date_start") or campanha.get("begin_date") or ""
     fim = campanha.get("finish_date") or campanha.get("end_date") or campanha.get("date_end") or ""
-    return f"{str(inicio)[:10] or '-'} ate {str(fim)[:10] or '-'}"
+    inicio_local = _renovacao_parse_data_ml(inicio)
+    fim_local = _renovacao_parse_data_ml(fim)
+    return f"{inicio_local.date() if inicio_local else '-'} ate {fim_local.date() if fim_local else '-'}"
 
 
 def _renovacao_atualizar_periodo_campanha_ml(
@@ -241,6 +272,7 @@ def _renovacao_atualizar_periodo_campanha_ml(
     if resp.status_code not in (200, 201):
         detalhe = ctx._ml_parse_error_detail(resp, "Falha na solicitacao")
         raise HTTPException(status_code=resp.status_code, detail=f"Erro ao alterar periodo da campanha no Mercado Livre: {detalhe}")
+    ctx._cache_invalidar_loja(client_id, nome_loja)
     resposta_put = _renovacao_json_response(resp)
     campanha_verificada, cfg = _renovacao_buscar_campanha_ml(client_id, nome_loja, cfg, campanha_id, promotion_type)
     if not campanha_verificada or not (
@@ -265,23 +297,25 @@ def _renovacao_atualizar_periodo_campanha_ml(
                 exc,
             )
 
-    inicio_ok = _renovacao_data_periodo_igual(inicio, campanha_verificada.get("start_date")) if inicio and campanha_verificada else True
-    fim_ok = _renovacao_data_periodo_igual(fim, campanha_verificada.get("finish_date")) if fim and campanha_verificada else True
-    if campanha_verificada and (not inicio_ok or not fim_ok):
+    inicio_retornado = campanha_verificada.get("start_date") or campanha_verificada.get("date_start") or campanha_verificada.get("begin_date")
+    fim_retornado = campanha_verificada.get("finish_date") or campanha_verificada.get("end_date") or campanha_verificada.get("date_end")
+    if (inicio and not inicio_retornado) or (fim and not fim_retornado):
+        raise HTTPException(
+            status_code=409,
+            detail="Nao foi possivel confirmar o periodo salvo no Mercado Livre. Atualize as campanhas e confira as datas antes de tentar novamente.",
+        )
+    inicio_ok = _renovacao_data_periodo_igual(inicio, inicio_retornado)
+    fim_ok = _renovacao_data_periodo_igual(fim, fim_retornado)
+    if not inicio_ok or not fim_ok:
         periodo_atual = _renovacao_descrever_periodo_campanha(campanha_verificada)
         ctx.logger.warning(
-            "[RENOVACAO PERIODO] Mercado Livre manteve periodo antigo loja=%s campanha=%s payload=%s retorno=%s",
-            nome_loja,
-            campanha_id,
-            payload,
-            campanha_verificada,
+            "[RENOVACAO PERIODO] O periodo confirmado diverge do solicitado.",
         )
         raise HTTPException(
             status_code=409,
             detail=(
-                "Mercado Livre recebeu a solicitacao, mas manteve o periodo atual "
-                f"({periodo_atual}). Verifique se o novo intervalo excede o limite permitido "
-                "ou se o status da campanha permite alterar essa data."
+                "Mercado Livre recebeu a solicitacao, mas retornou um periodo diferente "
+                f"({periodo_atual}). Atualize as campanhas e confira as datas antes de tentar novamente."
             ),
         )
     return {
@@ -567,12 +601,11 @@ def _renovacao_copiar_mlbs_campanha(
     erros_operacao = {}
     atualizados = set()
     if not somente_conferir:
+        _renovacao_emitir_progresso(progress_callback, "Sincronizacao", 60,
+            "Preparando a copia dos anuncios.", processados=0, total=len(item_ids))
         detalhes, cfg = ctx._ml_buscar_itens_batch(client_id, loja, cfg, item_ids)
         detalhes_por_id = {str(item.get("id")): item for item in detalhes if isinstance(item,dict)}
         for numero, item_id in enumerate(item_ids, start=1):
-            if numero == 1 or numero == len(item_ids) or numero % 20 == 0:
-                _renovacao_emitir_progresso(progress_callback, "Sincronizacao",
-                    60+30*numero/max(1,len(item_ids)), f"Conferindo e sincronizando {numero}/{len(item_ids)}: {item_id}")
             try:
                 percentual, _, preco_origem = _renovacao_desconto_item(item_id, raw_por_item[item_id], {})
                 if percentual is None:
@@ -597,6 +630,11 @@ def _renovacao_copiar_mlbs_campanha(
                 erros_operacao[item_id] = str(exc.detail)
             except Exception:
                 erros_operacao[item_id] = "Falha ao consultar ou aplicar o desconto deste item"
+            finally:
+                _renovacao_emitir_progresso(progress_callback, "Sincronizacao",
+                    60+30*numero/max(1,len(item_ids)),
+                    f"Sincronizando anuncios: {numero}/{len(item_ids)} processados.",
+                    processados=numero, total=len(item_ids))
         # Verificacao final independente das respostas de POST/PUT.
         final_stats = {}
         consultas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg,
@@ -627,7 +665,27 @@ def _renovacao_criar_ou_completar_proximo_mes(
     nome: str = "",
     promotion_type: str = "SELLER_CAMPAIGN",
     quantidade_origem_esperada: int | None = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
 ) -> dict:
+    ultimo_percentual = 0
+
+    def emitir(etapa, percentual, mensagem, **extras):
+        nonlocal ultimo_percentual
+        ultimo_percentual = max(ultimo_percentual, min(99, percentual))
+        _renovacao_emitir_progresso(progress_callback, etapa, ultimo_percentual, mensagem, **extras)
+
+    def progresso_origem(data):
+        emitir("Conferindo origem", data["percentual"], data["mensagem"],
+               processados=data.get("processados"), total=data.get("total"))
+
+    def progresso_copia(data):
+        percentual = data["percentual"]
+        etapa = ("Conferindo resultado" if percentual >= 91 else
+                 "Copiando anuncios" if data.get("etapa") == "Sincronizacao" else
+                 "Conferindo participacoes")
+        emitir(etapa, 42 + 55 * max(0, min(79, percentual - 18)) / 79,
+               data["mensagem"], processados=data.get("processados"), total=data.get("total"))
+
     loja = str(loja or "").strip()
     campanha_id = str(campanha_id or "").strip()
     nome = str(nome or "").strip()
@@ -635,7 +693,9 @@ def _renovacao_criar_ou_completar_proximo_mes(
     if not loja or not campanha_id:
         raise HTTPException(status_code=400, detail="Informe loja e campanha de origem.")
 
+    emitir("Consultando campanhas", 2, "Consultando as campanhas da loja.")
     campanhas, cfg = _renovacao_ml_listar_campanhas_usuario(client_id, loja)
+    emitir("Conferindo origem", 5, "Conferindo a campanha de origem.")
     campanha_fonte = next((c for c in campanhas if str(c.get("id") or "").strip() == campanha_id), None)
     if not campanha_fonte:
         campanha_fonte = {"id": campanha_id, "promotion_type": promotion_type}
@@ -652,6 +712,9 @@ def _renovacao_criar_ou_completar_proximo_mes(
     itens_origem, raw_origem, cfg = _renovacao_listar_itens_campanha(
         client_id, loja, cfg, campanha_id, promotion_type,
         expected_count=esperado_origem,
+        progress_callback=progresso_origem,
+        progress_start=8,
+        progress_end=38,
     )
     _renovacao_exigir_coleta_completa(itens_origem, esperado_origem, campanha_id)
     if not itens_origem:
@@ -660,7 +723,17 @@ def _renovacao_criar_ou_completar_proximo_mes(
     inicio_alvo, fim_alvo = _renovacao_datas_proximo_mes(campanha_fonte)
     campanha_destino = _renovacao_encontrar_campanha_destino(campanhas, nome, inicio_alvo)
     campanha_existente = bool(campanha_destino)
+    emitir("Preparando campanha", 40,
+           "Conferindo a campanha de destino." if campanha_existente else "Criando a nova campanha.")
     if campanha_destino:
+        if not _renovacao_periodo_campanha_igual(campanha_destino, inicio_alvo, fim_alvo):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A campanha de destino ja existe com periodo {_renovacao_descrever_periodo_campanha(campanha_destino)}. "
+                    f"Altere o periodo para {inicio_alvo[:10]} ate {fim_alvo[:10]} antes de completar o mes seguinte."
+                ),
+            )
         nova_campanha_id = str(campanha_destino.get("id") or "").strip()
         payload_campanha = {
             "name": str(campanha_destino.get("name") or nome).strip(),
@@ -678,9 +751,11 @@ def _renovacao_criar_ou_completar_proximo_mes(
             nome,
             campanha_fonte,
             datas_alvo=(inicio_alvo, fim_alvo),
+            confirmar_periodo=True,
         )
         promotion_type_destino = "SELLER_CAMPAIGN"
 
+    emitir("Conferindo participacoes", 42, "Conferindo os anuncios antes da copia.")
     copia, cfg = _renovacao_copiar_mlbs_campanha(
         client_id, loja, cfg, campanha_id, nova_campanha_id,
         promotion_type, promotion_type_destino,
@@ -688,8 +763,10 @@ def _renovacao_criar_ou_completar_proximo_mes(
         expected_origem_count=esperado_origem,
         origem_preparada=(itens_origem, raw_origem),
         expected_destino_count=_renovacao_contagem_esperada(campanha_destino or {}),
+        progress_callback=progresso_copia,
     )
 
+    emitir("Finalizando", 98, "Atualizando o resultado da campanha.")
     ctx._cache_invalidar_loja(client_id, loja)
     return {
         "success": True,
@@ -986,4 +1063,86 @@ def _renovacao_sincronizar_promocao_iniciar_payload(client_id: str, req: Renovac
         name=f"renovacao-sync-{job_id[:8]}",
     )
     thread.start()
+    return {"success": True, "job_id": job_id}
+
+
+
+def _renovacao_criar_proximo_mes_worker(client_id: str, job_id: str, payload: dict) -> None:
+    ultimo_percentual = 0
+
+    def progress_hook(data: dict) -> None:
+        nonlocal ultimo_percentual
+        data = data or {}
+        percentual = data.get("percentual", data.get("progress", ultimo_percentual))
+        try:
+            percentual = int(round(float(percentual)))
+        except (TypeError, ValueError, OverflowError):
+            percentual = ultimo_percentual
+        ultimo_percentual = max(ultimo_percentual, min(99, percentual))
+        _renovacao_sync_job_update(
+            job_id, status="running", percentual=ultimo_percentual, progress=ultimo_percentual,
+            etapa=_renovacao_sanitizar_relatorio(data.get("etapa") or "Preparando"),
+            mensagem=_renovacao_sanitizar_relatorio(data.get("mensagem") or ""),
+            processados=data.get("processados"), total=data.get("total"),
+        )
+
+    try:
+        resultado = _renovacao_criar_ou_completar_proximo_mes(
+            client_id,
+            payload.get("loja") or "",
+            payload.get("campanha_id") or "",
+            payload.get("nome") or "",
+            payload.get("promotion_type") or "SELLER_CAMPAIGN",
+            quantidade_origem_esperada=payload.get("quantidade_origem_esperada"),
+            progress_callback=progress_hook,
+        )
+        resultado = _renovacao_sanitizar_relatorio(resultado)
+        completa = resultado.get("success") is True
+        _renovacao_sync_job_update(
+            job_id, status="done", etapa="Concluido" if completa else "Pendencias",
+            percentual=100, progress=100, processados=None, total=None,
+            mensagem="Campanha criada e anuncios conferidos." if completa else
+                     "Criacao encerrada com pendencias. Confira os detalhes.",
+            result=jsonable_encoder(resultado), error="",
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False)
+        mensagem = _renovacao_sanitizar_relatorio(detail) or "Erro ao criar a campanha."
+        _renovacao_sync_job_update(
+            job_id, status="error", etapa="Erro", percentual=ultimo_percentual, progress=ultimo_percentual,
+            mensagem=mensagem, error=mensagem,
+        )
+    except Exception as exc:
+        ctx.logger.error("[RENOVACAO ML] Falha na criacao da campanha: %s", type(exc).__name__)
+        mensagem = "Erro ao criar a campanha. Consulte as campanhas antes de tentar novamente."
+        _renovacao_sync_job_update(
+            job_id, status="error", etapa="Erro", percentual=ultimo_percentual, progress=ultimo_percentual,
+            mensagem=mensagem, error=mensagem,
+        )
+
+
+def _renovacao_criar_proximo_mes_iniciar_payload(client_id: str, req: RenovacaoCampanhaCriarRequest):
+    if not str(req.loja or "").strip() or not str(req.campanha_id or "").strip():
+        raise HTTPException(400, "Informe loja e campanha de origem.")
+    if req.quantidade_origem_esperada is None:
+        raise HTTPException(409, "Atualize a tela para confirmar a quantidade da origem antes de criar a campanha.")
+    _renovacao_sync_jobs_limpar_antigos()
+    job_id = uuid.uuid4().hex
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    _renovacao_sync_job_update(
+        job_id, client_id=client_id, loja=str(req.loja).strip(), operacao="criar_proximo_mes",
+        campanha_origem_id=str(req.campanha_id).strip(), status="running", etapa="Preparando",
+        percentual=0, progress=0, processados=None, total=None,
+        mensagem="Aguardando inicio da criacao da campanha...", result=None, error="",
+    )
+    try:
+        thread = threading.Thread(
+            target=with_request_context(_renovacao_criar_proximo_mes_worker),
+            args=(client_id, job_id, payload), daemon=True, name=f"renovacao-criar-{job_id[:8]}",
+        )
+        thread.start()
+    except Exception:
+        mensagem = "Nao foi possivel iniciar a criacao da campanha."
+        _renovacao_sync_job_update(job_id, status="error", etapa="Erro", mensagem=mensagem, error=mensagem)
+        raise HTTPException(503, mensagem) from None
     return {"success": True, "job_id": job_id}

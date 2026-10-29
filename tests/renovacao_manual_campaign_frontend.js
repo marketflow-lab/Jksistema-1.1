@@ -44,9 +44,9 @@ assert(inlineScript.includes('restaurarSelecoesAposCriacaoManualRenovacao(origem
 assert(inlineScript.includes('selectDestino.value = novaId;'));
 assert(inlineScript.includes('fecharDialogCriacaoManualRenovacao(true, true);'));
 
-// O fluxo já existente continua separado e com o contrato anterior.
+// A criação com cópia continua separada da promoção vazia e agora inicia um job.
 assert(inlineScript.includes('async function criarCampanhaMesSeguinte()'));
-assert(inlineScript.includes("fetch('/api/renovacao/criar-proximo-mes'"));
+assert(inlineScript.includes("fetch('/api/renovacao/criar-proximo-mes/iniciar'"));
 assert(inlineScript.includes('campanha_id: campanhaId'));
 
 function createElement(overrides = {}) {

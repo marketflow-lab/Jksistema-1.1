@@ -104,6 +104,9 @@
         .sync-progress.ok .sync-progress-row { color: #8ff7d7; }
         .sync-progress-track { height: 11px; border-radius: 999px; overflow: hidden; background: #0a1220; border: 1px solid #24425f; }
         .sync-progress-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #27d3ff, #66f0b8); transition: width .25s ease; }
+        .sync-progress.indeterminate .sync-progress-fill { width: 35%; animation: renovacao-progress-pulse 1.4s ease-in-out infinite alternate; }
+        @keyframes renovacao-progress-pulse { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+        @media (prefers-reduced-motion: reduce) { .sync-progress.indeterminate .sync-progress-fill { animation: none; } }
         .sync-progress.finished .sync-progress-track, .sync-progress.finished #renovacao-sync-progress-percent, .sync-progress [hidden] { display: none; }
         .sync-result-stats { display: flex; flex-wrap: wrap; gap: 12px 32px; margin: 12px 0; }
         .sync-result-stat { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; color: #b8c7df; font-size: .95em; }
@@ -173,7 +176,7 @@
             </label>
         </div>
         <div class="api-actions">
-            <button class="btn-action" onclick="carregarCampanhasRenovacao()">Atualizar campanhas</button>
+            <button class="btn-action" id="btn-atualizar-campanhas-renovacao" onclick="carregarCampanhasRenovacao()">Atualizar campanhas</button>
             <button type="button" class="btn-action" id="btn-abrir-criacao-manual-renovacao" aria-haspopup="dialog" onclick="abrirDialogCriacaoManualRenovacao(event)">Criar promoção</button>
             <button class="btn-process btn-api" id="btn-criar-renovacao" onclick="criarCampanhaMesSeguinte()">Criar campanha do mes seguinte</button>
         </div>
@@ -267,22 +270,22 @@
                 <button class="btn-process btn-api" id="btn-corrigir-renovacao" onclick="sincronizarPromocaoRenovacao(false, true)">Conferir e corrigir</button>
                 <button class="btn-secondary" id="btn-baixar-conferencia-renovacao" style="display:none" onclick="baixarConferenciaRenovacao()">Baixar relatório</button>
             </div>
-            <div id="renovacao-sync-progress" class="sync-progress">
-                <div class="sync-progress-row" role="status" aria-live="polite">
-                    <span id="renovacao-sync-progress-text">Preparando sincronizacao...</span>
-                    <span id="renovacao-sync-progress-percent">0%</span>
-                </div>
-                <div class="sync-progress-track">
-                    <div id="renovacao-sync-progress-fill" class="sync-progress-fill"></div>
-                </div>
-                <div id="renovacao-sync-result-stats" class="sync-result-stats" hidden></div>
-                <details id="renovacao-sync-details" class="sync-result-details" hidden>
-                    <summary>Ver detalhes</summary>
-                    <div id="renovacao-sync-details-text" class="sync-result-details-text"></div>
-                </details>
-            </div>
         </div>
         <div id="renovacao-campanha-info" class="campaign-info"></div>
+        <div id="renovacao-sync-progress" class="sync-progress">
+            <div class="sync-progress-row" role="status" aria-live="polite">
+                <span id="renovacao-sync-progress-text">Preparando sincronizacao...</span>
+                <span id="renovacao-sync-progress-percent">0%</span>
+            </div>
+            <div id="renovacao-sync-progress-track" class="sync-progress-track" role="progressbar" aria-label="Andamento da operação" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="renovacao-sync-progress-fill" class="sync-progress-fill"></div>
+            </div>
+            <div id="renovacao-sync-result-stats" class="sync-result-stats" hidden></div>
+            <details id="renovacao-sync-details" class="sync-result-details" hidden>
+                <summary>Ver detalhes</summary>
+                <div id="renovacao-sync-details-text" class="sync-result-details-text"></div>
+            </details>
+        </div>
         <div id="renovacao-api-status" class="status-box" role="status" aria-live="polite"></div>
     </div>
 
@@ -292,6 +295,8 @@
     let campanhasRenovacao = [];
     let renovacaoNomeSugeridoAtual = '';
     let renovacaoSyncPolling = null;
+    let renovacaoSyncGeracao = 0;
+    let renovacaoCriacaoState = null;
     let renovacaoCriacaoManualTrigger = null;
     let renovacaoCriacaoManualState = { loja: '', pendente: false };
     let renovacaoPeriodoState = {
@@ -358,11 +363,16 @@
         const detalhes = document.getElementById('renovacao-sync-details');
         if (stats) stats.hidden = true;
         if (detalhes) { detalhes.hidden = true; detalhes.open = false; }
-        const pct = Math.max(0, Math.min(100, Number(percentual || 0)));
-        if (box) box.className = `sync-progress show ${tipo || 'info'}`;
+        const determinado = percentual != null && percentual !== '' && Number.isFinite(Number(percentual));
+        const pct = determinado ? Math.max(0, Math.min(100, Number(percentual))) : 0;
+        if (box) box.className = `sync-progress show ${tipo || 'info'}${!determinado && tipo === 'info' ? ' indeterminate' : ''}`;
         if (label) label.textContent = texto || 'Processando sincronizacao...';
-        if (percentLabel) percentLabel.textContent = `${Math.round(pct)}%`;
-        if (fill) fill.style.width = `${pct}%`;
+        if (percentLabel) percentLabel.textContent = determinado ? `${Math.round(pct)}%` : '';
+        if (fill) fill.style.width = determinado ? `${pct}%` : (tipo === 'info' ? '35%' : '0%');
+        const track = document.getElementById('renovacao-sync-progress-track');
+        if (determinado) track?.setAttribute?.('aria-valuenow', String(pct));
+        else track?.removeAttribute?.('aria-valuenow');
+        track?.setAttribute?.('aria-valuetext', texto || 'Processando');
     }
 
     function mostrarResultadoSincronizacaoRenovacao(result, destinoNome) {
@@ -408,6 +418,7 @@
     }
 
     function pararPollingRenovacaoSync() {
+        renovacaoSyncGeracao += 1;
         if (renovacaoSyncPolling) {
             clearInterval(renovacaoSyncPolling);
             renovacaoSyncPolling = null;
@@ -476,6 +487,7 @@
     }
 
     function abrirDialogCriacaoManualRenovacao(event) {
+        if (renovacaoCriacaoState) return;
         const loja = document.getElementById('renovacao-loja')?.value || '';
         if (!loja) {
             setRenovacaoApiStatus('Selecione a loja para criar a promoção.', 'error');
@@ -549,7 +561,7 @@
 
     async function criarPromocaoManualRenovacao(event) {
         event?.preventDefault();
-        if (renovacaoCriacaoManualState.pendente) return;
+        if (renovacaoCriacaoManualState.pendente || renovacaoCriacaoState) return;
         const lojaAtualAntesDoEnvio = document.getElementById('renovacao-loja')?.value || '';
         const loja = renovacaoCriacaoManualState.loja || lojaAtualAntesDoEnvio;
         const nomeInput = document.getElementById('renovacao-criacao-manual-nome');
@@ -626,6 +638,8 @@
     }
 
     async function carregarCampanhasRenovacao(silencioso = false) {
+        if (renovacaoCriacaoState && !silencioso) return;
+        const criacaoAoIniciar = renovacaoCriacaoState;
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const selectCampanha = document.getElementById('renovacao-campanha');
         const selectSyncOrigem = document.getElementById('renovacao-sync-origem');
@@ -656,6 +670,7 @@
                 headers: { ...obterAuthHeaders() }
             });
             const result = await response.json().catch(() => ({}));
+            if (loja !== document.getElementById('renovacao-loja')?.value || renovacaoCriacaoState !== criacaoAoIniciar) return;
             if (!response.ok) throw new Error(result.detail || 'Nao foi possivel listar as campanhas.');
             campanhasRenovacao = Array.isArray(result.campaigns) ? result.campaigns : [];
             if (!campanhasRenovacao.length) {
@@ -684,6 +699,7 @@
             atualizarCampanhasDestinoRenovacao();
             if (!silencioso) setRenovacaoApiStatus(`${campanhasRenovacao.length} campanha(s) encontrada(s).`, 'ok');
         } catch (error) {
+            if (loja !== document.getElementById('renovacao-loja')?.value || renovacaoCriacaoState !== criacaoAoIniciar) return;
             selectCampanha.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
             if (selectSyncOrigem) selectSyncOrigem.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
             if (selectDestino) selectDestino.innerHTML = '<option value="">Erro ao carregar campanhas</option>';
@@ -756,6 +772,7 @@
         `;
         lista.querySelectorAll('[data-campanha-id]').forEach((linha) => {
             linha.addEventListener('click', () => {
+                if (renovacaoCriacaoState) return;
                 const select = document.getElementById('renovacao-campanha');
                 if (select) {
                     select.value = linha.dataset.campanhaId || '';
@@ -771,6 +788,7 @@
     }
 
     async function salvarAgendamentoLinhaRenovacao(event) {
+        if (renovacaoCriacaoState) return;
         const checkbox = event.currentTarget;
         const campanhaId = checkbox?.dataset?.campanhaId || '';
         const loja = document.getElementById('renovacao-loja')?.value || '';
@@ -848,8 +866,18 @@
 
     function dataInputRenovacao(valor) {
         if (!valor) return '';
-        const texto = String(valor).slice(0, 10);
-        return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : '';
+        const texto = String(valor).trim();
+        if (/T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(texto)) {
+            const data = new Date(texto);
+            if (Number.isNaN(data.getTime())) return '';
+            const partes = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit'
+            }).formatToParts(data);
+            const campos = Object.fromEntries(partes.map(parte => [parte.type, parte.value]));
+            return `${campos.year}-${campos.month}-${campos.day}`;
+        }
+        const dataLocal = texto.slice(0, 10);
+        return /^\d{4}-\d{2}-\d{2}$/.test(dataLocal) ? dataLocal : '';
     }
 
     function textoDataPeriodoRenovacao(valor) {
@@ -925,6 +953,7 @@
     }
 
     function prepararAlterarPeriodoRenovacao(event, campanhaId) {
+        if (renovacaoCriacaoState) return;
         if (event) {
             event.preventDefault();
             event.stopPropagation();
@@ -1027,6 +1056,7 @@
     }
 
     async function alterarPeriodoCampanhaRenovacao(event, campanhaId = '') {
+        if (renovacaoCriacaoState) return;
         if (event) {
             event.preventDefault();
             event.stopPropagation();
@@ -1071,7 +1101,12 @@
                 })
             });
             const result = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(result.detail || 'Erro ao alterar periodo da campanha.');
+            if (!response.ok) {
+                if (response.status === 409) {
+                    await carregarCampanhasRenovacao(true).catch(() => {});
+                }
+                throw new Error(result.detail || 'Erro ao alterar periodo da campanha.');
+            }
             setRenovacaoApiStatus(`Periodo da campanha "${nome}" alterado com sucesso.`, 'ok');
             fecharPopoverPeriodoRenovacao();
             await carregarCampanhasRenovacao();
@@ -1086,6 +1121,7 @@
     }
 
     async function deletarCampanhaRenovacao(event, campanhaId = '') {
+        if (renovacaoCriacaoState) return;
         if (event) {
             event.preventDefault();
             event.stopPropagation();
@@ -1202,7 +1238,72 @@
         return ` ${total} item(ns) tiveram falha.${exemplos ? ` Primeiras falhas: ${exemplos}.` : ''}`;
     }
 
+    function contextoCriacaoRenovacaoAtual(contexto) {
+        return renovacaoCriacaoState === contexto
+            && (document.getElementById('renovacao-loja')?.value || '') === contexto.loja;
+    }
+
+    function bloquearControlesCriacaoRenovacao() {
+        const ids = ['renovacao-loja', 'renovacao-campanha', 'renovacao-nome',
+            'btn-atualizar-campanhas-renovacao', 'btn-abrir-criacao-manual-renovacao', 'btn-criar-renovacao',
+            'renovacao-sync-origem', 'renovacao-campanha-destino', 'btn-sincronizar-renovacao',
+            'btn-conferir-renovacao', 'btn-corrigir-renovacao', 'btn-salvar-periodo-renovacao'];
+        const controles = new Set(ids.map(id => document.getElementById(id)).filter(Boolean));
+        for (const controle of document.querySelectorAll?.('#renovacao-campanhas-lista button, #renovacao-campanhas-lista input') || []) {
+            controles.add(controle);
+        }
+        const anteriores = Array.from(controles, controle => [controle, controle.disabled]);
+        for (const [controle] of anteriores) controle.disabled = true;
+        return anteriores;
+    }
+
+    function mostrarProgressoCriacaoRenovacao(job, contexto) {
+        const informado = job.percentual ?? job.progress;
+        contexto.percentual = informado != null && informado !== '' && Number.isFinite(Number(informado))
+            ? Number(informado) : null;
+        let mensagem = job.mensagem || job.etapa || 'Preparando criação da campanha...';
+        const processados = Number(job.processados);
+        const total = Number(job.total);
+        if (job.processados != null && job.total != null && Number.isFinite(processados)
+                && Number.isFinite(total) && processados >= 0 && total > 0) {
+            const textoCompacto = mensagem.replace(/[.\s]/g, '');
+            if (!textoCompacto.includes(`${processados}/${total}`) && !textoCompacto.includes(`${processados}de${total}`)) {
+                mensagem += ` · ${processados.toLocaleString('pt-BR')} de ${total.toLocaleString('pt-BR')} anúncios`;
+            }
+        }
+        setRenovacaoSyncProgress(mensagem, contexto.percentual, 'info');
+    }
+
+    async function acompanharCriacaoRenovacao(contexto) {
+        const jobId = contexto.jobId;
+        while (contextoCriacaoRenovacaoAtual(contexto) && contexto.jobId === jobId) {
+            const response = await fetch(`/api/renovacao/criar-proximo-mes/progresso/${encodeURIComponent(jobId)}`, {
+                headers: { ...obterAuthHeaders() }
+            });
+            const job = await response.json().catch(() => ({}));
+            if (!contextoCriacaoRenovacaoAtual(contexto) || contexto.jobId !== jobId) return;
+            if (!response.ok) throw new Error(job.detail || 'Erro ao consultar o andamento da criação.');
+            if (job.status === 'done') {
+                const result = job.result || {};
+                ultimaConferenciaRenovacao = result;
+                const download = document.getElementById('btn-baixar-conferencia-renovacao');
+                if (download) download.style.display = '';
+                mostrarResultadoSincronizacaoRenovacao(result, result.nova_campanha?.nome || contexto.nome);
+                await carregarCampanhasRenovacao(true);
+                return;
+            }
+            if (job.status === 'error') {
+                setRenovacaoSyncProgress(job.error || job.mensagem || 'Erro ao criar campanha.', job.percentual ?? job.progress ?? contexto.percentual, 'error');
+                return;
+            }
+            mostrarProgressoCriacaoRenovacao(job, contexto);
+            await new Promise(resolve => window.setTimeout(resolve, 1000));
+        }
+    }
+
     async function criarCampanhaMesSeguinte() {
+        if (renovacaoCriacaoState || renovacaoCriacaoManualState.pendente
+                || document.getElementById('btn-sincronizar-renovacao')?.disabled) return;
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const campanhaId = document.getElementById('renovacao-campanha')?.value || '';
         const nome = document.getElementById('renovacao-nome')?.value.trim() || '';
@@ -1212,14 +1313,19 @@
             setRenovacaoApiStatus('Selecione a loja, a campanha e informe o nome da nova campanha.', 'error');
             return;
         }
-        if (!confirm(`Criar a campanha "${nome}" copiando os MLBs e descontos de "${campanha.name || campanhaId}"?`)) {
-            return;
-        }
-        botao.disabled = true;
+        if (!confirm(`Criar a campanha "${nome}" copiando os MLBs e descontos de "${campanha.name || campanhaId}"?`)) return;
+        fecharPopoverPeriodoRenovacao();
+        pararPollingRenovacaoSync();
+        const contexto = { loja, nome, jobId: '', percentual: null, controles: bloquearControlesCriacaoRenovacao() };
+        renovacaoCriacaoState = contexto;
         botao.textContent = 'Criando campanha...';
-        setRenovacaoApiStatus('Criando campanha e copiando os anuncios. Isso pode levar alguns minutos.', 'info');
+        ultimaConferenciaRenovacao = null;
+        const download = document.getElementById('btn-baixar-conferencia-renovacao');
+        if (download) download.style.display = 'none';
+        setRenovacaoSyncProgress('Iniciando criação da campanha...', null, 'info');
+        let inicioRejeitado = false;
         try {
-            const response = await fetch('/api/renovacao/criar-proximo-mes', {
+            const response = await fetch('/api/renovacao/criar-proximo-mes/iniciar', {
                 method: 'POST',
                 headers: { ...obterAuthHeaders(), 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1231,27 +1337,36 @@
                 })
             });
             const result = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(result.detail || 'Erro ao criar campanha.');
-            const nova = result.nova_campanha || {};
-            const falhas = resumoFalhasRenovacao(result);
-            const acao = result.campanha_existente ? 'Campanha já existia; MLBs conferidos' : 'Campanha criada';
-            setRenovacaoApiStatus(`${acao}: ${nova.nome || nome} (${nova.id}). Já presentes: ${result.mlbs_ja_presentes || 0}. Atualizados: ${result.atualizados || 0}. Incluídos: ${result.incluidos}/${result.total_origem}.${falhas}`, result.falhas_total ? 'info' : 'ok');
-            carregarCampanhasRenovacao();
+            if (!contextoCriacaoRenovacaoAtual(contexto)) return;
+            inicioRejeitado = !response.ok;
+            if (!response.ok || !result.job_id) throw new Error(result.detail || 'Não foi possível iniciar a criação da campanha.');
+            contexto.jobId = result.job_id;
+            await acompanharCriacaoRenovacao(contexto);
         } catch (error) {
-            setRenovacaoApiStatus(error.message || 'Erro ao criar campanha.', 'error');
+            if (contextoCriacaoRenovacaoAtual(contexto)) {
+                const aviso = !inicioRejeitado ? ' A criação pode continuar. Atualize as campanhas antes de tentar novamente.' : '';
+                setRenovacaoSyncProgress((error.message || 'Erro ao criar campanha.') + aviso, contexto.percentual, 'error');
+            }
         } finally {
-            botao.disabled = false;
-            botao.textContent = 'Criar campanha do mes seguinte';
+            if (renovacaoCriacaoState === contexto) {
+                for (const [controle, disabled] of contexto.controles) controle.disabled = disabled;
+                botao.textContent = 'Criar campanha do mes seguinte';
+                renovacaoCriacaoState = null;
+            }
         }
     }
 
     async function acompanharSincronizacaoRenovacao(jobId, botao, destinoNome) {
         pararPollingRenovacaoSync();
+        const geracao = renovacaoSyncGeracao;
+        const contextoAtual = () => geracao === renovacaoSyncGeracao && !renovacaoCriacaoState;
         const consultar = async () => {
+            if (!contextoAtual()) return true;
             const response = await fetch(`/api/renovacao/sincronizar-promocao/progresso/${encodeURIComponent(jobId)}`, {
                 headers: { ...obterAuthHeaders() }
             });
             const job = await response.json().catch(() => ({}));
+            if (!contextoAtual()) return true;
             if (!response.ok) throw new Error(job.detail || 'Erro ao consultar progresso da sincronizacao.');
             const status = job.status || 'running';
             const percentual = Number(job.percentual ?? job.progress ?? 0);
@@ -1259,13 +1374,14 @@
             const tipo = status === 'error' || (status === 'done' && job.result?.success !== true) ? 'error' : (status === 'done' ? 'ok' : 'info');
             if (status === 'done') {
                 pararPollingRenovacaoSync();
+                const geracaoFinalizada = renovacaoSyncGeracao;
                 const result = job.result || {};
                 ultimaConferenciaRenovacao = result;
                 const download = document.getElementById('btn-baixar-conferencia-renovacao');
                 if (download) download.style.display = '';
                 mostrarResultadoSincronizacaoRenovacao(result, destinoNome);
                 await carregarCampanhasRenovacao(true);
-                resetarBotaoSincronizacaoRenovacao(botao);
+                if (geracaoFinalizada === renovacaoSyncGeracao && !renovacaoCriacaoState) resetarBotaoSincronizacaoRenovacao(botao);
                 return true;
             }
             if (status === 'error') {
@@ -1283,6 +1399,7 @@
             const finalizado = await consultar();
             if (finalizado) return;
         } catch (error) {
+            if (!contextoAtual()) return;
             pararPollingRenovacaoSync();
             setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
             resetarBotaoSincronizacaoRenovacao(botao);
@@ -1293,6 +1410,7 @@
             try {
                 await consultar();
             } catch (error) {
+                if (!contextoAtual()) return;
                 pararPollingRenovacaoSync();
                 setRenovacaoSyncProgress(error.message || 'Erro ao acompanhar sincronizacao.', 100, 'error');
                 resetarBotaoSincronizacaoRenovacao(botao);
@@ -1301,6 +1419,7 @@
     }
 
     async function sincronizarPromocaoRenovacao(somenteConferir = false, corrigirDivergencias = false) {
+        if (renovacaoCriacaoState) return;
         const loja = document.getElementById('renovacao-loja')?.value || '';
         const origemId = document.getElementById('renovacao-sync-origem')?.value || '';
         const destinoId = document.getElementById('renovacao-campanha-destino')?.value || '';
@@ -1370,10 +1489,9 @@
     }
 
     function formatarDataCurta(valor) {
-        if (!valor) return '';
-        const texto = String(valor).slice(0, 10);
+        const texto = dataInputRenovacao(valor);
+        if (!texto) return '';
         const partes = texto.split('-');
-        if (partes.length !== 3) return texto;
         return `${partes[2]}/${partes[1]}/${partes[0]}`;
     }
 
@@ -1383,14 +1501,10 @@
     ];
 
     function parseDataRenovacao(valor) {
-        if (!valor) return null;
-        const texto = String(valor).slice(0, 10);
+        const texto = dataInputRenovacao(valor);
+        if (!texto) return null;
         const partes = texto.split('-').map((parte) => Number(parte));
-        if (partes.length === 3 && partes.every(Number.isFinite)) {
-            return new Date(partes[0], partes[1] - 1, partes[2], 12, 0, 0, 0);
-        }
-        const data = new Date(valor);
-        return Number.isNaN(data.getTime()) ? null : data;
+        return new Date(partes[0], partes[1] - 1, partes[2], 12, 0, 0, 0);
     }
 
     function adicionarMesesRenovacao(data, meses) {
@@ -1409,16 +1523,11 @@
     }
 
     function inicioProximaCampanhaRenovacao(campanha) {
-        const inicioOrigem = parseDataRenovacao(campanha?.start_date) || new Date(Date.now() + 24 * 60 * 60 * 1000);
-        let proximoInicio = adicionarMesesRenovacao(inicioOrigem, 1);
-        const hoje = new Date();
-        while (compararSomenteData(proximoInicio, hoje) < 0) {
-            proximoInicio = adicionarMesesRenovacao(proximoInicio, 1);
-        }
-        if (compararSomenteData(proximoInicio, hoje) === 0) {
-            proximoInicio = new Date(hoje.getTime() + 24 * 60 * 60 * 1000);
-        }
-        return proximoInicio;
+        const hoje = parseDataRenovacao(new Date().toISOString());
+        const inicioOrigem = parseDataRenovacao(campanha?.start_date) || hoje;
+        const proximoMesAtual = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 1, 12, 0, 0, 0);
+        const proximoMesOrigem = new Date(inicioOrigem.getFullYear(), inicioOrigem.getMonth() + 1, 1, 12, 0, 0, 0);
+        return compararSomenteData(proximoMesOrigem, proximoMesAtual) < 0 ? proximoMesAtual : proximoMesOrigem;
     }
 
     function gerarNomeCampanhaProximoMes(campanha) {

@@ -41,11 +41,33 @@ async function environment(browser, options = {}) {
     const state = {
         cadastro: gate(), mapa: gate(), impostos: gate(), concorrentes: gate(), detail: gate(), preco: gate(), fx: gate(),
         calls: { cadastro: 0, mapa: 0, impostos: 0, concorrentes: 0, global: 0 }, patches: [], errors: [],
+        savedReads: 0, queuedReads: 0, blockingReads: 0, ready: false, savedPending: false,
     };
     page.on('pageerror', error => state.errors.push(error.message));
     if (options.fastTimeout) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
         window.setTimeout = (callback, delay, ...args) => timeout(callback, delay === 5000 ? 50 : delay, ...args);
+    });
+    if (options.fastPolling) await page.addInitScript(() => {
+        const timeout = window.setTimeout.bind(window);
+        window.setTimeout = (callback, delay, ...args) => timeout(callback, [1000, 2000, 10000].includes(delay) ? 50 : delay, ...args);
+    });
+    if (options.cacheStub) await page.addInitScript(() => {
+        const context = { tenant: 'synthetic', store: 'synthetic' };
+        window.cacheWrites = [];
+        window.cacheInvalidations = 0;
+        window.JKCachePersistente = {
+            contexto: () => context, vigente: () => true, dadosVigentes: () => true,
+            ler: async () => null, invalidar: async () => { window.cacheInvalidations++; }, confirmarMutacao: () => context,
+            salvar: async (key, data) => { window.cacheWrites.push({ key, data }); },
+        };
+    });
+    if (options.oldPolling403) await page.addInitScript(() => {
+        const fetch = window.fetch.bind(window);
+        window.fetch = (url, options) => String(url).includes('/listas-pedidos/A?cache_mode=stale')
+            ? new Promise(resolve => { window.releaseOldPolling = () => resolve(new Response(JSON.stringify({ detail: 'Acesso antigo negado.' }),
+                { status: 403, headers: { 'Content-Type': 'application/json' } })); })
+            : fetch(url, options);
     });
     if (options.holdPrice) await page.addInitScript(() => {
         let resolve;
@@ -95,11 +117,28 @@ async function environment(browser, options = {}) {
         }
         const lista = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])$/);
         if (lista) {
+            const saved = url.searchParams.get('somente_salvos') === 'true';
+            const polling = url.searchParams.get('cache_mode') === 'stale';
+            if (saved) ++state.savedReads;
+            else if (polling) ++state.queuedReads;
+            else ++state.blockingReads;
+            if (options.denySaved && saved) return json(route, { detail: 'Acesso negado.' }, 403);
+            if (options.denyPolling && polling) return json(route, { detail: 'Acesso negado.' }, 403);
+            if (saved && state.savedPending) return json(route, { success: true, dados: null,
+                _cache: { estado: 'waiting', atualizando: true, retry_after_ms: 1000, completo: false } }, 202);
+            if (options.queuedDetail && lista[1] === 'A' && !saved && !state.ready) {
+                if (!polling) { await state.detail.promise; return json(route, { detail: 'Consulta bloqueante expirou.' }, 504); }
+                const metadata = { estado: 'waiting', atualizando: true, stale: true, retry_after_ms: 1000, completo: false };
+                if (options.staleResult) return json(route, { lista: { ...fixture('A', true), nome_lista: 'Resultado anterior' },
+                    _cache: { ...metadata, estado: 'refreshing', completo: true } });
+                return json(route, { success: true, dados: null, _cache: metadata }, 202);
+            }
             if (options.holdDetail && lista[1] === 'A') {
                 await state.detail.promise;
                 return json(route, { detail: 'Falha antiga' }, 500);
             }
             const data = fixture(lista[1], options.complete || lista[1] === 'B');
+            if (options.queuedDetail && !saved && state.ready) data.itens[0].Quantidade = 4;
             if (options.zeroQuantity) data.itens.push({ SKU: 'ZERO', Quantidade: 0 });
             if (options.noDollar) delete data.dolar_hoje;
             if (options.missingValues) { delete data.itens[0]['Valor unidade']; delete data.itens[0]['Valor total']; }
@@ -127,6 +166,96 @@ function releaseComplements(state) {
 (async () => {
     const browser = await chromium.launch({ headless: true });
     try {
+        const queued = await environment(browser, { queuedDetail: true, fastPolling: true, complete: true, cacheStub: true });
+        await queued.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await queued.page.waitForFunction(() => document.getElementById('vSku').textContent === '001', null, { timeout: 1500 });
+        await waitUntil(() => queued.state.queuedReads > 0);
+        assert.strictEqual(await queued.page.locator('#vQtd').textContent(), '2');
+        assert.match(await queued.page.locator('#cacheSkuStatus').textContent(), /salvos|Atualizando/);
+        assert.strictEqual(queued.state.savedReads, 1);
+        assert.strictEqual(queued.state.blockingReads, 0, 'Abrir SKU não espera o recálculo em um GET bloqueante.');
+        assert.strictEqual(queued.state.calls.cadastro, 0, 'Os complementos aguardam um resultado atual.');
+        assert.strictEqual(queued.state.patches.length, 0);
+        queued.state.savedPending = true;
+        await queued.page.evaluate(() => mostrarDadosSalvosSku(contextoDetalheSku));
+        assert.strictEqual(await queued.page.locator('#vQtd').textContent(), '2', 'Snapshot 202 não apaga dados já visíveis.');
+        queued.state.savedPending = false;
+        assert.strictEqual(await queued.page.evaluate(() => cacheWrites.some(entry => entry.data?.dados === null)), false,
+            'Resposta 202 não substitui os dados salvos.');
+        queued.state.ready = true;
+        await waitUntil(() => queued.state.patches.length === 1);
+        assert.strictEqual(await queued.page.locator('#vQtd').textContent(), '4');
+        assert.strictEqual(queued.state.calls.cadastro, 1);
+        assert.deepStrictEqual(queued.state.errors, []);
+        await queued.context.close();
+
+        const staleResult = await environment(browser, { queuedDetail: true, staleResult: true, fastPolling: true, complete: true, cacheStub: true });
+        await staleResult.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await waitUntil(() => staleResult.state.queuedReads > 0);
+        assert.strictEqual(await staleResult.page.locator('#vQtd').textContent(), '2');
+        assert.strictEqual(await staleResult.page.evaluate(() => cacheWrites.some(entry => entry.data?._cache?.stale)), false);
+        staleResult.state.ready = true;
+        await waitUntil(() => staleResult.state.patches.length === 1);
+        assert.deepStrictEqual(staleResult.state.errors, []);
+        await staleResult.context.close();
+
+        const deniedSnapshot = await environment(browser, { denySaved: true, cacheStub: true });
+        await deniedSnapshot.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await deniedSnapshot.page.waitForFunction(() => document.querySelector('.layout').children.length === 0);
+        assert.strictEqual(deniedSnapshot.state.queuedReads, 0);
+        assert.strictEqual(deniedSnapshot.state.patches.length, 0);
+        assert.deepStrictEqual(deniedSnapshot.state.errors, []);
+        await deniedSnapshot.context.close();
+
+        const deniedPolling = await environment(browser, { denyPolling: true, cacheStub: true });
+        await deniedPolling.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await deniedPolling.page.waitForFunction(() => document.querySelector('.layout').children.length === 0);
+        assert.strictEqual(deniedPolling.state.savedReads, 1);
+        assert.strictEqual(deniedPolling.state.queuedReads, 1);
+        assert.strictEqual(deniedPolling.state.patches.length, 0);
+        assert.deepStrictEqual(deniedPolling.state.errors, []);
+        await deniedPolling.context.close();
+
+        const oldDeniedPolling = await environment(browser, { oldPolling403: true, complete: true, cacheStub: true });
+        await oldDeniedPolling.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await oldDeniedPolling.page.waitForFunction(() => typeof window.releaseOldPolling === 'function');
+        await oldDeniedPolling.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
+        await oldDeniedPolling.page.evaluate(() => window.releaseOldPolling());
+        await oldDeniedPolling.page.waitForFunction(() => controladoresDetalheSku.size === 0);
+        assert.strictEqual(await oldDeniedPolling.page.locator('#vTituloPt').textContent(), 'Cadastro store-B');
+        assert.strictEqual(await oldDeniedPolling.page.locator('.layout .card').count(), 3);
+        assert.strictEqual(await oldDeniedPolling.page.evaluate(() => cacheInvalidations), 0, '403 antigo não invalida o contexto atual.');
+        assert.deepStrictEqual(oldDeniedPolling.state.errors, []);
+        await oldDeniedPolling.context.close();
+
+        const pending = await environment(browser, { queuedDetail: true, fastPolling: true, complete: true });
+        await pending.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await waitUntil(() => pending.state.queuedReads > 0);
+        await pending.page.evaluate(() => { const end = Date.now() + 120001; Date.now = () => end; });
+        await pending.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent.includes('Não foi possível atualizar'));
+        assert.strictEqual(await pending.page.locator('#vSku').textContent(), '001');
+        assert.strictEqual(await pending.page.locator('#vQtd').textContent(), '2');
+        assert.strictEqual(pending.state.patches.length, 0);
+        const pendingReads = pending.state.queuedReads;
+        await pending.page.waitForTimeout(150);
+        assert.strictEqual(pending.state.queuedReads, pendingReads, 'Acompanhamento encerra no prazo, preservando os dados salvos.');
+        assert.deepStrictEqual(pending.state.errors, []);
+        await pending.context.close();
+
+        const queuedStale = await environment(browser, { queuedDetail: true, fastPolling: true, complete: true });
+        await queuedStale.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await waitUntil(() => queuedStale.state.queuedReads > 0);
+        await queuedStale.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
+        const readsAfterNavigation = queuedStale.state.queuedReads;
+        queuedStale.state.ready = true;
+        await queuedStale.page.waitForTimeout(150);
+        assert.strictEqual(await queuedStale.page.locator('#vTituloPt').textContent(), 'Cadastro store-B');
+        assert.strictEqual(queuedStale.state.queuedReads, readsAfterNavigation, 'A geração anterior não continua consultando.');
+        assert.strictEqual(await queuedStale.page.evaluate(() => controladoresDetalheSku.size), 0, 'Timer anterior é cancelado ao navegar.');
+        assert(queuedStale.state.patches.every(patch => patch.pathname.includes('/B/')));
+        assert.deepStrictEqual(queuedStale.state.errors, []);
+        await queuedStale.context.close();
+
         const first = await environment(browser, { hold: true });
         await first.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await first.page.waitForFunction(() => document.getElementById('vSku').textContent === '001');
@@ -278,7 +407,7 @@ function releaseComplements(state) {
         assert.deepStrictEqual(stalePrice.state.errors, []);
         await stalePrice.context.close();
 
-        console.log('SKU: render imediato, complementos paralelos, loja exata, cálculo preservado, edição/foco, timeout/retry, falha fiscal e respostas antigas: OK');
+        console.log('SKU: snapshot imediato, fila 202/stale, prazo, 403, complementos, loja exata, cálculo, edição/foco, timeout/retry e respostas antigas: OK');
     } finally {
         await browser.close();
     }

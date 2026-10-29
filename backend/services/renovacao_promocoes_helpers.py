@@ -10,10 +10,17 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
 
 from backend.services import renovacao_context as ctx
+
+try:
+    RENOVACAO_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    RENOVACAO_TIMEZONE = dt.timezone(dt.timedelta(hours=-3))
+
 
 def _renovacao_json_response(resp):
     try:
@@ -292,6 +299,7 @@ def _renovacao_ml_listar_campanhas_usuario(client_id: str, loja: str) -> tuple[l
 
 
 def _renovacao_parse_data_ml(valor):
+    """Return the campaign's local time; ML reads may use UTC timestamps."""
     texto = str(valor or "").strip()
     if not texto:
         return None
@@ -304,7 +312,7 @@ def _renovacao_parse_data_ml(valor):
         try:
             data = dt.datetime.fromisoformat(item)
             if data.tzinfo is not None:
-                data = data.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                data = data.astimezone(RENOVACAO_TIMEZONE).replace(tzinfo=None)
             return data
         except Exception:
             pass
@@ -332,20 +340,15 @@ def _renovacao_adicionar_meses(data: dt.datetime, meses: int = 1) -> dt.datetime
 
 
 def _renovacao_datas_proximo_mes(campanha: dict) -> tuple[str, str]:
-    inicio = _renovacao_parse_data_ml(campanha.get("start_date")) or (dt.datetime.now() + dt.timedelta(days=1))
-    fim = _renovacao_parse_data_ml(campanha.get("finish_date"))
-    duracao_dias = 14
-    if fim and fim > inicio:
-        duracao_dias = max(1, min(14, (fim.date() - inicio.date()).days or 1))
-
-    novo_inicio = _renovacao_adicionar_meses(inicio, 1)
-    agora = dt.datetime.now()
-    while novo_inicio.date() < agora.date():
-        novo_inicio = _renovacao_adicionar_meses(novo_inicio, 1)
-    if novo_inicio.date() == agora.date():
-        novo_inicio = agora + dt.timedelta(days=1)
-    novo_inicio = novo_inicio.replace(hour=0, minute=0, second=0, microsecond=0)
-    novo_fim = (novo_inicio + dt.timedelta(days=duracao_dias)).replace(hour=23, minute=59, second=59, microsecond=0)
+    agora = dt.datetime.now(RENOVACAO_TIMEZONE).replace(tzinfo=None)
+    inicio = _renovacao_parse_data_ml(campanha.get("start_date")) or agora
+    mes_origem = inicio.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    mes_atual = agora.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    novo_inicio = max(
+        _renovacao_adicionar_meses(mes_origem, 1),
+        _renovacao_adicionar_meses(mes_atual, 1),
+    )
+    novo_fim = _renovacao_adicionar_meses(novo_inicio, 1) - dt.timedelta(seconds=1)
     return novo_inicio.strftime("%Y-%m-%dT%H:%M:%S"), novo_fim.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -598,10 +601,10 @@ def _renovacao_confirmar_lote(client_id, loja, cfg, item_ids, campanhas, estatis
                 for campaign, registro in resultado.items():
                     if registro.get("situacao") == "inconclusivo":
                         inconclusivos.setdefault(item, {})[campaign] = registro.get("erro") or "Participacao inconclusiva"
-                if numero == 1 or numero == len(pendentes) or numero % 25 == 0:
-                    pct = progress_start + (progress_end-progress_start)*numero/max(1,len(pendentes))
-                    _renovacao_emitir_progresso(progress_callback, "Conferencia", pct,
-                        f"Conferindo participacoes exatas: {numero}/{len(pendentes)} anuncios.")
+                pct = progress_start + (progress_end-progress_start)*numero/max(1,len(pendentes))
+                _renovacao_emitir_progresso(progress_callback, "Conferencia", pct,
+                    f"Conferindo participacoes exatas: {numero}/{len(pendentes)} anuncios.",
+                    processados=numero, total=len(pendentes))
     estados = {}
     for resultado in consultas.values():
         for campaign, registro in resultado.items():
