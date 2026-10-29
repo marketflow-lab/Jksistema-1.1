@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock, RLock
 import copy
+import hashlib
 import os
 import sqlite3
 
@@ -56,6 +57,7 @@ class _MemoLimitado:
 
 _PROJECOES = _MemoLimitado(96 * 1024 * 1024, 64)
 _CONSOLIDADOS = _MemoLimitado(24 * 1024 * 1024, 24)
+_ASSINATURAS = _MemoLimitado(1024 * 1024, 256)
 _QUANTIDADE_INVALIDA = object()
 
 
@@ -64,6 +66,75 @@ class _Projecao:
     vendas: tuple
     titulos: dict
     ultimas: dict
+    assinatura: str
+
+
+@dataclass(frozen=True)
+class _LeituraHistorico:
+    escopo: tuple
+    paths: tuple
+    revisoes: tuple
+    assinaturas: tuple
+
+
+_QUERY_PROJECAO = """
+    SELECT id_unico, sku, data, COALESCE(produto, ''),
+           date(data), strftime('%Y-%m', date(data)), COALESCE(quantidade, 0)
+    FROM vendas
+    WHERE sku IS NOT NULL AND trim(sku) != ''
+"""
+
+
+def _digest_linha(digest, row):
+    # SQLite returns only scalar types here. repr preserves their type and
+    # boundaries, including bytes, invalid quantities and significant spaces.
+    # Preserve cursor order: it participates in the existing dedup/title rules.
+    digest.update(repr(tuple(row)).encode("utf-8", errors="surrogatepass"))
+    digest.update(b"\0")
+
+
+def _assinatura_consulta(path, filtro_sql, filtro_params):
+    digest = hashlib.sha256(b"medias-historico-v1\0")
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        for row in conn.execute(_QUERY_PROJECAO + filtro_sql, filtro_params):
+            _digest_linha(digest, row)
+    finally:
+        conn.close()
+    return digest.hexdigest()
+
+
+def conferir_leitura_historico(leitura, db_paths, revisoes_esperadas, escopo):
+    """Validate changed sales files in the heavy worker, never in preflight.
+
+    A physical revision can change due to another store or a checkpoint. Only
+    accept that revision when the exact ordered rows consumed by this query
+    still match, and every file stays at the final captured physical revision.
+    """
+    if not isinstance(leitura, _LeituraHistorico):
+        return False
+    paths = tuple(db_paths)
+    if (paths != leitura.paths or len(paths) != len(revisoes_esperadas) or
+            (str(escopo.get("store_id", "")), str(escopo.get("loja", ""))) != leitura.escopo[1:3]):
+        return False
+    try:
+        for path, original, expected, digest in zip(
+                paths, leitura.revisoes, revisoes_esperadas, leitura.assinaturas):
+            if _revisao_banco(path) != expected:
+                return False
+            if original != expected:
+                key = (leitura.escopo, chave_arquivo(path))
+                current = _ASSINATURAS.obter(
+                    key, expected,
+                    lambda path=path: (_assinatura_consulta(path, leitura.escopo[3], leitura.escopo[4]), 512),
+                    lambda path=path, expected=expected: _revisao_banco(path) == expected,
+                )
+                if current != digest:
+                    return False
+        # A later file read must not hide a concurrent change in an earlier one.
+        return tuple(_revisao_banco(path) for path in paths) == tuple(revisoes_esperadas)
+    except (OSError, sqlite3.Error):
+        return False
 
 
 def _revisao_banco(path):
@@ -99,17 +170,15 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
     skus_normalizados = {}
     titulos_validados = {}
     weight = 256
-    query = """
-        SELECT id_unico, sku, data, COALESCE(produto, ''),
-               date(data), strftime('%Y-%m', date(data)), COALESCE(quantidade, 0)
-        FROM vendas
-        WHERE sku IS NOT NULL AND trim(sku) != ''
-    """ + filtro_sql
+    query = _QUERY_PROJECAO + filtro_sql
+    digest = hashlib.sha256(b"medias-historico-v1\0")
     # Opening a GET must not create a missing database or an index.
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
         registrar_contagem("historico_bancos_lidos")
-        for identificador, sku, raw_date, produto, data_iso, mes, quantidade in conn.execute(query, filtro_params):
+        for row in conn.execute(query, filtro_params):
+            _digest_linha(digest, row)
+            identificador, sku, raw_date, produto, data_iso, mes, quantidade = row
             registrar_contagem("historico_linhas_lidas")
             sku_original = str(sku or "").strip()
             if not sku_original:
@@ -155,7 +224,7 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
         conn.close()
     weight += sum(96 + _peso_textos(sku, *value) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
-    return _Projecao(tuple(recentes), titulos, ultimas), weight
+    return _Projecao(tuple(recentes), titulos, ultimas, digest.hexdigest()), weight + 128
 
 
 def _consolidar(paths, projecoes, ultimo_mes):
@@ -195,12 +264,13 @@ def _consolidar(paths, projecoes, ultimo_mes):
                  for period in vendas.values() if period is not None for sku, item in period.items())
     weight += sum(160 + _peso_textos(sku, *value.values()) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
-    return (vendas, titulos, ultimas), weight
+    assinaturas = tuple(projecao.assinatura for projecao in projecoes)
+    return (vendas, titulos, ultimas, assinaturas), weight + len(assinaturas) * 128
 
 
 def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_periodo,
                         filtro_sql, filtro_params, normalizar_sku, titulo_valido,
-                        normalizacao_token=None):
+                        normalizacao_token=None, snapshot=None):
     """Return independent result maps while keeping immutable projections private."""
     paths = tuple(str(path) for path in db_paths if path and os.path.exists(path))
     revisoes = tuple(_revisao_banco(path) for path in paths)
@@ -222,10 +292,12 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
             ))
         return _consolidar(paths, projecoes, fim_periodo[:7])
 
-    vendas, titulos, ultimas = _CONSOLIDADOS.obter(
+    vendas, titulos, ultimas, assinaturas = _CONSOLIDADOS.obter(
         key, revisoes, construir,
         lambda: tuple(_revisao_banco(path) for path in paths) == revisoes,
     )
+    if isinstance(snapshot, dict):
+        snapshot["historico_vendas"] = _LeituraHistorico(scope[:5], paths, revisoes, assinaturas)
     if vendas[meses] is None:
         raise ValueError("Quantidade de venda inválida no período selecionado.")
     return copy.deepcopy(vendas[meses]), copy.deepcopy(titulos), dict(ultimas)

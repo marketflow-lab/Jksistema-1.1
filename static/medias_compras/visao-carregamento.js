@@ -105,8 +105,9 @@
                         indisponivel: meta => {
                             if (!ativa()) return;
                             const anterior = atualizacaoAdiada?.data?._cache || metaVisaoExibida;
-                            const expirado = anterior?.gerado_em && Date.now() - new Date(anterior.gerado_em).getTime() > 15 * 60 * 1000;
-                            if (!meta.pendente_fontes && !expirado && !(anterior?.autoridade && meta.autoridade && anterior.autoridade !== meta.autoridade)) return;
+                            // A idade do snapshot não invalida a última visão autorizada.
+                            // O servidor decide a validade; a tela conserva os dados durante a atualização.
+                            if (!meta.pendente_fontes && !(anterior?.autoridade && meta.autoridade && anterior.autoridade !== meta.autoridade)) return;
                             atualizacaoAdiada = null;
                             metaVisaoExibida = null;
                             itensVisaoAtual = [];

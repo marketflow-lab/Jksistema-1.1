@@ -56,13 +56,53 @@ def categorias_alteradas(antes, depois):
     return dict(sorted(changes.items()))
 
 
+def fontes_consistentes(antes, depois):
+    """Compare source revisions; the caller still fences authority/target.
+
+    Sales equivalence is opt-in through the private snapshot filled by the
+    calculation. Other consumers retain the exact physical fence. This helper
+    is called only by the heavy worker after load, so polling stays cheap.
+    """
+    if antes.assinatura == depois.assinatura:
+        return True
+    if antes.autoridade != depois.autoridade or antes.pendente or depois.pendente:
+        return False
+    initial = antes.snapshot if isinstance(antes.snapshot, dict) else {}
+    final = depois.snapshot if isinstance(depois.snapshot, dict) else {}
+    leitura = initial.get("historico_vendas")
+    paths = tuple(initial.get("db_paths") or ())
+    if leitura is None or paths != tuple(final.get("db_paths") or ()):
+        return False
+    if len(antes.assinatura) != 2 or len(depois.assinatura) != 2 or antes.assinatura[0] != depois.assinatura[0]:
+        return False
+    old_rows, new_rows = antes.assinatura[1], depois.assinatura[1]
+    if any(not isinstance(row, tuple) or not row or not isinstance(row[0], str) for row in (*old_rows, *new_rows)):
+        return False
+    sales_paths = {
+        os.path.normcase(os.path.abspath(str(path) + suffix))
+        for path in paths for suffix in ("", "-wal", "-journal")
+    }
+    if tuple(row for row in old_rows if row[0] not in sales_paths) != tuple(
+            row for row in new_rows if row[0] not in sales_paths):
+        return False
+    revisions = {row[0]: row for row in new_rows}
+    expected = tuple(tuple(revisions.get(os.path.normcase(os.path.abspath(str(path) + suffix)))
+                           for suffix in ("", "-wal", "-journal")) for path in paths)
+    if any(row is None for revision in expected for row in revision):
+        return False
+    from backend.services.medias_compras_historico import conferir_leitura_historico
+    return conferir_leitura_historico(leitura, paths, expected, final.get("escopo") or {})
+
+
 def assinatura_arquivo(path, entry=None):
     path = Path(path)
     try:
         # Windows directory enumeration can retain an old mtime (and ino=0)
         # until that directory is opened. Read its own metadata so a read-only
         # scan does not manufacture a revision change on the next fence.
-        entry = path.lstat() if entry is None or stat.S_ISDIR(entry.st_mode) else entry
+        # Database fences are also compared with direct per-query snapshots;
+        # scandir may report ino=0 for files on Windows while lstat does not.
+        entry = path.lstat() if entry is None or stat.S_ISDIR(entry.st_mode) or path.suffix.casefold() == ".db" else entry
         linked = stat.S_ISLNK(entry.st_mode) or bool(getattr(entry, "st_file_attributes", 0) & 0x400)
         target = path.stat() if linked else entry
         # A read-only WAL connection can create/remove an empty sidecar. It

@@ -94,8 +94,9 @@ async def api_medias_compras_visao(
         lambda source: _api_medias_compras_visao_sync(
             meses=meses, loja=loja, store_id=store_id, client_id=client_id,
             _escopo_validado=source.snapshot["escopo"], _db_paths=source.snapshot["db_paths"],
+            _fontes_snapshot=source.snapshot,
         ),
-        stale=cache_mode == "stale",
+        stale=cache_mode == "stale", persistir_em=tenant,
     )
 
 
@@ -105,7 +106,7 @@ def _api_medias_compras_visao_sync(
     loja: str = "__todas",
     store_id: str = "",
     client_id: str = "default",
-    *, _escopo_validado=None, _db_paths=None,
+    *, _escopo_validado=None, _db_paths=None, _fontes_snapshot=None,
 ):
     try:
         if meses not in (3, 6, 12):
@@ -198,16 +199,14 @@ def _api_medias_compras_visao_sync(
         inicio_historico = time.perf_counter()
         db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja_sel)
         db_paths = tuple(path for path in db_paths if path and os.path.exists(path))
-        vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = {}, {}, {}
-        if db_paths:
-            filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
-            vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = ler_historico_vendas(
-                client_id=client_id, loja=loja_sel, store_id=store_id_escopo,
-                db_paths=db_paths, meses=meses, fim_periodo=fim_periodo,
-                filtro_sql=filtro_loja_sql, filtro_params=filtro_loja_params,
-                normalizar_sku=_normalizar_sku_mes, titulo_valido=_titulo_venda_valido,
-                normalizacao_token=normalizar_texto,
-            )
+        filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
+        vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = ler_historico_vendas(
+            client_id=client_id, loja=loja_sel, store_id=store_id_escopo,
+            db_paths=db_paths, meses=meses, fim_periodo=fim_periodo,
+            filtro_sql=filtro_loja_sql, filtro_params=filtro_loja_params,
+            normalizar_sku=_normalizar_sku_mes, titulo_valido=_titulo_venda_valido,
+            normalizacao_token=normalizar_texto, snapshot=_fontes_snapshot,
+        )
         leitura = leitura_atual()
         if leitura is not None:
             leitura.values[("historico_ultima_venda", client_id, loja_sel, tuple(db_paths))] = ultima_venda_snapshot

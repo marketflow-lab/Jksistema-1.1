@@ -300,3 +300,50 @@ def test_authority_is_rechecked_before_even_a_fresh_hit():
         separate = await service.consultar("a", ("other-root",), lambda: state, lambda _s: {"secret": "other"}, stale=False)
         assert separate == {"secret": "other"}
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("change", ["catalog", "authority"])
+@pytest.mark.parametrize("keep_changing", [False, True])
+def test_logical_sales_validation_rechecks_other_sources_before_publishing(monkeypatch, change, keep_changing):
+    from backend.services import medias_compras_fontes as sources
+
+    service = cache.ResultadoCache()
+    state = cache.Fontes(("day", (("vendas_historico.db", 1), ("cadastro_produtos.csv", 1))), ("policy-1",))
+    loaded = []
+    validations = []
+
+    def probe():
+        return state
+
+    def load(before):
+        nonlocal state
+        loaded.append(before)
+        result = {"catalog_revision": before.assinatura[1][1][1], "policy": before.autoridade[0]}
+        if len(loaded) == 1 or keep_changing:
+            state = replace(state, assinatura=("day", (("vendas_historico.db", len(loaded) + 1), state.assinatura[1][1])))
+        return result
+
+    def equivalent(before, after):
+        nonlocal state
+        if before.assinatura != after.assinatura:
+            validations.append(1)
+            # The row comparison accepted sales unchanged, but a different
+            # source changes after the prior probe and before it finishes.
+            if change == "catalog":
+                state = replace(state, assinatura=("day", (state.assinatura[1][0], ("cadastro_produtos.csv", len(validations) + 1))))
+            else:
+                state = replace(state, autoridade=(f"policy-{len(validations) + 1}",))
+        return True
+
+    monkeypatch.setattr(sources, "fontes_consistentes", equivalent)
+    if keep_changing:
+        with pytest.raises(HTTPException) as failure:
+            service._calculate(probe, load, time.perf_counter(), state)
+        assert failure.value.status_code == 409
+        assert failure.value.detail["code"] == "sources_changing"
+    else:
+        value, accepted = service._calculate(probe, load, time.perf_counter(), state)
+        assert accepted == state
+        assert value == {"catalog_revision": 2 if change == "catalog" else 1,
+                         "policy": "policy-2" if change == "authority" else "policy-1"}
+    assert len(loaded) == 2

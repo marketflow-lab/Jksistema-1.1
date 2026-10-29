@@ -1,4 +1,4 @@
-"""Bounded, process-local full results and one surviving owner per logical query.
+"""Bounded full results, optional durable views and one owner per logical query.
 
 Authentication is performed by the endpoint dependency; ``probe`` revalidates
 the current tenant/store/policy before *any* cache lookup. Source versions are
@@ -24,6 +24,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from backend.services.blocking_workers import run_blocking, run_heavy
+from backend.services import medias_compras_cache_disco as cache_disco
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class _Resultado:
     instante: float
     gerado_em: str
     versao: str
+    persistente: bool = False
 
     @property
     def peso(self):
@@ -101,22 +103,28 @@ class ResultadoCache:
 
     def _expire(self, now: float) -> None:
         for key, result in list(self._results.items()):
-            if now - result.instante > self.STALE_SECONDS:
+            limit = cache_disco.MAX_AGE_SECONDS if result.persistente else self.STALE_SECONDS
+            if now - result.instante > limit:
                 self._results.pop(key, None)
         for key, (instant, _) in list(self._errors.items()):
             if now - instant > self.ERROR_RETRY_SECONDS:
                 self._errors.pop(key, None)
 
-    def _store(self, key: tuple, value: dict, source: Fontes) -> bool:
+    def _store(self, key: tuple, value: dict, source: Fontes, *, persistente=False) -> bool:
         body = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(body) + 2048 > min(self.MAX_BYTES, self.TENANT_BYTES):
-            return False
-        tenant = key[0]
-        self._results[key] = _Resultado(
-            tenant, body, _compactar_fontes(source), self.clock(),
+        result = _Resultado(
+            key[0], body, _compactar_fontes(source), self.clock(),
             datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             hashlib.sha256(repr((source.assinatura, source.autoridade, source.alvo)).encode()).hexdigest()[:24],
+            persistente=persistente,
         )
+        return self._retain(key, result)
+
+    def _retain(self, key, result):
+        if result.peso > min(self.MAX_BYTES, self.TENANT_BYTES):
+            return False
+        tenant = key[0]
+        self._results[key] = result
         self._results.move_to_end(key)
         while True:
             tenant_keys = [k for k, v in self._results.items() if v.tenant == tenant]
@@ -128,6 +136,31 @@ class ResultadoCache:
             else:
                 break
         return True
+
+    @staticmethod
+    def _snapshot(result):
+        return {
+            "payload": json.loads(result.body), "assinatura": result.fontes.assinatura[0],
+            "autoridade": result.fontes.autoridade[0], "alvo": digest_json(result.fontes.alvo),
+            "politica_fotos": result.fontes.politica_fotos[0],
+            "gerado_em": result.gerado_em, "versao": result.versao,
+        }
+
+    def _restore(self, key, record, source):
+        # A snapshot never carries authorization. Recheck the current policy
+        # after the disk read and before making even stale data visible.
+        if (source.pendente or record["autoridade"] != source.autoridade[0]
+                or record["alvo"] != digest_json(source.alvo)
+                or record["politica_fotos"] != source.politica_fotos[0]):
+            return False
+        age = max(0.0, time.time() - datetime.fromisoformat(record["gerado_em"]).timestamp())
+        body = json.dumps(record["payload"], ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        result = _Resultado(
+            key[0], body, Fontes((record["assinatura"],), source.autoridade, source.alvo,
+                                politica_fotos=source.politica_fotos),
+            self.clock() - age, record["gerado_em"], record["versao"], persistente=True,
+        )
+        return self._retain(key, result)
 
     @staticmethod
     def _metadata(result, fonte, *, stale=False, running=False, error=None):
@@ -147,7 +180,7 @@ class ResultadoCache:
     def _calculate(self, probe, load, submitted, initial):
         from backend.services.medias_compras_common import _ListaPedidoConflict
         from backend.services.medias_compras_leitura import leitura_medias, medir_etapa
-        from backend.services.medias_compras_fontes import categorias_alteradas
+        from backend.services.medias_compras_fontes import categorias_alteradas, fontes_consistentes
 
         queue_ms = (time.perf_counter() - submitted) * 1000
         started = time.perf_counter()
@@ -199,9 +232,18 @@ class ResultadoCache:
                     after = probe()
                     metrics["fontes"] = metrics.get("fontes", 0) + (time.perf_counter() - probe_started) * 1000
                     expected_target = receipt[-1] if receipt else before.alvo
+                    validation_started = time.perf_counter()
                     consistent = (not before.pendente and not after.pendente and
-                                  before.assinatura == after.assinatura and before.autoridade == after.autoridade and
+                                  fontes_consistentes(before, after) and before.autoridade == after.autoridade and
                                   expected_target == after.alvo)
+                    if consistent and before.assinatura != after.assinatura:
+                        # Logical sales equivalence may scan rows. Fence every
+                        # source and access policy again after that scan: stock,
+                        # catalog or permissions can change while it runs.
+                        verified = probe()
+                        consistent = verified == after
+                        after = verified
+                    metrics["fontes"] = metrics.get("fontes", 0) + (time.perf_counter() - validation_started) * 1000
                     logger.info(
                         "[MEDIAS_FENCE] execucao=%s tentativa=%d consistente=%d pendente_antes=%d pendente_depois=%d autoridade_alterada=%d alvo_alterado=%d commit_proprio=%d categorias=%s",
                         execution, attempts, consistent, before.pendente, after.pendente,
@@ -227,19 +269,23 @@ class ResultadoCache:
                 metrics.get("calculo", 0), metrics.get("persistencia", 0), (time.perf_counter() - started) * 1000,
             )
 
-    async def _owner(self, key, probe, load, initial):
+    async def _owner(self, key, probe, load, initial, persistir_em=None):
         try:
             value, source = await run_heavy(self._calculate, probe, load, time.perf_counter(), initial)
             publish_started = time.perf_counter()
+            saved_result = None
             with self._lock:
-                if self._store(key, value, source):
+                if self._store(key, value, source, persistente=bool(persistir_em)):
                     self._errors.pop(key, None)
+                    saved_result = self._results.get(key)
                 else:
                     # Preserve legacy large responses without retaining them.
                     # Opt-in polling receives a terminal, sanitized warning.
                     self._errors[key] = (self.clock(), {
                         "code": "result_too_large", "message": "O resultado excede o limite de memoria da consulta.",
                     })
+            if persistir_em and saved_result:
+                await run_blocking(cache_disco.gravar, persistir_em, key, self._snapshot(saved_result))
             logging.getLogger("jk_sistema").info("[MEDIAS_TIMING] publicacao_cache_ms=%.1f", (time.perf_counter() - publish_started) * 1000)
             return value
         except Exception as exc:
@@ -250,7 +296,7 @@ class ResultadoCache:
             with self._lock:
                 self._flights.pop(key, None)
 
-    async def consultar(self, tenant: str, query: tuple, probe, load, *, stale: bool):
+    async def consultar(self, tenant: str, query: tuple, probe, load, *, stale: bool, persistir_em=None):
         # No registry lock is held during filesystem work or authentication.
         started = time.perf_counter()
         source = await run_blocking(probe)
@@ -259,15 +305,33 @@ class ResultadoCache:
         logical_query = query(source) if callable(query) else query
         key = (str(tenant), *logical_query)
         with self._lock:
+            self._expire(self.clock())
+            missing = key not in self._results
+        if persistir_em and missing and not source.pendente:
+            saved = await run_blocking(cache_disco.ler, persistir_em, key)
+            if saved is not None:
+                # The disk read is outside the registry lock. Access may have
+                # changed while it ran, so repeat the authenticated preflight.
+                source = await run_blocking(probe)
+                compact_source = _compactar_fontes(source)
+                latest_query = query(source) if callable(query) else query
+                latest_key = (str(tenant), *latest_query)
+                with self._lock:
+                    if latest_key == key and key not in self._results:
+                        self._restore(key, saved, compact_source)
+                key = latest_key
+        with self._lock:
             now = self.clock()
             self._expire(now)
             result = self._results.get(key)
-            if result and (result.fontes.autoridade != compact_source.autoridade or result.fontes.alvo != source.alvo or source.pendente):
+            if result and (result.fontes.autoridade != compact_source.autoridade or result.fontes.alvo != source.alvo or source.pendente
+                           or (persistir_em and result.fontes.politica_fotos != compact_source.politica_fotos)):
                 self._results.pop(key, None)
                 result = None
             flight = self._flights.get(key)
             running = flight is not None
-            fresh = bool(result and result.fontes.assinatura == compact_source.assinatura and now - result.instante <= self.FRESH_SECONDS)
+            fresh = bool(result and result.fontes.assinatura == compact_source.assinatura
+                         and (persistir_em or now - result.instante <= self.FRESH_SECONDS))
             if stale and fresh and not running:
                 self._results.move_to_end(key)
                 return {**json.loads(result.body), "_cache": self._metadata(result, compact_source)}
@@ -286,7 +350,7 @@ class ResultadoCache:
                         raise HTTPException(503, "Ha consultas em andamento. Tente novamente em instantes.", headers={"Retry-After": "2"})
                     error = {"code": "busy", "message": "Ha consultas em andamento. Tente novamente em instantes."}
                 else:
-                    owner = asyncio.create_task(self._owner(key, probe, load, source))
+                    owner = asyncio.create_task(self._owner(key, probe, load, source, persistir_em))
                     # Keep ownership after disconnect, and retrieve unobserved failures.
                     owner.add_done_callback(lambda task: None if task.cancelled() else task.exception())
                     self._flights[key] = (str(tenant), owner)

@@ -231,7 +231,7 @@ async function testViewAccessDenied(browser, status) {
 }
 
 
-async function testUnavailableAuthority(browser, invalidation, editing) {
+async function testUnavailableAuthority(browser, invalidation, editing, savedHoursAgo = 0) {
   const test = await fixture(browser, 'authority-' + invalidation + '-' + editing), { page } = test;
   try {
     if (editing) {
@@ -239,6 +239,7 @@ async function testUnavailableAuthority(browser, invalidation, editing) {
       await page.locator('.compra-sugerida-input').fill('73');
     }
     const previous = payload('Atualização anterior válida', 'v2', { stale: true });
+    if (savedHoursAgo) previous._cache.gerado_em = new Date(Date.now() - savedHoursAgo * 60 * 60 * 1000).toISOString();
     const waiting = { dados: null, _cache: { ...previous._cache, estado: 'waiting', completo: false,
       autoridade: invalidation === 'authority' ? 'authority-b' : 'authority-a',
       politica_fotos: invalidation === 'authority' ? 'photos-b' : 'photos-a',
@@ -286,7 +287,7 @@ async function testUnavailableAuthority(browser, invalidation, editing) {
     assert.match(await page.locator('#status').innerText(), /^Dados atualizados em /);
     await clean(test);
   } finally { await test.context.close(); }
-  console.log('PASS visão 202 ' + invalidation + (editing ? '/edição-adiada' : '') + ': snapshot/fotos/edição respeitam autoridade e próxima 200 pode reutilizar versão.');
+  console.log('PASS visão 202 ' + invalidation + (editing ? '/edição-adiada' : '') + (savedHoursAgo ? '/snapshot-48h' : '') + ': snapshot/fotos/edição respeitam autoridade e próxima 200 pode reutilizar versão.');
 }
 
 async function testLateCompletionAndEmpty(browser) {
@@ -355,6 +356,7 @@ async function testLateNavigationCancellation(browser, destination) {
     await testLateCompletionAndEmpty(browser);
     for (const destination of ['period', 'pagehide']) await testLateNavigationCancellation(browser, destination);
     for (const invalidation of ['same', 'authority', 'sources']) for (const editing of [false, true]) await testUnavailableAuthority(browser, invalidation, editing);
+    for (const invalidation of ['same', 'authority', 'sources']) for (const editing of [false, true]) await testUnavailableAuthority(browser, invalidation, editing, 48);
     for (const [kind, event] of [['tenant', 'none'], ['permissions', 'none'], ['token', 'none'], ['tenant', 'storage'], ['permissions', 'storage'], ['token', 'auth']]) await testSessionDuringPendingView(browser, kind, event);
     for (const kind of ['tenant', 'permissions', 'token']) await testSessionDuringPendingView(browser, kind, 'none', true);
     for (const status of [401, 403, 404]) await testViewAccessDenied(browser, status);
