@@ -297,7 +297,6 @@
 
         .importacao-acao--atualizar { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M20%207v5h-5M4%2017v-5h5%22%2F%3E%3Cpath%20d%3D%22M6.2%207A7%207%200%200%201%2018%205l2%202M4%2017l2%202a7%207%200%200%200%2011.8-2%22%2F%3E%3C%2Fsvg%3E"); }
         .importacao-acao--importar { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M12%2016V3m-5%205%205-5%205%205M4%2014v6h16v-6%22%2F%3E%3C%2Fsvg%3E"); }
-        .importacao-acao--medias { --acao-icone: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.7%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpath%20d%3D%22M4%204v16h16M8%2015v-4m5%204V7m5%208v-6%22%2F%3E%3C%2Fsvg%3E"); }
 
         .toolbar .importacao-acao:hover {
             transform: none;
@@ -1747,8 +1746,30 @@
         body { background: radial-gradient(ellipse at 70% -20%, #17365388, transparent 58%), #0b1320; }
         body::before, .card::before { display: none; }
         .container { padding: 24px clamp(12px, 2vw, 28px) 28px; }
-        .topbar { grid-template-columns: minmax(180px, 1fr) minmax(205px, 1.05fr) repeat(2, minmax(175px, .9fr)); gap: 0; margin-bottom: 23px; }
+        .topbar { grid-template-columns: minmax(380px, 1.35fr) minmax(205px, 1.05fr) repeat(2, minmax(175px, .9fr)); gap: 0; margin-bottom: 23px; }
         h1 { color: #e8f0fb; font-size: 32px; font-weight: 600; letter-spacing: -.8px; text-shadow: none; margin-right: 24px; }
+        .importacao-titulo-atalho { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; min-width: 0; margin-right: 20px; }
+        .importacao-titulo-atalho h1 { margin: 0; }
+        .importacao-atalho-medias {
+            display: inline-flex;
+            align-items: center;
+            flex-shrink: 0;
+            gap: 7px;
+            min-height: 40px;
+            padding: 9px 11px;
+            border: 1px solid #365a7d;
+            border-radius: 9px;
+            background: linear-gradient(120deg, #19334e, #112338);
+            color: #e8f0fb;
+            text-decoration: none;
+            font-size: 12px;
+            line-height: 1.2;
+            font-weight: 600;
+            transition: border-color .15s ease, background-color .15s ease;
+        }
+        .importacao-atalho-medias:hover { border-color: #83caff; background: #1c3854; }
+        .importacao-atalho-medias:focus-visible { outline: 2px solid #a2d8ff; outline-offset: 4px; }
+        .importacao-atalho-medias svg { flex-shrink: 0; color: #8dd1ff; }
         .fx-box, .clock-box, .clock-box.brasilia { min-height: 66px; padding: 11px 14px; gap: 10px; border-color: #2a3c52; background: #111e2f; box-shadow: none; border-radius: 0; }
         .fx-box { border-radius: 10px 0 0 10px; }
         .clock-box { border-left: 0; }
@@ -1768,7 +1789,6 @@
         .toolbar .importacao-monitor { order: -1; margin-right: auto; border: 0; background: transparent; padding: 0; color: #b4c5d9; font-size: 12px; font-weight: 400; }
         .toolbar .importacao-monitor::before { width: 6px; height: 6px; background: #e1b977; }
         .toolbar .importacao-acao { min-height: 35px; padding: 8px 11px; background: #16263b; border-color: #30445f; border-radius: 7px; font-size: 11px; font-weight: 500; box-shadow: none; }
-        .toolbar .importacao-acao--medias { order: 1; background: transparent; border-color: transparent; color: #9eb6d1; }
         .toolbar .importacao-acao--atualizar { order: 2; }
         .toolbar .importacao-acao--importar { order: 3; background: #7dc1ff; color: #08243f; border-color: #7dc1ff; font-weight: 600; box-shadow: none; }
         .loja-filtro-area { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; }
@@ -1904,7 +1924,7 @@
         }
         @media (max-width: 1160px) {
             .topbar { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
-            .topbar h1 { grid-column: 1 / -1; margin: 0 0 17px; }
+            .importacao-titulo-atalho { grid-column: 1 / -1; margin: 0 0 17px; }
             .topbar .fx-box, .topbar .clock-box { grid-column: auto; }
             .loja-filtro-area { flex-wrap: wrap; gap: 12px; }
             .busca-listas { flex-basis: 100%; }
@@ -1913,12 +1933,14 @@
             #tabelaListasImportacoes.is-compacta .lista-item--compacta { min-height: 0; }
             #listaWrap .lista-coluna-acoes { justify-self: end; }
             .toolbar .importacao-monitor { flex-basis: 100%; margin-bottom: 3px; }
-            .toolbar .importacao-acao--medias { margin-left: auto; }
         }
         @media (max-width: 780px) {
             .container { padding: 17px 12px; }
             .topbar { margin-bottom: 17px; }
             h1 { font-size: 28px; }
+            .importacao-titulo-atalho { gap: 10px; }
+            .importacao-atalho-medias { gap: 6px; padding: 8px; font-size: 11px; }
+            .topbar > .back-btn { position: static; grid-column: 1 / -1; justify-self: end; margin-top: 10px; }
             .fx-box, .clock-box, .clock-box.brasilia { min-height: 62px; padding: 10px 9px; gap: 5px; }
             .topbar .importacao-pais-icon { display: none; }
             .fx-value, .clock-value, .clock-box.brasilia .clock-value { font-size: 16px; }
@@ -1927,7 +1949,6 @@
             .card { padding: 14px 12px; }
             .toolbar .importacao-monitor { font-size: 11px; }
             .toolbar .importacao-acao { font-size: 10px; padding: 7px 8px; }
-            .toolbar .importacao-acao--medias { margin-left: 0; }
             .loja-filtro-card { padding: 7px 6px; gap: 5px; }
             .loja-filtro-nome { font-size: 11px; }
             .loja-filtro-contagem { font-size: 9px; }
@@ -2151,7 +2172,13 @@
     </svg>
     <div class="container">
         <div class="topbar">
-            <h1>Importações</h1>
+            <div class="importacao-titulo-atalho">
+                <h1>Importações</h1>
+                <a class="importacao-atalho-medias" href="/medias_compras.html">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V7m5 8v-6"/></svg>
+                    <span>Médias e Pedidos</span>
+                </a>
+            </div>
             <div class="fx-box">
                 <div class="importacao-pais-icon cotacao-bandeiras">
                     <svg class="importacao-bandeira" role="img" aria-label="Estados Unidos" focusable="false"><use href="#importacao-bandeira-us"></use></svg>
@@ -2192,7 +2219,6 @@
             <div class="toolbar">
                 <button class="btn importacao-acao importacao-acao--atualizar" id="btnAtualizar" type="button">Atualizar listas</button>
                 <button class="btn importacao-acao importacao-acao--importar" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
-                <a class="btn importacao-acao importacao-acao--medias" href="medias_compras.html">Abrir Médias e Pedidos</a>
                 <span class="badge importacao-monitor">Status monitorado: Analisando orçamento</span>
             </div>
             <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
