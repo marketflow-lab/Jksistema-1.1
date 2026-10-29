@@ -28,6 +28,7 @@ const moduleFiles = [
   'editor.js',
   'editor-produtos.js',
   'editor-salvamento.js',
+  'atualizacao-arquivo.js',
   'importacao.js',
   'tabela-virtual.js',
   'tabela.js',
@@ -151,7 +152,7 @@ assert(manifest.requiredPackagedFiles.includes('local_app/backend/services/media
 for (const file of ['backend/services/medias_compras_uniao.py', 'static/medias_compras/listas-uniao.js']) {
   assert(manifest.requiredPackagedSourceParity.includes(file), 'a união exige verificação de paridade do arquivo: ' + file);
 }
-for (const file of ['styles.css', ...moduleFiles]) {
+for (const file of ['styles.css', 'atualizacao-arquivo.css', ...moduleFiles]) {
   assert(
     manifest.requiredSourceFiles.includes(`static/medias_compras/${file}`),
     `manifest source não exige ${file}`,

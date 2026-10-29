@@ -360,7 +360,7 @@ def _recalcular_frete_internacional_itens_lista(
         qtd = max(0.0, _to_float(item.get("Quantidade", 0), 0.0))
         vu = max(0.0, _to_float(item.get("Valor unidade", 0), 0.0))
         vt = max(0.0, _to_float(item.get("Valor total", 0), 0.0))
-        total_usd += (vt if vt > 0 else (qtd * vu))
+        total_usd += (vt if item.get("valor_total_informado") is True or vt > 0 else (qtd * vu))
 
         enr = itens_enriquecidos[idx] if idx < len(itens_enriquecidos) else {}
         m3_item = max(

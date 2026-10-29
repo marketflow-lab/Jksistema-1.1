@@ -25,91 +25,22 @@
 
         function anexarExcelAtualizarPrecosLista(listaId, nomeLista) {
             if (!listaId) return;
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.xlsx,.xlsm,.xltx,.xltm';
-            input.addEventListener('change', async () => {
-                const file = input.files && input.files[0] ? input.files[0] : null;
-                if (!file) return;
-                try {
-                    const enviarArquivo = async (confirmarInclusoes) => {
-                        const fd = new FormData();
-                        fd.append('file', file);
-                        fd.append('confirmar_inclusoes', confirmarInclusoes ? '1' : '0');
-                        const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/importar-excel-precos', {
-                            method: 'POST',
-                            headers: { ...obterAuthHeaders() },
-                            body: fd
-                        });
-                        if (!resp.ok) {
-                            const err = await resp.json().catch(() => ({}));
-                            throw new Error(err.detail || 'Falha ao importar Excel.');
-                        }
-                        return resp.json();
-                    };
-
-                    setStatusListaPedido('Atualizando preços e quantidades da lista "' + String(nomeLista || '') + '"...');
-                    let data = await enviarArquivo(false);
-
-                    if (data && data.requer_confirmacao) {
-                        const resumo = data.resumo_pendencias || {};
-                        const pendencias = Array.isArray(data.pendencias) ? data.pendencias : [];
-                        const exemplos = pendencias.slice(0, 8).map((p) => {
-                            const skuTxt = String(p.sku || '');
-                            if (p.tipo === 'sku_novo') {
-                                return '- SKU novo: ' + skuTxt;
-                            }
-                            if (p.tipo === 'titulo_diferente') {
-                                return '- Título diferente no SKU ' + skuTxt;
-                            }
-                            return '- Divergência no SKU ' + skuTxt;
-                        }).join('\n');
-
-                        const mensagemConfirmacao =
-                            'O arquivo possui divergências e precisa da sua confirmação para incluir:\n\n' +
-                            '- SKUs novos: ' + numero(resumo.total_sku_novo || 0) + '\n' +
-                            '- Títulos diferentes: ' + numero(resumo.total_titulo_diferente || 0) + '\n' +
-                            (exemplos ? ('\nExemplos:\n' + exemplos + '\n') : '\n') +
-                            '\nDeseja continuar e incluir mesmo assim?';
-
-                        const confirmar = window.confirm(mensagemConfirmacao);
-                        if (!confirmar) {
-                            setStatusListaPedido('Importação cancelada pelo usuário após validação de divergências.');
-                            return;
-                        }
-
-                        data = await enviarArquivo(true);
-                    }
-
-                    try {
-                        await atualizarStatusListaPedido(listaId, 'Analisando orçamento');
-                    } catch (_e) {
-                        // Não bloqueia atualização de preços se status falhar.
-                    }
+            const loja = lojaSelecionada;
+            const store = storeIdSelecionado;
+            return global.JKAtualizacaoArquivo.atualizar({
+                listaId, nomeLista, sincronizar: true, fetch, headers: obterAuthHeaders,
+                vigente: () => loja === lojaSelecionada && store === storeIdSelecionado,
+                status: setStatusListaPedido,
+                preparar: () => aguardarSalvamentoListaPedido(listaId),
+                recarregar: async () => {
+                    limparStatusCanceladoLocal(listaId);
                     await carregarListasPedidos(true);
-                    if (listaPedidoAtual && String(listaPedidoAtual.id) === String(listaId)) {
-                        await abrirListaPedidoPorId(listaId, { preservarConteudo: true });
+                    if (String(listaPedidoAtual?.id) === String(listaId)) {
+                        const carregada = await abrirListaPedidoPorId(listaId, { preservarConteudo: true });
+                        if (carregada === false) throw new Error('A lista foi salva, mas a tela não pôde ser recarregada.');
                     }
-                    const skusIncluidos = Array.isArray(data.skus_incluidos) ? data.skus_incluidos.filter(Boolean) : [];
-                    const sufixoSkusIncluidos = skusIncluidos.length
-                        ? ' | SKUs incluídos: ' + skusIncluidos.join(', ')
-                        : '';
-                    const skusIgnorados = Array.isArray(data.skus_ignorados) ? data.skus_ignorados.filter(Boolean) : [];
-                    const sufixoSkusIgnorados = skusIgnorados.length
-                        ? ' | SKUs ignorados: ' + numero(data.total_skus_ignorados || skusIgnorados.length)
-                        : '';
-                    setStatusListaPedido(
-                        'Importação concluída. SKUs atualizados: ' + numero(data.total_skus_atualizados || 0) +
-                        ' | Quantidades atualizadas: ' + numero(data.total_quantidades_atualizadas || 0) +
-                        ' | SKUs incluídos: ' + numero(data.total_skus_incluidos || 0) + '.' +
-                        sufixoSkusIncluidos +
-                        sufixoSkusIgnorados
-                    );
-                } catch (e) {
-                    setStatusListaPedido(e.message || 'Erro ao atualizar preços com Excel.');
-                }
+                },
             });
-            input.click();
         }
 
         async function importarListaPedidoPorExcel() {

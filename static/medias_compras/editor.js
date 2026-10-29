@@ -136,7 +136,7 @@
                 const link = String(item.Link || '');
                 const qtd = Number(item.Quantidade || 0);
                 const vUnit = Number(item['Valor unidade'] || 0);
-                const vTotal = Number(item['Valor total'] || (qtd * vUnit));
+                const vTotal = item.valor_total_informado === true ? Number(item['Valor total'] ?? 0) : Number(item['Valor total'] || (qtd * vUnit));
                 const cbm = String(item['Estimed CBM'] || '');
                 const cbmIndividual = toNumeroDecimal(item['M3 individual'] || item['MÃ‚Â³ individual'] || item['m3_individual'] || 0);
                 const peso = String(item['Estimed Weigh'] || '');
@@ -155,6 +155,9 @@
                 tr.dataset.idx = String(idx);
                 tr.dataset.listaPedidoRow = '1';
                 tr.dataset.skuCmp = normalizarSkuComparacaoLocal(sku);
+                tr.dataset.quantidadeTotal = String(qtd);
+                tr.dataset.valorUnidadeTotal = String(vUnit);
+                tr.dataset.valorTotalInformado = item.valor_total_informado === true ? '1' : '0';
                 tr.innerHTML =
                     '<td><input class="sku-edit-input" data-kind="sku" data-idx="' + idx + '" data-original-sku="' + escaparHtml(sku) + '" type="text" value="' + escaparHtml(sku) + '" autocomplete="off" spellcheck="false" title="Altere o SKU e saia do campo para buscar os dados no cadastro"></td>' +
                     '<td>' + (fotoUrl ? '<img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku) + '" loading="lazy">' : '<span class="foto-empty">Sem foto</span>') + '</td>' +
@@ -163,7 +166,7 @@
                     '<td>' + escaparHtml(corLado) + '</td>' +
                     '<td>' + (link ? '<a href="' + escaparHtml(link) + '" target="_blank" rel="noopener noreferrer">' + escaparHtml(link) + '</a>' : '') + '</td>' +
                     '<td><input data-kind="qtd" data-idx="' + idx + '" type="number" min="0" step="1" value="' + escaparHtml(String(qtd)) + '"></td>' +
-                    '<td><input data-kind="vun" data-idx="' + idx + '" type="text" inputmode="decimal" value="' + escaparHtml(formatarMoedaUSD(vUnit)) + '"></td>' +
+                    '<td><input data-kind="vun" data-idx="' + idx + '" data-valor-original="' + escaparHtml(String(vUnit)) + '" data-texto-original="' + escaparHtml(formatarMoedaUSD(vUnit)) + '" type="text" inputmode="decimal" value="' + escaparHtml(formatarMoedaUSD(vUnit)) + '"></td>' +
                     '<td><input data-kind="vtot" data-idx="' + idx + '" type="hidden" value="' + escaparHtml(String(vTotal)) + '"><span class="money-locked" data-kind="vtot_fmt" data-idx="' + idx + '">' + escaparHtml(formatarMoedaUSD(vTotal)) + '</span></td>' +
                     '<td><input data-kind="cbm" data-idx="' + idx + '" data-cbm-individual="' + escaparHtml(String(cbmIndividual || '')) + '" type="text" inputmode="decimal" value="' + escaparHtml(cbm) + '"></td>' +
                     '<td><input data-kind="peso" data-idx="' + idx + '" type="text" inputmode="decimal" value="' + escaparHtml(peso) + '"></td>' +
@@ -200,7 +203,10 @@
 
             });
             tbody.querySelectorAll('input[data-kind="qtd"], input[data-kind="vun"]').forEach(inp => {
-                inp.addEventListener('input', recalcularLinhaListaPedido);
+                inp.addEventListener('input', ev => {
+                    if (inp.dataset.kind === 'vun') inp.dataset.valorEditado = '1';
+                    recalcularLinhaListaPedido(ev);
+                });
             });
             tbody.querySelectorAll('input[data-kind="cbm"]').forEach(inp => {
                 inp.addEventListener('input', atualizarTotaisListaPedido);
@@ -208,9 +214,12 @@
             });
             tbody.querySelectorAll('input[data-kind="vun"]').forEach(inp => {
                 inp.addEventListener('blur', () => {
-                    const vu = toNumeroDecimal(inp.value || 0);
-                    inp.value = formatarMoedaUSD(vu);
+                    const vu = obterValorUnidadeCampoPedido(inp);
                     recalcularLinhaListaPedido({ target: inp });
+                    inp.value = formatarMoedaUSD(vu);
+                    inp.dataset.valorOriginal = String(vu);
+                    inp.dataset.textoOriginal = inp.value;
+                    delete inp.dataset.valorEditado;
                 });
             });
             tbody.querySelectorAll('button[data-kind="excluir-item"]').forEach(btn => {
@@ -241,9 +250,10 @@
                 ? (listaPedidoAtual.itens[idx] || {})
                 : {};
             const quantidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'qtd'));
-            const valorUnidade = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vun'));
-            const valorTotal = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vtot') || base['Valor total'] || (quantidade * valorUnidade));
-            return {
+            const valorUnidade = obterValorUnidadeCampoPedido(row?.querySelector('[data-kind="vun"]'));
+            const totalBase = base.valor_total_informado === true ? (base['Valor total'] ?? 0) : (base['Valor total'] || (quantidade * valorUnidade));
+            const valorTotal = toNumeroDecimal(obterValorInputLinhaPedido(row, 'vtot') || totalBase);
+            const item = {
                 ...base,
                 SKU: normalizarSku(obterValorInputLinhaPedido(row, 'sku') || base.SKU || ''),
                 Quantidade: quantidade,
@@ -253,6 +263,16 @@
                 'Estimed Weigh': obterTextoInputLinhaPedido(row, 'peso', base['Estimed Weigh']),
                 'Individual packaging': obterTextoInputLinhaPedido(row, 'embalagem', base['Individual packaging']),
             };
+            if (row?.dataset.valorTotalInformado === '0') delete item.valor_total_informado;
+            return item;
+        }
+
+        function obterValorUnidadeCampoPedido(input) {
+            if (!input) return 0;
+            if (input.dataset.valorEditado !== '1' && input.value === input.dataset.textoOriginal && input.dataset.valorOriginal !== undefined) {
+                return Number(input.dataset.valorOriginal);
+            }
+            return toNumeroDecimal(input.value || 0);
         }
 
         function capturarItensListaPedidoDoEditor() {
@@ -395,7 +415,14 @@
             const vtotFmtEl = document.querySelector('[data-kind="vtot_fmt"][data-idx="' + idx + '"]');
             if (!qtdEl || !vunEl || !vtotEl) return;
             const q = toNumeroDecimal(qtdEl.value || 0);
-            const vu = toNumeroDecimal(vunEl.value || 0);
+            const vu = obterValorUnidadeCampoPedido(vunEl);
+            const row = el.closest('tr[data-lista-pedido-row]');
+            if (row && q === Number(row.dataset.quantidadeTotal) && vu === Number(row.dataset.valorUnidadeTotal)) return;
+            if (row) {
+                row.dataset.quantidadeTotal = String(q);
+                row.dataset.valorUnidadeTotal = String(vu);
+                row.dataset.valorTotalInformado = '0';
+            }
             const total = Math.max(0, q * vu);
             vtotEl.value = String(Math.round(total * 100) / 100);
             if (vtotFmtEl) vtotFmtEl.textContent = formatarMoedaUSD(total);

@@ -521,10 +521,14 @@ def _gerar_commercial_invoice_bytes(
             ["Valor total", "Sub-total(USD)", "Subtotal USD", "Sub total", "Subtotal"]
         )
         quantidade = int(quantidade_numero) if quantidade_numero is not None else None
-        if (preco is None or preco <= 0) and quantidade and valor_total is not None and valor_total > 0:
+        valor_informado = item.get("valor_total_informado") is True
+        unitario_informado = item.get("valor_unitario_informado") is True
+        if (preco is None or (preco <= 0 and not unitario_informado)) and quantidade and valor_total is not None and valor_total > 0:
             preco = valor_total / quantidade
         montante = None
-        if quantidade is not None and preco is not None:
+        if valor_informado and valor_total is not None:
+            montante = valor_total
+        elif quantidade is not None and preco is not None:
             montante = quantidade * preco
         elif valor_total is not None:
             montante = valor_total
@@ -792,7 +796,7 @@ def _gerar_excel_lista_pedido_bytes(
             item.get(COR_LADO_LISTA_PEDIDO_KEY, ""),
             item.get("Link", ""),
             quantidade,
-            valor_unidade if valor_unidade > 0 else None,
+            valor_unidade if valor_unidade > 0 or item.get("valor_unitario_informado") is True or item.get("valor_total_informado") is True else None,
             None,
             item.get(CBM_LISTA_PEDIDO_KEY, ""),
             item.get(PESO_LISTA_PEDIDO_KEY, ""),
@@ -850,7 +854,7 @@ def _gerar_excel_lista_pedido_bytes(
         else:
             ws[f"B{idx}"] = str(item.get("Foto", "") or "")
 
-        ws[f"I{idx}"] = f"=G{idx}*H{idx}"
+        ws[f"I{idx}"] = (item.get("Valor total", 0) if item.get("valor_total_informado") is True else f"=G{idx}*H{idx}")
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:L{max(1, len(itens_norm) + 1)}"

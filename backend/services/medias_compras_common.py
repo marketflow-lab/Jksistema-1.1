@@ -976,7 +976,7 @@ def _resumo_lista_pedido(lista: dict, m3_lookup: dict | None = None, *, client_i
         qtd = max(0.0, float(i.get("Quantidade", 0) or 0))
         vt = max(0.0, float(i.get("Valor total", 0) or 0))
         vu = max(0.0, float(i.get("Valor unidade", 0) or 0))
-        total_usd += vt if vt > 0 else (qtd * vu)
+        total_usd += vt if i.get("valor_total_informado") is True or vt > 0 else (qtd * vu)
         volume = None
         if m3_lookup is not None and not historica:
             individual = decimal_cubagem(m3_lookup.get(normalizar_sku_cubagem(i.get("SKU", ""))))

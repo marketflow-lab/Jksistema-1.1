@@ -81,7 +81,8 @@
             const skuCadastro = normalizarSku(obterCampoProdutoCadastro(produto, ['cubagem sku', 'sku']) || skuFallback);
             const quantidade = toNumeroDecimal(preservados.Quantidade || 0);
             const valorUnidade = toNumeroDecimal(preservados['Valor unidade'] || 0);
-            const valorTotal = Math.round(((quantidade * valorUnidade) + Number.EPSILON) * 100) / 100;
+            const valorTotal = preservados.valor_total_informado === true ? Number(preservados['Valor total'] ?? 0)
+                : Math.round(((quantidade * valorUnidade) + Number.EPSILON) * 100) / 100;
             const cbmIndividualCadastro = toNumeroDecimal(obterCampoProdutoCadastro(produto, ['estimed cbm', 'estimated cbm', 'cbm', 'm3 individual', 'm3', 'cg m3 individual', 'cg_m3 individual']));
             const cbmIndividual = cbmIndividualCadastro > 0
                 ? cbmIndividualCadastro

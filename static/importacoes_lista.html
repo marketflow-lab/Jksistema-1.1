@@ -7,6 +7,8 @@
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
+    <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
+    <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
     <style>
         body {
             margin: 0;
@@ -2165,7 +2167,7 @@
                 const qtd = valorNumerico(item && item.Quantidade);
                 const total = valorNumerico(item && item['Valor total']);
                 const unit = valorNumerico(item && item['Valor unidade']);
-                return acc + (total > 0 ? total : (qtd * unit));
+                return acc + (item?.valor_total_informado === true ? total : (total > 0 ? total : (qtd * unit)));
             }, 0);
             const totalM3 = dados.reduce((acc, item) => {
                 const m3Item = obterM3TotalItem(item);
@@ -2252,7 +2254,8 @@
             const totaisImpostos = dados.reduce((acc, item) => {
                 const qtd = valorNumerico(item && item.Quantidade);
                 const valorUnit = valorNumerico(item && item['Valor unidade']);
-                const valorTotal = valorNumerico(item && item['Valor total']) || (qtd * valorUnit);
+                const valorTotal = item?.valor_total_informado === true ? Number(item['Valor total'] ?? 0)
+                    : (valorNumerico(item && item['Valor total']) || (qtd * valorUnit));
                 const freteItemUsd = valorNumerico(obterCampo(item || {}, ['Frete Internacional'], 0));
 
                 const iiPct = valorNumerico(obterCampo(item || {}, ['II', 'ii'], 0));
@@ -2920,99 +2923,17 @@
 
         async function incluirSkuPorLista() {
             const listaId = getListaIdDaUrl();
-            if (!listaId) {
-                setErro('Lista não informada.');
-                return;
-            }
-            const btn = document.getElementById('btnAddSkuLista');
-
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.xlsx,.xlsm,.xltx,.xltm';
-
-            const txtOriginal = btn ? btn.textContent : '';
-
-            input.addEventListener('change', async () => {
-                const file = input.files && input.files[0] ? input.files[0] : null;
-                if (!file) return;
-
-                try {
-                    if (btn) {
-                        btn.disabled = true;
-                        btn.textContent = 'Importando...';
-                    }
-
-                    const enviarArquivo = async (confirmarInclusoes) => {
-                        const fd = new FormData();
-                        fd.append('file', file);
-                        fd.append('confirmar_inclusoes', confirmarInclusoes ? '1' : '0');
-                        const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(String(listaId)) + '/importar-excel-precos', {
-                            method: 'POST',
-                            headers: { ...obterAuthHeaders() },
-                            body: fd
-                        });
-                        if (!resp.ok) {
-                            const err = await resp.json().catch(() => ({}));
-                            throw new Error(err.detail || 'Falha ao importar Excel para a lista atual.');
-                        }
-                        return resp.json();
-                    };
-
-                    setStatusInclusaoSku('Importando arquivo "' + String(file.name || '') + '"...', false);
-                    let data = await enviarArquivo(false);
-
-                    if (data && data.requer_confirmacao) {
-                        const resumo = data.resumo_pendencias || {};
-                        const pendencias = Array.isArray(data.pendencias) ? data.pendencias : [];
-                        const exemplos = pendencias.slice(0, 8).map((p) => {
-                            const skuTxt = String(p.sku || '');
-                            if (p.tipo === 'sku_novo') return '- SKU novo: ' + skuTxt;
-                            if (p.tipo === 'titulo_diferente') return '- Título diferente no SKU ' + skuTxt;
-                            return '- Divergência no SKU ' + skuTxt;
-                        }).join('\n');
-
-                        const mensagemConfirmacao =
-                            'O arquivo possui divergências e precisa da sua confirmação para incluir:\n\n' +
-                            '- SKUs novos: ' + String(resumo.total_sku_novo || 0) + '\n' +
-                            '- Títulos diferentes: ' + String(resumo.total_titulo_diferente || 0) + '\n' +
-                            (exemplos ? ('\nExemplos:\n' + exemplos + '\n') : '\n') +
-                            '\nDeseja continuar e incluir mesmo assim?';
-
-                        const confirmar = window.confirm(mensagemConfirmacao);
-                        if (!confirmar) {
-                            setStatusInclusaoSku('Importação cancelada pelo usuário após validação de divergências.', true);
-                            return;
-                        }
-
-                        data = await enviarArquivo(true);
-                    }
-
-                    await carregarDetalheLista();
-
-                    const skusIncluidos = Array.isArray(data && data.skus_incluidos) ? data.skus_incluidos.filter(Boolean) : [];
-                    const sufixoSkusIncluidos = skusIncluidos.length
-                        ? ' | SKUs incluídos: ' + skusIncluidos.join(', ')
-                        : '';
-                    const msgSucesso =
-                        'Importação concluída. SKUs atualizados: ' + String(data && data.total_skus_atualizados || 0) +
-                        ' | Quantidades atualizadas: ' + String(data && data.total_quantidades_atualizadas || 0) +
-                        ' | SKUs incluídos: ' + String(data && data.total_skus_incluidos || 0) +
-                        sufixoSkusIncluidos;
-                    setErro('');
-                    setStatusInclusaoSku(msgSucesso, false);
-                } catch (e) {
-                    const msg = String(e && e.message || 'Erro ao importar arquivo para incluir SKUs.');
-                    setErro(msg);
-                    setStatusInclusaoSku(msg, true);
-                } finally {
-                    if (btn) {
-                        btn.disabled = false;
-                        btn.textContent = txtOriginal || 'Incluir Lista por Arquivo';
-                    }
-                }
+            if (!listaId) { setErro('Lista não informada.'); return; }
+            return window.JKAtualizacaoArquivo.atualizar({
+                listaId, nomeLista: ultimaListaCarregada?.nome_lista, sincronizar: false,
+                fetch, headers: obterAuthHeaders,
+                vigente: () => listaId === getListaIdDaUrl(),
+                status: (mensagem, erro) => {
+                    setErro(erro ? mensagem : '');
+                    setStatusInclusaoSku(mensagem, erro);
+                },
+                recarregar: () => carregarDetalheLista({ propagarErro: true }),
             });
-
-            input.click();
         }
 
         async function excluirSkuDaLista(sku, btn) {
@@ -3250,7 +3171,7 @@
                     ? (freteInternacionalItemUsd * dolarBase)
                     : 0;
                 const valorUnitRs = Number(obterCampo(item, ['Valor Unitário R$', 'Valor Unitario R$', 'Valor unitário R$', 'Valor unitario r$', 'Valor unitário em real', 'Valor unitario em real'], 0) || 0);
-                const valorTotal = Number(item['Valor total'] || (qtd * valorUnit));
+                const valorTotal = item.valor_total_informado === true ? Number(item['Valor total'] ?? 0) : Number(item['Valor total'] || (qtd * valorUnit));
                 const compraAprovada = itemComCompraAprovada(item);
                 const valorProdutoBrl = (valorTotal > 0 && dolarBase > 0) ? (valorTotal * dolarBase) : 0;
                 const baseTributosBrl = (valorTotal > 0 && freteInternacionalItemUsd >= 0 && dolarBase > 0)
@@ -3486,7 +3407,7 @@
             }
         }
 
-        async function carregarDetalheLista() {
+        async function carregarDetalheLista({ propagarErro = false } = {}) {
             const geracao = ++geracaoCarregamentoLista;
             const persistencia = window.JKCachePersistente;
             const candidato = persistencia?.contexto();
@@ -3589,6 +3510,7 @@
                     if (resp.status === 403) {
                         negarAcessoCacheLista();
                         await persistencia?.invalidar(['importacoes']);
+                        if (propagarErro) throw new Error('Acesso à lista indisponível após a atualização.');
                         return;
                     }
                     if (!resp.ok) {
@@ -3607,6 +3529,7 @@
             } catch (e) {
                 if (!vigente()) return;
                 respostaCompleta = true;
+                if (propagarErro) throw e;
                 if (copiaVisivel) {
                     statusCacheLista('Exibindo os dados salvos. Não foi possível atualizar agora.');
                     return;

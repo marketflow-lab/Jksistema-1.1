@@ -864,9 +864,11 @@ def _landed_cost_analysis(
     total_freight = 0.0
     ncm_values: set[str] = set()
     for item in items:
-        quantity = max(0.0, _float(item.get("Quantidade") or item.get("quantity")))
-        unit_usd = max(0.0, _float(item.get("Valor unidade") or item.get("Cost")))
-        total_usd = max(0.0, _float(item.get("Valor total") or item.get("Sub-total(USD)"))) or quantity * unit_usd
+        quantity = max(0.0, _float(item.get("Quantidade", item.get("quantity"))))
+        valores_informados = item.get("valor_total_informado") is True or item.get("valor_unitario_informado") is True
+        unit_usd = max(0.0, _float(item.get("Valor unidade") if valores_informados else item.get("Valor unidade") or item.get("Cost")))
+        total_usd = (max(0.0, _float(item.get("Valor total"))) if valores_informados
+                     else max(0.0, _float(item.get("Valor total") or item.get("Sub-total(USD)"))) or quantity * unit_usd)
         m3 = max(0.0, _float(item.get("M3") or item.get("m3") or item.get("Estimed CBM") or item.get("M3 individual")))
         if m3 and _float(item.get("M3 individual")) > 0 and m3 <= _float(item.get("M3 individual")) + 1e-9:
             m3 *= quantity
@@ -1069,8 +1071,9 @@ def _supplier_performance(all_orders: list[dict[str, Any]], supplier: str) -> di
         received_qty = sum(_float(item.get("received_quantity", item.get("Quantidade"))) for item in order.get("itens") or [] if isinstance(item, dict))
         defective = sum(_float(item.get("defective_quantity")) for item in order.get("itens") or [] if isinstance(item, dict))
         order_cost = sum(
-            _float(item.get("Valor total") or item.get("Sub-total(USD)"))
-            or (_float(item.get("Quantidade")) * _float(item.get("Valor unidade") or item.get("Cost")))
+            _float(item.get("Valor total")) if item.get("valor_total_informado") is True or item.get("valor_unitario_informado") is True else (
+                _float(item.get("Valor total") or item.get("Sub-total(USD)"))
+                or (_float(item.get("Quantidade")) * _float(item.get("Valor unidade") or item.get("Cost"))))
             for item in order.get("itens") or []
             if isinstance(item, dict)
         )

@@ -1,0 +1,22 @@
+.jk-arquivo-dialogo { width:min(820px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:0; border:1px solid #3b668d; border-radius:18px; color:#e8f1ff; background:#102034; box-shadow:0 24px 80px #0009; font:14px/1.5 system-ui,sans-serif; box-sizing:border-box; }
+.jk-arquivo-dialogo[open] { display:flex; flex-direction:column; }
+.jk-arquivo-dialogo::backdrop { background:rgba(3,10,20,.8); }
+.jk-arquivo-dialogo header { padding:22px 24px 16px; border-bottom:1px solid #28445e; flex:none; }
+.jk-arquivo-dialogo h2 { margin:0 0 8px; font-size:23px; line-height:1.2; }
+.jk-arquivo-dialogo p { margin:8px 0; color:#c5d7e8; overflow-wrap:anywhere; }
+.jk-arquivo-corpo { padding:0 24px 20px; overflow:auto; min-height:0; }
+.jk-arquivo-secao { margin:20px 0 0; }
+.jk-arquivo-secao h3 { color:#8ed8ff; font-size:16px; margin:0 0 10px; }
+.jk-arquivo-secao ul { margin:8px 0; padding-left:22px; overflow-wrap:anywhere; }
+.jk-arquivo-item { border:1px solid #294763; border-radius:10px; padding:12px 14px; margin:10px 0; overflow-wrap:anywhere; }
+.jk-arquivo-diferencas li { margin:4px 0; }
+.jk-arquivo-valores { display:grid; grid-template-columns:minmax(100px,1fr) minmax(0,2fr); gap:5px 12px; margin:10px 0 0; }
+.jk-arquivo-valores dt { color:#a9bfd4; }
+.jk-arquivo-valores dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.jk-arquivo-acoes { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:10px; padding:16px 24px; border-top:1px solid #28445e; flex:none; }
+.jk-arquivo-acoes button { padding:10px 16px; border:1px solid #426e94; border-radius:9px; color:#e8f1ff; background:#193650; cursor:pointer; font:600 14px system-ui,sans-serif; }
+.jk-arquivo-acoes .jk-arquivo-primario { background:#197db0; border-color:#399dcc; }
+.jk-arquivo-dialogo :focus-visible { outline:2px solid #84d5ff; outline-offset:3px; }
+.jk-arquivo-aviso:empty { display:none; }
+.jk-arquivo-aviso:not(:empty) { padding:12px; border:1px solid #a4823a; border-radius:9px; background:#42351a; color:#ffe1a6; }
+@media(max-width:520px) { .jk-arquivo-dialogo header,.jk-arquivo-acoes { padding:16px; } .jk-arquivo-corpo { padding:0 16px 16px; } .jk-arquivo-acoes button { flex:1 1 auto; } }

@@ -4094,7 +4094,7 @@
                 var qtd = embValorNumerico(it && it.Quantidade);
                 var vt = embValorNumerico(it && it['Valor total']);
                 var vu = embValorNumerico(it && it['Valor unidade']);
-                return s + (vt > 0 ? vt : qtd * vu);
+                return s + (it?.valor_total_informado === true || vt > 0 ? vt : qtd * vu);
             }, 0);
             var volumes = dados.map(embObterM3TotalItem);
             var m3Completo = volumes.every(function(v) { return Number.isFinite(v); });
@@ -4138,7 +4138,7 @@
                 var qtd = embValorNumerico(it && it.Quantidade);
                 var vt = embValorNumerico(it && it['Valor total']);
                 var vu = embValorNumerico(it && it['Valor unidade']);
-                var valorUsd = vt > 0 ? vt : qtd * vu;
+                var valorUsd = it?.valor_total_informado === true || vt > 0 ? vt : qtd * vu;
                 var freteIt = Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0);
                 var baseBrl = (valorUsd > 0 && dolar > 0) ? (valorUsd + freteIt) * dolar : 0;
                 var prodBrl = (valorUsd > 0 && dolar > 0) ? valorUsd * dolar : 0;

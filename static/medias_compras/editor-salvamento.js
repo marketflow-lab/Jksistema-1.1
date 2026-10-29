@@ -131,10 +131,14 @@
                 if (indice < 0 || !dados.itens[indice] || !atual.itens[indice]) return dados;
                 const chaves = { sku: ['SKU'], qtd: ['Quantidade', 'Valor total', 'Estimed CBM'],
                     vun: ['Valor unidade', 'Valor total'], cbm: ['Estimed CBM'], peso: ['Estimed Weigh'], embalagem: ['Individual packaging'] };
-                for (const chave of chaves[alvo.dataset.kind] || []) dados.itens[indice][chave] = atual.itens[indice][chave];
                 if (['qtd', 'vun'].includes(alvo.dataset.kind)) {
-                    dados.itens[indice]['Valor total'] = Math.round((Number(dados.itens[indice].Quantidade || 0) * Number(dados.itens[indice]['Valor unidade'] || 0) + Number.EPSILON) * 100) / 100;
-                }
+                    const campo = alvo.dataset.kind === 'qtd' ? 'Quantidade' : 'Valor unidade';
+                    if (Number(dados.itens[indice][campo] || 0) !== Number(atual.itens[indice][campo] || 0)) {
+                        for (const chave of chaves[alvo.dataset.kind]) dados.itens[indice][chave] = atual.itens[indice][chave];
+                        dados.itens[indice]['Valor total'] = Math.round((Number(dados.itens[indice].Quantidade || 0) * Number(dados.itens[indice]['Valor unidade'] || 0) + Number.EPSILON) * 100) / 100;
+                        delete dados.itens[indice].valor_total_informado;
+                    }
+                } else for (const chave of chaves[alvo.dataset.kind] || []) dados.itens[indice][chave] = atual.itens[indice][chave];
             }
             return dados;
         }
