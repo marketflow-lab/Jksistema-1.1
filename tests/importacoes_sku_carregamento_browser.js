@@ -46,7 +46,7 @@ async function environment(browser, options = {}) {
     page.on('pageerror', error => state.errors.push(error.message));
     if (options.fastTimeout) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
-        window.setTimeout = (callback, delay, ...args) => timeout(callback, delay === 5000 ? 50 : delay, ...args);
+        window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 50 : delay, ...args);
     });
     if (options.fastPolling) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
@@ -280,6 +280,21 @@ function releaseComplements(state) {
         await first.page.locator('.prop-input').press('Escape');
         await first.context.close();
 
+        const slow = await environment(browser, { hold: true });
+        await slow.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+        await waitUntil(() => Object.entries(slow.state.calls).filter(([key]) => key !== 'global').every(([, value]) => value === 1));
+        await slow.page.waitForTimeout(6100);
+        assert.strictEqual(await slow.page.locator('#erro').textContent(), '', 'Complementos válidos que excedem cinco segundos continuam aguardados.');
+        assert.strictEqual(await slow.page.locator('#vQtd').textContent(), '2');
+        releaseComplements(slow.state);
+        await waitUntil(() => slow.state.patches.length === 1);
+        await slow.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.');
+        assert.strictEqual(await slow.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
+        assert.notStrictEqual(await slow.page.locator('#vValorPorM3').textContent(), '-');
+        assert.strictEqual(await slow.page.evaluate(() => ultimoValorUnitarioProduto), 108.57);
+        assert.deepStrictEqual(slow.state.errors, []);
+        await slow.context.close();
+
         const complete = await environment(browser, { complete: true });
         await complete.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await waitUntil(() => complete.state.patches.length === 1);
@@ -331,6 +346,8 @@ function releaseComplements(state) {
         const timeout = await environment(browser, { hold: true, fastTimeout: true });
         await timeout.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await timeout.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
+        await timeout.page.waitForFunction(() => controladoresDetalheSku.size === 0
+            && !document.getElementById('cacheSkuStatus').textContent.includes('Atualizando'));
         assert.strictEqual(await timeout.page.locator('#vSku').textContent(), '001');
         assert.strictEqual(await timeout.page.locator('#vTituloPt').textContent(), 'Produto da lista A');
         assert.strictEqual(await timeout.page.locator('#vValorPorM3').textContent(), '-');
@@ -350,8 +367,10 @@ function releaseComplements(state) {
         const wrongStore = await environment(browser, { complete: true, wrongStore: true });
         await wrongStore.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await wrongStore.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
+        await wrongStore.page.waitForFunction(() => !document.getElementById('cacheSkuStatus').textContent.includes('Atualizando'));
         assert.strictEqual(await wrongStore.page.locator('#vTituloPt').textContent(), 'Produto da lista A');
         assert.strictEqual(wrongStore.state.calls.global, 0);
+        assert.strictEqual(wrongStore.state.patches.length, 0, 'Cadastro de outra loja não publica análise parcial.');
         assert.deepStrictEqual(wrongStore.state.errors, []);
         await wrongStore.context.close();
 
@@ -369,6 +388,7 @@ function releaseComplements(state) {
         const fiscal = await environment(browser, { complete: true, failFiscal: true });
         await fiscal.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await fiscal.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
+        await fiscal.page.waitForFunction(() => !document.getElementById('cacheSkuStatus').textContent.includes('Atualizando'));
         assert.strictEqual(await fiscal.page.locator('#vCustoTotalProduto').textContent(), '-');
         assert.strictEqual(fiscal.state.calls.impostos, 1);
         assert.strictEqual(fiscal.state.patches.length, 0);
@@ -399,6 +419,9 @@ function releaseComplements(state) {
         const stalePrice = await environment(browser, { complete: true, holdPrice: true });
         await stalePrice.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await stalePrice.page.waitForFunction(() => document.getElementById('lblConcorrente1').textContent === 'MLB1234567890');
+        assert.match(await stalePrice.page.locator('#cacheSkuStatus').textContent(), /Consultando preços dos concorrentes/);
+        assert.strictEqual(await stalePrice.page.evaluate(() => ultimoValorUnitarioProduto), 108.57,
+            'Preços opcionais pendentes não ocultam o custo já calculado.');
         await stalePrice.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
         await stalePrice.page.evaluate(() => window.releasePrice());
         await stalePrice.page.waitForTimeout(40);

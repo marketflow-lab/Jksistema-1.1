@@ -49,6 +49,13 @@ function listHarness(loja = 'JK Peças') {
     const state = { generation: 1, listaId: 'JK61', gets: [], patches: [], statuses: [],
         sources: {}, fail: false, beforeGet: null, beforePatch: null };
     const bindings = {
+        AUXILIAR_TIMEOUT_MS: 20000,
+        ATUALIZACAO_LISTA_LIMITE_MS: 120000,
+        AbortController,
+        setTimeout,
+        clearTimeout,
+        controladoresAuxiliares: new Set(),
+        estadosAnaliseMargensAutomaticas: new Map(),
         cicloAnaliseMargensAutomaticas: 0,
         ultimaListaCarregada: { loja },
         obterAuthHeaders: () => ({ Authorization: 'synthetic' }),
@@ -73,7 +80,7 @@ function listHarness(loja = 'JK Peças') {
     };
     const context = loadFunctions(listHtml, [
         'normTxt', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
-        'montarPayloadMargensAutomaticas', 'carregarFontesMargensAutomaticas',
+        'montarPayloadMargensAutomaticas', 'consultarAnaliseLista', 'carregarFontesMargensAutomaticas',
         'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
     ], bindings);
     return { state, context };

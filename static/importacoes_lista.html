@@ -946,7 +946,8 @@
         let contextoPersistenteLista = null;
         let requisicaoFaturamento = 0;
         let requisicaoCustoPosto = 0;
-        const AUXILIAR_TIMEOUT_MS = 5000;
+        const AUXILIAR_TIMEOUT_MS = 20000;
+        const ATUALIZACAO_LISTA_LIMITE_MS = 120000;
         const controladoresAuxiliares = new Set();
 
         function contextoCarregamentoAtual(listaId) {
@@ -975,6 +976,25 @@
         function statusCacheLista(texto) {
             const el = document.getElementById('cacheListaStatus');
             if (el) el.textContent = texto;
+        }
+
+        function aguardarAtualizacaoLista(vigente, espera) {
+            const controller = new AbortController();
+            controladoresAuxiliares.add(controller);
+            return new Promise((resolve, reject) => {
+                let timer;
+                const encerrar = erro => {
+                    clearTimeout(timer);
+                    controller.signal.removeEventListener('abort', cancelar);
+                    controladoresAuxiliares.delete(controller);
+                    if (erro) reject(erro);
+                    else resolve();
+                };
+                const cancelar = () => encerrar(new Error('Carregamento substituído.'));
+                controller.signal.addEventListener('abort', cancelar, { once: true });
+                timer = setTimeout(() => encerrar(), espera);
+                if (!vigente()) controller.abort();
+            });
         }
 
         async function salvarSnapshotLista(contexto) {
@@ -1376,47 +1396,64 @@
             };
         }
 
-        async function carregarFontesMargensAutomaticas(listaId) {
-            const resp = await fetch(
-                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/concorrentes-links',
-                {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() },
-                    cache: 'no-store',
+        async function consultarAnaliseLista(url, opcoes, contexto) {
+            if (!carregamentoVigente(contexto)) throw new Error('Carregamento substituído.');
+            const restante = contexto.analiseDeadline ? contexto.analiseDeadline - Date.now() : AUXILIAR_TIMEOUT_MS;
+            if (restante <= 0) throw new Error('Análise complementar pendente. Tente novamente.');
+            const controller = new AbortController();
+            controladoresAuxiliares.add(controller);
+            const timeout = setTimeout(() => controller.abort(), Math.min(AUXILIAR_TIMEOUT_MS, restante));
+            try {
+                const resposta = await fetch(url, { ...opcoes, signal: controller.signal });
+                if (!resposta.ok) {
+                    const erro = await resposta.json().catch(() => ({}));
+                    throw new Error(erro.detail || 'Não foi possível carregar a análise de concorrentes.');
                 }
-            );
-            if (!resp.ok) {
-                const erro = await resp.json().catch(() => ({}));
-                throw new Error(erro.detail || 'Não foi possível carregar os concorrentes da lista.');
+                const dados = await resposta.json();
+                if (!carregamentoVigente(contexto)) throw new Error('Carregamento substituído.');
+                return { dados, resposta };
+            } catch (erro) {
+                if (controller.signal.aborted) {
+                    if (opcoes.method === 'PATCH') contexto.podeSalvar = false;
+                    throw new Error('Tempo limite na análise de concorrentes. Tente novamente.');
+                }
+                throw erro;
+            } finally {
+                clearTimeout(timeout);
+                controladoresAuxiliares.delete(controller);
             }
-            const dados = await resp.json().catch(() => ({}));
+        }
+
+        async function carregarFontesMargensAutomaticas(listaId) {
+            const { dados } = await consultarAnaliseLista(
+                '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/concorrentes-links',
+                { method: 'GET', headers: { ...obterAuthHeaders() }, cache: 'no-store' },
+                contextoCarregamentoAtual(listaId)
+            );
             return dados && dados.resultados && typeof dados.resultados === 'object'
                 ? dados.resultados
                 : {};
         }
 
         async function salvarMargensAutomaticasSku(listaId, sku, payload, contexto) {
-            const resp = await fetch(
+            const { dados, resposta } = await consultarAnaliseLista(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
                     + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
                 {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
                     body: JSON.stringify(payload),
-                }
+                },
+                contexto
             );
-            if (!resp.ok) {
-                const erro = await resp.json().catch(() => ({}));
-                throw new Error(erro.detail || 'Não foi possível calcular as margens deste SKU.');
-            }
-            const dados = await resp.json();
-            confirmarMutacaoLista(contexto, resp);
+            confirmarMutacaoLista(contexto, resposta);
             return dados;
         }
 
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
             const cicloAtual = ++cicloAnaliseMargensAutomaticas;
             const contexto = contextoCarregamentoAtual(listaId);
+            contexto.analiseDeadline = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS;
             const versaoFontes = ultimaListaCarregada && ultimaListaCarregada.analise_concorrentes_fontes_versao;
             const lojaJkPecas = versaoFontes !== undefined && versaoFontes !== null
                 ? Number(versaoFontes) === 2
@@ -1443,6 +1480,11 @@
 
             for (const item of pendentes) {
                 if (cicloAtual !== cicloAnaliseMargensAutomaticas || !carregamentoVigente(contexto)) return;
+                if (Date.now() >= contexto.analiseDeadline || contexto.podeSalvar === false) {
+                    pendentes.filter(row => estadosAnaliseMargensAutomaticas.get(obterSkuItemMargensAutomaticas(row))?.status === 'fila')
+                        .forEach(row => definirEstadoMargensAutomaticas(row, 'erro', 'Análise complementar pendente. Tente novamente.'));
+                    return contexto;
+                }
                 const sku = obterSkuItemMargensAutomaticas(item);
                 definirEstadoMargensAutomaticas(item, 'analisando');
                 try {
@@ -1454,6 +1496,10 @@
                         contexto
                     );
                     if (!carregamentoVigente(contexto) || cicloAtual !== cicloAnaliseMargensAutomaticas) return;
+                    if (contexto.podeSalvar === false) {
+                        definirEstadoMargensAutomaticas(item, 'erro', 'Os dados mudaram durante a análise. Recarregue a lista.');
+                        continue;
+                    }
                     item.analise_concorrentes = resultado && resultado.analise_concorrentes
                         ? resultado.analise_concorrentes
                         : { margens: {} };
@@ -1582,7 +1628,7 @@
                 const celula = linha.querySelector('[data-col-key="m3"]');
                 if (!item || !celula) return;
                 const m3 = obterM3TotalItem(item);
-                celula.textContent = Number.isFinite(m3) ? formatarM3(m3) + (statusCubagemItem(item) === 'historico' ? ' · histórico' : '') : textoM3Ausente();
+                celula.textContent = Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente();
                 celula.classList.toggle('m3-alerta', !Number.isFinite(m3) && !mapaM3IndividualCarregando);
                 celula.title = Number.isFinite(m3) ? descricaoCubagemItem(item) : 'Cubagem pendente no cadastro desta loja.';
             });
@@ -3234,7 +3280,7 @@
                         ? '<img class="foto" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(sku || '') + '" loading="lazy">'
                         : '<span class="foto-empty">Sem foto</span>'),
                     quantidade: formatarNumero(qtd),
-                    m3: Number.isFinite(m3) ? formatarM3(m3) + (statusCubagemItem(item) === 'historico' ? ' · histórico' : '') : textoM3Ausente(),
+                    m3: Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente(),
                     ii: formatarPct(ii) + '<span class="cell-sub-money">' + formatarBRL(iiBrl) + '</span>',
                     ipi: formatarPct(ipi) + '<span class="cell-sub-money">' + formatarBRL(ipiBrl) + '</span>',
                     pis: formatarPct(pis) + '<span class="cell-sub-money">' + formatarBRL(pisBrl) + '</span>',
@@ -3478,10 +3524,21 @@
                         carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
                     void Promise.allSettled(complementos).then(async () => {
                         if (!dadosListaVigentes(contexto)) return;
-                        const contextoAnalise = await analisarMargensConcorrentesAutomaticamente(listaId, itens);
-                        await salvarSnapshotLista(contextoAnalise || contexto);
-                        if (carregamentoVigente(contextoAnalise || contexto)) statusCacheLista(ultimaAnaliseCustoPosto
+                        await salvarSnapshotLista(contexto);
+                        if (!dadosListaVigentes(contexto)) return;
+                        statusCacheLista(ultimaAnaliseCustoPosto
                             ? 'Dados atualizados.' : 'Itens atualizados. Custo complementar pendente.');
+                        // A análise externa tem estado próprio nas linhas e não bloqueia os dados da lista.
+                        void (async () => {
+                            const contextoAnalise = await analisarMargensConcorrentesAutomaticamente(listaId, itens);
+                            if (contextoAnalise) await salvarSnapshotLista(contextoAnalise);
+                        })().catch(() => {});
+                    }).catch(() => {
+                        if (carregamentoVigente(contexto)) statusCacheLista('Itens atualizados. Algumas informações complementares continuam pendentes.');
+                    }).finally(() => {
+                        if (carregamentoVigente(contexto) && !dadosListaVigentes(contexto)) {
+                            statusCacheLista('Os dados mudaram durante a consulta. Recarregue a lista para atualizar.');
+                        }
                     });
                 }
                 return true;
@@ -3509,30 +3566,71 @@
                             }
                         }).catch(() => {}).finally(() => clearTimeout(timeout));
                 }
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 15000);
-                let resp;
-                try {
-                    resp = await fetch(url, { method: 'GET', headers: { ...obterAuthHeaders() }, signal: controller.signal });
-                    if (resp.status === 403) {
-                        negarAcessoCacheLista();
-                        await persistencia?.invalidar(['importacoes']);
-                        if (propagarErro) throw new Error('Acesso à lista indisponível após a atualização.');
-                        return;
-                    }
-                    if (!resp.ok) {
-                        const err = await resp.json().catch(() => ({}));
-                        throw new Error(err.detail || 'Falha ao carregar detalhes da lista.');
-                    }
-                    const data = await resp.json();
+                const limite = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS;
+                const transitorios = new Set(['sources_changing', 'cache_capacity', 'stores_snapshot_initializing',
+                    'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
+                for (let tentativa = 0; tentativa < 32 && Date.now() < limite; tentativa++) {
                     if (!vigente()) return;
-                    if (!data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)) throw new Error('Dados da lista inválidos.');
-                    respostaCompleta = true;
-                    if (contextoPersistente) await persistencia.salvar(chave, data, { contexto: contextoPersistente, tags: ['importacoes'] });
-                    if (await aplicar(data, copiaVisivel, true)) statusCacheLista('Itens atualizados · Atualizando informações complementares...');
-                } finally {
-                    clearTimeout(timeout);
+                    const controller = new AbortController();
+                    controladoresAuxiliares.add(controller);
+                    const timeout = setTimeout(() => controller.abort(), Math.min(AUXILIAR_TIMEOUT_MS, limite - Date.now()));
+                    let data, esperaMinima = 0;
+                    try {
+                        const resp = await fetch(url + '?cache_mode=stale', {
+                            method: 'GET', headers: { ...obterAuthHeaders() }, signal: controller.signal,
+                        });
+                        if (!vigente()) return;
+                        if ([401, 403].includes(resp.status)) {
+                            negarAcessoCacheLista();
+                            await persistencia?.invalidar(['importacoes']);
+                            if (propagarErro) throw new Error('Acesso à lista indisponível após a atualização.');
+                            return;
+                        }
+                        if (!resp.ok) {
+                            const err = await resp.json().catch(() => ({}));
+                            const code = err.detail?.code || err.code;
+                            if (![409, 503].includes(resp.status) || !transitorios.has(code)) {
+                                throw new Error(err.detail?.message || err.detail || 'Falha ao carregar detalhes da lista.');
+                            }
+                            esperaMinima = 5000;
+                        } else {
+                            data = await resp.json();
+                        }
+                    } catch (erro) {
+                        if (!controller.signal.aborted) throw erro;
+                    } finally {
+                        clearTimeout(timeout);
+                        controladoresAuxiliares.delete(controller);
+                    }
+                    if (!vigente()) return;
+                    if (data) {
+                        const meta = data._cache;
+                        if (data.lista) {
+                            if (String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)) throw new Error('Dados da lista inválidos.');
+                            const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
+                            if (pronta) {
+                                respostaCompleta = true;
+                                if (contextoPersistente) await persistencia.salvar(chave, data, { contexto: contextoPersistente, tags: ['importacoes'] });
+                                if (await aplicar(data, copiaVisivel, true)) statusCacheLista('Itens atualizados · Atualizando informações complementares...');
+                                return;
+                            }
+                            if (!copiaVisivel && await aplicar(data)) copiaVisivel = true;
+                        } else if (!meta) {
+                            throw new Error('Dados da lista inválidos.');
+                        }
+                        if (meta?.erro && !meta.atualizando) {
+                            if (!transitorios.has(meta.erro.code)) throw new Error(meta.erro.message || 'Não foi possível atualizar a lista.');
+                            esperaMinima = 5000;
+                        }
+                        esperaMinima = Math.max(esperaMinima, Math.min(10000, Number(meta?.retry_after_ms) || 0));
+                    }
+                    statusCacheLista(copiaVisivel ? 'Dados salvos da lista · Atualizando cálculos...'
+                        : 'Preparando os dados da lista...');
+                    const intervalo = tentativa < 5 ? 1000 : tentativa < 10 ? 2000 : 5000;
+                    const espera = Math.min(Math.max(intervalo, esperaMinima), limite - Date.now());
+                    if (espera > 0) await aguardarAtualizacaoLista(vigente, espera);
                 }
+                throw new Error('A atualização dos cálculos continua pendente. Tente novamente.');
             } catch (e) {
                 if (!vigente()) return;
                 respostaCompleta = true;
@@ -3544,6 +3642,10 @@
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);
                 renderItens([], {});
+            } finally {
+                if (vigente() && !dadosVigentes()) {
+                    statusCacheLista('Os dados mudaram durante a consulta. Recarregue a lista para atualizar.');
+                }
             }
         }
 

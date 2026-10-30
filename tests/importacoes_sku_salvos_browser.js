@@ -76,7 +76,7 @@ async function environment(browser, options = {}) {
         }
         const original = window.setTimeout.bind(window);
         window.setTimeout = (callback, delay, ...args) => original(callback,
-            fastRequestTimeout && delay === 5000 ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
+            fastRequestTimeout && [5000, 20000].includes(delay) ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
     }, { testOrigin: origin, fastRequestTimeout: Boolean(options.fastRequestTimeout), ignoreBackgroundAbort: Boolean(options.ignoreBackgroundAbort) });
     const json = (route, result) => route.fulfill({
         status: result?.status || 200, contentType: 'application/json',
@@ -401,18 +401,64 @@ async function run(browser, name, options, check) {
             assert.deepStrictEqual(env.state.complements, []);
         });
 
-        await run(browser, 'cache básico não retém quantidade antiga quando um complemento falha', {
+        for (const failure of ['fiscal 500', 'fiscal timeout', 'concorrentes 500']) {
+            await run(browser, 'cache básico encerra a atualização com falha ' + failure, {
+                fastRequestTimeout: failure.endsWith('timeout'),
+                complement: async ({ pathname, state }) => {
+                    if (failure.startsWith('fiscal') && pathname === '/api/medias-compras/concorrentes-links') {
+                        return {
+                            concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
+                            concorrentes_valores: { concorrente_1: 'R$ 200,00' },
+                        };
+                    }
+                    const target = failure.startsWith('fiscal') ? '/api/impostos/produtos' : '/api/medias-compras/concorrentes-links';
+                    if (pathname !== target) return undefined;
+                    if (failure.endsWith('timeout')) {
+                        const pending = gate();
+                        state.pending.push(pending);
+                        await pending.promise;
+                    }
+                    return { status: 500, body: { detail: 'Complemento indisponível' } };
+                },
+            }, async env => {
+                await seed(env);
+                await open(env);
+                await env.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
+                await env.page.waitForFunction(() => controladoresDetalheSku.size === 0
+                    && document.getElementById('cacheSkuStatus').textContent.includes('Não foi possível'));
+                assert.doesNotMatch(await env.page.locator('#cacheSkuStatus').textContent(), /Atualizando|Consultando preços/);
+                assert.strictEqual(await env.page.locator('#vQtd').textContent(), '9');
+                assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
+                if (failure.startsWith('fiscal')) {
+                    assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
+                    assert.strictEqual(await env.page.locator('#lblConcorrente1 a').getAttribute('href'),
+                        'https://produto.mercadolivre.com.br/MLB-1234567890');
+                    assert.strictEqual(await env.page.locator('#vConcorrente1').textContent(),
+                        await env.page.evaluate(() => fmtBRL(200)),
+                    'Falha fiscal preserva links e preços válidos dos concorrentes.');
+                }
+                assert.strictEqual(await env.page.evaluate(() => analiseComplementosPronta), false);
+                assert.strictEqual(env.state.patches.length, 0);
+                assert.strictEqual(await env.page.evaluate(async () =>
+                    (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
+                'Falha complementar não publica um snapshot completo parcial.');
+            });
+        }
+
+        await run(browser, 'falha complementar encerra a atualização e preserva o snapshot completo', {
             complement: ({ pathname }) => pathname === '/api/impostos/produtos'
                 ? { status: 500, body: { detail: 'Fiscal indisponível' } } : undefined,
         }, async env => {
-            await seed(env);
+            await seed(env, true);
             await open(env);
-            await env.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
-            await env.page.waitForFunction(() => controladoresDetalheSku.size === 0);
-            assert.strictEqual(await env.page.locator('#vQtd').textContent(), '9');
-            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
-            assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
+            await env.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent.includes('Algumas informações não puderam'));
+            assert.doesNotMatch(await env.page.locator('#cacheSkuStatus').textContent(), /Atualizando|Consultando preços/);
+            assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro salvo');
+            assert.notStrictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
             assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados.lista.itens[0].Quantidade), 2);
         });
 
         await run(browser, 'revisão alterada durante complementos impede cadastro e análise antigos', {

@@ -70,7 +70,8 @@ const trechosSku = [
     'await Promise.all([',
     'enriquecerPrecosAnalise(linksConc)',
     'await salvarAnaliseConcorrentes(listaId, skuNorm);',
-    'aplicarAnaliseConcorrentes(resultadoAnalise && resultadoAnalise.analise_concorrentes);',
+    'item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;',
+    'aplicarAnaliseConcorrentes(item.analise_concorrentes);',
     'void salvarAnaliseConcorrentes(listaId, normSku(sku))',
     'if (detalheSkuVigente(contextoPersistencia)) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);',
 ];

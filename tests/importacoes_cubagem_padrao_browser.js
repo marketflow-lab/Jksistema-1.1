@@ -78,7 +78,7 @@ async function environment(browser, options = {}) {
         await lista.page.waitForFunction(() => !mapaM3IndividualCarregando);
         assert.strictEqual(await lista.page.locator('tr[data-sku="001"] [data-col-key="m3"]').textContent(), '0,0000625');
         assert.strictEqual(await lista.page.locator('tr[data-sku="1"] [data-col-key="m3"]').textContent(), 'Cubagem pendente');
-        assert.match(await lista.page.locator('tr[data-sku="H"] [data-col-key="m3"]').textContent(), /0,3000.*histórico/);
+        assert.strictEqual(await lista.page.locator('tr[data-sku="H"] [data-col-key="m3"]').textContent(), '0,3000');
         assert.strictEqual(await lista.page.locator('tr[data-sku="ZERO"] [data-col-key="m3"]').textContent(), '0,0000');
         assert.strictEqual(await lista.page.locator('tr[data-sku="ZERO"] [data-col-key="m3"]').evaluate(el => el.classList.contains('m3-alerta')), false);
         assert.match(await lista.page.locator('.totais-row [data-col-key="m3"]').textContent(), /0,3000625.*parcial/);
@@ -107,7 +107,7 @@ async function environment(browser, options = {}) {
         await historico.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=H');
         await historico.page.waitForFunction(() => document.getElementById('vSku').textContent === 'H');
         assert.strictEqual(await historico.page.locator('#vM3').textContent(), '0,3000');
-        assert.match(await historico.page.locator('#vM3Fonte').textContent(), /histórica preservada/);
+        assert.strictEqual(await historico.page.locator('[data-card-id="kv_m3"]').innerText(), 'M3\n0,3000');
         historico.state.detailGate.resolve();
         await historico.page.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro atual');
         assert.strictEqual(await historico.page.locator('#vM3').textContent(), '0,3000', 'Cadastro async divergente preserva o snapshot histórico');

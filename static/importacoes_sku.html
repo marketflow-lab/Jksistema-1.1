@@ -846,7 +846,7 @@
                         <div class="kv cost" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
                         <div class="kv cost" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
-                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div><div id="vM3Fonte" class="label"></div></div>
+                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_peso"><div class="label">Peso</div><div id="vPeso" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_ncm"><div class="label">NCM</div><div id="vNcm" class="value">-</div></div>
@@ -963,7 +963,7 @@
         let contextoDetalheSku = null;
         let custoComplementosPendente = true;
         let analiseComplementosPronta = false;
-        const COMPLEMENTO_SKU_TIMEOUT_MS = 5000;
+        const COMPLEMENTO_SKU_TIMEOUT_MS = 20000;
         const ATUALIZACAO_SKU_LIMITE_MS = 120000;
         const controladoresDetalheSku = new Set();
 
@@ -2556,9 +2556,6 @@
             setText('vValorTotalBrl', valorTotalBrlCalc !== null ? fmtBRL(valorTotalBrlCalc) : '-');
             setText('vQtd', fmtQty(quantidade));
             setText('vM3', m3Num === null ? 'Cubagem pendente' : fmtM3(m3Num));
-            const statusCubagem = statusCubagemItem(item);
-            const unidadeCubagem = ({ peca: 'Peça', par: 'Par', kit: 'Kit', unidade_comercial: 'Unidade comercial' })[item['Cubagem unidade']] || item['Cubagem unidade'];
-            setText('vM3Fonte', [statusCubagem === 'historico' ? 'Cubagem histórica preservada' : (m3Num === null ? 'Preencha a cubagem no cadastro desta loja' : 'Cubagem do cadastro desta loja'), item['Cubagem fonte'], unidadeCubagem, item['Cubagem data']].filter(Boolean).join(' · '));
             // Exibe o mesmo valor que aparece no cabeçalho da lista: editável → cálculo total (não usa campo do item)
             const { listaId: listaIdParamDisplay } = getParams();
             const resumoEditavelDisplay = carregarResumoEditavelLista(listaIdParamDisplay);
@@ -3114,7 +3111,7 @@
         async function mostrarDadosSalvosSku(contexto) {
             const data = await consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/'
                 + encodeURIComponent(contexto.listaId) + '?somente_salvos=true', contexto, {
-                    salvarCache: false, mensagemTimeout: 'Tempo limite ao consultar os dados salvos do SKU.',
+                    timeoutMs: 5000, salvarCache: false, mensagemTimeout: 'Tempo limite ao consultar os dados salvos do SKU.',
                 });
             if (!data?.lista) return;
             await exibirListaSalvaSku(data, contexto);
@@ -3219,6 +3216,7 @@
             if (btnVoltar && listaId) btnVoltar.href = 'importacoes_lista.html?lista_id=' + encodeURIComponent(listaId);
             if (!listaId || !sku) {
                 setErro('Parâmetros inválidos. Informe lista_id e sku na URL.');
+                statusCacheSku('');
                 return;
             }
             try {
@@ -3286,12 +3284,19 @@
                 if (!resultadoConcorrentes) resultadoConcorrentes = await promessaConcorrentes;
                 if (!dadosSkuVigentes(contexto)) return;
                 const falhas = [...resultados, resultadoConcorrentes].filter(resultado => resultado.status === 'rejected');
-                if (falhas.length) setErro('Algumas informações complementares estão indisponíveis. Os dados da lista continuam disponíveis. Atualize a página para tentar novamente.');
-                if (resultadoConcorrentes.status !== 'fulfilled') { await promessaDadosImposto; return; }
-                const linksConc = resultadoConcorrentes.value;
-                linksConc.contextoCarregamento = contexto;
-                aplicarLinksCacheSku(linksConc);
-                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                const linksConc = resultadoConcorrentes.status === 'fulfilled' ? resultadoConcorrentes.value : null;
+                if (linksConc) {
+                    linksConc.contextoCarregamento = contexto;
+                    aplicarLinksCacheSku(linksConc);
+                    aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                }
+                if (falhas.length) {
+                    setErro('Algumas informações complementares estão indisponíveis. Os dados da lista continuam disponíveis. Atualize a página para tentar novamente.');
+                    await promessaDadosImposto;
+                    if (dadosSkuVigentes(contexto)) statusCacheSku('Dados da lista disponíveis. Não foi possível atualizar todas as informações complementares.');
+                    return;
+                }
+                statusCacheSku('Dados da lista carregados. Consultando preços dos concorrentes...');
                 await Promise.all([
                     promessaDadosImposto,
                     enriquecerPrecosAnalise(linksConc),
@@ -3299,10 +3304,8 @@
                 if (!dadosSkuVigentes(contexto)) return;
                 analiseComplementosPronta = !!storeId && !custoComplementosPendente && ultimoValorUnitarioProduto !== null;
                 if (!analiseComplementosPronta) {
-                    if (!falhas.length) {
-                        await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
-                        if (dadosSkuVigentes(contexto)) statusCacheSku('Dados atualizados.');
-                    }
+                    await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
+                    if (dadosSkuVigentes(contexto)) statusCacheSku('Dados da lista atualizados. Cálculos complementares pendentes.');
                     return;
                 }
                 try {
@@ -3314,12 +3317,22 @@
                         statusCacheSku('Dados atualizados.');
                     }
                 } catch (erroPersistencia) {
-                    if (dadosSkuVigentes(contexto)) setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
+                    if (dadosSkuVigentes(contexto)) {
+                        setErro(erroPersistencia.message || 'A análise foi exibida, mas não foi possível salvar as margens dos concorrentes.');
+                        statusCacheSku('Dados exibidos. Não foi possível salvar a análise dos concorrentes.');
+                    }
                 }
             } catch (e) {
                 if (dadosSkuVigentes(contexto)) {
                     if (contexto.temDados || contexto.salvosVisiveis) statusCacheSku('Exibindo os dados salvos. Não foi possível atualizar agora.');
-                    else setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+                    else {
+                        setErro(e.message || 'Erro ao carregar detalhe do SKU.');
+                        statusCacheSku('Não foi possível carregar os dados do SKU.');
+                    }
+                }
+            } finally {
+                if (detalheSkuVigente(contexto) && !dadosSkuVigentes(contexto)) {
+                    statusCacheSku('Os dados mudaram durante a consulta. Abra o SKU novamente para atualizar.');
                 }
             }
         }

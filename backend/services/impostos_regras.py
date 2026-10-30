@@ -414,7 +414,9 @@ async def excluir_regra_impostos(regra_id: str, client_id: str = Depends(get_ten
 
 
 async def listar_produtos_impostos(client_id: str = Depends(get_tenant_id)):
-    return _montar_simulacao_impostos(client_id, 0.0)
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(_montar_simulacao_impostos, client_id, 0.0)
 
 
 async def simular_impostos(req: ImpostosSimulacaoRequest, client_id: str = Depends(get_tenant_id)):
