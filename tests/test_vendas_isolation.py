@@ -106,11 +106,12 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Busca explicita de motivos acrescenta iniciar/status ao contrato de Vendas.
-        "routes": 529,
-        "pairs": 527,
+        # Base 84e12f7a already has 533 routes / 531 method-path pairs.
+        # This extension adds somente_salvos/cache_mode to the existing summary GET.
+        "routes": 533,
+        "pairs": 531,
         "duplicates": [],
-        "openapi": "3cc445a8ab5d54097beb60b0fe690cc9b1a5644065ec11e9caccc9958bd5b636",
+        "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }
 
 

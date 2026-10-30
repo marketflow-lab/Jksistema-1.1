@@ -162,7 +162,7 @@ def test_unsafe_or_unscoped_photo_reference_is_not_exposed(reference):
     assert photos._photo_reference(reference, "tenant-a", "store-a") == ""
 
 
-def test_http_opt_in_preserves_old_response_and_openapi(monkeypatch):
+def test_http_opt_in_preserves_default_and_extends_optional_summary_contract(monkeypatch):
     original = _summary()
     projections = []
     monkeypatch.setattr(photos, "_project_photos", lambda *args: projections.append(args) or {})
@@ -182,9 +182,10 @@ def test_http_opt_in_preserves_old_response_and_openapi(monkeypatch):
     assert projections == [("tenant-a", "Loja A", ("001", "002"))]
     assert original == _summary()
     parameters = app.openapi()["paths"]["/api/vendas/resumo"]["get"]["parameters"]
-    assert [item["name"] for item in parameters] == ["data_inicio", "data_fim", "sku", "loja", "unidade_negocio", "incluir_ebazar"]
+    assert [item["name"] for item in parameters] == ["data_inicio", "data_fim", "sku", "loja", "unidade_negocio", "incluir_ebazar", "somente_salvos", "cache_mode"]
     assert not any(item["in"] == "header" for item in parameters)
-    assert len(router.routes) == 20
+    # Base 84e12f7a already has 22 routes; saved-only/stale add query options only.
+    assert len(router.routes) == 22
 
 
 def _write_catalog_records(tenant, records):

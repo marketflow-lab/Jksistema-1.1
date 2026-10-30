@@ -10,7 +10,16 @@ const runtime = source('runtime'), sync = source('sync'), period = source('perio
 const data = source('dados-render'), graph = source('grafico'), bridge = source('visual-novo-bridge');
 const flush = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-const response = payload => ({ ok: true, status: 200, json: async () => payload });
+// Older behavioral fixtures omit totals; give every synthetic summary its required shape.
+const response = payload => ({ ok: true, status: 200, json: async () =>
+    Array.isArray(payload?.rows) && !payload.totals ? { ...payload, totals: {} } : payload });
+const pendingSummary = () => ({ success: true, rows: [], totals: {}, meta: {
+    leitura: { estado: 'processando', possui_salvo: false, atualizando: true, revisao: '', salvo_em: null },
+} });
+const readySummary = sku => ({ success: true, rows: [{ sku, quantidade: 2, valor: 12.34 }],
+    totals: { valor: 12.34 }, meta: {
+        leitura: { estado: 'atualizado', possui_salvo: true, atualizando: false, revisao: 'ready', salvo_em: 1793300400 },
+    } });
 
 class Clock {
     constructor() { this.now = 1000; this.next = 0; this.timers = new Map(); }
@@ -195,12 +204,17 @@ async function main() {
         await h.clock.tick(1); assert.equal(h.fixture.calls.length, 2);
         h.evaluate('vendasSyncMonitor.stop()'); await flush(); assert.equal(h.clock.timers.size, 0);
     });
-    await check('summary body timeout ends loading and leaves explicit error during active sync', async () => {
+    await check('summary probe and background body use bounded deadlines during active sync', async () => {
         const h = harness(); h.fixture.fetch = async () => ({ ok: true, json: () => new Promise(() => {}) });
-        const request = h.evaluate('carregarVendas()'); await flush(); await h.clock.tick(45000); await request;
+        const request = h.evaluate('carregarVendas()'); await flush();
+        await h.clock.tick(9999); assert.equal(h.snapshot().loading, true); assert.equal(h.fixture.calls.length, 1);
+        await h.clock.tick(1); assert.equal(h.fixture.calls.length, 2); assert(h.fixture.calls[0].options.signal.aborted);
+        await h.clock.tick(14999); assert.equal(h.snapshot().loading, true);
+        await h.clock.tick(1); await request;
         h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,automacao:{jobs:[],lojas:[]}})');
         assert.equal(h.snapshot().loading, false); assert.match(h.snapshot().loadError, /tempo de resposta/);
         assert.match(h.node('status').className, /error/); assert.equal(h.fixture.rows.length, 0);
+        assert.equal(h.fixture.calls.length, 2); assert.equal(h.clock.timers.size, 0);
     });
     await check('graph body timeout is an error rather than permanent loading', async () => {
         const h = harness(); h.fixture.fetch = async () => ({ ok: true, json: () => new Promise(() => {}) });
@@ -323,41 +337,53 @@ async function main() {
         await h.clock.tick(14999); assert.equal(h.snapshot().graphLoading, true);
         await h.clock.tick(1); await request; assert.equal(h.snapshot().graphLoading, false); assert(h.snapshot().graphError);
     });
-    for (const method of ['carregarVendas', 'carregarGrafico']) {
-        await check('a 205 day all-store ' + method + ' read accepts valid headers after 65 seconds', async () => {
-            const h = harness(), pending = deferred();
-            h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
-            h.fixture.fetch = () => pending.promise;
-            const request = h.evaluate(method + '()'); await h.clock.tick(65000);
-            pending.resolve(response(method === 'carregarVendas'
-                ? { rows: [{ sku: 'confirmed', quantidade: 2, valor: 12.34 }], totals: { valor: 12.34 } } : stockPayload(31)));
-            await request;
-            const snapshot = h.snapshot();
-            if (method === 'carregarVendas') {
-                assert.equal(h.fixture.rows.length, 1); assert.equal(snapshot.loading, false); assert.equal(snapshot.loadError, '');
-            } else {
-                assert.equal(h.fixture.graphs.length, 1); assert.equal(snapshot.graphLoading, false); assert.equal(snapshot.graphError, '');
-            }
-            assert.equal(h.fixture.calls.length, 1); assert.equal(h.clock.timers.size, 0);
-        });
-    }
-    await check('205 day all-store bodies stop at 120 seconds and manual retry recovers without automatic loops', async () => {
+    await check('a 205 day summary calculation can finish after 65 seconds through quick background polls', async () => {
+        const h = harness(), readyAt = h.clock.now + 65000;
+        h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
+        h.fixture.fetch = async url => response(url.includes('somente_salvos=true') || h.clock.now < readyAt
+            ? pendingSummary() : readySummary('confirmed'));
+        const request = h.evaluate('carregarVendas()'); await flush();
+        await h.clock.tick(64999); assert.equal(h.snapshot().loading, true); assert.equal(h.fixture.rows.length, 0);
+        await h.clock.tick(4001); await request;
+        assert.equal(h.fixture.rows.length, 1); assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().loadError, '');
+        assert.equal(h.snapshot().rows[0].sku, 'confirmed');
+        assert(h.fixture.calls.length > 2 && h.fixture.calls.length <= 33);
+        assert.equal(new URLSearchParams(h.fixture.calls[0].url.split('?')[1]).get('somente_salvos'), 'true');
+        assert(h.fixture.calls.slice(1).every(call => new URLSearchParams(call.url.split('?')[1]).get('cache_mode') === 'stale'));
+        assert.equal(h.clock.timers.size, 0);
+    });
+    await check('a 205 day all-store graph accepts valid headers after 65 seconds', async () => {
+        const h = harness(), pending = deferred();
+        h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22'; h.fixture.fetch = () => pending.promise;
+        const request = h.evaluate('carregarGrafico()'); await h.clock.tick(65000);
+        pending.resolve(response(stockPayload(31))); await request;
+        assert.equal(h.fixture.graphs.length, 1); assert.equal(h.snapshot().graphLoading, false); assert.equal(h.snapshot().graphError, '');
+        assert.equal(h.fixture.calls.length, 1); assert.equal(h.clock.timers.size, 0);
+    });
+    await check('bounded summary bodies and 120 second graph bodies recover on manual retry without loops', async () => {
         const h = harness(); h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22';
         h.fixture.fetch = async () => ({ ok: true, json: () => new Promise(() => {}) });
         const requests = [h.evaluate('carregarVendas()'), h.evaluate('carregarGrafico()')]; await flush();
-        await h.clock.tick(119999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+        await h.clock.tick(24999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+        await h.clock.tick(1); assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, true);
+        assert.match(h.snapshot().loadError, /tempo de resposta/);
+        await h.clock.tick(94999); assert.equal(h.snapshot().graphLoading, true);
         await h.clock.tick(1); await Promise.all(requests);
-        assert.equal(h.snapshot().loading, false); assert.match(h.snapshot().loadError, /tempo de resposta/);
         assert.equal(h.snapshot().graphLoading, false); assert.match(h.snapshot().graphError, /tempo de resposta/);
-        assert.equal(h.clock.timers.size, 0); await h.clock.tick(600000); assert.equal(h.fixture.calls.length, 2);
-        h.fixture.fetch = async url => response(url.includes('/resumo')
-            ? { rows: [{ sku: 'retry-confirmed', quantidade: 1, valor: 5 }], totals: { valor: 5 } } : stockPayload(37));
+        assert.equal(h.clock.timers.size, 0);
+        const finishedCalls = h.fixture.calls.length;
+        assert.equal(h.fixture.calls.filter(call => call.url.includes('/resumo')).length, 2);
+        assert.equal(h.fixture.calls.filter(call => call.url.includes('/grafico')).length, 1);
+        await h.clock.tick(600000); assert.equal(h.fixture.calls.length, finishedCalls);
+        h.fixture.fetch = async url => response(url.includes('/resumo') ? readySummary('retry-confirmed') : stockPayload(37));
         await h.window.JKVendasLegacyBridge.retryReads();
         assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, false);
         assert.equal(h.snapshot().loadError, ''); assert.equal(h.snapshot().graphError, '');
-        assert.equal(h.snapshot().rows[0].sku, 'retry-confirmed');
-        assert.equal(h.snapshot().graph.data.estoque_geral[0], 37);
-        assert.equal(h.fixture.calls.length, 4); await h.clock.tick(120000); assert.equal(h.fixture.calls.length, 4);
+        assert.equal(h.snapshot().rows[0].sku, 'retry-confirmed'); assert.equal(h.snapshot().graph.data.estoque_geral[0], 37);
+        const retriedCalls = h.fixture.calls.length;
+        assert.equal(h.fixture.calls.slice(finishedCalls).filter(call => call.url.includes('/resumo')).length, 2);
+        assert.equal(h.fixture.calls.slice(finishedCalls).filter(call => call.url.includes('/grafico')).length, 1);
+        await h.clock.tick(120000); assert.equal(h.fixture.calls.length, retriedCalls);
         assert(h.fixture.calls.every(call => !call.options.method || call.options.method === 'GET'));
         assert.equal(h.clock.timers.size, 0);
     });
@@ -374,17 +400,21 @@ async function main() {
         assert.equal(h.fixture.graphs.length, 0); assert.equal(h.clock.timers.size, 0);
     });
     for (const scope of ['one-store-long', 'all-stores-short']) {
-        await check(scope + ' summary and graph reads keep their 45 second deadline', async () => {
+        await check(scope + ' keeps summary requests bounded and the graph deadline at 45 seconds', async () => {
             const h = harness();
             if (scope === 'one-store-long') {
                 h.fixture.start = '2026-04-01'; h.fixture.end = '2026-10-22'; h.evaluate("lojaSelecionada = 'Loja A'");
             }
             h.fixture.fetch = () => new Promise(() => {});
-            const requests = [h.evaluate('carregarVendas()'), h.evaluate('carregarGrafico()')];
-            await h.clock.tick(44999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+            const requests = [h.evaluate('carregarVendas()'), h.evaluate('carregarGrafico()')]; await flush();
+            await h.clock.tick(24999); assert.equal(h.snapshot().loading, true); assert.equal(h.snapshot().graphLoading, true);
+            await h.clock.tick(1); assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, true);
+            assert.match(h.snapshot().loadError, /tempo de resposta/);
+            await h.clock.tick(19999); assert.equal(h.snapshot().graphLoading, true);
             await h.clock.tick(1); await Promise.all(requests);
-            assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().graphLoading, false);
-            assert.match(h.snapshot().loadError, /tempo de resposta/); assert.match(h.snapshot().graphError, /tempo de resposta/);
+            assert.equal(h.snapshot().graphLoading, false); assert.match(h.snapshot().graphError, /tempo de resposta/);
+            assert.equal(h.fixture.calls.filter(call => call.url.includes('/resumo')).length, 2);
+            assert.equal(h.fixture.calls.filter(call => call.url.includes('/grafico')).length, 1);
             assert.equal(h.clock.timers.size, 0);
         });
     }

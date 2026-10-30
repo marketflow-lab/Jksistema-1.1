@@ -784,7 +784,7 @@ def resumo_vendas(
         reverse=True,
     )
 
-    if catalog.metadata.get("incomplete"):
+    if catalog.metadata.get("incomplete") and catalog.metadata.get("read_complete") is not True:
         mark_vendas_read_incomplete()
     return {
         "success": True,

@@ -171,7 +171,7 @@ def calculation_revision() -> str:
     here = Path(__file__).parent
     services = here.parents[1] / "services"
     paths = [here / name for name in (
-        "performance.py", "persistent_cache.py", "repository.py", "analytics.py", "compositions.py", "legacy_duplicates.py",
+        "performance.py", "persistent_cache.py", "summary_loading.py", "repository.py", "analytics.py", "compositions.py", "legacy_duplicates.py",
     )]
     paths += [services / name for name in (
         "bling_vendas.py", "estoque_historico.py", "cadastro_compatibilidade.py", "cadastro_lojas_produtos.py",
@@ -197,7 +197,15 @@ def valid_payload(namespace: str, payload: Any) -> bool:
         return (payload.get("success") is True and isinstance(payload.get("rows"), list)
                 and all(isinstance(row, dict) for row in payload["rows"])
                 and isinstance(payload.get("totals"), dict) and isinstance(meta, dict)
-                and (composition is None or (isinstance(composition, dict) and not composition.get("incomplete", False))))
+                and (composition is None or (isinstance(composition, dict)
+                    and composition.get("read_complete") is not False
+                    and (not composition.get("incomplete", False) or (
+                        composition.get("read_complete") is True
+                        and isinstance(composition.get("warnings"), list)
+                        and all(isinstance(item, dict) and isinstance(item.get("code"), str)
+                            and item["code"] not in {"catalog_unavailable", "store_catalog_unavailable"}
+                            for item in composition["warnings"])
+                    )))))
     if namespace == "grafico":
         labels = payload.get("labels")
         if not isinstance(labels, list) or not all(isinstance(label, str) for label in labels):

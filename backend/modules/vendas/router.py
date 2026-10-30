@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.schemas import VendasSyncRequest
 
@@ -42,9 +42,19 @@ def create_vendas_router(
         loja: str = None,
         unidade_negocio: str = None,
         incluir_ebazar: bool = False,
+        somente_salvos: bool = False,
+        cache_mode: str | None = None,
         client_id: str = Depends(tenant_dependency),
     ):
-        result = _transport(service.resumo_vendas, client_id=client_id, data_inicio=data_inicio, data_fim=data_fim, sku=sku, loja=loja, unidade_negocio=unidade_negocio, incluir_ebazar=incluir_ebazar)
+        arguments = dict(client_id=client_id, data_inicio=data_inicio, data_fim=data_fim, sku=sku, loja=loja, unidade_negocio=unidade_negocio, incluir_ebazar=incluir_ebazar)
+        if somente_salvos or cache_mode == "stale":
+            from .summary_loading import read_summary
+
+            result, status = read_summary(service.resumo_vendas, arguments, saved_only=somente_salvos)
+            # Photo enrichment reads Cadastro and stays in its independent opt-in
+            # request. Saved-only must never reconstruct sales or photo metadata.
+            return JSONResponse(result, status_code=status)
+        result = _transport(service.resumo_vendas, **arguments)
         if request.headers.get("X-JK-Vendas-Fotos") == "1":
             from .photos import enrich_summary_photos
 

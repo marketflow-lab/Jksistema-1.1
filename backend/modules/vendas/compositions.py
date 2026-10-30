@@ -257,6 +257,10 @@ class CompositionCatalog:
             "catalog_products": len(self._products),
             "composed_products": len(self._composed),
             "incomplete": bool(self._warnings),
+            "read_complete": getattr(self, "_read_complete", True) and not any(
+                item["code"] in {"catalog_unavailable", "store_catalog_unavailable"}
+                for item in self._warnings.values()
+            ),
             "warnings": self.warnings,
         }
 
@@ -592,7 +596,7 @@ def _store_field_proofs(products, sources, catalog, canonical_records):
 
 @cache_vendas_response(
     "composition_catalog", lambda args: composition_source_paths(args["client_id"]),
-    cache_if=lambda catalog: not any(warning["code"] in {
+    cache_if=lambda catalog: catalog.metadata.get("read_complete") is not False and not any(warning["code"] in {
         "catalog_unavailable", "store_catalog_unavailable",
     } for warning in catalog.warnings),
 )
@@ -624,17 +628,20 @@ def load_composition_catalog(client_id: str) -> CompositionCatalog:
                 ))
             except Exception:
                 failures.append(store_id)
+    proof_complete = True
     try:
         legacy_ids, legacy_compositions = _store_field_proofs(products, sources, catalog, records)
     except Exception:
         # Failure to prove legacy origin cannot disable canonical store rows.
         mark_vendas_read_incomplete()
+        proof_complete = False
         legacy_ids, legacy_compositions = frozenset(), frozenset()
     result = CompositionCatalog.from_products(
         products, stores=stores, _verified_legacy_ids=legacy_ids,
         _verified_legacy_compositions=legacy_compositions, _require_field_proof=True,
         _retired_names=parse_retired_store_names(sources.get(TOMBSTONES_FILE, b"[]")),
     )
+    result._read_complete = proof_complete
     for store_id in failures:
         result._warn("store_catalog_unavailable", store_id)
     return result

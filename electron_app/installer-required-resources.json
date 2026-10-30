@@ -335,6 +335,7 @@
     "static/cache-persistente.js",
     "static/vendas/cache-dados.js",
     "backend/modules/vendas/persistent_cache.py",
+    "backend/modules/vendas/summary_loading.py",
     "static/devolucoes/relatorio.js",
     "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css"

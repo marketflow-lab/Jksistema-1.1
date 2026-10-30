@@ -295,14 +295,29 @@ function aplicarResumoVendas(payload, dataIniIso, dataFimIso) {
     }));
 }
 
+function aguardarAtualizacaoResumoVendas(atraso, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal.aborted) { reject(new DOMException('Operação cancelada.', 'AbortError')); return; }
+        const cancelar = () => {
+            clearTimeout(timer);
+            signal.removeEventListener('abort', cancelar);
+            reject(new DOMException('Operação cancelada.', 'AbortError'));
+        };
+        const timer = setTimeout(() => {
+            signal.removeEventListener('abort', cancelar);
+            resolve();
+        }, atraso);
+        signal.addEventListener('abort', cancelar, { once: true });
+    });
+}
+
 async function carregarVendas(opcoes = {}) {
     if (window.JKVendasReadState?.isClosed()) return;
     const contextoCache = window.JKVendasCache?.contexto();
-    let restaurouCache = false;
+    let restaurouCache = Boolean(window.JKVendasReadState?.canCache() && dadosModoResumo && resumoTotaisVendas);
     const retornoRapido = !!opcoes.retornoRapido;
     const dataIniIso = getDataIniISO();
     const dataFimIso = getDataFimISO();
-    const prazoLeituraMs = obterPrazoLeituraVendasMs(dataIniIso, dataFimIso, lojaSelecionada || '__todas');
     const requestKey = JSON.stringify({
         tenant: obterClientId(),
         dataIniIso,
@@ -365,48 +380,104 @@ async function carregarVendas(opcoes = {}) {
         if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
             paramsResumo.append('unidade_negocio', unidadeNegocioSelect.value);
         }
-        const urlResumo = '/api/vendas/resumo' + (paramsResumo.toString() ? `?${paramsResumo.toString()}` : '');
         window.JKVendasCache?.estado('Lista', null);
         restaurouCache = typeof restaurarCacheTelaVendasSeValido === 'function'
-            && await restaurarCacheTelaVendasSeValido({ contexto: contextoCache, leituraAtual });
+            && await restaurarCacheTelaVendasSeValido({ contexto: contextoCache, leituraAtual }) || restaurouCache;
         if (!leituraAtual()) return;
-        statusEl.innerHTML = `${spinnerHtml}Buscando resumo de vendas...`;
-        const respResumo = await fetchComTimeout(urlResumo, {
-            headers: obterAuthHeaders(),
-            signal: requestController.signal
-        }, prazoLeituraMs);
-        if (!leituraAtual()) return;
-        if ([401, 403].includes(respResumo.status)) {
-            void window.JKCachePersistente?.invalidar(['vendas']);
-            window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
-            return;
-        }
-        if (!respResumo.ok) throw new Error(`HTTP ${respResumo.status}`);
-        const payloadResumo = await respResumo.json();
-        if (!leituraAtual()) return;
-        dadosVendasDeCache = false;
-        contextoDadosVendas = contextoCache;
-        aplicarResumoVendas(payloadResumo, dataIniIso, dataFimIso);
-        window.JKVendasReadState?.captureData();
+        const consultarResumo = async (modo, prazo) => {
+            const params = new URLSearchParams(paramsResumo);
+            params.set(modo === 'salvos' ? 'somente_salvos' : 'cache_mode', modo === 'salvos' ? 'true' : 'stale');
+            const resposta = await fetchComTimeout('/api/vendas/resumo?' + params.toString(), {
+                headers: obterAuthHeaders(), cache: 'no-store', signal: requestController.signal
+            }, prazo);
+            if (!leituraAtual()) return null;
+            if ([401, 403].includes(resposta.status)) {
+                void window.JKCachePersistente?.invalidar(['vendas']);
+                window.dispatchEvent(new CustomEvent('jk:vendas-acesso-negado'));
+                return null;
+            }
+            if (!resposta.ok) throw new Error('HTTP ' + resposta.status);
+            const payload = await resposta.json();
+            return leituraAtual() ? payload : null;
+        };
+        let ultimaRevisao = null;
+        const aplicarPayloadResumo = async (payload, salvo) => {
+            if (!Array.isArray(payload?.rows) || !payload?.totals || typeof payload.totals !== 'object') {
+                throw new Error('Resumo de vendas inválido.');
+            }
+            const revisao = payload.meta?.leitura?.revisao;
+            if (salvo && revisao && revisao === ultimaRevisao) return;
+            dadosVendasDeCache = false;
+            contextoDadosVendas = contextoCache;
+            aplicarResumoVendas(payload, dataIniIso, dataFimIso);
+            window.JKVendasReadState?.captureData();
+            atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
+            await filtrar();
+            if (!leituraAtual()) return;
+            if (typeof atualizarObservacoesGraficoVigente === 'function') atualizarObservacoesGraficoVigente();
+            if (typeof salvarCacheTelaVendas === 'function') {
+                await salvarCacheTelaVendas(window.JKVendasReadState?.scope('resumo'), contextoCache);
+            }
+            if (!leituraAtual()) return;
+            ultimaRevisao = revisao || null;
+            restaurouCache = true;
+            if (salvo) {
+                const salvoEm = payload.meta?.leitura?.salvo_em;
+                window.JKVendasCache?.estado('Lista', 'atualizando', typeof salvoEm === 'number' ? salvoEm * 1000 : undefined);
+                statusEl.className = 'status-bar';
+                statusEl.textContent = 'Atualizando os cálculos de Vendas em segundo plano...';
+            }
+        };
 
-        statusEl.innerHTML = `${spinnerHtml}Renderizando resumo...`;
-        await aguardarProximoFrame();
-        if (!leituraAtual()) return;
-        atualizarUnidadesNegocio(dados, mapeamentoUnidades || {});
-        await filtrar();
-        if (!leituraAtual()) return;
-        if (typeof atualizarObservacoesGraficoVigente === 'function') atualizarObservacoesGraficoVigente();
-        window.JKVendasReadState?.finish('resumo', stateKey, 'success');
-        window.JKVendasCache?.estado('Lista', null);
-        if (typeof salvarCacheTelaVendas === 'function') {
-            await salvarCacheTelaVendas(window.JKVendasReadState?.scope('resumo'), contextoCache);
+        // Read only the persisted response before asking the server to recalculate.
+        try {
+            const salvo = await consultarResumo('salvos', 10000);
+            if (!leituraAtual() || !salvo) return;
+            const leitura = salvo.meta?.leitura;
+            if (!leitura) {
+                // Compatibility with a server that still returns the synchronous summary.
+                await aplicarPayloadResumo(salvo, false);
+                if (!leituraAtual()) return;
+                window.JKVendasReadState?.finish('resumo', stateKey, 'success');
+                window.JKVendasCache?.estado('Lista', null);
+                if (!syncEmAndamento) { statusEl.className = 'status-bar'; statusEl.textContent = ''; }
+                return;
+            }
+            if (leitura.possui_salvo) await aplicarPayloadResumo(salvo, true);
+        } catch (erroSalvo) {
+            if (!leituraAtual() || erroSalvo.name === 'AbortError') return;
+            // A missing or temporarily unavailable snapshot does not block the live read.
         }
         if (!leituraAtual()) return;
-        if (!syncEmAndamento) {
-            statusEl.className = 'status-bar';
-            statusEl.textContent = '';
+
+        const limiteAtualizacao = Date.now() + 120000;
+        for (let tentativa = 0; tentativa < 32 && leituraAtual(); tentativa += 1) {
+            const restante = limiteAtualizacao - Date.now();
+            if (restante <= 0) break;
+            if (!restaurouCache) {
+                statusEl.className = 'status-bar loading';
+                statusEl.innerHTML = spinnerHtml + 'Preparando o resumo de Vendas...';
+            }
+            const payload = await consultarResumo('atualizar', Math.min(15000, restante));
+            if (!leituraAtual() || !payload) return;
+            const leitura = payload.meta?.leitura;
+            if (!leitura || leitura.estado === 'atualizado') {
+                await aplicarPayloadResumo(payload, false);
+                if (!leituraAtual()) return;
+                window.JKVendasReadState?.finish('resumo', stateKey, 'success');
+                window.JKVendasCache?.estado('Lista', null);
+                if (!syncEmAndamento) { statusEl.className = 'status-bar'; statusEl.textContent = ''; }
+                return;
+            }
+            if (leitura.possui_salvo) await aplicarPayloadResumo(payload, true);
+            if (!leituraAtual()) return;
+            if (leitura.estado === 'erro') throw new Error('Não foi possível atualizar os cálculos de Vendas.');
+            // A 202 response contains no summary; keep the visible saved rows and warnings.
+            await aguardarAtualizacaoResumoVendas(Math.min(tentativa < 3 ? 1000 : 4000,
+                Math.max(0, limiteAtualizacao - Date.now())), requestController.signal);
         }
-        return;
+        if (!leituraAtual()) return;
+        throw new DOMException('A atualização de Vendas excedeu o tempo de espera.', 'TimeoutError');
 
         const params = new URLSearchParams();
         if (dataIniIso) params.append('data_inicio', dataIniIso);
@@ -461,7 +532,8 @@ async function carregarVendas(opcoes = {}) {
     } catch (e) {
         if (!leituraAtual() || e.name === 'AbortError') return;
         if (restaurouCache) window.JKVendasCache?.estado('Lista', 'erro');
-        const mensagem = `Erro ao carregar vendas: ${e.name === 'TimeoutError' ? 'tempo de resposta excedido. Tente carregar o período novamente.' : e.message}`;
+        const mensagem = restaurouCache ? 'Atualização indisponível. O resumo salvo e seus avisos foram mantidos.'
+            : `Erro ao carregar vendas: ${e.name === 'TimeoutError' ? 'tempo de resposta excedido. Tente carregar o período novamente.' : e.message}`;
         window.JKVendasReadState?.finish('resumo', stateKey, 'error', mensagem);
         exibirErroLeituraVendas(mensagem);
     }
