@@ -445,6 +445,49 @@ def test_exportacao_busca_foto_atual_por_sku_e_ignora_imagens_do_fornecedor(tena
     assert Image.open(io.BytesIO(atualizado._images[0]._data())).getpixel((0, 0)) == Image.new("RGB", (1, 1), "orange").getpixel((0, 0))
 
 
+def test_exportacao_reconhece_sku_com_codigo_peca_apos_dois_pontos(tenants, monkeypatch):
+    literal = "SKU:496-K:71198-T7A-000 71193-T7A-000"
+    pasta = tenants / "cliente-a" / "cadastro_fotos"
+    pasta.mkdir()
+    (pasta / "496-K.png").write_bytes(_foto("green"))
+    descricao = "Front Bumper Retainer Bracket (Pair), Plastic, cardboard box"
+    produto = {"sku": "496-K", "store_id": "store-a", "cg_product description": descricao,
+               "foto": "496-K.png", "Unit/Pair": "Pair"}
+
+    def visao(client_id, store_id, *, skus, _normalizar_sku_consulta):
+        assert (client_id, store_id) == ("cliente-a", "store-a")
+        produtos = [produto] if _normalizar_sku_consulta(produto["sku"]) in skus else []
+        return {"scope": "store", "store_id": store_id, "produtos": produtos}
+
+    monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja", visao)
+    resolver = lambda _client, _sku, foto="", *_args, **_kwargs: foto
+    monkeypatch.setattr(common, "_resolver_foto_cadastro_sku", resolver)
+    monkeypatch.setattr(excel, "_resolver_foto_cadastro_sku", resolver)
+
+    def alterar(sheet):
+        sheet["A4"] = "16"
+        sheet["B5"] = literal
+        sheet["D5"] = 30
+        sheet["E4"] = 32
+
+    dados = packing._ler_packing_list_bytes(_modelo(alterar=alterar))
+    antes = copy.deepcopy(dados)
+    sheet = _sheet(packing._gerar_packing_list_bytes(_lista(), dados, client_id="cliente-a"))
+
+    assert sheet["B11"].value == literal
+    assert sheet["D11"].value == descricao
+    assert sheet["E11"].value == "Pair"
+    assert sheet["G11"].value == 30
+    assert sheet["A10"].value == "16"
+    assert sheet["F10"].value == 32
+    assert sheet["H10"].value == 1
+    assert {"A10:A11", "F10:F11", "H10:H11"}.issubset(set(map(str, sheet.merged_cells.ranges)))
+    assert len(sheet._images) == 1
+    assert sheet._images[0].anchor._from.row + 1 == 11
+    assert Image.open(io.BytesIO(sheet._images[0]._data())).getpixel((0, 0)) == (0, 128, 0)
+    assert dados == antes
+
+
 def test_exportacao_sem_cadastro_nao_usa_descricao_ou_foto_externas(tenants, monkeypatch):
     monkeypatch.setattr(cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja",
                         lambda *_args, **_kwargs: {"scope": "unresolved", "store_id": "", "produtos": []})

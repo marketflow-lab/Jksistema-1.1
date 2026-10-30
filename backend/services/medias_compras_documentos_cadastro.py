@@ -30,6 +30,21 @@ def _chave_sku_documento(valor):
     return str(int(texto)) if re.fullmatch(r"\d+", texto) else texto
 
 
+def _chaves_sku_documento(valor):
+    """Prefer the literal SKU, then a labeled SKU before a supplier OE code."""
+    chave = _chave_sku_documento(valor)
+    if not chave:
+        return ()
+    chaves = [chave]
+    if re.match(r"(?i)^sku[\s:#]+", str(valor or "").strip()):
+        prefixo, separador, _codigo_peca = chave.partition(":")
+        if separador and prefixo:
+            base = _chave_sku_documento(prefixo)
+            if base not in chaves:
+                chaves.append(base)
+    return tuple(chaves)
+
+
 def _nome_loja(valor):
     texto = unicodedata.normalize("NFKD", str(valor or ""))
     texto = "".join(letra for letra in texto if not unicodedata.combining(letra))
@@ -109,7 +124,7 @@ def _contexto_cadastro_documentos(lista, client_id, *, skus=None, incluir_fotos=
     if skus is None:
         skus = [item.get("SKU") or item.get("sku") for item in lista.get("itens") or []
                 if isinstance(item, dict)]
-    interesses = {_chave_sku_documento(sku) for sku in skus}
+    interesses = {chave for sku in skus for chave in _chaves_sku_documento(sku)}
     interesses.discard("")
     from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
     try:
@@ -162,5 +177,8 @@ def _contexto_cadastro_documentos(lista, client_id, *, skus=None, incluir_fotos=
 
 
 def _dados_produto_documento(contexto, sku):
-    return contexto.get("por_sku", {}).get(_chave_sku_documento(sku),
-                                          {"sku": "", "descricao": "", "foto": "", "unidade": ""})
+    por_sku = contexto.get("por_sku", {})
+    for chave in _chaves_sku_documento(sku):
+        if chave in por_sku:
+            return por_sku[chave]
+    return {"sku": "", "descricao": "", "foto": "", "unidade": ""}

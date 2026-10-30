@@ -283,3 +283,103 @@ def test_consulta_cadastro_sem_normalizador_preserva_aliases_existentes(catalogo
         "cliente-a", "loja-a", skus=["3752"],
     )
     assert [produto["sku"] for produto in resultado["produtos"]] == ["375-2"]
+
+
+@pytest.mark.parametrize("skus_explicitos", [False, True])
+@pytest.mark.parametrize("rotulo", [
+    "SKU:496-K:71198-T7A-000 71193-T7A-000",
+    "SKU:496-K :71198-T7A-000 71193-T7A-000",
+    "SKU:496-K\n:71198-T7A-000 71193-T7A-000",
+])
+def test_documento_resolve_sku_com_oe_sem_confundir_sufixos(
+    catalogo, monkeypatch, skus_explicitos, rotulo,
+):
+    registros = [
+        {"sku": sku, "sku_normalizado": sku, "store_id": "loja-a",
+         "cg_product description": f"Description {sku}", "foto": f"{sku}.png", "Unit/Pair": "Pair"}
+        for sku in ("496", "496-1", "496-K", "999")
+    ]
+    leituras, enriquecidos = _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
+    lista = {"store_id": "loja-a", "itens": [{"SKU": rotulo}]}
+    kwargs = {}
+    if skus_explicitos:
+        lista["itens"] = [{"SKU": "999"}]
+        kwargs["skus"] = (sku for sku in [rotulo])
+    antes = copy.deepcopy(lista)
+
+    contexto = documentos._contexto_cadastro_documentos(lista, "cliente-a", **kwargs)
+
+    assert documentos._dados_produto_documento(contexto, rotulo) == {
+        "sku": "496-K", "descricao": "Description 496-K", "foto": "496-K.png", "unidade": "Pair",
+    }
+    assert leituras == ["cliente-a"]
+    assert enriquecidos == ["496-K"]
+    assert lista == antes
+
+
+@pytest.mark.parametrize("campos_apagados", [False, True])
+def test_documento_prioriza_sku_literal_com_dois_pontos_inclusive_campos_vazios(
+    catalogo, monkeypatch, campos_apagados,
+):
+    literal = "496-K:71198-T7A-000"
+    descricao = "" if campos_apagados else "Literal product"
+    foto = "" if campos_apagados else "literal.png"
+    registros = [
+        {"sku": "496-K", "sku_normalizado": "496-K", "store_id": "loja-a",
+         "cg_product description": "Base product", "foto": "base.png", "Unit/Pair": "Pair"},
+        {"sku": literal, "sku_normalizado": literal, "store_id": "loja-a",
+         "cg_product description": descricao, "foto": foto, "Unit/Pair": "Unit"},
+    ]
+    _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
+    rotulo = f"SKU:{literal} 71193-T7A-000"
+
+    assert _consultar(rotulo) == {
+        "sku": literal, "descricao": descricao, "foto": foto, "unidade": "Unit",
+    }
+
+
+def test_documento_sem_rotulo_sku_preserva_dois_pontos_literais(catalogo, monkeypatch):
+    registros = [{"sku": "496-K", "sku_normalizado": "496-K", "store_id": "loja-a",
+                  "cg_product description": "Base product", "foto": "base.png"}]
+    _leituras, enriquecidos = _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
+
+    assert _consultar("496-K:71198-T7A-000") == {
+        "sku": "", "descricao": "", "foto": "", "unidade": "",
+    }
+    assert enriquecidos == []
+
+
+def test_documento_com_oe_preserva_isolamento_de_cliente_e_loja(catalogo, monkeypatch):
+    registros = [
+        {"sku": sku, "sku_normalizado": sku, "store_id": loja,
+         "cg_product description": f"cliente-a/{loja}/{sku}", "foto": f"cliente-a/{loja}/{sku}.png"}
+        for loja, sku in (("loja-a", "496-K"), ("loja-b", "496-K"), ("loja-b", "498-K"))
+    ]
+    _instrumentar_catalogo_real(monkeypatch, catalogo, registros)
+    outro = catalogo.parent / "cliente-b"
+    outro.mkdir()
+    lojas = [{"store_id": "loja-a", "nome": "Loja A"}]
+    (outro / "lojas_config.json").write_text(json.dumps(lojas), encoding="utf-8")
+    store_public_snapshot.write_snapshot(outro, store_public_snapshot.build_snapshot(lojas))
+    _csv(outro / "cadastro_produtos_lojas.csv", [
+        {"sku": sku, "sku_normalizado": sku, "store_id": "loja-a",
+         "cg_product description": f"cliente-b/loja-a/{sku}", "foto": f"cliente-b/loja-a/{sku}.png"}
+        for sku in ("496-K", "497-K")
+    ])
+
+    for client_id, store_id, sku, encontrado in (
+        ("cliente-a", "loja-a", "496-K", True),
+        ("cliente-a", "loja-b", "496-K", True),
+        ("cliente-b", "loja-a", "496-K", True),
+        ("cliente-a", "loja-a", "497-K", False),
+        ("cliente-a", "loja-a", "498-K", False),
+    ):
+        rotulo = f"SKU:{sku}:71198-T7A-000"
+        contexto = documentos._contexto_cadastro_documentos(
+            {"store_id": store_id, "itens": [{"SKU": rotulo}]}, client_id,
+        )
+        esperado = {
+            "sku": sku, "descricao": f"{client_id}/{store_id}/{sku}",
+            "foto": f"{client_id}/{store_id}/{sku}.png", "unidade": "Unit",
+        } if encontrado else {"sku": "", "descricao": "", "foto": "", "unidade": ""}
+        assert documentos._dados_produto_documento(contexto, rotulo) == esperado
