@@ -21,6 +21,9 @@ const requiredSnippets = [
     'body: JSON.stringify({ aprovada: aprovar })',
     'getNumber(cardValor && cardValor.textContent)',
     'dados.financeiro_exato === true',
+    'margens_anuncios_loja',
+    'precos_anuncios_loja: precosAnunciosLoja',
+    'itemIdAnalisado === itemIdAtual',
     'dados.imposto_valor',
     'dados.tarifa_ml',
     'dados.frete_ml',
@@ -48,7 +51,7 @@ const requiredSnippets = [
     "typeof event.stopPropagation === 'function'",
     'const abrirChrome = window.electronAPI && window.electronAPI.openExternalChrome;',
     'configurarCardOfertaClicavel(lbl, labelTexto, v);',
-    'enriquecerPrecosAnalise(linksConc),',
+    'function enriquecerPromocoesSkuEmSegundoPlano(',
     'await salvarAnaliseConcorrentes(listaId, skuNorm);',
     "const erro = await resp.json().catch(() => ({}));",
     'Não foi possível carregar os anúncios e preços dos concorrentes.',
@@ -67,7 +70,6 @@ if (!/\.analysis-comparison-title\s*\{\s*display:\s*none;/.test(html)) {
 const forbiddenSnippets = [
     'Aprovar venda',
     'venda_aprovada',
-    'vMargemMlb',
     'escolherValorCardMlb',
     'if (!resp.ok) return vazio;',
     '((precoVenda - custoUnitario) / precoVenda) * 100',
@@ -85,6 +87,7 @@ for (let index = 1; index <= 5; index += 1) {
         `<article class="analysis-comparison-card" data-card-id="analise_comparacao_${index}">[\\s\\S]*?`
         + `id="vMlbOriginal${index}"[\\s\\S]*?`
         + `id="vPromoMlb${index}"[\\s\\S]*?`
+        + `id="vMargemMlb${index}"[\\s\\S]*?`
         + `id="vConcorrenteOriginal${index}"[\\s\\S]*?`
         + `id="vPromoConcorrente${index}"[\\s\\S]*?`
         + `id="vMargemConcorrente${index}"[\\s\\S]*?<\\/div>`,

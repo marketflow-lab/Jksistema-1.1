@@ -90,6 +90,7 @@ async function verifySkuContextAndVersion() {
     const calls = [];
     const cells = new Map();
     const current = { listaId: 'JK61 / A&B', sku: 'D104-32' };
+    const validity = { data: true };
     const bindings = {
         ultimaVersaoFontesConcorrentes: null,
         ultimosAnunciosLojaConcorrentes: {},
@@ -97,12 +98,13 @@ async function verifySkuContextAndVersion() {
         analiseComplementosPronta: true,
         custoComplementosPendente: false,
         detalheSkuVigente: context => context === bindings.contextoDetalheSku,
+        dadosSkuVigentes: context => context === bindings.contextoDetalheSku && validity.data,
         obterAuthHeaders: () => ({}),
         document: { getElementById: id => cells.get(id) || null },
         setLinkConcorrente: () => {},
         normalizarDetalhePrecoOferta: value => value,
         aplicarDetalhePrecoOferta: (kind, number, value) => {
-            if (kind === 'concorrente') cells.set('vConcorrente' + number, { textContent: value });
+            cells.set((kind === 'mlb' ? 'vMlb' : 'vConcorrente') + number, { textContent: value });
         },
         consultarJsonDetalheSku: async (url, context, options) => {
             assert.strictEqual(context, bindings.contextoDetalheSku);
@@ -131,8 +133,15 @@ async function verifySkuContextAndVersion() {
     for (let n = 1; n <= 5; n++) {
         assert.strictEqual(patch.anuncios_loja['concorrente_' + n], 'MLB' + (1000000000 + n));
         assert.strictEqual(patch.precos_concorrentes['concorrente_' + n], 80.5 + n);
+        assert.strictEqual(patch.precos_anuncios_loja['concorrente_' + n], 90 + n);
     }
     await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /carregamento completo/);
+    validity.data = false;
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /carregamento completo/);
+    validity.data = true;
+    current.podeSalvar = false;
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /carregamento completo/);
+    delete current.podeSalvar;
     assert.strictEqual(calls.length, 2, 'Outro contexto não pode salvar a análise carregada.');
 
     const legacy = await context.buscarLinksConcorrentes('001');

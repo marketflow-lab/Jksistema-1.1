@@ -61,19 +61,21 @@ const trechosSku = [
     "method: 'PATCH'",
     'body: JSON.stringify(coletarAnaliseConcorrentes())',
     'anuncios_loja: { ...ultimosAnunciosLojaConcorrentes }',
+    'precos_anuncios_loja: precosAnunciosLoja',
+    'ultimaAnaliseConcorrentes.margens_anuncios_loja',
     'dados.financeiro_exato === true',
     'dados.imposto_valor',
     'dados.tarifa_ml',
     'dados.frete_ml',
     'function aplicarAnaliseConcorrentes(analise)',
     'const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);',
-    'await Promise.all([',
-    'enriquecerPrecosAnalise(linksConc)',
+    'await promessaDadosImposto;',
+    'enriquecerPromocoesSkuEmSegundoPlano(contexto, lista, cad, mapaM3Cadastro, linksConc);',
     'await salvarAnaliseConcorrentes(listaId, skuNorm);',
     'item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;',
     'aplicarAnaliseConcorrentes(item.analise_concorrentes);',
     'void salvarAnaliseConcorrentes(listaId, normSku(sku))',
-    'if (detalheSkuVigente(contextoPersistencia)) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);',
+    'if (dadosSkuVigentes(contextoPersistencia) && contextoPersistencia.podeSalvar !== false) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);',
 ];
 
 for (const trecho of trechosSku) {
@@ -86,10 +88,14 @@ if (skuHtml.includes('((precoVenda - custoUnitario) / precoVenda) * 100')) {
     throw new Error('A tela ainda contém a fórmula simplificada que ignora imposto, tarifa e frete.');
 }
 
-const esperaCalculos = skuHtml.indexOf('await Promise.all([');
+const inicioCarregamento = skuHtml.indexOf('async function carregarDetalheSku()');
+const custosProntos = skuHtml.indexOf('analiseComplementosPronta = !!storeId', inicioCarregamento);
+const esperaCalculos = skuHtml.lastIndexOf('await promessaDadosImposto;', custosProntos);
 const salvaAnalise = skuHtml.indexOf('await salvarAnaliseConcorrentes(listaId, skuNorm);');
-if (!(esperaCalculos >= 0 && salvaAnalise > esperaCalculos)) {
-    throw new Error('As margens só podem ser salvas depois que custo e preços terminarem de atualizar.');
+const consultaPromocoes = skuHtml.indexOf('enriquecerPromocoesSkuEmSegundoPlano(', salvaAnalise);
+if (!(esperaCalculos > inicioCarregamento && custosProntos > esperaCalculos
+    && salvaAnalise > custosProntos && consultaPromocoes > salvaAnalise)) {
+    throw new Error('As margens devem aguardar os custos e aparecer antes das consultas opcionais de promoções.');
 }
 
 console.log('OK: margens dos cinco concorrentes persistidas e exibidas na lista.');

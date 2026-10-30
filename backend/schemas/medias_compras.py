@@ -102,6 +102,7 @@ class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
     fontes_versao: Literal[1, 2] | None = None
     custo_unitario: float | None = None
     precos_concorrentes: dict[str, float] = Field(default_factory=dict)
+    precos_anuncios_loja: dict[str, float] | None = None
     anuncios_loja: dict[str, str] = Field(default_factory=dict)
 
 

@@ -38,6 +38,44 @@ function aguardando() {
     } } };
 }
 
+function fontesFinanceiras(id = 'A') {
+    return {
+        concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
+        concorrentes_valores: { concorrente_1: id === 'A' ? 'R$ 200,00' : 'R$ 250,00' },
+        concorrentes_mlb: { concorrente_1: id === 'A'
+            ? 'https://produto.mercadolivre.com.br/MLB-9876543210'
+            : 'https://produto.mercadolivre.com.br/MLB-8765432109' },
+        concorrentes_preco: { concorrente_1: id === 'A' ? 'R$ 300,00' : 'R$ 350,00' },
+    };
+}
+
+function respostaFinanceira(payload, margemPropria = 33) {
+    const dados = preco => ({
+        preco_venda: preco, item_id_loja: payload.anuncios_loja.concorrente_1, financeiro_exato: true,
+        custo_unitario: 50, imposto_valor: 20, tarifa_ml: 30, frete_ml: 10, valor_liquido: 190,
+    });
+    return { analise_concorrentes: {
+        margens: { concorrente_1: { ...dados(payload.precos_concorrentes.concorrente_1), margem_percentual: 12 } },
+        margens_anuncios_loja: { concorrente_1: { ...dados(payload.precos_anuncios_loja.concorrente_1), margem_percentual: margemPropria } },
+    } };
+}
+
+function opcoesFinanceiras(overrides = {}) {
+    return {
+        holdPrices: true,
+        complement: ({ pathname, url }) => pathname === '/api/medias-compras/concorrentes-links'
+            ? fontesFinanceiras(url.searchParams.get('lista_id')) : undefined,
+        patch: ({ payload }) => respostaFinanceira(payload),
+        ...overrides,
+    };
+}
+
+async function aguardarMargens(env) {
+    await env.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.'
+        && document.getElementById('vMargemMlb1').textContent === 'Margem: 33,00%'
+        && document.getElementById('vMargemConcorrente1').textContent === 'Margem: 12,00%');
+}
+
 async function waitUntil(predicate, message) {
     for (let attempt = 0; attempt < 500; attempt++) {
         if (predicate()) return;
@@ -47,7 +85,7 @@ async function waitUntil(predicate, message) {
 }
 
 async function environment(browser, options = {}) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     const state = {
         calls: [], complements: [], patches: [], errors: [], pending: [],
@@ -55,7 +93,7 @@ async function environment(browser, options = {}) {
     };
     page.setDefaultTimeout(10000);
     page.on('pageerror', error => state.errors.push(error.message));
-    await context.addInitScript(({ testOrigin, fastRequestTimeout, ignoreBackgroundAbort }) => {
+    await context.addInitScript(({ testOrigin, fastRequestTimeout, ignoreBackgroundAbort, holdPrices }) => {
         if (location.origin !== testOrigin) return;
         if (!localStorage.getItem('user_data')) {
             localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-A', username: 'tester' }));
@@ -74,10 +112,19 @@ async function environment(browser, options = {}) {
                 return originalFetch(input, init);
             };
         }
+        if (holdPrices) {
+            window.fixturePrices = [];
+            window.releasePrices = count => window.fixturePrices.splice(0, count ?? window.fixturePrices.length)
+                .forEach(item => item.resolve({ price: 999, original_price: 1000 }));
+            window.electronAPI = { getMlBrowserItemInfo: (itemId, url) => new Promise(resolve => {
+                window.fixturePrices.push({ itemId, url, resolve });
+            }) };
+        }
         const original = window.setTimeout.bind(window);
         window.setTimeout = (callback, delay, ...args) => original(callback,
             fastRequestTimeout && [5000, 20000].includes(delay) ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
-    }, { testOrigin: origin, fastRequestTimeout: Boolean(options.fastRequestTimeout), ignoreBackgroundAbort: Boolean(options.ignoreBackgroundAbort) });
+    }, { testOrigin: origin, fastRequestTimeout: Boolean(options.fastRequestTimeout),
+        ignoreBackgroundAbort: Boolean(options.ignoreBackgroundAbort), holdPrices: Boolean(options.holdPrices) });
     const json = (route, result) => route.fulfill({
         status: result?.status || 200, contentType: 'application/json',
         body: JSON.stringify(result?.body ?? result),
@@ -117,13 +164,15 @@ async function environment(browser, options = {}) {
             }
             if (pathname.endsWith('/analise-concorrentes')) {
                 assert.strictEqual(route.request().method(), 'PATCH');
-                state.patches.push({ pathname, payload: route.request().postDataJSON() });
+                const call = { pathname, payload: route.request().postDataJSON() };
+                state.patches.push(call);
+                if (options.patch) return json(route, await options.patch({ ...call, state }));
                 return json(route, { analise_concorrentes: { margens: {} } });
             }
             if (pathname.startsWith('/api/')) {
                 state.complements.push(pathname);
                 if (options.complement) {
-                    const custom = await options.complement({ pathname, state });
+                    const custom = await options.complement({ pathname, state, url });
                     if (custom !== undefined) return json(route, custom);
                 }
                 const product = pathname.match(/^\/api\/cadastro\/lojas\/(store-[AB])\/produtos\/001$/);
@@ -203,6 +252,123 @@ async function run(browser, name, options, check) {
 (async () => {
     const browser = await chromium.launch({ headless: true });
     try {
+        await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
+            await open(env);
+            await aguardarMargens(env);
+            await env.page.waitForFunction(() => window.fixturePrices.length === 2);
+            assert.strictEqual(env.state.patches.length, 1);
+            assert.strictEqual(env.state.patches[0].payload.precos_anuncios_loja.concorrente_1, 300);
+            assert.strictEqual(env.state.patches[0].payload.precos_concorrentes.concorrente_1, 200);
+            const salvo = await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
+            assert.strictEqual(salvo.lista.itens[0].analise_concorrentes.margens_anuncios_loja.concorrente_1.margem_percentual, 33,
+                'Snapshot financeiro completo não aguarda o IPC de promoções.');
+            if (process.env.JK_SKU_MARGIN_SCREENSHOT) {
+                await env.page.setViewportSize({ width: 1680, height: 1050 });
+                await env.page.locator('.analysis-comparison-card').first().scrollIntoViewIfNeeded();
+                await env.page.screenshot({ path: process.env.JK_SKU_MARGIN_SCREENSHOT });
+            }
+            await env.page.evaluate(() => window.releasePrices());
+            await env.page.waitForFunction(() => !document.getElementById('vPromoMlb1').hidden
+                && !document.getElementById('vPromoConcorrente1').hidden);
+            assert.strictEqual(await env.page.locator('#vMlb1').textContent(), await env.page.evaluate(() => fmtBRL(300)));
+            assert.strictEqual(await env.page.locator('#vConcorrente1').textContent(), await env.page.evaluate(() => fmtBRL(200)));
+            await env.page.waitForFunction(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))
+                ?.dados.precosOfertas['mlb:1'].temPromocao === true);
+            assert.strictEqual(env.state.patches.length, 1, 'Metadados promocionais não causam uma segunda mutação financeira.');
+            await aguardarMargens(env);
+            await env.page.evaluate(() => { window.fixtureAnaliseExata = JSON.parse(JSON.stringify(ultimaAnaliseConcorrentes)); });
+            for (const change of ['financeiro_exato', 'item_id_loja', 'preco_venda']) {
+                await env.page.evaluate(change => {
+                    const analise = JSON.parse(JSON.stringify(window.fixtureAnaliseExata));
+                    analise.margens_anuncios_loja.concorrente_1[change] = change === 'financeiro_exato' ? false
+                        : change === 'item_id_loja' ? 'MLB1111111111' : 999;
+                    aplicarAnaliseConcorrentes(analise);
+                }, change);
+                assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -',
+                    'Margem própria exige financeiro exato e o mesmo anúncio/preço exibidos.');
+                assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: 12,00%');
+            }
+        });
+
+        await run(browser, 'promoção antiga não altera o SKU depois de navegar para outra lista', opcoesFinanceiras(), async env => {
+            await open(env);
+            await aguardarMargens(env);
+            await env.page.waitForFunction(() => window.fixturePrices.length === 2);
+            await env.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
+            await aguardarMargens(env);
+            await env.page.waitForFunction(() => window.fixturePrices.length === 4);
+            await env.page.evaluate(() => window.releasePrices(2));
+            await env.page.waitForTimeout(80);
+            assert.strictEqual(await env.page.locator('#vMlb1').textContent(), await env.page.evaluate(() => fmtBRL(350)));
+            assert.strictEqual(await env.page.locator('#vConcorrente1').textContent(), await env.page.evaluate(() => fmtBRL(250)));
+            assert.strictEqual(await env.page.locator('#vPromoMlb1').isHidden(), true);
+            assert.strictEqual(env.state.patches.length, 2);
+        });
+
+        for (const change of ['auth', 'revision']) {
+            await run(browser, 'promoção tardia respeita mudança de ' + change, opcoesFinanceiras(), async env => {
+                await open(env);
+                await aguardarMargens(env);
+                await env.page.waitForFunction(() => window.fixturePrices.length === 2);
+                await env.page.evaluate(async change => {
+                    if (change === 'auth') window.dispatchEvent(new CustomEvent('jk-auth-changed'));
+                    else await JKCachePersistente.invalidar(['importacoes']);
+                    window.releasePrices();
+                }, change);
+                await env.page.waitForTimeout(100);
+                if (change === 'auth') assert.strictEqual(await env.page.locator('.layout > *').count(), 0);
+                else {
+                    assert.strictEqual(await env.page.locator('#vPromoMlb1').isHidden(), true);
+                    assert.strictEqual(await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true);
+                }
+                assert.strictEqual(env.state.patches.length, 1);
+            });
+        }
+
+        for (const failure of ['receipt', 'timeout']) {
+            await run(browser, 'análise com ' + failure + ' não publica margem nem snapshot completo', opcoesFinanceiras({
+                fastRequestTimeout: failure === 'timeout',
+                patch: async ({ payload, state }) => {
+                    const pending = gate(); state.pending.push(pending);
+                    await pending.promise;
+                    return respostaFinanceira(payload);
+                },
+            }), async env => {
+                await open(env);
+                await waitUntil(() => env.state.patches.length === 1);
+                if (failure === 'receipt') {
+                    await env.page.evaluate(() => JKCachePersistente.invalidar(['importacoes']));
+                    env.state.pending[0].resolve();
+                }
+                await env.page.waitForFunction(() => contextoDetalheSku.podeSalvar === false
+                    && !/Calculando|Consultando/.test(document.getElementById('cacheSkuStatus').textContent));
+                assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+                assert.strictEqual(await env.page.evaluate(() => window.fixturePrices.length), 0);
+                assert.strictEqual(await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true);
+            });
+        }
+
+        await run(browser, 'edição da proporção ignora análise cujo recibo perdeu a revisão', opcoesFinanceiras({
+            patch: async ({ payload, state }) => {
+                if (state.patches.length === 1) return respostaFinanceira(payload);
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return respostaFinanceira(payload, 77);
+            },
+        }), async env => {
+            await open(env);
+            await aguardarMargens(env);
+            await env.page.locator('.kv.prop').dblclick();
+            await env.page.locator('.prop-input').fill('80');
+            await env.page.locator('.prop-input').press('Enter');
+            await waitUntil(() => env.state.patches.length === 2);
+            await env.page.evaluate(() => JKCachePersistente.invalidar(['importacoes']));
+            env.state.pending[0].resolve();
+            await env.page.waitForFunction(() => contextoDetalheSku.podeSalvar === false);
+            assert.notStrictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: 77,00%');
+            assert.strictEqual(await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true);
+        });
+
         await run(browser, 'dados salvos antes da fila; waiting/refreshing/ready; edição preservada', {
             background: ({ state }) => state.phase === 'waiting' ? aguardando()
                 : state.phase === 'refreshing' ? completo('A', 88, { estado: 'refreshing', stale: true, atualizando: true, retry_after_ms: 1000 })

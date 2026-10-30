@@ -231,11 +231,18 @@ def _calcular_margens_concorrentes_promocoes(
     sku: str,
     precos_concorrentes: dict[str, float],
     anuncios_loja: dict[str, str],
+    *,
+    contexto_consulta: dict | None = None,
 ) -> dict[str, dict[str, Any]]:
     deps = _dependencias_margens_concorrentes()
     margens: dict[str, dict[str, Any]] = {}
-    cache_contextos: dict[str, dict[str, Any]] = {}
-    cache_cadastro: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    # Both price series belong to one request. Never reuse an item's financial
+    # context across a tenant, store or SKU, even if the MLB happens to match.
+    cache_consulta = {} if contexto_consulta is None else contexto_consulta
+    cache_escopo = cache_consulta.setdefault((client_id, loja_lista, sku), {})
+    cache_contextos = cache_escopo.setdefault("anuncios", {})
+    cache_cadastro = cache_escopo.setdefault("cadastro", {})
+    cache_cotacoes = cache_escopo.setdefault("cotacoes", {})
 
     for chave in sorted(precos_concorrentes):
         preco_venda = float(precos_concorrentes[chave])
@@ -246,6 +253,11 @@ def _calcular_margens_concorrentes_promocoes(
                 "",
                 "Informe o anúncio da loja correspondente a este concorrente.",
             )
+            continue
+
+        cotacao_salva = cache_cotacoes.get((item_id, preco_venda))
+        if cotacao_salva is not None:
+            margens[chave] = dict(cotacao_salva)
             continue
 
         contexto, motivo = _carregar_contexto_anuncio_loja(
@@ -379,6 +391,10 @@ def _calcular_margens_concorrentes_promocoes(
             )[:120],
         }
 
+    for chave, dados in margens.items():
+        item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))
+        if item_id:
+            cache_cotacoes[(item_id, float(precos_concorrentes[chave]))] = dict(dados)
     return margens
 
 
@@ -1317,8 +1333,11 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             raise HTTPException(status_code=400, detail="Custo unitario invalido para analise de concorrentes")
 
     precos_recebidos = dict(req.precos_concorrentes or {})
+    precos_loja_recebidos = dict(req.precos_anuncios_loja or {})
     anuncios_recebidos = dict(req.anuncios_loja or {})
-    chaves_invalidas = sorted((set(precos_recebidos) | set(anuncios_recebidos)) - _CHAVES_CONCORRENTES)
+    chaves_invalidas = sorted(
+        (set(precos_recebidos) | set(precos_loja_recebidos) | set(anuncios_recebidos)) - _CHAVES_CONCORRENTES
+    )
     if chaves_invalidas:
         raise HTTPException(status_code=400, detail="Concorrente invalido para analise")
 
@@ -1328,6 +1347,13 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         if not math.isfinite(preco_venda) or preco_venda <= 0:
             raise HTTPException(status_code=400, detail="Preco de concorrente invalido para analise")
         precos_normalizados[chave] = preco_venda
+
+    precos_loja_normalizados: dict[str, float] = {}
+    for chave in sorted(precos_loja_recebidos):
+        preco_venda = float(precos_loja_recebidos[chave])
+        if not math.isfinite(preco_venda) or preco_venda <= 0:
+            raise HTTPException(status_code=400, detail="Preco de anuncio da loja invalido para analise")
+        precos_loja_normalizados[chave] = preco_venda
 
     anuncios_normalizados: dict[str, str] = {}
     for chave, item_id_raw in anuncios_recebidos.items():
@@ -1339,30 +1365,36 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             raise HTTPException(status_code=400, detail="Anuncio da loja invalido para analise")
         anuncios_normalizados[chave] = item_id
 
-    margens: dict[str, dict[str, Any]] = {}
-    if precos_normalizados:
+    contexto_consulta = {} if req.precos_anuncios_loja is not None else None
+
+    def calcular_precos(precos: dict[str, float]) -> dict[str, dict[str, Any]]:
+        if not precos:
+            return {}
         try:
-            margens = _calcular_margens_concorrentes_promocoes(
+            return _calcular_margens_concorrentes_promocoes(
                 client_id,
                 str(lista.get("loja") or ""),
                 str(item.get("SKU") or sku),
-                precos_normalizados,
+                precos,
                 anuncios_normalizados,
+                **({"contexto_consulta": contexto_consulta} if contexto_consulta is not None else {}),
             )
         except Exception:
             logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
-            margens = {
+            return {
                 chave: _margem_concorrente_indisponivel(
                     preco_venda,
                     anuncios_normalizados.get(chave, ""),
                     "Cálculo financeiro temporariamente indisponível.",
                 )
-                for chave, preco_venda in precos_normalizados.items()
+                for chave, preco_venda in precos.items()
             }
 
+    margens = calcular_precos(precos_normalizados)
+    margens_anuncios_loja = calcular_precos(precos_loja_normalizados)
     custos_cadastro = {
         float(dados["custo_unitario"])
-        for dados in margens.values()
+        for dados in [*margens.values(), *margens_anuncios_loja.values()]
         if _numero_finito_margem(dados.get("custo_unitario")) is not None
     }
     custo_unitario_cadastro = next(iter(custos_cadastro)) if len(custos_cadastro) == 1 else None
@@ -1409,6 +1441,12 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
 
     item_atual = itens_atuais[idx_item_atual]
+    if req.precos_anuncios_loja is not None:
+        analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
+    else:
+        analise_atual = item_atual.get("analise_concorrentes")
+        if isinstance(analise_atual, dict) and "margens_anuncios_loja" in analise_atual:
+            analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
     item_atual["analise_concorrentes"] = analise_concorrentes
     itens_atuais[idx_item_atual] = item_atual
     lista_atual["itens"] = itens_atuais

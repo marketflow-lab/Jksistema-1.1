@@ -7,7 +7,7 @@
     "ListaPedidoStatusRequest": "7b376f623574517734cff36b9529c8fda7d95eed2739bf823313c600d5928b26",
     "ListaPedidoAddSkuRequest": "3ba1702d8e59c01bca82a214202cf89d2bfa82c21411d0f8aef61ec30b1bf7c0",
     "ListaPedidoSkuAprovacaoRequest": "af1cb3288979fec7bf919fe8dab48e8a668ddf9d49ffe3942a4f3008eeaf05ec",
-    "ListaPedidoSkuAnaliseConcorrentesRequest": "52035df3706a52d79d401660aa1652f3e971c010c4c3724f70d88f43524d50af",
+    "ListaPedidoSkuAnaliseConcorrentesRequest": "d48df0c1a3a0aed5a46660b53d4153340fe3a1c68ec91dd18d1698c0b60ad78f",
     "ListaPedidoPreferenciasColunasRequest": "caf03eb999a34b35d74798d6ecb1c9186adbdf12f726da7350eacae3dd216003",
     "MediasComprasSkusOcultosRequest": "1d37fa5557b090f21376a4eaf2d8b46ee987df79cc512572783ce3eed133b2b2"
   },

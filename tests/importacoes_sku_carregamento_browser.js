@@ -46,6 +46,7 @@ async function environment(browser, options = {}) {
     page.on('pageerror', error => state.errors.push(error.message));
     if (options.fastTimeout) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
+        window.restoreTimeout = () => { window.setTimeout = timeout; };
         window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 50 : delay, ...args);
     });
     if (options.fastPolling) await page.addInitScript(() => {
@@ -358,7 +359,7 @@ function releaseComplements(state) {
         await timeout.page.locator('.prop-input').press('Enter');
         assert.strictEqual(timeout.state.patches.length, 0, 'Edição não persiste uma análise incompleta');
         releaseComplements(timeout.state);
-        await timeout.page.evaluate(() => carregarDetalheSku());
+        await timeout.page.evaluate(() => { window.restoreTimeout(); return carregarDetalheSku(); });
         await waitUntil(() => timeout.state.patches.length === 1);
         assert.strictEqual(await timeout.page.locator('#erro').textContent(), '');
         assert.deepStrictEqual(timeout.state.errors, []);
@@ -419,14 +420,17 @@ function releaseComplements(state) {
         const stalePrice = await environment(browser, { complete: true, holdPrice: true });
         await stalePrice.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await stalePrice.page.waitForFunction(() => document.getElementById('lblConcorrente1').textContent === 'MLB1234567890');
-        assert.match(await stalePrice.page.locator('#cacheSkuStatus').textContent(), /Consultando preços dos concorrentes/);
+        await stalePrice.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.');
+        assert.strictEqual(stalePrice.state.patches.length, 1, 'A primeira análise termina antes da consulta opcional de promoções.');
         assert.strictEqual(await stalePrice.page.evaluate(() => ultimoValorUnitarioProduto), 108.57,
             'Preços opcionais pendentes não ocultam o custo já calculado.');
         await stalePrice.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
         await stalePrice.page.evaluate(() => window.releasePrice());
         await stalePrice.page.waitForTimeout(40);
         assert.strictEqual(await stalePrice.page.locator('#vConcorrente1').textContent(), await stalePrice.page.evaluate(() => fmtBRL(200)));
-        assert(stalePrice.state.patches.every(patch => patch.pathname.includes('/B/')));
+        assert.strictEqual(stalePrice.state.patches.filter(patch => patch.pathname.includes('/A/')).length, 1,
+            'Promoção tardia não repete a análise da geração anterior.');
+        assert.strictEqual(stalePrice.state.patches.filter(patch => patch.pathname.includes('/B/')).length, 1);
         assert.deepStrictEqual(stalePrice.state.errors, []);
         await stalePrice.context.close();
 

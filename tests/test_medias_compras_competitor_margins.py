@@ -4,6 +4,7 @@ import threading
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from backend.routers.medias_compras import create_medias_compras_router
 from backend.schemas.medias_compras import (
@@ -371,6 +372,7 @@ def test_update_generico_preserva_analise_gravada(monkeypatch):
     analise_original = {
         "custo_unitario": 60,
         "margens": {"concorrente_1": {"preco_venda": 100, "margem_percentual": 40}},
+        "margens_anuncios_loja": {"concorrente_1": {"preco_venda": 120, "margem_percentual": 45}},
         "atualizado_em": "2026-08-17T10:00:00",
     }
     estado["tenant-a"][0]["itens"][0]["analise_concorrentes"] = copy.deepcopy(analise_original)
@@ -535,3 +537,192 @@ def test_router_expoe_endpoint_de_fontes_em_lote():
 
     assert rota is not None
     assert rota.methods == {"GET"}
+
+
+def _dependencias_precos_variaveis(chamadas):
+    deps = _dependencias_financeiras_fake()
+
+    def item(client_id, loja, cfg, _method, _url, **_kwargs):
+        chamadas.append(("item", client_id, loja))
+        return _RespostaMlFake(), cfg
+
+    def cadastro(client_id, loja):
+        chamadas.append(("cadastro", client_id, loja))
+        custo = 40 if client_id == "tenant-b" else 70 if loja == "Loja B" else 60
+        return {"001": custo}, {"001": 0.1}
+
+    def tarifa(_client_id, _loja, cfg, anuncio):
+        preco = anuncio["price"]
+        chamadas.append(("tarifa", preco))
+        return {"ad_cost": preco * 0.15, "ad_cost_exact_for_price": True,
+                "ad_cost_price_context": preco}, cfg
+
+    def frete(_client_id, _loja, cfg, _item_id, _shipping, **kwargs):
+        preco = kwargs["contexto_frete"]["item_price"]
+        chamadas.append(("frete", preco))
+        return {"shipping_cost": 8, "shipping_exact_for_price": True,
+                "shipping_price_context": preco}, cfg
+
+    deps.update(ml_api_request=item, carregar_custos_impostos=cadastro,
+                ml_obter_taxas_anuncio=tarifa, ml_obter_frete_detalhado=frete)
+    return deps
+
+
+@pytest.mark.parametrize(("preco_loja", "margem_loja", "consultas_financeiras"), [(100, 7, 1), (120, 18.33, 2)])
+def test_endpoint_separa_margens_proprias_e_reutiliza_contexto(monkeypatch, preco_loja, margem_loja, consultas_financeiras):
+    estado = _configurar_estado(monkeypatch)
+    chamadas = []
+    deps = _dependencias_precos_variaveis(chamadas)
+    monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
+
+    resultado = asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+        "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(
+            custo_unitario=999,
+            precos_concorrentes={"concorrente_1": 100},
+            precos_anuncios_loja={"concorrente_1": preco_loja},
+            anuncios_loja={"concorrente_1": "MLB111"},
+        ), client_id="tenant-a",
+    ))
+
+    analise = resultado["analise_concorrentes"]
+    rival = analise["margens"]["concorrente_1"]
+    propria = analise["margens_anuncios_loja"]["concorrente_1"]
+    assert rival["margem_percentual"] == 7
+    assert rival["preco_venda"] == 100
+    assert propria["margem_percentual"] == margem_loja
+    assert propria["preco_venda"] == preco_loja
+    assert propria["item_id_loja"] == "MLB111"
+    assert propria["financeiro_exato"] is True
+    assert propria["custo_unitario"] == analise["custo_unitario"] == 60
+    assert rival is not propria
+    assert chamadas.count(("item", "tenant-a", "Loja A")) == 1
+    assert chamadas.count(("cadastro", "tenant-a", "Loja A")) == 1
+    assert sum(row[0] == "tarifa" for row in chamadas) == consultas_financeiras
+    assert sum(row[0] == "frete" for row in chamadas) == consultas_financeiras
+    assert estado["tenant-a"][0]["itens"][0]["analise_concorrentes"] == analise
+    assert "analise_concorrentes" not in estado["tenant-b"][0]["itens"][0]
+
+
+def test_contexto_financeiro_nao_e_reutilizado_entre_tenants_ou_lojas(monkeypatch):
+    chamadas = []
+    deps = _dependencias_precos_variaveis(chamadas)
+    monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
+    contexto = {}
+    margens = []
+    for client_id, loja in [("tenant-a", "Loja A"), ("tenant-a", "Loja B"), ("tenant-b", "Loja A")]:
+        resultado = listas_service._calcular_margens_concorrentes_promocoes(
+            client_id, loja, "001", {"concorrente_1": 100}, {"concorrente_1": "MLB111"},
+            contexto_consulta=contexto,
+        )
+        margens.append(resultado["concorrente_1"]["margem_percentual"])
+    assert margens == [7, -3, 27]
+    assert sum(row[0] == "item" for row in chamadas) == 3
+    assert sum(row[0] == "cadastro" for row in chamadas) == 3
+
+
+@pytest.mark.parametrize("precos", [{"concorrente_1": None}, {"concorrente_1": "sem preco"}])
+def test_schema_rejeita_preco_proprio_nulo_ou_nao_numerico(precos):
+    with pytest.raises(ValidationError):
+        ListaPedidoSkuAnaliseConcorrentesRequest(precos_anuncios_loja=precos)
+
+
+@pytest.mark.parametrize("precos", [
+    {"concorrente_1": 0}, {"concorrente_1": -1},
+    {"concorrente_1": float("nan")}, {"concorrente_1": float("inf")},
+    {"concorrente_6": 100},
+])
+def test_endpoint_rejeita_preco_proprio_invalido_sem_calcular(monkeypatch, precos):
+    estado = _configurar_estado(monkeypatch)
+    monkeypatch.setattr(listas_service, "_calcular_margens_concorrentes_promocoes",
+                        lambda *_args, **_kwargs: pytest.fail("Preço inválido não deve consultar o ML."))
+    with pytest.raises(HTTPException) as erro:
+        asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+            "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(precos_anuncios_loja=precos),
+            client_id="tenant-a",
+        ))
+    assert erro.value.status_code == 400
+    assert "analise_concorrentes" not in estado["tenant-a"][0]["itens"][0]
+
+
+@pytest.mark.parametrize("falha", ["anuncio_ausente", "anuncio_outra_loja", "custo", "imposto", "tarifa", "frete", "preco_frete"])
+def test_margem_propria_nao_e_estimada_sem_evidencia_exata(monkeypatch, falha):
+    _configurar_estado(monkeypatch)
+    deps = _dependencias_financeiras_fake(seller_item="999" if falha == "anuncio_outra_loja" else "123")
+    if falha in {"custo", "imposto"}:
+        deps["carregar_custos_impostos"] = lambda *_args: (
+            {} if falha == "custo" else {"001": 60}, {} if falha == "imposto" else {"001": 0.1},
+        )
+    if falha == "tarifa":
+        deps["ml_obter_taxas_anuncio"] = lambda _c, _l, cfg, _item: (
+            {"ad_cost": 15, "ad_cost_exact_for_price": False, "ad_cost_price_context": 100}, cfg,
+        )
+    if falha in {"frete", "preco_frete"}:
+        deps["ml_obter_frete_detalhado"] = lambda _c, _l, cfg, *_args, **_kwargs: (
+            {"shipping_cost": 8, "shipping_exact_for_price": falha != "frete",
+             "shipping_price_context": 90 if falha == "preco_frete" else 100}, cfg,
+        )
+    monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
+    resultado = asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+        "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(
+            precos_anuncios_loja={"concorrente_1": 100},
+            anuncios_loja={} if falha == "anuncio_ausente" else {"concorrente_1": "MLB111"},
+        ), client_id="tenant-a",
+    ))
+    propria = resultado["analise_concorrentes"]["margens_anuncios_loja"]["concorrente_1"]
+    assert propria["margem_percentual"] is None
+    assert propria["financeiro_exato"] is False
+    assert propria["motivo_indisponivel"]
+
+
+@pytest.mark.parametrize("campos", [{}, {"precos_anuncios_loja": None}])
+def test_cliente_antigo_preserva_margem_propria_mais_recente(monkeypatch, campos):
+    estado = _configurar_estado(monkeypatch)
+    item = estado["tenant-a"][0]["itens"][0]
+    item["analise_concorrentes"] = {"margens_anuncios_loja": {"concorrente_1": {"preco_venda": 100}}}
+    recente = {"concorrente_1": {"preco_venda": 120, "margem_percentual": 18.33, "financeiro_exato": True}}
+
+    def calcular(*_args):
+        item["analise_concorrentes"]["margens_anuncios_loja"] = copy.deepcopy(recente)
+        item["compra_aprovada"] = True
+        return {}
+
+    monkeypatch.setattr(listas_service, "_calcular_margens_concorrentes_promocoes", calcular)
+    resultado = asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+        "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(
+            precos_concorrentes={"concorrente_1": 90}, **campos,
+        ), client_id="tenant-a",
+    ))
+    assert resultado["analise_concorrentes"]["margens_anuncios_loja"] == recente
+    assert estado["tenant-a"][0]["itens"][0]["compra_aprovada"] is True
+
+
+def test_precos_proprios_vazios_limpam_somente_matriz_propria(monkeypatch):
+    estado = _configurar_estado(monkeypatch)
+    estado["tenant-a"][0]["itens"][0]["analise_concorrentes"] = {"margens_anuncios_loja": {"concorrente_1": {}}}
+    rival = {"concorrente_1": {"margem_percentual": 7, "custo_unitario": 60}}
+    monkeypatch.setattr(listas_service, "_calcular_margens_concorrentes_promocoes", lambda *_args, **_kwargs: rival)
+    resultado = asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+        "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(
+            precos_concorrentes={"concorrente_1": 100}, precos_anuncios_loja={},
+        ), client_id="tenant-a",
+    ))
+    assert resultado["analise_concorrentes"]["margens"] == rival
+    assert resultado["analise_concorrentes"]["margens_anuncios_loja"] == {}
+
+
+@pytest.mark.parametrize("campo", ["loja", "store_id"])
+def test_margem_propria_nao_grava_se_loja_mudou_durante_consulta(monkeypatch, campo):
+    estado = _configurar_estado(monkeypatch)
+
+    def calcular(*_args, **_kwargs):
+        estado["tenant-a"][0][campo] = "outra-loja"
+        return {}
+
+    monkeypatch.setattr(listas_service, "_calcular_margens_concorrentes_promocoes", calcular)
+    with pytest.raises(HTTPException) as erro:
+        asyncio.run(listas_service.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
+            "lista-1", "001", ListaPedidoSkuAnaliseConcorrentesRequest(precos_anuncios_loja={"concorrente_1": 100}),
+            client_id="tenant-a",
+        ))
+    assert erro.value.status_code == 409
+    assert "analise_concorrentes" not in estado["tenant-a"][0]["itens"][0]
