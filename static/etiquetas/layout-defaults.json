@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "stores": {
+    "Mercado Livre": {
+      "version": 1,
+      "page": {
+        "width": 99.8361111111111,
+        "height": 149.93055555555554
+      },
+      "items": {
+        "etiqueta": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 99.8361111111111,
+          "height": 137.58333333333331,
+          "rotation": 0,
+          "visible": true
+        },
+        "sku": {
+          "x": 0.0,
+          "y": 137.23055555555555,
+          "width": 99.8361111111111,
+          "height": 12.7,
+          "rotation": 0,
+          "visible": true
+        },
+        "danfe": {
+          "x": 90.3111111111111,
+          "y": 5.291666666666666,
+          "width": 9.524999999999999,
+          "height": 132.29166666666666,
+          "rotation": 90,
+          "visible": true
+        }
+      }
+    },
+    "Shopee": {
+      "version": 1,
+      "page": {
+        "width": 99.8361111111111,
+        "height": 149.93055555555554
+      },
+      "items": {
+        "etiqueta": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 99.8361111111111,
+          "height": 149.93055555555554,
+          "rotation": 0,
+          "visible": true
+        },
+        "sku": {
+          "x": 84.66666666666666,
+          "y": 0.0,
+          "width": 15.169444444444443,
+          "height": 123.47222222222221,
+          "rotation": 90,
+          "visible": true
+        },
+        "danfe": {
+          "x": 90.3111111111111,
+          "y": 5.291666666666666,
+          "width": 9.524999999999999,
+          "height": 132.29166666666666,
+          "rotation": 90,
+          "visible": false
+        }
+      }
+    },
+    "TikTok": {
+      "version": 1,
+      "page": {
+        "width": 99.8361111111111,
+        "height": 149.93055555555554
+      },
+      "items": {
+        "etiqueta": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 99.8361111111111,
+          "height": 149.93055555555554,
+          "rotation": 0,
+          "visible": true
+        },
+        "sku": {
+          "x": 95.95555555555555,
+          "y": 0.0,
+          "width": 3.880555555555555,
+          "height": 105.83333333333333,
+          "rotation": 90,
+          "visible": true
+        },
+        "danfe": {
+          "x": 90.3111111111111,
+          "y": 5.291666666666666,
+          "width": 9.524999999999999,
+          "height": 132.29166666666666,
+          "rotation": 90,
+          "visible": false
+        }
+      }
+    },
+    "Amazon": {
+      "version": 1,
+      "page": {
+        "width": 99.8361111111111,
+        "height": 149.93055555555554
+      },
+      "items": {
+        "etiqueta": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 99.8361111111111,
+          "height": 137.58333333333331,
+          "rotation": 0,
+          "visible": true
+        },
+        "sku": {
+          "x": 0.0,
+          "y": 137.23055555555555,
+          "width": 99.8361111111111,
+          "height": 12.7,
+          "rotation": 0,
+          "visible": true
+        },
+        "danfe": {
+          "x": 90.3111111111111,
+          "y": 5.291666666666666,
+          "width": 9.524999999999999,
+          "height": 132.29166666666666,
+          "rotation": 90,
+          "visible": true
+        }
+      }
+    }
+  }
+}

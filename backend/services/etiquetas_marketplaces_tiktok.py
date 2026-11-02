@@ -198,7 +198,7 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
         if layout is not None:
             from backend.services.etiquetas_layout import renderizar_etiqueta_layout
             renderizar_etiqueta_layout(
-                nova_pagina, doc_origem, i, layout=layout,
+                nova_pagina, doc_origem, i, layout=layout, store='TikTok',
                 sku_text=f"SKU: {dados_sku[0]}  (x{dados_sku[1]})" if dados_sku else "SKU N/D",
                 counter=count_etiquetas + 1, embedded_danfe=True, collector=component_collector,
             )
@@ -240,6 +240,8 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
         nova_pagina.insert_text(fitz.Point(255, 12), num_pag_text, fontsize=12, color=(0,0,0))
         
         i += 1 
+        if limite_etiquetas and count_etiquetas >= limite_etiquetas:
+            break
 
     progress_bar.progress(100, text="Finalizado!")
     time.sleep(0.3)

@@ -7,6 +7,7 @@
     let revision = 0;
     let timer;
     let controller;
+    let defaultsPromise;
     const clone = value => JSON.parse(JSON.stringify(value));
     const round = value => Math.round(value * 100) / 100;
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -60,6 +61,21 @@
             const value = memory.get(key);
             return validLayout(value) ? clone(value) : null;
         }
+    }
+
+    async function getCurrentLayout(store) {
+        if (!defaultsPromise) {
+            defaultsPromise = fetch('/etiquetas/layout-defaults.json?v=20261102-config-atual-v2')
+                .then(async response => {
+                    if (!response.ok) throw new Error('Não foi possível carregar a configuração atual.');
+                    const data = await response.json();
+                    if (data.version !== 1 || !data.stores) throw new Error('Configuração atual inválida.');
+                    return data.stores;
+                }).catch(error => { defaultsPromise = null; throw error; });
+        }
+        const layouts = await defaultsPromise;
+        if (!validLayout(layouts[store])) throw new Error('Configuração atual inválida.');
+        return clone(layouts[store]);
     }
 
     function createDialog() {
@@ -136,11 +152,7 @@
             state.crop.height = Math.min(state.crop.height, 1 - state.crop.y);
             paintCrop();
         }));
-        dialog.querySelector('#layout-reset').addEventListener('click', async () => {
-            if (!state) return;
-            state.layout = null;
-            await loadPreview();
-        });
+        dialog.querySelector('#layout-reset').addEventListener('click', restoreCurrentLayout);
         dialog.addEventListener('cancel', event => { event.preventDefault(); if (state?.cropping) closeCrop(); else close(); });
         dialog.addEventListener('click', event => {
             if (event.target === dialog) {
@@ -172,8 +184,8 @@
         const item = layout.items[selected];
         const paper = el('etiquetas-layout-page');
         paper.style.aspectRatio = `${layout.page.width} / ${layout.page.height}`;
-        el('layout-paper-size').textContent = `${layout.page.width} × ${layout.page.height} mm`;
-        el('layout-ruler-width').textContent = `${layout.page.width} mm`;
+        el('layout-paper-size').textContent = `${round(layout.page.width)} × ${round(layout.page.height)} mm`;
+        el('layout-ruler-width').textContent = `${round(layout.page.width)} mm`;
         el('layout-selected-name').textContent = names[selected];
         for (const id of Object.keys(names)) {
             const data = layout.items[id];
@@ -192,14 +204,14 @@
             button.setAttribute('aria-pressed', String(id === selected));
             button.disabled = !available;
         }
-        for (const key of ['x', 'y', 'width', 'height', 'rotation']) field(key).value = item[key];
+        for (const key of ['x', 'y', 'width', 'height', 'rotation']) field(key).value = round(item[key]);
         field('visible').checked = item.visible;
         field('x').max = round(layout.page.width - item.width);
         field('y').max = round(layout.page.height - item.height);
         field('width').min = field('height').min = 1;
         field('width').max = round(layout.page.width - item.x);
         field('height').max = round(layout.page.height - item.y);
-        el('layout-crop-tools').hidden = !state.source || state.store === 'Amazon' || (state.availability.danfe !== false && !layout.danfe_source);
+        el('layout-crop-tools').hidden = !state.source || state.store === 'Amazon' || (!state.canSelectDanfe && !layout.danfe_source);
         el('layout-crop-clear').hidden = !layout.danfe_source;
     }
 
@@ -267,10 +279,10 @@
 
     function normalizeItem(item) {
         const page = state.layout.page;
-        item.width = round(clamp(item.width, 1, page.width));
-        item.height = round(clamp(item.height, 1, page.height));
-        item.x = round(clamp(item.x, 0, page.width - item.width));
-        item.y = round(clamp(item.y, 0, page.height - item.height));
+        item.width = clamp(round(item.width), 1, page.width);
+        item.height = clamp(round(item.height), 1, page.height);
+        item.x = clamp(round(item.x), 0, page.width - item.width);
+        item.y = clamp(round(item.y), 0, page.height - item.height);
     }
 
     function changed() {
@@ -355,7 +367,7 @@
         changed();
     }
 
-    async function loadPreview() {
+    async function loadPreview({ configuration = false } = {}) {
         if (!state) return false;
         clearTimeout(timer);
         const session = state;
@@ -369,24 +381,38 @@
         form.append('store', state.store);
         if (state.layout) form.append('layout', JSON.stringify(state.layout));
         const selectedStore = document.querySelector('input[name="loja"]:checked')?.value;
+        let hasSource = false;
         if (selectedStore === state.store) {
             for (const [id, name] of [['file-etiquetas', 'file_etiquetas'], ['file-lista', 'file_lista'], ['file-nf', 'file_nota_fiscal']]) {
                 const file = document.getElementById(id)?.files[0];
-                if (file && (state.store !== 'Amazon' || name === 'file_nota_fiscal')) form.append(name, file);
+                const relevant = state.store === 'Amazon' ? name === 'file_nota_fiscal' : name !== 'file_nota_fiscal';
+                if (file && relevant) {
+                    form.append(name, file);
+                    if (name === 'file_etiquetas' || name === 'file_nota_fiscal') hasSource = true;
+                }
             }
         }
         el('layout-preview').disabled = true;
         el('layout-save').disabled = true;
-        status('Gerando prévia da impressão…');
+        el('layout-sample').textContent = 'Carregando prévia…';
+        status('Carregando a prévia da configuração atual…');
         try {
             const token = localStorage.getItem('access_token');
-            const response = await fetch('/api/etiquetas/layout/preview', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, body: form, signal });
-            const data = await response.json();
+            const readConfig = configuration && !hasSource;
+            const url = readConfig ? '/api/etiquetas/layout/config?store=' + encodeURIComponent(state.store) : '/api/etiquetas/layout/preview';
+            const response = await fetch(url, { method: readConfig ? 'GET' : 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {}, ...(readConfig ? {} : { body: form }), signal });
+            if (state !== session || request !== revision || storageKey(state.store) !== scope) return false;
+            if (response.status === 404 || response.status === 405) throw new Error('O servidor local precisa ser reiniciado para carregar o editor de etiquetas. A configuração exibida foi preservada. Após reiniciar, atualize a página.');
+            let data;
+            try { data = await response.json(); } catch (_) { throw new Error('O servidor não retornou uma prévia válida. Tente atualizar a prévia novamente.'); }
             if (state !== session || request !== revision || storageKey(state.store) !== scope) return false;
             if (!response.ok || !data.success) throw new Error(typeof data.detail === 'string' ? data.detail : data.message || 'Não foi possível gerar a prévia.');
             if (!validLayout(data.layout)) throw new Error('O servidor retornou um layout inválido.');
             state.layout = clone(data.layout);
+            state.rendered = true;
+            el('etiquetas-layout-page').classList.remove('needs-preview');
             state.availability = data.availability || {};
+            state.canSelectDanfe = data.can_select_danfe ?? state.availability.danfe === false;
             const original = data.source || data.components?.etiqueta;
             state.source = typeof original === 'string' && /^data:image\/png;base64,/.test(original) ? original : null;
             for (const id of Object.keys(names)) {
@@ -397,18 +423,39 @@
             }
             if (data.preview && /^data:image\/png;base64,/.test(data.preview)) el('layout-print-preview').src = data.preview;
             if (state.availability[state.selected] === false) state.selected = 'etiqueta';
-            el('layout-sample').textContent = data.sample ? 'Amostra ilustrativa' : 'Prévia do seu arquivo';
-            el('layout-source-note').textContent = data.sample ? 'Amostra ilustrativa. Selecione um PDF na tela e atualize para conferir a etiqueta real.' : 'Prévia da primeira etiqueta do arquivo. O layout será aplicado às etiquetas processadas.';
+            el('layout-sample').textContent = data.sample ? 'Configuração atual · amostra' : 'Prévia do seu arquivo';
+            el('layout-source-note').textContent = data.sample ? 'Posições da configuração atual, com dados de exemplo. Selecione um PDF e atualize para conferir sua etiqueta.' : 'Prévia da primeira etiqueta do arquivo. O layout será aplicado às etiquetas processadas.';
             state.warnings = Array.isArray(data.warnings) ? data.warnings : [];
             status(state.warnings.join(' ') || 'Prévia pronta. Posicione os itens e salve o layout.');
             paint();
             el('layout-save').disabled = false;
             return true;
         } catch (error) {
-            if (error.name !== 'AbortError' && state === session && request === revision) status(error.message || 'Falha ao carregar a prévia.', true);
+            if (error.name !== 'AbortError' && state === session && request === revision) {
+                status(error.message || 'Falha ao carregar a prévia.', true);
+                el('layout-sample').textContent = 'Prévia indisponível';
+            }
             return false;
         } finally {
             if (state === session && request === revision) el('layout-preview').disabled = false;
+        }
+    }
+
+    async function restoreCurrentLayout() {
+        if (!state) return;
+        const session = state;
+        clearTimeout(timer);
+        controller?.abort();
+        revision++;
+        try {
+            const layout = await getCurrentLayout(state.store);
+            if (state !== session) return;
+            state.layout = layout;
+            state.selected = 'etiqueta';
+            paint();
+            await loadPreview({ configuration: true });
+        } catch (error) {
+            if (state === session) status(error.message, true);
         }
     }
 
@@ -441,17 +488,33 @@
 
     async function open(store, trigger) {
         if (!stores.includes(store) || dialog.open) return;
-        state = { store, trigger, scope: storageKey(store), layout: getSavedLayout(store), selected: 'etiqueta', availability: {}, warnings: [] };
+        const saved = getSavedLayout(store);
+        state = { store, trigger, scope: storageKey(store), layout: saved, selected: 'etiqueta', availability: {}, warnings: [], rendered: false };
+        const session = state;
         el('layout-crop-panel').hidden = true;
         dialog.querySelector('.layout-body').hidden = false;
         el('layout-store').textContent = store;
         el('layout-save').disabled = true;
-        el('layout-sample').textContent = 'Gerando prévia…';
+        el('layout-sample').textContent = saved ? 'Configuração salva' : 'Configuração atual';
         el('layout-print-preview').removeAttribute('src');
-        dialog.querySelectorAll('[data-layout-item]').forEach(item => { item.hidden = true; });
+        el('etiquetas-layout-page').classList.add('needs-preview');
+        el('layout-source-note').textContent = saved ? 'Suas posições salvas estão exibidas. Carregando o conteúdo da etiqueta…' : 'Carregando as posições usadas atualmente na impressão…';
+        dialog.querySelectorAll('[data-layout-item]').forEach(item => {
+            item.hidden = true;
+            item.querySelector('img').removeAttribute('src');
+        });
+        if (saved) paint();
         dialog.showModal();
         el('layout-close').focus();
-        await loadPreview();
+        if (!saved) {
+            try {
+                const layout = await getCurrentLayout(store);
+                if (state !== session) return;
+                state.layout = layout;
+                paint();
+            } catch (_) { /* A rota de configuração também fornece as posições atuais. */ }
+        }
+        if (state === session) await loadPreview({ configuration: !saved });
     }
 
     document.querySelectorAll('[data-layout-store]').forEach(gear => {

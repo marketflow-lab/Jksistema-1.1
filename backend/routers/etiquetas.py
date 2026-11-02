@@ -20,7 +20,7 @@ from backend.services.etiquetas import (
     obter_pdf_temporario,
     processar_etiquetas_loja,
 )
-from backend.services.etiquetas_layout import gerar_preview_layout, validar_layout
+from backend.services.etiquetas_layout import gerar_preview_layout, layout_e_padrao_atual, validar_layout
 
 
 @dataclass(frozen=True)
@@ -104,6 +104,16 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
             print(f"Erro QR Code etiquetas: {e}")
             return {"success": False, "message": str(e)}
 
+    @etiquetas_router.get("/api/etiquetas/layout/config")
+    async def obter_configuracao_layout(
+        store: str = "Mercado Livre",
+        client_id: str = Depends(config.get_tenant_id),
+    ):
+        try:
+            return await run_in_threadpool(gerar_preview_layout, store)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @etiquetas_router.post("/api/etiquetas/layout/preview")
     async def preview_layout_etiqueta(
         store: str = Form(...),
@@ -141,7 +151,7 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
             bytes_etiquetas = await file_etiquetas.read() if file_etiquetas else None
             bytes_lista = await file_lista.read() if file_lista else None
             bytes_nf = await file_nota_fiscal.read() if file_nota_fiscal else None
-            if normalized is None:
+            if normalized is None or layout_e_padrao_atual(normalized, store):
                 resultado = processar_etiquetas_loja(store, bytes_etiquetas, bytes_lista, bytes_nf)
             else:
                 resultado = await run_in_threadpool(

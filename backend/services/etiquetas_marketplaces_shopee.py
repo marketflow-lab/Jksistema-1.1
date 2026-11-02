@@ -173,9 +173,9 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
                             from backend.services.etiquetas_layout import renderizar_etiqueta_layout
                             info = mapa_global.get(pedido_id)
                             sku = f"SKU: {info[0]} (x{info[1]})" if info and info[0] != "N/D" else "SKU N/D"
-                            extra = "\n".join(value for value in ((info[2] if info and len(info) > 2 else ""), nome_cliente) if value)
+                            extra = (info[2] if info and len(info) > 2 else "") + "\n" + nome_cliente
                             renderizar_etiqueta_layout(
-                                new_page, doc, page_index, clip=q, layout=layout, sku_text=sku,
+                                new_page, doc, page_index, clip=q, layout=layout, sku_text=sku, store='Shopee',
                                 extra_text=extra, counter=count_labels, embedded_danfe=True, collector=component_collector,
                             )
                             continue

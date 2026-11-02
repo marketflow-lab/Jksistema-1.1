@@ -223,7 +223,7 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
                 chave = extrair_chave_acesso(texto_pagina)
             codigo = chave or id_correspondente
             renderizar_etiqueta_layout(
-                nova_pagina, doc_origem, i, layout=layout,
+                nova_pagina, doc_origem, i, layout=layout, store='Mercado Livre',
                 sku_text=f"SKU {dados_sku[0]}  x  {dados_sku[1]}" if dados_sku else "SKU N/D",
                 code=codigo, code_text=chave or (f"VENDA {id_correspondente}" if id_correspondente else None),
                 counter=count_etiquetas + 1,
@@ -307,6 +307,8 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
         )
         
         i += salto
+        if limite_etiquetas and count_etiquetas >= limite_etiquetas:
+            break
 
     progress_bar.progress(100, text="Finalizado!")
     progress_bar.empty()

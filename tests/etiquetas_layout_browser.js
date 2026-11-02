@@ -11,7 +11,9 @@ assert.deepStrictEqual(html, fs.readFileSync(path.join(root, 'static', 'frontend
   'As duas páginas devem oferecer o mesmo editor de impressão');
 const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=';
 const stores = ['Mercado Livre', 'Shopee', 'TikTok', 'Amazon'];
-const state = { previews: [], processing: [], errors: [], alerts: [], failPreview: false, delayedPreview: null };
+const defaults = JSON.parse(fs.readFileSync(path.join(root, 'static', 'etiquetas', 'layout-defaults.json'), 'utf8'));
+const state = { configs: [], previews: [], processing: [], errors: [], alerts: [], defaultsRequests: 0,
+  failPreview: false, apiStatus: null, delayedPreview: null, delayedConfig: null, configLayout: null, canSelectDanfe: null };
 const modal = page => page.locator('#etiquetas-layout-dialog');
 const gear = (page, store) => page.locator('[data-layout-store="' + store + '"]');
 const item = (page, name) => modal(page).locator('[data-layout-item="' + name + '"]');
@@ -29,12 +31,29 @@ async function until(predicate) {
   }
 }
 
-function defaultLayout() {
-  return { version: 1, page: { width: 100, height: 150 }, items: {
-    etiqueta: { x: 0, y: 0, width: 88, height: 138, rotation: 0, visible: true },
-    sku: { x: 2, y: 140, width: 96, height: 9, rotation: 0, visible: true },
-    danfe: { x: 90, y: 2, width: 9, height: 135, rotation: 90, visible: true },
-  } };
+function defaultLayout(store = 'Mercado Livre') {
+  assert(defaults.stores[store], 'Defaults estáticos devem incluir todas as lojas');
+  return clone(defaults.stores[store]);
+}
+
+function previewResponse(store, layout, uploaded = false) {
+  const embeddedDanfe = uploaded && ['Shopee', 'TikTok'].includes(store);
+  const separateDanfe = !embeddedDanfe || Boolean(layout.danfe_source);
+  if (!separateDanfe) layout.items.danfe.visible = false;
+  return { success: true, layout, current_layout: defaultLayout(store),
+    mode: JSON.stringify(layout) === JSON.stringify(defaultLayout(store)) ? 'padrao_atual' : 'personalizado', sample: !uploaded,
+    capabilities: { preview: true, processing: store !== 'Amazon', embedded_danfe: ['Shopee', 'TikTok'].includes(store) },
+    components: { etiqueta: png, sku: png, danfe: separateDanfe ? png : null },
+    availability: { etiqueta: true, sku: true, danfe: separateDanfe }, preview: png,
+    source: embeddedDanfe || state.canSelectDanfe !== null ? png : null,
+    ...(state.canSelectDanfe === null ? {} : { can_select_danfe: state.canSelectDanfe }),
+    warnings: store === 'Amazon' ? ['Processamento Amazon ainda não está disponível.'] : [] };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
 }
 
 function multipart(request) {
@@ -60,23 +79,31 @@ async function routes(page) {
       if (pathname.startsWith('/etiquetas/')) {
         const asset = path.join(root, 'static', pathname.slice(1));
         assert(fs.existsSync(asset), 'Asset do editor deve existir: ' + pathname);
-        return route.fulfill({ contentType: pathname.endsWith('.css') ? 'text/css' : 'application/javascript', body: fs.readFileSync(asset) });
+        if (pathname.endsWith('/layout-defaults.json')) state.defaultsRequests += 1;
+        return route.fulfill({ contentType: pathname.endsWith('.css') ? 'text/css' : pathname.endsWith('.json') ? 'application/json' : 'application/javascript', body: fs.readFileSync(asset) });
+      }
+      if (pathname === '/api/etiquetas/layout/config') {
+        assert.strictEqual(request.method(), 'GET', 'Configuração inicial deve usar GET');
+        assert.strictEqual(request.headers().authorization, 'Bearer synthetic-token');
+        const store = new URL(request.url()).searchParams.get('store');
+        assert(stores.includes(store), 'GET config deve identificar a loja');
+        const layout = state.configLayout ? clone(state.configLayout) : defaultLayout(store);
+        state.configs.push({ store, layout: clone(layout) });
+        if (state.delayedConfig) await state.delayedConfig;
+        if (state.apiStatus) return json(route, { detail: 'Method Not Allowed' }, state.apiStatus);
+        if (state.failPreview) return json(route, { detail: 'Falha sintética ao gerar prévia' }, 400);
+        return json(route, previewResponse(store, layout));
       }
       if (pathname === '/api/etiquetas/layout/preview') {
         assert.strictEqual(request.headers().authorization, 'Bearer synthetic-token');
         const fields = multipart(request);
         assert(stores.includes(fields.store), 'Preview deve identificar a loja');
-        const layout = fields.layout ? JSON.parse(fields.layout) : defaultLayout();
+        const layout = fields.layout ? JSON.parse(fields.layout) : defaultLayout(fields.store);
         state.previews.push({ store: fields.store, layout: clone(layout), uploaded: Boolean(fields.file_etiquetas) });
         if (state.delayedPreview) await state.delayedPreview;
+        if (state.apiStatus) return json(route, { detail: 'Method Not Allowed' }, state.apiStatus);
         if (state.failPreview) return json(route, { detail: 'Falha sintética ao gerar prévia' }, 400);
-        const embeddedDanfe = Boolean(fields.file_etiquetas) && ['Shopee', 'TikTok'].includes(fields.store);
-        const separateDanfe = !embeddedDanfe || Boolean(layout.danfe_source);
-        if (!separateDanfe) layout.items.danfe.visible = false;
-        return json(route, { success: true, layout, sample: !fields.file_etiquetas,
-          components: { etiqueta: png, sku: png, danfe: separateDanfe ? png : null },
-          availability: { etiqueta: true, sku: true, danfe: separateDanfe }, preview: png, source: embeddedDanfe ? png : null,
-          warnings: fields.store === 'Amazon' ? ['Processamento Amazon ainda não está disponível.'] : [] });
+        return json(route, previewResponse(fields.store, layout, Boolean(fields.file_etiquetas)));
       }
       if (pathname === '/api/etiquetas/processar') {
         const fields = multipart(request);
@@ -92,10 +119,10 @@ async function routes(page) {
 }
 
 async function open(page, store) {
-  const before = state.previews.length;
+  const before = state.previews.length + state.configs.length;
   await gear(page, store).click();
   await modal(page).waitFor({ state: 'visible' });
-  await until(() => state.previews.length > before);
+  await until(() => state.previews.length + state.configs.length > before);
   await modal(page).locator('#layout-save').waitFor({ state: 'visible' });
   await page.waitForFunction(() => !document.getElementById('layout-save').disabled);
   assert((await modal(page).innerText()).includes(store), 'Editor deve identificar a loja aberta');
@@ -111,9 +138,9 @@ async function fill(page, name, value) {
   await field(page, name).press('Tab');
 }
 
-function withinPage(value) {
+function withinPage(value, page = defaultLayout().page) {
   assert(value.x >= 0 && value.y >= 0 && value.width > 0 && value.height > 0, 'Item deve ter medidas positivas dentro da impressão');
-  assert(value.x + value.width <= 100.05 && value.y + value.height <= 150.05,
+  assert(value.x + value.width <= page.width + 0.05 && value.y + value.height <= page.height + 0.05,
     'Arraste e redimensionamento não podem deixar o item fora da impressão: ' + JSON.stringify(value));
 }
 
@@ -144,6 +171,106 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
     await page.goto('http://jk.test/frontend_etiquetas.html');
     assert.strictEqual(await page.locator('[data-layout-store]').count(), 4);
     for (const store of stores) {
+      assert(Math.abs(defaultLayout(store).page.width - 283 * 25.4 / 72) < 0.001,
+        'Largura padrão deve preservar os 283 pontos usados pela impressão atual');
+      assert(Math.abs(defaultLayout(store).page.height - 425 * 25.4 / 72) < 0.001,
+        'Altura padrão deve preservar os 425 pontos usados pela impressão atual');
+    }
+
+    // Os campos e as caixas aparecem antes da resposta lenta da API.
+    const slowConfig = deferred();
+    state.delayedConfig = slowConfig.promise;
+    const beforeSlowConfig = state.configs.length;
+    const postsBeforeConfig = state.previews.length;
+    await gear(page, 'Mercado Livre').click();
+    await modal(page).waitFor({ state: 'visible' });
+    await until(() => state.configs.length > beforeSlowConfig);
+    assert(state.defaultsRequests > 0, 'A configuração inicial deve carregar o asset de defaults');
+    const pendingFields = await values(page);
+    for (const key of ['x', 'y', 'width', 'height']) {
+      assert(Math.abs(pendingFields[key] - defaultLayout().items.etiqueta[key]) <= 0.0051,
+        'Defaults devem preencher as coordenadas antes do GET, com a precisão exibida: ' + key);
+    }
+    assert.strictEqual(await item(page, 'etiqueta').isVisible(), true);
+    assert.strictEqual(await modal(page).locator('#layout-save').isDisabled(), true,
+      'Salvar deve aguardar a prévia validada pelo servidor');
+    assert.strictEqual(state.previews.length, postsBeforeConfig, 'Abrir configuração sem arquivo ou salvo deve usar somente GET');
+    slowConfig.resolve();
+    state.delayedConfig = null;
+    await page.waitForFunction(() => !document.getElementById('layout-save').disabled);
+    await modal(page).locator('#layout-cancel').click();
+
+    // Headers podem chegar antes da troca de sessão e o corpo JSON só depois dela.
+    state.configLayout = defaultLayout();
+    Object.assign(state.configLayout.items.etiqueta, { x: 11, y: 17, width: 55, height: 90 });
+    await page.evaluate(() => {
+      const originalFetch = window.fetch;
+      let release;
+      const bodyGate = new Promise(done => { release = done; });
+      window.__releaseLayoutJson = release;
+      window.__layoutJsonWaiting = false;
+      window.__layoutJsonSettled = false;
+      window.__restoreLayoutFetch = () => { window.fetch = originalFetch; };
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        if (String(args[0]).includes('/api/etiquetas/layout/config')) {
+          const originalJson = response.json.bind(response);
+          response.json = async () => {
+            const body = await originalJson();
+            window.__layoutJsonWaiting = true;
+            await bodyGate;
+            window.__layoutJsonSettled = true;
+            return body;
+          };
+        }
+        return response;
+      };
+    });
+    await gear(page, 'Mercado Livre').click();
+    await modal(page).waitFor({ state: 'visible' });
+    await page.waitForFunction(() => window.__layoutJsonWaiting);
+    const fieldsBeforeSessionChange = await values(page);
+    assert.strictEqual(await item(page, 'etiqueta').locator('img').getAttribute('src'), null);
+    await page.evaluate(() => {
+      localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-body-new', username: 'user-body-new' }));
+      window.__releaseLayoutJson();
+    });
+    await page.waitForFunction(() => window.__layoutJsonSettled);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.deepStrictEqual(await values(page), fieldsBeforeSessionChange,
+      'Resposta antiga não pode repintar as coordenadas depois de uma troca de sessão durante JSON');
+    assert.strictEqual(await item(page, 'etiqueta').locator('img').getAttribute('src'), null,
+      'Imagem da sessão antiga não pode aparecer depois da troca de usuário');
+    assert.strictEqual(await modal(page).locator('#layout-save').isDisabled(), true,
+      'Uma resposta invalidada pela troca de sessão não pode habilitar salvar');
+    assert.strictEqual(await stored(page), null);
+    assert.strictEqual(await stored(page, 'tenant-body-new', 'user-body-new'), null,
+      'Resposta antiga não pode persistir dados na sessão nova');
+    await modal(page).locator('#layout-cancel').click();
+    await page.evaluate(() => {
+      window.__restoreLayoutFetch();
+      localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-a', username: 'user-a' }));
+    });
+    state.configLayout = null;
+
+    // Um servidor antigo não deve deixar o editor vazio nem provocar POST alternativo.
+    state.apiStatus = 405;
+    const postsBefore405 = state.previews.length;
+    await gear(page, 'Shopee').click();
+    await modal(page).waitFor({ state: 'visible' });
+    await page.waitForFunction(() => /reinici/i.test(document.getElementById('layout-status').textContent));
+    assert(Number(await field(page, 'width').inputValue()) > 0 && Number(await field(page, 'height').inputValue()) > 0,
+      '405 deve preservar as medidas iniciais da impressão');
+    assert.strictEqual(await item(page, 'etiqueta').isVisible(), true);
+    assert(!/gerando/i.test(await modal(page).locator('#layout-sample').textContent()),
+      'Falha deve encerrar o indicador de geração da prévia');
+    assert.strictEqual(await modal(page).locator('#layout-save').isDisabled(), true);
+    assert.strictEqual(state.previews.length, postsBefore405, 'GET 405 não pode disparar POST de fallback');
+    assert.strictEqual(await stored(page, 'tenant-a', 'user-a', 'Shopee'), null);
+    await modal(page).locator('#layout-cancel').click();
+    state.apiStatus = null;
+
+    for (const store of stores) {
       await open(page, store);
       assert.strictEqual(await page.locator('input[name="loja"]:checked').inputValue(), 'Mercado Livre',
         'A engrenagem deve abrir configurações sem mudar a loja selecionada');
@@ -153,6 +280,25 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
       assert.strictEqual(await gear(page, store).evaluate(element => document.activeElement === element), true,
         'O foco deve voltar à engrenagem que abriu o editor');
     }
+
+    // O placeholder DANFE pode existir e ainda permitir selecionar um código escaneado.
+    state.canSelectDanfe = true;
+    await open(page, 'Mercado Livre');
+    assert.strictEqual(await modal(page).locator('[data-layout-select="danfe"]').isDisabled(), false,
+      'Cenário deve manter o componente DANFE disponível enquanto a seleção manual é permitida');
+    assert.strictEqual(await item(page, 'danfe').locator('img').getAttribute('src'), png);
+    assert.strictEqual(await modal(page).locator('#layout-crop-open').isVisible(), true,
+      'can_select_danfe deve permitir recorte mesmo com availability.danfe verdadeira');
+    await modal(page).locator('#layout-crop-open').click();
+    await modal(page).locator('#layout-crop-panel').waitFor({ state: 'visible' });
+    await modal(page).locator('#layout-crop-cancel').click();
+    await modal(page).locator('#layout-cancel').click();
+    state.canSelectDanfe = false;
+    await open(page, 'Mercado Livre');
+    assert.strictEqual(await modal(page).locator('#layout-crop-open').isVisible(), false,
+      'Flag explícita falsa deve ocultar seleção manual quando não existe recorte salvo');
+    await modal(page).locator('#layout-cancel').click();
+    state.canSelectDanfe = null;
 
     await open(page, 'Mercado Livre');
     assert((await modal(page).innerText()).toLowerCase().includes('amostra'), 'Prévia sem arquivo deve informar que é uma amostra');
@@ -223,6 +369,47 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
     assert.strictEqual(await stored(page, 'tenant-a', 'user-a', 'Shopee'), null, 'Salvar deve afetar somente a loja aberta');
     assert(!JSON.stringify(saved).includes('data:image') && !JSON.stringify(saved).includes('Synthetic label'),
       'Persistência deve guardar geometria, sem imagens ou conteúdo do arquivo');
+
+    const slowSaved = deferred();
+    state.delayedPreview = slowSaved.promise;
+    const beforeSavedPreview = state.previews.length;
+    const configsBeforeSaved = state.configs.length;
+    await gear(page, 'Mercado Livre').click();
+    await modal(page).waitFor({ state: 'visible' });
+    await until(() => state.previews.length > beforeSavedPreview);
+    await modal(page).locator('[data-layout-select="sku"]').click();
+    assert(Math.abs(Number(await field(page, 'x').inputValue()) - saved.items.sku.x) < 0.001,
+      'Layout salvo deve aparecer antes da resposta do POST lento');
+    assert.strictEqual(await item(page, 'sku').isVisible(), true);
+    assert.strictEqual(state.configs.length, configsBeforeSaved, 'Layout salvo deve ir diretamente ao POST de prévia');
+    slowSaved.resolve();
+    state.delayedPreview = null;
+    await page.waitForFunction(() => !document.getElementById('layout-save').disabled);
+    await modal(page).locator('#layout-cancel').click();
+
+    state.apiStatus = 405;
+    await gear(page, 'Mercado Livre').click();
+    await modal(page).waitFor({ state: 'visible' });
+    await page.waitForFunction(() => /reinici/i.test(document.getElementById('layout-status').textContent));
+    await modal(page).locator('[data-layout-select="sku"]').click();
+    assert(Math.abs(Number(await field(page, 'x').inputValue()) - saved.items.sku.x) < 0.001,
+      'POST 405 deve preservar as coordenadas já salvas na tela');
+    assert.strictEqual(await modal(page).locator('#layout-save').isDisabled(), true);
+    assert.deepStrictEqual(await stored(page), saved, 'Falha do servidor não pode sobrescrever o layout salvo');
+    await modal(page).locator('#layout-cancel').click();
+    state.apiStatus = null;
+
+    await open(page, 'Mercado Livre');
+    await modal(page).locator('#layout-reset').click();
+    await page.waitForFunction(() => !document.getElementById('layout-save').disabled);
+    await modal(page).locator('[data-layout-select="etiqueta"]').click();
+    const resetOriginal = await values(page);
+    for (const key of ['x', 'y', 'width', 'height']) {
+      assert(Math.abs(resetOriginal[key] - defaultLayout().items.etiqueta[key]) <= 0.0051,
+        'Restaurar deve mostrar a configuração atual da impressão: ' + key);
+    }
+    assert.deepStrictEqual(await stored(page), saved, 'Restaurar sem salvar deve manter o layout anterior persistido');
+    await modal(page).locator('#layout-cancel').click();
 
     // Cancelar e Escape descartam somente o rascunho.
     await open(page, 'Mercado Livre');
@@ -364,9 +551,9 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
     if (previewDirectory) await modal(page).screenshot({ path: path.join(previewDirectory, 'etiquetas-editor-mobile.png') });
     await modal(page).locator('[data-layout-select="danfe"]').click();
     await fill(page, 'x', 200);
-    withinPage(await values(page));
+    withinPage(await values(page), defaultLayout('TikTok').page);
     await modal(page).locator('#layout-cancel').click();
     assert.deepStrictEqual(state.errors, []);
-    console.log('etiquetas_layout_browser: OK (4 lojas, ordem das camadas, arraste, limites, tamanho, teclado, recorte DANFE, cancelamento, isolamento, processamento e mobile)');
+    console.log('etiquetas_layout_browser: OK (config GET, defaults imediatos, API lenta/405, sessão durante JSON, 4 lojas, camadas, arraste, flag e recorte DANFE, cancelamento, isolamento, processamento e mobile)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

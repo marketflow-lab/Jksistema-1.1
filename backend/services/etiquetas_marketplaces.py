@@ -51,6 +51,8 @@ def processar_etiquetas_loja(store: str, bytes_etiquetas: bytes | None, bytes_li
     if layout is not None:
         from backend.services.etiquetas_layout import validar_layout
         options = {"layout": validar_layout(layout, store), "component_collector": _component_collector, "limite_etiquetas": _limit}
+    elif _limit is not None:
+        options["limite_etiquetas"] = _limit
     out_etiquetas = None
     out_lista = None
     qtd = 0

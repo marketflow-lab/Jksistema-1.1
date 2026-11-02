@@ -39,6 +39,9 @@
 .layout-item { position: absolute; box-sizing: border-box; cursor: move; outline: 1px dashed transparent; touch-action: none; user-select: none; }
 .layout-item[hidden] { display: none; }
 .layout-item img { position: absolute; z-index: 0; top: 50%; left: 50%; object-fit: contain; pointer-events: none; user-select: none; }
+.layout-item img:not([src]) { display: none; }
+.layout-paper.needs-preview .layout-item { outline: 1px dashed #86a9db; background: #eaf2ff55; }
+.layout-paper.needs-preview .layout-item-label { display: block; }
 .layout-item:hover { outline-color: #8eb1e2; }
 .layout-item.is-selected { outline: 2px solid #2665d2; }
 .layout-item:focus-visible { outline: 2px solid #184cb4; outline-offset: 1px; }
