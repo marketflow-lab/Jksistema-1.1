@@ -89,7 +89,7 @@ function listHarness(loja = 'JK Peças') {
 async function verifySkuContextAndVersion() {
     const calls = [];
     const cells = new Map();
-    const current = { listaId: 'JK61 / A&B', sku: 'D104-32' };
+    const current = { listaId: 'JK61 / A&B', sku: 'D104-32', storeId: 'store-lista', lojaNome: 'Loja da lista' };
     const validity = { data: true };
     const bindings = {
         ultimaVersaoFontesConcorrentes: null,
@@ -97,6 +97,7 @@ async function verifySkuContextAndVersion() {
         contextoDetalheSku: current,
         analiseComplementosPronta: true,
         custoComplementosPendente: false,
+        ultimoValorUnitarioProduto: 14.20,
         detalheSkuVigente: context => context === bindings.contextoDetalheSku,
         dadosSkuVigentes: context => context === bindings.contextoDetalheSku && validity.data,
         obterAuthHeaders: () => ({}),
@@ -109,7 +110,10 @@ async function verifySkuContextAndVersion() {
         consultarJsonDetalheSku: async (url, context, options) => {
             assert.strictEqual(context, bindings.contextoDetalheSku);
             calls.push({ url, context, options });
-            return options ? { analise_concorrentes: {} } : sourceRow(context === current ? 2 : 1);
+            return options?.method === 'PATCH' ? { analise_concorrentes: {} } : {
+                ...sourceRow(context === current ? 2 : 1), anuncios_loja_store_id: current.storeId,
+                anuncios_loja_nome: current.lojaNome, anuncios_loja_fonte: 'loja_lista_sku',
+            };
         },
         fetch: async url => {
             calls.push({ url });
@@ -118,29 +122,33 @@ async function verifySkuContextAndVersion() {
     };
     const context = loadFunctions(skuHtml, [
         'normSku', 'getNumber', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
+        'fontesAnunciosDaLista', 'custoSimuladoDisponivel',
         'aplicarLinksCacheSku', 'coletarAnaliseConcorrentes', 'salvarAnaliseConcorrentes',
     ], bindings);
     const sources = await context.buscarLinksConcorrentes('D104-32', current);
     const requested = new URL(calls[0].url, 'http://fixture');
     assert.strictEqual(requested.searchParams.get('lista_id'), current.listaId);
     assert.strictEqual(requested.searchParams.get('sku'), 'D104-32');
+    assert.strictEqual(requested.searchParams.get('anuncios_da_lista'), 'true');
     assert.strictEqual(sources.fontes_versao, 2);
     context.aplicarLinksCacheSku(sources);
     await context.salvarAnaliseConcorrentes(current.listaId, current.sku);
     const patch = JSON.parse(calls[1].options.body);
     assert.strictEqual(calls[1].options.method, 'PATCH');
     assert.strictEqual(patch.fontes_versao, 2, 'A origem consultada acompanha a análise salva.');
+    assert.strictEqual(patch.fonte_custo, 'simulacao_importacao_sku');
+    assert.strictEqual(patch.custo_unitario, 14.20);
     for (let n = 1; n <= 5; n++) {
         assert.strictEqual(patch.anuncios_loja['concorrente_' + n], 'MLB' + (1000000000 + n));
         assert.strictEqual(patch.precos_concorrentes['concorrente_' + n], 80.5 + n);
         assert.strictEqual(patch.precos_anuncios_loja['concorrente_' + n], 90 + n);
     }
-    await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /cadastro da loja e os anúncios/);
+    await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /custo unitário simulado/);
     validity.data = false;
-    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /cadastro da loja e os anúncios/);
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /custo unitário simulado/);
     validity.data = true;
     current.podeSalvar = false;
-    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /cadastro da loja e os anúncios/);
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /custo unitário simulado/);
     delete current.podeSalvar;
     assert.strictEqual(calls.length, 2, 'Outro contexto não pode salvar a análise carregada.');
 

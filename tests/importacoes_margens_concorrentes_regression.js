@@ -74,8 +74,9 @@ const trechosSku = [
     'await promessaDadosImposto;',
     'enriquecerPromocoesSkuEmSegundoPlano(contexto, lista, cad, mapaM3Cadastro, linksConc);',
     'salvarAnaliseConcorrentes(contexto.listaId, contexto.sku)',
-    'item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;',
-    'aplicarAnaliseConcorrentes(item.analise_concorrentes);',
+    'item.analise_simulacao_importacao_sku',
+    "fonte_custo: 'simulacao_importacao_sku'",
+    'custo_unitario: ultimoValorUnitarioProduto',
     'void salvarAnaliseConcorrentes(listaId, normSku(sku))',
     'if (dadosSkuVigentes(contextoPersistencia) && contextoPersistencia.podeSalvar !== false) aplicarAnaliseConcorrentes(resultado && resultado.analise_concorrentes);',
 ];
@@ -96,8 +97,8 @@ const salvaIndependente = skuHtml.indexOf('salvarAnaliseConcorrentes(contexto.li
 const consultaPromocoes = skuHtml.indexOf('enriquecerPromocoesSkuEmSegundoPlano(', inicioCarregamento);
 const guardAnalise = skuHtml.slice(skuHtml.indexOf('async function salvarAnaliseConcorrentes'), skuHtml.indexOf('function atualizarCustoTotalProduto'));
 if (!(salvaIndependente > inicioPreparacao && salvaIndependente < inicioCarregamento
-    && consultaPromocoes > inicioCarregamento) || guardAnalise.includes('custoComplementosPendente')) {
-    throw new Error('Margens do cadastro devem iniciar independentemente dos custos de importação e antes das promoções opcionais.');
+    && consultaPromocoes > inicioCarregamento) || !guardAnalise.includes('custoSimuladoDisponivel()')) {
+    throw new Error('A simulação do SKU exige custo unitário completo e precede as promoções opcionais.');
 }
 
 console.log('OK: margens dos cinco concorrentes persistidas e exibidas na lista.');

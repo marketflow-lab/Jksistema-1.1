@@ -14,13 +14,13 @@ function gate() {
 
 function fixture(id = 'A', complete = false) {
     return {
-        id, nome_lista: 'Lista ' + id, store_id: 'store-' + id, dolar_hoje: 5,
+        id, nome_lista: 'Lista ' + id, loja: 'Loja ' + id, store_id: 'store-' + id, dolar_hoje: 5,
         itens: [
             { SKU: '001', Quantidade: 2, 'Valor unidade': 10, 'Valor total': 20,
                 'M3 individual': 0.1, Produto: 'Produto da lista ' + id,
                 NCM: '00000001', Link: 'https://produto.test/' + id,
                 II: 10, IPI: 5, PIS: 2, COFINS: 3, 'ST Minas': 'Não', 'ST Paraíba': 'Não',
-                analise_concorrentes: { margens: {} } },
+                analise_simulacao_importacao_sku: { margens: {} } },
             { SKU: '002', Quantidade: 3, 'Valor unidade': 5, 'Valor total': 15,
                 ...(complete ? { 'M3 individual': 0.2 } : {}) },
         ],
@@ -47,7 +47,7 @@ async function environment(browser, options = {}) {
     if (options.fastTimeout) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
         window.restoreTimeout = () => { window.setTimeout = timeout; };
-        window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 50 : delay, ...args);
+        window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000, 120000].includes(delay) ? 50 : delay, ...args);
     });
     if (options.fastPolling) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
@@ -94,7 +94,8 @@ async function environment(browser, options = {}) {
             const store = cadastro[1];
             if (options.hold && store === 'store-A') await state.cadastro.promise;
             return json(route, { produto: { store_id: options.wrongStore ? 'store-X' : store,
-                sku: cadastro[2], nome: 'Cadastro ' + store, ncm: '00000002', 'M3 individual': 0.1 } });
+                sku: cadastro[2], nome: 'Cadastro ' + store, ncm: '00000002', 'M3 individual': 0.1,
+                custo: '999', imposto: '10' } });
         }
         const mapa = pathname.match(/^\/api\/cadastro\/lojas\/(store-[AB])\/produtos$/);
         if (mapa) {
@@ -112,8 +113,12 @@ async function environment(browser, options = {}) {
         }
         if (pathname === '/api/medias-compras/concorrentes-links') {
             ++state.calls.concorrentes;
+            assert.strictEqual(url.searchParams.get('anuncios_da_lista'), 'true');
             if ((options.hold || options.holdConcorrentes) && state.calls.concorrentes === 1) await state.concorrentes.promise;
-            return json(route, { concorrentes: { concorrente_1: options.holdPrice && state.calls.concorrentes === 1 ? 'https://produto.mercadolivre.com.br/MLB-1234567890' : '' },
+            const id = url.searchParams.get('lista_id');
+            return json(route, { anuncios_loja_store_id: 'store-' + id,
+                anuncios_loja_nome: 'Loja ' + id, anuncios_loja_fonte: 'loja_lista_sku',
+                concorrentes: { concorrente_1: options.holdPrice && state.calls.concorrentes === 1 ? 'https://produto.mercadolivre.com.br/MLB-1234567890' : '' },
                 concorrentes_valores: { concorrente_1: options.holdPrice && state.calls.concorrentes === 1 ? '' : 'R$ 200,00' } });
         }
         const lista = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])$/);
@@ -147,8 +152,15 @@ async function environment(browser, options = {}) {
         }
         if (pathname.endsWith('/analise-concorrentes')) {
             assert.strictEqual(route.request().method(), 'PATCH');
-            state.patches.push({ pathname, payload: route.request().postDataJSON() });
-            return json(route, { analise_concorrentes: { margens: {} } });
+            const payload = route.request().postDataJSON();
+            assert.strictEqual(payload.fonte_custo, 'simulacao_importacao_sku');
+            assert(Number.isFinite(payload.custo_unitario) && payload.custo_unitario > 0);
+            state.patches.push({ pathname, payload });
+            return json(route, { analise_concorrentes: {
+                fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario,
+                store_id: pathname.includes('/B/') ? 'store-B' : 'store-A',
+                margens: {}, margens_anuncios_loja: {},
+            } });
         }
         if (url.hostname === 'economia.awesomeapi.com.br') {
             if (options.holdFx) await state.fx.promise;
@@ -188,7 +200,10 @@ function releaseComplements(state) {
             'Resposta 202 não substitui os dados salvos.');
         queued.state.ready = true;
         await queued.page.waitForFunction(() => document.getElementById('vQtd').textContent === '4');
-        assert.strictEqual(queued.state.patches.length, 1, 'A lista pronta reutiliza a análise independente já confirmada.');
+        await waitUntil(() => queued.state.patches.length === 2);
+        assert.notStrictEqual(queued.state.patches[1].payload.custo_unitario, queued.state.patches[0].payload.custo_unitario,
+            'O novo rateio altera o custo simulado e exige atualizar a margem.');
+        assert.strictEqual(queued.state.patches[1].payload.custo_unitario, await queued.page.evaluate(() => ultimoValorUnitarioProduto));
         assert.strictEqual(queued.state.calls.cadastro, 1);
         assert.deepStrictEqual(queued.state.errors, []);
         await queued.context.close();
@@ -337,10 +352,13 @@ function releaseComplements(state) {
         await delayedFx.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await delayedFx.page.waitForFunction(() => document.getElementById('vSku').textContent === '001');
         assert.strictEqual(await delayedFx.page.locator('#vCustoTotalProduto').textContent(), '-');
-        await waitUntil(() => delayedFx.state.patches.length === 1);
-        assert.strictEqual(await delayedFx.page.locator('#vCustoTotalProduto').textContent(), '-', 'Margens independem da cotação do dólar da importação.');
+        await waitUntil(() => delayedFx.state.calls.cadastro > 0 && delayedFx.state.calls.impostos > 0
+            && delayedFx.state.calls.concorrentes > 0);
+        assert.strictEqual(delayedFx.state.patches.length, 0, 'A simulação aguarda a cotação necessária ao custo do painel.');
         delayedFx.state.fx.resolve();
         await delayedFx.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
+        await waitUntil(() => delayedFx.state.patches.length === 1);
+        assert.strictEqual(delayedFx.state.patches[0].payload.custo_unitario, 108.57);
         assert.deepStrictEqual(delayedFx.state.errors, []);
         await delayedFx.context.close();
 
@@ -391,7 +409,7 @@ function releaseComplements(state) {
         assert.strictEqual(await missingValues.page.locator('#vValorTotalDolar').textContent(), '-', 'Preço ausente não vira total zero');
         assert.strictEqual(await missingValues.page.locator('#vValorPorM3').textContent(), '-', 'Lista com preço ausente não calcula rateio parcial');
         assert.strictEqual(await missingValues.page.locator('#vCustoTotalProduto').textContent(), '-');
-        assert.strictEqual(missingValues.state.patches.length, 1, 'Margens usam o cadastro mesmo quando o preço de importação está ausente.');
+        assert.strictEqual(missingValues.state.patches.length, 0, 'Preço de importação ausente impede o custo simulado e a análise.');
         assert.deepStrictEqual(missingValues.state.errors, []);
         await missingValues.context.close();
 
@@ -401,7 +419,7 @@ function releaseComplements(state) {
         await fiscal.page.waitForFunction(() => !document.getElementById('cacheSkuStatus').textContent.includes('Atualizando'));
         assert.strictEqual(await fiscal.page.locator('#vCustoTotalProduto').textContent(), '-');
         assert.strictEqual(fiscal.state.calls.impostos, 1);
-        assert.strictEqual(fiscal.state.patches.length, 1, 'Falha fiscal de importação não bloqueia a cotação financeira do cadastro.');
+        assert.strictEqual(fiscal.state.patches.length, 0, 'Falha fiscal impede usar um custo simulado incompleto.');
         assert.deepStrictEqual(fiscal.state.errors, []);
         await fiscal.context.close();
 

@@ -1799,6 +1799,18 @@
 
         let ultimosComponentesCustoProduto = null;
 
+        function custoSimuladoDisponivel() {
+            return !custoComplementosPendente && Number.isFinite(ultimoValorUnitarioProduto)
+                && ultimoValorUnitarioProduto >= 0;
+        }
+
+        function analiseUsaCustoSimuladoAtual(analise) {
+            const custo = getNumber(analise?.custo_unitario);
+            return custoSimuladoDisponivel() && analise?.fonte_custo === 'simulacao_importacao_sku'
+                && !!contextoDetalheSku?.storeId && analise.store_id === contextoDetalheSku.storeId
+                && custo !== null && Math.abs(custo - ultimoValorUnitarioProduto) <= 0.005;
+        }
+
         function atualizarMargemOferta(numero, propria = false) {
             const prefixo = propria ? 'Mlb' : 'Concorrente';
             const el = document.getElementById('vMargem' + prefixo + numero);
@@ -1811,17 +1823,21 @@
             const dados = margens && margens['concorrente_' + numero];
             const itemIdAtual = extrairCodigoMlbOferta(ultimosAnunciosLojaConcorrentes['concorrente_' + numero]);
             const itemIdAnalisado = extrairCodigoMlbOferta(dados && dados.item_id_loja);
-            const lojaAnuncio = itemIdAtual && itemIdAnalisado === itemIdAtual
+            const contaCorreta = !!contextoDetalheSku?.storeId
+                && String(dados?.store_id || '') === contextoDetalheSku.storeId;
+            const lojaAnuncio = contaCorreta && itemIdAtual && itemIdAnalisado === itemIdAtual
                 ? String(dados?.loja || '').trim() : '';
             if (propria) {
                 const papel = el.closest?.('.analysis-offer')?.querySelector('.analysis-offer-role');
-                if (papel) papel.textContent = lojaAnuncio || 'Peças';
+                if (papel) papel.textContent = lojaAnuncio || contextoDetalheSku?.lojaNome || 'Anúncio da loja';
             }
             const precoAnalisado = getNumber(dados && dados.preco_venda);
             const margem = getNumber(dados && dados.margem_percentual);
             const dadosValidos = precoVenda !== null && precoVenda > 0
                 && precoAnalisado !== null && Math.abs(precoVenda - precoAnalisado) <= 0.02
                 && !!itemIdAtual && itemIdAnalisado === itemIdAtual
+                && contaCorreta && analiseUsaCustoSimuladoAtual(ultimaAnaliseConcorrentes)
+                && analiseUsaCustoSimuladoAtual(dados)
                 && margem !== null && dados && dados.financeiro_exato === true;
 
             el.classList.remove('negative', 'unavailable');
@@ -1839,7 +1855,7 @@
             el.title = [
                 ...(lojaAnuncio ? ['Conta do anúncio: ' + lojaAnuncio] : []),
                 (propria ? 'Preço do anúncio da loja: ' : 'Preço do concorrente: ') + fmtBRL(precoVenda),
-                'Custo do cadastro: ' + fmtBRL(dados.custo_unitario),
+                'Custo unitário simulado: ' + fmtBRL(dados.custo_unitario),
                 'Imposto: ' + fmtBRL(dados.imposto_valor),
                 'Tarifa ML: ' + fmtBRL(dados.tarifa_ml),
                 'Frete ML: ' + fmtBRL(dados.frete_ml),
@@ -1859,7 +1875,9 @@
         }
 
         function aplicarAnaliseConcorrentes(analise) {
-            ultimaAnaliseConcorrentes = analise && typeof analise === 'object' ? analise : null;
+            if (analise && !analiseUsaCustoSimuladoAtual(analise)
+                && analiseUsaCustoSimuladoAtual(ultimaAnaliseConcorrentes)) return;
+            ultimaAnaliseConcorrentes = analiseUsaCustoSimuladoAtual(analise) ? analise : null;
             atualizarTodasMargensConcorrentes();
         }
 
@@ -1880,6 +1898,8 @@
             });
 
             return {
+                fonte_custo: 'simulacao_importacao_sku',
+                custo_unitario: ultimoValorUnitarioProduto,
                 precos_concorrentes: precosConcorrentes,
                 precos_anuncios_loja: precosAnunciosLoja,
                 anuncios_loja: { ...ultimosAnunciosLojaConcorrentes },
@@ -1889,9 +1909,9 @@
 
         async function salvarAnaliseConcorrentes(listaId, sku) {
             const contexto = contextoDetalheSku;
-            if (!analiseComplementosPronta || !dadosSkuVigentes(contexto) || contexto.podeSalvar === false
+            if (!analiseComplementosPronta || !custoSimuladoDisponivel() || !dadosSkuVigentes(contexto) || contexto.podeSalvar === false
                 || contexto.listaId !== String(listaId) || contexto.sku !== normSku(sku)) {
-                throw new Error('A análise aguarda o cadastro da loja e os anúncios deste SKU.');
+                throw new Error('A análise aguarda o custo unitário simulado e os anúncios desta loja.');
             }
             const payload = coletarAnaliseConcorrentes();
             const assinatura = JSON.stringify(payload);
@@ -2999,9 +3019,11 @@
             try {
                 const listaId = contexto && contexto.listaId;
                 const url = '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(skuNorm)
-                    + (listaId ? '&lista_id=' + encodeURIComponent(listaId) : '');
+                    + (listaId ? '&lista_id=' + encodeURIComponent(listaId) + '&anuncios_da_lista=true' : '');
                 let data;
-                if (contexto) data = await consultarJsonDetalheSku(url, contexto);
+                if (contexto) data = await consultarJsonDetalheSku(url, contexto, {
+                    timeoutMs: 120000, mensagemTimeout: 'Tempo limite ao buscar os anúncios da loja desta lista.',
+                });
                 else {
                     const resp = await fetch(url, {
                         method: 'GET',
@@ -3017,11 +3039,19 @@
                     }
                     data = await resp.json();
                 }
+                if (contexto && (!contexto.storeId
+                    || String(data.anuncios_loja_store_id || '') !== contexto.storeId
+                    || data.anuncios_loja_fonte !== 'loja_lista_sku')) {
+                    throw new Error('Os anúncios retornados não pertencem à loja desta lista.');
+                }
                 const c = data && data.concorrentes ? data.concorrentes : {};
                 const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
                 const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
                 const p = data && data.concorrentes_preco ? data.concorrentes_preco : {};
                 return {
+                    storeId: String(data.anuncios_loja_store_id || ''),
+                    lojaNome: String(data.anuncios_loja_nome || ''),
+                    fonte: data.anuncios_loja_fonte || '',
                     fontes_versao: data.fontes_versao || null,
                     links: {
                         concorrente_1: String(c.concorrente_1 || '').trim(),
@@ -3065,7 +3095,26 @@
             if (el) el.textContent = texto;
         }
 
+        function fontesAnunciosDaLista(links, contexto = contextoDetalheSku) {
+            return !!contexto?.storeId && links?.fonte === 'loja_lista_sku'
+                && links.storeId === contexto.storeId;
+        }
+
+        function limparOfertasSku(contexto) {
+            ultimosAnunciosLojaConcorrentes = {};
+            ultimosPrecosOfertas = {};
+            ultimaVersaoFontesConcorrentes = null;
+            ultimaAnaliseConcorrentes = null;
+            [1, 2, 3, 4, 5].forEach(n => {
+                setLinkConcorrente('lblMlb' + n, 'Anúncio da loja', '');
+                setLinkConcorrente('lblConcorrente' + n, 'Concorrente ' + n, '');
+                aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta('', {}));
+                aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta('', {}));
+            });
+        }
+
         function aplicarLinksCacheSku(linksConc) {
+            if (!fontesAnunciosDaLista(linksConc)) return false;
             ultimaVersaoFontesConcorrentes = linksConc.fontes_versao || null;
             ultimosAnunciosLojaConcorrentes = {};
             [1, 2, 3, 4, 5].forEach(function(n) {
@@ -3080,6 +3129,7 @@
                 aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
                 aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
             });
+            return true;
         }
 
         function chaveSnapshotSku(contexto) {
@@ -3100,13 +3150,15 @@
                 || lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
             const item = lista.itens.find(row => normSku(row?.SKU) === contexto.sku);
             if (!item) return false;
-            completo = completo && dados.versao === 1 && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
+            completo = completo && [1, 2].includes(dados.versao) && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
             completo = completo && dados.impostos.every(entrada => Array.isArray(entrada) && entrada.length === 2)
                 && dados.mapaM3.every(entrada => Array.isArray(entrada) && entrada.length === 2);
             if (!dadosSkuVigentes(contexto)) return false;
             contexto.restaurado = true;
             contexto.temDados = true;
             contexto.snapshot = completo ? dados : null;
+            contexto.storeId = String(lista.store_id || '').trim();
+            contexto.lojaNome = String(lista.loja || '').trim();
             if (completo) {
                 cacheImpostosProdutos = new Map(dados.impostos);
                 if (!(cotacaoDolarHoje > 0)) cotacaoDolarHoje = Number(dados.cotacao || 0);
@@ -3117,14 +3169,14 @@
                 new Map(completo ? dados.mapaM3 : []), { somenteDadosLista: !completo });
             if (!detalheSkuVigente(contexto)) return false;
             configurarAprovacaoCompra(lista, item);
-            if (completo && dados.concorrentes) {
+            if (completo && dados.versao === 2 && dados.anunciosDaLista && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
                 aplicarLinksCacheSku(dados.concorrentes);
                 Object.entries(dados.precosOfertas || {}).forEach(([chave, detalhe]) => {
                     const [tipo, numero] = chave.split(':');
                     if (['mlb', 'concorrente'].includes(tipo) && /^[1-5]$/.test(numero)) aplicarDetalhePrecoOferta(tipo, Number(numero), detalhe);
                 });
             }
-            aplicarAnaliseConcorrentes(item.analise_concorrentes);
+            aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
             statusCacheSku('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
             return true;
         }
@@ -3132,7 +3184,7 @@
         async function salvarSnapshotSku(contexto, lista, cadastro, mapaM3, concorrentes) {
             if (!dadosSkuVigentes(contexto) || contexto.podeSalvar === false || !contexto.persistencia || !window.JKCachePersistente) return;
             const { contextoCarregamento, ...fontes } = concorrentes;
-            const dados = { versao: 1, lista, cadastro, mapaM3: Array.from(mapaM3.entries()),
+            const dados = { versao: 2, anunciosDaLista: true, lista, cadastro, mapaM3: Array.from(mapaM3.entries()),
                 impostos: Array.from((cacheImpostosProdutos || new Map()).entries()), concorrentes: fontes,
                 precosOfertas: ultimosPrecosOfertas, cotacao: cotacaoDolarHoje, custoPendente: custoComplementosPendente };
             const contextoAtual = contexto.persistencia;
@@ -3168,7 +3220,7 @@
                 await preencherCampos(item, lista, null, lista.itens, new Map(), { somenteDadosLista: true });
                 if (!dadosSkuVigentes(contexto)) return;
                 configurarAprovacaoCompra(lista, item);
-                aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
                 contexto.temDados = true;
                 contexto.salvosVisiveis = true;
                 statusCacheSku('Dados salvos da lista · Atualizando cálculos...');
@@ -3196,11 +3248,12 @@
 
         async function preservarCacheAposAnaliseSku(contexto, lista, resposta, links) {
             if (!dadosSkuVigentes(contexto) || contexto.podeSalvar === false || !contexto.persistencia) return;
+            if (!analiseUsaCustoSimuladoAtual(resposta?.analise_concorrentes)) return;
             const persistencia = contexto.persistencia;
             const base = contexto.listaPronta || lista;
             const atualizada = JSON.parse(JSON.stringify(base));
             const item = atualizada.itens.find(row => normSku(row.SKU) === contexto.sku);
-            if (item && resposta?.analise_concorrentes) item.analise_concorrentes = resposta.analise_concorrentes;
+            if (item && resposta?.analise_concorrentes) item.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
             // O recibo confirma só a alteração da análise; a cópia mantém o estado salvo.
             await window.JKCachePersistente?.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/'
                 + encodeURIComponent(contexto.listaId), { lista: atualizada },
@@ -3208,7 +3261,7 @@
             const snapshot = contexto.snapshot;
             if (!snapshot || !dadosSkuVigentes(contexto) || contexto.persistencia !== persistencia) return;
             const assinatura = value => JSON.stringify(value, (key, row) => {
-                if (['updated_at', 'analise_concorrentes'].includes(key)) return undefined;
+                if (['updated_at', 'analise_concorrentes', 'analise_simulacao_importacao_sku'].includes(key)) return undefined;
                 return row && typeof row === 'object' && !Array.isArray(row)
                     ? Object.fromEntries(Object.keys(row).sort().map(name => [name, row[name]])) : row;
             });
@@ -3216,8 +3269,8 @@
             const { contextoCarregamento, ...fontes } = links;
             const listaSnapshot = JSON.parse(JSON.stringify(snapshot.lista));
             const itemSnapshot = listaSnapshot.itens.find(row => normSku(row.SKU) === contexto.sku);
-            if (itemSnapshot && resposta?.analise_concorrentes) itemSnapshot.analise_concorrentes = resposta.analise_concorrentes;
-            const copia = { ...snapshot, lista: listaSnapshot, concorrentes: fontes, precosOfertas: { ...ultimosPrecosOfertas } };
+            if (itemSnapshot && resposta?.analise_concorrentes) itemSnapshot.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
+            const copia = { ...snapshot, versao: 2, anunciosDaLista: true, lista: listaSnapshot, concorrentes: fontes, precosOfertas: { ...ultimosPrecosOfertas } };
             await window.JKCachePersistente?.salvar(chaveSnapshotSku(contexto), copia,
                 { contexto: persistencia, tags: ['importacoes', 'vendas'] });
         }
@@ -3225,6 +3278,9 @@
         function prepararComplementosSku(lista, contexto) {
             const storeId = String(lista.store_id || '').trim();
             if (contexto.complementos?.storeId === storeId) return contexto.complementos;
+            if (contexto.storeId && contexto.storeId !== storeId) limparOfertasSku(contexto);
+            contexto.storeId = storeId;
+            contexto.lojaNome = String(lista.loja || '').trim();
             const itens = lista.itens;
             const item = itens.find(row => normSku(row.SKU) === contexto.sku);
             const consultas = { storeId };
@@ -3258,14 +3314,15 @@
                 // Usa os valores salvos da lista; a atualização continua em segundo plano.
                 await preencherCampos(item, lista, cad, itens, mapa, { preservarOfertas: true });
             }).catch(() => {});
-            consultas.analise = Promise.all([consultas.cadastro, consultas.concorrentes]).then(async ([cad, resultado]) => {
+            consultas.analise = Promise.all([consultas.cadastro, consultas.concorrentes, consultas.previa]).then(async ([cad, resultado]) => {
                 if (!vigente() || !storeId || resultado.status !== 'fulfilled') return null;
                 const links = resultado.value;
                 links.contextoCarregamento = contexto;
                 aplicarLinksCacheSku(links);
-                aplicarAnaliseConcorrentes(item.analise_concorrentes);
-                // As margens usam custo/imposto do cadastro, independentemente do custo de importação.
+                aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
+                // Este cenário usa o custo simulado do painel e os anúncios da loja da lista.
                 analiseComplementosPronta = true;
+                if (!custoSimuladoDisponivel()) return null;
                 const resposta = await salvarAnaliseConcorrentes(contexto.listaId, contexto.sku);
                 if (vigente() && contexto.podeSalvar !== false) {
                     aplicarAnaliseConcorrentes(resposta?.analise_concorrentes);
@@ -3365,6 +3422,7 @@
             controladoresDetalheSku.forEach(controller => controller.abort());
             analiseComplementosPronta = false;
             if (!contexto.temDados) {
+                limparOfertasSku(contexto);
                 cacheImpostosProdutos = null;
                 custoComplementosPendente = true;
                 ultimoValorUnitarioProduto = null;
@@ -3409,7 +3467,7 @@
                 if (!contexto.snapshot) {
                     preencherCampos(item, lista, null, itens, new Map(), { somenteDadosLista: true });
                     configurarAprovacaoCompra(lista, item);
-                    aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                    aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
                 }
                 contexto.temDados = true;
                 const storeId = String(lista.store_id || '').trim();
@@ -3434,6 +3492,7 @@
                 cacheImpostosProdutos = resultados[2].status === 'fulfilled' ? resultados[2].value : new Map();
                 custoComplementosPendente = custoSkuPendente(lista, item, mapaM3Cadastro, resultados[2].status === 'fulfilled');
                 const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);
+                await promessaDadosImposto;
                 if (!resultadoConcorrentes) resultadoConcorrentes = await promessaConcorrentes;
                 if (!await dadosSkuAposMutacao(contexto)) return;
                 const falhas = [...resultados, resultadoConcorrentes].filter(resultado => resultado.status === 'rejected');
@@ -3445,16 +3504,16 @@
                     aplicarLinksCacheSku(linksConc);
                     statusCacheSku('Dados do SKU disponíveis. Calculando margens dos anúncios...');
                     let resultadoAnalise = await consultas.analise;
-                    if (resultadoAnalise.status === 'rejected' && Number.isInteger(resultadoAnalise.reason.status)
-                        && analiseComplementosPronta && contexto.podeSalvar !== false && await dadosSkuAposMutacao(contexto)) {
-                        // Um conflito conhecido da leitura salva pode ser refeito após a lista pronta.
+                    if (analiseComplementosPronta && custoSimuladoDisponivel()
+                        && contexto.podeSalvar !== false && await dadosSkuAposMutacao(contexto)) {
+                        // A assinatura inclui o custo: reutiliza o mesmo cenário ou calcula o valor novo.
                         resultadoAnalise = await salvarAnaliseConcorrentes(listaId, skuNorm).then(
                             value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }));
                     }
                     if (!await dadosSkuAposMutacao(contexto)) return;
                     respostaAnalise = resultadoAnalise.value;
                     erroAnalise = resultadoAnalise.status === 'rejected' ? resultadoAnalise.reason : null;
-                    aplicarAnaliseConcorrentes(respostaAnalise?.analise_concorrentes || item.analise_concorrentes);
+                    aplicarAnaliseConcorrentes(respostaAnalise?.analise_concorrentes || item.analise_simulacao_importacao_sku);
                     if (!erroAnalise) setErro('');
                 }
                 if (falhas.length) {
@@ -3477,8 +3536,12 @@
                     if (erroAnalise) throw erroAnalise;
                     const resultadoAnalise = respostaAnalise;
                     if (dadosSkuVigentes(contexto) && contexto.podeSalvar !== false) {
-                        item.analise_concorrentes = resultadoAnalise?.analise_concorrentes || item.analise_concorrentes;
-                        aplicarAnaliseConcorrentes(item.analise_concorrentes);
+                        if (!analiseUsaCustoSimuladoAtual(resultadoAnalise?.analise_concorrentes)) {
+                            statusCacheSku('Aguardando a análise do custo unitário simulado atual.');
+                            return;
+                        }
+                        item.analise_simulacao_importacao_sku = resultadoAnalise?.analise_concorrentes || item.analise_simulacao_importacao_sku;
+                        aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
                         await salvarSnapshotSku(contexto, lista, cad, mapaM3Cadastro, linksConc);
                         statusCacheSku('Dados atualizados.');
                         enriquecerPromocoesSkuEmSegundoPlano(contexto, lista, cad, mapaM3Cadastro, linksConc);

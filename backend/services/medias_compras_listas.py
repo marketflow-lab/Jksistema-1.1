@@ -168,11 +168,14 @@ def _cfg_confere_dono_anuncio(cfg: dict, dono: dict) -> bool:
                 and str(cfg.get("site_id") or "").strip() == dono["site_id"])
 
 
-def _candidatos_donos_anuncios(client_id: str, deps: dict, cache_contextos: dict) -> tuple[list, str]:
+def _candidatos_donos_anuncios(
+    client_id: str, deps: dict, cache_contextos: dict, *, store_id_alvo: str | None = None,
+) -> tuple[list, str]:
     # This snapshot belongs only to this request's authenticated tenant. It is
     # never restored from an ad cache, audit record or historical store list.
-    if "__contas_autorizadas" in cache_contextos:
-        salvo = cache_contextos["__contas_autorizadas"]
+    cache_key = ("__contas_autorizadas", store_id_alvo)
+    if cache_key in cache_contextos:
+        salvo = cache_contextos[cache_key]
         return salvo["candidatos"], salvo["motivo"]
     candidatos: list[dict[str, Any]] = []
     motivo = "Não foi possível confirmar uma conta autorizada e seu site para este anúncio."
@@ -187,6 +190,8 @@ def _candidatos_donos_anuncios(client_id: str, deps: dict, cache_contextos: dict
     for row in lojas:
         nome = str(row.get("nome") or "").strip()
         store_id = str(row.get("store_id") or "").strip()
+        if store_id_alvo is not None and store_id != store_id_alvo:
+            continue
         integracoes = row.get("integracoes") or {}
         publico = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else None
         if (not nome or not store_id or not isinstance(publico, dict)
@@ -207,7 +212,7 @@ def _candidatos_donos_anuncios(client_id: str, deps: dict, cache_contextos: dict
             continue
         if _cfg_confere_dono_anuncio(cfg, dono):
             candidatos.append({**dono, "cfg": cfg})
-    cache_contextos["__contas_autorizadas"] = {"candidatos": candidatos, "motivo": motivo}
+    cache_contextos[cache_key] = {"candidatos": candidatos, "motivo": motivo}
     return candidatos, motivo
 
 
@@ -244,11 +249,12 @@ def _carregar_contexto_anuncio_loja(
     item_id: str,
     deps: dict[str, Any],
     cache_contextos: dict[str, dict[str, Any]],
+    *, store_id_alvo: str | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     if item_id in cache_contextos:
         contexto = cache_contextos[item_id]
         return (contexto, "") if contexto.get("ok") else (None, contexto.get("motivo") or "")
-    candidatos, motivo = _candidatos_donos_anuncios(client_id, deps, cache_contextos)
+    candidatos, motivo = _candidatos_donos_anuncios(client_id, deps, cache_contextos, store_id_alvo=store_id_alvo)
     if not candidatos:
         cache_contextos[item_id] = {"ok": False, "motivo": motivo}
         return None, motivo
@@ -307,13 +313,27 @@ def _calcular_margens_concorrentes_promocoes(
     anuncios_loja: dict[str, str],
     *,
     contexto_consulta: dict | None = None,
+    custo_unitario_simulado: float | None = None,
+    store_id_alvo: str | None = None,
 ) -> dict[str, dict[str, Any]]:
+    simulacao = custo_unitario_simulado is not None or store_id_alvo is not None
+    custo_simulado = _numero_finito_margem(custo_unitario_simulado)
+    if simulacao and (custo_simulado is None or custo_simulado < 0 or not str(store_id_alvo or "").strip()):
+        return {
+            chave: _margem_concorrente_indisponivel(
+                preco, _normalizar_item_id_mlb(anuncios_loja.get(chave)),
+                "O custo simulado e a loja da lista precisam estar disponíveis para analisar este SKU.",
+            ) for chave, preco in precos_concorrentes.items()
+        }
     deps = _dependencias_margens_concorrentes()
     margens: dict[str, dict[str, Any]] = {}
     # Both price series belong to one request. Never reuse an item's financial
     # context across a tenant, store or SKU, even if the MLB happens to match.
     cache_consulta = {} if contexto_consulta is None else contexto_consulta
-    cache_escopo = cache_consulta.setdefault((client_id, loja_lista, sku), {})
+    escopo = (client_id, loja_lista, sku)
+    if simulacao:
+        escopo = (*escopo, "simulacao_importacao_sku", store_id_alvo, custo_simulado)
+    cache_escopo = cache_consulta.setdefault(escopo, {})
     cache_contextos = cache_escopo.setdefault("anuncios", {})
     cache_cadastro = cache_escopo.setdefault("cadastro", {})
     cache_cotacoes = cache_escopo.setdefault("cotacoes", {})
@@ -340,6 +360,7 @@ def _calcular_margens_concorrentes_promocoes(
             item_id,
             deps,
             cache_contextos,
+            **({"store_id_alvo": store_id_alvo} if simulacao else {}),
         )
         if not contexto:
             margens[chave] = _margem_concorrente_indisponivel(preco_venda, item_id, motivo)
@@ -348,6 +369,14 @@ def _calcular_margens_concorrentes_promocoes(
         loja = str(contexto.get("loja") or "").strip()
         store_id = str(contexto.get("store_id") or "").strip()
         item = dict(contexto.get("item") or {})
+        if simulacao:
+            from backend.services.importacoes_sku_anuncios import anuncio_corresponde_sku_exato
+
+            if not anuncio_corresponde_sku_exato(item, sku):
+                margens[chave] = _margem_concorrente_indisponivel(
+                    preco_venda, item_id, "O anúncio da loja da lista não confirmou o SKU solicitado.", loja=loja,
+                )
+                continue
         cfg = dict(contexto.get("cfg") or {})
         cadastro_key = (store_id, sku)
         if cadastro_key not in cache_cadastro:
@@ -357,7 +386,7 @@ def _calcular_margens_concorrentes_promocoes(
             except Exception:
                 cache_cadastro[cadastro_key] = ({}, {})
         custos_cadastro, impostos_cadastro = cache_cadastro[cadastro_key]
-        custo_unitario = deps["resolver_custo"](custos_cadastro, sku)
+        custo_unitario = custo_simulado if simulacao else deps["resolver_custo"](custos_cadastro, sku)
         custo_unitario = _numero_finito_margem(custo_unitario)
         if custo_unitario is None or custo_unitario < 0:
             margens[chave] = _margem_concorrente_indisponivel(
@@ -479,6 +508,8 @@ def _calcular_margens_concorrentes_promocoes(
                 or ""
             )[:120],
         }
+        if simulacao:
+            margens[chave]["fonte_custo"] = "simulacao_importacao_sku"
         cache_cotacoes[(item_id, preco_venda)] = dict(margens[chave])
 
     for chave, dados in margens.items():
@@ -638,12 +669,14 @@ async def api_medias_compras_concorrentes_links(
     sku: str,
     client_id: str = Depends(medias_common.get_tenant_id),
     lista_id: str | None = None,
+    anuncios_da_lista: bool = False,
 ):
     from backend.services.blocking_workers import run_heavy
 
     return await run_heavy(
         _api_medias_compras_concorrentes_links_sync,
         sku=sku, client_id=client_id, lista_id=lista_id,
+        **({"anuncios_da_lista": True} if anuncios_da_lista else {}),
     )
 
 
@@ -651,10 +684,13 @@ def _api_medias_compras_concorrentes_links_sync(
     sku: str,
     client_id: str = Depends(medias_common.get_tenant_id),
     lista_id: str | None = None,
+    anuncios_da_lista: bool = False,
 ):
     sku_in = str(sku or "").strip()
     if not sku_in:
         raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio")
+    if anuncios_da_lista and not str(lista_id or "").strip():
+        raise HTTPException(status_code=400, detail="Informe a lista para consultar os anúncios deste SKU na loja vinculada.")
 
     lista = None
     if lista_id is not None:
@@ -671,10 +707,29 @@ def _api_medias_compras_concorrentes_links_sync(
 
     try:
         indice, fontes_versao = _indice_concorrentes_lista(client_id, lista)
-        return {
+        payload = {
             **_payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in))),
             "fontes_versao": fontes_versao,
         }
+        if anuncios_da_lista:
+            from backend.services.importacoes_sku_anuncios import buscar_anuncios_sku_da_lista
+
+            anuncios = buscar_anuncios_sku_da_lista(client_id, lista, sku_in)
+            payload["concorrentes_mlb"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
+            payload["concorrentes_preco"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
+            for numero, anuncio in enumerate((anuncios.get("anuncios") or [])[:5], start=1):
+                chave = f"concorrente_{numero}"
+                payload["concorrentes_mlb"][chave] = anuncio["url"]
+                payload["concorrentes_preco"][chave] = anuncio.get("preco") if anuncio.get("preco") is not None else ""
+            payload.update({
+                "anuncios_loja_store_id": anuncios["store_id"],
+                "anuncios_loja_nome": anuncios["loja"],
+                "anuncios_loja_fonte": "loja_lista_sku",
+                "anuncios_loja_total": anuncios.get("total_encontrado", len(anuncios.get("anuncios") or [])),
+                "anuncios_loja_truncado": bool(anuncios.get("truncado")),
+                "anuncios_loja_limite": anuncios.get("limite", 5),
+            })
+        return payload
     except HTTPException:
         raise
     except Exception as e:
@@ -1158,8 +1213,10 @@ def _proteger_itens_aprovados_lista(
     for item_atual in itens_atuais or []:
         sku = _sku_item_lista_pedido(item_atual)
         item_novo = novos_por_sku.get(sku)
-        if item_novo and "analise_concorrentes" in item_atual:
-            item_novo["analise_concorrentes"] = copy.deepcopy(item_atual["analise_concorrentes"])
+        if item_novo:
+            for campo in ("analise_concorrentes", "analise_simulacao_importacao_sku"):
+                if campo in item_atual:
+                    item_novo[campo] = copy.deepcopy(item_atual[campo])
 
         if not _item_lista_pedido_compra_aprovada(item_atual):
             continue
@@ -1421,6 +1478,20 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         custo_unitario_informado = float(custo_unitario_informado)
         if not math.isfinite(custo_unitario_informado) or custo_unitario_informado < 0:
             raise HTTPException(status_code=400, detail="Custo unitario invalido para analise de concorrentes")
+    simulacao = req.fonte_custo == "simulacao_importacao_sku"
+    store_id_alvo = None
+    campo_analise = "analise_simulacao_importacao_sku" if simulacao else "analise_concorrentes"
+    if simulacao:
+        if custo_unitario_informado is None:
+            raise HTTPException(status_code=400, detail="Aguarde o custo unitário simulado deste SKU antes de analisar as margens.")
+        store_id_alvo = str(lista.get("store_id") or "").strip()
+        if not store_id_alvo:
+            escopo = medias_common._resolver_escopo_loja_medias(
+                client_id, lista.get("loja"), exigir_especifica=True,
+            )
+            store_id_alvo = str(escopo.get("store_id") or "").strip()
+        if not store_id_alvo:
+            raise HTTPException(status_code=409, detail="Defina uma loja específica nesta lista para analisar a simulação do SKU.")
 
     precos_recebidos = dict(req.precos_concorrentes or {})
     precos_loja_recebidos = dict(req.precos_anuncios_loja or {})
@@ -1455,7 +1526,9 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             raise HTTPException(status_code=400, detail="Anuncio da loja invalido para analise")
         anuncios_normalizados[chave] = item_id
 
-    contexto_consulta = {} if req.precos_anuncios_loja is not None else None
+    contexto_consulta = {} if req.precos_anuncios_loja is not None or simulacao else None
+    opcoes_simulacao = ({"custo_unitario_simulado": custo_unitario_informado, "store_id_alvo": store_id_alvo}
+                        if simulacao else {})
 
     def calcular_precos(precos: dict[str, float]) -> dict[str, dict[str, Any]]:
         if not precos:
@@ -1468,6 +1541,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
                 precos,
                 anuncios_normalizados,
                 **({"contexto_consulta": contexto_consulta} if contexto_consulta is not None else {}),
+                **opcoes_simulacao,
             )
         except Exception:
             logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
@@ -1492,12 +1566,15 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     atualizado_em = datetime.now().isoformat(timespec="seconds")
     analise_concorrentes = {
         "custo_unitario": round(custo_unitario_cadastro, 2) if custo_unitario_cadastro is not None else None,
-        "fonte_custo": "cadastro_sku_loja",
+        "fonte_custo": req.fonte_custo,
         "metodo": "analise_promocoes_ml_liquida",
         "fontes_versao": req.fontes_versao,
         "margens": margens,
         "atualizado_em": atualizado_em,
     }
+    if simulacao:
+        analise_concorrentes["custo_unitario"] = round(custo_unitario_informado, 2)
+        analise_concorrentes["store_id"] = store_id_alvo
 
     # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
     # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
@@ -1534,10 +1611,22 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     if req.precos_anuncios_loja is not None:
         analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
     else:
-        analise_atual = item_atual.get("analise_concorrentes")
+        analise_atual = item_atual.get(campo_analise)
         if isinstance(analise_atual, dict) and "margens_anuncios_loja" in analise_atual:
-            analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
-    item_atual["analise_concorrentes"] = analise_concorrentes
+            if not simulacao:
+                analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
+            elif (analise_atual.get("fonte_custo") == req.fonte_custo
+                  and _numero_finito_margem(analise_atual.get("custo_unitario")) == custo_unitario_informado
+                  and analise_atual.get("store_id") == store_id_alvo):
+                analise_concorrentes["margens_anuncios_loja"] = {
+                    chave: copy.deepcopy(dados)
+                    for chave, dados in (analise_atual["margens_anuncios_loja"] or {}).items()
+                    if isinstance(dados, dict) and dados.get("store_id") == store_id_alvo
+                    and dados.get("item_id_loja") == anuncios_normalizados.get(chave)
+                }
+        if simulacao:
+            analise_concorrentes.setdefault("margens_anuncios_loja", {})
+    item_atual[campo_analise] = analise_concorrentes
     itens_atuais[idx_item_atual] = item_atual
     lista_atual["itens"] = itens_atuais
     lista_atual["updated_at"] = atualizado_em

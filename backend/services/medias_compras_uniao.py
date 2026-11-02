@@ -253,7 +253,7 @@ def _resolver_itens(previa, bases, escolhas):
         item["received_quantity"] = item["defective_quantity"] = 0
         for key in list(item):
             if key.startswith("compra_aprovada") or key.startswith("Compra aprovada") or key in {
-                "analise_concorrentes", "margens", "margem_percentual", "II", "IPI", "PIS", "COFINS", "Imposto", "Descricao do NCM",
+                "analise_concorrentes", "analise_simulacao_importacao_sku", "margens", "margem_percentual", "II", "IPI", "PIS", "COFINS", "Imposto", "Descricao do NCM",
             }:
                 item.pop(key, None)
     return list(bases.values())

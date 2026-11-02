@@ -149,7 +149,8 @@ def test_catalogue_fields_are_not_offered_as_manual_choices_and_are_reset(store)
     def change(rows):
         rows[0]["itens"][0].update({"M3 individual": "", "Estimed CBM": "", "Cubagem status": "pendente",
                                      "Foto": "foto-a", "NCM": "1234", "CEST": "9876",
-                                     "analise_concorrentes": {"margem": 99}, "Imposto": "Resultado antigo"})
+                                     "analise_concorrentes": {"margem": 99}, "Imposto": "Resultado antigo",
+                                     "analise_simulacao_importacao_sku": {"custo_unitario": 14.2, "margens": {"antiga": 99}}})
         rows[1]["itens"][0].update({"Foto": "foto-b", "NCM": "5678", "CEST": "5432"})
     edit(change)
     data = preview()
@@ -161,6 +162,7 @@ def test_catalogue_fields_are_not_offered_as_manual_choices_and_are_reset(store)
     assert not item.get("NCM") and not item.get("CEST")
     assert result["m3_completo"] is False
     assert "analise_concorrentes" not in item and "Imposto" not in item
+    assert "analise_simulacao_importacao_sku" not in item
 
 
 @pytest.mark.parametrize("other_oem", ["", "OEM-B"])

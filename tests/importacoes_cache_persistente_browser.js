@@ -24,13 +24,13 @@ function lista(revisao = 1) {
         itens: [{ SKU: '001', Quantidade: revisao === 1 ? 2 : 9, 'M3 individual': 0.1,
             'Valor unidade': 10, 'Valor total': 20, Produto: 'Produto da lista', NCM: '00000001',
             II: 10, IPI: 5, PIS: 2, COFINS: 3, 'ST Minas': 'Não', 'ST Paraíba': 'Não',
-            analise_concorrentes: { margens: {} } }] };
+            analise_concorrentes: { margens: {} }, analise_simulacao_importacao_sku: { margens: {} } }] };
 }
 
 async function launch(mode = 'live') {
     context = await chromium.launchPersistentContext(profile, { headless: true });
     const state = { mode, revisao: 1, pending: gate(), complementsForbidden: false, costFailure: false, logistics: {},
-        calls: { detail: 0, index: 0, cost: 0, patches: 0 }, errors: [] };
+        calls: { detail: 0, index: 0, cost: 0, patches: 0 }, analyses: [], errors: [] };
     await context.addInitScript(() => {
         if (location.origin !== 'http://127.0.0.1:8128') return;
         if (!localStorage.getItem('user_data')) {
@@ -56,7 +56,12 @@ async function launch(mode = 'live') {
                 body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
         if (pathname.endsWith('/analise-concorrentes')) {
             state.calls.patches++;
-            return json(route, { analise_concorrentes: { margens: {} } });
+            const payload = route.request().postDataJSON();
+            state.analyses.push(payload);
+            assert.strictEqual(payload.fonte_custo, 'simulacao_importacao_sku');
+            assert(Number.isFinite(payload.custo_unitario) && payload.custo_unitario > 0);
+            return json(route, { analise_concorrentes: { fonte_custo: payload.fonte_custo,
+                custo_unitario: payload.custo_unitario, store_id: 'store-A', margens: {}, margens_anuncios_loja: {} } });
         }
         const primary = pathname === '/api/medias-compras/listas-pedidos' || pathname === '/api/medias-compras/listas-pedidos/A';
         if (primary) {
@@ -85,8 +90,12 @@ async function launch(mode = 'live') {
                 produto: { store_id: 'store-A', sku: '001', nome: 'Cadastro confirmado', ncm: '00000002', 'M3 individual': 0.1 } });
             if (pathname === '/api/cadastro/lojas/store-A/produtos') return json(route, []);
             if (pathname === '/api/impostos/produtos') return json(route, { produtos: [] });
-            if (pathname === '/api/medias-compras/concorrentes-links') return json(route, { concorrentes: {},
-                concorrentes_mlb: {}, concorrentes_preco: {}, concorrentes_valores: { concorrente_1: 'R$ 200,00' } });
+            if (pathname === '/api/medias-compras/concorrentes-links') {
+                assert.strictEqual(url.searchParams.get('anuncios_da_lista'), 'true');
+                return json(route, { anuncios_loja_store_id: 'store-A', anuncios_loja_nome: 'Loja A',
+                    anuncios_loja_fonte: 'loja_lista_sku', concorrentes: {}, concorrentes_mlb: {},
+                    concorrentes_preco: {}, concorrentes_valores: { concorrente_1: 'R$ 200,00' } });
+            }
             return json(route, {});
         }
         return route.fulfill({ contentType: 'application/javascript', body: '' });
@@ -108,8 +117,19 @@ async function saved(page, key, predicate) {
         await sku.goto(origin + '/importacoes_sku.html?lista_id=A&sku=001');
         await saved(sku, 'importacoes:SKU:A:001');
         await sku.waitForFunction(() => document.getElementById('vCustoTotalProduto').textContent !== '-');
+        await sku.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.');
         const custo = await sku.locator('#vCustoTotalProduto').textContent();
         assert.notStrictEqual(custo, '-');
+        const snapshot = await sku.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
+        assert.strictEqual(snapshot.versao, 2);
+        assert.strictEqual(snapshot.anunciosDaLista, true);
+        assert.strictEqual(snapshot.concorrentes.storeId, 'store-A');
+        assert.strictEqual(snapshot.concorrentes.fonte, 'loja_lista_sku');
+        assert.strictEqual(snapshot.lista.itens[0].analise_simulacao_importacao_sku.fonte_custo, 'simulacao_importacao_sku');
+        assert.strictEqual(snapshot.lista.itens[0].analise_simulacao_importacao_sku.custo_unitario,
+            await sku.evaluate(() => ultimoValorUnitarioProduto));
+        assert.deepStrictEqual(snapshot.lista.itens[0].analise_concorrentes, { margens: {} },
+            'O cache da simulação não modifica a análise legada usada pela lista.');
         let detalhe = await context.newPage();
         await detalhe.goto(origin + '/importacoes_lista.html?lista_id=A');
         await saved(detalhe, 'importacoes:GET:/api/medias-compras/listas-pedidos/A', 'complementosLista');

@@ -16,12 +16,12 @@ function gate() {
 
 function lista(id = 'A', quantidade = 2) {
     return {
-        id, nome_lista: 'Pedido ' + id, store_id: 'store-' + id, dolar_hoje: 5,
+        id, nome_lista: 'Pedido ' + id, loja: 'Loja ' + id, store_id: 'store-' + id, dolar_hoje: 5,
         itens: [{
             SKU: '001', Quantidade: quantidade, 'Valor unidade': 10, 'Valor total': quantidade * 10,
             'M3 individual': 0.1, Produto: 'Produto salvo ' + id, NCM: '00000001',
             Link: 'https://produto.test/' + id, II: 10, IPI: 5, PIS: 2, COFINS: 3,
-            'ST Minas': 'Não', 'ST Paraíba': 'Não', analise_concorrentes: { margens: {} },
+            'ST Minas': 'Não', 'ST Paraíba': 'Não', analise_simulacao_importacao_sku: { margens: {} },
         }],
     };
 }
@@ -40,6 +40,8 @@ function aguardando() {
 
 function fontesFinanceiras(id = 'A') {
     return {
+        anuncios_loja_store_id: 'store-' + id, anuncios_loja_nome: 'Loja ' + id,
+        anuncios_loja_fonte: 'loja_lista_sku',
         concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
         concorrentes_valores: { concorrente_1: id === 'A' ? 'R$ 200,00' : 'R$ 250,00' },
         concorrentes_mlb: { concorrente_1: id === 'A'
@@ -49,15 +51,24 @@ function fontesFinanceiras(id = 'A') {
     };
 }
 
-function respostaFinanceira(payload, margemPropria = 33) {
+function margemSimulada(custo, preco) {
+    return ((preco - custo - preco * .1 - preco * .15 - 8) * 100) / preco;
+}
+
+function respostaFinanceira(payload, margemPropria = null, storeId = 'store-A') {
     const dados = preco => ({
         preco_venda: preco, item_id_loja: payload.anuncios_loja.concorrente_1, financeiro_exato: true,
-        loja: 'Loja do anúncio', store_id: 'store-owner', seller_id: 'seller-owner', site_id: 'MLB',
-        custo_unitario: 50, imposto_valor: 20, tarifa_ml: 30, frete_ml: 10, valor_liquido: 190,
+        loja: 'Loja ' + storeId.slice(-1), store_id: storeId, seller_id: 'seller-' + storeId, site_id: 'MLB',
+        fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario,
+        imposto_valor: preco * .1, tarifa_ml: preco * .15, frete_ml: 8,
+        valor_liquido: preco - payload.custo_unitario - preco * .1 - preco * .15 - 8,
+        margem_percentual: margemSimulada(payload.custo_unitario, preco),
     });
     return { analise_concorrentes: {
-        margens: { concorrente_1: { ...dados(payload.precos_concorrentes.concorrente_1), margem_percentual: 12 } },
-        margens_anuncios_loja: { concorrente_1: { ...dados(payload.precos_anuncios_loja.concorrente_1), margem_percentual: margemPropria } },
+        fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario, store_id: storeId,
+        margens: { concorrente_1: dados(payload.precos_concorrentes.concorrente_1) },
+        margens_anuncios_loja: { concorrente_1: { ...dados(payload.precos_anuncios_loja.concorrente_1),
+            ...(margemPropria === null ? {} : { margem_percentual: margemPropria }) } },
     } };
 }
 
@@ -66,15 +77,21 @@ function opcoesFinanceiras(overrides = {}) {
         holdPrices: true,
         complement: ({ pathname, url }) => pathname === '/api/medias-compras/concorrentes-links'
             ? fontesFinanceiras(url.searchParams.get('lista_id')) : undefined,
-        patch: ({ payload }) => respostaFinanceira(payload),
+        patch: ({ payload, pathname }) => respostaFinanceira(payload, null, pathname.includes('/B/') ? 'store-B' : 'store-A'),
         ...overrides,
     };
 }
 
 async function aguardarMargens(env) {
-    await env.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.'
-        && document.getElementById('vMargemMlb1').textContent === 'Margem: 33,00%'
-        && document.getElementById('vMargemConcorrente1').textContent === 'Margem: 12,00%');
+    await env.page.waitForFunction(() => {
+        const custo = ultimoValorUnitarioProduto;
+        const margem = preco => ((preco - custo - preco * .1 - preco * .15 - 8) * 100) / preco;
+        const propria = getNumber(document.getElementById('vMlb1').textContent);
+        const mercado = getNumber(document.getElementById('vConcorrente1').textContent);
+        return custo !== null && document.getElementById('cacheSkuStatus').textContent === 'Dados atualizados.'
+            && document.getElementById('vMargemMlb1').textContent === 'Margem: ' + fmtPct(margem(propria))
+            && document.getElementById('vMargemConcorrente1').textContent === 'Margem: ' + fmtPct(margem(mercado));
+    });
 }
 
 async function waitUntil(predicate, message) {
@@ -166,12 +183,23 @@ async function environment(browser, options = {}) {
             if (pathname.endsWith('/analise-concorrentes')) {
                 assert.strictEqual(route.request().method(), 'PATCH');
                 const call = { pathname, payload: route.request().postDataJSON() };
+                assert.strictEqual(call.payload.fonte_custo, 'simulacao_importacao_sku');
+                assert(Number.isFinite(call.payload.custo_unitario) && call.payload.custo_unitario > 0,
+                    'A simulação exige o custo unitário válido do painel.');
                 state.patches.push(call);
                 if (options.patch) return json(route, await options.patch({ ...call, state }));
-                return json(route, { analise_concorrentes: { margens: {} } });
+                return json(route, { analise_concorrentes: {
+                    fonte_custo: call.payload.fonte_custo, custo_unitario: call.payload.custo_unitario,
+                    store_id: pathname.includes('/B/') ? 'store-B' : 'store-A',
+                    margens: {}, margens_anuncios_loja: {},
+                } });
             }
             if (pathname.startsWith('/api/')) {
                 state.complements.push(pathname);
+                if (pathname === '/api/medias-compras/concorrentes-links') {
+                    assert.strictEqual(url.searchParams.get('anuncios_da_lista'), 'true',
+                        'A tela pede anúncios exclusivamente da loja da lista.');
+                }
                 if (options.complement) {
                     const custom = await options.complement({ pathname, state, url });
                     if (custom !== undefined) return json(route, custom);
@@ -179,11 +207,13 @@ async function environment(browser, options = {}) {
                 const product = pathname.match(/^\/api\/cadastro\/lojas\/(store-[AB])\/produtos\/001$/);
                 if (product) return json(route, { produto: {
                     store_id: product[1], sku: '001', nome: 'Cadastro ' + product[1],
-                    ncm: '00000002', 'M3 individual': 0.1,
+                    ncm: '00000002', 'M3 individual': 0.1, custo: '999', imposto: '10',
                 } });
                 if (/^\/api\/cadastro\/lojas\/store-[AB]\/produtos$/.test(pathname)) return json(route, []);
                 if (pathname === '/api/impostos/produtos') return json(route, { produtos: [] });
                 if (pathname === '/api/medias-compras/concorrentes-links') return json(route, {
+                    anuncios_loja_store_id: 'store-' + url.searchParams.get('lista_id'),
+                    anuncios_loja_nome: 'Loja ' + url.searchParams.get('lista_id'), anuncios_loja_fonte: 'loja_lista_sku',
                     concorrentes: {}, concorrentes_mlb: {}, concorrentes_preco: {},
                     concorrentes_valores: { concorrente_1: 'R$ 200,00' },
                 });
@@ -214,23 +244,25 @@ async function visibleSaved(env, quantity = '2') {
         && document.getElementById('vQtd').textContent === expected, quantity);
 }
 
-async function seed(env, full = false) {
+async function seed(env, full = false, snapshotVersion = 2) {
     await env.page.goto(origin + '/seed.html');
-    await env.page.evaluate(async ({ data, full, key }) => {
+    await env.page.evaluate(async ({ data, full, key, snapshotVersion }) => {
         const options = { tags: ['importacoes', 'vendas'] };
         const ok = await JKCachePersistente.salvar(key, { lista: data }, options);
         if (!ok) throw new Error('A fixture não conseguiu salvar o cache canônico.');
         if (!full) return;
         const snapshot = {
-            versao: 1, lista: data, cadastro: { tituloPt: 'Cadastro salvo', ncm: '00000001', m3Individual: 0.1 },
+            versao: snapshotVersion, anunciosDaLista: snapshotVersion >= 2,
+            lista: data, cadastro: { tituloPt: 'Cadastro salvo', ncm: '00000001', m3Individual: 0.1 },
             mapaM3: [['001', 0.1]], impostos: [], cotacao: 5, custoPendente: false,
-            concorrentes: { links: {}, valores: { concorrente_1: 'R$ 200,00' }, mlb: {}, preco: {} },
+            concorrentes: { links: {}, valores: { concorrente_1: 'R$ 200,00' }, mlb: {}, preco: {},
+                storeId: 'store-A', lojaNome: 'Loja A', fonte: 'loja_lista_sku' },
             precosOfertas: {},
         };
         if (!await JKCachePersistente.salvar('importacoes:SKU:A:001', snapshot, options)) {
             throw new Error('A fixture não conseguiu salvar o snapshot completo.');
         }
-    }, { data: lista(), full, key: canonicalKey });
+    }, { data: lista(), full, key: canonicalKey, snapshotVersion });
 }
 
 function verifyCalls(env) {
@@ -257,15 +289,19 @@ async function run(browser, name, options, check) {
         await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
             await open(env);
             await aguardarMargens(env);
-            assert.strictEqual(await env.page.locator('.analysis-offer.own .analysis-offer-role').first().textContent(), 'Loja do anúncio');
-            assert.match(await env.page.locator('#vMargemMlb1').getAttribute('title'), /Conta do anúncio: Loja do anúncio/);
-            assert.strictEqual(await env.page.evaluate(() => contextoDetalheSku.listaPronta.store_id), 'store-A', 'A conta do anúncio não substitui a loja da importação.');
+            assert.strictEqual(await env.page.locator('.analysis-offer.own .analysis-offer-role').first().textContent(), 'Loja A');
+            assert.match(await env.page.locator('#vMargemMlb1').getAttribute('title'), /Custo unitário simulado/);
+            assert.strictEqual(await env.page.evaluate(() => contextoDetalheSku.listaPronta.store_id), 'store-A');
             await env.page.waitForFunction(() => window.fixturePrices.length === 2);
             assert.strictEqual(env.state.patches.length, 1);
             assert.strictEqual(env.state.patches[0].payload.precos_anuncios_loja.concorrente_1, 300);
             assert.strictEqual(env.state.patches[0].payload.precos_concorrentes.concorrente_1, 200);
+            assert.strictEqual(env.state.patches[0].payload.custo_unitario, await env.page.evaluate(() => ultimoValorUnitarioProduto),
+                'O pedido usa o custo arredondado exibido no painel.');
             const salvo = await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
-            assert.strictEqual(salvo.lista.itens[0].analise_concorrentes.margens_anuncios_loja.concorrente_1.margem_percentual, 33,
+            assert.strictEqual(salvo.versao, 2);
+            assert.strictEqual(salvo.lista.itens[0].analise_simulacao_importacao_sku.custo_unitario,
+                env.state.patches[0].payload.custo_unitario,
                 'Snapshot financeiro completo não aguarda o IPC de promoções.');
             if (process.env.JK_SKU_MARGIN_SCREENSHOT) {
                 await env.page.setViewportSize({ width: 1680, height: 1050 });
@@ -282,17 +318,110 @@ async function run(browser, name, options, check) {
             assert.strictEqual(env.state.patches.length, 1, 'Metadados promocionais não causam uma segunda mutação financeira.');
             await aguardarMargens(env);
             await env.page.evaluate(() => { window.fixtureAnaliseExata = JSON.parse(JSON.stringify(ultimaAnaliseConcorrentes)); });
-            for (const change of ['financeiro_exato', 'item_id_loja', 'preco_venda']) {
+            for (const change of ['financeiro_exato', 'item_id_loja', 'preco_venda', 'custo_unitario', 'fonte_custo', 'store_id']) {
                 await env.page.evaluate(change => {
                     const analise = JSON.parse(JSON.stringify(window.fixtureAnaliseExata));
                     analise.margens_anuncios_loja.concorrente_1[change] = change === 'financeiro_exato' ? false
-                        : change === 'item_id_loja' ? 'MLB1111111111' : 999;
+                        : change === 'item_id_loja' ? 'MLB1111111111'
+                            : change === 'store_id' ? 'store-JK'
+                                : change === 'fonte_custo' ? 'cadastro_sku_loja' : 999;
                     aplicarAnaliseConcorrentes(analise);
                 }, change);
                 assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -',
-                    'Margem própria exige financeiro exato e o mesmo anúncio/preço exibidos.');
-                assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: 12,00%');
+                    'Margem própria exige anúncio, preço, custo simulado e loja correspondentes.');
+                assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), await env.page.evaluate(() =>
+                    'Margem: ' + fmtPct(((200 - ultimoValorUnitarioProduto - 20 - 30 - 8) * 100) / 200)));
             }
+        });
+
+        await run(browser, 'anúncios de outra loja são rejeitados antes de enviar a simulação', opcoesFinanceiras({
+            complement: ({ pathname }) => pathname === '/api/medias-compras/concorrentes-links'
+                ? fontesFinanceiras('B') : undefined,
+        }), async env => {
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('erro').textContent.includes('complementares'));
+            await env.page.waitForFunction(() => controladoresDetalheSku.size === 0);
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
+            assert.strictEqual(await env.page.locator('#lblMlb1 a').count(), 0);
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(env.state.patches.length, 0, 'A loja B não substitui os anúncios da lista A.');
+        });
+
+        await run(browser, 'cotação financeira de outra loja não aparece na simulação', opcoesFinanceiras({
+            patch: ({ payload }) => respostaFinanceira(payload, null, 'store-B'),
+        }), async env => {
+            await open(env);
+            await waitUntil(() => env.state.patches.length === 1);
+            await env.page.evaluate(() => contextoDetalheSku.complementos?.analise);
+            await env.page.waitForFunction(() => controladoresDetalheSku.size === 0);
+            assert.strictEqual(env.state.patches.length, 1);
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: -');
+        });
+
+        await run(browser, 'cache legado de anúncios JK preserva custo e descarta ofertas e margens antigas', opcoesFinanceiras({
+            saved: async ({ state }) => {
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return { lista: lista() };
+            },
+            background: () => aguardando(),
+        }), async env => {
+            await seed(env, true, 1);
+            await env.page.evaluate(async () => {
+                const key = 'importacoes:SKU:A:001';
+                const data = (await JKCachePersistente.ler(key)).dados;
+                data.concorrentes = { links: {}, valores: { concorrente_1: 'R$ 200,00' },
+                    mlb: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1111111111' },
+                    preco: { concorrente_1: 'R$ 300,00' }, storeId: 'store-JK', lojaNome: 'JK Peças' };
+                data.lista.itens[0].analise_concorrentes = { fonte_custo: 'cadastro_sku_loja', custo_unitario: 50,
+                    margens: { concorrente_1: { item_id_loja: 'MLB1111111111', store_id: 'store-JK',
+                        financeiro_exato: true, preco_venda: 200, custo_unitario: 50, margem_percentual: 99 } },
+                    margens_anuncios_loja: { concorrente_1: { item_id_loja: 'MLB1111111111', store_id: 'store-JK',
+                        financeiro_exato: true, preco_venda: 300, custo_unitario: 50, margem_percentual: 99 } } };
+                await JKCachePersistente.salvar(key, data, { tags: ['importacoes', 'vendas'] });
+            });
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vCustoTotalProduto').textContent !== '-');
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro salvo');
+            assert.strictEqual(await env.page.locator('#lblMlb1 a').count(), 0);
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: -');
+            assert.strictEqual(env.state.patches.length, 0, 'O cache anterior não autoriza reaproveitar a análise de JK.');
+            env.state.pending.forEach(item => item.resolve());
+            await waitUntil(() => env.state.patches.length === 1);
+            await env.page.evaluate(() => contextoDetalheSku.complementos?.analise);
+            assert.strictEqual(env.state.patches[0].payload.custo_unitario,
+                await env.page.evaluate(() => ultimoValorUnitarioProduto));
+            assert.strictEqual(await env.page.locator('#lblMlb1').textContent(), 'MLB9876543210');
+            assert.notStrictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: 99,00%');
+        });
+
+        await run(browser, 'alterar proporção invalida a margem antiga e usa o novo custo simulado', opcoesFinanceiras({
+            patch: async ({ payload, state }) => {
+                if (state.patches.length === 1) return respostaFinanceira(payload);
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return respostaFinanceira(payload);
+            },
+        }), async env => {
+            await open(env);
+            await aguardarMargens(env);
+            const custoAnterior = env.state.patches[0].payload.custo_unitario;
+            await env.page.locator('.kv.prop').dblclick();
+            await env.page.locator('.prop-input').fill('80');
+            await env.page.locator('.prop-input').press('Enter');
+            await waitUntil(() => env.state.patches.length === 2);
+            const custoAtual = await env.page.evaluate(() => ultimoValorUnitarioProduto);
+            assert.notStrictEqual(custoAtual, custoAnterior);
+            assert.strictEqual(env.state.patches[1].payload.custo_unitario, custoAtual);
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: -');
+            env.state.pending.forEach(item => item.resolve());
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent !== 'Margem: -'
+                && document.getElementById('vMargemConcorrente1').textContent !== 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), await env.page.evaluate(() =>
+                'Margem: ' + fmtPct(((300 - ultimoValorUnitarioProduto - 30 - 45 - 8) * 100) / 300)));
         });
 
         await run(browser, 'promoção antiga não altera o SKU depois de navegar para outra lista', opcoesFinanceiras(), async env => {
@@ -616,6 +745,7 @@ async function run(browser, name, options, check) {
                 complement: async ({ pathname, state }) => {
                     if (failure.startsWith('fiscal') && pathname === '/api/medias-compras/concorrentes-links') {
                         return {
+                            anuncios_loja_store_id: 'store-A', anuncios_loja_nome: 'Loja A', anuncios_loja_fonte: 'loja_lista_sku',
                             concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
                             concorrentes_valores: { concorrente_1: 'R$ 200,00' },
                         };
@@ -646,9 +776,8 @@ async function run(browser, name, options, check) {
                         await env.page.evaluate(() => fmtBRL(200)),
                     'Falha fiscal preserva links e preços válidos dos concorrentes.');
                 }
-                assert.strictEqual(await env.page.evaluate(() => analiseComplementosPronta), failure.startsWith('fiscal'));
-                assert.strictEqual(env.state.patches.length, failure.startsWith('fiscal') ? 1 : 0,
-                    'Margens do cadastro independem do fiscal da importação e exigem anúncios válidos.');
+                assert.strictEqual(env.state.patches.length, 0,
+                    'Sem custo simulado completo ou anúncios válidos, nenhuma análise financeira é enviada.');
                 assert.strictEqual(await env.page.evaluate(async () =>
                     (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
                 'Falha complementar não publica um snapshot completo parcial.');
@@ -667,7 +796,10 @@ async function run(browser, name, options, check) {
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
             assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro salvo');
             assert.notStrictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
-            assert.strictEqual(env.state.patches.length, 1, 'Análise autorizada independe da atualização fiscal.');
+            assert.strictEqual(env.state.patches.length, 1, 'Uma simulação completa preservada continua sendo a base exibida.');
+            assert.strictEqual(env.state.patches[0].payload.fonte_custo, 'simulacao_importacao_sku');
+            assert.strictEqual(env.state.patches[0].payload.custo_unitario,
+                await env.page.evaluate(() => ultimoValorUnitarioProduto), 'Falha de atualização não troca o custo simulado por cadastro.');
             assert.strictEqual(await env.page.evaluate(async () =>
                 (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados.lista.itens[0].Quantidade), 2);
         });
@@ -693,7 +825,7 @@ async function run(browser, name, options, check) {
             assert.strictEqual(env.state.patches.length, 0, 'Cadastro concluído após a revisão não autoriza análise antiga.');
         });
 
-        await run(browser, 'margens do cadastro carregam com lista pendente e fiscal indisponível', opcoesFinanceiras({
+        await run(browser, 'fiscal indisponível mantém margens pendentes sem recorrer ao cadastro', opcoesFinanceiras({
             background: () => aguardando(),
             complement: ({ pathname, url }) => pathname === '/api/impostos/produtos'
                 ? { status: 500, body: { detail: 'Fiscal indisponível na fixture' } }
@@ -701,17 +833,21 @@ async function run(browser, name, options, check) {
                     ? fontesFinanceiras(url.searchParams.get('lista_id')) : undefined,
         }), async env => {
             await open(env);
-            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent === 'Margem: 33,00%'
-                && document.getElementById('vMargemConcorrente1').textContent === 'Margem: 12,00%');
+            await waitUntil(() => env.state.complements.includes('/api/impostos/produtos'));
+            await env.page.evaluate(async () => {
+                await contextoDetalheSku.complementos?.previa;
+                await contextoDetalheSku.complementos?.analise;
+            });
             await waitUntil(() => env.state.backgroundById.A > 1);
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
             assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
             assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
-            assert.strictEqual(env.state.patches.length, 1, 'Polling não duplica a mesma análise financeira.');
-            assert.deepStrictEqual(env.state.patches[0].payload.anuncios_loja, { concorrente_1: 'MLB9876543210' });
+            assert.strictEqual(env.state.patches.length, 0, 'Cadastro disponível não substitui o custo simulado ausente.');
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: -');
             assert.strictEqual(await env.page.evaluate(async () =>
                 (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
-            'Margens disponíveis não autorizam publicar um snapshot com custo fiscal incompleto.');
+            'O custo fiscal incompleto não gera um snapshot financeiro completo.');
         });
 
         await run(browser, 'conflito financeiro antecipado permite nova tentativa com a lista pronta', opcoesFinanceiras({
@@ -734,7 +870,8 @@ async function run(browser, name, options, check) {
             assert.strictEqual(await env.page.locator('#erro').textContent(), '', 'Nova análise válida encerra o erro transitório.');
             const snapshot = await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
             assert.strictEqual(snapshot.lista.itens[0].Quantidade, 9);
-            assert.strictEqual(snapshot.lista.itens[0].analise_concorrentes.margens_anuncios_loja.concorrente_1.margem_percentual, 33);
+            assert.strictEqual(snapshot.lista.itens[0].analise_simulacao_importacao_sku.custo_unitario,
+                env.state.patches[1].payload.custo_unitario);
         });
 
         await run(browser, 'prazo total encerra acompanhamento sem esvaziar o SKU', {
@@ -755,7 +892,7 @@ async function run(browser, name, options, check) {
             await env.page.clock.fastForward(20000);
             assert.strictEqual(env.state.backgroundById.A, before, 'Acompanhamento deve parar depois do prazo global.');
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
-            assert.strictEqual(env.state.patches.length, 1, 'A análise do cadastro não aguarda o prazo da lista.');
+            assert.strictEqual(env.state.patches.length, 1, 'O custo simulado válido permite análise durante a fila da lista.');
         });
         console.log('SKU: dados salvos, fila em segundo plano, cache, prazos e isolamento: OK');
     } finally {
