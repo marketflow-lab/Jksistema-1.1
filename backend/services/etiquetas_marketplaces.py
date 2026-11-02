@@ -33,20 +33,24 @@ def _bytes_io(data: bytes | None):
     return BytesIO(data) if data is not None else None
 
 
-def _processar_mercado_livre_backend(bytes_etiquetas: bytes):
-    return processar_mercado_livre(_bytes_io(bytes_etiquetas))
+def _processar_mercado_livre_backend(bytes_etiquetas: bytes, **options):
+    return processar_mercado_livre(_bytes_io(bytes_etiquetas), **options)
 
 
-def _processar_tiktok_backend(bytes_etiquetas: bytes, bytes_lista: bytes | None):
-    return processar_tiktok(_bytes_io(bytes_etiquetas), _bytes_io(bytes_lista))
+def _processar_tiktok_backend(bytes_etiquetas: bytes, bytes_lista: bytes | None, **options):
+    return processar_tiktok(_bytes_io(bytes_etiquetas), _bytes_io(bytes_lista), **options)
 
 
-def _processar_shopee_backend(bytes_etiquetas: bytes):
-    etiquetas_pdf, lista_pdf, qtd = processar_shopee(_bytes_io(bytes_etiquetas))
+def _processar_shopee_backend(bytes_etiquetas: bytes, **options):
+    etiquetas_pdf, lista_pdf, qtd = processar_shopee(_bytes_io(bytes_etiquetas), **options)
     return etiquetas_pdf, qtd, lista_pdf
 
 
-def processar_etiquetas_loja(store: str, bytes_etiquetas: bytes | None, bytes_lista: bytes | None, bytes_nf: bytes | None) -> dict:
+def processar_etiquetas_loja(store: str, bytes_etiquetas: bytes | None, bytes_lista: bytes | None, bytes_nf: bytes | None, *, layout=None, _component_collector=None, _limit=None) -> dict:
+    options = {}
+    if layout is not None:
+        from backend.services.etiquetas_layout import validar_layout
+        options = {"layout": validar_layout(layout, store), "component_collector": _component_collector, "limite_etiquetas": _limit}
     out_etiquetas = None
     out_lista = None
     qtd = 0
@@ -54,15 +58,15 @@ def processar_etiquetas_loja(store: str, bytes_etiquetas: bytes | None, bytes_li
     if store == "Mercado Livre":
         if not bytes_etiquetas:
             return {"success": False, "message": "Arquivo principal de etiquetas obrigatorio para Mercado Livre."}
-        out_etiquetas, qtd, out_lista = _processar_mercado_livre_backend(bytes_etiquetas)
+        out_etiquetas, qtd, out_lista = _processar_mercado_livre_backend(bytes_etiquetas, **options)
     elif store == "Shopee":
         if not bytes_etiquetas:
             return {"success": False, "message": "Arquivo principal de etiquetas obrigatorio para Shopee."}
-        out_etiquetas, qtd, out_lista = _processar_shopee_backend(bytes_etiquetas)
+        out_etiquetas, qtd, out_lista = _processar_shopee_backend(bytes_etiquetas, **options)
     elif store == "TikTok":
         if not bytes_etiquetas:
             return {"success": False, "message": "Arquivo principal de etiquetas obrigatorio para TikTok."}
-        out_etiquetas, qtd, out_lista = _processar_tiktok_backend(bytes_etiquetas, bytes_lista)
+        out_etiquetas, qtd, out_lista = _processar_tiktok_backend(bytes_etiquetas, bytes_lista, **options)
     elif store == "Amazon":
         if not bytes_nf:
             return {"success": False, "message": "Para Amazon, o arquivo de Nota Fiscal obrigatorio."}

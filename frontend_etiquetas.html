@@ -110,6 +110,7 @@
         }
     </style>
     <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261008-fluido-v2">
+    <link rel="stylesheet" href="/etiquetas/styles/layout-editor.css?v=20261102-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
 <body>
@@ -141,10 +142,10 @@
        <section class="shipping-card" aria-label="Preparar etiquetas de envio">
         <div class="section-heading"><span class="step-number">1</span><div><h2>Selecione a loja</h2><p class="section-hint">Escolha a origem das etiquetas que deseja processar.</p></div></div>
         <div class="radio-group">
-            <label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"><span class="store-mark ml" aria-hidden="true">ML</span><span>Mercado Livre</span></label>
-            <label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"><span class="store-mark shopee" aria-hidden="true">S</span><span>Shopee</span></label>
-            <label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"><span class="store-mark tiktok" aria-hidden="true">Tk</span><span>TikTok</span></label>
-            <label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"><span class="store-mark amazon" aria-hidden="true">a</span><span>Amazon</span></label>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"><span class="store-mark ml" aria-hidden="true">ML</span><span>Mercado Livre</span></label><button type="button" class="store-layout-button" data-layout-store="Mercado Livre" aria-label="Configurar layout de Mercado Livre" title="Configurar layout de Mercado Livre"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"><span class="store-mark shopee" aria-hidden="true">S</span><span>Shopee</span></label><button type="button" class="store-layout-button" data-layout-store="Shopee" aria-label="Configurar layout de Shopee" title="Configurar layout de Shopee"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"><span class="store-mark tiktok" aria-hidden="true">Tk</span><span>TikTok</span></label><button type="button" class="store-layout-button" data-layout-store="TikTok" aria-label="Configurar layout de TikTok" title="Configurar layout de TikTok"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"><span class="store-mark amazon" aria-hidden="true">a</span><span>Amazon</span></label><button type="button" class="store-layout-button" data-layout-store="Amazon" aria-label="Configurar layout de Amazon" title="Configurar layout de Amazon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
         </div>
 
         <div class="section-heading upload-heading"><span class="step-number">2</span><div><h2>Adicione seus arquivos</h2><p class="section-hint">Selecione os documentos da loja escolhida.</p></div></div>
@@ -1054,6 +1055,8 @@
 
         const formData = new FormData();
         formData.append('store', loja);
+        const layoutPersonalizado = window.JKEtiquetasLayout?.getSavedLayout(loja);
+        if (layoutPersonalizado) formData.append('layout', JSON.stringify(layoutPersonalizado));
         if (fileEtiquetas) formData.append('file_etiquetas', fileEtiquetas);
         if (fileLista) formData.append('file_lista', fileLista);
         if (fileNf) formData.append('file_nota_fiscal', fileNf);
@@ -1329,6 +1332,7 @@
     atualizarFormatoAvulsa();
     atualizarLayoutQrCode();
 </script>
+<script src="/etiquetas/layout-editor.js?v=20261102-v1"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>

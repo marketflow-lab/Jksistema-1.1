@@ -125,7 +125,7 @@ def parse_tiktok_picking_list(file_obj):
         return {}, []
 
 
-def processar_tiktok(uploaded_file, uploaded_list=None):
+def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, component_collector=None, limite_etiquetas=None):
     progress_bar = marketplace_ctx.st.progress(0, text="Processando arquivo do TikTok...")
     
     file_bytes = uploaded_file.read()
@@ -195,6 +195,19 @@ def processar_tiktok(uploaded_file, uploaded_list=None):
             dados_sku = lista_sequencial_fallback[fallback_seq_index]
             fallback_seq_index += 1
         
+        if layout is not None:
+            from backend.services.etiquetas_layout import renderizar_etiqueta_layout
+            renderizar_etiqueta_layout(
+                nova_pagina, doc_origem, i, layout=layout,
+                sku_text=f"SKU: {dados_sku[0]}  (x{dados_sku[1]})" if dados_sku else "SKU N/D",
+                counter=count_etiquetas + 1, embedded_danfe=True, collector=component_collector,
+            )
+            count_etiquetas += 1
+            i += 1
+            if limite_etiquetas and count_etiquetas >= limite_etiquetas:
+                break
+            continue
+
         nova_pagina.show_pdf_page(nova_pagina.rect, doc_origem, i)
         
         if dados_sku:

@@ -104,7 +104,7 @@ def _extrair_dados_ml_da_pagina(texto_pagina):
     return (sku, _extrair_qtd_ml(texto_pagina))
 
 
-def processar_mercado_livre(uploaded_file):
+def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=None, limite_etiquetas=None):
     progress_bar = marketplace_ctx.st.progress(0, text="Processando arquivo do Mercado Livre...")
     
     file_bytes = uploaded_file.read()
@@ -214,6 +214,28 @@ def processar_mercado_livre(uploaded_file):
         if not dados_sku:
             dados_sku = _extrair_dados_ml_da_pagina(texto_pagina)
         
+        if layout is not None:
+            from backend.services.etiquetas_layout import renderizar_etiqueta_layout
+            chave = None
+            if page_declaracao:
+                chave = extrair_chave_acesso(page_declaracao.get_text())
+            elif "CHAVE DE ACESSO" in texto_atual:
+                chave = extrair_chave_acesso(texto_pagina)
+            codigo = chave or id_correspondente
+            renderizar_etiqueta_layout(
+                nova_pagina, doc_origem, i, layout=layout,
+                sku_text=f"SKU {dados_sku[0]}  x  {dados_sku[1]}" if dados_sku else "SKU N/D",
+                code=codigo, code_text=chave or (f"VENDA {id_correspondente}" if id_correspondente else None),
+                counter=count_etiquetas + 1,
+                embedded_danfe=bool("CHAVE DE ACESSO" in texto_atual and extrair_chave_acesso(texto_pagina)),
+                collector=component_collector,
+            )
+            count_etiquetas += 1
+            i += salto
+            if limite_etiquetas and count_etiquetas >= limite_etiquetas:
+                break
+            continue
+
         # Mantem a escala original; a DANFE usa a margem lateral existente.
         nova_pagina.show_pdf_page(fitz.Rect(0, 0, 283, 390), doc_origem, i)
         

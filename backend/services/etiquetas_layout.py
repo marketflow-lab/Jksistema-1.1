@@ -1,0 +1,266 @@
+"""Validated marketplace print layouts and their shared PDF/preview compositor.
+
+Only geometry is accepted from the client. Product and fiscal values always
+come from the uploaded document; preview components are returned in memory.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import math
+
+import fitz
+
+from backend.services.etiquetas_marketplaces_common import gerar_imagem_barcode
+
+
+MM = 72 / 25.4
+STORES = ("Mercado Livre", "Shopee", "TikTok", "Amazon")
+ITEMS = ("etiqueta", "sku", "danfe")
+
+
+def layout_padrao(store: str) -> dict:
+    if store not in STORES:
+        raise ValueError("Loja invalida.")
+    items = {
+        "etiqueta": {"x": 0, "y": 0, "width": 100, "height": 137.6, "rotation": 0, "visible": True},
+        "sku": {"x": 2, "y": 140, "width": 96, "height": 9, "rotation": 0, "visible": True},
+        "danfe": {"x": 92, "y": 7, "width": 8, "height": 128, "rotation": 90, "visible": True},
+    }
+    if store in ("Shopee", "TikTok"):
+        items["etiqueta"].update(width=92, height=150)
+        items["sku"].update(x=94, y=20, width=5, height=115, rotation=90)
+        items["danfe"].update(visible=False)
+    return {"version": 1, "page": {"width": 100, "height": 150}, "items": items}
+
+
+def validar_layout(raw, store: str) -> dict:
+    """Reject malformed, non-finite and out-of-page geometry before PDF work."""
+    if store not in STORES:
+        raise ValueError("Loja invalida.")
+    if raw is None or raw == "":
+        return layout_padrao(store)
+    if isinstance(raw, str):
+        if len(raw) > 12000:
+            raise ValueError("Configuracao de impressao muito grande.")
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Configuracao de impressao invalida.") from exc
+    if not isinstance(raw, dict) or not {"version", "page", "items"}.issubset(raw) or set(raw) - {"version", "page", "items", "danfe_source"}:
+        raise ValueError("Configuracao de impressao invalida.")
+    if type(raw["version"]) is not int or raw["version"] != 1:
+        raise ValueError("Versao de configuracao nao suportada.")
+    page = raw["page"]
+    if not isinstance(page, dict) or set(page) != {"width", "height"}:
+        raise ValueError("Medidas da folha invalidas.")
+
+    def number(value, minimum, maximum):
+        if type(value) not in (int, float) or not math.isfinite(value) or not minimum <= value <= maximum:
+            raise ValueError("Medidas de impressao invalidas.")
+        return float(value)
+
+    width = number(page["width"], 20, 300)
+    height = number(page["height"], 20, 500)
+    items = raw["items"]
+    if not isinstance(items, dict) or set(items) != set(ITEMS):
+        raise ValueError("Componentes de impressao invalidos.")
+    normalized = {}
+    for name in ITEMS:
+        item = items[name]
+        if not isinstance(item, dict) or set(item) != {"x", "y", "width", "height", "rotation", "visible"}:
+            raise ValueError("Componente de impressao invalido.")
+        x = number(item["x"], 0, width)
+        y = number(item["y"], 0, height)
+        w = number(item["width"], 0.5, width)
+        h = number(item["height"], 0.5, height)
+        if x + w > width + 0.000001 or y + h > height + 0.000001:
+            raise ValueError("Mantenha os componentes dentro da folha.")
+        if type(item["rotation"]) is not int or item["rotation"] not in (0, 90, 180, 270):
+            raise ValueError("Rotacao de impressao invalida.")
+        if type(item["visible"]) is not bool:
+            raise ValueError("Visibilidade de impressao invalida.")
+        normalized[name] = {"x": x, "y": y, "width": w, "height": h,
+                            "rotation": item["rotation"], "visible": item["visible"]}
+    output = {"version": 1, "page": {"width": width, "height": height}, "items": normalized}
+    if "danfe_source" in raw:
+        source = raw["danfe_source"]
+        if not isinstance(source, dict) or set(source) != {"x", "y", "width", "height"}:
+            raise ValueError("Area original do DANFE invalida.")
+        crop = {name: number(source[name], 0 if name in ("x", "y") else 0.001, 1) for name in source}
+        if crop["x"] + crop["width"] > 1.000001 or crop["y"] + crop["height"] > 1.000001:
+            raise ValueError("Mantenha a area do DANFE dentro da etiqueta original.")
+        output["danfe_source"] = crop
+    return output
+
+
+def _pdf_texto(text: str, *, extra_text: str = "") -> bytes:
+    doc = fitz.open()
+    page = doc.new_page(width=280, height=55 if extra_text else 28)
+    text_rect = fitz.Rect(3, 2, 277, 27)
+    for fontsize in (13, 12, 10, 9, 8, 7, 6, 5, 4):
+        if page.insert_textbox(text_rect, text, fontname="hebo", fontsize=fontsize,
+                               align=1, color=(1, 0, 0) if "N/D" in text else (0, 0, 0)) >= 0:
+            break
+    if extra_text:
+        page.insert_textbox(fitz.Rect(3, 29, 277, 55), extra_text, fontsize=8, align=1)
+    output = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return output
+
+
+def _pdf_codigo(code: str | None, text: str | None = None) -> bytes | None:
+    if not code:
+        return None
+    image = gerar_imagem_barcode(code)
+    if not image:
+        raise ValueError("Nao foi possivel gerar o codigo de barras.")
+    doc = fitz.open()
+    page = doc.new_page(width=365, height=30)
+    label = text or code
+    label_size = min(6, 359 / max(fitz.get_text_length(label, fontsize=1), 1))
+    label_width = fitz.get_text_length(label, fontsize=label_size)
+    page.insert_text(fitz.Point((365 - label_width) / 2, 7), label, fontsize=label_size)
+    page.insert_image(fitz.Rect(2, 10, 363, 30), stream=image, keep_proportion=False)
+    output = doc.tobytes(garbage=3, deflate=True)
+    doc.close()
+    return output
+
+
+def _pdf_original(doc, page_index: int, clip=None, *, counter: int | None = None) -> bytes:
+    source = doc[page_index]
+    area = fitz.Rect(clip) if clip is not None else source.rect
+    component = fitz.open()
+    page = component.new_page(width=area.width, height=area.height)
+    page.show_pdf_page(page.rect, doc, page_index, clip=area)
+    if counter is not None:
+        label = str(counter)
+        size = min(10, 22 / max(fitz.get_text_length(label, fontsize=1), 1))
+        page.insert_text(fitz.Point(max(2, area.width - 24), 12), label, fontsize=size)
+    output = component.tobytes(garbage=3, deflate=True)
+    component.close()
+    return output
+
+
+def _compose(page, components: dict, layout: dict) -> None:
+    page.set_mediabox(fitz.Rect(0, 0, layout["page"]["width"] * MM, layout["page"]["height"] * MM))
+    for name in ITEMS:
+        item = layout["items"][name]
+        data = components.get(name)
+        if not item["visible"] or not data:
+            continue
+        rect = fitz.Rect(item["x"] * MM, item["y"] * MM,
+                         (item["x"] + item["width"]) * MM, (item["y"] + item["height"]) * MM)
+        with fitz.open(stream=data, filetype="pdf") as source:
+            page.show_pdf_page(rect, source, 0, rotate=item["rotation"], keep_proportion=True)
+
+
+def _separar_danfe(original: bytes, selection: dict) -> tuple[bytes, bytes]:
+    """Extract exactly the region explicitly selected by the user, once."""
+    with fitz.open(stream=original, filetype="pdf") as source:
+        page = source[0]
+        rect = fitz.Rect(selection["x"] * page.rect.width, selection["y"] * page.rect.height,
+                         (selection["x"] + selection["width"]) * page.rect.width,
+                         (selection["y"] + selection["height"]) * page.rect.height)
+        with fitz.open() as component:
+            target = component.new_page(width=rect.width, height=rect.height)
+            target.show_pdf_page(target.rect, source, 0, clip=rect)
+            danfe = component.tobytes(garbage=3, deflate=True)
+        page.add_redact_annot(rect, fill=(1, 1, 1))
+        # Blank only selected image pixels and remove contained line art/text.
+        # Any clipping is explicitly chosen in the editor, never inferred.
+        page.apply_redactions(images=2, graphics=1, text=0)
+        remaining = source.tobytes(garbage=3, deflate=True)
+        return remaining, danfe
+
+
+def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
+                               code=None, code_text=None, clip=None,
+                               extra_text="", counter=None, embedded_danfe=False,
+                               collector=None) -> None:
+    """Compose raw source plus new layers once, for print and for preview."""
+    original = _pdf_original(doc, page_index, clip, counter=counter)
+    components = {
+        "etiqueta": original,
+        "sku": _pdf_texto(sku_text, extra_text=extra_text),
+        "danfe": None if embedded_danfe else _pdf_codigo(code, code_text),
+    }
+    warnings = []
+    if layout.get("danfe_source"):
+        components["etiqueta"], components["danfe"] = _separar_danfe(original, layout["danfe_source"])
+    elif embedded_danfe:
+        warnings.append("O codigo DANFE desta loja faz parte da etiqueta original e acompanha o movimento dela.")
+    elif not code:
+        warnings.append("Codigo DANFE nao encontrado neste arquivo.")
+    _compose(page, components, layout)
+    if collector is not None and not collector:
+        collector.append({"components": components, "warnings": warnings, "source": original})
+
+
+def _data_png(data: bytes, *, alpha: bool = False) -> str:
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        pix = doc[0].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=alpha)
+        return "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode("ascii")
+
+
+def _componentes_amostra(store: str) -> dict:
+    doc = fitz.open()
+    page = doc.new_page(width=283, height=390)
+    page.draw_rect(fitz.Rect(8, 8, 275, 382), width=1)
+    page.insert_textbox(fitz.Rect(18, 20, 265, 155),
+                        f"{store}\nAMOSTRA DE ETIQUETA\n\nDESTINATARIO\nCliente de exemplo\nEndereco de exemplo\nPedido de exemplo", fontsize=12)
+    tracking = gerar_imagem_barcode("AMOSTRA000001")
+    if tracking:
+        page.insert_image(fitz.Rect(25, 210, 258, 260), stream=tracking)
+    page.insert_text(fitz.Point(85, 330), "SEM VALOR FISCAL", fontsize=10)
+    original = doc.tobytes()
+    doc.close()
+    return {"etiqueta": original, "sku": _pdf_texto("SKU EXEMPLO-001  x  2"),
+            "danfe": _pdf_codigo("12345678901234567890123456789012345678901234", "DANFE DE EXEMPLO - SEM VALOR FISCAL")}
+
+
+def gerar_preview_layout(store: str, bytes_etiquetas=None, bytes_lista=None,
+                         bytes_nf=None, layout=None) -> dict:
+    normalized = validar_layout(layout, store)
+    sample = not bytes_etiquetas
+    if store == "Amazon":
+        sample = True
+    warnings = []
+    if sample:
+        components = _componentes_amostra(store)
+        original_source = components["etiqueta"]
+        if store == "Amazon":
+            warnings.append("Processamento Amazon ainda nao esta disponivel. Esta e apenas uma amostra do editor.")
+        else:
+            warnings.append("Amostra de impressao. Envie um PDF para visualizar seus dados reais.")
+        if store in ("Shopee", "TikTok"):
+            warnings.append("Nos arquivos reais desta loja, o codigo DANFE acompanha a etiqueta original.")
+        doc = fitz.open()
+        page = doc.new_page()
+        _compose(page, components, normalized)
+        result_pdf = doc.tobytes()
+        doc.close()
+    else:
+        from backend.services.etiquetas_marketplaces import processar_etiquetas_loja
+
+        collector = []
+        result = processar_etiquetas_loja(store, bytes_etiquetas, bytes_lista, bytes_nf,
+                                          layout=normalized, _component_collector=collector, _limit=1)
+        if not result.get("success"):
+            return result
+        if not collector or not result.get("out_etiquetas"):
+            return {"success": False, "message": "Nenhuma etiqueta reconhecida neste PDF."}
+        components = collector[0]["components"]
+        original_source = collector[0]["source"]
+        warnings.extend(collector[0]["warnings"])
+        result_pdf = result["out_etiquetas"]
+    return {
+        "success": True, "layout": normalized, "sample": sample,
+        "components": {name: _data_png(data, alpha=True) if data else None for name, data in components.items()},
+        "availability": {name: bool(data) for name, data in components.items()},
+        "preview": _data_png(result_pdf), "source": _data_png(original_source), "warnings": warnings,
+    }
+
+
+__all__ = ["layout_padrao", "validar_layout", "gerar_preview_layout", "renderizar_etiqueta_layout"]

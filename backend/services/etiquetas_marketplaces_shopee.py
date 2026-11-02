@@ -100,7 +100,7 @@ def extract_shopee_data(doc):
     return mapa_pedidos
 
 
-def processar_shopee(uploaded_file):
+def processar_shopee(uploaded_file, *, layout=None, component_collector=None, limite_etiquetas=None):
     try:
         file_bytes = uploaded_file.read()
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -112,6 +112,8 @@ def processar_shopee(uploaded_file):
         count_labels = 0
         
         for page_index in range(len(doc)):
+            if limite_etiquetas and count_labels >= limite_etiquetas:
+                break
             page = doc[page_index]
             text = page.get_text("text").lower()
             
@@ -130,6 +132,8 @@ def processar_shopee(uploaded_file):
                     ]
                 
                 for q in quads:
+                    if limite_etiquetas and count_labels >= limite_etiquetas:
+                        break
                     q_text = page.get_text(clip=q)
                     q_text_clean = q_text.replace(" ", "").replace("\n", "").upper()
                     
@@ -165,6 +169,16 @@ def processar_shopee(uploaded_file):
 
                         count_labels += 1
                         new_page = output_labels.new_page(width=A6_W, height=A6_H)
+                        if layout is not None:
+                            from backend.services.etiquetas_layout import renderizar_etiqueta_layout
+                            info = mapa_global.get(pedido_id)
+                            sku = f"SKU: {info[0]} (x{info[1]})" if info and info[0] != "N/D" else "SKU N/D"
+                            extra = "\n".join(value for value in ((info[2] if info and len(info) > 2 else ""), nome_cliente) if value)
+                            renderizar_etiqueta_layout(
+                                new_page, doc, page_index, clip=q, layout=layout, sku_text=sku,
+                                extra_text=extra, counter=count_labels, embedded_danfe=True, collector=component_collector,
+                            )
+                            continue
                         new_page.show_pdf_page(fitz.Rect(0, 0, A6_W, A6_H), doc, page_index, clip=q)
                         
                         sku_info = mapa_global.get(pedido_id)
