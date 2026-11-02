@@ -201,13 +201,15 @@ def test_endpoint_rejeita_dados_invalidos(monkeypatch, payload_req, mensagem):
 class _RespostaMlFake:
     status_code = 200
 
-    def __init__(self, seller_id="123"):
+    def __init__(self, seller_id="123", item_id="MLB111"):
         self._seller_id = seller_id
+        self._item_id = item_id
 
     def json(self):
         return {
-            "id": "MLB111",
+            "id": self._item_id,
             "seller_id": self._seller_id,
+            "site_id": "MLB",
             "category_id": "MLB1",
             "listing_type_id": "gold_special",
             "condition": "new",
@@ -221,10 +223,14 @@ class _RespostaMlFake:
 
 def _dependencias_financeiras_fake(*, seller_cfg="123", seller_item="123", frete_exato=True):
     return {
-        "carregar_lojas": lambda _client_id: [],
-        "obter_cfg_ml": lambda _client_id, _loja: {"user_id": seller_cfg, "access_token": "token-teste"},
+        "carregar_lojas": lambda _client_id: [{"nome": "Loja A", "store_id": "store-a", "integracoes": {
+            "mercadolivre": {"user_id": seller_cfg, "site_id": "MLB", "access_token": "token-teste"},
+        }}],
+        "obter_cfg_ml": lambda _client_id, _loja, store_id=None: {
+            "user_id": seller_cfg, "site_id": "MLB", "access_token": "token-teste", "_store_id_context": store_id,
+        },
         "ml_api_request": lambda _client_id, _loja, cfg, _method, _url, **_kwargs: (
-            _RespostaMlFake(seller_item),
+            _RespostaMlFake(seller_item, _url.rsplit("/", 1)[-1]),
             cfg,
         ),
         "ml_contexto_frete_item": lambda _item, preco: {"item_price": preco},
@@ -246,7 +252,7 @@ def _dependencias_financeiras_fake(*, seller_cfg="123", seller_item="123", frete
             },
             cfg,
         ),
-        "carregar_custos_impostos": lambda _client_id, _loja: ({"001": 60}, {"001": 0.10}),
+        "carregar_custos_impostos": lambda _client_id, _loja, *_identity: ({"001": 60}, {"001": 0.10}),
         "resolver_custo": lambda custos, sku: custos.get(sku),
         "resolver_imposto": lambda impostos, sku: impostos.get(sku),
         "calcular_margem": _calcular_margem_liquida_ml,
@@ -272,6 +278,9 @@ def test_calculadora_reutiliza_formula_liquida_de_promocoes(monkeypatch):
         "preco_venda": 100.0,
         "item_id_loja": "MLB111",
         "loja": "Loja A",
+        "store_id": "store-a",
+        "seller_id": "123",
+        "site_id": "MLB",
         "custo_unitario": 60.0,
         "imposto_percentual": 10.0,
         "imposto_valor": 10.0,
@@ -287,7 +296,7 @@ def test_calculadora_reutiliza_formula_liquida_de_promocoes(monkeypatch):
 
 def test_calculadora_nao_usa_custo_da_importacao_quando_cadastro_esta_vazio(monkeypatch):
     deps = _dependencias_financeiras_fake()
-    deps["carregar_custos_impostos"] = lambda _client_id, _loja: ({}, {"001": 0.10})
+    deps["carregar_custos_impostos"] = lambda _client_id, _loja, *_identity: ({}, {"001": 0.10})
     deps["ml_obter_taxas_anuncio"] = lambda *_args, **_kwargs: pytest.fail(
         "Tarifa não deve ser consultada sem custo cadastrado."
     )
@@ -341,7 +350,7 @@ def test_calculadora_rejeita_anuncio_de_outra_loja(monkeypatch):
     )["concorrente_1"]
 
     assert dados["margem_percentual"] is None
-    assert "não pertence à loja" in dados["motivo_indisponivel"]
+    assert "não pertence a uma conta autorizada" in dados["motivo_indisponivel"]
 
 
 @pytest.mark.parametrize("failure,expected", [
@@ -380,12 +389,12 @@ def test_consulta_anuncio_informa_falha_sanitizada_e_nao_estima_margem(monkeypat
 def test_calculadora_infere_loja_unica_em_lista_antiga_sem_loja(monkeypatch):
     deps = _dependencias_financeiras_fake()
     deps["carregar_lojas"] = lambda _client_id: [
-        {"nome": "Loja A", "integracoes": {"mercadolivre": {"access_token": "a"}}},
-        {"nome": "Loja B", "integracoes": {"mercadolivre": {"access_token": "b"}}},
+        {"nome": "Loja A", "store_id": "store-a", "integracoes": {"mercadolivre": {"user_id": "123", "site_id": "MLB", "access_token": "a"}}},
+        {"nome": "Loja B", "store_id": "store-b", "integracoes": {"mercadolivre": {"user_id": "999", "site_id": "MLB", "access_token": "b"}}},
     ]
-    deps["obter_cfg_ml"] = lambda _client_id, loja: {
+    deps["obter_cfg_ml"] = lambda _client_id, loja, store_id=None: {
         "user_id": "123" if loja == "Loja A" else "999",
-        "access_token": "token-teste",
+        "access_token": "token-teste", "site_id": "MLB", "_store_id_context": store_id,
     }
     monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
 
@@ -580,7 +589,7 @@ def _dependencias_precos_variaveis(chamadas):
         chamadas.append(("item", client_id, loja))
         return _RespostaMlFake(), cfg
 
-    def cadastro(client_id, loja):
+    def cadastro(client_id, loja, *_identity):
         chamadas.append(("cadastro", client_id, loja))
         custo = 40 if client_id == "tenant-b" else 70 if loja == "Loja B" else 60
         return {"001": custo}, {"001": 0.1}
@@ -637,7 +646,7 @@ def test_endpoint_separa_margens_proprias_e_reutiliza_contexto(monkeypatch, prec
     assert "analise_concorrentes" not in estado["tenant-b"][0]["itens"][0]
 
 
-def test_contexto_financeiro_nao_e_reutilizado_entre_tenants_ou_lojas(monkeypatch):
+def test_contexto_financeiro_nao_e_reutilizado_entre_tenants_ou_listas(monkeypatch):
     chamadas = []
     deps = _dependencias_precos_variaveis(chamadas)
     monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
@@ -649,7 +658,8 @@ def test_contexto_financeiro_nao_e_reutilizado_entre_tenants_ou_lojas(monkeypatc
             contexto_consulta=contexto,
         )
         margens.append(resultado["concorrente_1"]["margem_percentual"])
-    assert margens == [7, -3, 27]
+    # MLB111 belongs to Loja A even when the import list was created in Loja B.
+    assert margens == [7, 7, 27]
     assert sum(row[0] == "item" for row in chamadas) == 3
     assert sum(row[0] == "cadastro" for row in chamadas) == 3
 

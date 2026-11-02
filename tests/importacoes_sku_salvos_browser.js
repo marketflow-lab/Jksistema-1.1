@@ -52,6 +52,7 @@ function fontesFinanceiras(id = 'A') {
 function respostaFinanceira(payload, margemPropria = 33) {
     const dados = preco => ({
         preco_venda: preco, item_id_loja: payload.anuncios_loja.concorrente_1, financeiro_exato: true,
+        loja: 'Loja do anúncio', store_id: 'store-owner', seller_id: 'seller-owner', site_id: 'MLB',
         custo_unitario: 50, imposto_valor: 20, tarifa_ml: 30, frete_ml: 10, valor_liquido: 190,
     });
     return { analise_concorrentes: {
@@ -256,6 +257,9 @@ async function run(browser, name, options, check) {
         await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
             await open(env);
             await aguardarMargens(env);
+            assert.strictEqual(await env.page.locator('.analysis-offer.own .analysis-offer-role').first().textContent(), 'Loja do anúncio');
+            assert.match(await env.page.locator('#vMargemMlb1').getAttribute('title'), /Conta do anúncio: Loja do anúncio/);
+            assert.strictEqual(await env.page.evaluate(() => contextoDetalheSku.listaPronta.store_id), 'store-A', 'A conta do anúncio não substitui a loja da importação.');
             await env.page.waitForFunction(() => window.fixturePrices.length === 2);
             assert.strictEqual(env.state.patches.length, 1);
             assert.strictEqual(env.state.patches[0].payload.precos_anuncios_loja.concorrente_1, 300);
