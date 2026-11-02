@@ -93,11 +93,43 @@ def _dependencias_margens_concorrentes() -> dict[str, Any]:
         "ml_contexto_frete_item": mercadolivre_legacy_core._ml_contexto_frete_item,
         "ml_obter_frete_detalhado": mercadolivre_legacy_core._ml_obter_frete_detalhado,
         "ml_obter_taxas_anuncio": mercadolivre_legacy_core._ml_obter_taxas_anuncio,
-        "carregar_custos_impostos": promocoes_core._carregar_custos_impostos_cadastro_por_sku_loja,
+        "carregar_custos_impostos": _carregar_custos_impostos_dono_anuncio,
         "resolver_custo": promocoes_core._resolver_custo_medio_por_skus,
         "resolver_imposto": promocoes_core._resolver_imposto_rate_por_sku,
         "calcular_margem": promocoes_core._calcular_margem_liquida_ml,
     }
+
+
+def _carregar_custos_impostos_dono_anuncio(
+    client_id: str, loja: str, store_id: str, sku: str,
+) -> tuple[dict, dict]:
+    from backend.services.cadastro_compatibilidade import visao_produtos_cadastro_contexto_loja
+    from backend.services import cadastro_lojas_produtos as cadastro
+    from backend.services.promocoes_core_custos import _to_float_safe, _to_rate_safe
+
+    visao = visao_produtos_cadastro_contexto_loja(client_id, store_id, skus=[sku])
+    if visao.get("scope") != "store" or str(visao.get("store_id") or "") != store_id:
+        return {}, {}
+    sku_key = _normalizar_sku_mes(sku).strip().upper()
+    produtos = [produto for produto in visao.get("produtos") or []
+                if isinstance(produto, dict) and str(produto.get("store_id") or "") == store_id
+                and not produto.get("deleted_at_utc")
+                and _normalizar_sku_mes(str(produto.get("sku") or "")).strip().upper() == sku_key]
+    if len(produtos) != 1:
+        return {}, {}
+    # A legacy product shadow may inherit generic product fields. Financial
+    # values require the canonical cost source's proven association to this ID
+    # (or its unambiguous authorized legacy name), never that generic fallback.
+    identidade = cadastro.resolver_loja_cadastro(client_id, store_id)
+    contexto = cadastro._contexto_legado_de_tenant(
+        client_id, identidade, cadastro.get_tenant_path(client_id), cadastro._lojas_atuais(client_id),
+        fotos={}, sku_interessa=lambda row: cadastro._normalizar_sku_chave(row.get("sku")) == cadastro._normalizar_sku_chave(sku),
+        chave_filtro=("importacoes_financeiro", sku_key),
+    )
+    financeiro = (contexto.get("custos") or {}).get(cadastro._normalizar_sku_chave(sku)) or {}
+    custo = _to_float_safe(financeiro.get("custo"))
+    imposto = _to_rate_safe(financeiro.get("imposto"))
+    return ({sku: custo} if custo is not None else {}, {sku: imposto} if imposto is not None else {})
 
 
 def _margem_concorrente_indisponivel(
@@ -129,6 +161,83 @@ def _motivo_consulta_anuncio(status: int | None) -> str:
     return "Não foi possível consultar o anúncio da loja no Mercado Livre."
 
 
+def _cfg_confere_dono_anuncio(cfg: dict, dono: dict) -> bool:
+    return bool(isinstance(cfg, dict) and str(cfg.get("access_token") or "").strip()
+                and str(cfg.get("_store_id_context") or "").strip() == dono["store_id"]
+                and str(cfg.get("user_id") or "").strip() == dono["seller_id"]
+                and str(cfg.get("site_id") or "").strip() == dono["site_id"])
+
+
+def _candidatos_donos_anuncios(client_id: str, deps: dict, cache_contextos: dict) -> tuple[list, str]:
+    # This snapshot belongs only to this request's authenticated tenant. It is
+    # never restored from an ad cache, audit record or historical store list.
+    if "__contas_autorizadas" in cache_contextos:
+        salvo = cache_contextos["__contas_autorizadas"]
+        return salvo["candidatos"], salvo["motivo"]
+    candidatos: list[dict[str, Any]] = []
+    motivo = "Não foi possível confirmar uma conta autorizada e seu site para este anúncio."
+    try:
+        lojas = [row for row in (deps["carregar_lojas"](client_id) or []) if isinstance(row, dict)]
+    except Exception:
+        lojas = []
+    identidades = [str(row.get("store_id") or "").strip() for row in lojas if row.get("store_id")]
+    if len(identidades) != len(set(identidades)):
+        motivo = "A identidade das contas autorizadas está ambígua. Atualize as conexões das lojas."
+        lojas = []
+    for row in lojas:
+        nome = str(row.get("nome") or "").strip()
+        store_id = str(row.get("store_id") or "").strip()
+        integracoes = row.get("integracoes") or {}
+        publico = integracoes.get("mercadolivre") if isinstance(integracoes, dict) else None
+        if (not nome or not store_id or not isinstance(publico, dict)
+                or "mercadolivre" in (row.get("_unavailable_providers") or [])
+                or publico.get("connected") is False or publico.get("oauth_invalid") is True
+                or not str(publico.get("access_token") or "").strip()):
+            continue
+        dono = {"nome": nome, "store_id": store_id,
+                "seller_id": str(publico.get("user_id") or "").strip(),
+                "site_id": str(publico.get("site_id") or row.get("site_id") or "").strip()}
+        # This endpoint accepts MLB IDs. An absent or different site cannot be
+        # inferred from a store label or from some other account's credentials.
+        if not dono["seller_id"] or dono["site_id"] != "MLB":
+            continue
+        try:
+            cfg = dict(deps["obter_cfg_ml"](client_id, nome, store_id=store_id) or {})
+        except Exception:
+            continue
+        if _cfg_confere_dono_anuncio(cfg, dono):
+            candidatos.append({**dono, "cfg": cfg})
+    cache_contextos["__contas_autorizadas"] = {"candidatos": candidatos, "motivo": motivo}
+    return candidatos, motivo
+
+
+def _consultar_anuncio_na_conta(client_id: str, item_id: str, conta: dict, deps: dict) -> tuple[dict | None, str]:
+    try:
+        resposta, cfg = deps["ml_api_request"](
+            client_id, conta["nome"], conta["cfg"], "GET", f"https://api.mercadolibre.com/items/{item_id}", timeout=12,
+        )
+        if not _cfg_confere_dono_anuncio(cfg, conta):
+            conta["indisponivel"] = True
+            return None, "A identidade da conexão do anúncio mudou. Atualize as conexões das lojas."
+        conta["cfg"] = dict(cfg)
+        status = getattr(resposta, "status_code", None)
+        if status != 200:
+            return None, _motivo_consulta_anuncio(status)
+        payload = resposta.json() or {}
+        if (not isinstance(payload, dict) or str(payload.get("id") or "").strip() != item_id
+                or str(payload.get("site_id") or "").strip() != "MLB"):
+            return None, "O Mercado Livre não confirmou a identidade e o site do anúncio solicitado."
+        return payload, ""
+    except requests.Timeout:
+        return None, "Tempo limite ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
+    except requests.RequestException:
+        return None, "Falha de conexão ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
+    except HTTPException as erro:
+        return None, _motivo_consulta_anuncio(erro.status_code)
+    except Exception:
+        return None, _motivo_consulta_anuncio(None)
+
+
 def _carregar_contexto_anuncio_loja(
     client_id: str,
     loja_lista: str,
@@ -139,43 +248,8 @@ def _carregar_contexto_anuncio_loja(
     if item_id in cache_contextos:
         contexto = cache_contextos[item_id]
         return (contexto, "") if contexto.get("ok") else (None, contexto.get("motivo") or "")
-
-    candidatos: list[dict[str, Any]] = []
-    if _loja_lista_definida(loja_lista):
-        nomes_lojas = [str(loja_lista).strip()]
-    else:
-        try:
-            nomes_lojas = [
-                str(loja.get("nome") or "").strip()
-                for loja in (deps["carregar_lojas"](client_id) or [])
-                if isinstance(loja, dict)
-                and str(loja.get("nome") or "").strip()
-                and isinstance(loja.get("integracoes"), dict)
-                and isinstance((loja.get("integracoes") or {}).get("mercadolivre"), dict)
-                and str(((loja.get("integracoes") or {}).get("mercadolivre") or {}).get("access_token") or "").strip()
-            ]
-        except Exception:
-            nomes_lojas = []
-
-    for nome_loja in dict.fromkeys(nomes_lojas):
-        try:
-            cfg = dict(deps["obter_cfg_ml"](client_id, nome_loja) or {})
-        except Exception:
-            continue
-        candidatos.append(
-            {
-                "nome": nome_loja,
-                "cfg": cfg,
-                "seller_id": str(cfg.get("user_id") or "").strip(),
-            }
-        )
-
+    candidatos, motivo = _candidatos_donos_anuncios(client_id, deps, cache_contextos)
     if not candidatos:
-        motivo = (
-            "A loja da lista não possui integração ativa com o Mercado Livre."
-            if _loja_lista_definida(loja_lista)
-            else "Defina a loja da lista para calcular tarifa, frete e imposto."
-        )
         cache_contextos[item_id] = {"ok": False, "motivo": motivo}
         return None, motivo
 
@@ -183,32 +257,12 @@ def _carregar_contexto_anuncio_loja(
     candidato_consulta = None
     motivo_falha = _motivo_consulta_anuncio(None)
     for candidato in candidatos:
-        try:
-            resposta, cfg_atualizada = deps["ml_api_request"](
-                client_id,
-                candidato["nome"],
-                candidato["cfg"],
-                "GET",
-                f"https://api.mercadolibre.com/items/{item_id}",
-                timeout=12,
-            )
-            candidato["cfg"] = dict(cfg_atualizada or candidato["cfg"])
-            candidato["seller_id"] = str(candidato["cfg"].get("user_id") or candidato["seller_id"] or "").strip()
-            if getattr(resposta, "status_code", None) == 200:
-                payload = resposta.json() or {}
-                if isinstance(payload, dict):
-                    item = payload
-                    candidato_consulta = candidato
-                    break
-            motivo_falha = _motivo_consulta_anuncio(getattr(resposta, "status_code", None))
-        except requests.Timeout:
-            motivo_falha = "Tempo limite ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
-        except requests.RequestException:
-            motivo_falha = "Falha de conexão ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
-        except HTTPException as erro:
-            motivo_falha = _motivo_consulta_anuncio(erro.status_code)
-        except Exception:
+        if candidato.get("indisponivel"):
             continue
+        item, motivo_falha = _consultar_anuncio_na_conta(client_id, item_id, candidato, deps)
+        if item is not None:
+            candidato_consulta = candidato
+            break
 
     if not isinstance(item, dict):
         motivo = motivo_falha
@@ -216,29 +270,28 @@ def _carregar_contexto_anuncio_loja(
         return None, motivo
 
     seller_id = str(item.get("seller_id") or ((item.get("seller") or {}).get("id") if isinstance(item.get("seller"), dict) else "") or "").strip()
-    if _loja_lista_definida(loja_lista):
-        escolhido = candidatos[0]
-        if not seller_id or seller_id != escolhido["seller_id"]:
-            motivo = "O anúncio informado não pertence à loja selecionada nesta lista."
+    correspondentes = [candidato for candidato in candidatos if seller_id and candidato["seller_id"] == seller_id
+                       and candidato["site_id"] == item["site_id"] and not candidato.get("indisponivel")]
+    if len(correspondentes) != 1:
+        motivo = ("Há mais de uma conta autorizada para o mesmo vendedor e site. Confirme as conexões das lojas."
+                  if len(correspondentes) > 1 else "O anúncio não pertence a uma conta autorizada neste cliente e site.")
+        cache_contextos[item_id] = {"ok": False, "motivo": motivo}
+        return None, motivo
+    escolhido = correspondentes[0]
+    if candidato_consulta is not escolhido:
+        item, motivo = _consultar_anuncio_na_conta(client_id, item_id, escolhido, deps)
+        seller_confirmado = str((item or {}).get("seller_id") or "").strip()
+        if not item or seller_confirmado != escolhido["seller_id"]:
+            motivo = motivo or "A conta proprietária não confirmou o anúncio solicitado."
             cache_contextos[item_id] = {"ok": False, "motivo": motivo}
             return None, motivo
-    else:
-        correspondentes = [candidato for candidato in candidatos if seller_id and candidato["seller_id"] == seller_id]
-        if len(correspondentes) != 1:
-            motivo = (
-                "Há mais de uma loja compatível; defina a loja desta lista."
-                if len(correspondentes) > 1
-                else "Não foi possível identificar de forma segura a loja deste anúncio."
-            )
-            cache_contextos[item_id] = {"ok": False, "motivo": motivo}
-            return None, motivo
-        escolhido = correspondentes[0]
-        if candidato_consulta is escolhido:
-            escolhido["cfg"] = candidato_consulta["cfg"]
 
     contexto = {
         "ok": True,
         "loja": escolhido["nome"],
+        "store_id": escolhido["store_id"],
+        "seller_id": escolhido["seller_id"],
+        "site_id": escolhido["site_id"],
         "cfg": escolhido["cfg"],
         "item": item,
     }
@@ -293,15 +346,17 @@ def _calcular_margens_concorrentes_promocoes(
             continue
 
         loja = str(contexto.get("loja") or "").strip()
+        store_id = str(contexto.get("store_id") or "").strip()
         item = dict(contexto.get("item") or {})
         cfg = dict(contexto.get("cfg") or {})
-        if loja not in cache_cadastro:
+        cadastro_key = (store_id, sku)
+        if cadastro_key not in cache_cadastro:
             try:
-                custos, impostos = deps["carregar_custos_impostos"](client_id, loja)
-                cache_cadastro[loja] = (dict(custos or {}), dict(impostos or {}))
+                custos, impostos = deps["carregar_custos_impostos"](client_id, loja, store_id, sku)
+                cache_cadastro[cadastro_key] = (dict(custos or {}), dict(impostos or {}))
             except Exception:
-                cache_cadastro[loja] = ({}, {})
-        custos_cadastro, impostos_cadastro = cache_cadastro[loja]
+                cache_cadastro[cadastro_key] = ({}, {})
+        custos_cadastro, impostos_cadastro = cache_cadastro[cadastro_key]
         custo_unitario = deps["resolver_custo"](custos_cadastro, sku)
         custo_unitario = _numero_finito_margem(custo_unitario)
         if custo_unitario is None or custo_unitario < 0:
@@ -336,6 +391,11 @@ def _calcular_margens_concorrentes_promocoes(
             tarifa_dados = dict(tarifa_dados or {})
         except Exception:
             tarifa_dados = {}
+        if not _cfg_confere_dono_anuncio(cfg, contexto):
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda, item_id, "A conexão da conta do anúncio mudou durante a consulta financeira.", loja=loja,
+            )
+            continue
         tarifa_ml = _numero_finito_margem(tarifa_dados.get("ad_cost"))
         contexto_tarifa = _numero_finito_margem(tarifa_dados.get("ad_cost_price_context"))
         tarifa_exata = bool(tarifa_dados.get("ad_cost_exact_for_price"))
@@ -363,6 +423,11 @@ def _calcular_margens_concorrentes_promocoes(
         except Exception:
             frete_dados = {}
         contexto["cfg"] = cfg
+        if not _cfg_confere_dono_anuncio(cfg, contexto):
+            margens[chave] = _margem_concorrente_indisponivel(
+                preco_venda, item_id, "A conexão da conta do anúncio mudou durante a consulta financeira.", loja=loja,
+            )
+            continue
         frete_ml = _numero_finito_margem(frete_dados.get("shipping_cost"))
         contexto_frete = _numero_finito_margem(frete_dados.get("shipping_price_context"))
         frete_exato = bool(frete_dados.get("shipping_exact_for_price"))
@@ -396,6 +461,9 @@ def _calcular_margens_concorrentes_promocoes(
             "preco_venda": round(preco_venda, 2),
             "item_id_loja": item_id,
             "loja": loja,
+            "store_id": store_id,
+            "seller_id": contexto["seller_id"],
+            "site_id": contexto["site_id"],
             "custo_unitario": round(float(custo_unitario), 2),
             "imposto_percentual": round(float(imposto_rate) * 100.0, 4),
             "imposto_valor": round(float(financeiro["imposto"]), 2),
@@ -411,6 +479,7 @@ def _calcular_margens_concorrentes_promocoes(
                 or ""
             )[:120],
         }
+        cache_cotacoes[(item_id, preco_venda)] = dict(margens[chave])
 
     for chave, dados in margens.items():
         item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))

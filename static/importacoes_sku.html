@@ -1811,6 +1811,12 @@
             const dados = margens && margens['concorrente_' + numero];
             const itemIdAtual = extrairCodigoMlbOferta(ultimosAnunciosLojaConcorrentes['concorrente_' + numero]);
             const itemIdAnalisado = extrairCodigoMlbOferta(dados && dados.item_id_loja);
+            const lojaAnuncio = itemIdAtual && itemIdAnalisado === itemIdAtual
+                ? String(dados?.loja || '').trim() : '';
+            if (propria) {
+                const papel = el.closest?.('.analysis-offer')?.querySelector('.analysis-offer-role');
+                if (papel) papel.textContent = lojaAnuncio || 'Peças';
+            }
             const precoAnalisado = getNumber(dados && dados.preco_venda);
             const margem = getNumber(dados && dados.margem_percentual);
             const dadosValidos = precoVenda !== null && precoVenda > 0
@@ -1831,6 +1837,7 @@
             el.textContent = 'Margem: ' + fmtPct(margem);
             el.classList.toggle('negative', margem < 0);
             el.title = [
+                ...(lojaAnuncio ? ['Conta do anúncio: ' + lojaAnuncio] : []),
                 (propria ? 'Preço do anúncio da loja: ' : 'Preço do concorrente: ') + fmtBRL(precoVenda),
                 'Custo do cadastro: ' + fmtBRL(dados.custo_unitario),
                 'Imposto: ' + fmtBRL(dados.imposto_valor),
