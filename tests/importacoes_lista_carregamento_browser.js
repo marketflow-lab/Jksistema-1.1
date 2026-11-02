@@ -85,6 +85,8 @@ async function environment(browser, options = {}) {
       { id: 'supplier-a', nome_empresa: 'Empresa A' }, { id: 'supplier-b', nome_empresa: 'Empresa B' },
     ]);
     if (pathname === '/api/cadastro/produtos') { ++state.calls.globalCatalog; return json(route, [{ sku: '002', m3: 999 }]); }
+    // O custo consulta a projeção resumida; o contador abaixo mede somente a cubagem.
+    if (pathname.startsWith('/api/cadastro/lojas/') && url.searchParams.get('view') === 'summary') return json(route, []);
     if (pathname.startsWith('/api/cadastro/lojas/')) {
       ++state.calls.catalog;
       assert.strictEqual(pathname, '/api/cadastro/lojas/store-A/produtos');

@@ -1006,6 +1006,8 @@
                 custoAssinatura: assinaturaAnaliseCustoPosto, faturamento: faturamentoVendas12m,
                 faturamentoLoja: faturamentoVendasLoja, mapaM3: Array.from(mapaM3IndividualSku.entries()),
                 mapaM3Carregado: mapaM3IndividualCarregado, mapaM3Loja: mapaM3StoreId,
+                custosCadastro: Array.from(custosCadastroPorSku.entries()), custosCadastroLoja: custosCadastroStoreId,
+                custosCadastroEstado: estadoCustosCadastro,
             } };
             await persistencia.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId), dados,
                 { contexto: contexto.persistencia, tags: ['importacoes', 'vendas'] });
@@ -1059,6 +1061,102 @@
             return Array.from(new Uint8Array(digest), valor => valor.toString(16).padStart(2, '0')).join('');
         }
         let ultimosItensCarregados = [];
+        const custosCadastroPorSku = new Map();
+        let custosCadastroStoreId = '';
+        let estadoCustosCadastro = 'carregando';
+        let requisicaoCustosCadastro = 0;
+        let consultaCustosCadastro = null;
+
+        function custoCadastradoNumero(valor) {
+            if (typeof valor === 'number') return Number.isFinite(valor) && valor >= 0 ? valor : null;
+            if (typeof valor !== 'string' || !/\d/.test(valor)) return null;
+            let texto = valor.trim().replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '').replace(/\$/g, '');
+            if (texto.includes(',') && texto.includes('.')) {
+                texto = texto.lastIndexOf(',') > texto.lastIndexOf('.')
+                    ? texto.replace(/\./g, '').replace(',', '.') : texto.replace(/,/g, '');
+            } else if (texto.includes(',')) texto = texto.replace(',', '.');
+            const numero = Number(texto);
+            return Number.isFinite(numero) && numero >= 0 ? numero : null;
+        }
+
+        function chaveSkuCustoCadastro(sku) {
+            return String(sku ?? '').trim().toUpperCase();
+        }
+
+        function reiniciarCustosCadastro(storeId = '') {
+            ++requisicaoCustosCadastro;
+            consultaCustosCadastro = null;
+            custosCadastroPorSku.clear();
+            custosCadastroStoreId = storeId;
+            estadoCustosCadastro = storeId ? 'carregando' : 'indisponivel';
+        }
+
+        function textoUltimoCustoCadastrado(item) {
+            const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
+            const sku = chaveSkuCustoCadastro(item && item.SKU);
+            if (storeId && custosCadastroStoreId === storeId && custosCadastroPorSku.has(sku)) {
+                const custo = custosCadastroPorSku.get(sku);
+                return custo === null ? 'Não cadastrado' : formatarBRL(custo);
+            }
+            if (!storeId || estadoCustosCadastro === 'indisponivel') return 'Indisponível';
+            return estadoCustosCadastro === 'pronto' ? 'Não cadastrado' : 'Carregando...';
+        }
+
+        function atualizarCustosCadastroVisiveis() {
+            document.querySelectorAll('#tbodyLista tr[data-item-index]').forEach(linha => {
+                const item = ultimosItensCarregados[Number(linha.dataset.itemIndex)];
+                const celula = linha.querySelector('[data-col-key="ultimo_custo_cadastrado"]');
+                if (item && celula) celula.textContent = textoUltimoCustoCadastrado(item);
+            });
+        }
+
+        function carregarCustosCadastro(contexto) {
+            const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
+            if (!storeId) {
+                estadoCustosCadastro = 'indisponivel';
+                atualizarCustosCadastroVisiveis();
+                return Promise.resolve();
+            }
+            if (consultaCustosCadastro && consultaCustosCadastro.geracao === contexto.geracao
+                && consultaCustosCadastro.storeId === storeId && consultaCustosCadastro.persistencia === contexto.persistencia) {
+                return consultaCustosCadastro.promessa;
+            }
+            const ordem = ++requisicaoCustosCadastro;
+            const vigente = () => dadosListaVigentes(contexto) && ordem === requisicaoCustosCadastro
+                && String(ultimaListaCarregada.store_id || '').trim() === storeId;
+            estadoCustosCadastro = 'carregando';
+            atualizarCustosCadastroVisiveis();
+            const consulta = { geracao: contexto.geracao, storeId, persistencia: contexto.persistencia, promessa: null };
+            consultaCustosCadastro = consulta;
+            consulta.promessa = (async () => {
+                try {
+                    const aplicar = produtos => {
+                        if (!vigente()) return;
+                        if (!Array.isArray(produtos)) throw new Error('Custos do cadastro indisponíveis.');
+                        custosCadastroPorSku.clear();
+                        produtos.forEach(produto => {
+                            if (!produto || String(produto.store_id || '') !== storeId) return;
+                            // A chave preserva os zeros: 001 e 1 são produtos distintos.
+                            const sku = chaveSkuCustoCadastro(produto.sku);
+                            if (sku) custosCadastroPorSku.set(sku, custoCadastradoNumero(produto.custo));
+                        });
+                        custosCadastroStoreId = storeId;
+                        estadoCustosCadastro = 'pronto';
+                        atualizarCustosCadastroVisiveis();
+                    };
+                    const produtos = await consultarComplementoJson('/api/cadastro/lojas/' + encodeURIComponent(storeId)
+                        + '/produtos?view=summary', contexto, aplicar);
+                    if (vigente()) aplicar(produtos);
+                } catch (_erro) {
+                    if (!vigente()) return;
+                    estadoCustosCadastro = 'indisponivel';
+                    atualizarCustosCadastroVisiveis();
+                }
+                if (vigente()) await salvarSnapshotLista(contexto).catch(() => {});
+            })();
+            return consulta.promessa;
+        }
+
         let fornecedorResumoSalvando = false;
         let ultimaAnaliseCustoPosto = null;
         let assinaturaListaAtual = '';
@@ -2579,6 +2677,7 @@
             { key: 'valor_usd', label: 'Valor em dólar', width: 145 },
             { key: 'frete_internacional', label: 'Frete Internacional', width: 170 },
             { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
+            { key: 'ultimo_custo_cadastrado', label: 'Último custo cadastrado', width: 190 },
             { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
             { key: 'margens_concorrentes', label: 'Margem concorrentes', width: 185 },
             { key: 'acao', label: 'Ação', width: 130 }
@@ -2587,6 +2686,13 @@
 
         function adicionarColunasNovasNaOrdem(ordenadas, mapa) {
             mapa.forEach((coluna) => {
+                if (coluna.key === 'ultimo_custo_cadastrado') {
+                    const indiceValorUnitario = ordenadas.findIndex((item) => item.key === 'valor_unit_brl');
+                    if (indiceValorUnitario >= 0) {
+                        ordenadas.splice(indiceValorUnitario + 1, 0, coluna);
+                        return;
+                    }
+                }
                 if (coluna.key === 'margens_concorrentes') {
                     const indiceAcao = ordenadas.findIndex((item) => item.key === 'acao');
                     if (indiceAcao >= 0) {
@@ -3289,6 +3395,7 @@
                     valor_usd: formatarUSD(valorUnit),
                     frete_internacional: formatarBRL(freteInternacionalItemBrl),
                     valor_unit_brl: formatarBRL(valorUnitRs),
+                    ultimo_custo_cadastrado: textoUltimoCustoCadastrado(item),
                     valor_total_usd: formatarUSD(valorTotal),
                     margens_concorrentes: formatarMargensConcorrentes(item),
                     acao: sku
@@ -3315,6 +3422,7 @@
                     valor_usd: 'num',
                     frete_internacional: 'num',
                     valor_unit_brl: 'num',
+                    ultimo_custo_cadastrado: 'num',
                     valor_total_usd: 'num',
                     margens_concorrentes: 'num-center',
                     acao: 'num-center',
@@ -3485,11 +3593,13 @@
                     || data.lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
                 const lista = data.lista;
                 const itens = lista.itens;
+                const storeId = String(lista.store_id || '').trim();
                 const assinatura = await assinaturaCustosLista(lista);
                 if (!dadosVigentes()) return false;
                 const mesmaLista = ultimaListaCarregada && String(ultimaListaCarregada.id) === String(lista.id)
                     && String(ultimaListaCarregada.store_id || '') === String(lista.store_id || '');
                 ultimaListaCarregada = lista;
+                if (!mesmaLista) reiniciarCustosCadastro(storeId);
                 if (!mesmaLista || assinatura !== assinaturaListaAtual) {
                     ultimaAnaliseCustoPosto = null;
                     assinaturaAnaliseCustoPosto = '';
@@ -3498,8 +3608,17 @@
                 }
                 assinaturaListaAtual = assinatura;
                 ultimosItensCarregados = itens;
-                const storeId = String(lista.store_id || '').trim();
                 const complemento = data.complementosLista;
+                if (!mesmaLista && complemento && complemento.custosCadastroLoja === storeId && Array.isArray(complemento.custosCadastro)) {
+                    custosCadastroPorSku.clear();
+                    complemento.custosCadastro.forEach(entrada => {
+                        if (Array.isArray(entrada) && entrada.length === 2 && typeof entrada[0] === 'string' && entrada[0].trim()) {
+                            custosCadastroPorSku.set(chaveSkuCustoCadastro(entrada[0]), custoCadastradoNumero(entrada[1]));
+                        }
+                    });
+                    custosCadastroStoreId = storeId;
+                    estadoCustosCadastro = complemento.custosCadastroEstado === 'pronto' ? 'pronto' : 'indisponivel';
+                }
                 if (complemento && (!complemento.mapaM3Loja || complemento.mapaM3Loja === storeId)) {
                     ultimaAnaliseCustoPosto = complemento.custoAssinatura === assinatura ? (complemento.custo || null) : null;
                     assinaturaAnaliseCustoPosto = ultimaAnaliseCustoPosto ? assinatura : '';
@@ -3519,6 +3638,7 @@
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
                 const contexto = contextoCarregamentoAtual(listaId);
+                void carregarCustosCadastro(contexto);
                 if (atualizarMargens) {
                     const complementos = [carregarPreferenciasColunasServidor(contexto), carregarMapaM3Individual(contexto),
                         carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
@@ -3680,6 +3800,7 @@
             geracaoCarregamentoLista++;
             ultimaListaCarregada = null;
             ultimosItensCarregados = [];
+            reiniciarCustosCadastro();
             document.getElementById('meta').textContent = '';
             document.getElementById('resumoTopo').replaceChildren();
             document.getElementById('tbodyLista').replaceChildren();

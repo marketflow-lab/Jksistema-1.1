@@ -44,6 +44,8 @@ async function environment(browser, options = {}) {
             fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
         if (pathname === '/api/cadastro/produtos' || pathname === '/api/cadastro/produto') { state.global++; return json(route, [{ sku: '001', 'm3 individual': 999 }]); }
         if (pathname === '/api/cadastro/lojas/store-A/produtos') {
+            // A consulta de custo não deve interferir nas contagens nem no mapa de cubagem.
+            if (url.searchParams.get('view') === 'summary') return json(route, []);
             state.catalog++;
             return json(route, [
                 { store_id: 'store-X', sku: '001', 'm3 individual': 999 },

@@ -845,6 +845,7 @@
                         <div class="kv" data-card-id="kv_valor_total_reais"><div class="label">Valor total em reais</div><div id="vValorTotalBrl" class="value">-</div></div>
                         <div class="kv cost" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
                         <div class="kv cost" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
+                        <div class="kv cost" data-card-id="kv_ultimo_custo_cadastrado"><div class="label">Último custo cadastrado</div><div id="vUltimoCustoCadastrado" class="value">Carregando...</div></div>
                         <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
@@ -1313,6 +1314,12 @@
                     container.appendChild(el);
                 }
             });
+            // Insere o novo card junto ao valor unitário nas ordens já salvas.
+            if (!aplicados.has('kv_ultimo_custo_cadastrado')) {
+                const custo = mapa.get('kv_ultimo_custo_cadastrado');
+                const unitario = mapa.get('kv_valor_unitario_produto');
+                if (custo && unitario) unitario.after(custo);
+            }
         }
 
         function limparIndicacaoDrag(container) {
@@ -2624,6 +2631,7 @@
             setText('vNcm', ncm);
             setNcmDescricao(ncmDescricao || '-');
             setText('vCest', cest);
+            atualizarCustoCadastroSku(cad);
             setText('vDolar', fmtUsd(valorDolar));
             const valorUnitarioDolarNum = getNumber(valorDolar);
             const quantidadeNum = getNumber(quantidade);
@@ -2965,7 +2973,7 @@
         }
 
         function montarDadosCadastroSku(produto) {
-            if (!produto) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '' };
+            if (!produto) return { tituloPt: '', ncm: '', cest: '', m3Individual: 0, ncmDescricao: '', custo: null };
             const tituloPt = pickCadastro(produto, [
                 'produto_bling',
                 'nome_bling',
@@ -2980,7 +2988,17 @@
             const cest = pickCadastro(produto, ['cest', 'CEST']);
             const ncmDescricao = pickCadastro(produto, ['descricao_ncm', 'descricao ncm', 'ncm descricao', 'desc ncm', 'ncm desc']);
             const m3Individual = obterM3IndividualProdutoCadastro(produto);
-            return { tituloPt, ncm, cest, m3Individual, ncmDescricao };
+            const custoBruto = produto.custo;
+            const custoNumero = (typeof custoBruto === 'number' || typeof custoBruto === 'string' && /\d/.test(custoBruto))
+                ? getNumber(custoBruto) : null;
+            const custo = custoNumero !== null && custoNumero >= 0 ? custoNumero : null;
+            return { tituloPt, ncm, cest, m3Individual, ncmDescricao, custo };
+        }
+
+        function atualizarCustoCadastroSku(cad) {
+            if (!cad || !Object.prototype.hasOwnProperty.call(cad, 'custo')) return;
+            const custo = getNumber(cad.custo);
+            setText('vUltimoCustoCadastrado', custo !== null && custo >= 0 ? fmtBRL(custo) : 'Não cadastrado');
         }
 
         function mesclarDadosCadastroSku(principal, fallback) {
@@ -2991,7 +3009,8 @@
                 ncm: a.ncm || b.ncm || '',
                 cest: a.cest || b.cest || '',
                 m3Individual: a.m3Individual || b.m3Individual || 0,
-                ncmDescricao: a.ncmDescricao || b.ncmDescricao || ''
+                ncmDescricao: a.ncmDescricao || b.ncmDescricao || '',
+                custo: Object.prototype.hasOwnProperty.call(a, 'custo') ? a.custo : (b.custo ?? null)
             };
         }
 
@@ -3000,10 +3019,15 @@
             const data = await consultarJsonDetalheSku('/api/cadastro/lojas/' + encodeURIComponent(storeId)
                 + '/produtos/' + encodeURIComponent(normSku(sku)), contexto);
             const produto = data && data.produto;
-            if (!produto || String(produto.store_id || '') !== storeId || normSku(produto.cubagem_sku || produto.sku) !== normSku(sku)) {
+            const mesmoSku = produto && normSku(produto.sku) === normSku(sku);
+            const mesmaCubagem = produto && normSku(produto.cubagem_sku || produto.sku) === normSku(sku);
+            if (!produto || String(produto.store_id || '') !== storeId || (!mesmoSku && !mesmaCubagem)) {
                 throw new Error('O cadastro retornado não pertence à loja e ao SKU desta lista.');
             }
-            return montarDadosCadastroSku(produto);
+            const cad = montarDadosCadastroSku(produto);
+            // O alias de cubagem pode compartilhar medidas, mas não o custo de outro SKU.
+            if (!mesmoSku) cad.custo = null;
+            return cad;
         }
 
         async function buscarLinksConcorrentes(sku, contexto) {
@@ -3299,12 +3323,18 @@
             ]);
             // O título não depende da fila de recálculo nem da simulação fiscal.
             void consultas.cadastro.then(cad => {
-                if (!vigente() || contexto.listaAtualizada || contexto.snapshot) return;
+                if (!vigente()) return;
+                atualizarCustoCadastroSku(cad);
+                if (contexto.listaAtualizada || contexto.snapshot) return;
                 if (cad.tituloPt) setText('vTituloPt', cad.tituloPt);
                 if (cad.ncm) setText('vNcm', cad.ncm);
                 if (cad.cest) setText('vCest', cad.cest);
                 if (cad.ncmDescricao) setNcmDescricao(cad.ncmDescricao);
-            }).catch(() => {});
+            }).catch(() => {
+                if (vigente() && !Object.prototype.hasOwnProperty.call(contexto.snapshot?.cadastro || {}, 'custo')) {
+                    setText('vUltimoCustoCadastrado', 'Indisponível');
+                }
+            });
             consultas.previa = consultas.resultados.then(async resultados => {
                 if (!await dadosSkuAposMutacao(contexto) || !vigente() || contexto.listaAtualizada || contexto.snapshot) return;
                 const cad = resultados[0].status === 'fulfilled' ? resultados[0].value : null;
@@ -3430,6 +3460,7 @@
                 ultimaVersaoFontesConcorrentes = null;
                 setText('vCustoTotalProduto', '-');
                 setText('vValorUnitarioProduto', '-');
+                setText('vUltimoCustoCadastrado', 'Carregando...');
                 setText('vDespesasNacionais', '-');
             }
             const btnVoltar = document.getElementById('btnVoltar');
