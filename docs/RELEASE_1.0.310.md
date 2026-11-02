@@ -7,6 +7,8 @@ Atualização pequena no perfil `app-update`.
 - A prévia e o PDF usam os mesmos componentes; abrir e salvar o padrão sem editar preserva a impressão existente. O código DANFE integrado pode ser separado pela seleção explícita de sua área, preservando o arquivo enviado.
 - O carregamento identifica servidores sem as rotas novas e orienta reiniciar, em vez de deixar o editor vazio com `Method Not Allowed`.
 - Importações: dados e margens do SKU carregam durante a atualização da lista, preservando os dados salvos e a edição enquanto as fontes complementares respondem.
+- Cada anúncio próprio usa sua conta proprietária confirmada para consultar tarifas, frete, custos e impostos. A conta do anúncio aparece na análise e não substitui a loja vinculada à lista de importação.
+- Custos e impostos respeitam o cliente e a identidade exata da loja, incluindo lojas com nomes iguais, cadastros excluídos e dados legados ambíguos.
 - As consultas ao Mercado Livre e os workers mantêm isolamento de cliente, loja e execução, sem bloquear as rotas de saúde, autenticação e navegação.
 
 Os contratos de runtime e as dependências permanecem iguais aos da versão anterior. A opção Amazon mantém a prévia de amostra; seu processamento ainda não está disponível.
