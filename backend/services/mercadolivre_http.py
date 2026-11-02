@@ -177,7 +177,8 @@ def _ml_http_request(
     from backend.services.perguntas_loading_transport import check_budget, request_timeout
     check_budget()
     if is_marker(token):
-        response = provider_request(token, method, url, headers=headers, params=params, json=json, data=data)
+        response = provider_request(token, method, url, headers=headers, params=params, json=json, data=data,
+                                    timeout=timeout)
         check_budget()
         return response
     if verify_ssl is False:

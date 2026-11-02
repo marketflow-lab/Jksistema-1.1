@@ -12,8 +12,10 @@ from anyio.lowlevel import RunVar
 
 _Result = TypeVar("_Result")
 _HEAVY_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_heavy_worker_limiter")
+_FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_financial_worker_limiter")
 _PENDING_WORKERS: RunVar[set[asyncio.Task]] = RunVar("jk_pending_blocking_workers")
 HEAVY_WORKER_LIMIT = 2
+FINANCIAL_WORKER_LIMIT = 1
 
 
 def heavy_worker_limiter() -> anyio.CapacityLimiter:
@@ -33,6 +35,30 @@ async def run_heavy(function: Callable[..., _Result], *args, **kwargs) -> _Resul
     )
 
 
+def financial_worker_limiter() -> anyio.CapacityLimiter:
+    """Reserve at most one heavy worker for financial network enrichment."""
+    try:
+        return _FINANCIAL_LIMITER.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(FINANCIAL_WORKER_LIMIT)
+        _FINANCIAL_LIMITER.set(limiter)
+        return limiter
+
+
+async def run_financial(function: Callable[..., _Result], *args, **kwargs) -> _Result:
+    """Queue financial work before heavy admission, retaining both until done."""
+    financial_limiter = financial_worker_limiter()
+    heavy_limiter = heavy_worker_limiter()
+
+    async def admitted():
+        # Waiting financial requests must not occupy the other heavy slot,
+        # which is also used by local import-list and fiscal calculations.
+        async with financial_limiter:
+            return await _run_worker(partial(function, *args, **kwargs), heavy_limiter)
+
+    return await _retain_worker(asyncio.create_task(admitted(), name="jk-financial-worker"))
+
+
 async def run_blocking(function: Callable[..., _Result], *args, **kwargs) -> _Result:
     """Use normal worker admission for short operational reads such as stores."""
     return await _run_worker(partial(function, *args, **kwargs), None)
@@ -42,22 +68,38 @@ async def _run_worker(function: Callable[[], _Result], limiter) -> _Result:
     # Raw asyncio Task.cancel() bypasses AnyIO CancelScope shielding. Keep the
     # task owning the limiter alive, so a disconnected request cannot free its
     # slot while its worker is still calculating or committing a transaction.
+    worker = asyncio.create_task(anyio.to_thread.run_sync(
+        function, limiter=limiter, abandon_on_cancel=False,
+    ), name="jk-blocking-worker")
+    return await _retain_worker(worker)
+
+
+async def _retain_worker(worker: asyncio.Task) -> _Result:
+    """Keep an admitted or queued operation alive after its caller disconnects."""
     try:
         pending = _PENDING_WORKERS.get()
     except LookupError:
         pending = set()
         _PENDING_WORKERS.set(pending)
-    worker = asyncio.create_task(anyio.to_thread.run_sync(
-        function, limiter=limiter, abandon_on_cancel=False,
-    ), name="jk-blocking-worker")
     pending.add(worker)
+    completion = asyncio.get_running_loop().create_future()
 
     def completed(task):
         pending.discard(task)
-        # A cancelled caller cannot retrieve a later worker failure itself.
-        if not task.cancelled():
-            task.exception()
+        if task.cancelled():
+            if not completion.done():
+                completion.cancel()
+            return
+        # Retrieve failures even after the caller has cancelled its own Future.
+        # asyncio.shield on Python 3.14 logs later failures despite retrieval.
+        error = task.exception()
+        if not completion.done():
+            if error is not None:
+                completion.set_exception(error)
+            else:
+                completion.set_result(task.result())
 
     worker.add_done_callback(completed)
     with anyio.CancelScope(shield=True):
-        return await asyncio.shield(worker)
+        # Raw Task.cancel() cancels only this completion Future, never worker.
+        return await completion

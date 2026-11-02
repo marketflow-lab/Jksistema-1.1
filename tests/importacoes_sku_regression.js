@@ -52,7 +52,7 @@ const requiredSnippets = [
     'const abrirChrome = window.electronAPI && window.electronAPI.openExternalChrome;',
     'configurarCardOfertaClicavel(lbl, labelTexto, v);',
     'function enriquecerPromocoesSkuEmSegundoPlano(',
-    'await salvarAnaliseConcorrentes(listaId, skuNorm);',
+    'salvarAnaliseConcorrentes(contexto.listaId, contexto.sku)',
     "const erro = await resp.json().catch(() => ({}));",
     'Não foi possível carregar os anúncios e preços dos concorrentes.',
 ];

@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+import requests
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
@@ -116,6 +117,18 @@ def _margem_concorrente_indisponivel(
     }
 
 
+def _motivo_consulta_anuncio(status: int | None) -> str:
+    if status in (401, 403):
+        return f"Consulta do anúncio não autorizada (HTTP {status}). Confira a conexão e as permissões desta loja."
+    if status == 404:
+        return "O anúncio da loja não foi encontrado no Mercado Livre (HTTP 404)."
+    if status == 429:
+        return "O Mercado Livre limitou a consulta do anúncio (HTTP 429). Tente novamente em instantes."
+    if status is not None and 500 <= status <= 599:
+        return f"A consulta do anúncio no Mercado Livre está temporariamente indisponível (HTTP {status})."
+    return "Não foi possível consultar o anúncio da loja no Mercado Livre."
+
+
 def _carregar_contexto_anuncio_loja(
     client_id: str,
     loja_lista: str,
@@ -168,6 +181,7 @@ def _carregar_contexto_anuncio_loja(
 
     item = None
     candidato_consulta = None
+    motivo_falha = _motivo_consulta_anuncio(None)
     for candidato in candidatos:
         try:
             resposta, cfg_atualizada = deps["ml_api_request"](
@@ -186,11 +200,18 @@ def _carregar_contexto_anuncio_loja(
                     item = payload
                     candidato_consulta = candidato
                     break
+            motivo_falha = _motivo_consulta_anuncio(getattr(resposta, "status_code", None))
+        except requests.Timeout:
+            motivo_falha = "Tempo limite ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
+        except requests.RequestException:
+            motivo_falha = "Falha de conexão ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
+        except HTTPException as erro:
+            motivo_falha = _motivo_consulta_anuncio(erro.status_code)
         except Exception:
             continue
 
     if not isinstance(item, dict):
-        motivo = "Não foi possível consultar o anúncio da loja no Mercado Livre."
+        motivo = motivo_falha
         cache_contextos[item_id] = {"ok": False, "motivo": motivo}
         return None, motivo
 
@@ -1297,9 +1318,9 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    from backend.services.blocking_workers import run_heavy
+    from backend.services.blocking_workers import run_financial
 
-    return await run_heavy(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
+    return await run_financial(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
 
 
 @_retry_listas_pedidos

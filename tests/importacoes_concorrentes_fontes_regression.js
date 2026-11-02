@@ -135,12 +135,12 @@ async function verifySkuContextAndVersion() {
         assert.strictEqual(patch.precos_concorrentes['concorrente_' + n], 80.5 + n);
         assert.strictEqual(patch.precos_anuncios_loja['concorrente_' + n], 90 + n);
     }
-    await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /carregamento completo/);
+    await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /cadastro da loja e os anúncios/);
     validity.data = false;
-    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /carregamento completo/);
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /cadastro da loja e os anúncios/);
     validity.data = true;
     current.podeSalvar = false;
-    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /carregamento completo/);
+    await assert.rejects(context.salvarAnaliseConcorrentes(current.listaId, current.sku), /cadastro da loja e os anúncios/);
     delete current.podeSalvar;
     assert.strictEqual(calls.length, 2, 'Outro contexto não pode salvar a análise carregada.');
 

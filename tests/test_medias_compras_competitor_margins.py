@@ -3,6 +3,7 @@ import copy
 import threading
 
 import pytest
+import requests
 from fastapi import HTTPException
 from pydantic import ValidationError
 
@@ -341,6 +342,39 @@ def test_calculadora_rejeita_anuncio_de_outra_loja(monkeypatch):
 
     assert dados["margem_percentual"] is None
     assert "não pertence à loja" in dados["motivo_indisponivel"]
+
+
+@pytest.mark.parametrize("failure,expected", [
+    (401, "HTTP 401"), (403, "HTTP 403"), (404, "HTTP 404"), (429, "HTTP 429"), (503, "HTTP 503"),
+    (requests.Timeout("private-request-and-token"), "Tempo limite"),
+    (requests.ConnectionError("private-request-and-token"), "Falha de conexão"),
+    (HTTPException(401, "private-request-and-token"), "HTTP 401"),
+])
+def test_consulta_anuncio_informa_falha_sanitizada_e_nao_estima_margem(monkeypatch, failure, expected):
+    deps = _dependencias_financeiras_fake()
+    calls = []
+
+    def request(client_id, loja, cfg, method, url, **kwargs):
+        calls.append((client_id, loja, method, url, kwargs))
+        if isinstance(failure, Exception):
+            raise failure
+        response = requests.Response()
+        response.status_code = failure
+        response._content = b'{"message":"private-request-and-token"}'
+        return response, cfg
+
+    deps["ml_api_request"] = request
+    deps["ml_obter_taxas_anuncio"] = lambda *_args, **_kwargs: pytest.fail(
+        "Uma consulta de anúncio negada não autoriza a cotação financeira."
+    )
+    monkeypatch.setattr(listas_service, "_dependencias_margens_concorrentes", lambda: deps)
+    dados = listas_service._calcular_margens_concorrentes_promocoes(
+        "tenant-a", "Loja A", "001", {"concorrente_1": 100}, {"concorrente_1": "MLB111"},
+    )["concorrente_1"]
+    assert dados["financeiro_exato"] is False and dados["margem_percentual"] is None
+    assert expected in dados["motivo_indisponivel"]
+    assert "private-request-and-token" not in str(dados)
+    assert len(calls) == 1 and calls[0][:3] == ("tenant-a", "Loja A", "GET")
 
 
 def test_calculadora_infere_loja_unica_em_lista_antiga_sem_loja(monkeypatch):

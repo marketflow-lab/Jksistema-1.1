@@ -1827,7 +1827,8 @@ async def obter_produto_loja(
     sku: str,
     client_id: str = Depends(get_tenant_id),
 ):
-    return {"produto": _obter_produto_loja_sync(client_id, store_id, sku)}
+    produto = await run_in_threadpool(_obter_produto_loja_sync, client_id, store_id, sku)
+    return {"produto": produto}
 
 
 async def criar_produto_loja(

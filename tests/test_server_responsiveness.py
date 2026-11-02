@@ -52,6 +52,8 @@ def _uvicorn_server(app):
 
 
 def test_health_html_auth_and_stores_respond_during_50_second_import_workers(tmp_path, monkeypatch):
+    from backend.services import medias_compras_cache, medias_compras_fontes
+
     html_names = ("dashboard", "vendas", "perguntas_pos_venda", "importacoes_lista")
     static = tmp_path / "static"
     static.mkdir()
@@ -104,6 +106,13 @@ def test_health_html_auth_and_stores_respond_during_50_second_import_workers(tmp
             with lock:
                 active -= 1
 
+    # The full-detail wrapper now probes revisions and unwraps the transaction
+    # before entering its heavy worker. Keep those sources synthetic and stable.
+    slow_import.__wrapped__ = slow_import
+    monkeypatch.setattr(medias_compras_listas, "get_tenant_path", lambda client_id: str(tmp_path))
+    monkeypatch.setattr(medias_compras_listas, "_carregar_listas_pedidos", lambda client_id: [{"id": "list-a", "itens": []}])
+    monkeypatch.setattr(medias_compras_fontes, "extras_runtime", lambda module: ())
+    monkeypatch.setattr(medias_compras_cache, "resultados_medias", medias_compras_cache.ResultadoCache())
     monkeypatch.setattr(medias_compras_listas, "_api_medias_compras_lista_pedido_detalhe_sync", slow_import)
     monkeypatch.setattr(medias_compras_listas, "_api_medias_compras_lista_pedido_custo_posto_sync", slow_import)
     monkeypatch.setattr(cadastro_listagem, "_listar_produtos_cadastro_sync", slow_import)
@@ -143,6 +152,62 @@ def test_health_html_auth_and_stores_respond_during_50_second_import_workers(tmp
     assert {row[0] for row in starts} == {"tenant-a", "tenant-b", "tenant-c"}
     assert all(client_id == context and thread != loop_thread for client_id, context, thread, _ in starts)
     assert min(row[3] for row in starts[2:]) - min(row[3] for row in starts[:2]) >= 50
+
+
+def test_health_responds_while_individual_store_product_waits_for_catalog(monkeypatch):
+    from backend.services import cadastro_lojas_produtos
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocked_product(client_id, store_id, sku):
+        calls.append((client_id, store_id, sku, _TENANT.get(), threading.get_ident()))
+        entered.set()
+        assert release.wait(5), "Catalog worker was not released"
+        return {"store_id": store_id, "sku": sku, "nome": "Synthetic product"}
+
+    monkeypatch.setattr(cadastro_lojas_produtos, "_obter_produto_loja_sync", blocked_product)
+    app = FastAPI()
+
+    async def tenant():
+        _TENANT.set("tenant-product")
+        return "tenant-product"
+
+    app.dependency_overrides[cadastro_lojas_produtos.get_tenant_id] = tenant
+    app.add_api_route(
+        "/api/cadastro/lojas/{store_id}/produtos/{sku:path}",
+        cadastro_lojas_produtos.obter_produto_loja,
+    )
+
+    @app.get("/health")
+    async def health():
+        return {"ready": True}
+
+    with _uvicorn_server(app) as (base, loop_thread), ThreadPoolExecutor(max_workers=1) as clients:
+        def request_product():
+            with httpx.Client(timeout=8, trust_env=False) as client:
+                return client.get(base + "/api/cadastro/lojas/store-product/produtos/001")
+
+        pending = clients.submit(request_product)
+        try:
+            assert entered.wait(3), "Product request did not reach the catalog reader"
+            with httpx.Client(timeout=1, trust_env=False) as client:
+                response = client.get(base + "/health")
+            assert response.status_code == 200
+            assert response.json() == {"ready": True}
+            assert not pending.done(), "Product request should still be waiting for its catalog"
+        finally:
+            release.set()
+        product_response = pending.result(5)
+
+    assert product_response.status_code == 200
+    assert product_response.json() == {
+        "produto": {"store_id": "store-product", "sku": "001", "nome": "Synthetic product"},
+    }
+    assert len(calls) == 1
+    assert calls[0][:4] == ("tenant-product", "store-product", "001", "tenant-product")
+    assert calls[0][4] != loop_thread
 
 
 @pytest.mark.parametrize("method,path,payload", [

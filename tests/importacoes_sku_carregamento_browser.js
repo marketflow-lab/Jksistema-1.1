@@ -175,8 +175,11 @@ function releaseComplements(state) {
         assert.match(await queued.page.locator('#cacheSkuStatus').textContent(), /salvos|Atualizando/);
         assert.strictEqual(queued.state.savedReads, 1);
         assert.strictEqual(queued.state.blockingReads, 0, 'Abrir SKU não espera o recálculo em um GET bloqueante.');
-        assert.strictEqual(queued.state.calls.cadastro, 0, 'Os complementos aguardam um resultado atual.');
-        assert.strictEqual(queued.state.patches.length, 0);
+        await queued.page.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro store-A');
+        await waitUntil(() => queued.state.patches.length === 1);
+        assert.strictEqual(queued.state.calls.cadastro, 1, 'O cadastro individual inicia enquanto a lista aguarda recálculo.');
+        assert.notStrictEqual(await queued.page.locator('#vCustoTotalProduto').textContent(), '-', 'Custos completos já salvos são exibidos durante a fila.');
+        assert.strictEqual(await queued.page.evaluate(() => cacheWrites.some(entry => entry.key.startsWith('importacoes:SKU:'))), false, 'A prévia não publica snapshot completo antes do resultado atual.');
         queued.state.savedPending = true;
         await queued.page.evaluate(() => mostrarDadosSalvosSku(contextoDetalheSku));
         assert.strictEqual(await queued.page.locator('#vQtd').textContent(), '2', 'Snapshot 202 não apaga dados já visíveis.');
@@ -184,8 +187,8 @@ function releaseComplements(state) {
         assert.strictEqual(await queued.page.evaluate(() => cacheWrites.some(entry => entry.data?.dados === null)), false,
             'Resposta 202 não substitui os dados salvos.');
         queued.state.ready = true;
-        await waitUntil(() => queued.state.patches.length === 1);
-        assert.strictEqual(await queued.page.locator('#vQtd').textContent(), '4');
+        await queued.page.waitForFunction(() => document.getElementById('vQtd').textContent === '4');
+        assert.strictEqual(queued.state.patches.length, 1, 'A lista pronta reutiliza a análise independente já confirmada.');
         assert.strictEqual(queued.state.calls.cadastro, 1);
         assert.deepStrictEqual(queued.state.errors, []);
         await queued.context.close();
@@ -236,7 +239,7 @@ function releaseComplements(state) {
         await pending.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent.includes('Não foi possível atualizar'));
         assert.strictEqual(await pending.page.locator('#vSku').textContent(), '001');
         assert.strictEqual(await pending.page.locator('#vQtd').textContent(), '2');
-        assert.strictEqual(pending.state.patches.length, 0);
+        assert.strictEqual(pending.state.patches.length, 1, 'A margem pode concluir mesmo quando o recálculo da lista excede o prazo.');
         const pendingReads = pending.state.queuedReads;
         await pending.page.waitForTimeout(150);
         assert.strictEqual(pending.state.queuedReads, pendingReads, 'Acompanhamento encerra no prazo, preservando os dados salvos.');
@@ -246,6 +249,8 @@ function releaseComplements(state) {
         const queuedStale = await environment(browser, { queuedDetail: true, fastPolling: true, complete: true });
         await queuedStale.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await waitUntil(() => queuedStale.state.queuedReads > 0);
+        await waitUntil(() => queuedStale.state.patches.length === 1);
+        const patchesAntes = queuedStale.state.patches.filter(patch => patch.pathname.includes('/A/')).length;
         await queuedStale.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B&sku=001'); return carregarDetalheSku(); });
         const readsAfterNavigation = queuedStale.state.queuedReads;
         queuedStale.state.ready = true;
@@ -253,7 +258,7 @@ function releaseComplements(state) {
         assert.strictEqual(await queuedStale.page.locator('#vTituloPt').textContent(), 'Cadastro store-B');
         assert.strictEqual(queuedStale.state.queuedReads, readsAfterNavigation, 'A geração anterior não continua consultando.');
         assert.strictEqual(await queuedStale.page.evaluate(() => controladoresDetalheSku.size), 0, 'Timer anterior é cancelado ao navegar.');
-        assert(queuedStale.state.patches.every(patch => patch.pathname.includes('/B/')));
+        assert.strictEqual(queuedStale.state.patches.filter(patch => patch.pathname.includes('/A/')).length, patchesAntes, 'A geração anterior não publica novas margens após navegar.');
         assert.deepStrictEqual(queuedStale.state.errors, []);
         await queuedStale.context.close();
 
@@ -271,6 +276,7 @@ function releaseComplements(state) {
         await first.page.evaluate(() => { window.editorNode = document.querySelector('.prop-input'); });
         releaseComplements(first.state);
         await waitUntil(() => first.state.patches.length === 1);
+        await first.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
         assert.strictEqual(await first.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
         assert.strictEqual(await first.page.evaluate(() => ultimoValorUnitarioProduto), 108.57);
         assert.strictEqual(await first.page.evaluate(() => document.querySelector('.prop-input') === window.editorNode && document.activeElement === window.editorNode), true);
@@ -299,6 +305,7 @@ function releaseComplements(state) {
         const complete = await environment(browser, { complete: true });
         await complete.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await waitUntil(() => complete.state.patches.length === 1);
+        await complete.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
         assert.strictEqual(complete.state.calls.mapa, 0, 'Lista enriquecida dispensa o catálogo M3');
         assert.strictEqual(await complete.page.evaluate(() => ultimoValorUnitarioProduto), 108.57);
         assert.deepStrictEqual(complete.state.errors, []);
@@ -307,6 +314,7 @@ function releaseComplements(state) {
         const zeroQuantity = await environment(browser, { complete: true, zeroQuantity: true });
         await zeroQuantity.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await waitUntil(() => zeroQuantity.state.patches.length === 1);
+        await zeroQuantity.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
         assert.strictEqual(zeroQuantity.state.calls.mapa, 0, 'Quantidade zero dispensa metragem e preço do item');
         assert.strictEqual(await zeroQuantity.page.evaluate(() => ultimoValorUnitarioProduto), 108.57, 'Item com quantidade zero não invalida o rateio dos demais');
         const rateioComZero = await zeroQuantity.page.evaluate(() => calcularValorPorM3PeloCabecalho({}, [
@@ -320,6 +328,7 @@ function releaseComplements(state) {
         const fallbackFx = await environment(browser, { complete: true, noDollar: true });
         await fallbackFx.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await waitUntil(() => fallbackFx.state.patches.length === 1);
+        await fallbackFx.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
         assert.strictEqual(await fallbackFx.page.evaluate(() => ultimoValorUnitarioProduto), 108.57, 'Cotação do topo preserva fallback sem cotação da compra');
         assert.deepStrictEqual(fallbackFx.state.errors, []);
         await fallbackFx.context.close();
@@ -328,10 +337,10 @@ function releaseComplements(state) {
         await delayedFx.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
         await delayedFx.page.waitForFunction(() => document.getElementById('vSku').textContent === '001');
         assert.strictEqual(await delayedFx.page.locator('#vCustoTotalProduto').textContent(), '-');
-        assert.strictEqual(delayedFx.state.patches.length, 0);
-        delayedFx.state.fx.resolve();
         await waitUntil(() => delayedFx.state.patches.length === 1);
-        assert.strictEqual(await delayedFx.page.evaluate(() => ultimoValorUnitarioProduto), 108.57);
+        assert.strictEqual(await delayedFx.page.locator('#vCustoTotalProduto').textContent(), '-', 'Margens independem da cotação do dólar da importação.');
+        delayedFx.state.fx.resolve();
+        await delayedFx.page.waitForFunction(() => ultimoValorUnitarioProduto === 108.57);
         assert.deepStrictEqual(delayedFx.state.errors, []);
         await delayedFx.context.close();
 
@@ -382,7 +391,7 @@ function releaseComplements(state) {
         assert.strictEqual(await missingValues.page.locator('#vValorTotalDolar').textContent(), '-', 'Preço ausente não vira total zero');
         assert.strictEqual(await missingValues.page.locator('#vValorPorM3').textContent(), '-', 'Lista com preço ausente não calcula rateio parcial');
         assert.strictEqual(await missingValues.page.locator('#vCustoTotalProduto').textContent(), '-');
-        assert.strictEqual(missingValues.state.patches.length, 0);
+        assert.strictEqual(missingValues.state.patches.length, 1, 'Margens usam o cadastro mesmo quando o preço de importação está ausente.');
         assert.deepStrictEqual(missingValues.state.errors, []);
         await missingValues.context.close();
 
@@ -392,7 +401,7 @@ function releaseComplements(state) {
         await fiscal.page.waitForFunction(() => !document.getElementById('cacheSkuStatus').textContent.includes('Atualizando'));
         assert.strictEqual(await fiscal.page.locator('#vCustoTotalProduto').textContent(), '-');
         assert.strictEqual(fiscal.state.calls.impostos, 1);
-        assert.strictEqual(fiscal.state.patches.length, 0);
+        assert.strictEqual(fiscal.state.patches.length, 1, 'Falha fiscal de importação não bloqueia a cotação financeira do cadastro.');
         assert.deepStrictEqual(fiscal.state.errors, []);
         await fiscal.context.close();
 

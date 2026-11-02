@@ -122,7 +122,7 @@ async function environment(browser, options = {}) {
         }
         const original = window.setTimeout.bind(window);
         window.setTimeout = (callback, delay, ...args) => original(callback,
-            fastRequestTimeout && [5000, 20000].includes(delay) ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
+            fastRequestTimeout && [5000, 20000, 120000].includes(delay) ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
     }, { testOrigin: origin, fastRequestTimeout: Boolean(options.fastRequestTimeout),
         ignoreBackgroundAbort: Boolean(options.ignoreBackgroundAbort), holdPrices: Boolean(options.holdPrices) });
     const json = (route, result) => route.fulfill({
@@ -239,6 +239,7 @@ function verifyCalls(env) {
 }
 
 async function run(browser, name, options, check) {
+    if (process.env.JK_SKU_TEST_CASE && !name.includes(process.env.JK_SKU_TEST_CASE)) return;
     const env = await environment(browser, options);
     try {
         await check(env);
@@ -348,7 +349,7 @@ async function run(browser, name, options, check) {
             });
         }
 
-        await run(browser, 'edição da proporção ignora análise cujo recibo perdeu a revisão', opcoesFinanceiras({
+        await run(browser, 'mudança do preço ignora análise cujo recibo perdeu a revisão', opcoesFinanceiras({
             patch: async ({ payload, state }) => {
                 if (state.patches.length === 1) return respostaFinanceira(payload);
                 const pending = gate(); state.pending.push(pending);
@@ -358,9 +359,10 @@ async function run(browser, name, options, check) {
         }), async env => {
             await open(env);
             await aguardarMargens(env);
-            await env.page.locator('.kv.prop').dblclick();
-            await env.page.locator('.prop-input').fill('80');
-            await env.page.locator('.prop-input').press('Enter');
+            await env.page.evaluate(() => {
+                aplicarDetalhePrecoOferta('mlb', 1, { precoAtual: 301, precoCheio: null, temPromocao: false });
+                void salvarAnaliseConcorrentes('A', '001').catch(() => {});
+            });
             await waitUntil(() => env.state.patches.length === 2);
             await env.page.evaluate(() => JKCachePersistente.invalidar(['importacoes']));
             env.state.pending[0].resolve();
@@ -379,10 +381,14 @@ async function run(browser, name, options, check) {
                 'A tela não consultou somente_salvos=true antes de aguardar a fila.');
             await visibleSaved(env);
             await waitUntil(() => env.state.backgroundById.A > 0);
-            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Produto salvo A');
-            assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
-            assert.deepStrictEqual(env.state.complements, []);
-            assert.strictEqual(env.state.patches.length, 0);
+            await env.page.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro store-A'
+                && document.getElementById('vCustoTotalProduto').textContent !== '-');
+            await waitUntil(() => env.state.patches.length === 1);
+            assert(env.state.complements.includes('/api/cadastro/lojas/store-A/produtos/001'),
+                'Cadastro individual começa antes do recálculo da lista.');
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
+            'Prévia autorizada não publica um snapshot completo antes do resultado atual.');
             await env.page.locator('.kv.prop').dblclick();
             await env.page.locator('.prop-input').fill('77');
             await env.page.evaluate(() => { window.fixtureEditor = document.querySelector('.prop-input'); });
@@ -390,8 +396,7 @@ async function run(browser, name, options, check) {
             env.state.phase = 'refreshing';
             await waitUntil(() => env.state.backgroundById.A > before);
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2', 'Resultado stale não substitui os dados salvos atuais.');
-            assert.deepStrictEqual(env.state.complements, []);
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, 1, 'Resultado stale não repete a mesma análise financeira.');
             env.state.phase = 'ready';
             await waitUntil(() => env.state.patches.length === 1);
             await env.page.waitForFunction(() => controladoresDetalheSku.size === 0);
@@ -412,9 +417,11 @@ async function run(browser, name, options, check) {
             await visibleSaved(env);
             await env.page.waitForFunction(() => /não foi possível|indispon|tentar/i.test(
                 document.getElementById('cacheSkuStatus').textContent + document.getElementById('erro').textContent));
-            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Produto salvo A');
-            assert.strictEqual(env.state.patches.length, 0);
-            assert.deepStrictEqual(env.state.complements, []);
+            await env.page.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro store-A');
+            await waitUntil(() => env.state.patches.length === 1);
+            assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true);
         });
 
         await run(browser, 'leitura salva falha, resultado pronto recupera a abertura', {
@@ -453,12 +460,13 @@ async function run(browser, name, options, check) {
             await env.page.waitForFunction(() => document.getElementById('vCustoTotalProduto').textContent !== '-');
             const custo = await env.page.locator('#vCustoTotalProduto').textContent();
             await waitUntil(() => env.state.backgroundById.A > 0);
+            await env.page.evaluate(() => contextoDetalheSku.complementos?.analise);
             assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro salvo');
             assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), custo);
             assert.strictEqual(await env.page.evaluate(async key =>
                 (await JKCachePersistente.ler(key))?.dados.lista.itens[0].Quantidade, canonicalKey), 2);
-            assert.strictEqual(env.state.patches.length, 0);
-            assert.deepStrictEqual(env.state.complements, []);
+            await waitUntil(() => env.state.patches.length === 1);
+            assert(env.state.complements.includes('/api/cadastro/lojas/store-A/produtos/001'));
             env.state.phase = 'fail';
             await env.page.waitForFunction(() => /não foi possível|indispon/i.test(
                 document.getElementById('cacheSkuStatus').textContent + document.getElementById('erro').textContent));
@@ -479,16 +487,31 @@ async function run(browser, name, options, check) {
 
         await run(browser, '403 no acompanhamento impede repovoamento por cache', {
             background: () => ({ status: 403, body: { detail: 'Permissão revogada' } }),
+            complement: async ({ state }) => {
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return undefined;
+            },
         }, async env => {
             await seed(env, true);
             await open(env);
             await env.page.waitForFunction(() => document.querySelector('.layout').children.length === 0);
+            env.state.pending.forEach(item => item.resolve());
+            await env.page.waitForLoadState('networkidle');
             assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(await env.page.locator('.layout .card').count(), 0,
+                'Complementos iniciados antes do 403 não repovoam o SKU.');
         });
 
         for (const lateStatus of [200, 403]) {
             await run(browser, 'troca de lista ignora resposta anterior ' + lateStatus, {
                 ignoreBackgroundAbort: true,
+                complement: async ({ pathname, state }) => {
+                    if (pathname !== '/api/cadastro/lojas/store-A/produtos/001') return undefined;
+                    const pending = gate(); state.pending.push(pending);
+                    await pending.promise;
+                    return undefined;
+                },
                 background: async ({ id, state }) => {
                     if (id !== 'A') return completo(id, 7);
                     const pending = gate();
@@ -500,22 +523,29 @@ async function run(browser, name, options, check) {
                 await open(env);
                 await visibleSaved(env);
                 await waitUntil(() => env.state.backgroundById.A > 0);
+                const anteriores = env.state.patches.length;
                 await env.page.evaluate(() => {
                     history.replaceState({}, '', '?lista_id=B&sku=001');
                     void carregarDetalheSku();
                 });
-                await waitUntil(() => env.state.patches.length === 1);
+                await waitUntil(() => env.state.patches.some(item => item.pathname.includes('/B/')));
                 env.state.pending.forEach(item => item.resolve());
                 await env.page.waitForFunction(() => controladoresDetalheSku.size === 0);
                 assert.strictEqual(await env.page.locator('#erro').textContent(), '', 'Resposta antiga não pode invalidar o carregamento atual.');
                 await env.page.waitForLoadState('networkidle');
                 assert.strictEqual(await env.page.locator('#vQtd').textContent(), '7');
                 assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-B');
-                assert(env.state.patches.every(item => item.pathname.includes('/B/')));
+                assert(env.state.patches.slice(anteriores).every(item => item.pathname.includes('/B/')),
+                    'A análise autorizada antes da navegação pode existir; respostas antigas não iniciam outra em A.');
             });
         }
 
         await run(browser, 'revisão alterada rejeita cálculo iniciado antes da edição', {
+            complement: async ({ state }) => {
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return undefined;
+            },
             background: async ({ state }) => {
                 const pending = gate();
                 state.pending.push(pending);
@@ -526,15 +556,20 @@ async function run(browser, name, options, check) {
             await open(env);
             await visibleSaved(env);
             await waitUntil(() => env.state.backgroundById.A > 0);
+            const anteriores = env.state.patches.length;
             await env.page.evaluate(() => JKCachePersistente.invalidar(['importacoes']));
             env.state.pending.forEach(item => item.resolve());
             await env.page.waitForLoadState('networkidle');
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
-            assert.deepStrictEqual(env.state.complements, []);
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, anteriores, 'Resultado anterior à revisão não inicia nova análise.');
         });
 
         await run(browser, 'troca de cliente limpa dados e ignora a resposta pendente', {
+            complement: async ({ state }) => {
+                const pending = gate(); state.pending.push(pending);
+                await pending.promise;
+                return undefined;
+            },
             background: async ({ state }) => {
                 const pending = gate();
                 state.pending.push(pending);
@@ -545,6 +580,7 @@ async function run(browser, name, options, check) {
             await open(env);
             await visibleSaved(env);
             await waitUntil(() => env.state.backgroundById.A > 0);
+            const anteriores = env.state.patches.length;
             await env.page.evaluate(() => {
                 localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-B', username: 'tester' }));
                 window.dispatchEvent(new CustomEvent('jk-tenant-changed'));
@@ -552,7 +588,7 @@ async function run(browser, name, options, check) {
             env.state.pending.forEach(item => item.resolve());
             await env.page.waitForLoadState('networkidle');
             assert.strictEqual(await env.page.locator('.layout .card').count(), 0);
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, anteriores, 'Resposta do cliente anterior não inicia outra análise.');
         });
 
         await run(browser, 'resposta pronta de outra lista não substitui os dados autorizados', {
@@ -562,9 +598,12 @@ async function run(browser, name, options, check) {
             await visibleSaved(env);
             await env.page.waitForLoadState('networkidle');
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
-            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Produto salvo A');
-            assert.strictEqual(env.state.patches.length, 0);
-            assert.deepStrictEqual(env.state.complements, []);
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
+            assert.strictEqual(env.state.patches.length, 1);
+            assert(env.state.patches.every(patch => patch.pathname.includes('/A/')),
+                'Resultado inválido de B não desvia a análise autorizada da lista A.');
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true);
         });
 
         for (const failure of ['fiscal 500', 'fiscal timeout', 'concorrentes 500']) {
@@ -603,8 +642,9 @@ async function run(browser, name, options, check) {
                         await env.page.evaluate(() => fmtBRL(200)),
                     'Falha fiscal preserva links e preços válidos dos concorrentes.');
                 }
-                assert.strictEqual(await env.page.evaluate(() => analiseComplementosPronta), false);
-                assert.strictEqual(env.state.patches.length, 0);
+                assert.strictEqual(await env.page.evaluate(() => analiseComplementosPronta), failure.startsWith('fiscal'));
+                assert.strictEqual(env.state.patches.length, failure.startsWith('fiscal') ? 1 : 0,
+                    'Margens do cadastro independem do fiscal da importação e exigem anúncios válidos.');
                 assert.strictEqual(await env.page.evaluate(async () =>
                     (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
                 'Falha complementar não publica um snapshot completo parcial.');
@@ -618,11 +658,12 @@ async function run(browser, name, options, check) {
             await seed(env, true);
             await open(env);
             await env.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent.includes('Algumas informações não puderam'));
+            await env.page.evaluate(() => contextoDetalheSku.complementos?.analise);
             assert.doesNotMatch(await env.page.locator('#cacheSkuStatus').textContent(), /Atualizando|Consultando preços/);
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
             assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro salvo');
             assert.notStrictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, 1, 'Análise autorizada independe da atualização fiscal.');
             assert.strictEqual(await env.page.evaluate(async () =>
                 (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados.lista.itens[0].Quantidade), 2);
         });
@@ -645,7 +686,51 @@ async function run(browser, name, options, check) {
             await env.page.waitForLoadState('networkidle');
             assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Produto salvo A');
             assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, 0, 'Cadastro concluído após a revisão não autoriza análise antiga.');
+        });
+
+        await run(browser, 'margens do cadastro carregam com lista pendente e fiscal indisponível', opcoesFinanceiras({
+            background: () => aguardando(),
+            complement: ({ pathname, url }) => pathname === '/api/impostos/produtos'
+                ? { status: 500, body: { detail: 'Fiscal indisponível na fixture' } }
+                : pathname === '/api/medias-compras/concorrentes-links'
+                    ? fontesFinanceiras(url.searchParams.get('lista_id')) : undefined,
+        }), async env => {
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent === 'Margem: 33,00%'
+                && document.getElementById('vMargemConcorrente1').textContent === 'Margem: 12,00%');
+            await waitUntil(() => env.state.backgroundById.A > 1);
+            assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro store-A');
+            assert.strictEqual(await env.page.locator('#vCustoTotalProduto').textContent(), '-');
+            assert.strictEqual(env.state.patches.length, 1, 'Polling não duplica a mesma análise financeira.');
+            assert.deepStrictEqual(env.state.patches[0].payload.anuncios_loja, { concorrente_1: 'MLB9876543210' });
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
+            'Margens disponíveis não autorizam publicar um snapshot com custo fiscal incompleto.');
+        });
+
+        await run(browser, 'conflito financeiro antecipado permite nova tentativa com a lista pronta', opcoesFinanceiras({
+            background: ({ state }) => state.phase === 'waiting' ? aguardando() : completo(),
+            patch: ({ payload, state }) => state.patches.length === 1
+                ? { status: 409, body: { detail: 'A lista mudou durante o cálculo financeiro.' } }
+                : respostaFinanceira(payload),
+        }), async env => {
+            await open(env);
+            await waitUntil(() => env.state.patches.length === 1);
+            await env.page.waitForFunction(() => document.getElementById('erro').textContent.includes('mudou'));
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.evaluate(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001')) === null), true,
+            'Conflito não publica uma análise nem um snapshot completo.');
+            env.state.phase = 'ready';
+            await aguardarMargens(env);
+            assert.strictEqual(env.state.patches.length, 2, 'A lista pronta permite uma nova tentativa após o conflito conhecido.');
+            assert.strictEqual(await env.page.locator('#vQtd').textContent(), '9');
+            assert.strictEqual(await env.page.locator('#erro').textContent(), '', 'Nova análise válida encerra o erro transitório.');
+            const snapshot = await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
+            assert.strictEqual(snapshot.lista.itens[0].Quantidade, 9);
+            assert.strictEqual(snapshot.lista.itens[0].analise_concorrentes.margens_anuncios_loja.concorrente_1.margem_percentual, 33);
         });
 
         await run(browser, 'prazo total encerra acompanhamento sem esvaziar o SKU', {
@@ -655,6 +740,10 @@ async function run(browser, name, options, check) {
             await open(env);
             await visibleSaved(env);
             await waitUntil(() => env.state.backgroundById.A > 0);
+            await env.page.evaluate(async () => {
+                await contextoDetalheSku.complementos?.analise;
+                await contextoDetalheSku.complementos?.previa;
+            });
             await env.page.clock.fastForward(121000);
             await env.page.waitForFunction(() => /não foi possível|tempo|pendente|tentar/i.test(
                 document.getElementById('cacheSkuStatus').textContent + document.getElementById('erro').textContent));
@@ -662,7 +751,7 @@ async function run(browser, name, options, check) {
             await env.page.clock.fastForward(20000);
             assert.strictEqual(env.state.backgroundById.A, before, 'Acompanhamento deve parar depois do prazo global.');
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
-            assert.strictEqual(env.state.patches.length, 0);
+            assert.strictEqual(env.state.patches.length, 1, 'A análise do cadastro não aguarda o prazo da lista.');
         });
         console.log('SKU: dados salvos, fila em segundo plano, cache, prazos e isolamento: OK');
     } finally {
