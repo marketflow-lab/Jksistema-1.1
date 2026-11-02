@@ -280,8 +280,26 @@ def test_failure_while_scanning_another_database_keeps_legacy_in_every_reader(mi
             raise sqlite3.OperationalError("fixture account scan unavailable")
         return readonly(path, **kwargs)
 
-    # Readers retain their own working handles; only the safety scan fails.
+    class UnavailableSnapshotAccounts:
+        def __init__(self, conn):
+            self.conn = conn
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+        def execute(self, query, *args, **kwargs):
+            if query.startswith("SELECT DISTINCT loja_conta, trim(store_id)"):
+                failed_reads.append(str(second))
+                raise sqlite3.OperationalError("fixture account scan unavailable")
+            return self.conn.execute(query, *args, **kwargs)
+
+    def snapshot_reader(path, **kwargs):
+        conn = readonly(path, **kwargs)
+        return UnavailableSnapshotAccounts(conn) if str(path) == str(second) else conn
+
+    # Retain working data handles; fail only account evidence, including the
+    # evidence now captured inside each summary/chart read transaction.
     monkeypatch.setattr(performance, "open_vendas_readonly", unavailable_account_scan)
+    monkeypatch.setattr(repository, "open_vendas_readonly", snapshot_reader)
+    monkeypatch.setattr(analytics, "open_vendas_readonly", snapshot_reader)
     quantities = _reader_quantities()
     assert failed_reads
     assert quantities == {reader: 3 for reader in quantities}

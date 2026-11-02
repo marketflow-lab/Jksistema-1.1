@@ -213,7 +213,14 @@ async function main() {
         await h.clock.tick(1); await request;
         h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,automacao:{jobs:[],lojas:[]}})');
         assert.equal(h.snapshot().loading, false); assert.match(h.snapshot().loadError, /tempo de resposta/);
+        assert.match(h.snapshot().loadError, /servidor.*resumo/);
+        assert.match(h.snapshot().loadError, /sincronização das lojas em Detalhes/);
         assert.match(h.node('status').className, /error/); assert.equal(h.fixture.rows.length, 0);
+        h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,active_count:1,automacao:{verificando_conexoes:true,jobs:[],lojas:[{status:"running"}]}})');
+        assert.match(h.node('status').textContent, /tempo de resposta do servidor/);
+        h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,active_count:0,automacao:{verificando_conexoes:true,jobs:[],lojas:[]}})');
+        assert.match(h.node('status').textContent, /tempo de resposta do servidor/);
+        assert(h.fixture.calls.every(call => !call.options.method || call.options.method === 'GET'));
         assert.equal(h.fixture.calls.length, 2); assert.equal(h.clock.timers.size, 0);
     });
     await check('graph body timeout is an error rather than permanent loading', async () => {
@@ -350,6 +357,78 @@ async function main() {
         assert(h.fixture.calls.length > 2 && h.fixture.calls.length <= 33);
         assert.equal(new URLSearchParams(h.fixture.calls[0].url.split('?')[1]).get('somente_salvos'), 'true');
         assert(h.fixture.calls.slice(1).every(call => new URLSearchParams(call.url.split('?')[1]).get('cache_mode') === 'stale'));
+        assert.equal(h.clock.timers.size, 0);
+    });
+    await check('a pending summary reaches its own deadline without pausing collection or hiding its cause', async () => {
+        const h = harness(); h.fixture.fetch = async () => response(pendingSummary());
+        const request = h.evaluate('carregarVendas()'); await flush();
+        await h.clock.tick(120000); await request;
+        assert.equal(h.snapshot().loading, false);
+        assert.match(h.snapshot().loadError, /cálculo do resumo não terminou/);
+        assert.doesNotMatch(h.snapshot().loadError, /tempo de resposta do servidor/);
+        h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,active_count:1,progress:{etapa:"Dia",percentual:42,concluido:false},automacao:{verificando_conexoes:true,jobs:[],lojas:[{status:"running"}]}})');
+        assert.equal(h.evaluate('syncEmAndamento'), true);
+        assert.match(h.node('status').textContent, /cálculo do resumo/);
+        assert(h.fixture.calls.every(call => call.url.includes('/api/vendas/resumo')
+            && (!call.options.method || call.options.method === 'GET')));
+        assert.equal(h.clock.timers.size, 0);
+    });
+    await check('the first complete saved summary finishes loading while collection keeps advancing', async () => {
+        const h = harness(), readyAt = h.clock.now + 1000;
+        const captured = readySummary('captured-during-sync');
+        captured.meta.leitura.estado = 'processando';
+        captured.meta.leitura.atualizando = true;
+        h.fixture.fetch = async url => response(url.includes('somente_salvos=true') || h.clock.now < readyAt
+            ? pendingSummary() : captured);
+        const request = h.evaluate('carregarVendas()'); await flush();
+        assert.equal(h.snapshot().loading, true);
+        await h.clock.tick(1000); await request;
+        assert.equal(h.snapshot().loading, false);
+        assert.equal(h.snapshot().loadError, '');
+        assert.equal(h.snapshot().rows[0].sku, 'captured-during-sync');
+        h.evaluate('aplicarEstadoMonitorSyncVendas({active:true,active_count:1,progress:{etapa:"Dia",percentual:42,concluido:false},automacao:{jobs:[],lojas:[{status:"running"}]}})');
+        assert.equal(h.evaluate('syncEmAndamento'), true);
+        await h.clock.tick(120000);
+        assert(h.fixture.calls.length <= 35);
+        assert.equal(h.snapshot().loadError, '');
+        assert(h.fixture.calls.every(call => !call.options.method || call.options.method === 'GET'));
+    });
+    await check('a loaded saved summary receives the completed revision without another collection commit', async () => {
+        const h = harness(); let ready = false, savedReads = 0;
+        const initial = readySummary('saved-before-refresh');
+        initial.meta.leitura.estado = 'processando'; initial.meta.leitura.atualizando = true;
+        h.fixture.fetch = async url => {
+            if (url.includes('somente_salvos=true') && savedReads++ === 0) return response(pendingSummary());
+            return response(ready ? readySummary('completed-without-new-commit') : initial);
+        };
+        await h.evaluate('carregarVendas()');
+        assert.equal(h.snapshot().loading, false);
+        assert.equal(h.snapshot().rows[0].sku, 'saved-before-refresh');
+        ready = true;
+        await h.clock.tick(1000);
+        assert.equal(h.snapshot().rows[0].sku, 'completed-without-new-commit');
+        assert.equal(h.snapshot().loading, false); assert.equal(h.snapshot().loadError, '');
+        assert(h.fixture.calls.every(call => call.url.includes('/api/vendas/resumo')
+            && (!call.options.method || call.options.method === 'GET')));
+        h.window.dispatchEvent({type:'pagehide'}); await flush();
+        assert.equal(h.clock.timers.size, 0);
+    });
+    await check('pagehide cancels saved-only background refresh and rejects its late response', async () => {
+        const h = harness(), held = deferred(); let savedReads = 0;
+        const saved = readySummary('visible-snapshot');
+        saved.meta.leitura.estado = 'processando'; saved.meta.leitura.atualizando = true;
+        h.fixture.fetch = url => url.includes('somente_salvos=true') && savedReads++ > 0
+            ? held.promise : Promise.resolve(response(saved));
+        await h.evaluate('carregarVendas()');
+        assert.equal(h.snapshot().loading, false);
+        await h.clock.tick(1000);
+        assert.equal(h.fixture.calls.length, 3);
+        h.window.dispatchEvent({type:'pagehide'}); await flush();
+        const calls = h.fixture.calls.length;
+        const rowsAfterHide = JSON.stringify(h.snapshot().rows);
+        held.resolve(response(readySummary('late-unusable'))); await flush();
+        assert.equal(JSON.stringify(h.snapshot().rows), rowsAfterHide);
+        assert.equal(h.fixture.calls.length, calls);
         assert.equal(h.clock.timers.size, 0);
     });
     await check('a 205 day all-store graph accepts valid headers after 65 seconds', async () => {

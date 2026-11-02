@@ -19,6 +19,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 from fastapi import HTTPException
+from urllib3.util import Timeout
 
 from .remote_auth_contracts import load_remote_auth_configuration
 from .transport_security import configure_requests_session
@@ -69,6 +70,25 @@ def migration_session_expired():
                          headers={"WWW-Authenticate": "Bearer"})
 
 
+def _central_request_timeout(requested):
+    """Honor shorter caller limits without expanding the Central transport ceiling."""
+    limits = (3.05, 35)
+    if requested is None:
+        return limits
+    if isinstance(requested, Timeout):
+        bounded = requested.clone()
+        bounded.start_connect()
+        connect, read = bounded.connect_timeout, bounded.read_timeout
+        total = bounded.total
+        values = tuple(limit if value in (None, Timeout.DEFAULT_TIMEOUT) else min(float(value), limit)
+                       for value, limit in zip((connect, read), limits))
+        return Timeout(connect=values[0], read=values[1],
+                       total=35 if total in (None, Timeout.DEFAULT_TIMEOUT) else min(total, 35))
+    connect, read = requested if isinstance(requested, tuple) else (requested, requested)
+    return tuple(limit if value is None else min(float(value), limit)
+                 for value, limit in zip((connect, read), limits))
+
+
 class CentralClient:
     def __init__(self, extension, user_data, permissions, *, configuration=None, transport=None):
         self.configuration = configuration or load_remote_auth_configuration(os.environ)
@@ -89,7 +109,7 @@ class CentralClient:
         self._origin = parsed.scheme + "://" + parsed.netloc
         self.refreshed_at = int(time.time())
 
-    def call(self, method, path, body=None):
+    def call(self, method, path, body=None, *, timeout=None):
         from backend.services.perguntas_loading_transport import check_budget, request_timeout
         check_budget()
         if self.expires_at <= time.time():
@@ -101,7 +121,7 @@ class CentralClient:
         try:
             response = session.request(method, self._origin + "/api/central/v1" + path,
                 json=body, headers={"Authorization": "Bearer " + self._credential, "X-JK-Machine": self.machine},
-                timeout=request_timeout((3.05, 35)), allow_redirects=False)
+                timeout=request_timeout(_central_request_timeout(timeout)), allow_redirects=False)
             self.bling_account_quota = response.headers.get("X-JK-Bling-Quota") == "company-v1"
             check_budget()
             if len(response.content) > 12 * 1024 * 1024:
@@ -320,7 +340,7 @@ def bling_account_for_marker(marker, *, require_quota=False):
     return ""
 
 
-def provider_request(marker, method, url, *, headers=None, params=None, json=None, data=None, **_kwargs):
+def provider_request(marker, method, url, *, headers=None, params=None, json=None, data=None, timeout=None, **_kwargs):
     with _lock:
         reference = _references.get(marker)
     if reference is None:
@@ -354,7 +374,7 @@ def provider_request(marker, method, url, *, headers=None, params=None, json=Non
             "provider": provider, "method": method.upper(), "path": path, "params": parameters,
             "headers": {str(key).lower(): str(value) for key, value in (headers or {}).items()
                         if str(key).lower() in {"x-format-new", "x-version", "if-match", "if-none-match"}},
-            "body": json, "request_id": secrets.token_hex(16)})
+            "body": json, "request_id": secrets.token_hex(16)}, timeout=timeout)
     except HTTPException as exc:
         if provider != "bling" or method.upper() != "GET" or exc.status_code != 429:
             raise
@@ -362,6 +382,7 @@ def provider_request(marker, method, url, *, headers=None, params=None, json=Non
         response = requests.Response()
         response.status_code = 429
         response._content = b'{"error":{"type":"TOO_MANY_REQUESTS"}}'
+        response._content_consumed = True
         response.headers.update(exc.headers or {})
         response.url = url
         return response
@@ -370,6 +391,7 @@ def provider_request(marker, method, url, *, headers=None, params=None, json=Non
     if response.status_code == 401 or (method.upper() != "GET" and response.status_code >= 500):
         raise HTTPException(409, "A plataforma não confirmou esta operação. Confira a conexão e o resultado antes de repetir.")
     response._content = base64.b64decode(result["body_base64"], validate=True)
+    response._content_consumed = True
     response.headers.update(result.get("headers", {}))
     response.url = url
     response.encoding = "utf-8"

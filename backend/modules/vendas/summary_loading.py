@@ -39,6 +39,7 @@ _ERROR = "Não foi possível atualizar as vendas agora. Os últimos dados salvos
 class _Job:
     state: str = "processando"
     finished_at: float = 0
+    revision: str = ""
 
 
 def _arguments(arguments: dict) -> dict:
@@ -51,6 +52,12 @@ def _sources(arguments: dict) -> tuple:
     from .repository import _vendas_resumo_cache_paths
 
     return performance.vendas_sources_signature(_vendas_resumo_cache_paths(arguments))
+
+
+def _guard_sources(arguments: dict) -> tuple:
+    from .repository import _vendas_resumo_cache_paths
+
+    return performance.vendas_snapshot_signature(_vendas_resumo_cache_paths(arguments))
 
 
 def _generation(arguments: dict, *, create: bool):
@@ -75,10 +82,12 @@ def _revision(generation, sources: tuple) -> str:
     return disk._digest([generation.global_revision, generation.tenant_revision, sources])
 
 
-def _load(generation, key: str) -> dict | None:
+def _load(generation, key: str, guard: tuple) -> dict | None:
     payload = disk.load(generation, "resumo", key)
     marker = payload.get("meta", {}).get(_SAVED_META) if payload else None
     if not isinstance(marker, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(marker.get("revisao", ""))):
+        return None
+    if marker.get("guard") != disk._digest(guard):
         return None
     timestamp = marker.get("salvo_em")
     if (not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp)
@@ -99,13 +108,15 @@ def _response(saved: dict | None, state: str, *, updating=False, revision="", er
     return payload, 200 if saved is not None or state == "atualizado" else 202
 
 
-def _run(job_key, job, calculate, arguments, generation, key, sources, revision):
+def _run(job_key, job, calculate, arguments, generation, key, guard, revision):
     confidence = [True]
     token = performance._READ_CONFIDENCE.set(confidence)
+    captured_sources = []
+    sources_token = performance._READ_SOURCES.set(captured_sources)
     try:
         def unchanged():
             return (disk.current(generation) and _key(generation, arguments) == key
-                    and _sources(arguments) == sources)
+                    and _guard_sources(arguments) == guard)
 
         if not unchanged():
             raise ValueError("Read context changed")
@@ -115,10 +126,12 @@ def _run(job_key, job, calculate, arguments, generation, key, sources, revision)
         payload = copy.deepcopy(result)
         meta = payload.setdefault("meta", {})
         meta.pop("leitura", None)
-        meta[_SAVED_META] = {"revisao": revision, "salvo_em": time.time()}
+        published_revision = (_revision(generation, captured_sources[-1]) if captured_sources else revision)
+        meta[_SAVED_META] = {"revisao": published_revision, "guard": disk._digest(guard), "salvo_em": time.time()}
         if not disk.save(generation, "resumo", key, payload, unchanged):
             raise ValueError("Summary snapshot unavailable")
         with _LOCK:
+            job.revision = published_revision
             job.state = "atualizado"
     except Exception:
         # Domain/transport errors and partial reads cannot replace the last valid
@@ -126,39 +139,41 @@ def _run(job_key, job, calculate, arguments, generation, key, sources, revision)
         with _LOCK:
             job.state = "erro"
     finally:
+        performance._READ_SOURCES.reset(sources_token)
         performance._READ_CONFIDENCE.reset(token)
         with _LOCK:
             job.finished_at = time.monotonic()
         _SLOTS.release()
 
 
-def _schedule(job_key, calculate, arguments, generation, key, sources, revision):
+def _schedule(job_key, calculate, arguments, generation, key, guard, revision):
     with _LOCK:
         previous = _JOBS.get(job_key)
         if previous is not None:
             reusable = previous.state == "processando"
             if previous.state == "atualizado":
-                published = _load(generation, key)
+                published = _load(generation, key, guard)
                 reusable = bool(published and published["meta"][_SAVED_META]["revisao"] == revision)
             elif previous.state == "erro":
-                reusable = time.monotonic() - previous.finished_at < ERROR_RETRY_SECONDS
+                reusable = (previous.revision == revision
+                            and time.monotonic() - previous.finished_at < ERROR_RETRY_SECONDS)
             if reusable:
                 _JOBS.move_to_end(job_key)
                 return previous
         if not _SLOTS.acquire(blocking=False):
             return None
-        while len(_JOBS) >= MAX_JOB_RECORDS:
+        while job_key not in _JOBS and len(_JOBS) >= MAX_JOB_RECORDS:
             removable = next((item for item, value in _JOBS.items() if value.state != "processando"), None)
             if removable is None:
                 _SLOTS.release()
                 return None
             _JOBS.pop(removable)
-        job = _Job()
+        job = _Job(revision=revision)
         _JOBS[job_key] = job
         context = copy_context()
         try:
             _POOL.submit(context.run, _run, job_key, job, calculate, dict(arguments),
-                         generation, key, sources, revision)
+                         generation, key, guard, revision)
         except Exception:
             _JOBS.pop(job_key, None)
             _SLOTS.release()
@@ -174,13 +189,15 @@ def read_summary(calculate: Callable, arguments: dict, *, saved_only: bool = Fal
         if generation is None:
             return _response(None, "processando" if saved_only else "erro", error=not saved_only)
         key = _key(generation, arguments)
+        guard = _guard_sources(arguments)
 
         def respond(saved, state, **options):
-            if saved is not None and (not disk.current(generation) or _key(generation, arguments) != key):
+            if saved is not None and (not disk.current(generation) or _key(generation, arguments) != key
+                                      or _guard_sources(arguments) != guard):
                 return _response(None, "processando")
             return _response(saved, state, **options)
 
-        saved = _load(generation, key)
+        saved = _load(generation, key, guard)
         if saved_only:
             with _LOCK:
                 updating = any(item[0] == key and item[1] == generation and value.state == "processando"
@@ -194,16 +211,24 @@ def read_summary(calculate: Callable, arguments: dict, *, saved_only: bool = Fal
         marker = saved.get("meta", {}).get(_SAVED_META) if saved else None
         if marker and marker.get("revisao") == revision:
             return respond(saved, "atualizado")
-        job_key = (key, generation, revision)
-        job = _schedule(job_key, calculate, arguments, generation, key, sources, revision)
+        # A collection commit changes freshness, not the identity of an active
+        # calculation. Polling must not fill the pool with the same query again.
+        job_key = (key, generation)
+        job = _schedule(job_key, calculate, arguments, generation, key, guard, revision)
         # A short calculation may have published since the initial disk read.
         if job and job.state == "atualizado":
-            published = _load(generation, key)
+            published = _load(generation, key, guard)
             if published is not None:
                 saved = published
             if saved and saved["meta"][_SAVED_META]["revisao"] == revision:
                 return respond(saved, "atualizado")
-            return respond(saved, "erro", error=True)
+            if published is None:
+                return respond(saved, "erro", error=True)
+            # A complete snapshot can be older than collection commits made
+            # during its calculation. Keep it visible and coalesce one refresh.
+            followup = _schedule(job_key, calculate, arguments, generation, key, guard, revision)
+            return respond(saved, "processando",
+                           updating=bool(followup and followup.state == "processando"), revision=revision)
         if job and job.state == "erro":
             return respond(saved, "erro", error=True)
         return respond(saved, "processando", updating=job is not None, revision=revision)

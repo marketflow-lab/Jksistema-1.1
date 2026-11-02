@@ -6,10 +6,13 @@ import copy
 import json
 import threading
 import time
+from contextlib import contextmanager, nullcontext
+from types import SimpleNamespace
 
 import pytest
 import requests
 from fastapi import HTTPException
+from urllib3.util import Timeout
 
 from backend.services import central_accounts_client as desktop
 from backend.services import remote_auth_client
@@ -174,6 +177,115 @@ def test_provider_transport_is_central_only_and_does_not_sync_on_cache_read():
     assert kwargs["json"]["path"] == "/orders/search"
     assert "opaque-session" not in json.dumps(value.public_stores())
     assert marker not in json.dumps(value.public_stores())
+
+
+@pytest.mark.parametrize("timeout,expected", [(None, (3.05, 35)), (8, (3.05, 8)),
+                                             ((3.05, 8), (3.05, 8)), ((10, 90), (3.05, 35)),
+                                             ((None, None), (3.05, 35))])
+def test_provider_transport_preserves_shorter_timeouts_and_central_ceiling(timeout, expected):
+    value, transport = client()
+    desktop._current.set(value)
+    marker = value.stores()[0]["integracoes"]["mercadolivre"]["access_token"]
+    desktop.CentralAwareSession().get("https://api.mercadolibre.com/questions/search",
+                                    headers={"Authorization": "Bearer " + marker}, timeout=timeout)
+    assert transport.calls[0][2]["timeout"] == expected
+
+
+def test_provider_transport_reuses_remaining_budget_with_an_existing_timeout(monkeypatch):
+    from backend.services import perguntas_loading_transport as budget
+    clock = [100.0]
+    monkeypatch.setattr(budget, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    value, transport = client()
+    desktop._current.set(value)
+    marker = value.stores()[0]["integracoes"]["mercadolivre"]["access_token"]
+    with budget.read_budget(15):
+        original = budget.request_timeout((3.05, 8))
+        clock[0] += 10
+        desktop.CentralAwareSession().get("https://api.mercadolibre.com/questions/search",
+                                        headers={"Authorization": "Bearer " + marker}, timeout=original)
+    actual = transport.calls[0][2]["timeout"]
+    assert isinstance(actual, Timeout) and actual is not original
+    assert actual.total == 5
+    assert actual.connect_timeout == 3.05
+    assert actual.read_timeout <= 8
+    assert original.total == 15
+
+
+@pytest.mark.parametrize("total", [None, 5, 90])
+def test_existing_timeout_cannot_expand_central_ceiling_or_mutate_caller(total):
+    value, transport = client()
+    original = Timeout(connect=10, read=90, total=total)
+    value.call("GET", "/bootstrap", timeout=original)
+    actual = transport.calls[0][2]["timeout"]
+    assert isinstance(actual, Timeout) and actual is not original
+    assert actual.total == (min(total, 35) if total is not None else 35)
+    assert actual.connect_timeout == 3.05
+    assert actual.read_timeout <= 35
+    assert original.total == total and original.read_timeout == 90
+
+
+@pytest.mark.parametrize("seconds", [None, 6])
+@pytest.mark.parametrize("central_status,provider_status", [(200, 200), (200, 429), (429, None)])
+def test_bling_preflight_passes_its_eight_second_limit_to_central_transport(
+        monkeypatch, seconds, central_status, provider_status):
+    from backend.modules.vendas import sync_engine
+    from backend.modules.vendas.errors import VendasDomainError
+    from backend.schemas import VendasSyncRequest
+    from backend.services import bling, perguntas_loading_transport as budget
+
+    value, transport = client()
+    value._stores[0]["integracoes"]["bling"] = {
+        "connected": True, "central": True, "user_id": "company-id", "site_id": ""}
+    transport.body["body_base64"] = base64.b64encode(b'{"data":[]}').decode()
+    transport.status = central_status
+    transport.body["status"] = provider_status
+    if central_status == 429:
+        transport.body = {"code": "central_provider_rate_limited"}
+    desktop._current.set(value)
+    row = value.stores()[0]
+    monkeypatch.setattr(sync_engine, "buscar_loja", lambda *_args, **_kwargs: copy.deepcopy(row))
+    monkeypatch.setattr(sync_engine, "_verificar_cancelamento", lambda *_args: None)
+
+    @contextmanager
+    def permit(*_args, **_kwargs):
+        yield lambda: None
+
+    monkeypatch.setattr(bling, "bling_account_request", permit)
+    monkeypatch.setattr(bling, "remember_bling_throttle", lambda *_args: None)
+    with desktop.CentralAwareSession() as session:
+        monkeypatch.setattr(bling, "BLING_SESSION", session)
+        with budget.read_budget(seconds) if seconds is not None else nullcontext():
+            req = VendasSyncRequest(
+                loja=row["nome"], store_id=row["store_id"],
+                data_inicio="2026-10-01", data_fim="2026-10-02")
+            if central_status == provider_status == 200:
+                sync_engine._verificar_conexao_bling(req, "tenant-a")
+            else:
+                with pytest.raises(VendasDomainError) as error:
+                    sync_engine._verificar_conexao_bling(req, "tenant-a")
+                assert error.value.status_code == 429
+    assert len(transport.calls) == 1
+    actual = transport.calls[0][2]["timeout"]
+    if seconds is None:
+        assert actual == (3.05, 8)
+    else:
+        assert isinstance(actual, Timeout)
+        assert 0 < actual.total <= seconds
+        assert actual.connect_timeout <= 3.05
+        assert actual.read_timeout <= 8
+
+
+@pytest.mark.parametrize("method,status", [("GET", 503), ("POST", 409)])
+def test_shorter_transport_timeout_preserves_read_and_mutation_error_policy(method, status):
+    value, transport = client()
+    transport.error = requests.Timeout("private transport detail")
+    desktop._current.set(value)
+    marker = value.stores()[0]["integracoes"]["mercadolivre"]["access_token"]
+    with pytest.raises(HTTPException) as error:
+        desktop.provider_request(marker, method, "https://api.mercadolibre.com/items", timeout=(3.05, 8))
+    assert error.value.status_code == status
+    assert "private transport detail" not in str(error.value.detail)
+    assert len(transport.calls) == 1 and transport.calls[0][2]["timeout"] == (3.05, 8)
 
 
 def test_foreign_session_cannot_reuse_another_store_reference():

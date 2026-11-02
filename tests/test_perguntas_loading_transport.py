@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 from fastapi import HTTPException
+from urllib3.util import Timeout
 
 from backend.services import mercadolivre_http as http
 from backend.services import perguntas_loading_transport as budget
@@ -31,6 +32,27 @@ def test_legacy_timeouts_unchanged_and_nested_budget_cannot_extend_deadline(cloc
             assert timeout.connect_timeout == 11
         assert budget.remaining() == 11
     assert budget.remaining() is None
+
+
+@pytest.mark.parametrize("total", [None, 9, 30])
+def test_reapplying_budget_to_timeout_clones_and_only_shortens_total(clock, total):
+    original = Timeout(connect=3.05, read=8, total=total)
+    original.start_connect()
+    expected_total = min(15, total) if total is not None else 15
+    with budget.read_budget(15):
+        first = budget.request_timeout(original)
+        assert first is not original
+        assert first.total == expected_total
+        first.start_connect()
+        clock[0] += 10
+        second = budget.request_timeout(first)
+        assert second is not first
+        assert second.total == 5
+        assert second.connect_timeout == 3.05
+        second.start_connect()
+    assert original.total == total
+    assert first.total == expected_total
+    assert original.clone().read_timeout == 8
 
 
 def test_deadline_blocks_followup_request_and_restores_context(clock, monkeypatch):

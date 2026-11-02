@@ -77,7 +77,13 @@ function possuiColetaAgendadaVendas(data) {
         .some(item => ['queued', 'running'].includes(String(item?.status || '').toLowerCase()));
 }
 
-const mensagemVerificacaoConexoesVendas = 'Verificando conexões Bling antes da coleta...';
+function possuiColetaEmExecucaoVendas(data) {
+    return Number(data?.active_count) > 0
+        || [...(data?.active_jobs || []), ...(data?.automacao?.jobs || []), ...(data?.automacao?.lojas || [])]
+            .some(item => ['running', 'executando', 'em_execucao'].includes(String(item?.status || '').toLowerCase()));
+}
+
+const mensagemVerificacaoConexoesVendas = 'Verificando conexões Bling com pendências...';
 
 function formatarMomentoSyncVendas(valor) {
     if (!valor) return '';
@@ -125,6 +131,7 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
     if (!painel) return;
     const automacao = data?.automacao;
     const verificandoConexoes = automacao?.verificando_conexoes === true;
+    const coletando = possuiColetaEmExecucaoVendas(data);
     const lojas = Array.isArray(automacao?.lojas) ? automacao.lojas : [];
     if (!lojas.length && !verificandoConexoes) {
         painel.innerHTML = '';
@@ -180,9 +187,12 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         return `<div class="vendas-sync-technical-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong> · ${escaparHtmlVendas(rotulo + periodo + dias)}${coleta}${ultima}${proxima}</div>`;
     }).join('');
     const logs = logsSyncVendas(data?.logs);
-    const mensagemEtapa = verificandoConexoes ? mensagemVerificacaoConexoesVendas : data?.progress?.mensagem;
+    const mensagemEtapa = [...new Set([
+        !verificandoConexoes || coletando ? data?.progress?.mensagem : '',
+        verificandoConexoes ? mensagemVerificacaoConexoesVendas : ''
+    ].filter(Boolean))].join(' ');
     const etapa = mensagemEtapa ? `<div>${escaparHtmlVendas(mensagemEtapa)}</div>` : '';
-    const resumo = verificandoConexoes ? mensagemVerificacaoConexoesVendas
+    const resumo = verificandoConexoes && !coletando ? mensagemVerificacaoConexoesVendas
         : contagens ? `Lojas: ${contagens}` : 'Sincronização das lojas';
     painel.className = 'status-bar vendas-sync-status';
     substituirConteudoSyncVendas(painel, '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
@@ -314,10 +324,12 @@ function aplicarEstadoMonitorSyncVendas(data) {
     const estavaVerificandoConexoes = verificandoConexoesMonitor;
     verificandoConexoesMonitor = data.automacao?.verificando_conexoes === true;
 
-    if (verificandoConexoesMonitor) {
+    if (verificandoConexoesMonitor && !possuiColetaEmExecucaoVendas(data)) {
         syncEmAndamento = true;
         setSyncButtons(true);
-        renderProgresso({ etapa: 'Conexões', concluido: false }, data.logs, statusEl);
+        const readError = window.JKVendasReadState?.get('resumo')?.error;
+        if (readError) exibirErroLeituraVendas(readError);
+        else renderProgresso({ etapa: 'Conexões', concluido: false }, data.logs, statusEl);
         return;
     }
 

@@ -81,7 +81,7 @@ def _check_store_connection(client_id, store, requires_session=False):
 
 
 def _run_connection_check(client_id, owner, grant):
-    """Finish the whole connection phase before releasing any collection claim.
+    """Recover historical warnings independently of store collection workers.
 
     Paused stores are checked too, without resuming their work. Failed checks
     leave their warnings intact; they do not stop the remaining stores' checks.
@@ -96,9 +96,11 @@ def _run_connection_check(client_id, owner, grant):
     SYNC_THREAD_CONTEXT.lease_check = lambda: queue.owns_connection_check(owner, generation)
     completed = False
     try:
-        if grant["requires_session"] and current(client_id) is None:
-            return
-        for store in grant["stores"]:
+        # A Central-initiated recovery must never fall back to historical local
+        # credentials after its session is lost. Finish this attempt with its
+        # warnings intact; independently authorized store jobs may still run.
+        stores = [] if grant["requires_session"] and current(client_id) is None else grant["stores"]
+        for store in stores:
             if _STOP.is_set() or not queue.heartbeat_connection_check(owner, generation):
                 return
             try:
@@ -111,10 +113,10 @@ def _run_connection_check(client_id, owner, grant):
                     owner, generation, store_id, store["alerts"],
                 )
             except Exception as exc:
-                if not isinstance(exc, VendasDomainError) and not _is_fastapi_http_exception(exc):
-                    raise
                 if _STOP.is_set() or not queue.owns_connection_check(owner, generation):
                     return
+                if not isinstance(exc, VendasDomainError) and not _is_fastapi_http_exception(exc):
+                    logger.warning("Uma conexão de vendas não pôde ser verificada; as demais continuam.")
                 # A 401, timeout or denied store must not prevent checking the
                 # other accounts, or erase the original error/checkpoints.
                 continue
@@ -141,28 +143,25 @@ def dispatch(client_id: str):
     with _LOCK:
         _reap()
         if queue.connection_check_pending():
-            if client_id in _CHECKING:
-                return started
-            owner = uuid.uuid4().hex
-            grant = queue.claim_connection_check(owner)
-            if grant is None:
-                return started
-            with SYNC_ACTIVE_LOCK:
-                SYNC_CANCEL_FLAGS.pop(client_id, None)
-            authorizations = _CENTRAL_CHECK_AUTH if grant["requires_session"] else _CHECK_AUTH
-            target = authorizations.get(client_id) or with_request_context(_run_connection_check)
-            thread = threading.Thread(
-                target=target, args=(client_id, owner, grant),
-                name="vendas-conexoes", daemon=True,
-            )
-            _CHECKING[client_id] = {"thread": thread, "owner": owner, "generation": grant["generation"]}
-            try:
-                thread.start()
-            except Exception:
-                _CHECKING.pop(client_id, None)
-                queue.abandon_connection_check(owner, grant["generation"])
-                raise
-            return started
+            if client_id not in _CHECKING:
+                owner = uuid.uuid4().hex
+                grant = queue.claim_connection_check(owner)
+                if grant is not None:
+                    with SYNC_ACTIVE_LOCK:
+                        SYNC_CANCEL_FLAGS.pop(client_id, None)
+                    authorizations = _CENTRAL_CHECK_AUTH if grant["requires_session"] else _CHECK_AUTH
+                    target = authorizations.get(client_id) or with_request_context(_run_connection_check)
+                    thread = threading.Thread(
+                        target=target, args=(client_id, owner, grant),
+                        name="vendas-conexoes", daemon=True,
+                    )
+                    _CHECKING[client_id] = {"thread": thread, "owner": owner, "generation": grant["generation"]}
+                    try:
+                        thread.start()
+                    except Exception:
+                        _CHECKING.pop(client_id, None)
+                        queue.abandon_connection_check(owner, grant["generation"])
+                        logger.warning("Verificação de conexões adiada; as lojas disponíveis continuam.")
         while len([key for key in _RUNNING if key[0] == client_id]) < MAX_CONCURRENT_ACCOUNTS:
             exclusions = [value["store_id"] for key, value in _RUNNING.items() if key[0] == client_id]
             owner = uuid.uuid4().hex

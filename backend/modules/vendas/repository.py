@@ -28,6 +28,7 @@ from backend.services.sqlite_coordination import (
 
 from .dependencies import get_tenant_path, logger
 from .compositions import load_composition_catalog
+from .read_snapshot import begin_vendas_snapshot
 from .errors import VendasDomainError as HTTPException
 from .legacy import (
     _bling_obter_numero_nf,
@@ -462,7 +463,37 @@ def _vendas_resumo_cache_paths(arguments: dict) -> list[str]:
     return vendas_source_paths(client_id, db_paths, include_compositions=True)
 
 
-@cache_vendas_response("resumo", _vendas_resumo_cache_paths, persistent=True)
+def _summary_return_rows(cur, path, *, data_inicio, data_fim, sku, catalog, loja, unidade_negocio):
+    if not cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notas_entrada_itens'").fetchone():
+        return []
+    columns = {row[1] for row in cur.execute("PRAGMA table_info(notas_entrada_itens)")}
+    if "devolucao" not in columns:
+        return []
+    fields = (
+        ("id_unico", "''"), ("data_emissao", "''"), ("sku", "''"), ("descricao", "''"),
+        ("quantidade", "0"), ("valor_total", "0"), ("loja_conta", "''"), ("store_id", "''"),
+        ("unidade_negocio", "''"), ("unidade_negocio_virtual", "''"), ("natureza_operacao", "''"),
+    )
+    query = "SELECT " + ", ".join(_vendas_resumo_col(columns, name, default) for name, default in fields)
+    query += " FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
+    params = []
+    conditions = []
+    append_indexable_date_filter(conditions, params, "data_emissao", data_inicio, data_fim)
+    _append_composition_sku_filter(conditions, params, sku, catalog, loja)
+    if conditions:
+        query += " AND " + " AND ".join(conditions)
+    filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
+    if filtro_sql:
+        query += filtro_sql
+        params.extend(filtro_params)
+    filtro_sql, filtro_params = _sql_filtro_loja_notas_entrada(cur, loja)
+    if filtro_sql:
+        query += filtro_sql
+        params.extend(filtro_params)
+    return [dict(row) for row in cur.execute(query, params).fetchall()]
+
+
+@cache_vendas_response("resumo", _vendas_resumo_cache_paths, persistent=True, consistent_snapshot=True)
 def resumo_vendas(
     client_id: str,
     data_inicio: str = None,
@@ -523,24 +554,39 @@ def resumo_vendas(
         unidade_sql, unidade_params = _sql_filtro_unidade_com_mapa(unidade_negocio, mapa_lojas_cliente)
 
     vendas_brutas: list[dict] = []
+    devolucoes_brutas: list[dict] = []
+    captured_accounts: set[tuple[str, str]] = set()
+    account_evidence_complete = True
     dias_com_dados: set[str] = set()
     unidades: set[str] = set()
     bancos_processados = 0
 
     for alvo in db_paths:
         if not (alvo and os.path.exists(alvo)):
+            mark_vendas_read_incomplete()
+            account_evidence_complete = False
             continue
         conn = None
         try:
             conn = open_vendas_readonly(alvo, row_factory=sqlite3.Row)
+            accounts = begin_vendas_snapshot(conn)
+            if accounts is None:
+                account_evidence_complete = False
+                mark_vendas_read_incomplete()
             cur = conn.cursor()
             tabela_vendas = cur.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='vendas'"
             ).fetchone()
             if not tabela_vendas:
+                devolucoes_brutas.extend(_summary_return_rows(
+                    cur, alvo, data_inicio=data_inicio, data_fim=data_fim, sku=sku,
+                    catalog=catalog, loja=loja, unidade_negocio=unidade_negocio,
+                ))
+                if accounts is not None:
+                    captured_accounts.update(accounts)
                 continue
 
-            cols = cached_table_columns(alvo, "vendas", conn)
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(vendas)")}
             select_cols = [
                 _vendas_resumo_col(cols, "id_unico"),
                 _vendas_resumo_col(cols, "data"),
@@ -589,43 +635,47 @@ def resumo_vendas(
             # labels while still allowing the date index to filter candidates.
             query += " ORDER BY rowid"
 
-            rows = cur.execute(query, params).fetchall()
-            for row in rows:
-                item = dict(row)
-                if (not incluir_ebazar) and _deve_excluir_venda_ebazar(
-                    item.get("devolucao"),
-                    item.get("comprador"),
-                    item.get("canal"),
-                ):
-                    continue
-
-                unidade_resolvida = resolver_unidade_resumo(
-                    item.get("loja_id"),
-                    item.get("unidade_id"),
-                    item.get("unidade_negocio"),
-                    item.get("intermediador_nome"),
-                    item.get("intermediador_cnpj"),
-                    item.get("canal"),
-                )
-                if unidade_resolvida:
-                    item["unidade_negocio"] = unidade_resolvida
-                    unidades.add(str(unidade_resolvida))
-
-                data_item = str(item.get("data") or "")[:10]
-                if data_item:
-                    dias_com_dados.add(data_item)
-                vendas_brutas.append(item)
-
+            sales = [dict(row) for row in cur.execute(query, params).fetchall()]
+            returns = _summary_return_rows(
+                cur, alvo, data_inicio=data_inicio, data_fim=data_fim, sku=sku,
+                catalog=catalog, loja=loja, unidade_negocio=unidade_negocio,
+            )
+            vendas_brutas.extend(sales)
+            devolucoes_brutas.extend(returns)
+            if accounts is not None:
+                captured_accounts.update(accounts)
             bancos_processados += 1
         except Exception as e:
             mark_vendas_read_incomplete()
+            account_evidence_complete = False
             logger.warning("[VENDAS] Falha ao gerar resumo no banco %s: %s", alvo, e)
         finally:
             if conn:
                 conn.close()
 
+    vendas_filtradas = []
+    for item in vendas_brutas:
+        if not incluir_ebazar and _deve_excluir_venda_ebazar(
+            item.get("devolucao"), item.get("comprador"), item.get("canal"),
+        ):
+            continue
+        unidade_resolvida = resolver_unidade_resumo(
+            item.get("loja_id"), item.get("unidade_id"), item.get("unidade_negocio"),
+            item.get("intermediador_nome"), item.get("intermediador_cnpj"), item.get("canal"),
+        )
+        if unidade_resolvida:
+            item["unidade_negocio"] = unidade_resolvida
+            unidades.add(str(unidade_resolvida))
+        data_item = str(item.get("data") or "")[:10]
+        if data_item:
+            dias_com_dados.add(data_item)
+        vendas_filtradas.append(item)
+    vendas_brutas = vendas_filtradas
     vendas_deduplicadas = _deduplicar_vendas_consolidadas(
-        vendas_brutas, blocked_store_names=legacy_store_conflicts(db_paths, vendas_brutas),
+        vendas_brutas, blocked_store_names=legacy_store_conflicts(
+            db_paths, vendas_brutas,
+            captured_accounts=captured_accounts if account_evidence_complete else None,
+        ),
     )
     resumo_por_sku: dict[str, dict] = {}
     totals = {
@@ -670,99 +720,41 @@ def resumo_vendas(
     _add_composition_summary_rows(resumo_por_sku, physical_sales)
     return_rows: list[dict] = []
     devolucoes_vistas: set[str] = set()
-    for alvo in db_paths:
-        if not (alvo and os.path.exists(alvo)):
+    for dev in devolucoes_brutas:
+        chave_dev = str(dev.get("id_unico") or "").strip()
+        if chave_dev:
+            if chave_dev in devolucoes_vistas:
+                continue
+            devolucoes_vistas.add(chave_dev)
+        data_dev = str(dev.get("data_emissao") or "")[:10]
+        if data_dev:
+            dias_com_dados.add(data_dev)
+        unidade_dev = _classificar_unidade_virtual_devolucao(
+            dev.get("unidade_negocio_virtual"), dev.get("natureza_operacao"), dev.get("loja_conta"),
+        )
+        if unidade_dev:
+            unidades.add(str(unidade_dev))
+        dev["produto"] = dev.get("descricao") or ""
+        return_rows.append(dev)
+        if sku and str(dev.get("sku") or "").strip().upper() != str(sku).strip().upper():
             continue
-        conn = None
-        try:
-            conn = open_vendas_readonly(alvo, row_factory=sqlite3.Row)
-            cur = conn.cursor()
-            tabela_itens = cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='notas_entrada_itens'"
-            ).fetchone()
-            if not tabela_itens:
-                continue
-
-            cols_itens = cached_table_columns(alvo, "notas_entrada_itens", conn)
-            if "devolucao" not in cols_itens:
-                continue
-            select_itens = [
-                _vendas_resumo_col(cols_itens, "id_unico"),
-                _vendas_resumo_col(cols_itens, "data_emissao"),
-                _vendas_resumo_col(cols_itens, "sku"),
-                _vendas_resumo_col(cols_itens, "descricao"),
-                _vendas_resumo_col(cols_itens, "quantidade", "0"),
-                _vendas_resumo_col(cols_itens, "valor_total", "0"),
-                _vendas_resumo_col(cols_itens, "loja_conta"),
-                _vendas_resumo_col(cols_itens, "store_id"),
-                _vendas_resumo_col(cols_itens, "unidade_negocio"),
-                _vendas_resumo_col(cols_itens, "unidade_negocio_virtual"),
-                _vendas_resumo_col(cols_itens, "natureza_operacao"),
-            ]
-            query = (
-                "SELECT "
-                + ", ".join(select_itens)
-                + " FROM notas_entrada_itens WHERE devolucao = 1 AND sku IS NOT NULL AND sku != ''"
-            )
-            params: list = []
-            date_conditions: list[str] = []
-            append_indexable_date_filter(date_conditions, params, "data_emissao", data_inicio, data_fim)
-            _append_composition_sku_filter(date_conditions, params, sku, catalog, loja)
-            if date_conditions:
-                query += " AND " + " AND ".join(date_conditions)
-            filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
-            if filtro_sql:
-                query += filtro_sql
-                params.extend(filtro_params)
-            filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_notas_entrada(cur, loja)
-            if filtro_loja_sql:
-                query += filtro_loja_sql
-                params.extend(filtro_loja_params)
-
-            for row in cur.execute(query, params).fetchall():
-                dev = dict(row)
-                chave_dev = str(dev.get("id_unico") or "").strip()
-                if chave_dev:
-                    if chave_dev in devolucoes_vistas:
-                        continue
-                    devolucoes_vistas.add(chave_dev)
-                data_dev = str(dev.get("data_emissao") or "")[:10]
-                if data_dev:
-                    dias_com_dados.add(data_dev)
-                unidade_dev = _classificar_unidade_virtual_devolucao(
-                    dev.get("unidade_negocio_virtual"),
-                    dev.get("natureza_operacao"),
-                    dev.get("loja_conta"),
-                )
-                if unidade_dev:
-                    unidades.add(str(unidade_dev))
-                dev["produto"] = dev.get("descricao") or ""
-                return_rows.append(dev)
-                if sku and str(dev.get("sku") or "").strip().upper() != str(sku).strip().upper():
-                    continue
-                display_sku = str(dev.get("sku") or "N/D").strip() or "N/D"
-                chave_sku = display_sku.upper()
-                linha = resumo_por_sku.get(chave_sku)
-                if linha is None:
-                    linha = _vendas_resumo_nova_linha(display_sku, str(dev.get("descricao") or ""))
-                    resumo_por_sku[chave_sku] = linha
-                if not linha.get("produto") or linha.get("produto") == "-":
-                    linha["produto"] = str(dev.get("descricao") or "-")
-                qtd_dev = _vendas_resumo_num(dev.get("quantidade"))
-                valor_dev = _vendas_resumo_num(dev.get("valor_total"))
-                linha["devolucoes"] += 1
-                linha["itensDevolucao"] += qtd_dev
-                linha["itensDevolucaoDiretos"] += qtd_dev
-                linha["valorDevolucao"] += valor_dev
-                totals["devolucoes"] += 1
-                totals["itensDevolucao"] += qtd_dev
-                totals["valorDevolucao"] += valor_dev
-        except Exception as e:
-            mark_vendas_read_incomplete()
-            logger.warning("[VENDAS] Falha ao somar devolucoes no resumo %s: %s", alvo, e)
-        finally:
-            if conn:
-                conn.close()
+        display_sku = str(dev.get("sku") or "N/D").strip() or "N/D"
+        chave_sku = display_sku.upper()
+        linha = resumo_por_sku.get(chave_sku)
+        if linha is None:
+            linha = _vendas_resumo_nova_linha(display_sku, str(dev.get("descricao") or ""))
+            resumo_por_sku[chave_sku] = linha
+        if not linha.get("produto") or linha.get("produto") == "-":
+            linha["produto"] = str(dev.get("descricao") or "-")
+        qtd_dev = _vendas_resumo_num(dev.get("quantidade"))
+        valor_dev = _vendas_resumo_num(dev.get("valor_total"))
+        linha["devolucoes"] += 1
+        linha["itensDevolucao"] += qtd_dev
+        linha["itensDevolucaoDiretos"] += qtd_dev
+        linha["valorDevolucao"] += valor_dev
+        totals["devolucoes"] += 1
+        totals["itensDevolucao"] += qtd_dev
+        totals["valorDevolucao"] += valor_dev
 
     physical_returns = catalog.project_rows(return_rows, target_sku=sku, store=loja)
     totals["itensDevolucao"] = sum(_vendas_resumo_num(item.get("quantidade")) for item in physical_returns)

@@ -574,7 +574,7 @@ def test_queue_retoma_apos_reconexao_sem_reenfileirar_nem_perder_dias(tmp_path, 
         monkeypatch.setattr(module, "_verificar_cancelamento", lambda *_args: None)
         monkeypatch.setattr(module, "_set_progresso", lambda *_args: None)
         monkeypatch.setattr(module, "_criar_progresso", lambda *_args: {})
-        monkeypatch.setattr(module, "invalidate_vendas_cache", lambda *_args: None)
+        monkeypatch.setattr(module, "invalidate_vendas_cache", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(sync_engine, "SyncQueue", lambda _tenant: queue)
     monkeypatch.setattr(sync_engine, "_sync_context_key", lambda _tenant: "oauth-recovery-test")
     monkeypatch.setattr(sync_engine, "_sync_unregister_active", lambda *_args: None)

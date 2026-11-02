@@ -492,8 +492,8 @@ class SyncQueue:
     def _claim(self, owner, now, lease_seconds, limit, exclude_store_ids):
         with self._transaction() as conn:
             now = _time(now)
-            if self._connection_check_pending(conn):
-                return None
+            # Connection recovery is scoped to each store by the worker. An
+            # unrelated pending/slow probe must not hold the tenant's collectors.
             active = conn.execute("SELECT store_id, account_id FROM jobs WHERE status = 'running' AND lease_until > ?",
                                   (now,)).fetchall()
             if len(active) >= min(MAX_CONCURRENT_ACCOUNTS, max(0, int(limit))):
@@ -527,9 +527,13 @@ class SyncQueue:
                                         (row["id"],)).fetchone()
             transfer_ack = bool(previous["last_error"] and acknowledged and
                                 acknowledged[0] == self._error_signature(previous))
+            # An unknown account from an earlier turn is not a current collection
+            # lease. Resolve it again after this store's own preflight; binding an
+            # unknown account below still excludes every actual collector.
             conn.execute("""UPDATE jobs SET status = 'running', owner = ?, lease_until = ?,
+                account_id = CASE WHEN account_id = ? THEN NULL ELSE account_id END,
                 attempts = attempts + 1, updated_at = ? WHERE id = ?""",
-                         (str(owner), now + lease_seconds, now, row["id"]))
+                         (str(owner), now + lease_seconds, UNKNOWN_ACCOUNT_ID, now, row["id"]))
             job = self._job(conn, row["id"])
             if transfer_ack:
                 # Starting collection does not create another provider error.
@@ -741,9 +745,6 @@ class SyncQueue:
                 return None
             state = conn.execute("SELECT * FROM connection_check_state WHERE singleton = 1").fetchone()
             if state["owner"] is not None and (state["lease_until"] or 0) > now:
-                return None
-            if conn.execute("""SELECT 1 FROM jobs WHERE status = 'running'
-                AND lease_until > ? LIMIT 1""", (now,)).fetchone():
                 return None
             generation = max(state["requested_generation"], state["claimed_generation"] + 1)
             # Fence an expired attempt even if a caller reuses the same owner.

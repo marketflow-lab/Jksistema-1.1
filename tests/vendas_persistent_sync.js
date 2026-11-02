@@ -298,18 +298,18 @@ function freezeState(value) {
         };
         const unchanged = JSON.stringify(checkingPayload);
         const checking = setup({ payload: checkingPayload });
-        checking.context.window.JKVendasReadState = { get: () => ({ error: new Error('Falha de leitura anterior') }) };
+        checking.context.window.JKVendasReadState = { get: () => ({ error: null }) };
         checking.context.exibirErroLeituraVendas = () => { throw new Error('O fallback não deve substituir a etapa de verificação.'); };
         checking.context.aplicarEstadoMonitorSyncVendas(checkingPayload);
         assert.equal(checking.context.syncEmAndamento, true);
         assert.equal(checking.elements.btnSync.disabled, true);
         assert.equal(checking.elements.btnCancel.disabled, false, 'a verificação global deve poder ser pausada sem coleta ativa');
-        assert.match(checking.elements.status.innerHTML, /Verificando conexões Bling antes da coleta\.\.\./);
+        assert.match(checking.elements.status.innerHTML, /Verificando conexões Bling com pendências\.\.\./);
         assert.doesNotMatch(checking.elements.status.innerHTML, /Sincronizando|Aguardando|100%|concluído|conferido/i,
             'a verificação tem prioridade sobre progresso antigo e não comprova coleta');
         const checkingHtml = checking.elements.syncPersistenteStatus.innerHTML;
         const checkingSummary = checkingHtml.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
-        assert.match(checkingSummary, /Verificando conexões Bling antes da coleta/);
+        assert.match(checkingSummary, /Verificando conexões Bling com pendências/);
         assert.doesNotMatch(checkingSummary, /sincronizando|atualizada|concluída|conferida/i);
         assert.match(checkingHtml, /&lt;falha anterior&gt;/, 'a verificação não apaga o erro histórico');
         assert.match(checkingHtml, /1 tarefa pendente/);
@@ -337,8 +337,8 @@ function freezeState(value) {
     checkingWithoutStores.context.setSyncButtons(false);
     assert.equal(checkingWithoutStores.elements.btnSync.disabled, true);
     assert.equal(checkingWithoutStores.elements.btnCancel.disabled, false);
-    assert.match(checkingWithoutStores.elements.status.innerHTML, /Verificando conexões Bling antes da coleta/);
-    assert.match(checkingWithoutStores.elements.syncPersistenteStatus.innerHTML, /Verificando conexões Bling antes da coleta/);
+    assert.match(checkingWithoutStores.elements.status.innerHTML, /Verificando conexões Bling com pendências/);
+    assert.match(checkingWithoutStores.elements.syncPersistenteStatus.innerHTML, /Verificando conexões Bling com pendências/);
     const verificationFailed = {
         active: false, progress: { etapa: 'Pendente', concluido: false, mensagem: 'Conexão Bling requer nova autorização.' },
         automacao: { verificando_conexoes: false, lojas: [{ loja: 'Loja A', status: 'retry', ultimo_erro: 'Reconecte a loja.' }], jobs: [], pendentes: 1, habilitadas: 0 }
@@ -380,6 +380,16 @@ function freezeState(value) {
     assert.match(mixedHtml, /&lt;registro técnico&gt;/);
     assert.match(mixedHtml, /Coletando página 2/, 'a mensagem da etapa deve continuar disponível nos detalhes');
     assert.match(mixedHtml, /Loja B.*Falha na tentativa anterior/);
+    assert.match(reopened.elements.status.innerHTML, /Sincronizando · 43%/);
+    reopened.context.aplicarEstadoMonitorSyncVendas({
+        ...mixed, active_count: 2, automacao: { ...mixed.automacao, verificando_conexoes: true }
+    });
+    const collectingWithCheck = reopened.elements.syncPersistenteStatus.innerHTML;
+    const collectingSummary = collectingWithCheck.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
+    assert.match(collectingSummary, /2 sincronizando/);
+    assert.doesNotMatch(collectingSummary, /Verificando conexões/,
+        'uma conexão pendente não pode substituir a coleta ativa no resumo');
+    assert.match(collectingWithCheck, /Verificando conexões Bling com pendências/);
     assert.match(reopened.elements.status.innerHTML, /Sincronizando · 43%/);
     assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página|Loja [A-F]|em andamento/);
     assert.match(reopened.elements.status.innerHTML, /role="progressbar"[^>]*aria-valuenow="43"/);

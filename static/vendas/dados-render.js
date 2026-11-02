@@ -332,6 +332,7 @@ async function carregarVendas(opcoes = {}) {
     carregarVendasController = new AbortController();
     carregarVendasRequestKey = requestKey;
     const requestController = carregarVendasController;
+    let acompanhamentoResumoPromise = null;
     if (window.JKVendasReadState && !window.JKVendasReadState.canCache()) {
         dados = []; dadosFiltrados = []; devolucaoItens = []; notasEntrada = [];
         resumoTotaisVendas = null; vendasResumoMeta = null;
@@ -355,6 +356,7 @@ async function carregarVendas(opcoes = {}) {
 
     statusEl.className = 'status-bar loading';
     statusEl.innerHTML = `${spinnerHtml}Carregando vendas...`;
+    let esperaCalculoEsgotada = false;
     try {
         clientId = obterClientId();
         if (!clientId) {
@@ -429,6 +431,41 @@ async function carregarVendas(opcoes = {}) {
             }
         };
 
+        const acompanharResumoSalvo = async () => {
+            const limite = Date.now() + 120000;
+            try {
+                for (let tentativa = 0; tentativa < 32 && leituraAtual(); tentativa += 1) {
+                    const restante = limite - Date.now();
+                    if (restante <= 0) return;
+                    await aguardarAtualizacaoResumoVendas(Math.min(tentativa < 3 ? 1000 : 4000, restante), requestController.signal);
+                    if (!leituraAtual()) return;
+                    let payload = await consultarResumo('salvos', 10000);
+                    if (!leituraAtual() || !payload) return;
+                    if (payload.meta?.leitura?.possui_salvo) await aplicarPayloadResumo(payload, true);
+                    if (!leituraAtual()) return;
+                    if (payload.meta?.leitura?.atualizando) continue;
+                    // Saved-only polls do no calculations. Once the worker
+                    // finishes, check freshness and request at most one successor.
+                    payload = await consultarResumo('atualizar', 15000);
+                    if (!leituraAtual() || !payload) return;
+                    const leitura = payload.meta?.leitura;
+                    if (leitura?.estado === 'erro') throw new Error('Atualização do resumo indisponível.');
+                    if (!leitura || leitura.estado === 'atualizado') {
+                        await aplicarPayloadResumo(payload, false);
+                        if (!leituraAtual()) return;
+                        window.JKVendasCache?.estado('Lista', null);
+                        if (!syncEmAndamento) { statusEl.className = 'status-bar'; statusEl.textContent = ''; }
+                        return;
+                    }
+                    if (leitura.possui_salvo) await aplicarPayloadResumo(payload, true);
+                }
+            } catch (erro) {
+                if (!leituraAtual() || erro.name === 'AbortError') return;
+                window.JKVendasCache?.estado('Lista', 'erro');
+                if (!syncEmAndamento) exibirErroLeituraVendas('Atualização do resumo indisponível. O resumo salvo e seus avisos foram mantidos.');
+            }
+        };
+
         // Read only the persisted response before asking the server to recalculate.
         try {
             const salvo = await consultarResumo('salvos', 10000);
@@ -443,7 +480,11 @@ async function carregarVendas(opcoes = {}) {
                 if (!syncEmAndamento) { statusEl.className = 'status-bar'; statusEl.textContent = ''; }
                 return;
             }
-            if (leitura.possui_salvo) await aplicarPayloadResumo(salvo, true);
+            if (leitura.possui_salvo) {
+                await aplicarPayloadResumo(salvo, true);
+                if (!leituraAtual()) return;
+                window.JKVendasReadState?.finish('resumo', stateKey, 'success');
+            }
         } catch (erroSalvo) {
             if (!leituraAtual() || erroSalvo.name === 'AbortError') return;
             // A missing or temporarily unavailable snapshot does not block the live read.
@@ -472,11 +513,23 @@ async function carregarVendas(opcoes = {}) {
             if (leitura.possui_salvo) await aplicarPayloadResumo(payload, true);
             if (!leituraAtual()) return;
             if (leitura.estado === 'erro') throw new Error('Não foi possível atualizar os cálculos de Vendas.');
+            if (leitura.possui_salvo) {
+                // A complete captured summary is usable while newer collected
+                // days refresh separately. Do not wait for all writers to stop.
+                window.JKVendasReadState?.finish('resumo', stateKey, 'success');
+                if (!syncEmAndamento) {
+                    statusEl.className = 'status-bar';
+                    statusEl.textContent = 'Resumo de vendas carregado. Conferindo atualizações em segundo plano...';
+                }
+                acompanhamentoResumoPromise = acompanharResumoSalvo();
+                return;
+            }
             // A 202 response contains no summary; keep the visible saved rows and warnings.
             await aguardarAtualizacaoResumoVendas(Math.min(tentativa < 3 ? 1000 : 4000,
                 Math.max(0, limiteAtualizacao - Date.now())), requestController.signal);
         }
         if (!leituraAtual()) return;
+        esperaCalculoEsgotada = true;
         throw new DOMException('A atualização de Vendas excedeu o tempo de espera.', 'TimeoutError');
 
         const params = new URLSearchParams();
@@ -532,8 +585,15 @@ async function carregarVendas(opcoes = {}) {
     } catch (e) {
         if (!leituraAtual() || e.name === 'AbortError') return;
         if (restaurouCache) window.JKVendasCache?.estado('Lista', 'erro');
-        const mensagem = restaurouCache ? 'Atualização indisponível. O resumo salvo e seus avisos foram mantidos.'
-            : `Erro ao carregar vendas: ${e.name === 'TimeoutError' ? 'tempo de resposta excedido. Tente carregar o período novamente.' : e.message}`;
+        const motivo = e.name === 'TimeoutError'
+            ? esperaCalculoEsgotada
+                ? 'o cálculo do resumo não terminou dentro do prazo de espera da tela.'
+                : 'tempo de resposta do servidor excedido ao consultar o resumo.'
+            : e.message;
+        const mensagem = (restaurouCache
+            ? 'Atualização do resumo indisponível. O resumo salvo e seus avisos foram mantidos. '
+            : 'Erro ao carregar o resumo de vendas: ') + motivo
+            + (e.name === 'TimeoutError' ? ' Acompanhe a sincronização das lojas em Detalhes.' : '');
         window.JKVendasReadState?.finish('resumo', stateKey, 'error', mensagem);
         exibirErroLeituraVendas(mensagem);
     }
@@ -544,7 +604,11 @@ async function carregarVendas(opcoes = {}) {
     } finally {
         if (carregarVendasController === requestController) {
             carregarVendasPromise = null;
-            carregarVendasController = null;
+            if (acompanhamentoResumoPromise) {
+                void acompanhamentoResumoPromise.finally(() => {
+                    if (carregarVendasController === requestController) carregarVendasController = null;
+                });
+            } else carregarVendasController = null;
         }
     }
 }

@@ -192,12 +192,11 @@ def test_real_preflight_does_not_apply_the_historical_collection_window(history_
     assert (req.data_inicio, req.data_fim) == (START, END)
 
 
-def test_historical_eleven_store_batch_acknowledges_nine_before_any_collection(history_environment, monkeypatch):
+def test_historical_batch_acknowledges_only_valid_accounts_and_preserves_work(history_environment, monkeypatch):
     state = history_environment
     for req in state.requests.values():
         state.queue.enqueue(req.store_id, req.loja, START, END, verify_connections=True)
     saved_jobs, saved_plans = state.queue.list_jobs(), plans(state.queue)
-    assert state.queue.claim("must-wait-for-all-checks") is None
     grant = state.queue.claim_connection_check("history-checker")
     assert len(grant["stores"]) == 11
     assert all((store["data_inicio"], store["data_fim"]) == (START, END) for store in grant["stores"])

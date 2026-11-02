@@ -63,42 +63,44 @@ def test_clean_enqueue_does_not_add_a_connection_barrier(queue):
     assert queue.claim("collector", now=NOW)["id"] == job["id"]
 
 
-def test_all_eleven_alerted_stores_are_checked_before_any_collection_claim(queue):
+def test_historical_checks_do_not_hold_an_independent_collection_claim(queue):
     for index in range(11):
         failed(queue, f"store-{index:02}", now=NOW + index * 3)
     queue.pause_all(now=NOW + 40)
     requested = enqueue(queue, "store-00", verify=True, now=NOW + 41)
     jobs_before, plans_before = queue.list_jobs(), saved_plans(queue)
 
-    assert queue.claim("collector", now=NOW + 42, limit=50) is None
     batch = queue.claim_connection_check("checker", now=NOW + 42)
     assert len(batch["stores"]) == 11
     assert queue.summary()["verificando_conexoes"] is True
     for store in batch["stores"]:
         assert queue.acknowledge_checked_connection(
             "checker", batch["generation"], store["store_id"], store["alerts"], now=NOW + 43) == 1
-        assert queue.claim("collector", now=NOW + 43) is None
     assert queue.list_jobs() == jobs_before
     assert saved_plans(queue) == plans_before
     assert all(not queue.connection_alerts(store["store_id"]) for store in batch["stores"])
-    assert queue.complete_connection_check("checker", batch["generation"], now=NOW + 44)
-    claimed = queue.claim("collector", now=NOW + 45)
+    claimed = queue.claim("collector", now=NOW + 44)
     assert claimed["id"] == requested["id"]
     assert claimed["last_error"] == ERROR
     assert claimed["dias_concluidos"] == ["2026-10-01"]
     assert queue.connection_alerts("store-00") == []
+    assert queue.connection_check_pending()
+    assert queue.complete_connection_check("checker", batch["generation"], now=NOW + 45)
     assert queue.summary()["verificando_conexoes"] is False
     assert sum(job["status"] == "paused" for job in queue.list_jobs()) == 10
 
 
-def test_batch_waits_for_preexisting_collector_then_snapshots_its_new_failure(queue):
+def test_batch_and_independent_collectors_can_run_at_the_same_time(queue):
     failed(queue)
     active = enqueue(queue, "already-running", now=NOW + 3)
     queue.claim("collector", now=NOW + 3, lease_seconds=10)
     enqueue(queue, "requested", now=NOW + 4, verify=True)
-    assert queue.claim_connection_check("checker", now=NOW + 5) is None
-    assert queue.claim("second-collector", now=NOW + 5) is None
+    batch = queue.claim_connection_check("checker", now=NOW + 5)
+    assert {store["store_id"] for store in batch["stores"]} == {"store-0"}
+    assert queue.claim("second-collector", now=NOW + 5)["store_id"] == "requested"
     queue.fail_job(active["id"], "collector", ERROR, retryable=False, now=NOW + 6)
+    assert queue.complete_connection_check("checker", batch["generation"], now=NOW + 6)
+    enqueue(queue, "new-request", now=NOW + 6, verify=True)
     batch = queue.claim_connection_check("checker", now=NOW + 7)
     assert {store["store_id"] for store in batch["stores"]} == {"store-0", "already-running"}
     with pytest.raises(RuntimeError):
@@ -112,7 +114,7 @@ def test_generation_does_not_finish_a_new_request_arriving_during_the_batch(queu
     assert acknowledge(queue, batch, now=NOW + 7) == 1
     assert queue.complete_connection_check("checker", batch["generation"], now=NOW + 8)
     assert queue.connection_check_pending()
-    assert queue.claim("collector", now=NOW + 8) is None
+    assert queue.claim("collector", now=NOW + 8)
     next_batch = queue.claim_connection_check("next-checker", now=NOW + 9)
     assert next_batch["generation"] > batch["generation"]
     assert next_batch["stores"] == []
@@ -120,7 +122,7 @@ def test_generation_does_not_finish_a_new_request_arriving_during_the_batch(queu
     assert queue.claim("collector", now=NOW + 11)
 
 
-def test_batch_claim_is_atomic_and_other_queue_connections_cannot_bypass_it(queue):
+def test_batch_claim_is_atomic_without_blocking_other_queue_collectors(queue):
     failed(queue)
     enqueue(queue, verify=True, now=NOW + 3)
     peers = [SyncQueue("tenant-a", tenant_path=queue.path.parent) for _ in range(8)]
@@ -128,8 +130,9 @@ def test_batch_claim_is_atomic_and_other_queue_connections_cannot_bypass_it(queu
         batches = list(pool.map(lambda pair: pair[1].claim_connection_check(
             f"checker-{pair[0]}", now=NOW + 4), enumerate(peers)))
     assert sum(batch is not None for batch in batches) == 1
-    assert all(peer.claim(f"collector-{index}", now=NOW + 5) is None
-               for index, peer in enumerate(peers))
+    claimed = [peer.claim(f"collector-{index}", now=NOW + 5)
+               for index, peer in enumerate(peers)]
+    assert sum(job is not None for job in claimed) == 1
 
 
 def test_expired_batch_reply_is_fenced_even_when_the_owner_is_reused(queue):
@@ -155,13 +158,13 @@ def test_heartbeat_extends_only_the_current_batch_lease(queue):
     assert not queue.heartbeat_connection_check("checker", generation, now=NOW + 34)
 
 
-def test_abandon_keeps_work_and_barrier_pending_until_a_fresh_grant(queue):
+def test_abandon_keeps_recovery_pending_without_holding_collections(queue):
     _, batch = prepared(queue)
     jobs, plans = queue.list_jobs(), saved_plans(queue)
     assert queue.abandon_connection_check("checker", batch["generation"], now=NOW + 6)
     assert queue.connection_check_pending()
-    assert queue.claim("collector", now=NOW + 7) is None
     assert queue.list_jobs() == jobs and saved_plans(queue) == plans
+    assert queue.claim("collector", now=NOW + 7)
     assert acknowledge(queue, batch, now=NOW + 7) == 0
     fresh = queue.claim_connection_check("checker", now=NOW + 7)
     assert fresh["generation"] > batch["generation"]
@@ -244,7 +247,7 @@ def test_scheduler_requests_barrier_for_alerts_in_paused_other_stores(queue, req
     queue.complete_job(job["id"], "collector", now=NOW + 6)
     assert queue.schedule_due("2026-10-22", now=NOW + 906)
     assert queue.connection_check_pending()
-    assert queue.claim("collector", now=NOW + 907) is None
+    assert queue.claim("collector", now=NOW + 907)["store_id"] == "automatic"
     batch = queue.claim_connection_check("checker", now=NOW + 907)
     assert [store["store_id"] for store in batch["stores"]] == ["store-0"]
     assert batch["requires_session"] is requires_session

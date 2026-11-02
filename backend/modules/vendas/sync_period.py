@@ -1323,10 +1323,9 @@ async def _sincronizar_vendas_periodo_impl(
                            for nota in notas if isinstance(nota, dict) and nota.get("id") is not None},
     )
 
-    # O banco ja foi confirmado neste ponto. Invalide por dia para que um
-    # periodo parcialmente concluido (por falha em um dia posterior) nunca
-    # continue servindo uma resposta anterior ao commit que deu certo.
-    invalidate_vendas_cache(client_id)
+    # Mark current results stale while retaining the last complete saved read.
+    # Explicit replacement of a requested history still revokes saved results.
+    invalidate_vendas_cache(client_id, preserve_saved=not req.forcar_resync)
 
     _sync_log(
         client_id,

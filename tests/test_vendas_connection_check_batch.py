@@ -15,7 +15,7 @@ from backend.modules.vendas.state import (
     SYNC_ACTIVE, SYNC_CANCEL_FLAGS, SYNC_DAY_CONTEXT, SYNC_LOGS,
     SYNC_META, SYNC_PROGRESS, SYNC_THREAD_CONTEXT,
 )
-from backend.modules.vendas.sync_queue import SyncQueue
+from backend.modules.vendas.sync_queue import SyncQueue, UNKNOWN_ACCOUNT_ID
 from backend.modules.vendas.sync_period import _ensure_sync_schema
 from backend.schemas import VendasSyncRequest
 from backend.services import bling_vendas
@@ -96,52 +96,106 @@ def finish_checks(state):
     for _ in range(5):
         if not state.queue.connection_check_pending():
             return
-        sync_automation.dispatch("tenant-a")
         running = sync_automation._CHECKING.get("tenant-a")
-        assert running is not None
-        running["thread"].join(timeout=5)
-        assert not running["thread"].is_alive()
-    pytest.fail("connection phase never released the collection queue")
+        if running and running["thread"].is_alive():
+            running["thread"].join(timeout=5)
+            assert not running["thread"].is_alive()
+        else:
+            grant = state.queue.claim_connection_check("test-checker")
+            assert grant is not None
+            contexts = sync_automation._CENTRAL_CHECK_AUTH if grant["requires_session"] else sync_automation._CHECK_AUTH
+            target = contexts.get("tenant-a") or sync_automation._run_connection_check
+            target("tenant-a", "test-checker", grant)
+    pytest.fail("connection recovery did not finish")
 
 
-def test_all_eleven_alerted_stores_are_checked_before_any_collection(environment, monkeypatch):
+def test_slow_connection_does_not_hold_a_healthy_stores_collection(environment, monkeypatch):
     state = environment
-    last_check = threading.Event()
+    slow_check = threading.Event()
     collected = threading.Event()
+    slow, healthy = state.requests[:2]
+    # A previous unidentified connection must not reserve the whole tenant
+    # while its next turn is still checking authorization.
+    with sqlite3.connect(state.queue.path) as conn:
+        conn.execute("UPDATE jobs SET account_id = ? WHERE store_id = ?", (UNKNOWN_ACCOUNT_ID, slow.store_id))
+        conn.execute("UPDATE jobs SET account_id = ? WHERE store_id = ?", ("1001", healthy.store_id))
 
     def verify(req, client):
         assert client == "tenant-a"
         state.events.append(("check", req.store_id))
-        # This is a second queue instance, as used by a scheduler/other process.
-        assert SyncQueue(client).claim("competing-collector") is None
-        if req.store_id == state.requests[-1].store_id:
-            last_check.set()
+        if req.store_id == slow.store_id:
+            slow_check.set()
             assert state.release.wait(5)
 
     async def collect(req, client, *, day_budget=None):
         assert day_budget == 1
         state.events.append(("collect", req.store_id))
-        assert {store for kind, store in state.events if kind == "check"} == {r.store_id for r in state.requests}
         assert not state.queue.connection_alerts(req.store_id), "claim must keep the confirmed warning dismissed"
-        collected.set()
         job_id, owner = SYNC_THREAD_CONTEXT.job_id, SYNC_THREAD_CONTEXT.queue_owner
         state.queue.complete_day(job_id, owner, req.data_fim, {"vendas": 1})
         state.queue.complete_job(job_id, owner)
+        if req.store_id == healthy.store_id:
+            collected.set()
 
     monkeypatch.setattr(sync_engine, "_verificar_conexao_bling", verify)
     monkeypatch.setattr(sync_engine, "_sincronizar_vendas_impl", collect)
-    results = [sync_engine.sincronizar_vendas(req, "tenant-a") for req in state.requests]
+    results = [sync_engine.sincronizar_vendas(req, "tenant-a") for req in (slow, healthy)]
     assert all(result["accepted"] for result in results)
-    assert last_check.wait(5), "the scan must reach store 11 without waiting for the first two collections"
-    assert not collected.is_set()
-    assert not any(job["status"] == "running" for job in state.queue.list_jobs())
+    assert slow_check.wait(5)
+    assert collected.wait(5), "the healthy store must finish while the other probe is still waiting"
+    assert not state.release.is_set()
+    payload = progress.progresso_sincronizacao_vendas("tenant-a")
+    assert payload["active_count"] >= 1
+    assert payload["progress"]["etapa"] != "Conexões"
+    saved = next(job for job in state.queue.list_jobs() if job["store_id"] == healthy.store_id)
+    assert saved["status"] == "complete" and saved["dias_concluidos"] == [healthy.data_inicio, healthy.data_fim]
     state.release.set()
     finish_checks(state)
-    assert all(store["ultimo_erro"] is None for store in state.queue.summary()["lojas"])
+
+
+@pytest.mark.parametrize("failure", ["reconnect", "missing_session", "unexpected"])
+def test_failed_store_preserves_coverage_while_healthy_store_finishes(environment, monkeypatch, failure):
+    state = environment
+    failed, healthy = state.requests[:2]
+    completed = threading.Event()
+    failed_job = state.queue.enqueue(
+        failed.store_id, failed.loja, failed.data_inicio, failed.data_fim,
+        automatico=True, requires_session=failure == "missing_session", verify_connections=True,
+    )
+    healthy_job = state.queue.enqueue(
+        healthy.store_id, healthy.loja, healthy.data_inicio, healthy.data_fim,
+        automatico=True, verify_connections=True,
+    )
+
+    def verify(req, _client):
+        if req.store_id != failed.store_id:
+            return
+        if failure == "missing_session":
+            pytest.fail("a store requiring a Central session must not use local credentials")
+        if failure == "reconnect":
+            raise VendasDomainError(401, "fixture reauthorization", code="bling_reconnect_required")
+        raise RuntimeError("fixture unexpected failure")
+
+    async def collect(req, _client, *, day_budget=None):
+        assert req.store_id == healthy.store_id and day_budget == 1
+        job_id, owner = SYNC_THREAD_CONTEXT.job_id, SYNC_THREAD_CONTEXT.queue_owner
+        state.queue.complete_day(job_id, owner, req.data_fim, {"vendas": 1})
+        state.queue.complete_job(job_id, owner)
+        completed.set()
+
+    monkeypatch.setattr(sync_engine, "_verificar_conexao_bling", verify)
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_impl", collect)
     sync_automation.dispatch("tenant-a")
-    assert collected.wait(5)
-    first_collection = next(index for index, event in enumerate(state.events) if event[0] == "collect")
-    assert len([event for event in state.events[:first_collection] if event[0] == "check"]) == 11
+    assert completed.wait(5)
+    for value in list(sync_automation._RUNNING.values()):
+        value["thread"].join(timeout=5)
+        assert not value["thread"].is_alive()
+    saved = state.queue.get_job(failed_job["id"])
+    assert saved["status"] == "retry"
+    assert saved["dias_concluidos"] == [failed.data_inicio]
+    assert saved["last_error"]
+    assert state.queue.get_job(healthy_job["id"])["status"] == "complete"
+    assert saved["next_attempt"] is not None
 
 
 @pytest.mark.parametrize("failed_status", [401, 403, 429, 503])
@@ -190,7 +244,7 @@ def test_pause_during_last_reply_keeps_confirmed_warnings_hidden_and_preserves_r
         assert old["last_error"] == new["last_error"]
 
 
-def test_start_returns_while_provider_is_waiting_and_new_requests_keep_barrier(environment, monkeypatch):
+def test_start_returns_while_provider_is_waiting_and_new_requests_are_dispatched(environment, monkeypatch):
     state = environment
     entered = threading.Event()
     returned = threading.Event()
@@ -198,7 +252,11 @@ def test_start_returns_while_provider_is_waiting_and_new_requests_keep_barrier(e
         entered.set()
         assert state.release.wait(5)
         state.events.append(("check", req.store_id))
+    async def collect(_req, _client, *, day_budget=None):
+        state.queue.yield_job(SYNC_THREAD_CONTEXT.job_id, SYNC_THREAD_CONTEXT.queue_owner)
+        return {"yielded": True}
     monkeypatch.setattr(sync_engine, "_verificar_conexao_bling", verify)
+    monkeypatch.setattr(sync_engine, "_sincronizar_vendas_impl", collect)
     def submit():
         sync_engine.sincronizar_vendas(state.requests[0], "tenant-a")
         returned.set()
@@ -208,12 +266,12 @@ def test_start_returns_while_provider_is_waiting_and_new_requests_keep_barrier(e
         assert entered.wait(5)
         assert returned.wait(2), "POST must not wait for Bling responses"
         sync_engine.sincronizar_vendas(state.requests[1], "tenant-a")
-        assert SyncQueue("tenant-a").claim("other-process") is None
+        assert any(job["status"] == "running" for job in state.queue.list_jobs())
     finally:
         state.release.set()
         submitter.join(timeout=5)
     finish_checks(state)
-    assert len(state.events) == 11
+    assert {store for kind, store in state.events if kind == "check"} == {req.store_id for req in state.requests}
 
 
 def test_connection_phase_carries_initiating_request_context(environment, monkeypatch):
@@ -296,7 +354,7 @@ def test_monitor_shows_connection_phase_without_claiming_a_collection(environmen
     assert paused["progress"]["concluido"] is False
 
 
-def test_thread_start_failure_leaves_barrier_recoverable_without_collecting(environment, monkeypatch):
+def test_thread_start_failure_leaves_store_work_recoverable(environment, monkeypatch):
     state = environment
     request_check(state)
     class BrokenThread:
@@ -307,7 +365,9 @@ def test_thread_start_failure_leaves_barrier_recoverable_without_collecting(envi
     with pytest.raises(RuntimeError, match="thread failure"):
         sync_automation.dispatch("tenant-a")
     assert state.queue.connection_check_pending()
-    assert state.queue.claim("must-not-collect") is None
+    failed = next(job for job in state.queue.list_jobs() if job["store_id"] == state.requests[0].store_id)
+    assert failed["status"] == "retry"
+    assert state.queue.claim("recovered-collector", now=failed["next_attempt"]) is not None
     monkeypatch.setattr(sync_automation.threading, "Thread", original)
     monkeypatch.setattr(sync_engine, "_verificar_conexao_bling", lambda *_: None)
     finish_checks(state)
@@ -315,7 +375,7 @@ def test_thread_start_failure_leaves_barrier_recoverable_without_collecting(envi
 
 
 @pytest.mark.parametrize("failure_boundary", ["probe", "acknowledgement"])
-def test_unexpected_failure_abandons_phase_without_releasing_collection(environment, monkeypatch, failure_boundary):
+def test_unexpected_failure_finishes_recovery_without_clearing_warnings(environment, monkeypatch, failure_boundary):
     state = environment
     request_check(state)
     grant = state.queue.claim_connection_check("check-owner")
@@ -326,14 +386,13 @@ def test_unexpected_failure_abandons_phase_without_releasing_collection(environm
     else:
         monkeypatch.setattr(sync_engine, "_verificar_conexao_bling", lambda *_: None)
         monkeypatch.setattr(SyncQueue, "acknowledge_checked_connection", crash)
-    with pytest.raises(RuntimeError, match="infrastructure failure"):
-        sync_automation._run_connection_check("tenant-a", "check-owner", grant)
-    assert state.queue.connection_check_pending()
-    assert state.queue.claim("must-not-collect") is None
+    sync_automation._run_connection_check("tenant-a", "check-owner", grant)
+    assert not state.queue.connection_check_pending()
+    assert state.queue.claim("independent-collector") is not None
     assert all(store["ultimo_erro"] for store in state.queue.summary()["lojas"])
 
 
-def test_central_batch_without_session_cannot_fall_back_to_historical_local_connections(environment, monkeypatch):
+def test_central_batch_without_session_never_uses_historical_local_credentials(environment, monkeypatch):
     state = environment
     request_check(state, requires_session=True)
     grant = state.queue.claim_connection_check("check-owner")
@@ -341,8 +400,7 @@ def test_central_batch_without_session_cannot_fall_back_to_historical_local_conn
     monkeypatch.setattr(sync_engine, "_verificar_conexao_bling",
                         lambda *_: pytest.fail("missing Central session must not try local credentials"))
     sync_automation._run_connection_check("tenant-a", "check-owner", grant)
-    assert state.queue.connection_check_pending()
-    assert state.queue.claim("must-wait-for-session") is None
+    assert not state.queue.connection_check_pending()
     assert all(store["ultimo_erro"] for store in state.queue.summary()["lojas"])
 
 
@@ -397,4 +455,6 @@ def test_stop_revokes_inflight_phase_without_losing_pending_work(environment, mo
     assert not checking.is_alive()
     assert state.queue.connection_check_pending()
     assert state.queue.claim("must-not-collect") is None
-    assert state.queue.list_jobs() == before
+    for old, new in zip(before, state.queue.list_jobs()):
+        assert old["id"] == new["id"]
+        assert old["resultados_dias"] == new["resultados_dias"]

@@ -48,6 +48,11 @@ def request_timeout(original):
     if available is None:
         return original
     check_budget()
+    if isinstance(original, Timeout):
+        bounded = original.clone()
+        bounded.total = (available if bounded.total in (None, Timeout.DEFAULT_TIMEOUT)
+                         else min(bounded.total, available))
+        return bounded
     if isinstance(original, tuple):
         connect, read = original
     else:

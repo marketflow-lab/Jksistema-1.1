@@ -387,10 +387,15 @@ def progresso_sincronizacao_vendas(client_id: str):
             progress = _criar_progresso("Fila", 0, 0, 0, "Períodos salvos; aguardando processamento.")
     if automacao.get("verificando_conexoes") is True:
         active = True
-        progress = _criar_progresso(
-            "Conexões", 0, 0, 0, "Verificando conexões Bling antes da coleta...",
+        collecting = bool(active_jobs) or any(
+            job.get("status") == "running" and float(job.get("lease_until") or 0) > time.time()
+            for job in durable_jobs
         )
-        progress["concluido"] = False
+        if not collecting:
+            progress = _criar_progresso(
+                "Conexões", 0, 0, 0, "Verificando conexões Bling com pendências...",
+            )
+            progress["concluido"] = False
     if durable_jobs and progress is not None:
         confirmed = automacao["dias_confirmados"]
         total = automacao["dias_total"]

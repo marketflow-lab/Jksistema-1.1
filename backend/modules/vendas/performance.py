@@ -17,6 +17,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import Future
+from contextlib import nullcontext
 from contextvars import ContextVar
 from datetime import date, timedelta
 from pathlib import Path
@@ -36,14 +37,21 @@ _RESPONSE_CACHE: OrderedDict[tuple, tuple[float, Any]] = OrderedDict()
 _FILE_CACHE: OrderedDict[tuple, Any] = OrderedDict()
 _SCHEMA_CACHE: OrderedDict[tuple, frozenset[str]] = OrderedDict()
 _CACHE_GENERATIONS: dict[str, int] = {}
+_CONTENT_GENERATIONS: dict[str, int] = {}
 _CACHE_EPOCH = 0
 _RESPONSE_FLIGHTS: dict[tuple, Future] = {}
 _CACHE_STATS = {"hits": 0, "misses": 0, "sets": 0, "invalidations": 0, "disk_hits": 0, "disk_sets": 0}
 _READ_CONFIDENCE: ContextVar[list[bool] | None] = ContextVar("vendas_read_confidence", default=None)
+_READ_SOURCES: ContextVar[list | None] = ContextVar("vendas_read_sources", default=None)
+# SQLite row conversion in concurrent Python readers is much slower than a
+# single complete capture. This gate never participates in collection writes.
+_READ_WORK_LOCKS = tuple(threading.RLock() for _ in range(32))
+_UNCAPTURED_ACCOUNTS = object()
 
 
 class _ReadFlight(Future):
     complete = True
+    sources = ()
 
 _PREPARE_LOCK = threading.RLock()
 _PREPARE_THREAD_LOCK = threading.Lock()
@@ -84,6 +92,47 @@ def vendas_sources_signature(paths: Iterable[str | os.PathLike[str]]) -> tuple:
     unique.update(path + "-wal" for path in tuple(unique) if path.lower().endswith(".db"))
     unique.update(path + "-journal" for path in tuple(unique) if path.lower().endswith(".db"))
     return tuple(vendas_file_signature(path) for path in sorted(unique))
+
+
+def vendas_snapshot_signature(paths: Iterable[str | os.PathLike[str]]) -> tuple:
+    """Fence identity/removal and projection inputs, allowing captured sales writes.
+
+    Only Vendas databases may advance after their complete SQL snapshot. Catalog,
+    configuration, mappings and stock inputs retain their full content signature.
+    """
+    unique = {os.path.abspath(os.fspath(path)) for path in paths if path}
+    databases = {path for path in unique if Path(path).name.lower().startswith("vendas_historico")
+                 and path.lower().endswith(".db")}
+    sidecars = {path + suffix for path in databases for suffix in ("-wal", "-journal")}
+    signatures = []
+    for path in sorted(unique - sidecars):
+        if path not in databases:
+            signatures.append(vendas_file_signature(path))
+            continue
+        try:
+            stat = os.stat(path)
+        except FileNotFoundError:
+            signatures.append((path, "database", None))
+            continue
+        if not stat.st_ino:
+            # An untrustworthy file identity cannot safely outlive a write.
+            signatures.extend(vendas_sources_signature([path]))
+            continue
+        signatures.append((path, "database", int(stat.st_dev), int(stat.st_ino),
+                           getattr(stat, "st_birthtime_ns", None),
+                           os.path.normcase(os.path.realpath(path))))
+    return tuple(signatures)
+
+
+def _remember_read_sources(sources) -> None:
+    captured = _READ_SOURCES.get()
+    if captured is not None:
+        captured[:] = [sources]
+
+
+def _memory_generation(client_id: str, namespace: str) -> int:
+    generations = _CONTENT_GENERATIONS if namespace == "composition_catalog" else _CACHE_GENERATIONS
+    return generations.get(client_id, 0)
 
 
 def vendas_source_paths(
@@ -155,6 +204,8 @@ def cache_vendas_response(
     ttl_seconds: float = VENDAS_CACHE_TTL_SECONDS,
     cache_if: Callable[[Any], bool] | None = None,
     persistent: bool = False,
+    consistent_snapshot: bool | Callable[[Mapping[str, Any]], bool] = False,
+    serialize_reads: bool = False,
 ):
     """Cache a synchronous endpoint using filters and source-file signatures."""
 
@@ -177,6 +228,9 @@ def cache_vendas_response(
                 return func(*args, **kwargs)
 
             durable = persistent and namespace in persistent_cache.NAMESPACES
+            snapshot_read = durable and bool(consistent_snapshot(bound.arguments) if callable(consistent_snapshot)
+                                             else consistent_snapshot)
+            snapshot_sources = vendas_snapshot_signature(source_paths) if snapshot_read else None
             disk_generation = None
             disk_key = None
             day = date.today().isoformat() if durable and namespace == "grafico" else ""
@@ -194,7 +248,7 @@ def cache_vendas_response(
                     return func(*args, **kwargs)
 
             with _CACHE_LOCK:
-                generation = _CACHE_GENERATIONS.get(client_id, 0)
+                generation = _memory_generation(client_id, namespace)
                 epoch = _CACHE_EPOCH
             filters = tuple(
                 sorted(
@@ -222,7 +276,7 @@ def cache_vendas_response(
 
             def unchanged():
                 with _CACHE_LOCK:
-                    if epoch != _CACHE_EPOCH or generation != _CACHE_GENERATIONS.get(client_id, 0):
+                    if epoch != _CACHE_EPOCH or generation != _memory_generation(client_id, namespace):
                         return False
                 try:
                     if vendas_sources_signature(paths_provider(bound.arguments) or ()) != sources:
@@ -239,20 +293,40 @@ def cache_vendas_response(
                 except Exception:
                     return False
 
+            def snapshot_unchanged():
+                try:
+                    if epoch != _CACHE_EPOCH:
+                        return False
+                    if vendas_snapshot_signature(paths_provider(bound.arguments) or ()) != snapshot_sources:
+                        return False
+                    if durable and (not persistent_cache.current(disk_generation)
+                                    or (date.today().isoformat() if namespace == "grafico" else "") != day):
+                        return False
+                    return True
+                except Exception:
+                    return False
+
             with _CACHE_LOCK:
                 found, cached = _cache_get(key)
             if found and unchanged():
+                if snapshot_read:
+                    _remember_read_sources(sources)
                 return cached
+            flight_key = ((str(namespace), client_id, filters, epoch, disk_generation, day, snapshot_sources)
+                          if snapshot_read else key)
             with _CACHE_LOCK:
-                flight = _RESPONSE_FLIGHTS.get(key)
+                flight = _RESPONSE_FLIGHTS.get(flight_key)
                 owner = flight is None
                 if owner:
                     flight = _ReadFlight()
-                    _RESPONSE_FLIGHTS[key] = flight
+                    flight.sources = sources
+                    _RESPONSE_FLIGHTS[flight_key] = flight
             if not owner:
                 # Each request owns its response, including nested rows/warnings.
                 result = copy.deepcopy(flight.result())
-                if not flight.complete:
+                if snapshot_read:
+                    _remember_read_sources(flight.sources)
+                if not flight.complete or (snapshot_read and not snapshot_unchanged()):
                     mark_vendas_read_incomplete()
                 return result
             try:
@@ -263,6 +337,8 @@ def cache_vendas_response(
                             published = _cache_set(key, cached_disk, ttl_seconds)
                             _CACHE_STATS["disk_hits"] += 1
                         flight.set_result(published)
+                        if snapshot_read:
+                            _remember_read_sources(sources)
                         return copy.deepcopy(published)
                 confidence = _READ_CONFIDENCE.get()
                 token = None
@@ -270,17 +346,23 @@ def cache_vendas_response(
                     confidence = [True]
                     token = _READ_CONFIDENCE.set(confidence)
                 try:
-                    result = func(*args, **kwargs)
+                    gate = (_READ_WORK_LOCKS[hash(client_id) % len(_READ_WORK_LOCKS)]
+                            if snapshot_read or serialize_reads else nullcontext())
+                    with gate:
+                        result = func(*args, **kwargs)
                 finally:
                     if token is not None:
                         _READ_CONFIDENCE.reset(token)
-                eligible = (confidence[0] and (cache_if is None or cache_if(result))
-                            and (not durable or persistent_cache.valid_payload(namespace, result)) and unchanged())
-                if not eligible:
+                complete = (confidence[0] and (cache_if is None or cache_if(result))
+                            and (not durable or persistent_cache.valid_payload(namespace, result)))
+                fresh = unchanged()
+                eligible = complete and fresh
+                safe = complete and (snapshot_unchanged() if snapshot_read else fresh)
+                if not safe:
                     confidence[0] = False
                 with _CACHE_LOCK:
                     if (eligible and epoch == _CACHE_EPOCH
-                            and generation == _CACHE_GENERATIONS.get(client_id, 0)
+                            and generation == _memory_generation(client_id, namespace)
                             ):
                         published = _cache_set(key, result, ttl_seconds)
                     else:
@@ -288,7 +370,9 @@ def cache_vendas_response(
                 if durable and eligible and persistent_cache.save(disk_generation, namespace, disk_key, result, unchanged):
                     with _CACHE_LOCK:
                         _CACHE_STATS["disk_sets"] += 1
-                flight.complete = eligible
+                flight.complete = safe
+                if snapshot_read:
+                    _remember_read_sources(sources)
                 flight.set_result(published)
                 return result
             except BaseException as error:
@@ -296,7 +380,7 @@ def cache_vendas_response(
                 raise
             finally:
                 with _CACHE_LOCK:
-                    _RESPONSE_FLIGHTS.pop(key, None)
+                    _RESPONSE_FLIGHTS.pop(flight_key, None)
 
         return wrapper
 
@@ -310,19 +394,23 @@ def mark_vendas_read_incomplete() -> None:
         confidence[0] = False
 
 
-def invalidate_vendas_cache(client_id: str | None = None) -> None:
-    """Invalidate response caches after Vendas writes or mapping changes."""
+def invalidate_vendas_cache(client_id: str | None = None, *, preserve_saved: bool = False) -> None:
+    """Invalidate freshness; only ordinary committed collections retain saved reads."""
 
     global _CACHE_EPOCH
     try:
         root = get_tenant_path(client_id) if client_id else str(get_vendas_dependencies().paths.info_dir)
-        persistent_cache.invalidate(root, global_scope=not bool(client_id))
+        if not preserve_saved or not client_id:
+            persistent_cache.invalidate(root, global_scope=not bool(client_id))
     except (OSError, RuntimeError, ValueError):
         pass
     with _CACHE_LOCK:
         if client_id:
             _CACHE_GENERATIONS[client_id] = _CACHE_GENERATIONS.get(client_id, 0) + 1
-            for key in [key for key in _RESPONSE_CACHE if len(key) > 1 and key[1] == client_id]:
+            if not preserve_saved:
+                _CONTENT_GENERATIONS[client_id] = _CONTENT_GENERATIONS.get(client_id, 0) + 1
+            for key in [key for key in _RESPONSE_CACHE if len(key) > 1 and key[1] == client_id
+                        and (not preserve_saved or key[0] != "composition_catalog")]:
                 _RESPONSE_CACHE.pop(key, None)
         else:
             _CACHE_EPOCH += 1
@@ -330,6 +418,7 @@ def invalidate_vendas_cache(client_id: str | None = None) -> None:
             _FILE_CACHE.clear()
             _SCHEMA_CACHE.clear()
             _CACHE_GENERATIONS.clear()
+            _CONTENT_GENERATIONS.clear()
         _CACHE_STATS["invalidations"] += 1
 
 
@@ -398,6 +487,7 @@ def select_compatible_column(columns: set[str] | frozenset[str], name: str, defa
 
 def legacy_store_conflicts(
     paths: Iterable[str], rows: Iterable[dict], *, store_id: str = "",
+    captured_accounts=_UNCAPTURED_ACCOUNTS,
 ) -> set[str]:
     """Resolve legacy account ambiguity outside the requested SKU/date window.
 
@@ -411,6 +501,13 @@ def legacy_store_conflicts(
     if not names:
         return set()
     accounts = {name: {store_id} if store_id else set() for name in names}
+    if captured_accounts is None:
+        return set(names)
+    if captured_accounts is not _UNCAPTURED_ACCOUNTS:
+        for name, account in captured_accounts:
+            if name in accounts and account:
+                accounts[name].add(str(account))
+        return {name for name, identities in accounts.items() if len(identities) > 1}
     for path in dict.fromkeys(paths):
         if not path or not os.path.isfile(path):
             continue

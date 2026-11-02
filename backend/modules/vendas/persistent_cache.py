@@ -171,7 +171,7 @@ def calculation_revision() -> str:
     here = Path(__file__).parent
     services = here.parents[1] / "services"
     paths = [here / name for name in (
-        "performance.py", "persistent_cache.py", "summary_loading.py", "repository.py", "analytics.py", "compositions.py", "legacy_duplicates.py",
+        "performance.py", "persistent_cache.py", "summary_loading.py", "repository.py", "analytics.py", "read_snapshot.py", "compositions.py", "legacy_duplicates.py",
     )]
     paths += [services / name for name in (
         "bling_vendas.py", "estoque_historico.py", "cadastro_compatibilidade.py", "cadastro_lojas_produtos.py",

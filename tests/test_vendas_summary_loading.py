@@ -1,11 +1,13 @@
 """Saved-first summaries: synthetic sources, bounded jobs and publication fences."""
 
 from concurrent.futures import Future
+from contextlib import closing
 from contextvars import ContextVar
 import copy
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -30,6 +32,7 @@ def context(tmp_path, monkeypatch):
         paths=SimpleNamespace(info_dir=info, tenant_path=lambda client_id: str(info / client_id)),
         logger=logging.getLogger("summary-fixture")))
     monkeypatch.setattr(loading, "_sources", lambda arguments: performance.vendas_sources_signature([source]))
+    monkeypatch.setattr(loading, "_guard_sources", lambda arguments: performance.vendas_snapshot_signature([source]))
     monkeypatch.setattr(loading, "_JOBS", loading.OrderedDict())
     monkeypatch.setattr(disk, "_DISABLED", set())
     calls = []
@@ -58,6 +61,42 @@ def settled(context, *, calculate=None, **filters):
             return result, status
         time.sleep(.01)
     pytest.fail("Synthetic summary did not settle")
+
+
+def sales_source(context, monkeypatch):
+    path = context.root / "vendas_historico_synthetic.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE synthetic_sales(value INTEGER NOT NULL)")
+        connection.execute("INSERT INTO synthetic_sales VALUES (10)")
+        connection.commit()
+    sources = [path, context.source]
+    monkeypatch.setattr(loading, "_sources", lambda _args: performance.vendas_sources_signature(sources))
+    monkeypatch.setattr(loading, "_guard_sources", lambda _args: performance.vendas_snapshot_signature(sources))
+
+    def calculate(**arguments):
+        context.calls.append(arguments)
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            value = connection.execute("SELECT value FROM synthetic_sales").fetchone()[0]
+        return {"success": True, "rows": [{"sku": "SYNTHETIC", "itens": value}],
+                "totals": {"itens": value}, "meta": {}}
+
+    def write(value):
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("UPDATE synthetic_sales SET value = ?", (value,))
+            connection.commit()
+        performance.invalidate_vendas_cache("tenant-a", preserve_saved=True)
+
+    context.calculate = calculate
+    return SimpleNamespace(path=path, write=write)
+
+
+def wait_for_jobs():
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if all(job.state != "processando" and job.finished_at for job in loading._JOBS.values()):
+            return
+        time.sleep(.01)
+    pytest.fail("Synthetic summary jobs did not finish")
 
 
 def test_saved_only_never_computes_schedules_or_reads_sources(context, monkeypatch):
@@ -103,9 +142,10 @@ def test_background_is_immediate_deduplicated_and_restores_after_memory_reset(co
     assert len(context.calls) == 1
 
 
-def test_old_saved_data_is_visible_while_new_sources_refresh(context):
+def test_old_saved_data_is_visible_while_new_sources_refresh(context, monkeypatch):
+    sales = sales_source(context, monkeypatch)
     original, _ = settled(context)
-    context.source.write_text("20")
+    sales.write(20)
     entered, release = threading.Event(), threading.Event()
 
     def slow(**kwargs):
@@ -127,10 +167,11 @@ def test_old_saved_data_is_visible_while_new_sources_refresh(context):
 
 
 @pytest.mark.parametrize("failure", ["exception", "partial", "catalog", "unproven-warning"])
-def test_failure_preserves_last_valid_snapshot(context, failure):
+def test_failure_preserves_last_valid_snapshot(context, failure, monkeypatch):
+    sales = sales_source(context, monkeypatch)
     settled(context)
     snapshots = {p.name: p.read_bytes() for p in (context.root / disk.CACHE_DIRECTORY).glob("*.json")}
-    context.source.write_text("20")
+    sales.write(20)
 
     def fail(**arguments):
         if failure == "exception":
@@ -277,10 +318,11 @@ def test_independent_process_restores_saved_only_without_calculator(context):
     child = r'''
 import json, logging, pathlib, sys
 from types import SimpleNamespace
-from backend.modules.vendas import dependencies, summary_loading
+from backend.modules.vendas import dependencies, summary_loading, performance
 info=pathlib.Path(sys.argv[1])
 dependencies._dependencies=SimpleNamespace(paths=SimpleNamespace(info_dir=info,
     tenant_path=lambda client_id:str(info/client_id)),logger=logging.getLogger("fixture"))
+summary_loading._guard_sources=lambda arguments:performance.vendas_snapshot_signature([info/"tenant-a"/"source.txt"])
 def forbidden(**arguments):raise AssertionError("Saved-only child calculated")
 result,status=summary_loading.read_summary(forbidden,{"client_id":"tenant-a","loja":"Loja A"},saved_only=True)
 print(json.dumps({"status":status,"items":result["totals"].get("itens"),"state":result["meta"]["leitura"]["estado"]}))
@@ -347,13 +389,14 @@ def test_identity_change_during_job_cannot_publish_old_account(context):
 
 
 def test_completed_job_load_failure_preserves_initial_saved_payload(context, monkeypatch):
+    sales = sales_source(context, monkeypatch)
     settled(context)
-    context.source.write_text("20")
+    sales.write(20)
     normalized = loading._arguments(context.arguments)
     generation = loading._generation(normalized,create=False)
     key = loading._key(generation,normalized)
     original_load = loading._load
-    old = original_load(generation,key)
+    old = original_load(generation,key,loading._guard_sources(normalized))
     revision = loading._revision(generation,loading._sources(normalized))
     monkeypatch.setattr(loading,"_schedule",lambda *args:loading._Job(state="atualizado"))
     responses = iter([old,None])
@@ -367,8 +410,8 @@ def test_identity_change_during_saved_read_is_rechecked_before_response(context,
     settled(context)
     original = loading._load
 
-    def changing(generation,key):
-        saved = original(generation,key)
+    def changing(generation,key,guard):
+        saved = original(generation,key,guard)
         (context.root / "lojas_config.json").write_text('{"synthetic_identity":"replacement-store"}')
         return saved
 
@@ -394,3 +437,131 @@ def test_completed_job_recovers_when_its_saved_snapshot_is_lost(context, loss):
     for _ in range(3):
         assert read(context)[0]["meta"]["leitura"]["estado"] == "atualizado"
     assert len(context.calls) == 2
+
+
+def test_soft_commits_publish_first_complete_snapshot_and_coalesce_one_followup(context, monkeypatch):
+    sales = sales_source(context, monkeypatch)
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+
+    def slow(**arguments):
+        result = context.calculate(**arguments)
+        index = len(context.calls) - 1
+        assert index < 2, "source revisions must not queue another copy of the same query"
+        entered[index].set()
+        assert release[index].wait(5)
+        return result
+
+    try:
+        assert read(context, calculate=slow)[1] == 202
+        assert entered[0].wait(2)
+        for value in (20, 30, 40):
+            sales.write(value)
+            result, status = read(context, calculate=slow)
+            assert status == 202 and not result["meta"]["leitura"]["possui_salvo"]
+            assert len(loading._JOBS) == len(context.calls) == 1
+        release[0].set()
+        wait_for_jobs()
+        first, status = read(context, saved_only=True)
+        assert status == 200 and first["totals"]["itens"] == 10
+
+        # Saved-first must survive a service restart during continuous collection.
+        monkeypatch.setattr(loading, "_JOBS", loading.OrderedDict())
+        reopened, status = read(context, saved_only=True)
+        assert status == 200 and reopened["totals"]["itens"] == 10
+        refreshing, status = read(context, calculate=slow)
+        assert status == 200 and refreshing["totals"]["itens"] == 10
+        assert refreshing["meta"]["leitura"]["estado"] == "processando"
+        assert refreshing["meta"]["leitura"]["atualizando"]
+        assert entered[1].wait(2)
+        for _ in range(5):
+            assert read(context, calculate=slow)[0]["totals"]["itens"] == 10
+        assert len(loading._JOBS) == 1 and len(context.calls) == 2
+        release[1].set()
+        updated, status = settled(context, calculate=slow)
+        assert status == 200 and updated["totals"]["itens"] == 40
+        assert updated["meta"]["leitura"]["estado"] == "atualizado"
+        assert len(context.calls) == 2
+    finally:
+        for event in release:
+            event.set()
+        wait_for_jobs()
+
+
+@pytest.mark.parametrize("mutation", ["catalog", "tenant", "global", "removed", "replaced"])
+def test_snapshot_guards_revoke_saved_sales_after_destructive_or_identity_changes(context, monkeypatch, mutation):
+    sales = sales_source(context, monkeypatch)
+    settled(context)
+    if mutation == "catalog":
+        context.source.write_text("catalog changed")
+    elif mutation in {"tenant", "global"}:
+        assert disk.invalidate(context.info if mutation == "global" else context.root,
+                               global_scope=mutation == "global")
+    elif mutation == "removed":
+        sales.path.unlink()
+    else:
+        replacement = context.root / "replacement.db"
+        with closing(sqlite3.connect(replacement)) as connection:
+            connection.execute("CREATE TABLE synthetic_sales(value INTEGER NOT NULL)")
+            connection.execute("INSERT INTO synthetic_sales VALUES (99)")
+            connection.commit()
+        os.replace(replacement, sales.path)
+    result, status = read(context, saved_only=True)
+    assert status == 202 and not result["meta"]["leitura"]["possui_salvo"]
+    assert len(context.calls) == 1
+
+
+def test_captured_flight_revision_cannot_be_relabelled_as_new_source_revision(context, monkeypatch):
+    sales = sales_source(context, monkeypatch)
+    old_sources = loading._sources(context.arguments)
+    old_payload = context.calculate(**context.arguments)
+    sales.write(20)
+
+    def older_flight(**_arguments):
+        performance._READ_SOURCES.get()[:] = [old_sources]
+        return copy.deepcopy(old_payload)
+
+    read(context, calculate=older_flight)
+    wait_for_jobs()
+    result, status = read(context, saved_only=True)
+    assert status == 200 and result["totals"]["itens"] == 10
+    generation = loading._generation(context.arguments, create=False)
+    current_revision = loading._revision(generation, loading._sources(context.arguments))
+    assert result["meta"]["leitura"]["revisao"] != current_revision
+    assert result["meta"]["leitura"]["revisao"] == loading._revision(generation, old_sources)
+
+
+def test_completed_stale_job_remains_visible_without_a_false_error(context, monkeypatch):
+    sales = sales_source(context, monkeypatch)
+    settled(context)
+    sales.write(20)
+    monkeypatch.setattr(loading, "_schedule", lambda *args: loading._Job(state="atualizado"))
+    result, status = read(context)
+    assert status == 200 and result["totals"]["itens"] == 10
+    assert result["meta"]["leitura"]["estado"] == "processando"
+
+
+def test_failed_job_can_retry_a_new_revision_without_reusing_previous_error(context):
+    def fail(**_arguments):
+        raise PermissionError("synthetic unavailable source")
+
+    assert settled(context, calculate=fail)[0]["meta"]["leitura"]["estado"] == "erro"
+    context.source.write_text("20")
+    result, status = settled(context)
+    assert status == 200 and result["totals"]["itens"] == 20
+
+
+def test_submission_failure_returns_its_slot_for_the_next_request(context, monkeypatch):
+    attempts = []
+
+    class FailingExecutor:
+        def submit(self, *_args):
+            attempts.append(1)
+            raise RuntimeError("synthetic executor unavailable")
+
+    monkeypatch.setattr(loading, "_POOL", FailingExecutor())
+    monkeypatch.setattr(loading, "_SLOTS", threading.BoundedSemaphore(1))
+    for _ in range(3):
+        result, status = read(context)
+        assert status == 202 and not result["meta"]["leitura"]["atualizando"]
+    assert len(attempts) == 3 and not loading._JOBS

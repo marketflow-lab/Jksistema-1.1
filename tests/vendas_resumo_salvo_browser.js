@@ -150,6 +150,30 @@ async function main() {
             await prepare(page); await settled(page); await assertSavedVisible(page,100);
             assert.equal(polls,3);
         });
+        await run(browser,'a complete captured summary loads while newer days keep refreshing',async(page,state) => {
+            let polls=0;
+            state.saved=() => polls ? payload(90,'processando') : {body:processing(),status:202};
+            state.stale=() => { polls++; return payload(90,'processando'); };
+            await prepare(page); await settled(page); await assertSavedVisible(page,90);
+            assert.equal(polls,1,'A complete saved result must finish initial loading without waiting for current sources');
+            assert.doesNotMatch(await page.locator('#status').getAttribute('class'),/error/);
+            assert.match(await page.locator('#cacheVendasStatus').textContent(),/dados salvos/i);
+            await page.waitForTimeout(150);
+            assert.equal(polls,1,'Collection progress triggers later refreshes; a loaded summary must not keep polling');
+        });
+        await run(browser,'a finished background summary replaces saved rows without another sales commit',async(page,state) => {
+            let completed=false;
+            state.saved=() => completed
+                ? payload(100,'salvo',{atualizando:false,revisao:'revision-completed'})
+                : payload(70,'salvo',{atualizando:true});
+            state.stale=() => completed ? payload(100,'atualizado') : payload(70,'processando');
+            await prepare(page); await settled(page); await assertSavedVisible(page,70);
+            completed=true;
+            await assertSavedVisible(page,100);
+            assert.doesNotMatch(await page.locator('#status').getAttribute('class'),/error/);
+            assert(state.calls.every(call => call.path === '/api/vendas/resumo'),
+                'Following the completed summary must not restart collections or reload graphs');
+        });
         await run(browser,'changing filters discards a late response for the previous period',async(page,state) => {
             state.stale=(_route,query) => query.get('data_inicio') === '2026-10-01' ? 'hold' : payload(222,'atualizado');
             state.saved=(_route,query) => payload(query.get('data_inicio') === '2026-10-01' ? 70 : 200);
@@ -207,7 +231,7 @@ async function main() {
             const background=await waitHeld(state,item=>item.query.get('cache_mode') === 'stale');
             await respond(background.route,payload(222,'atualizado')); await settled(page); await assertSavedVisible(page,222);
         });
-        console.log('PASS Vendas resumo salvo: 13 protocol, preservation, isolation and cancellation scenarios.');
+        console.log('PASS Vendas resumo salvo: 15 protocol, preservation, isolation and cancellation scenarios.');
     } finally { await browser.close(); }
 }
 main().catch(error => {console.error(error);process.exitCode=1;});

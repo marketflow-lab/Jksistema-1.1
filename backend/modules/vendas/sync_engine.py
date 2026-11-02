@@ -308,7 +308,7 @@ def _sincronizar_vendas_thread_worker(req: VendasSyncRequest, client_id: str, jo
                 prepare_vendas_database(db_path)
             except Exception:
                 logger.warning("Não foi possível preparar os índices após a sincronização.")
-        invalidate_vendas_cache(client_id)
+        invalidate_vendas_cache(client_id, preserve_saved=not req.forcar_resync)
         SYNC_META[job_id] = {**(SYNC_META.get(job_id) or {}), "status": "complete"}
     except Exception as exc:
         failed = False

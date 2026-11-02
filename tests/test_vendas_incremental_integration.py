@@ -32,7 +32,7 @@ def pipeline(isolated, monkeypatch, sales_api):
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_unidades", lambda: {})
     monkeypatch.setattr(sync_period, "_carregar_mapeamento_lojas_virtuais_cliente", lambda *a: {})
     monkeypatch.setattr(sync_period, "_sync_log", lambda *a: None)
-    monkeypatch.setattr(sync_period, "invalidate_vendas_cache", lambda *a: None)
+    monkeypatch.setattr(sync_period, "invalidate_vendas_cache", lambda *a, **kwargs: None)
     monkeypatch.setattr(sync_period, "legacy_store_conflicts", lambda *a, **k: set())
     seen_days = []
 

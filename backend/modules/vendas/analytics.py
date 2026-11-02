@@ -26,6 +26,7 @@ import pandas as pd
 from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 
 from .compositions import load_composition_catalog
+from .read_snapshot import begin_vendas_snapshot
 from .dependencies import get_tenant_path, get_vendas_dependencies, logger
 from .errors import VendasDomainError as HTTPException
 from .legacy_duplicates import without_legacy_sale_duplicates
@@ -192,7 +193,45 @@ def _calcular_previsao_mes_atual(rows: list[tuple], hoje: datetime) -> dict[str,
     }
 
 
-@cache_vendas_response("grafico", _grafico_cache_paths, persistent=True)
+_GRAPH_RETURN_FIELDS = (
+    "data_emissao", "quantidade", "valor_total", "sku", "loja_conta",
+    "store_id", "id_unico", "numero_nota", "origem_codigo",
+)
+
+
+def _graph_return_rows(cur, *, data_inicio, data_fim, sku, candidates, unidade_negocio, loja):
+    columns = {row[1] for row in cur.execute("PRAGMA table_info(notas_entrada_itens)")}
+    if not columns:
+        return []
+    fields = _GRAPH_RETURN_FIELDS
+    query = "SELECT " + ", ".join(
+        select_compatible_column(columns, field, "0" if field in {"quantidade", "valor_total"} else "''")
+        for field in fields
+    ) + " FROM notas_entrada_itens WHERE devolucao = 1"
+    params = []
+    conditions = []
+    append_indexable_date_filter(conditions, params, "data_emissao", data_inicio, data_fim)
+    if conditions:
+        query += " AND " + " AND ".join(conditions)
+    if sku:
+        query += " AND UPPER(trim(sku)) IN (" + ",".join("?" for _ in candidates) + ")"
+        params.extend(candidates)
+    filtro_sql, filtro_params = _sql_filtro_unidade_devolucao(unidade_negocio)
+    if filtro_sql:
+        query += filtro_sql
+        params.extend(filtro_params)
+    filtro_sql, filtro_params = _sql_filtro_loja_notas_entrada(cur, loja)
+    if filtro_sql:
+        query += filtro_sql
+        params.extend(filtro_params)
+    query += " ORDER BY data_emissao"
+    return [dict(zip(fields, row)) for row in cur.execute(query, params).fetchall()]
+
+
+@cache_vendas_response(
+    "grafico", _grafico_cache_paths, persistent=True, serialize_reads=True,
+    consistent_snapshot=lambda args: not args.get("mostrar_estoque_geral") and not args.get("mostrar_estoque_sku"),
+)
 def grafico_vendas(
     periodo: str = "3m",
     intervalo: str = "dia",
@@ -317,20 +356,41 @@ def grafico_vendas(
                 params.extend(filtro_unidade_params)
         where_sql = " WHERE " + " AND ".join(conditions) + " ORDER BY data"
         rows = []
+        returns_rows = []
+        captured_accounts: set[tuple[str, str]] = set()
+        account_evidence_complete = True
         for path in db_paths:
             if not os.path.exists(path):
+                mark_vendas_read_incomplete()
+                account_evidence_complete = False
                 continue
             conn_db = open_vendas_readonly(path)
             try:
+                accounts = begin_vendas_snapshot(conn_db)
+                if accounts is None:
+                    account_evidence_complete = False
+                    mark_vendas_read_incomplete()
                 cur_db = conn_db.cursor()
-                columns = cached_table_columns(path, "vendas", conn_db)
+                columns = {row[1] for row in cur_db.execute("PRAGMA table_info(vendas)")}
                 query = "SELECT " + ", ".join(
                     select_compatible_column(
                         columns, field, "0" if field in {"devolucao", "quantidade", "valor"} else "''",
                     ) for field in sale_fields
                 ) + " FROM vendas" + where_sql
                 cur_db.execute(query, params)
-                rows.extend(cur_db.fetchall())
+                sales = cur_db.fetchall()
+                try:
+                    returns = _graph_return_rows(
+                        cur_db, data_inicio=data_inicio_dt.strftime("%Y-%m-%d"), data_fim=data_fim_str,
+                        sku=sku, candidates=candidates, unidade_negocio=unidade_negocio, loja=loja,
+                    )
+                except sqlite3.OperationalError:
+                    mark_vendas_read_incomplete()
+                    returns = []
+                rows.extend(sales)
+                returns_rows.extend(returns)
+                if accounts is not None:
+                    captured_accounts.update(accounts)
             finally:
                 conn_db.close()
 
@@ -357,7 +417,10 @@ def grafico_vendas(
             rows_unicos.append(row)
         sales = [dict(zip(sale_fields, row)) for row in rows_unicos]
         consolidated = without_legacy_sale_duplicates(
-            sales, blocked_store_names=legacy_store_conflicts(db_paths, sales),
+            sales, blocked_store_names=legacy_store_conflicts(
+                db_paths, sales,
+                captured_accounts=captured_accounts if account_evidence_complete else None,
+            ),
         )
         rows_unicos = [
             tuple(item.get(field) for field in sale_fields) for item in consolidated
@@ -466,62 +529,13 @@ def grafico_vendas(
             dados_agrupados[chave]["vendas_valor"] += valor or 0
             dados_agrupados[chave]["vendas_qtd"] += qtd or 0
 
-        # Adicionar devoluções a partir de notas de entrada (consolidando bancos por loja)
-        returns_rows = []
-        for db_path_nf in db_paths:
-            if not os.path.exists(db_path_nf):
-                continue
-            conn_nf = open_vendas_readonly(db_path_nf)
-            try:
-                cur_nf = conn_nf.cursor()
-                columns_nf = cached_table_columns(db_path_nf, "notas_entrada_itens", conn_nf)
-                fields_nf = (
-                    "data_emissao", "quantidade", "valor_total", "sku", "loja_conta",
-                    "store_id", "id_unico", "numero_nota", "origem_codigo",
-                )
-                query_nf = "SELECT " + ", ".join(
-                    select_compatible_column(columns_nf, field, "0" if field in {"quantidade", "valor_total"} else "''")
-                    for field in fields_nf
-                ) + " FROM notas_entrada_itens WHERE devolucao = 1"
-                params_nf = []
-                date_conditions_nf: list[str] = []
-                append_indexable_date_filter(
-                    date_conditions_nf,
-                    params_nf,
-                    "data_emissao",
-                    data_inicio_dt.strftime("%Y-%m-%d"),
-                    data_fim_str,
-                )
-                if date_conditions_nf:
-                    query_nf += " AND " + " AND ".join(date_conditions_nf)
-                if sku:
-                    query_nf += " AND UPPER(trim(sku)) IN (" + ",".join("?" for _ in candidates) + ")"
-                    params_nf.extend(candidates)
-                filtro_nf_sql, filtro_nf_params = _sql_filtro_unidade_devolucao(unidade_negocio)
-                if filtro_nf_sql:
-                    query_nf += filtro_nf_sql
-                    params_nf.extend(filtro_nf_params)
-                filtro_loja_nf_sql, filtro_loja_nf_params = _sql_filtro_loja_notas_entrada(cur_nf, loja)
-                if filtro_loja_nf_sql:
-                    query_nf += filtro_loja_nf_sql
-                    params_nf.extend(filtro_loja_nf_params)
-                query_nf += " ORDER BY data_emissao"
-                cur_nf.execute(query_nf, params_nf)
-                returns_rows.extend(dict(zip(fields_nf, row)) for row in cur_nf.fetchall())
-            except sqlite3.OperationalError as error:
-                # Alguns bancos podem não ter tabela de notas ainda.
-                if not ("no such table" in str(error).lower() and "notas_entrada_itens" in str(error).lower()):
-                    mark_vendas_read_incomplete()
-            finally:
-                conn_nf.close()
-
         # A tenant may expose both a consolidated DB and its store mirror.
         unique_returns = {}
         for item in returns_rows:
             unique_id = str(item.get("id_unico") or "").strip()
             identity = str(item.get("store_id") or item.get("loja_conta") or "").strip().casefold()
             key = (identity, unique_id) if unique_id else tuple(
-                str(item.get(field) or "") for field in fields_nf if field != "id_unico"
+                str(item.get(field) or "") for field in _GRAPH_RETURN_FIELDS if field != "id_unico"
             )
             unique_returns.setdefault(key, item)
         for item in catalog.project_rows(list(unique_returns.values()), target_sku=sku, store=loja):
