@@ -129,7 +129,9 @@ def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None,
         "lojas_public_snapshot.json", "lojas_sync_tombstones.json", "cadastro_fotos_config.json",
         ".cadastro-fotos-migracao-v1.json",
     }
-    if not detalhe:
+    if detalhe:
+        fixed.add("favoritos_planilhas_lojas.json")
+    else:
         fixed.add("listas_pedidos.json")
     paths.update(root / name for name in fixed)
     # Inventory only files actually consulted. Sync progress and unrelated

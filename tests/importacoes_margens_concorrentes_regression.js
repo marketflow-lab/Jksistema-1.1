@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
 
 function readHtml(name) {
     return fs.readFileSync(path.join(__dirname, '..', 'static', name), 'utf8');
@@ -62,7 +64,6 @@ const trechosSku = [
     'const payload = coletarAnaliseConcorrentes();',
     'body: JSON.stringify(payload)',
     'timeoutMs: 120000',
-    'anuncios_loja: { ...ultimosAnunciosLojaConcorrentes }',
     'precos_anuncios_loja: precosAnunciosLoja',
     'ultimaAnaliseConcorrentes.margens_anuncios_loja',
     'dados.financeiro_exato === true',
@@ -90,6 +91,22 @@ for (const trecho of trechosSku) {
 if (skuHtml.includes('((precoVenda - custoUnitario) / precoVenda) * 100')) {
     throw new Error('A tela ainda contém a fórmula simplificada que ignora imposto, tarifa e frete.');
 }
+
+const inicioColeta = skuHtml.indexOf('function coletarAnaliseConcorrentes()');
+const fimColeta = skuHtml.indexOf('async function salvarAnaliseConcorrentes', inicioColeta);
+const valores = {vMlb1: 590, vConcorrente1: 779.9, vConcorrente2: 550, vConcorrente3: 628, vConcorrente4: 620};
+const referencia = 'MLB1000000001';
+const payloadPausado = vm.runInNewContext(skuHtml.slice(inicioColeta, fimColeta) + '\ncoletarAnaliseConcorrentes();', {
+    document: {getElementById: id => valores[id] == null ? null : {textContent: valores[id]}},
+    getNumber: valor => typeof valor === 'number' ? valor : null,
+    ultimosAnunciosLojaConcorrentes: {concorrente_1: referencia},
+    ultimoAnuncioPausadoReferencia: referencia,
+    ultimoValorUnitarioProduto: 280.86,
+    ultimaVersaoFontesConcorrentes: 1,
+});
+assert.equal(Object.keys(payloadPausado.precos_anuncios_loja).length, 1);
+assert.equal(Object.keys(payloadPausado.precos_concorrentes).length, 4);
+assert.deepEqual(Object.values(payloadPausado.anuncios_loja), Array(4).fill(referencia));
 
 const inicioPreparacao = skuHtml.indexOf('function prepararComplementosSku(');
 const inicioCarregamento = skuHtml.indexOf('async function carregarDetalheSku()');

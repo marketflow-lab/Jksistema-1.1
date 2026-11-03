@@ -29,7 +29,7 @@ def product(item_id="MLB1000000001", **overrides):
 @pytest.fixture
 def env(monkeypatch):
     state = {"client": "tenant-a", "store": "store-a", "seller": "seller-a", "name": "Carlos José",
-             "ids": ["MLB1000000001"], "items": {}, "calls": [], "cfg_calls": [],
+             "ids": ["MLB1000000001"], "paused_ids": [], "items": {}, "calls": [], "cfg_calls": [],
              "request": None, "revoke_at": None, "cfg_change_at": None}
 
     def rows(client):
@@ -58,11 +58,12 @@ def env(monkeypatch):
                 return custom, cfg
         if path.endswith("/items/search"):
             assert path == "/users/" + state["seller"] + "/items/search"
-            assert params["seller_sku"] == "35" and params["status"] == "active"
+            assert params["seller_sku"] == "35" and params["status"] in {"active", "paused"}
             assert "q" not in params
+            ids = state["ids"] if params["status"] == "active" else state["paused_ids"]
             offset, limit = params["offset"], params["limit"]
-            return Response({"results": state["ids"][offset:offset + limit],
-                             "paging": {"total": len(state["ids"]), "offset": offset, "limit": limit}}), cfg
+            return Response({"results": ids[offset:offset + limit],
+                             "paging": {"total": len(ids), "offset": offset, "limit": limit}}), cfg
         if path.endswith("/sale_price"):
             assert params == {"context": "channel_marketplace"}
             item_id = path.split("/")[-2]
@@ -94,9 +95,19 @@ def test_selected_store_and_current_exact_sku_supply_own_ad(env):
     result = lookup(env)
     assert result["store_id"] == "store-a" and result["loja"] == "Carlos José"
     assert result["anuncios"] == [{"item_id": "MLB1000000001", "preco": 50,
-        "url": product()["permalink"], "seller_id": "seller-a", "site_id": "MLB", "sku": "35"}]
+        "url": product()["permalink"], "status": "active", "seller_id": "seller-a", "site_id": "MLB", "sku": "35"}]
     assert result["total_encontrado"] == 1 and result["truncado"] is False
     assert len(env["cfg_calls"]) == 4
+
+
+def test_paused_ad_supplies_its_configured_price_without_active_sale_price(env):
+    item_id = env["ids"].pop()
+    env["paused_ids"] = [item_id]
+    env["items"][item_id] = product(item_id, status="paused", price=503.10)
+    result = lookup(env)["anuncios"]
+    assert [(ad["item_id"], ad["status"], ad["preco"]) for ad in result] == [(item_id, "paused", 503.10)]
+    assert [params["status"] for _, _, path, params in env["calls"] if path.endswith("/search")] == ["active", "paused"]
+    assert not any(path.endswith("/sale_price") for _, _, path, _ in env["calls"])
 
 
 @pytest.mark.parametrize("sku", ["350", "035", "35-1", "35;350", "35,35", "", None])
@@ -187,7 +198,7 @@ def test_paging_limits_and_incomplete_metadata_are_not_silently_accepted(env, pa
 def test_empty_search_is_a_valid_empty_result(env):
     env["ids"] = []
     assert lookup(env)["anuncios"] == []
-    assert len(env["calls"]) == 1
+    assert len(env["calls"]) == 2
 
 
 def test_ad_removed_after_search_is_not_invented(env):

@@ -562,6 +562,13 @@ def _localizar_linha_sku(worksheet: Any, sku: str) -> int:
     raise HTTPException(status_code=404, detail=f"SKU {sku} nao encontrado na coluna A da planilha.")
 
 
+def id_planilha_favoritos_loja(client_id: str, loja: str) -> str:
+    payload = favoritos_service._favoritos_carregar_planilhas_lojas(client_id)
+    chave = favoritos_service._chave_loja_favoritos(loja)
+    planilha = (payload.get("planilhas") or {}).get(chave) or {}
+    return _spreadsheet_id(planilha.get("url"))
+
+
 def favoritos_colar_historico_planilha(client_id: str, loja: Any, historico: Any) -> dict[str, Any]:
     nome_loja = _texto(loja)
     if _loja_bloqueada(nome_loja):
@@ -571,11 +578,7 @@ def favoritos_colar_historico_planilha(client_id: str, loja: Any, historico: Any
     if not sku:
         raise HTTPException(status_code=400, detail="Historico sem SKU.")
 
-    payload_planilhas = favoritos_service._favoritos_carregar_planilhas_lojas(client_id)
-    chave_loja = favoritos_service._chave_loja_favoritos(nome_loja)
-    planilha = (payload_planilhas.get("planilhas") or {}).get(chave_loja) or {}
-    url_planilha = planilha.get("url") or ""
-    planilha_id = _spreadsheet_id(url_planilha)
+    planilha_id = id_planilha_favoritos_loja(client_id, nome_loja)
     if not planilha_id:
         raise HTTPException(status_code=404, detail=f"Nenhuma planilha cadastrada para a loja {nome_loja}.")
 

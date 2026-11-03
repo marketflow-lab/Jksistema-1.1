@@ -13,7 +13,8 @@ from backend.services import medias_compras_listas as listas
 
 
 BASE = "sheet-base"
-ADICIONAL = "1QTJ0i-Y1nYGdu3yRdRuJ7PpAn0KfuGaE8AYozuI6mEY"
+ADICIONAL = "sheet-jk-favoritos"
+OUTRA = "sheet-outra-favoritos"
 HEADER = ["SKU", "Nome"] + [""] * 20
 
 
@@ -66,7 +67,8 @@ def fontes(monkeypatch):
         },
         planilhas={
             BASE: [HEADER, _linha("001", 100)],
-            ADICIONAL: [HEADER, _linha("167", 200), _linha("002", 300)],
+            ADICIONAL: [HEADER, _linha("167", 200), _linha("002", 300), _linha("001", 400)],
+            OUTRA: [HEADER, _linha("167", 500)],
         },
         leituras=[],
         resolucoes=[],
@@ -86,6 +88,13 @@ def fontes(monkeypatch):
 
     monkeypatch.setattr(listas, "SPREADSHEET_ID_CONCORRENTES", BASE, raising=False)
     monkeypatch.setattr(listas, "_carregar_linhas_planilha_concorrentes", carregar_planilha)
+    from backend.services import favoritos
+
+    monkeypatch.setattr(favoritos, "_favoritos_carregar_planilhas_lojas", lambda client_id: {"planilhas": {
+        favoritos._chave_loja_favoritos("JK Peças"): {"url": f"https://docs.google.com/spreadsheets/d/{ADICIONAL}/edit"},
+    } if client_id == "tenant-a" else {
+        favoritos._chave_loja_favoritos("Outra Loja"): {"url": f"https://docs.google.com/spreadsheets/d/{OUTRA}/edit"},
+    }})
     monkeypatch.setattr(
         listas, "_carregar_listas_pedidos",
         lambda client_id: copy.deepcopy(estado.listas.get(client_id, [])),
@@ -129,31 +138,44 @@ def test_sku_sem_lista_nao_consulta_fonte_exclusiva_jk(fontes):
     assert fontes.leituras == [BASE]
 
 
-def test_sku_jk_usa_fonte_adicional_com_cinco_pares(fontes):
+def test_sku_usa_planilha_de_favoritos_com_cinco_pares(fontes):
     payload = _sku()
     _comparar_pares(payload, fontes.planilhas[ADICIONAL][1])
-    assert payload["fontes_versao"] == 2
-    assert fontes.leituras == [BASE, ADICIONAL]
+    assert payload["fontes_versao"] >= 3
+    assert fontes.leituras == [ADICIONAL]
     assert fontes.resolucoes == ["tenant-a"]
 
 
-def test_lote_jk_le_cada_fonte_uma_vez_e_mantem_pares(fontes):
+def test_lote_le_planilha_da_loja_uma_vez_e_mantem_pares(fontes):
     payload = _lote()
     assert payload["total"] == 3
     assert set(payload["resultados"]) == {"001", "167", "002"}
     for sku, row in (
-        ("001", fontes.planilhas[BASE][1]),
+        ("001", fontes.planilhas[ADICIONAL][3]),
         ("167", fontes.planilhas[ADICIONAL][1]),
         ("002", fontes.planilhas[ADICIONAL][2]),
     ):
         _comparar_pares(payload["resultados"][sku], row)
-        assert payload["resultados"][sku]["fontes_versao"] == 2
-    assert fontes.leituras == [BASE, ADICIONAL]
+        assert payload["resultados"][sku]["fontes_versao"] >= 3
+    assert fontes.leituras == [ADICIONAL]
+
+
+def test_trocar_planilha_da_loja_invalida_versao_das_margens(fontes, monkeypatch):
+    from backend.services import favoritos
+
+    original = _sku()
+    monkeypatch.setattr(favoritos, "_favoritos_carregar_planilhas_lojas", lambda _tenant: {
+        "planilhas": {favoritos._chave_loja_favoritos("JK Peças"): {"url": f"https://docs.google.com/spreadsheets/d/{OUTRA}/edit"}},
+    })
+    atualizado = _sku()
+    _comparar_pares(atualizado, fontes.planilhas[OUTRA][1])
+    assert atualizado["fontes_versao"] != original["fontes_versao"]
+    assert fontes.leituras == [ADICIONAL, OUTRA]
 
 
 @pytest.mark.parametrize("consulta", ["sku", "lote"])
-def test_duplicata_preserva_linha_inteira_da_fonte_base(fontes, consulta):
-    base = fontes.planilhas[BASE][1]
+def test_duplicata_preserva_primeira_linha_inteira(fontes, consulta):
+    base = fontes.planilhas[ADICIONAL][3]
     base[5] = ""
     base[10:14] = ["", "", "", ""]
     fontes.planilhas[ADICIONAL].append(_linha("001", 900))
@@ -161,16 +183,16 @@ def test_duplicata_preserva_linha_inteira_da_fonte_base(fontes, consulta):
     _comparar_pares(payload, base)
     assert payload["concorrentes_valores"]["concorrente_1"] == ""
     assert payload["concorrentes_mlb"]["concorrente_3"] == ""
-    assert fontes.leituras == [BASE, ADICIONAL]
+    assert fontes.leituras == [ADICIONAL]
 
 
 def test_zeros_iniciais_distinguem_skus_na_mesma_lista(fontes):
     # O contrato legado converte "1" em "001"; "01" e "001" seguem distintos.
     fontes.listas["tenant-a"][0]["itens"].append({"SKU": "01"})
-    linha_dois_digitos = _linha("01", 400)
+    linha_dois_digitos = _linha("01", 401)
     fontes.planilhas[ADICIONAL].append(linha_dois_digitos)
     payload = _lote()["resultados"]
-    _comparar_pares(payload["001"], fontes.planilhas[BASE][1])
+    _comparar_pares(payload["001"], fontes.planilhas[ADICIONAL][3])
     _comparar_pares(payload["01"], linha_dois_digitos)
     assert payload["001"]["concorrentes_mlb"] != payload["01"]["concorrentes_mlb"]
 
@@ -182,7 +204,7 @@ def test_vinculo_do_sku_aceita_equivalente_legado_de_um_digito(fontes):
     assert fontes.listas["tenant-a"][0]["itens"][0]["SKU"] == "001"
     payload = _sku("1")
     assert payload["sku"] == "1"
-    assert payload["fontes_versao"] == 2
+    assert payload["fontes_versao"] >= 3
     _comparar_pares(payload, linha_legada)
 
 
@@ -198,9 +220,9 @@ def test_mesmo_id_lista_em_outro_tenant_nao_ativa_fonte_jk(fontes, consulta):
         _sku(tenant="tenant-b") if consulta == "sku"
         else _lote(tenant="tenant-b")["resultados"]["167"]
     )
-    assert payload["fontes_versao"] == 1
-    assert all(value == "" for value in payload["concorrentes_mlb"].values())
-    assert fontes.leituras == [BASE]
+    assert payload["fontes_versao"] >= 3
+    _comparar_pares(payload, fontes.planilhas[OUTRA][1])
+    assert fontes.leituras == [OUTRA]
     assert fontes.resolucoes == ["tenant-b"]
 
 
@@ -233,8 +255,8 @@ def test_sku_ausente_da_lista_falha_antes_de_consultar_fontes(fontes):
 def test_store_id_prevalece_sobre_nome_salvo(fontes, store_id, nome_salvo, versao):
     fontes.listas["tenant-a"][0].update(store_id=store_id, loja=nome_salvo)
     payload = _sku()
-    assert payload["fontes_versao"] == versao
-    assert fontes.leituras == ([BASE, ADICIONAL] if versao == 2 else [BASE])
+    assert payload["fontes_versao"] >= 3
+    assert fontes.leituras == ([ADICIONAL] if versao == 2 else [])
     if versao == 2:
         _comparar_pares(payload, fontes.planilhas[ADICIONAL][1])
     else:
@@ -244,7 +266,7 @@ def test_store_id_prevalece_sobre_nome_salvo(fontes, store_id, nome_salvo, versa
 def test_nome_legado_unico_resolve_identidade_canonica_jk(fontes):
     fontes.listas["tenant-a"][0].update(store_id="", loja="jk pecas")
     payload = _sku()
-    assert payload["fontes_versao"] == 2
+    assert payload["fontes_versao"] >= 3
     _comparar_pares(payload, fontes.planilhas[ADICIONAL][1])
 
 
@@ -252,8 +274,8 @@ def test_nome_parecido_nao_ativa_fonte_jk(fontes):
     fontes.lojas["tenant-a"][0]["nome"] = "JK Peças Outlet"
     fontes.listas["tenant-a"][0]["loja"] = "JK Peças Outlet"
     payload = _sku()
-    assert payload["fontes_versao"] == 1
-    assert fontes.leituras == [BASE]
+    assert payload["fontes_versao"] >= 3
+    assert fontes.leituras == []
 
 
 @pytest.mark.parametrize("consulta", ["sku", "lote"])
@@ -315,13 +337,14 @@ def test_detalhe_informa_fonte_canonica_sem_ler_planilha(
         assert fontes.resolucoes == []
         assert contexto_consultado == []
     else:
-        assert payload["lista"]["analise_concorrentes_fontes_versao"] == versao
+        fonte = payload["lista"]["analise_concorrentes_fontes_versao"]
+        assert (fonte == 0) if versao == 0 else (fonte >= 3)
         assert fontes.resolucoes == ["tenant-a"]
         assert contexto_consultado == [("tenant-a", store_id)]
 
 
 @pytest.mark.parametrize("consulta", ["sku", "lote"])
-@pytest.mark.parametrize("fonte", [BASE, ADICIONAL])
+@pytest.mark.parametrize("fonte", [ADICIONAL])
 @pytest.mark.parametrize("falha,codigo", [
     (HTTPException(status_code=503, detail="Fonte temporariamente indisponível"), 503),
     (RuntimeError("Falha simulada de leitura"), 500),

@@ -183,13 +183,13 @@ def _exigir_resposta(response):
     _erro(503, "sku_ads_unavailable", "Não foi possível consultar os anúncios desta loja no Mercado Livre.")
 
 
-def _buscar_ids(client_id: str, scope: dict, sku: str) -> list[str]:
+def _buscar_ids(client_id: str, scope: dict, sku: str, status: str) -> list[str]:
     ids: list[str] = []
     total = None
     offset = 0
     for _page in range(LIMITE_PAGINAS):
         response = _get(client_id, scope, "users/" + scope["seller_id"] + "/items/search",
-                        params={"seller_sku": sku, "status": "active", "offset": offset, "limit": TAMANHO_PAGINA})
+                        params={"seller_sku": sku, "status": status, "offset": offset, "limit": TAMANHO_PAGINA})
         _exigir_resposta(response)
         body = _json(response)
         paging = body.get("paging") if isinstance(body, dict) else None
@@ -245,26 +245,33 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
         _erro(409, "sku_ads_identity_unconfirmed", "Confirme a identidade e o site da conta desta lista.")
     try:
         with read_budget(TEMPO_TOTAL_SEGUNDOS):
-            candidates = _buscar_ids(client_id, scope, target)
             ads = []
-            for item_id in candidates:
-                response = _get(client_id, scope, "items/" + item_id, params={"include_attributes": "all"})
-                if getattr(response, "status_code", None) == 404:
-                    continue
-                _exigir_resposta(response)
-                item = _json(response)
-                if (not isinstance(item, dict) or item.get("id") != item_id or item.get("site_id") != "MLB"
-                        or str(item.get("seller_id") or "") != scope["seller_id"]):
-                    _erro(409, "sku_ads_item_identity_mismatch", "O Mercado Livre não confirmou o anúncio desta conta e site.")
-                if item.get("status") != "active" or not anuncio_corresponde_sku_exato(item, target):
-                    continue
-                price = _preco(item)
-                url = _url(item, item_id)
-                if price is None or url is None:
-                    continue
-                ads.append({"item_id": item_id, "preco": price, "url": url,
-                            "seller_id": scope["seller_id"], "site_id": "MLB", "sku": target})
+            total_candidatos = 0
+            for status in ("active", "paused"):
+                candidates = _buscar_ids(client_id, scope, target, status)
+                total_candidatos += len(candidates)
+                for item_id in candidates:
+                    response = _get(client_id, scope, "items/" + item_id, params={"include_attributes": "all"})
+                    if getattr(response, "status_code", None) == 404:
+                        continue
+                    _exigir_resposta(response)
+                    item = _json(response)
+                    if (not isinstance(item, dict) or item.get("id") != item_id or item.get("site_id") != "MLB"
+                            or str(item.get("seller_id") or "") != scope["seller_id"]):
+                        _erro(409, "sku_ads_item_identity_mismatch", "O Mercado Livre não confirmou o anúncio desta conta e site.")
+                    if item.get("status") != status or not anuncio_corresponde_sku_exato(item, target):
+                        continue
+                    price = _preco(item)
+                    url = _url(item, item_id)
+                    if price is None or url is None:
+                        continue
+                    ads.append({"item_id": item_id, "preco": price, "url": url, "status": status,
+                                "seller_id": scope["seller_id"], "site_id": "MLB", "sku": target})
+                if ads:
+                    break
             for ad in ads[:LIMITE_ANUNCIOS]:
+                if ad["status"] == "paused":
+                    continue  # Preço cadastrado para simulação, sem oferta vigente.
                 response = _get(client_id, scope, f"items/{ad['item_id']}/sale_price",
                                 params={"context": "channel_marketplace"})
                 _exigir_resposta(response)
@@ -275,7 +282,7 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
                 ad["preco"] = _preco({"price": sale.get("amount"), "currency_id": sale.get("currency_id")})
             _cfg_atual(client_id, scope)  # Recheck authorization after the last network response.
             return {"store_id": store_id, "loja": scope["loja"], "anuncios": ads[:LIMITE_ANUNCIOS],
-                    "total_encontrado": len(ads), "total_candidatos": len(candidates),
+                    "total_encontrado": len(ads), "total_candidatos": total_candidatos,
                     "limite": LIMITE_ANUNCIOS, "truncado": len(ads) > LIMITE_ANUNCIOS}
     except requests.Timeout:
         _erro(504, "sku_ads_timeout", "Tempo limite ao consultar os anúncios próprios deste SKU.")

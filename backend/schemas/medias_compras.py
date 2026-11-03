@@ -99,7 +99,7 @@ class ListaPedidoSkuAprovacaoRequest(BaseModel):
 
 
 class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
-    fontes_versao: Literal[1, 2] | None = None
+    fontes_versao: int | None = Field(default=None, strict=True, ge=1, le=2**48 + 2)
     fonte_custo: Literal["cadastro_sku_loja", "simulacao_importacao_sku"] = "cadastro_sku_loja"
     custo_unitario: float | None = None
     precos_concorrentes: dict[str, float] = Field(default_factory=dict)

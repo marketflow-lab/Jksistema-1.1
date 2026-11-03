@@ -5,6 +5,7 @@ from __future__ import annotations
 from backend.services.medias_compras_leitura import consulta_medias, fotos_da_consulta, leitura_medias, medir_etapa
 
 import copy
+from hashlib import sha256
 import io
 import json
 import math
@@ -527,7 +528,9 @@ def _calcular_margens_concorrentes_promocoes(
 
         frete_fonte = str(frete_dados.get("shipping_cost_retry_source") or frete_dados.get("shipping_cost_source_path") or "")
         subsidio = None
-        if anuncios_proprios and tarifa_dados.get("ad_cost_source") == "sites/MLB/listing_prices":
+        if anuncios_proprios and item.get("status") == "paused":
+            subsidio = 0.0
+        elif anuncios_proprios and tarifa_dados.get("ad_cost_source") == "sites/MLB/listing_prices":
             subsidio = _consultar_subsidio_promocao_ativa(
                 deps, client_id, contexto, cfg, item_id, preco_venda, tarifa_ml, frete_ml, frete_fonte,
             )
@@ -781,9 +784,11 @@ def _api_medias_compras_concorrentes_links_sync(
             anuncios = buscar_anuncios_sku_da_lista(client_id, lista, sku_in)
             payload["concorrentes_mlb"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
             payload["concorrentes_preco"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
+            payload["anuncios_loja_status"] = {}
             for numero, anuncio in enumerate((anuncios.get("anuncios") or [])[:5], start=1):
                 chave = f"concorrente_{numero}"
                 payload["concorrentes_mlb"][chave] = anuncio["url"]
+                payload["anuncios_loja_status"][chave] = anuncio.get("status")
                 payload["concorrentes_preco"][chave] = anuncio.get("preco") if anuncio.get("preco") is not None else ""
             payload.update({
                 "anuncios_loja_store_id": anuncios["store_id"],
@@ -818,33 +823,24 @@ def _carregar_linhas_planilha_concorrentes(spreadsheet_id: str | None = None) ->
     return list(ws.get_all_values() or [])
 
 
-SPREADSHEET_ID_CONCORRENTES_JK_PECAS = "1QTJ0i-Y1nYGdu3yRdRuJ7PpAn0KfuGaE8AYozuI6mEY"
+def _fonte_concorrentes_lista(client_id: str, lista: dict) -> tuple[str, int]:
+    from backend.services.favoritos_planilhas_colar import id_planilha_favoritos_loja
 
-
-def _versao_fontes_concorrentes_lista(client_id: str, lista: dict | None) -> int:
-    incluir_jk = False
-    if lista is not None:
-        escopo = medias_common._resolver_escopo_loja_medias(
-            client_id, lista.get("loja"), lista.get("store_id"),
-        )
-        nome = unicodedata.normalize("NFKD", escopo["loja"])
-        nome = "".join(ch for ch in nome if not unicodedata.combining(ch))
-        incluir_jk = re.sub(r"[^a-z0-9]+", " ", nome.casefold()).strip() == "jk pecas"
-    return 2 if incluir_jk else 1
+    escopo = medias_common._resolver_escopo_loja_medias(client_id, lista.get("loja"), lista.get("store_id"))
+    store_id = escopo["store_id"]
+    planilha = id_planilha_favoritos_loja(client_id, escopo["loja"]) if store_id else ""
+    # Versões 1 e 2 pertencem às antigas fontes fixas. A troca de link invalida a análise salva.
+    identidade = json.dumps([client_id, store_id, planilha])
+    versao = 3 + int(sha256(identidade.encode()).hexdigest()[:12], 16)
+    return planilha, versao
 
 
 def _indice_concorrentes_lista(client_id: str, lista: dict | None) -> tuple[dict[str, list[str]], int]:
-    fontes_versao = _versao_fontes_concorrentes_lista(client_id, lista)
-    indice = _indexar_linhas_planilha_concorrentes(_carregar_linhas_planilha_concorrentes())
-    if fontes_versao == 2:
-        adicionais = _indexar_linhas_planilha_concorrentes(
-            _carregar_linhas_planilha_concorrentes(SPREADSHEET_ID_CONCORRENTES_JK_PECAS),
-        )
-        # Cada linha conserva os cinco pares de anuncio/preco da mesma fonte.
-        # A fonte atual continua prioritaria se um SKU surgir nas duas planilhas.
-        for sku, linha in adicionais.items():
-            indice.setdefault(sku, linha)
-    return indice, fontes_versao
+    if lista is None:
+        return _indexar_linhas_planilha_concorrentes(_carregar_linhas_planilha_concorrentes()), 1
+    planilha, versao = _fonte_concorrentes_lista(client_id, lista)
+    linhas = _carregar_linhas_planilha_concorrentes(planilha) if planilha else []
+    return _indexar_linhas_planilha_concorrentes(linhas), versao
 
 
 def _indexar_linhas_planilha_concorrentes(rows: list[list[str]]) -> dict[str, list[str]]:
@@ -1195,7 +1191,7 @@ def _api_medias_compras_lista_pedido_detalhe_sync(
     # Apenas o detalhe completo resolve a loja; restaurar uma copia salva
     # continua sem consultas complementares. Nenhuma planilha e lida aqui.
     try:
-        resumo["analise_concorrentes_fontes_versao"] = _versao_fontes_concorrentes_lista(client_id, alvo)
+        resumo["analise_concorrentes_fontes_versao"] = _fonte_concorrentes_lista(client_id, alvo)[1]
     except (HTTPException, RuntimeError):
         resumo["analise_concorrentes_fontes_versao"] = 0
     return {

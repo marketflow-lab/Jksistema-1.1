@@ -956,6 +956,7 @@
         let ultimoValorUnitarioProduto = null;
         let ultimaAnaliseConcorrentes = null;
         let ultimosAnunciosLojaConcorrentes = {};
+        let ultimoAnuncioPausadoReferencia = '';
         let ultimaVersaoFontesConcorrentes = null;
         let cacheImpostosProdutos = null;
         let ultimosPrecosOfertas = {};
@@ -1827,7 +1828,8 @@
             const margens = ultimaAnaliseConcorrentes && (propria
                 ? ultimaAnaliseConcorrentes.margens_anuncios_loja : ultimaAnaliseConcorrentes.margens);
             const dados = margens && margens['concorrente_' + numero];
-            const itemIdAtual = extrairCodigoMlbOferta(ultimosAnunciosLojaConcorrentes['concorrente_' + numero]);
+            const itemIdAtual = ultimosAnunciosLojaConcorrentes['concorrente_' + numero]
+                || (propria ? '' : ultimoAnuncioPausadoReferencia);
             const itemIdAnalisado = extrairCodigoMlbOferta(dados && dados.item_id_loja);
             const contaCorreta = !!contextoDetalheSku?.storeId
                 && String(dados?.store_id || '') === contextoDetalheSku.storeId;
@@ -1894,12 +1896,17 @@
         function coletarAnaliseConcorrentes() {
             const precosConcorrentes = {};
             const precosAnunciosLoja = {};
+            const anunciosLoja = { ...ultimosAnunciosLojaConcorrentes };
 
             [1, 2, 3, 4, 5].forEach((numero) => {
                 const cardValor = document.getElementById('vConcorrente' + numero);
                 const precoVenda = getNumber(cardValor && cardValor.textContent);
                 if (precoVenda !== null && precoVenda > 0) {
                     precosConcorrentes['concorrente_' + numero] = precoVenda;
+                    const chave = 'concorrente_' + numero;
+                    if (!anunciosLoja[chave] && ultimoAnuncioPausadoReferencia) {
+                        anunciosLoja[chave] = ultimoAnuncioPausadoReferencia;
+                    }
                 }
                 const precoProprio = getNumber(document.getElementById('vMlb' + numero)?.textContent);
                 if (precoProprio !== null && precoProprio > 0) {
@@ -1912,7 +1919,7 @@
                 custo_unitario: ultimoValorUnitarioProduto,
                 precos_concorrentes: precosConcorrentes,
                 precos_anuncios_loja: precosAnunciosLoja,
-                anuncios_loja: { ...ultimosAnunciosLojaConcorrentes },
+                anuncios_loja: anunciosLoja,
                 fontes_versao: ultimaVersaoFontesConcorrentes,
             };
         }
@@ -2329,7 +2336,7 @@
                 const itemMlb = extrairCodigoMlbOferta(linkMlb);
                 const itemConcorrente = extrairCodigoMlbOferta(linkConcorrente);
 
-                if (itemMlb) {
+                if (itemMlb && comparacoes.statusAnuncios?.[chave] !== 'paused') {
                     tarefas.push(async () => {
                         if (!vigente()) return;
                         const detalhe = await buscarDetalhePrecoOferta(itemMlb, linkMlb, precoMlb);
@@ -3080,6 +3087,7 @@
                     lojaNome: String(data.anuncios_loja_nome || ''),
                     fonte: data.anuncios_loja_fonte || '',
                     fontes_versao: data.fontes_versao || null,
+                    statusAnuncios: data.anuncios_loja_status || {},
                     links: {
                         concorrente_1: String(c.concorrente_1 || '').trim(),
                         concorrente_2: String(c.concorrente_2 || '').trim(),
@@ -3129,6 +3137,7 @@
 
         function limparOfertasSku(contexto) {
             ultimosAnunciosLojaConcorrentes = {};
+            ultimoAnuncioPausadoReferencia = '';
             ultimosPrecosOfertas = {};
             ultimaVersaoFontesConcorrentes = null;
             ultimaAnaliseConcorrentes = null;
@@ -3144,14 +3153,19 @@
             if (!fontesAnunciosDaLista(linksConc)) return false;
             ultimaVersaoFontesConcorrentes = linksConc.fontes_versao || null;
             ultimosAnunciosLojaConcorrentes = {};
+            ultimoAnuncioPausadoReferencia = '';
             [1, 2, 3, 4, 5].forEach(function(n) {
                 const chave = 'concorrente_' + n;
                 const linkMlb = linksConc.mlb[chave] || '';
                 const linkConcorrente = linksConc.links[chave] || '';
                 const codigoMlb = extrairCodigoMlbOferta(linkMlb);
                 const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
-                if (codigoMlb) ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
-                setLinkConcorrente('lblMlb' + n, codigoMlb || 'Anúncio da loja', linkMlb);
+                const pausado = linksConc.statusAnuncios?.[chave] === 'paused';
+                if (codigoMlb) {
+                    ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
+                    if (pausado && !ultimoAnuncioPausadoReferencia) ultimoAnuncioPausadoReferencia = codigoMlb;
+                }
+                setLinkConcorrente('lblMlb' + n, pausado && codigoMlb ? codigoMlb + ' · Pausado' : (codigoMlb || 'Anúncio da loja'), linkMlb);
                 setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
                 aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
                 aplicarDetalhePrecoOferta('concorrente', n, normalizarDetalhePrecoOferta(linksConc.valores[chave], {}));
