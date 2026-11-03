@@ -244,7 +244,7 @@ async function visibleSaved(env, quantity = '2') {
         && document.getElementById('vQtd').textContent === expected, quantity);
 }
 
-async function seed(env, full = false, snapshotVersion = 2) {
+async function seed(env, full = false, snapshotVersion = 3) {
     await env.page.goto(origin + '/seed.html');
     await env.page.evaluate(async ({ data, full, key, snapshotVersion }) => {
         const options = { tags: ['importacoes', 'vendas'] };
@@ -299,7 +299,7 @@ async function run(browser, name, options, check) {
             assert.strictEqual(env.state.patches[0].payload.custo_unitario, await env.page.evaluate(() => ultimoValorUnitarioProduto),
                 'O pedido usa o custo arredondado exibido no painel.');
             const salvo = await env.page.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
-            assert.strictEqual(salvo.versao, 2);
+            assert.strictEqual(salvo.versao, 3);
             assert.strictEqual(salvo.lista.itens[0].analise_simulacao_importacao_sku.custo_unitario,
                 env.state.patches[0].payload.custo_unitario,
                 'Snapshot financeiro completo não aguarda o IPC de promoções.');

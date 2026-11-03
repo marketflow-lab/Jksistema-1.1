@@ -540,7 +540,6 @@
         }
 
         .kv.title {
-            grid-column: 1 / -1;
             background: linear-gradient(180deg, #1c2f4e, #152640);
         }
 
@@ -827,6 +826,7 @@
                 <h2>Produto</h2>
                 <div class="hero-grid">
                     <div class="foto-col">
+                        <div class="kv title" data-card-id="kv_titulo_pt"><div class="label">Título em português</div><div id="vTituloPt" class="value">-</div></div>
                         <div id="fotoBox" class="foto-box"><div class="sem-foto">Sem foto</div></div>
                         <div id="ncmDescCard" class="ncm-desc-card">
                             <div class="label">Descrição do NCM</div>
@@ -839,7 +839,6 @@
                     <div class="kv-grid">
                         <div class="kv sku" data-card-id="kv_sku"><div class="label">SKU</div><div id="vSku" class="value">-</div></div>
                         <div class="kv prop" data-card-id="kv_prop"><div class="label">Proporção</div><div id="vProp" class="value">-</div></div>
-                        <div class="kv title" data-card-id="kv_titulo_pt"><div class="label">Título em português</div><div id="vTituloPt" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_dolar"><div class="label">Valor em dólar</div><div id="vDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_dolar"><div class="label">Total em Dólar</div><div id="vValorTotalDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_reais"><div class="label">Valor total em reais</div><div id="vValorTotalBrl" class="value">-</div></div>
@@ -3174,7 +3173,7 @@
                 || lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
             const item = lista.itens.find(row => normSku(row?.SKU) === contexto.sku);
             if (!item) return false;
-            completo = completo && [1, 2].includes(dados.versao) && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
+            completo = completo && [1, 2, 3].includes(dados.versao) && Array.isArray(dados.impostos) && Array.isArray(dados.mapaM3);
             completo = completo && dados.impostos.every(entrada => Array.isArray(entrada) && entrada.length === 2)
                 && dados.mapaM3.every(entrada => Array.isArray(entrada) && entrada.length === 2);
             if (!dadosSkuVigentes(contexto)) return false;
@@ -3193,7 +3192,7 @@
                 new Map(completo ? dados.mapaM3 : []), { somenteDadosLista: !completo });
             if (!detalheSkuVigente(contexto)) return false;
             configurarAprovacaoCompra(lista, item);
-            if (completo && dados.versao === 2 && dados.anunciosDaLista && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
+            if (completo && dados.versao === 3 && dados.anunciosDaLista && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
                 aplicarLinksCacheSku(dados.concorrentes);
                 Object.entries(dados.precosOfertas || {}).forEach(([chave, detalhe]) => {
                     const [tipo, numero] = chave.split(':');
@@ -3208,7 +3207,7 @@
         async function salvarSnapshotSku(contexto, lista, cadastro, mapaM3, concorrentes) {
             if (!dadosSkuVigentes(contexto) || contexto.podeSalvar === false || !contexto.persistencia || !window.JKCachePersistente) return;
             const { contextoCarregamento, ...fontes } = concorrentes;
-            const dados = { versao: 2, anunciosDaLista: true, lista, cadastro, mapaM3: Array.from(mapaM3.entries()),
+            const dados = { versao: 3, anunciosDaLista: true, lista, cadastro, mapaM3: Array.from(mapaM3.entries()),
                 impostos: Array.from((cacheImpostosProdutos || new Map()).entries()), concorrentes: fontes,
                 precosOfertas: ultimosPrecosOfertas, cotacao: cotacaoDolarHoje, custoPendente: custoComplementosPendente };
             const contextoAtual = contexto.persistencia;
@@ -3294,7 +3293,7 @@
             const listaSnapshot = JSON.parse(JSON.stringify(snapshot.lista));
             const itemSnapshot = listaSnapshot.itens.find(row => normSku(row.SKU) === contexto.sku);
             if (itemSnapshot && resposta?.analise_concorrentes) itemSnapshot.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
-            const copia = { ...snapshot, versao: 2, anunciosDaLista: true, lista: listaSnapshot, concorrentes: fontes, precosOfertas: { ...ultimosPrecosOfertas } };
+            const copia = { ...snapshot, versao: 3, anunciosDaLista: true, lista: listaSnapshot, concorrentes: fontes, precosOfertas: { ...ultimosPrecosOfertas } };
             await window.JKCachePersistente?.salvar(chaveSnapshotSku(contexto), copia,
                 { contexto: persistencia, tags: ['importacoes', 'vendas'] });
         }

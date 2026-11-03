@@ -224,7 +224,8 @@ def test_sem_fotos_obtem_descricao_da_loja_sem_resolver_nem_abrir_fotos(tenants,
 
 
 @pytest.mark.parametrize("consulta,esperado", [("", "com_fotos"), ("?modelo=com_fotos", "com_fotos"),
-                                               ("?modelo=sem_fotos", "sem_fotos")])
+                                               ("?modelo=sem_fotos", "sem_fotos"),
+                                               ("?modelo=antigo", "antigo")])
 def test_api_propaga_modelo_validado_e_tenant_da_sessao(monkeypatch, consulta, esperado):
     chamadas = []
 
@@ -254,7 +255,8 @@ def test_api_rejeita_modelo_invalido_antes_de_gerar_pdf(monkeypatch, modelo):
     assert resposta.status_code == 422
 
 
-def test_api_sem_fotos_exige_autenticacao_preserva_tenant_e_original(tenants, monkeypatch):
+@pytest.mark.parametrize("modelo", ["sem_fotos", "antigo"])
+def test_api_modelos_sem_fotos_exigem_autenticacao_preservam_tenant_e_original(tenants, monkeypatch, modelo):
     original = _xlsx({"grupos": [_grupo(skus=("SKU:001",))]})
     packing._importar_packing_list_sync("lista-1", original, "synthetic.xlsx", "cliente-a")
     arquivo = tenants / "cliente-a" / "listas_pedidos.json"
@@ -271,18 +273,25 @@ def test_api_sem_fotos_exige_autenticacao_preserva_tenant_e_original(tenants, mo
     app = FastAPI()
     app.include_router(create_medias_compras_router())
     with TestClient(app) as client:
-        assert client.get(ROTA, params={"modelo": "sem_fotos"}).status_code == 401
-        assert client.get(ROTA, params={"modelo": "sem_fotos", "client_id": "cliente-a"},
+        assert client.get(ROTA, params={"modelo": modelo}).status_code == 401
+        assert client.get(ROTA, params={"modelo": modelo, "client_id": "cliente-a"},
                           headers={"Authorization": "Bearer synthetic-b"}).status_code == 404
-        resposta = client.get(ROTA, params={"modelo": "sem_fotos", "client_id": "cliente-b"},
+        resposta = client.get(ROTA, params={"modelo": modelo, "client_id": "cliente-b"},
                               headers={"Authorization": "Bearer synthetic-a"})
     assert resposta.status_code == 200, resposta.text
     assert resposta.headers["content-type"] == "application/pdf"
     assert 'attachment;' in resposta.headers["content-disposition"]
     with fitz.open(stream=resposta.content, filetype="pdf") as documento:
         assert len(documento) == 1
-        _sem_fotos(documento[0])
-        assert "QUANTITY PER CARTON" in documento[0].get_text()
+        pagina = documento[0]
+        if modelo == "antigo":
+            assert "_Modelo_Antigo.pdf" in resposta.headers["content-disposition"]
+            assert pagina.rect.width > pagina.rect.height
+            assert not pagina.get_images()
+            assert {"INV. No.:", "1/1", "SKU 001"}.issubset(pagina.get_text().splitlines())
+        else:
+            _sem_fotos(pagina)
+            assert "QUANTITY PER CARTON" in pagina.get_text()
     assert arquivo.read_bytes() == antes
     assert _salvo(tenants) == lista_antes
     assert next((arquivo.parent / "packing_lists").glob("*.xlsx")).read_bytes() == original

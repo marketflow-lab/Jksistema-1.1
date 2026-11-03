@@ -331,6 +331,80 @@ def _grade_sem_fotos(pdf, itens, esquerda, direita, topo, base, inicio, total):
         sku.drawOn(pdf, x + 6, inicio_y + altura_qtd + 6)
 
 
+def _texto_antigo(pdf, texto, esquerda, direita, base, topo, *, fonte="Times-Bold",
+                  tamanho=12, minimo=8, entrelinhas=1.32):
+    if not texto:
+        return
+    bloco, altura = _paragrafo(
+        texto, direita - esquerda - 10, topo - base - 4, fonte=fonte, tamanho=tamanho,
+        minimo=minimo, cor=colors.black, entrelinhas=entrelinhas, centralizado=True,
+    )
+    bloco.drawOn(pdf, esquerda + 5, (topo + base - altura) / 2)
+
+
+def gerar_etiquetas_antigas_pdf(lista, caixas, *, cabecalho, importador, comprador, origem, data):
+    """Render the classic shipping mark, one A4 landscape sheet per carton."""
+    if not caixas or any(not caixa.get("skus") for caixa in caixas):
+        raise HTTPException(400, "Inclua produtos nos volumes para gerar etiquetas.")
+    if len(caixas) > MAX_FOLHAS:
+        raise HTTPException(400, "Limite máximo de 5.000 folhas de etiquetas por Packing List.")
+
+    largura_pagina, altura_pagina = landscape(A4)
+    # The original form is offset to the right and leaves a larger bottom margin.
+    esquerda, direita = 76, largura_pagina - 34
+    topo, fim_fornecedor, topo_faixa, fim_faixa, fim_caixa, base = (
+        altura_pagina - recuo for recuo in (25, 156, 176.5, 197, 263, 467)
+    )
+    divisor = 483
+    colunas_faixa = (esquerda, 167.5, 297, 334.5, divisor, 645.5, direita)
+    invoice = str(lista.get("numero_invoice") or lista.get("invoice") or "").strip()
+    campos_faixa = ("INV. No.:", invoice, "DATE:", data, "FROM:", str(origem or "").upper())
+
+    fornecedor = _campos(cabecalho)
+    nome_fornecedor = fornecedor[0] if fornecedor else ""
+    dados_fornecedor = {}
+    for campo in fornecedor[1:]:
+        rotulo, _, valor = campo.partition(":")
+        dados_fornecedor[rotulo.casefold()] = valor.strip()
+    contato_fornecedor = "\n".join(
+        f"{rotulo}: {dados_fornecedor[chave]}"
+        for chave, rotulo in (("registered company address", "Address"), ("contact name", "Contact"),
+                              ("company tel", "TEL"), ("e-mail", "Email"))
+        if dados_fornecedor.get(chave)
+    )
+    comprador = re.sub(r"^Buyer:", "Company Name:", comprador, flags=re.IGNORECASE)
+    output = io.BytesIO()
+    pdf = Canvas(output, pagesize=(largura_pagina, altura_pagina), pageCompression=1)
+    pdf.setTitle(f"Etiquetas externas {invoice} - Modelo antigo".strip())
+    pdf.setAuthor("JK Sistema")
+    for caixa in caixas:
+        pdf.setLineWidth(.9)
+        pdf.rect(esquerda, base, direita - esquerda, topo - base)
+        for y in (fim_fornecedor, topo_faixa, fim_faixa, fim_caixa):
+            pdf.line(esquerda, y, direita, y)
+        for x in colunas_faixa[1:-1]:
+            pdf.line(x, fim_faixa, x, topo_faixa)
+        pdf.line(divisor, base, divisor, fim_caixa)
+
+        _texto_antigo(pdf, nome_fornecedor, esquerda, direita, topo - 24, topo,
+                      fonte=NEGRITO, tamanho=16)
+        _texto_antigo(pdf, contato_fornecedor, esquerda + 108, direita - 108, fim_fornecedor,
+                      topo - 24, fonte=NEGRITO, tamanho=14, entrelinhas=1.44)
+        for indice, campo in enumerate(campos_faixa):
+            fonte = "Times-Bold" if indice in (1, 3) else "Times-Roman"
+            _texto_antigo(pdf, campo, colunas_faixa[indice], colunas_faixa[indice + 1],
+                          fim_faixa, topo_faixa, fonte=fonte, tamanho=11, entrelinhas=1.05)
+        _texto_antigo(pdf, f'{caixa["numero"]}/{len(caixas)}', esquerda, direita,
+                      fim_faixa - 44, fim_faixa - 19, tamanho=22, entrelinhas=1)
+        _texto_antigo(pdf, "SKU " + ", ".join(caixa["skus"]), esquerda, direita,
+                      fim_caixa, fim_faixa - 44, fonte="Times-Roman", tamanho=14, entrelinhas=1)
+        _texto_antigo(pdf, importador, esquerda, divisor, base, fim_caixa, tamanho=11)
+        _texto_antigo(pdf, comprador, divisor, direita, base, fim_caixa)
+        pdf.showPage()
+    pdf.save()
+    return output.getvalue()
+
+
 def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, origem, data, modelo="com_fotos"):
     """Render resolved carton contents, splitting each carton into 18-item sheets."""
     if modelo not in {"com_fotos", "sem_fotos"}:
@@ -425,4 +499,4 @@ def gerar_etiquetas_pdf(lista, caixas, *, cabecalho, importador, comprador, orig
     return output.getvalue()
 
 
-__all__ = ["gerar_etiquetas_pdf", "grade_etiquetas"]
+__all__ = ["gerar_etiquetas_antigas_pdf", "gerar_etiquetas_pdf", "grade_etiquetas"]

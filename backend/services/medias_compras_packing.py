@@ -868,16 +868,25 @@ def _caixas_etiquetas_packing(dados, *, incluir_itens=False):
 
 def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None, modelo="com_fotos"):
     from backend.services.fornecedor_origem import identificar_pais_fornecedor
-    from backend.services.medias_compras_etiquetas_pdf import gerar_etiquetas_pdf
+    from backend.services.medias_compras_etiquetas_pdf import gerar_etiquetas_antigas_pdf, gerar_etiquetas_pdf
 
-    if modelo not in {"com_fotos", "sem_fotos"}:
+    if modelo not in {"com_fotos", "sem_fotos", "antigo"}:
         raise HTTPException(400, "Modelo de etiquetas inválido.")
-    caixas = _caixas_etiquetas_packing(dados, incluir_itens=True)
-    opcoes_contexto = {"incluir_fotos": False} if modelo == "sem_fotos" else {}
+    caixas = _caixas_etiquetas_packing(dados, incluir_itens=modelo != "antigo")
+    opcoes_contexto = {"incluir_fotos": False} if modelo != "com_fotos" else {}
     contexto = _contexto_cadastro_documentos(
         lista, client_id, skus=[item["sku"] for grupo in dados["grupos"] for item in grupo["itens"]],
         **opcoes_contexto,
     )
+    fornecedor = excel._cadastro_fornecedor_commercial_invoice(lista, client_id)
+    cabecalho, _altura = excel._cabecalho_fornecedor_commercial_invoice(lista, client_id, cadastro=fornecedor)
+    importador, _altura = excel._bloco_nacionalizador_commercial_invoice(lista, client_id)
+    comprador = _texto_comprador_packing(lista, client_id, contexto_cadastro=contexto)
+    if modelo == "antigo":
+        return gerar_etiquetas_antigas_pdf(
+            lista, caixas, cabecalho=str(cabecalho), importador=importador, comprador=comprador,
+            origem=identificar_pais_fornecedor(fornecedor), data=_data_packing(lista),
+        )
     por_sku = {}
     for item in lista.get("itens") or []:
         if isinstance(item, dict):
@@ -913,10 +922,6 @@ def _gerar_etiquetas_packing_bytes(lista, dados, *, client_id=None, modelo="com_
                 item["descricao"] = common._primeiro_texto_item(
                     cadastro, [common.TITULO_PRODUTO_INGLES_KEY, "Título em inglês", "Description", "Descrição", "Descricao"],
                 )
-    fornecedor = excel._cadastro_fornecedor_commercial_invoice(lista, client_id)
-    cabecalho, _altura = excel._cabecalho_fornecedor_commercial_invoice(lista, client_id, cadastro=fornecedor)
-    importador, _altura = excel._bloco_nacionalizador_commercial_invoice(lista, client_id)
-    comprador = _texto_comprador_packing(lista, client_id, contexto_cadastro=contexto)
     return gerar_etiquetas_pdf(
         lista, caixas, cabecalho=str(cabecalho), importador=importador, comprador=comprador,
         origem=identificar_pais_fornecedor(fornecedor), data=_data_packing(lista),
@@ -929,14 +934,14 @@ def _baixar_etiquetas_packing_sync(lista_id, client_id, modelo="com_fotos"):
     output = _gerar_etiquetas_packing_bytes(lista, dados, client_id=client_id, modelo=modelo)
     nome = str(lista.get("numero_invoice") or lista.get("invoice") or lista.get("nome_lista") or lista_id).strip()
     nome = re.sub(r"[^A-Za-z0-9_-]+", "_", nome).strip("_") or "lista"
-    sufixo = "_Sem_Fotos" if modelo == "sem_fotos" else ""
+    sufixo = {"sem_fotos": "_Sem_Fotos", "antigo": "_Modelo_Antigo"}.get(modelo, "")
     return Response(content=output, media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="Etiquetas_Externas_{nome}{sufixo}.pdf"'})
 
 
 async def api_medias_compras_lista_pedido_etiquetas(
     lista_id: str, client_id: str = Depends(common.get_tenant_id),
-    modelo: Literal["com_fotos", "sem_fotos"] = "com_fotos",
+    modelo: Literal["com_fotos", "sem_fotos", "antigo"] = "com_fotos",
 ):
     from backend.services.blocking_workers import run_heavy
     return await run_heavy(_baixar_etiquetas_packing_sync, lista_id=lista_id, client_id=client_id, modelo=modelo)

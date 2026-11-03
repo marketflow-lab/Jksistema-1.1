@@ -698,6 +698,7 @@
         .etiquetas-modelo-dialog p { margin: 0 0 18px; color: #bed1e6; line-height: 1.5; }
         .etiquetas-modelo-opcoes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .etiquetas-modelo-dialog button { min-height: 42px; padding: 10px 12px; border: 1px solid #39739b; border-radius: 8px; background: #193650; color: #eef6ff; font: inherit; cursor: pointer; }
+        .etiquetas-modelo-opcoes [data-etiquetas-modelo="antigo"] { grid-column: 1 / -1; }
         .etiquetas-modelo-dialog [data-etiquetas-modelo="com_fotos"] { background: #197db0; }
         .etiquetas-modelo-acoes { display: flex; justify-content: flex-end; margin-top: 16px; }
         .etiquetas-modelo-dialog :focus-visible { outline: 2px solid #67caff; outline-offset: 3px; }
@@ -3078,7 +3079,8 @@
             dialogo.innerHTML = '<h2 id="etiquetasModeloTitulo">Etiquetas</h2>' +
                 '<p id="etiquetasModeloDescricao">Escolha o modelo do PDF.</p>' +
                 '<div class="etiquetas-modelo-opcoes"><button type="button" data-etiquetas-modelo="com_fotos">Com fotos</button>' +
-                '<button type="button" data-etiquetas-modelo="sem_fotos">Sem fotos (inglês)</button></div>' +
+                '<button type="button" data-etiquetas-modelo="sem_fotos">Sem fotos (inglês)</button>' +
+                '<button type="button" data-etiquetas-modelo="antigo">Modelo antigo</button></div>' +
                 '<div class="etiquetas-modelo-acoes"><button type="button" data-etiquetas-modelo-cancelar>Cancelar</button></div>';
             const fechar = modelo => {
                 if (!dialogoModeloEtiquetas || dialogoModeloEtiquetas.elemento !== dialogo) return;
@@ -3086,7 +3088,7 @@
                 dialogo.close();
                 dialogo.remove();
                 if (botaoOrigem && botaoOrigem.isConnected) botaoOrigem.focus();
-                if (modelo === 'com_fotos' || modelo === 'sem_fotos') {
+                if (modelo) {
                     baixarEtiquetasLista(todasListasCache.find(item => String(item.id) === listaId) || lista, botaoOrigem, modelo);
                 }
             };
@@ -3120,8 +3122,9 @@
                 const invoice = await persistirInvoiceLegadoSeNecessario(listaAtualizada, listaId) || obterInvoiceLista(listaAtualizada, listaId);
                 if (btn) btn.textContent = 'Gerando...';
                 setStatus('Gerando etiquetas da lista ' + String(listaAtualizada.nome_lista || '') + '...');
-                const semFotos = modelo === 'sem_fotos';
-                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/etiquetas' + (semFotos ? '?modelo=sem_fotos' : ''), {
+                const consultaModelo = modelo === 'com_fotos' ? '' : '?modelo=' + encodeURIComponent(modelo);
+                const sufixo = { sem_fotos: '_Sem_Fotos', antigo: '_Modelo_Antigo' }[modelo] || '';
+                const resposta = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId) + '/etiquetas' + consultaModelo, {
                     method: 'GET', headers: { ...obterAuthHeaders() }
                 });
                 if (resposta.status === 404) {
@@ -3140,7 +3143,7 @@
                 const objectUrl = URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = objectUrl;
-                link.download = nomeArquivoCommercialInvoice(resposta, 'Etiquetas_Externas_' + nomeSeguro + (semFotos ? '_Sem_Fotos' : '') + '.pdf');
+                link.download = nomeArquivoCommercialInvoice(resposta, 'Etiquetas_Externas_' + nomeSeguro + sufixo + '.pdf');
                 document.body.appendChild(link);
                 link.click();
                 link.remove();

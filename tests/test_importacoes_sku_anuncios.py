@@ -63,6 +63,11 @@ def env(monkeypatch):
             offset, limit = params["offset"], params["limit"]
             return Response({"results": state["ids"][offset:offset + limit],
                              "paging": {"total": len(state["ids"]), "offset": offset, "limit": limit}}), cfg
+        if path.endswith("/sale_price"):
+            assert params == {"context": "channel_marketplace"}
+            item_id = path.split("/")[-2]
+            item = state["items"].get(item_id, product(item_id, seller_id=state["seller"]))
+            return Response({"amount": item.get("price"), "currency_id": "BRL"}), cfg
         item_id = path.rsplit("/", 1)[-1]
         assert params == {"include_attributes": "all"}
         return Response(state["items"].get(item_id, product(item_id, seller_id=state["seller"]))), cfg
@@ -91,7 +96,7 @@ def test_selected_store_and_current_exact_sku_supply_own_ad(env):
     assert result["anuncios"] == [{"item_id": "MLB1000000001", "preco": 50,
         "url": product()["permalink"], "seller_id": "seller-a", "site_id": "MLB", "sku": "35"}]
     assert result["total_encontrado"] == 1 and result["truncado"] is False
-    assert len(env["cfg_calls"]) == 3
+    assert len(env["cfg_calls"]) == 4
 
 
 @pytest.mark.parametrize("sku", ["350", "035", "35-1", "35;350", "35,35", "", None])
@@ -235,3 +240,12 @@ def test_store_id_and_list_membership_are_required_before_api(env):
     error_code(lambda: lookup(env, store_id=""), 409, "sku_ads_store_required")
     error_code(lambda: lookup(env, itens=[{"SKU": "350"}]), 404, "sku_ads_sku_not_in_list")
     assert env["calls"] == []
+
+
+@pytest.mark.parametrize("amount,currency,expected", [(38.57, "BRL", 38.57), (None, "BRL", None), (38.57, "USD", None)])
+def test_current_sale_price_is_used_without_falling_back_to_item(env, amount, currency, expected):
+    env["request"] = lambda path, params, cfg: (
+        Response({"amount": amount, "regular_amount": 50, "currency_id": currency})
+        if path.endswith("/sale_price") else None
+    )
+    assert lookup(env)["anuncios"][0]["preco"] == expected

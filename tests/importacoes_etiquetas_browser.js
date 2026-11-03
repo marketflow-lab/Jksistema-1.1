@@ -105,8 +105,8 @@ async function routes(page) {
         assert(list, 'Etiquetas devem pertencer à lista sintética');
         assert.strictEqual(request.method(), 'GET');
         const modelo = url.searchParams.get('modelo') || 'com_fotos';
-        assert(['com_fotos', 'sem_fotos'].includes(modelo));
-        assert.strictEqual(url.search, modelo === 'sem_fotos' ? '?modelo=sem_fotos' : '', 'Modelo com fotos deve preservar a URL legada');
+        assert(['com_fotos', 'sem_fotos', 'antigo'].includes(modelo));
+        assert.strictEqual(url.search, modelo === 'com_fotos' ? '' : '?modelo=' + modelo, 'Modelo com fotos deve preservar a URL legada');
         state.downloads.push({ id, invoice: list.numero_invoice, date: list.order_date, modelo, search: url.search });
         if (state.downloadGate) await state.downloadGate;
         if (!packingReady[id]) return json(route, { detail: 'Packing List não incluído' }, 404);
@@ -230,6 +230,8 @@ async function routes(page) {
     assert.strictEqual(state.downloads.at(-1).modelo, 'sem_fotos');
     await download(page, 'fallback', 'Etiquetas_Externas_INV-FALLBACK_Sem_Fotos.pdf', null, 'sem_fotos');
     assert.strictEqual(state.downloads.at(-1).search, '?modelo=sem_fotos');
+    await download(page, 'fallback', 'Etiquetas_Externas_INV-FALLBACK_Modelo_Antigo.pdf', null, 'antigo');
+    assert.strictEqual(state.downloads.at(-1).search, '?modelo=antigo');
     console.log('Etiquetas: variante sem fotos por teclado, query explícita e nome fallback distinto: OK');
 
     const gate = deferred(); state.downloadGate = gate.promise;

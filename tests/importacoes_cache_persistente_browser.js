@@ -121,7 +121,7 @@ async function saved(page, key, predicate) {
         const custo = await sku.locator('#vCustoTotalProduto').textContent();
         assert.notStrictEqual(custo, '-');
         const snapshot = await sku.evaluate(async () => (await JKCachePersistente.ler('importacoes:SKU:A:001'))?.dados);
-        assert.strictEqual(snapshot.versao, 2);
+        assert.strictEqual(snapshot.versao, 3);
         assert.strictEqual(snapshot.anunciosDaLista, true);
         assert.strictEqual(snapshot.concorrentes.storeId, 'store-A');
         assert.strictEqual(snapshot.concorrentes.fonte, 'loja_lista_sku');

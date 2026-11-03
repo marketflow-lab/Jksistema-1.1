@@ -264,6 +264,15 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
                     continue
                 ads.append({"item_id": item_id, "preco": price, "url": url,
                             "seller_id": scope["seller_id"], "site_id": "MLB", "sku": target})
+            for ad in ads[:LIMITE_ANUNCIOS]:
+                response = _get(client_id, scope, f"items/{ad['item_id']}/sale_price",
+                                params={"context": "channel_marketplace"})
+                _exigir_resposta(response)
+                sale = _json(response)
+                if not isinstance(sale, dict):
+                    _erro(502, "sku_ads_invalid_response", "O Mercado Livre retornou um preço de venda inválido.")
+                # The item price is only a listing check. A missing sale price cannot quote a margin.
+                ad["preco"] = _preco({"price": sale.get("amount"), "currency_id": sale.get("currency_id")})
             _cfg_atual(client_id, scope)  # Recheck authorization after the last network response.
             return {"store_id": store_id, "loja": scope["loja"], "anuncios": ads[:LIMITE_ANUNCIOS],
                     "total_encontrado": len(ads), "total_candidatos": len(candidates),
