@@ -80,6 +80,9 @@ async function environment(browser, options = {}) {
     await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         const pathname = url.pathname;
+        if (pathname === '/medias_compras/importacoes-custo-simulado.js') return route.fulfill({
+            status: 200, contentType: 'application/javascript',
+            body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
         if (pathname === '/importacoes_sku.html') return route.fulfill({ status: 200, contentType: 'text/html',
             body: fs.readFileSync(path.join(root, 'static', 'importacoes_sku.html')) });
         if (pathname === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript',

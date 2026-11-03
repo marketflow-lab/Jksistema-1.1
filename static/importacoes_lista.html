@@ -9,6 +9,7 @@
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js"></script>
     <style>
         body {
             margin: 0;
@@ -141,6 +142,28 @@
             background: #15253f;
             padding: 4px 6px;
             min-height: 42px;
+        }
+        .resumo-card.card-proporcao {
+            grid-column: span 2;
+        }
+        .proporcao-controles {
+            display: flex;
+            gap: 4px;
+        }
+        .proporcao-controles input {
+            flex: 1;
+            width: 0;
+            min-width: 0;
+        }
+        .proporcao-controles button {
+            width: auto;
+            cursor: pointer;
+        }
+        .proporcao-status {
+            font-size: 0.72rem;
+        }
+        @media (max-width: 300px) {
+            .resumo-card.card-proporcao { grid-column: span 1; }
         }
         .resumo-card.editavel {
             cursor: text;
@@ -308,14 +331,6 @@
         .num-center {
             text-align: center;
             white-space: nowrap;
-        }
-        .cell-sub-money {
-            display: block;
-            margin-top: 2px;
-            font-size: 0.75rem;
-            font-weight: 700;
-            color: #c7ddf7;
-            line-height: 1.1;
         }
         .competitor-margins {
             display: grid;
@@ -1663,14 +1678,15 @@
         }
 
         function obterM3TotalItem(item) {
-            const qtd = valorNumerico(item && item.Quantidade);
+            const numero = window.JKImportacoesCustoSimulado?.numero || valorNumerico;
+            const qtd = numero(item?.Quantidade ?? item?.Qtd);
             if (qtd === 0) return 0;
-            if (qtd < 0 || !Number.isFinite(qtd)) return null;
+            if (qtd === null || qtd < 0) return null;
             const status = statusCubagemItem(item);
             if (status === 'pendente') return null;
             if (status === 'historico') {
                 const bruto = obterCampoNormalizado(item, ['M3', 'Estimated CBM', 'Estimed CBM'], '');
-                const total = String(bruto).trim() ? valorNumerico(bruto) : null;
+                const total = String(bruto).trim() ? numero(bruto) : null;
                 if (total !== null && total >= 0 && Number.isFinite(total)) return total;
             }
             const individual = obterM3IndividualDoItem(item);
@@ -1697,7 +1713,7 @@
             const ordem = ++requisicaoM3;
             const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
             const faltantes = ultimosItensCarregados.some(item => !statusCubagemItem(item)
-                && valorNumerico(item.Quantidade) > 0 && !(valorNumerico(obterCampoNormalizado(item, ['M3 individual'], 0)) > 0));
+                && valorNumerico(item.Quantidade ?? item.Qtd) > 0 && !(valorNumerico(obterCampoNormalizado(item, ['M3 individual'], 0)) > 0));
             if (!storeId || !faltantes || (mapaM3IndividualCarregado && mapaM3StoreId === storeId)) {
                 mapaM3IndividualCarregando = false;
                 atualizarM3Visivel(faltantes);
@@ -1758,6 +1774,7 @@
             const retry = document.getElementById('btnRecarregarM3');
             if (retry) retry.hidden = conhecido || mapaM3IndividualCarregando || !ultimosItensCarregados.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) || !String(ultimaListaCarregada.store_id || '').trim();
             if (atualizarResumo) renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+            else atualizarCustosUnitariosVisiveis();
         }
 
         function obterValorResumo(lista, itens, aliases, fallback = '-') {
@@ -2313,12 +2330,62 @@
             });
         }
 
+        const LS_PROPORCAO_SKU_KEY = 'importacoes_sku_proporcao_v1';
+
+        function lerProporcoesSku() {
+            return JSON.parse(localStorage.getItem(LS_PROPORCAO_SKU_KEY) || '{}') || {};
+        }
+
+        function configurarProporcaoLista(form, listaId, itens) {
+            if (!form) return;
+            const skus = [...new Set(itens.map(item => String(item?.SKU || '').trim().toUpperCase()).filter(Boolean))];
+            const campo = form.elements.percentual;
+            const status = form.querySelector('.proporcao-status');
+            const ativo = Boolean(listaId && skus.length);
+            campo.disabled = form.querySelector('button').disabled = !ativo;
+
+            if (!form.dataset.editado && document.activeElement !== campo) {
+                let mapa = {};
+                try { mapa = lerProporcoesSku()[listaId] || {}; } catch (_e) { /* sem valor legível */ }
+                const valores = new Set(skus.map(sku => {
+                    const valor = Number(String(mapa[sku] ?? '').replace(',', '.').replace('%', '').trim());
+                    return Number.isFinite(valor) && valor > 0 ? valor : 100;
+                }));
+                campo.value = valores.size === 1 ? [...valores][0] : '';
+                campo.placeholder = valores.size > 1 ? 'Variada' : '%';
+            }
+
+            campo.oninput = () => {
+                form.dataset.editado = '1';
+                status.textContent = '';
+            };
+            form.onsubmit = (evento) => {
+                evento.preventDefault();
+                const valor = campo.valueAsNumber;
+                if (!ativo || listaId !== getListaIdDaUrl() || !Number.isFinite(valor) || valor <= 0 || valor > 100) return;
+                try {
+                    const mapa = lerProporcoesSku();
+                    const porSku = Object.fromEntries(skus.map(sku => [sku, String(valor)]));
+                    localStorage.setItem(LS_PROPORCAO_SKU_KEY, JSON.stringify({
+                        ...mapa,
+                        [listaId]: { ...mapa[listaId], ...porSku },
+                    }));
+                    delete form.dataset.editado;
+                    atualizarCustosUnitariosVisiveis();
+                    status.textContent = `Aplicada a ${skus.length} ${skus.length === 1 ? 'SKU' : 'SKUs'}.`;
+                } catch (_e) {
+                    status.textContent = 'Não foi possível salvar a proporção.';
+                }
+            };
+        }
+
         function renderResumoTopo(lista, itens) {
             const el = document.getElementById('resumoTopo');
             if (!el) return;
             const idAtual = String(lista && lista.id || '');
             const preservados = el.dataset.listaId === idAtual
                 ? Array.from(el.children).filter(card => card.dataset.editando === '1'
+                    || card.matches('.card-proporcao')
                     || card.contains(document.activeElement)
                     || (card.querySelector('#resumoFornecedorSelect')
                         && (fornecedorResumoSalvando || el.dataset.geracao === String(geracaoCarregamentoLista))))
@@ -2571,10 +2638,19 @@
                 { label: 'Taxa Siscomex', value: taxaSiscomex },
                 { label: 'AFRMM', value: afrmm },
                 { label: 'Total NCM', value: totalNcm.toLocaleString('pt-BR') },
+                { label: 'Proporção dos anúncios', proporcao: true },
             ];
 
             const novosCards = document.createElement('div');
             novosCards.innerHTML = cards.map((c) => {
+                if (c.proporcao) {
+                    return '<form id="resumoProporcaoForm" class="resumo-card card-proporcao">' +
+                        '<label class="label" for="resumoProporcaoPercentual">Proporção dos anúncios (%)</label>' +
+                        '<div class="proporcao-controles">' +
+                        '<input id="resumoProporcaoPercentual" class="resumo-select" name="percentual" type="number" min="0.01" max="100" step="0.01" required>' +
+                        '<button type="submit" class="resumo-select">Aplicar a todos</button></div>' +
+                        '<div class="proporcao-status" role="status"></div></form>';
+                }
                 let classeExtra = c.label === 'Cotação na Compra'
                     ? ' card-cotacao'
                     : (c.label === 'Loja' ? ' card-loja' : '');
@@ -2623,6 +2699,9 @@
                 ajustarTamanhoValoresResumo();
                 setTimeout(() => ajustarTamanhoValoresResumo(), 80);
             });
+
+            configurarProporcaoLista(document.getElementById('resumoProporcaoForm'), listaId, dados);
+            atualizarCustosUnitariosVisiveis();
 
             const selModalidade = document.getElementById('resumoModalidadeSelect');
             const selectFornecedor = document.getElementById('resumoFornecedorSelect');
@@ -2686,11 +2765,6 @@
             { key: 'foto', label: 'Foto', width: 90 },
             { key: 'quantidade', label: 'Quantidade', width: 110 },
             { key: 'm3', label: 'M³', width: 100 },
-            { key: 'ii', label: 'II', width: 90 },
-            { key: 'ipi', label: 'IPI', width: 90 },
-            { key: 'pis', label: 'PIS', width: 90 },
-            { key: 'cofins', label: 'COFINS', width: 100 },
-            { key: 'icms', label: 'ICMS', width: 95 },
             { key: 'valor_usd', label: 'Valor em dólar', width: 145 },
             { key: 'frete_internacional', label: 'Frete Internacional', width: 170 },
             { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
@@ -3309,6 +3383,90 @@
             salvarOrdemItensLista(itensOrdenados, itensAnteriores);
         }
 
+        let fiscalCustoSkuLista = null;
+        const ALIASES_VALOR_M3_SKU = ['Valor por M³', 'Valor por M?', 'Valor por M3', 'Valor/M³', 'Valor/M?', 'Valor/M3'];
+
+        async function carregarFiscalCustoSkuLista(contexto) {
+            try {
+                const dados = await consultarComplementoJson('/api/impostos/produtos', contexto);
+                if (!dadosListaVigentes(contexto) || contexto.listaId !== getListaIdDaUrl() || !Array.isArray(dados?.produtos)) return;
+                const porSku = new Map();
+                for (const produto of dados.produtos) {
+                    const sku = String(produto?.sku || '').trim().toUpperCase();
+                    for (const chave of [sku, normalizarSkuComparacao(sku)]) {
+                        if (chave && !porSku.has(chave)) porSku.set(chave, produto);
+                    }
+                }
+                fiscalCustoSkuLista = porSku;
+                atualizarCustosUnitariosVisiveis();
+            } catch (_erro) {
+                // O custo permanece indisponível sem a consulta fiscal.
+            }
+        }
+
+        function atualizarCustosUnitariosVisiveis() {
+            const lista = ultimaListaCarregada;
+            const listaId = getListaIdDaUrl();
+            const motor = window.JKImportacoesCustoSimulado;
+            if (!motor || !fiscalCustoSkuLista || !lista || String(lista.id) !== listaId) return;
+
+            const { numero, possuiRespostaSim, extrairPrimeiroNumero, calcular } = motor;
+            const itens = ultimosItensCarregados;
+            const m3 = itens.map(obterM3TotalItem);
+            const totalM3 = m3.reduce((total, valor) => total + valor, 0);
+            const cotacao = numero(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
+            const cotacaoBase = cotacao > 0 ? cotacao : cotacaoDolarTopo;
+            const editadoM3 = numero(carregarResumoEditavel(listaId).valor_por_m3);
+            const totaisCabecalho = itens.map(item => {
+                const qtd = numero(item.Quantidade ?? item.Qtd);
+                const total = numero(item['Valor total'] ?? item['Valor total em dólar']);
+                const unit = numero(item['Valor unidade'] ?? item['Valor em dólar']);
+                if (total !== null) return total;
+                if (qtd === 0) return 0;
+                return qtd !== null && unit !== null ? qtd * unit : null;
+            });
+            const rateioCabecalho = totalM3 > 0 && m3.every(Number.isFinite) && totaisCabecalho.every(Number.isFinite)
+                ? totaisCabecalho.reduce((total, valor) => total + valor, 0) / totalM3 : null;
+            let proporcoes = {};
+            try { proporcoes = lerProporcoesSku()[listaId] || {}; } catch (_erro) { /* usa a proporção padrão */ }
+
+            document.querySelectorAll('#tbodyLista tr[data-item-index]').forEach(linha => {
+                const celula = linha.querySelector('[data-col-key="valor_unit_brl"]');
+                const indice = Number(linha.dataset.itemIndex);
+                const item = itens[indice];
+                if (!celula || !item) return;
+                const campo = (aliases) => String(obterCampoNormalizado(item, aliases, '')).trim();
+                const campoLista = (aliases) => campo(aliases) || obterCampoNormalizado(lista, aliases, '');
+                const qtd = numero(campo(['Quantidade', 'Qtd']));
+                const unit = numero(campo(['Valor em dólar', 'Valor em dolar', 'Valor em d?lar', 'Valor unidade',
+                    'Valor unitário em dólar', 'Valor unitario em dolar', 'Valor unit?rio em d?lar']));
+                const total = numero(campo(['Valor total em dólar', 'Valor total em dolar', 'Valor total em d?lar', 'Valor total']));
+                const valorM3 = numero(campoLista(ALIASES_VALOR_M3_SKU));
+                const rateio = editadoM3 > 0 ? editadoM3 : (valorM3 > 0 ? valorM3 : rateioCabecalho);
+                const sku = String(item.SKU || '').trim().toUpperCase();
+                const fiscal = fiscalCustoSkuLista.get(sku) || fiscalCustoSkuLista.get(normalizarSkuComparacao(sku));
+                const custo = calcular({
+                    totalUsd: total ?? (unit !== null && qtd !== null ? unit * qtd : null),
+                    freteUsd: rateio > 0 && Number.isFinite(m3[indice]) ? rateio * m3[indice] : null,
+                    cotacao: cotacaoBase,
+                    quantidade: qtd,
+                    iiPct: numero(campo(['II'])),
+                    ipiPct: numero(campo(['IPI'])),
+                    pisPct: numero(campo(['PIS'])),
+                    cofinsPct: numero(campo(['COFINS'])),
+                    proporcaoPct: numero(proporcoes[sku]),
+                    stMg: possuiRespostaSim(fiscal?.convenio_mg_st_minas || campoLista(['ST Minas', 'ST-Minas', 'ST_Minas', 'ST MG', 'convenio_mg_st_minas'])),
+                    stPb: possuiRespostaSim(fiscal?.convenio_mg_st_paraiba || campoLista(['ST Paraíba', 'ST Para?ba', 'ST Paraiba', 'ST-Paraiba', 'ST_Paraiba', 'ST PB', 'convenio_mg_st_paraiba'])),
+                    mvaMgPct: extrairPrimeiroNumero(fiscal?.convenio_mg_mva || campoLista(['MVA Minas', 'MVA-Minas', 'MVA_Minas', 'MVA (Conv. MG)', 'convenio_mg_mva'])),
+                    baseIcmsFallback: numero(campoLista(['Base ICMS', 'Base de ICMS', 'Base_ICMS'])),
+                    baseCstMgFallback: numero(campoLista(['B. de C.ST MG', 'Base de C.ST MG', 'Base C.ST MG'])),
+                    baseCstPbFallback: numero(campoLista(['B. de C.ST PB', 'Base de C.ST PB', 'Base C.ST PB'])),
+                    icmsFallback: numero(campo(['ICMS'])),
+                }).custoUnitario;
+                celula.textContent = Number.isFinite(custo) ? formatarBRL(custo) : '—';
+            });
+        }
+
         function renderItens(itens, lista) {
             const tbody = document.getElementById('tbodyLista');
             const totalGeralEl = document.getElementById('totalGeral');
@@ -3337,28 +3495,13 @@
                 const qtd = Number(item.Quantidade || 0);
                 const m3 = obterM3TotalItem(item);
                 const m3SemMetragem = !Number.isFinite(m3);
-                const ii = Number(obterCampo(item, ['II', 'ii'], 0) || 0);
-                const ipi = Number(obterCampo(item, ['IPI', 'ipi'], 0) || 0);
-                const pis = Number(obterCampo(item, ['PIS', 'pis'], 0) || 0);
-                const cofins = Number(obterCampo(item, ['COFINS', 'cofins'], 0) || 0);
-                const icms = Number(obterCampo(item, ['ICMS', 'icms'], 0) || 0);
                 const valorUnit = Number(item['Valor unidade'] || 0);
                 const freteInternacionalItemUsd = Number(obterCampo(item, ['Frete Internacional'], 0) || 0);
                 const freteInternacionalItemBrl = (freteInternacionalItemUsd > 0 && dolarBase > 0)
                     ? (freteInternacionalItemUsd * dolarBase)
                     : 0;
-                const valorUnitRs = Number(obterCampo(item, ['Valor Unitário R$', 'Valor Unitario R$', 'Valor unitário R$', 'Valor unitario r$', 'Valor unitário em real', 'Valor unitario em real'], 0) || 0);
                 const valorTotal = item.valor_total_informado === true ? Number(item['Valor total'] ?? 0) : Number(item['Valor total'] || (qtd * valorUnit));
                 const compraAprovada = itemComCompraAprovada(item);
-                const valorProdutoBrl = (valorTotal > 0 && dolarBase > 0) ? (valorTotal * dolarBase) : 0;
-                const baseTributosBrl = (valorTotal > 0 && freteInternacionalItemUsd >= 0 && dolarBase > 0)
-                    ? ((valorTotal + freteInternacionalItemUsd) * dolarBase)
-                    : 0;
-                const iiBrl = (baseTributosBrl > 0 && ii > 0) ? (baseTributosBrl * (ii / 100)) : 0;
-                const baseIpiBrl = valorProdutoBrl + iiBrl;
-                const ipiBrl = (baseIpiBrl > 0 && ipi > 0) ? (baseIpiBrl * (ipi / 100)) : 0;
-                const pisBrl = (baseTributosBrl > 0 && pis > 0) ? (baseTributosBrl * (pis / 100)) : 0;
-                const cofinsBrl = (baseTributosBrl > 0 && cofins > 0) ? (baseTributosBrl * (cofins / 100)) : 0;
                 totalGeral += valorTotal;
                 totalQuantidade += qtd;
                 totalM3 += Number.isFinite(m3) ? m3 : 0;
@@ -3405,14 +3548,9 @@
                         : '<span class="foto-empty">Sem foto</span>'),
                     quantidade: formatarNumero(qtd),
                     m3: Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente(),
-                    ii: formatarPct(ii) + '<span class="cell-sub-money">' + formatarBRL(iiBrl) + '</span>',
-                    ipi: formatarPct(ipi) + '<span class="cell-sub-money">' + formatarBRL(ipiBrl) + '</span>',
-                    pis: formatarPct(pis) + '<span class="cell-sub-money">' + formatarBRL(pisBrl) + '</span>',
-                    cofins: formatarPct(cofins) + '<span class="cell-sub-money">' + formatarBRL(cofinsBrl) + '</span>',
-                    icms: formatarPct(icms),
                     valor_usd: formatarUSD(valorUnit),
                     frete_internacional: formatarBRL(freteInternacionalItemBrl),
-                    valor_unit_brl: formatarBRL(valorUnitRs),
+                    valor_unit_brl: '—',
                     ultimo_custo_cadastrado: textoUltimoCustoCadastrado(item),
                     valor_total_usd: formatarUSD(valorTotal),
                     margens_concorrentes: formatarMargensConcorrentes(item),
@@ -3432,11 +3570,6 @@
                     sku: 'sku',
                     quantidade: 'num-center',
                     m3: 'num-center' + (m3SemMetragem && !mapaM3IndividualCarregando ? ' m3-alerta' : ''),
-                    ii: 'num-center',
-                    ipi: 'num-center',
-                    pis: 'num-center',
-                    cofins: 'num-center',
-                    icms: 'num-center',
                     valor_usd: 'num',
                     frete_internacional: 'num',
                     valor_unit_brl: 'num',
@@ -3559,6 +3692,7 @@
             colunasTabela.forEach((coluna, idx) => aplicarLarguraColuna(idx, coluna, obterLarguraColuna(coluna)));
 
             if (totalGeralEl) totalGeralEl.textContent = 'Total geral: ' + formatarUSD(totalGeral);
+            atualizarCustosUnitariosVisiveis();
         }
 
         function renderMeta(lista) {
@@ -3588,6 +3722,7 @@
 
         async function carregarDetalheLista({ propagarErro = false } = {}) {
             const geracao = ++geracaoCarregamentoLista;
+            fiscalCustoSkuLista = null;
             const persistencia = window.JKCachePersistente;
             const candidato = persistencia?.contexto();
             const contextoPersistente = persistencia?.vigente(candidato) ? candidato : null;
@@ -3603,7 +3738,7 @@
             let copiaVisivel = false;
             let respostaCompleta = false;
             const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
-                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input')
+                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input:not(#resumoProporcaoPercentual)')
                     || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
                     await new Promise(resolve => setTimeout(resolve, 120));
                 }
@@ -3675,6 +3810,7 @@
                         : 'Itens atualizados · Atualizando informações complementares...');
                     const complementos = [carregarPreferenciasColunasServidor(contexto), carregarMapaM3Individual(contexto),
                         carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
+                    void carregarFiscalCustoSkuLista(contexto);
                     void carregarCustosCadastro(contexto).then(() => salvarSnapshotLista(contexto)).catch(() => {});
                     void Promise.allSettled(complementos).then(async () => {
                         if (!dadosListaVigentes(contexto)) return;
@@ -3835,6 +3971,7 @@
             geracaoCarregamentoLista++;
             ultimaListaCarregada = null;
             ultimosItensCarregados = [];
+            fiscalCustoSkuLista = null;
             reiniciarCustosCadastro();
             document.getElementById('meta').textContent = '';
             document.getElementById('resumoTopo').replaceChildren();
@@ -3846,6 +3983,9 @@
         window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheLista);
         const limparContextoLista = () => negarAcessoCacheLista('Cliente ou permissões alterados. Abra a lista novamente.');
         window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoLista(); });
+        window.addEventListener('storage', evento => {
+            if (evento.key === LS_PROPORCAO_SKU_KEY) atualizarCustosUnitariosVisiveis();
+        });
         ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoLista));
 
         renderCabecalho();

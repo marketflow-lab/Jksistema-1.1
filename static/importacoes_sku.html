@@ -6,6 +6,7 @@
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js"></script>
     <style>
         :root {
             --bg: #0b0f1a;
@@ -1735,31 +1736,7 @@
             return null;
         }
 
-        function getNumber(val) {
-            if (val === null || val === undefined) return null;
-            if (typeof val === 'number') return Number.isFinite(val) ? val : null;
-            const txt = String(val).trim();
-            if (!txt) return null;
-            let s = txt.replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '').replace(/\$/g, '').replace(/%/g, '');
-
-            // Suporta tanto 1.234,56 quanto 1234.56 sem inflar valores percentuais.
-            const hasComma = s.includes(',');
-            const hasDot = s.includes('.');
-            if (hasComma && hasDot) {
-                const lastComma = s.lastIndexOf(',');
-                const lastDot = s.lastIndexOf('.');
-                if (lastComma > lastDot) {
-                    s = s.replace(/\./g, '').replace(',', '.');
-                } else {
-                    s = s.replace(/,/g, '');
-                }
-            } else if (hasComma) {
-                s = s.replace(',', '.');
-            }
-
-            const n = Number(s);
-            return Number.isFinite(n) ? n : null;
-        }
+        const { numero: getNumber, possuiRespostaSim, extrairPrimeiroNumero } = window.JKImportacoesCustoSimulado;
 
         function fmtUsd(val) {
             const n = getNumber(val);
@@ -1804,7 +1781,7 @@
             } catch (_e) { el.textContent = '--:--:--'; }
         }
 
-        let ultimosComponentesCustoProduto = null;
+        let ultimoFiscalSimulacaoSku = null;
 
         function custoSimuladoDisponivel() {
             return !custoComplementosPendente && Number.isFinite(ultimoValorUnitarioProduto)
@@ -1956,38 +1933,13 @@
             return promessa;
         }
 
-        function atualizarCustoTotalProduto(icmsValor) {
-            const c = ultimosComponentesCustoProduto;
-            const elCustoTotal = document.getElementById('vCustoTotalProduto');
-            const elValUnit = document.getElementById('vValorUnitarioProduto');
-            const elDespesasNacionais = document.getElementById('vDespesasNacionais');
-            if (custoComplementosPendente || !c || !(c.prodBrl > 0) || getNumber(icmsValor) === null) {
-                ultimoValorUnitarioProduto = null;
-                if (elCustoTotal) elCustoTotal.textContent = '-';
-                if (elValUnit) elValUnit.textContent = '-';
-                if (elDespesasNacionais) elDespesasNacionais.textContent = '-';
-                atualizarTodasMargensConcorrentes();
-                return null;
-            }
-
-            const icmsBrl = getNumber(icmsValor) || 0;
-            const baseCusto = c.prodBrl
-                + (c.iiEmReais || 0)
-                + (c.ipiEmReais || 0)
-                + (c.pisEmReais || 0)
-                + (c.cofinsEmReais || 0)
-                + (c.freteBrl || 0)
-                + (c.seguroBrl || 0)
-                + icmsBrl;
-            const custoTotal = baseCusto / 0.90;
-            const despesasNacionais = custoTotal * 0.10;
-            ultimoValorUnitarioProduto = c.qtd > 0 ? Math.round((custoTotal / c.qtd) * 100) / 100 : null;
-
-            if (elCustoTotal) elCustoTotal.textContent = fmtBRL(custoTotal);
-            if (elValUnit) elValUnit.textContent = ultimoValorUnitarioProduto !== null ? fmtBRL(ultimoValorUnitarioProduto) : '-';
-            if (elDespesasNacionais) elDespesasNacionais.textContent = fmtBRL(despesasNacionais);
+        function atualizarCustoTotalProduto(calculo) {
+            const disponivel = !custoComplementosPendente && calculo.custoUnitario !== null;
+            ultimoValorUnitarioProduto = disponivel ? calculo.custoUnitario : null;
+            setText('vCustoTotalProduto', disponivel ? fmtBRL(calculo.custoTotal) : '-');
+            setText('vValorUnitarioProduto', disponivel ? fmtBRL(calculo.custoUnitario) : '-');
+            setText('vDespesasNacionais', disponivel ? fmtBRL(calculo.despesasNacionais) : '-');
             atualizarTodasMargensConcorrentes();
-            return custoTotal;
         }
 
         async function carregarFxTopo() {
@@ -2034,114 +1986,35 @@
         }
 
         function atualizarCardsIiIpiComValor(valorTotalDolar, freteInternacionalDolar, iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual, proporcaoPct, qtdNum) {
-            const elIi = document.getElementById('vIi');
-            const elIpi = document.getElementById('vIpi');
-            const elIpiPbMg = document.getElementById('vIpiPbMg');
-            const elPis = document.getElementById('vPis');
-            const elCofins = document.getElementById('vCofins');
-            const elIcmsRetidoNfe = document.getElementById('vIcmsRetidoNfe');
-            const elTrade = document.getElementById('vTrade');
-            if (!elIi && !elIpi && !elIpiPbMg && !elPis && !elCofins && !elIcmsRetidoNfe && !elTrade) return;
-
-            const propFactor = (proporcaoPct !== undefined && proporcaoPct !== null && Number(proporcaoPct) > 0) ? Number(proporcaoPct) / 100 : 1;
-            const qtd = (qtdNum !== undefined && qtdNum !== null && Number(qtdNum) > 0) ? Number(qtdNum) : 1;
-
-            const iiNum = getNumber(iiPercentual);
-            const iiPctTxt = (iiNum === null) ? String(iiPercentual || '-') : fmtPct(iiNum);
-            const ipiNum = getNumber(ipiPercentual);
-            const ipiPctTxt = (ipiNum === null) ? String(ipiPercentual || '-') : fmtPct(ipiNum);
-            const pisNum = getNumber(pisPercentual);
-            const pisPctTxt = (pisNum === null) ? String(pisPercentual || '-') : fmtPct(pisNum);
-            const cofinsNum = getNumber(cofinsPercentual);
-            const cofinsPctTxt = (cofinsNum === null) ? String(cofinsPercentual || '-') : fmtPct(cofinsNum);
-
-            const setAliquotaNoTitulo = (labelId, nome, aliquotaTxt) => {
-                const lbl = document.getElementById(labelId);
-                if (!lbl) return;
-                const aliq = String(aliquotaTxt || '').trim();
-                lbl.textContent = (aliq && aliq !== '-') ? (nome + ' ' + aliq) : nome;
-            };
-
-            setAliquotaNoTitulo('lblIi', 'II', iiPctTxt);
-            setAliquotaNoTitulo('lblIpi', 'IPI', ipiPctTxt);
-            setAliquotaNoTitulo('lblPis', 'PIS', pisPctTxt);
-            setAliquotaNoTitulo('lblCofins', 'COFINS', cofinsPctTxt);
-
-            const totalUsd = getNumber(valorTotalDolar);
-            const freteUsd = getNumber(freteInternacionalDolar);
-            const valorProdutoUsd = (totalUsd !== null ? totalUsd : 0);
-            const freteUsdNum = (freteUsd !== null ? freteUsd : 0);
-            const baseTributosUsd = valorProdutoUsd + freteUsdNum;
-            const cotacaoBase = (ultimaCotacaoBase > 0) ? ultimaCotacaoBase : cotacaoDolarHoje;
-            const valorProdutoReais = (valorProdutoUsd > 0 && cotacaoBase > 0)
-                ? (valorProdutoUsd * cotacaoBase)
-                : null;
-            const baseTributosReais = (baseTributosUsd > 0 && cotacaoBase > 0 && totalUsd !== null && freteUsd !== null)
-                ? (baseTributosUsd * cotacaoBase)
-                : null;
-            const baseTributosReaisProp = baseTributosReais !== null ? baseTributosReais * propFactor : null;
-            const valorProdutoReaisProp = valorProdutoReais !== null ? valorProdutoReais * propFactor : null;
-
-            const iiEmReais = (baseTributosReaisProp !== null && iiNum !== null)
-                ? (baseTributosReaisProp * (iiNum / 100))
-                : null;
-
-            const baseIpiReais = (valorProdutoReaisProp !== null)
-                ? (valorProdutoReaisProp + (iiEmReais || 0))
-                : null;
-            const ipiEmReais = (baseIpiReais !== null && ipiNum !== null)
-                ? (baseIpiReais * (ipiNum / 100))
-                : null;
-            const pisEmReais = (baseTributosReaisProp !== null && pisNum !== null)
-                ? (baseTributosReaisProp * (pisNum / 100))
-                : null;
-            const cofinsEmReais = (baseTributosReaisProp !== null && cofinsNum !== null)
-                ? (baseTributosReaisProp * (cofinsNum / 100))
-                : null;
-
-            // Custo Total, Valor Unitário, IPI PB>MG e Trade
-            const freteBrl = (freteUsdNum > 0 && cotacaoBase > 0) ? freteUsdNum * cotacaoBase : 0;
-            const seguroBrl = (baseTributosUsd > 0 && cotacaoBase > 0) ? (baseTributosUsd * cotacaoBase * 0.0028) : 0;
-            const prodBrl = valorProdutoReais !== null ? valorProdutoReais : 0;
-            const freteImpFederaisCalc = (valorProdutoReaisProp !== null)
-                ? (valorProdutoReaisProp + (iiEmReais || 0) + (ipiEmReais || 0) + (pisEmReais || 0) + (cofinsEmReais || 0) + freteBrl + seguroBrl)
-                : null;
-            const ipiPbMgEmReais = (freteImpFederaisCalc !== null && ipiNum !== null)
-                ? ((freteImpFederaisCalc * (ipiNum / 100)) - (ipiEmReais || 0))
-                : null;
-            const icmsRetidoNfeEmReais = freteImpFederaisCalc !== null
-                ? (freteImpFederaisCalc * 0.04)
-                : null;
-
-            if (elIi) elIi.textContent = iiEmReais !== null ? fmtBRL(iiEmReais) : '-';
-            if (elIpi) elIpi.textContent = ipiEmReais !== null ? fmtBRL(ipiEmReais) : '-';
-            if (elIpiPbMg) elIpiPbMg.textContent = ipiPbMgEmReais !== null ? fmtBRL(ipiPbMgEmReais) : '-';
-            if (elPis) elPis.textContent = pisEmReais !== null ? fmtBRL(pisEmReais) : '-';
-            if (elCofins) elCofins.textContent = cofinsEmReais !== null ? fmtBRL(cofinsEmReais) : '-';
-            if (elIcmsRetidoNfe) elIcmsRetidoNfe.textContent = icmsRetidoNfeEmReais !== null ? fmtBRL(icmsRetidoNfeEmReais) : '-';
-            ultimosComponentesCustoProduto = {
-                prodBrl,
-                iiEmReais: iiEmReais || 0,
-                ipiEmReais: ipiEmReais || 0,
-                pisEmReais: pisEmReais || 0,
-                cofinsEmReais: cofinsEmReais || 0,
-                freteBrl,
-                seguroBrl,
-                qtd
-            };
-            atualizarCardIcmsCalculado(
-                document.getElementById('vBaseIcms')?.textContent || '-',
-                document.getElementById('vBaseCstMg')?.textContent || '-',
-                document.getElementById('vBaseCstPb')?.textContent || '-',
-                document.getElementById('vStMinas')?.textContent || '-',
-                document.getElementById('vStParaiba')?.textContent || '-',
-                icmsRetidoNfeEmReais !== null ? fmtBRL(icmsRetidoNfeEmReais) : '-',
-                document.getElementById('vIcms')?.textContent || '-'
-            );
-
-            const baseTrade = (prodBrl * propFactor) + freteBrl + seguroBrl;
-            const tradeBrl = baseTrade > 0 ? (baseTrade * 0.03) : null;
-            if (elTrade) elTrade.textContent = tradeBrl !== null ? fmtBRL(tradeBrl) : '-';
+            const fiscal = ultimoFiscalSimulacaoSku;
+            if (!fiscal) return;
+            const [iiPct, ipiPct, pisPct, cofinsPct] = [iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual].map(getNumber);
+            [['lblIi', 'II', iiPct], ['lblIpi', 'IPI', ipiPct], ['lblPis', 'PIS', pisPct], ['lblCofins', 'COFINS', cofinsPct]]
+                .forEach(([id, nome, aliquota]) => {
+                    setText(id, aliquota === null ? nome : nome + ' ' + fmtPct(aliquota));
+                });
+            const calculo = window.JKImportacoesCustoSimulado.calcular({
+                totalUsd: getNumber(valorTotalDolar), freteUsd: getNumber(freteInternacionalDolar),
+                cotacao: ultimaCotacaoBase > 0 ? ultimaCotacaoBase : cotacaoDolarHoje, quantidade: qtdNum,
+                iiPct, ipiPct, pisPct, cofinsPct, proporcaoPct,
+                stMg: possuiRespostaSim(fiscal.stMinas), stPb: possuiRespostaSim(fiscal.stParaiba),
+                mvaMgPct: extrairPrimeiroNumero(fiscal.mvaMinas),
+                baseIcmsFallback: getNumber(fiscal.baseIcms), baseCstMgFallback: getNumber(fiscal.baseCstMg),
+                baseCstPbFallback: getNumber(fiscal.baseCstPb), icmsFallback: getNumber(fiscal.icms),
+            });
+            Object.entries({
+                vIi: calculo.iiBrl, vIpi: calculo.ipiBrl, vIpiPbMg: calculo.ipiPbMgBrl,
+                vPis: calculo.pisBrl, vCofins: calculo.cofinsBrl,
+                vIcmsRetidoNfe: calculo.icmsRetidoBrl, vTrade: calculo.tradeBrl,
+                vFreteImp: calculo.freteImpostosBrl, vBaseIcms: calculo.baseIcms,
+                vBaseCstMg: calculo.baseCstMg, vBaseCstPb: calculo.baseCstPb, vIcms: calculo.icmsBrl,
+            }).forEach(([id, valor]) => setText(id, fmtBRL(valor)));
+            if (calculo.freteImpostosBrl === null) setText('vFreteImp', fiscal.freteImp);
+            setText('vStMinas', fiscal.stMinas);
+            setText('vStParaiba', fiscal.stParaiba);
+            setText('vMvaMinas', possuiRespostaSim(fiscal.stMinas) ? formatarValorMvaConvMg(fiscal.mvaMinas) : '-');
+            setText('vMvaAjustado', calculo.mvaAjustadoPct === null ? fiscal.mvaAjustado : fmtPct(calculo.mvaAjustadoPct));
+            atualizarCustoTotalProduto(calculo);
         }
 
         function fmtQty(val) {
@@ -2600,7 +2473,6 @@
             // --- Proporção: carrega do localStorage ou usa 100% como padrão ---
             const { listaId: listaIdParam } = getParams();
             const propLocal = carregarProporcaoLocal(listaIdParam, sku);
-            const propFactor = propLocal / 100;
             ultimaProporcao = propLocal;
             ultimoQtdSku = qtdNum || 1;
 
@@ -2697,47 +2569,9 @@
                 : null;
             const armazenagemCalc = vmldSkuBrlCalc !== null ? (vmldSkuBrlCalc * 0.035) : null;
 
-            const iiPct = getNumber(ii);
-            const ipiPct = getNumber(ipi);
-            const pisPct = getNumber(pis);
-            const cofinsPct = getNumber(cofins);
-
-            const valorProdutoBrl = (valorTotalDolarNum !== null && dolarBase !== null)
-                ? (valorTotalDolarNum * dolarBase)
-                : null;
-            const baseTributosBrl = (valorTotalDolarNum !== null && freteInternacionalUsd !== null && dolarBase !== null)
-                ? ((valorTotalDolarNum + freteInternacionalUsd) * dolarBase)
-                : null;
-            // Aplica a proporção apenas na base tributável
-            const baseTributosBrlProp = baseTributosBrl !== null ? baseTributosBrl * propFactor : null;
-            const valorProdutoBrlProp = valorProdutoBrl !== null ? valorProdutoBrl * propFactor : null;
-            const iiBrl = (baseTributosBrlProp !== null && iiPct !== null)
-                ? (baseTributosBrlProp * (iiPct / 100))
-                : null;
-            const baseIpiBrl = (valorProdutoBrlProp !== null)
-                ? (valorProdutoBrlProp + (iiBrl || 0))
-                : null;
-            const ipiBrl = (baseIpiBrl !== null && ipiPct !== null)
-                ? (baseIpiBrl * (ipiPct / 100))
-                : null;
-            const pisBrl = (baseTributosBrlProp !== null && pisPct !== null)
-                ? (baseTributosBrlProp * (pisPct / 100))
-                : null;
-            const cofinsBrl = (baseTributosBrlProp !== null && cofinsPct !== null)
-                ? (baseTributosBrlProp * (cofinsPct / 100))
-                : null;
-
-            const freteImpFederaisBrlCalc = (
-                valorProdutoBrlProp !== null &&
-                iiBrl !== null &&
-                ipiBrl !== null &&
-                pisBrl !== null &&
-                cofinsBrl !== null &&
-                freteBrlBase !== null &&
-                seguroInternacionalBrlCalc !== null
-            )
-                ? (valorProdutoBrlProp + iiBrl + ipiBrl + pisBrl + cofinsBrl + freteBrlBase + seguroInternacionalBrlCalc)
-                : null;
+            ultimoFiscalSimulacaoSku = {
+                stMinas, stParaiba, mvaMinas, mvaAjustado, baseIcms, baseCstMg, baseCstPb, icms, freteImp,
+            };
             ultimoValorTotalDolarIi = valorTotalDolarCalc;
             ultimoFreteInternacionalUsdIi = freteInternacionalUsd;
             ultimoPercentualIi = ii;
@@ -2745,48 +2579,16 @@
             ultimoPercentualPis = pis;
             ultimoPercentualCofins = cofins;
             atualizarCardsIiIpiComValor(valorTotalDolarCalc, freteInternacionalUsd, ii, ipi, pis, cofins, propLocal, qtdNum || 1);
-            setText('vFreteImp', freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : freteImp);
             setFreteInternacional(freteInternacionalExibicao, freteInternacionalUsdExibicao, formulaFreteInternacional);
             setTextComSub(
                 'vSeguroInternacional',
                 seguroInternacionalBrlCalc !== null ? fmtBRL(seguroInternacionalBrlCalc) : seguroInternacionalBruto,
                 seguroInternacionalUsdCalc !== null ? fmtUsd(seguroInternacionalUsdCalc) : ''
             );
-            setText('vIcms', icms);
             setText('vAfrm', afrm);
             setText('vArmazenagem', armazenagemCalc !== null ? fmtBRL(armazenagemCalc) : armazenagem);
             setText('vTaxasFixas', taxasFixas);
             setText('vMonofasico', monofasico);
-            const usaStMgLocal = possuiRespostaSim(stMinas);
-            const usaStPbLocal = possuiRespostaSim(stParaiba);
-            const mvaMinasNumLocal = extrairPrimeiroNumero(mvaMinas);
-            const mvaAjustadoCalc = (mvaMinasNumLocal !== null)
-                ? calcularMvaAjustadoPct(mvaMinasNumLocal)
-                : null;
-            const fatorIpiLocal = ipiPct !== null ? (1 + (ipiPct / 100)) : null;
-            const baseCstMgCalc = (freteImpFederaisBrlCalc !== null && fatorIpiLocal !== null && mvaMinasNumLocal !== null)
-                ? ((freteImpFederaisBrlCalc * fatorIpiLocal) * (1 + (mvaMinasNumLocal / 100)))
-                : null;
-            const baseCstPbCalc = (freteImpFederaisBrlCalc !== null && fatorIpiLocal !== null && mvaAjustadoCalc !== null)
-                ? ((freteImpFederaisBrlCalc * fatorIpiLocal) * (1 + (mvaAjustadoCalc / 100)))
-                : null;
-
-            setText('vStMinas', stMinas);
-            setText('vStParaiba', stParaiba);
-            setText('vBaseIcms', freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : (baseIcms || '-'));
-            setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMg || '-'));
-            setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPb || '-'));
-            atualizarCardIcmsCalculado(
-                freteImpFederaisBrlCalc !== null ? fmtBRL(freteImpFederaisBrlCalc) : baseIcms,
-                baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMg,
-                baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPb,
-                stMinas,
-                stParaiba,
-                document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
-                icms
-            );
-            setText('vMvaMinas', usaStMgLocal ? formatarValorMvaConvMg(mvaMinas) : '-');
-            setText('vMvaAjustado', mvaAjustadoCalc !== null ? fmtPct(mvaAjustadoCalc) : (mvaAjustado || '-'));
             setText('vTaxaSiscomex', taxaSiscomex);
             setText('vCapatazia', capatazia);
             setText('vBlFee', blFee);
@@ -2801,41 +2603,9 @@
             }
             setLink('vLink', link);
             renderFoto(obterUrlFoto(foto), sku);
-            const promessaDadosImposto = aplicarDadosImpostoNosCards(
-                sku,
-                baseIcms,
-                stMinas,
-                stParaiba,
-                mvaMinas,
-                ipiPct,
-                freteImpFederaisBrlCalc,
-                baseCstMg,
-                baseCstPb
-            );
+            const promessaDadosImposto = aplicarDadosImpostoNosCards(sku, ultimoFiscalSimulacaoSku);
             inicializarEdicaoProporcao(listaIdParam, sku);
             return promessaDadosImposto;
-        }
-
-        function possuiRespostaSim(valor) {
-            return String(valor || '')
-                .toUpperCase()
-                .split('|')
-                .some((parte) => parte.trim() === 'SIM');
-        }
-
-        function extrairPrimeiroNumero(valor) {
-            const txt = String(valor || '').trim();
-            if (!txt || txt === '-') return null;
-            const match = txt.replace(/\s+/g, '').match(/-?\d+(?:[.,]\d+)?/);
-            if (!match) return null;
-            const num = Number(String(match[0]).replace(',', '.'));
-            return Number.isFinite(num) ? num : null;
-        }
-
-        function calcularMvaAjustadoPct(mvaMinasPct) {
-            const mvaNum = (typeof mvaMinasPct === 'number') ? mvaMinasPct : extrairPrimeiroNumero(mvaMinasPct);
-            if (mvaNum === null) return null;
-            return (((1 + (mvaNum / 100)) * ((1 - 0.04) / (1 - 0.18))) - 1) * 100;
         }
 
         function formatarValorMvaConvMg(valor) {
@@ -2852,33 +2622,6 @@
                     return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
                 });
             return partes.length ? partes.join(' | ') : '-';
-        }
-
-        function atualizarCardIcmsCalculado(baseIcmsValor, baseCstMgValor, baseCstPbValor, stMinasValor, stParaibaValor, icmsRetidoValor, fallbackValor) {
-            const stMgSim = possuiRespostaSim(stMinasValor);
-            const stPbSim = possuiRespostaSim(stParaibaValor);
-            const baseIcmsNum = getNumber(baseIcmsValor);
-            const baseCstMgNum = getNumber(baseCstMgValor);
-            const baseCstPbNum = getNumber(baseCstPbValor);
-            const icmsRetidoNum = getNumber(icmsRetidoValor) || 0;
-
-            let baseCalculo = null;
-            if (stPbSim) {
-                baseCalculo = baseCstPbNum;
-            } else if (stMgSim && !stPbSim) {
-                baseCalculo = (baseCstPbNum !== null ? baseCstPbNum : baseCstMgNum);
-            } else if (!stMgSim && !stPbSim) {
-                baseCalculo = baseIcmsNum;
-            }
-
-            const icmsCalculado = (baseCalculo !== null)
-                ? ((baseCalculo * 0.18) - icmsRetidoNum)
-                : null;
-
-            const icmsFinal = icmsCalculado !== null ? icmsCalculado : getNumber(fallbackValor);
-            setText('vIcms', icmsCalculado !== null ? fmtBRL(icmsCalculado) : (fallbackValor || '-'));
-            atualizarCustoTotalProduto(icmsFinal);
-            return icmsFinal;
         }
 
         async function carregarMapaProdutosImpostos(contexto = contextoDetalheSku) {
@@ -2901,78 +2644,19 @@
             return mapa;
         }
 
-        async function aplicarDadosImpostoNosCards(sku, baseIcmsAtual, stMinasAtual, stParaibaAtual, mvaMinasAtual, ipiPercentualAtual, freteImpFederalAtual, baseCstMgAtual, baseCstPbAtual) {
+        async function aplicarDadosImpostoNosCards(sku, fiscal) {
             const contexto = contextoDetalheSku;
-            const stMgFallback = String(stMinasAtual || '').trim();
-            const stPbFallback = String(stParaibaAtual || '').trim();
-            const baseCstMgTexto = String(baseCstMgAtual || '').trim();
-            const baseCstPbTexto = String(baseCstPbAtual || '').trim();
-            const freteImpBase = (typeof freteImpFederalAtual === 'number' && Number.isFinite(freteImpFederalAtual))
-                ? freteImpFederalAtual
-                : extrairPrimeiroNumero(freteImpFederalAtual);
-            const ipiNumBase = (typeof ipiPercentualAtual === 'number') ? ipiPercentualAtual : extrairPrimeiroNumero(ipiPercentualAtual);
-            const fatorIpi = ipiNumBase !== null ? (1 + (ipiNumBase / 100)) : null;
-
-            try {
-                const mapa = await carregarMapaProdutosImpostos(contexto);
-                if (!detalheSkuVigente(contexto)) return;
-                const dados = mapa.get(normSku(sku)) || mapa.get(normalizarSkuComparacao(sku)) || null;
-
-                const stMg = String((dados && dados.convenio_mg_st_minas) || stMgFallback || '').trim();
-                const stPb = String((dados && dados.convenio_mg_st_paraiba) || stPbFallback || '').trim();
-                const usaStMg = possuiRespostaSim(stMg);
-                const usaStPb = possuiRespostaSim(stPb);
-                const mvaFonte = (dados && dados.convenio_mg_mva) || mvaMinasAtual;
-                const mvaMgNum = extrairPrimeiroNumero(mvaFonte);
-                const mvaAjustadoNum = calcularMvaAjustadoPct(mvaMgNum);
-                const baseCstMgCalc = (freteImpBase !== null && fatorIpi !== null && mvaMgNum !== null)
-                    ? ((freteImpBase * fatorIpi) * (1 + (mvaMgNum / 100)))
-                    : null;
-                const baseCstPbCalc = (freteImpBase !== null && fatorIpi !== null && mvaAjustadoNum !== null)
-                    ? ((freteImpBase * fatorIpi) * (1 + (mvaAjustadoNum / 100)))
-                    : null;
-
-                setText('vStMinas', stMg || '-');
-                setText('vStParaiba', stPb || '-');
-                setText('vMvaMinas', usaStMg ? formatarValorMvaConvMg(mvaFonte) : '-');
-                setText('vMvaAjustado', mvaAjustadoNum !== null ? fmtPct(mvaAjustadoNum) : '-');
-                setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMgTexto || '-'));
-                setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPbTexto || '-'));
-                atualizarCardIcmsCalculado(
-                    document.getElementById('vBaseIcms')?.textContent || baseIcmsAtual || '-',
-                    baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMgTexto,
-                    baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPbTexto,
-                    stMg,
-                    stPb,
-                    document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
-                    document.getElementById('vIcms')?.textContent || '-'
-                );
-            } catch (_e) {
-                if (!detalheSkuVigente(contexto)) return;
-                const usaStMg = possuiRespostaSim(stMgFallback);
-                const usaStPb = possuiRespostaSim(stPbFallback);
-                const mvaMgNum = extrairPrimeiroNumero(mvaMinasAtual);
-                const mvaAjustadoNum = calcularMvaAjustadoPct(mvaMgNum);
-                const baseCstMgCalc = (freteImpBase !== null && fatorIpi !== null && mvaMgNum !== null)
-                    ? ((freteImpBase * fatorIpi) * (1 + (mvaMgNum / 100)))
-                    : null;
-                const baseCstPbCalc = (freteImpBase !== null && fatorIpi !== null && mvaAjustadoNum !== null)
-                    ? ((freteImpBase * fatorIpi) * (1 + (mvaAjustadoNum / 100)))
-                    : null;
-                setText('vMvaMinas', usaStMg ? formatarValorMvaConvMg(mvaMinasAtual) : '-');
-                setText('vMvaAjustado', mvaAjustadoNum !== null ? fmtPct(mvaAjustadoNum) : '-');
-                setText('vBaseCstMg', baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : (baseCstMgTexto || '-'));
-                setText('vBaseCstPb', baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : (baseCstPbTexto || '-'));
-                atualizarCardIcmsCalculado(
-                    document.getElementById('vBaseIcms')?.textContent || baseIcmsAtual || '-',
-                    baseCstMgCalc !== null ? fmtBRL(baseCstMgCalc) : baseCstMgTexto,
-                    baseCstPbCalc !== null ? fmtBRL(baseCstPbCalc) : baseCstPbTexto,
-                    stMgFallback,
-                    stPbFallback,
-                    document.getElementById('vIcmsRetidoNfe')?.textContent || '-',
-                    document.getElementById('vIcms')?.textContent || '-'
-                );
-            }
+            const mapa = await carregarMapaProdutosImpostos(contexto).catch(() => null);
+            if (!detalheSkuVigente(contexto) || ultimoFiscalSimulacaoSku !== fiscal) return;
+            const dados = mapa?.get(normSku(sku)) || mapa?.get(normalizarSkuComparacao(sku));
+            if (!dados) return;
+            fiscal.stMinas = dados.convenio_mg_st_minas || fiscal.stMinas;
+            fiscal.stParaiba = dados.convenio_mg_st_paraiba || fiscal.stParaiba;
+            fiscal.mvaMinas = dados.convenio_mg_mva || fiscal.mvaMinas;
+            atualizarCardsIiIpiComValor(
+                ultimoValorTotalDolarIi, ultimoFreteInternacionalUsdIi, ultimoPercentualIi, ultimoPercentualIpi,
+                ultimoPercentualPis, ultimoPercentualCofins, ultimaProporcao, ultimoQtdSku
+            );
         }
 
         function obterM3IndividualProdutoCadastro(produto) {
@@ -3471,6 +3155,7 @@
             if (!contexto.temDados) {
                 limparOfertasSku(contexto);
                 cacheImpostosProdutos = null;
+                ultimoFiscalSimulacaoSku = null;
                 custoComplementosPendente = true;
                 ultimoValorUnitarioProduto = null;
                 ultimaAnaliseConcorrentes = null;
@@ -3621,6 +3306,7 @@
         function negarAcessoCacheSku(mensagem) {
             geracaoDetalheSku++;
             controladoresDetalheSku.forEach(controller => controller.abort());
+            ultimoFiscalSimulacaoSku = null;
             document.getElementById('meta').textContent = '';
             document.querySelector('.layout').replaceChildren();
             statusCacheSku(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar o SKU.');

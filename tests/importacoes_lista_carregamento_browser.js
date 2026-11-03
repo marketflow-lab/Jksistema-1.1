@@ -81,12 +81,16 @@ async function environment(browser, options = {}) {
       body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });
     if (pathname.startsWith('/medias_compras/')) return route.fulfill({ status: 200, contentType: 'application/javascript',
       body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
+    if (pathname === '/api/impostos/produtos') return json(route, { produtos: [
+      { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' },
+    ] });
     if (pathname === '/api/cadastro/fornecedores') return json(route, [
       { id: 'supplier-a', nome_empresa: 'Empresa A' }, { id: 'supplier-b', nome_empresa: 'Empresa B' },
     ]);
     if (pathname === '/api/cadastro/produtos') { ++state.calls.globalCatalog; return json(route, [{ sku: '002', m3: 999 }]); }
     // O custo consulta a projeção resumida; o contador abaixo mede somente a cubagem.
     if (pathname.startsWith('/api/cadastro/lojas/') && url.searchParams.get('view') === 'summary') return json(route, []);
+    if (pathname === '/api/cadastro/lojas/store-A/produtos/001') return json(route, {});
     if (pathname.startsWith('/api/cadastro/lojas/')) {
       ++state.calls.catalog;
       assert.strictEqual(pathname, '/api/cadastro/lojas/store-A/produtos');
@@ -171,6 +175,12 @@ async function waitUntil(predicate) {
   try {
     const first = await environment(browser, { holdCost: true, holdSupplier: true });
     const { page, state } = first;
+    Object.assign(state.lists.A, { dolar_hoje: 5, 'Valor por M³': 50 });
+    Object.assign(state.lists.A.itens[0], { II: '10%', IPI: '5%', PIS: '2%', COFINS: '8%', 'Valor Unitário R$': 999 });
+    await page.addInitScript(() => {
+      const chave = 'importacoes_sku_proporcao_v1';
+      if (!localStorage.getItem(chave)) localStorage.setItem(chave, JSON.stringify({ A: { '001': '80' }, B: { '001': '60' } }));
+    });
     await page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
     await page.locator('#tbodyLista tr[data-sku="001"]').waitFor();
     assert.strictEqual(await page.locator('#tbodyLista tr[data-sku]').count(), 3);
@@ -178,6 +188,33 @@ async function waitUntil(predicate) {
     await waitUntil(() => state.calls.prefs === 1 && state.calls.catalog === 1);
     assert.match(await page.locator('tr[data-sku="002"] [data-col-key="m3"]').textContent(), /Carregando/);
     assert.strictEqual(await page.locator('tr[data-sku="003"] [data-col-key="m3"]').textContent(), await page.evaluate(() => formatarM3(0)));
+    for (const key of ['ii', 'ipi', 'pis', 'cofins', 'icms']) {
+      assert.strictEqual(await page.locator(`#tHead [data-col-key="${key}"], #tbodyLista [data-col-key="${key}"]`).count(), 0);
+    }
+    const custo001 = page.locator('tr[data-sku="001"] [data-col-key="valor_unit_brl"]');
+    const custo002 = page.locator('tr[data-sku="002"] [data-col-key="valor_unit_brl"]');
+    await page.waitForFunction(() => document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent !== '—');
+    assert.match(await custo001.textContent(), /123,29/);
+    assert.strictEqual(await custo002.textContent(), '—');
+    const proporcao = page.locator('#resumoProporcaoForm');
+    const percentual = proporcao.locator('input');
+    const aplicar = proporcao.getByRole('button', { name: 'Aplicar a todos' });
+    assert.strictEqual(await proporcao.locator('xpath=preceding-sibling::*[1]/*[@class="label"]').textContent(), 'Total NCM');
+    assert.strictEqual(await percentual.inputValue(), '', 'Proporções diferentes não são exibidas como um valor único');
+    const lerProporcoes = () => page.evaluate(() => JSON.parse(localStorage.getItem('importacoes_sku_proporcao_v1')));
+    await percentual.fill('101');
+    await aplicar.click();
+    assert.deepStrictEqual(await lerProporcoes(), { A: { '001': '80' }, B: { '001': '60' } });
+    await percentual.fill('45.5');
+    await page.evaluate(() => renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados));
+    assert.strictEqual(await percentual.inputValue(), '45.5', 'Atualização do painel preserva o valor em edição');
+    await aplicar.click();
+    assert.match(await proporcao.getByRole('status').textContent(), /3 SKUs/);
+    assert.match(await custo001.textContent(), /109,42/);
+    assert.deepStrictEqual(await lerProporcoes(), {
+      A: { '001': '45.5', '002': '45.5', '003': '45.5' },
+      B: { '001': '60' },
+    });
     await page.locator('[data-edit-key="numero_invoice"]').dblclick();
     const invoice = page.locator('[data-edit-key="numero_invoice"] input');
     await invoice.fill('INV-SINTETICA');
@@ -219,6 +256,10 @@ async function waitUntil(predicate) {
     state.supplier.resolve();
     await page.waitForFunction(() => !document.getElementById('resumoFornecedorSelect').disabled);
     assert.deepStrictEqual(state.errors, []);
+    const custoNaLista = await custo001.textContent();
+    await page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+    await page.waitForFunction(() => /109,42/.test(document.getElementById('vValorUnitarioProduto').textContent));
+    assert.strictEqual(await page.locator('#vValorUnitarioProduto').textContent(), custoNaLista);
     await first.context.close();
 
     const columns = await environment(browser, { complete: true });

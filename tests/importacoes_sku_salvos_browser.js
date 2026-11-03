@@ -157,6 +157,9 @@ async function environment(browser, options = {}) {
             if (pathname === '/seed.html') return route.fulfill({
                 contentType: 'text/html', body: '<!doctype html><script src="/cache-persistente.js"></script>',
             });
+            if (pathname === '/medias_compras/importacoes-custo-simulado.js') return route.fulfill({
+                status: 200, contentType: 'application/javascript',
+                body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
             if (pathname === '/importacoes_sku.html' || pathname === '/cache-persistente.js') return route.fulfill({
                 contentType: pathname.endsWith('.html') ? 'text/html' : 'application/javascript',
                 body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))),
