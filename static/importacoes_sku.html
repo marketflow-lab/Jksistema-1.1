@@ -1858,12 +1858,16 @@
 
             el.textContent = 'Margem: ' + fmtPct(margem);
             el.classList.toggle('negative', margem < 0);
+            const subsidio = propria && typeof dados.subsidio_ml === 'number' ? dados.subsidio_ml : null;
             el.title = [
                 ...(lojaAnuncio ? ['Conta do anúncio: ' + lojaAnuncio] : []),
                 (propria ? 'Preço do anúncio da loja: ' : 'Preço do concorrente: ') + fmtBRL(precoVenda),
                 'Custo unitário simulado: ' + fmtBRL(dados.custo_unitario),
                 'Imposto: ' + fmtBRL(dados.imposto_valor),
                 'Tarifa ML: ' + fmtBRL(dados.tarifa_ml),
+                ...(propria && subsidio === null ? ['Subsídio ML: não confirmado'] : []),
+                ...(subsidio > 0 ? ['Subsídio ML: ' + fmtBRL(subsidio),
+                    'Tarifa após subsídio: ' + fmtBRL(dados.tarifa_ml_efetiva)] : []),
                 'Frete ML: ' + fmtBRL(dados.frete_ml),
                 'Valor líquido: ' + fmtBRL(dados.valor_liquido),
             ].join(' | ');

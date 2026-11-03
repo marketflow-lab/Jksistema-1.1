@@ -947,6 +947,7 @@
         let requisicaoFaturamento = 0;
         let requisicaoCustoPosto = 0;
         const AUXILIAR_TIMEOUT_MS = 20000;
+        const CACHE_COMPLEMENTO_FRESCOR_MS = 120000;
         const ATUALIZACAO_LISTA_LIMITE_MS = 120000;
         const controladoresAuxiliares = new Set();
 
@@ -1013,11 +1014,14 @@
                 { contexto: contexto.persistencia, tags: ['importacoes', 'vendas'] });
         }
 
-        async function consultarComplementoJson(url, contexto, aoRestaurar, recurso = url) {
+        async function consultarComplementoJson(url, contexto, aoRestaurar, recurso = url, reutilizarRecente = true) {
             const persistencia = window.JKCachePersistente;
             const chave = 'importacoes:GET:' + recurso;
             const copia = contexto.persistencia ? await persistencia.ler(chave, { contexto: contexto.persistencia }) : null;
             if (!dadosListaVigentes(contexto)) return null;
+            if (reutilizarRecente && copia && !copia.desatualizado && Date.now() - copia.salvoEm < CACHE_COMPLEMENTO_FRESCOR_MS) {
+                return copia.dados;
+            }
             if (copia && aoRestaurar) aoRestaurar(copia.dados);
             for (let tentativa = 0; tentativa < 2; tentativa++) {
                 if (!dadosListaVigentes(contexto)) return null;
@@ -1124,7 +1128,7 @@
             const ordem = ++requisicaoCustosCadastro;
             const vigente = () => dadosListaVigentes(contexto) && ordem === requisicaoCustosCadastro
                 && String(ultimaListaCarregada.store_id || '').trim() === storeId;
-            estadoCustosCadastro = 'carregando';
+            if (estadoCustosCadastro !== 'pronto') estadoCustosCadastro = 'carregando';
             atualizarCustosCadastroVisiveis();
             const consulta = { geracao: contexto.geracao, storeId, persistencia: contexto.persistencia, promessa: null };
             consultaCustosCadastro = consulta;
@@ -1149,10 +1153,9 @@
                     if (vigente()) aplicar(produtos);
                 } catch (_erro) {
                     if (!vigente()) return;
-                    estadoCustosCadastro = 'indisponivel';
+                    if (estadoCustosCadastro !== 'pronto') estadoCustosCadastro = 'indisponivel';
                     atualizarCustosCadastroVisiveis();
                 }
-                if (vigente()) await salvarSnapshotLista(contexto).catch(() => {});
             })();
             return consulta.promessa;
         }
@@ -1240,15 +1243,17 @@
                 return;
             }
 
+            faturamentoVendasCarregando = true;
             if (faturamentoVendasLoja !== chaveLoja) {
                 faturamentoVendas12m = null;
                 faturamentoVendasLoja = chaveLoja;
+            }
+            if (faturamentoVendas12m === null) {
                 if (ultimaListaCarregada) {
                     renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
                 }
             }
 
-            faturamentoVendasCarregando = true;
             try {
                 const params = new URLSearchParams({ periodo: '1a', intervalo: 'mes' });
                 params.set('loja', lojaFiltro);
@@ -1267,7 +1272,12 @@
             } catch (_e) {
                 // Mantém o último valor conhecido em caso de falha transitória.
             } finally {
-                if (ordemRequisicao === requisicaoFaturamento) faturamentoVendasCarregando = false;
+                if (ordemRequisicao === requisicaoFaturamento) {
+                    faturamentoVendasCarregando = false;
+                    if (dadosListaVigentes(contexto) && faturamentoVendas12m === null) {
+                        renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados);
+                    }
+                }
             }
         }
 
@@ -1678,7 +1688,7 @@
             return [status === 'historico' ? 'Cubagem histórica preservada' : 'Cubagem do cadastro desta loja', origem, unidade, data].filter(Boolean).join(' · ');
         }
 
-        async function carregarMapaM3Individual(contexto) {
+        async function carregarMapaM3Individual(contexto, forcarAtualizacao = false) {
             const ordem = ++requisicaoM3;
             const storeId = String(ultimaListaCarregada && ultimaListaCarregada.store_id || '').trim();
             const faltantes = ultimosItensCarregados.some(item => !statusCubagemItem(item)
@@ -1702,7 +1712,8 @@
                     mapaM3StoreId = storeId;
                     atualizarM3Visivel();
                 };
-                const lista = await consultarComplementoJson('/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos', contexto, aplicar);
+                const url = '/api/cadastro/lojas/' + encodeURIComponent(storeId) + '/produtos';
+                const lista = await consultarComplementoJson(url, contexto, aplicar, url, !forcarAtualizacao);
                 aplicar(lista);
             } catch (_e) {
                 // A tabela permanece disponível e a metragem ausente continua indisponível.
@@ -2360,7 +2371,8 @@
                 ? faturamentoVendas12m
                 : null;
             const textoFaturamentoLoja = lojaFiltroFaturamento
-                ? (faturamentoDaLoja !== null ? formatarMoedaBR(faturamentoDaLoja) : 'Carregando...')
+                ? (faturamentoDaLoja !== null ? formatarMoedaBR(faturamentoDaLoja)
+                    : (faturamentoVendasCarregando ? 'Carregando...' : 'Indisponível'))
                 : 'Loja nao definida';
             const faixaImposto = analiseCustoPosto && analiseCustoPosto.tax_band_pct != null
                 ? formatarPct(analiseCustoPosto.tax_band_pct)
@@ -2801,7 +2813,8 @@
             const revisao = revisaoColunasLocal;
             const ordem = ++requisicaoPreferencias;
             try {
-                const data = await consultarComplementoJson('/api/medias-compras/listas-pedidos/preferencias-colunas', contexto);
+                const url = '/api/medias-compras/listas-pedidos/preferencias-colunas';
+                const data = await consultarComplementoJson(url, contexto, null, url, false);
                 if (!data || !dadosListaVigentes(contexto) || ordem !== requisicaoPreferencias) return;
                 preferenciasColunasCarregadas = true;
                 if (revisao !== revisaoColunasLocal || colunaArrastadaKey || colunaRedimensionando) return;
@@ -3595,11 +3608,16 @@
                 const itens = lista.itens;
                 const storeId = String(lista.store_id || '').trim();
                 const assinatura = await assinaturaCustosLista(lista);
-                if (!dadosVigentes()) return false;
+                if (!dadosVigentes() || (!atualizarMargens && respostaCompleta)) return false;
                 const mesmaLista = ultimaListaCarregada && String(ultimaListaCarregada.id) === String(lista.id)
                     && String(ultimaListaCarregada.store_id || '') === String(lista.store_id || '');
                 ultimaListaCarregada = lista;
-                if (!mesmaLista) reiniciarCustosCadastro(storeId);
+                if (!mesmaLista) {
+                    reiniciarCustosCadastro(storeId);
+                    faturamentoVendas12m = null;
+                    faturamentoVendasLoja = '';
+                    faturamentoVendasCarregando = false;
+                }
                 if (!mesmaLista || assinatura !== assinaturaListaAtual) {
                     ultimaAnaliseCustoPosto = null;
                     assinaturaAnaliseCustoPosto = '';
@@ -3622,8 +3640,10 @@
                 if (complemento && (!complemento.mapaM3Loja || complemento.mapaM3Loja === storeId)) {
                     ultimaAnaliseCustoPosto = complemento.custoAssinatura === assinatura ? (complemento.custo || null) : null;
                     assinaturaAnaliseCustoPosto = ultimaAnaliseCustoPosto ? assinatura : '';
-                    faturamentoVendas12m = complemento.faturamento ?? null;
-                    faturamentoVendasLoja = complemento.faturamentoLoja || '';
+                    if (complemento.faturamentoLoja === obterChaveFaturamentoLoja(lista)) {
+                        faturamentoVendas12m = complemento.faturamento ?? null;
+                        faturamentoVendasLoja = complemento.faturamentoLoja;
+                    }
                     mapaM3IndividualSku.clear();
                     if (Array.isArray(complemento.mapaM3)) complemento.mapaM3.forEach(entrada => {
                         if (Array.isArray(entrada) && entrada.length === 2) registrarM3IndividualPorSku(entrada[0], entrada[1]);
@@ -3638,10 +3658,19 @@
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
                 const contexto = contextoCarregamentoAtual(listaId);
-                void carregarCustosCadastro(contexto);
                 if (atualizarMargens) {
+                    // Grava os itens novos junto com os complementos que ainda são válidos.
+                    await salvarSnapshotLista(contexto);
+                    if (!dadosListaVigentes(contexto)) {
+                        if (carregamentoVigente(contexto)) statusCacheLista('Itens atualizados. Informações complementares pendentes.');
+                        return false;
+                    }
+                    statusCacheLista(ultimaAnaliseCustoPosto && faturamentoVendas12m !== null
+                        ? 'Dados salvos da lista · Atualizando em segundo plano...'
+                        : 'Itens atualizados · Atualizando informações complementares...');
                     const complementos = [carregarPreferenciasColunasServidor(contexto), carregarMapaM3Individual(contexto),
                         carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
+                    void carregarCustosCadastro(contexto).then(() => salvarSnapshotLista(contexto)).catch(() => {});
                     void Promise.allSettled(complementos).then(async () => {
                         if (!dadosListaVigentes(contexto)) return;
                         await salvarSnapshotLista(contexto);
@@ -3660,6 +3689,8 @@
                             statusCacheLista('Os dados mudaram durante a consulta. Recarregue a lista para atualizar.');
                         }
                     });
+                } else {
+                    void carregarCustosCadastro(contexto);
                 }
                 return true;
             };
@@ -3730,8 +3761,7 @@
                             const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
                             if (pronta) {
                                 respostaCompleta = true;
-                                if (contextoPersistente) await persistencia.salvar(chave, data, { contexto: contextoPersistente, tags: ['importacoes'] });
-                                if (await aplicar(data, copiaVisivel, true)) statusCacheLista('Itens atualizados · Atualizando informações complementares...');
+                                await aplicar(data, copiaVisivel, true);
                                 return;
                             }
                             if (!copiaVisivel && await aplicar(data)) copiaVisivel = true;
@@ -3826,7 +3856,7 @@
             mapaM3IndividualCarregado = false;
             mapaM3IndividualCarregando = true;
             atualizarM3Visivel();
-            void carregarMapaM3Individual(contextoCarregamentoAtual(ultimaListaCarregada.id));
+            void carregarMapaM3Individual(contextoCarregamentoAtual(ultimaListaCarregada.id), true);
         });
         setInterval(carregarFaturamentoVendas12m, FATURAMENTO_REFRESH_MS);
 

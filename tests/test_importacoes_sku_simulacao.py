@@ -11,6 +11,7 @@ from backend.schemas.medias_compras import ListaPedidoSkuAnaliseConcorrentesRequ
 from backend.services import medias_compras_listas as service
 from test_importacoes_ad_owner import _Harness
 from test_medias_compras_competitor_margins import _configurar_estado
+from test_promocoes_desconto_ml import _FakeResponse, _parse_float
 
 
 def _setup(monkeypatch):
@@ -64,6 +65,62 @@ def test_explicit_sku_simulation_uses_displayed_cost_and_keeps_catalog_analysis(
     assert saved["analise_simulacao_importacao_sku"] == analysis
     assert saved["analise_concorrentes"] == original
     assert not any(call[0] == "item" and call[1] == "JK" for call in harness.calls)
+
+
+@pytest.mark.parametrize(("offers", "expected"), [
+    ([{"status": "started", "price": 37.79, "seller_receives": 27.51}], 1.10),
+    ([{"status": "started", "price": 37.79, "sale_fee_discount_amount": 1.10}], 1.10),
+    ([{"status": "candidate", "price": 37.79, "sale_fee_discount_amount": 1.10}], 0.0),
+    ([{"status": "started", "price": 29.19, "sale_fee_discount_amount": 1.10}], None),
+    ([{"status": "started", "price": 37.79, "sale_fee_discount_amount": 5}], None),
+    ([{"status": "started", "price": 37.79, "meli_percentage": 2.91}], None),
+    ([{"status": "started", "price": 37.79, "sale_fee_discount_amount": 1.10},
+      {"status": "started", "price": 37.79, "sale_fee_discount_amount": 0.50}], None),
+])
+def test_subsidio_da_promocao_ativa_apenas_na_margem_propria(monkeypatch, offers, expected):
+    from backend.services import mercadolivre_legacy_pricing as pricing
+    from backend.services.mercadolivre_legacy_planilhas import _ml_iterar_campos_payload_limitado
+
+    state, harness = _setup(monkeypatch)
+    monkeypatch.setattr(pricing, "_parse_float_flex", _parse_float, raising=False)
+    monkeypatch.setattr(pricing, "_to_float_safe", _parse_float, raising=False)
+    monkeypatch.setattr(pricing, "_ml_iterar_campos_payload_limitado", _ml_iterar_campos_payload_limitado, raising=False)
+    deps = harness.deps
+    request = deps["ml_api_request"]
+    chamadas_promocoes = []
+
+    def request_com_promocoes(client, loja, cfg, method, url, **kwargs):
+        if "/seller-promotions/" in url:
+            assert (client, loja, cfg["_store_id_context"], method) == ("tenant-a", "Carlos", "store-carlos", "GET")
+            assert url.endswith("/items/MLB3097212849")
+            chamadas_promocoes.append(url)
+            return _FakeResponse(200, {"results": offers}), cfg
+        return request(client, loja, cfg, method, url, **kwargs)
+
+    deps.update(
+        ml_api_request=request_com_promocoes,
+        resolver_subsidio=pricing._ml_ajustar_desconto_tarifa_recebivel_promocao,
+        resolver_imposto=lambda *_: 0.143,
+        ml_obter_taxas_anuncio=lambda _client, _loja, cfg, item: (
+            {"ad_cost": 4.53, "ad_cost_exact_for_price": True, "ad_cost_price_context": item["price"],
+             "ad_cost_source": "sites/MLB/listing_prices"}, cfg),
+        ml_obter_frete_detalhado=lambda _client, _loja, cfg, *_args, **kwargs: (
+            {"shipping_cost": 6.85, "shipping_exact_for_price": True,
+             "shipping_price_context": kwargs["contexto_frete"]["item_price"],
+             "shipping_cost_retry_source": "users/shipping_options/free/contexto"}, cfg),
+    )
+    analysis = _request(monkeypatch, state, cost=11.71,
+                        anuncios_loja={"concorrente_1": "MLB3097212849"},
+                        precos_anuncios_loja={"concorrente_1": 37.79},
+                        precos_concorrentes={"concorrente_1": 37.79})["analise_concorrentes"]
+    propria = analysis["margens_anuncios_loja"]["concorrente_1"]
+    assert propria["subsidio_ml"] == expected
+    assert propria["tarifa_ml"] == 4.53
+    assert propria["tarifa_ml_efetiva"] == (3.43 if expected else 4.53)
+    assert propria["valor_liquido"] == (10.40 if expected else 9.30)
+    assert propria["margem_percentual"] == (27.51 if expected else 24.60)
+    assert analysis["margens"]["concorrente_1"]["margem_percentual"] == 24.60
+    assert len(chamadas_promocoes) == 1
 
 
 def test_schema_defaults_to_catalog_and_rejects_unknown_cost_source():

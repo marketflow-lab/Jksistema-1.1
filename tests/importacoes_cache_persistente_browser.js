@@ -82,6 +82,7 @@ async function launch(mode = 'live') {
         if (pathname.endsWith('/preferencias-colunas')) return json(route, {});
         if (pathname.startsWith('/api/')) {
             if (pathname.endsWith('/landed-cost')) state.calls.cost++;
+            if (pathname.endsWith('/landed-cost') && state.costPending) await state.costPending.promise;
             if (pathname.endsWith('/landed-cost') && state.costFailure) return json(route, { detail: 'Custo indisponível' }, 500);
             if (state.complementsForbidden) return json(route, { detail: 'Permissão de complemento ausente' }, 403);
             if (pathname.endsWith('/landed-cost')) return json(route, { analysis: { order_id: 'A', tax_band_pct: 12 } });
@@ -133,6 +134,11 @@ async function saved(page, key, predicate) {
         let detalhe = await context.newPage();
         await detalhe.goto(origin + '/importacoes_lista.html?lista_id=A');
         await saved(detalhe, 'importacoes:GET:/api/medias-compras/listas-pedidos/A', 'complementosLista');
+        await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent === 'Dados atualizados.');
+        const chamadasCusto = state.calls.cost;
+        await detalhe.reload();
+        await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent === 'Dados atualizados.');
+        assert.strictEqual(state.calls.cost, chamadasCusto, 'Reabrir a mesma revisão reaproveita o custo recente.');
         let indice = await context.newPage();
         await indice.goto(origin + '/importacoes.html');
         await saved(indice, 'importacoes:GET:/api/medias-compras/listas-pedidos');
@@ -173,7 +179,23 @@ async function saved(page, key, predicate) {
         state.mode = 'live';
         state.revisao = 2;
         state.costFailure = true;
+        state.costPending = gate();
         await detalhe.evaluate(() => carregarDetalheLista());
+        const reabertura = await context.newPage();
+        state.mode = 'hold';
+        state.pending = gate();
+        await reabertura.goto(origin + '/importacoes_lista.html?lista_id=A');
+        await reabertura.waitForFunction(() => document.getElementById('cacheListaStatus').textContent.includes('Cópia salva'));
+        assert.strictEqual(await reabertura.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '9');
+        assert.strictEqual(await reabertura.evaluate(() => faturamentoVendas12m), 100,
+            'A lista nova preserva o faturamento da loja mesmo com o custo ainda em consulta.');
+        assert.strictEqual(await reabertura.evaluate(() => ultimaAnaliseCustoPosto), null,
+            'A cópia salva da lista nova já descarta o custo da quantidade anterior.');
+        await reabertura.close();
+        state.mode = 'live';
+        state.pending.resolve();
+        state.costPending.resolve();
+        state.costPending = null;
         await detalhe.waitForFunction(async () => {
             const copia = await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A');
             return copia?.dados.lista.itens[0].Quantidade === 9 && copia.dados.complementosLista

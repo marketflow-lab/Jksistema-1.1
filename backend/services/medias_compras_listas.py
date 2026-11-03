@@ -93,6 +93,7 @@ def _dependencias_margens_concorrentes() -> dict[str, Any]:
         "ml_contexto_frete_item": mercadolivre_legacy_core._ml_contexto_frete_item,
         "ml_obter_frete_detalhado": mercadolivre_legacy_core._ml_obter_frete_detalhado,
         "ml_obter_taxas_anuncio": mercadolivre_legacy_core._ml_obter_taxas_anuncio,
+        "resolver_subsidio": mercadolivre_legacy_core._ml_ajustar_desconto_tarifa_recebivel_promocao,
         "carregar_custos_impostos": _carregar_custos_impostos_dono_anuncio,
         "resolver_custo": promocoes_core._resolver_custo_medio_por_skus,
         "resolver_imposto": promocoes_core._resolver_imposto_rate_por_sku,
@@ -305,6 +306,58 @@ def _carregar_contexto_anuncio_loja(
     return contexto, ""
 
 
+def _consultar_subsidio_promocao_ativa(
+    deps, client_id, dono, cfg, item_id, preco, tarifa, frete, frete_fonte,
+) -> float | None:
+    """Retorna zero sem promoção ativa, None sem evidência suficiente."""
+    try:
+        resposta, cfg_atual = deps["ml_api_request"](
+            client_id, dono["loja"], cfg, "GET",
+            f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
+            params={"app_version": "v2"}, timeout=8,
+        )
+        if resposta.status_code != 200 or not _cfg_confere_dono_anuncio(cfg_atual, dono):
+            return None
+        ofertas = resposta.json()
+        if isinstance(ofertas, dict):
+            ofertas = ofertas.get("results")
+        if not isinstance(ofertas, list) or any(not isinstance(oferta, dict) for oferta in ofertas):
+            return None
+        ativas = []
+        for oferta in ofertas:
+            status = str(oferta.get("status") or "").strip().lower()
+            if status in {"candidate", "pending", "scheduled", "finished", "paused", "cancelled"}:
+                continue
+            if status not in {"started", "active"}:
+                return None
+            id_oferta = oferta.get("item_id")
+            if id_oferta and _normalizar_item_id_mlb(id_oferta) != item_id:
+                return None
+            ativas.append(oferta)
+        if not ativas:
+            return 0.0
+        correspondentes = []
+        for oferta in ativas:
+            preco_oferta = _numero_finito_margem(
+                oferta.get("total_price_for_boosted_offer")
+                if oferta.get("boosted_offer") is True else oferta.get("price"),
+            )
+            if preco_oferta is None:
+                return None
+            if abs(preco_oferta - preco) <= 0.005:
+                correspondentes.append(oferta)
+        if len(correspondentes) != 1:
+            return None
+        desconto = _numero_finito_margem(deps["resolver_subsidio"](
+            raw_promocao=correspondentes[0], preco_promocional=preco, tarifa_ml=tarifa, frete_ml=frete,
+            tarifa_exata=True, frete_exato=True, tarifa_preco_contexto=preco, frete_preco_contexto=preco,
+            tarifa_fonte="sites/MLB/listing_prices", frete_fonte=frete_fonte,
+        ))
+        return round(desconto, 2) if desconto is not None and 0 <= desconto <= tarifa else None
+    except Exception:
+        return None
+
+
 def _calcular_margens_concorrentes_promocoes(
     client_id: str,
     loja_lista: str,
@@ -315,6 +368,7 @@ def _calcular_margens_concorrentes_promocoes(
     contexto_consulta: dict | None = None,
     custo_unitario_simulado: float | None = None,
     store_id_alvo: str | None = None,
+    anuncios_proprios: bool = False,
 ) -> dict[str, dict[str, Any]]:
     simulacao = custo_unitario_simulado is not None or store_id_alvo is not None
     custo_simulado = _numero_finito_margem(custo_unitario_simulado)
@@ -349,7 +403,8 @@ def _calcular_margens_concorrentes_promocoes(
             )
             continue
 
-        cotacao_salva = cache_cotacoes.get((item_id, preco_venda))
+        cotacao_chave = (item_id, preco_venda, anuncios_proprios)
+        cotacao_salva = cache_cotacoes.get(cotacao_chave)
         if cotacao_salva is not None:
             margens[chave] = dict(cotacao_salva)
             continue
@@ -470,11 +525,18 @@ def _calcular_margens_concorrentes_promocoes(
             )
             continue
 
+        frete_fonte = str(frete_dados.get("shipping_cost_retry_source") or frete_dados.get("shipping_cost_source_path") or "")
+        subsidio = None
+        if anuncios_proprios and tarifa_dados.get("ad_cost_source") == "sites/MLB/listing_prices":
+            subsidio = _consultar_subsidio_promocao_ativa(
+                deps, client_id, contexto, cfg, item_id, preco_venda, tarifa_ml, frete_ml, frete_fonte,
+            )
+        tarifa_efetiva = tarifa_ml - (subsidio or 0)
         financeiro = deps["calcular_margem"](
             preco_venda,
             custo_unitario,
             imposto_rate,
-            tarifa_ml,
+            tarifa_efetiva,
             frete_ml,
         )
         if not financeiro:
@@ -510,7 +572,9 @@ def _calcular_margens_concorrentes_promocoes(
         }
         if simulacao:
             margens[chave]["fonte_custo"] = "simulacao_importacao_sku"
-        cache_cotacoes[(item_id, preco_venda)] = dict(margens[chave])
+        if anuncios_proprios:
+            margens[chave].update(subsidio_ml=subsidio, tarifa_ml_efetiva=round(tarifa_efetiva, 2))
+        cache_cotacoes[cotacao_chave] = dict(margens[chave])
 
     for chave, dados in margens.items():
         item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))
@@ -1530,7 +1594,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     opcoes_simulacao = ({"custo_unitario_simulado": custo_unitario_informado, "store_id_alvo": store_id_alvo}
                         if simulacao else {})
 
-    def calcular_precos(precos: dict[str, float]) -> dict[str, dict[str, Any]]:
+    def calcular_precos(precos: dict[str, float], *, anuncios_proprios: bool = False) -> dict[str, dict[str, Any]]:
         if not precos:
             return {}
         try:
@@ -1542,6 +1606,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
                 anuncios_normalizados,
                 **({"contexto_consulta": contexto_consulta} if contexto_consulta is not None else {}),
                 **opcoes_simulacao,
+                **({"anuncios_proprios": True} if simulacao and anuncios_proprios else {}),
             )
         except Exception:
             logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
@@ -1555,7 +1620,7 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             }
 
     margens = calcular_precos(precos_normalizados)
-    margens_anuncios_loja = calcular_precos(precos_loja_normalizados)
+    margens_anuncios_loja = calcular_precos(precos_loja_normalizados, anuncios_proprios=True)
     custos_cadastro = {
         float(dados["custo_unitario"])
         for dados in [*margens.values(), *margens_anuncios_loja.values()]
