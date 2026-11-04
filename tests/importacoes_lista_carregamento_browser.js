@@ -81,9 +81,17 @@ async function environment(browser, options = {}) {
       body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });
     if (pathname.startsWith('/medias_compras/')) return route.fulfill({ status: 200, contentType: 'application/javascript',
       body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
-    if (pathname === '/api/impostos/produtos') return json(route, { produtos: [
-      { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' },
-    ] });
+    const fiscalSku = { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' };
+    if (pathname === '/api/impostos/produtos') return json(route, { produtos: [fiscalSku] });
+    if (pathname === '/api/medias-compras/listas-pedidos/A/skus/001') {
+      const { itens, ...lista } = state.lists.A;
+      const somenteSalvos = url.searchParams.get('somente_salvos') === 'true';
+      return json(route, {
+        lista, item: itens[0], revisao: 'lista-A',
+        rateio: { total_usd: 35, total_m3: 0.8, m3_completo: true, valor_por_m3: 50 },
+        fiscal: somenteSalvos ? null : fiscalSku, fiscal_pronto: !somenteSalvos,
+      });
+    }
     if (pathname === '/api/cadastro/fornecedores') return json(route, [
       { id: 'supplier-a', nome_empresa: 'Empresa A' }, { id: 'supplier-b', nome_empresa: 'Empresa B' },
     ]);
@@ -106,7 +114,7 @@ async function environment(browser, options = {}) {
       if (method === 'PUT') return json(route, {});
       ++state.calls.prefs;
       await state.prefs.promise;
-      return json(route, { ordem_colunas: ['foto', 'sku', 'm3'], larguras_colunas: { sku: 321, m3: 211 } });
+      return json(route, { ordem_colunas: ['foto', 'sku', 'm3', 'valor_unit_brl'], larguras_colunas: { sku: 321, m3: 211 } });
     }
     if (pathname.endsWith('/landed-cost')) {
       const requestOrder = ++state.calls.cost;
@@ -214,16 +222,50 @@ async function waitUntil(predicate) {
     await percentual.fill('101');
     await aplicar.click();
     assert.deepStrictEqual(await lerProporcoes(), { A: { '001': '80' }, B: { '001': '60' } });
+    const proporcao001 = page.getByRole('spinbutton', { name: 'Proporção (%) do SKU 001' });
+    const proporcao002 = page.getByRole('spinbutton', { name: 'Proporção (%) do SKU 002' });
+    assert.strictEqual(await proporcao001.inputValue(), '80');
+    assert.strictEqual(await proporcao002.inputValue(), '100');
+    await proporcao001.fill('62.5');
+    await proporcao001.press('Enter');
+    assert.match(page.url(), /importacoes_lista\.html\?lista_id=A$/);
+    assert.deepStrictEqual(await lerProporcoes(), { A: { '001': '62.5' }, B: { '001': '60' } });
+    assert.notStrictEqual(await custo001.textContent(), await page.evaluate(() => formatarBRL(123.29)));
+    assert.strictEqual(await proporcao002.inputValue(), '100');
+    assert.strictEqual(await percentual.getAttribute('placeholder'), 'Variada');
+    await proporcao001.fill('0');
+    await proporcao001.press('Enter');
+    assert.strictEqual(await proporcao001.evaluate(input => input === document.activeElement), true);
+    await proporcao001.press('Escape');
+    assert.strictEqual(await proporcao001.inputValue(), '62.5');
+    assert.deepStrictEqual(await lerProporcoes(), { A: { '001': '62.5' }, B: { '001': '60' } });
+
     await percentual.fill('45.5');
     await page.evaluate(() => renderResumoTopo(ultimaListaCarregada, ultimosItensCarregados));
     assert.strictEqual(await percentual.inputValue(), '45.5', 'Atualização do painel preserva o valor em edição');
     await aplicar.click();
     assert.match(await proporcao.getByRole('status').textContent(), /3 SKUs/);
     assert.match(await custo001.textContent(), /109,42/);
+    assert.strictEqual(await proporcao001.inputValue(), '45.5');
+    assert.strictEqual(await proporcao002.inputValue(), '45.5');
     assert.deepStrictEqual(await lerProporcoes(), {
       A: { '001': '45.5', '002': '45.5', '003': '45.5' },
       B: { '001': '60' },
     });
+    const outraAba = await first.context.newPage();
+    await outraAba.route('http://jk.test/proporcoes', route => route.fulfill({ contentType: 'text/html', body: '<html></html>' }));
+    await outraAba.goto('http://jk.test/proporcoes');
+    await percentual.focus();
+    await outraAba.evaluate(() => {
+      const chave = 'importacoes_sku_proporcao_v1';
+      const mapa = JSON.parse(localStorage.getItem(chave));
+      mapa.A['002'] = '70';
+      localStorage.setItem(chave, JSON.stringify(mapa));
+    });
+    await page.waitForFunction(() => document.getElementById('resumoProporcaoPercentual').placeholder === 'Variada');
+    assert.strictEqual(await percentual.inputValue(), '');
+    assert.strictEqual(await proporcao002.inputValue(), '70');
+    await outraAba.close();
     await page.locator('[data-edit-key="numero_invoice"]').dblclick();
     const invoice = page.locator('[data-edit-key="numero_invoice"] input');
     await invoice.fill('INV-SINTETICA');
@@ -265,9 +307,14 @@ async function waitUntil(predicate) {
     state.supplier.resolve();
     await page.waitForFunction(() => !document.getElementById('resumoFornecedorSelect').disabled);
     assert.deepStrictEqual(state.errors, []);
+    await proporcao001.fill('50');
+    await proporcao001.press('Tab');
+    assert.strictEqual(await percentual.getAttribute('placeholder'), 'Variada');
     const custoNaLista = await custo001.textContent();
+    assert.match(custoNaLista, /111,23/);
     await page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
-    await page.waitForFunction(() => /109,42/.test(document.getElementById('vValorUnitarioProduto').textContent));
+    await page.waitForFunction(() => /R\$/.test(document.getElementById('vValorUnitarioProduto').textContent));
+    assert.strictEqual(await page.locator('#vProp').textContent(), '50%');
     assert.strictEqual(await page.locator('#vValorUnitarioProduto').textContent(), custoNaLista);
     await first.context.close();
 
@@ -289,6 +336,7 @@ async function waitUntil(predicate) {
     assert.strictEqual(await columns.page.locator('#tHead th').first().getAttribute('data-col-key'), 'sku');
     await columns.page.evaluate(() => { skuArrastadoIndex = -1; aplicarPreferenciasColunasPendentes(); });
     assert.strictEqual(await columns.page.locator('#tHead th').first().getAttribute('data-col-key'), 'foto');
+    assert.strictEqual(await columns.page.locator('#tHead th[data-col-key="proporcao"] + th').getAttribute('data-col-key'), 'valor_unit_brl');
     assert.strictEqual(await columns.page.evaluate(() => largurasColunas.sku), 321);
     assert.strictEqual(await columns.page.evaluate(() => document.querySelector('tr[data-sku="001"]') === window.rowNode), true);
     assert.deepStrictEqual(columns.state.errors, []);

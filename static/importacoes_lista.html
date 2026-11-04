@@ -245,6 +245,18 @@
         .resumo-select:focus {
             border-color: #67b4ff;
         }
+        .proporcao-sku-input {
+            max-width: 80px;
+            text-align: center;
+            appearance: textfield;
+        }
+        .proporcao-sku-input::-webkit-inner-spin-button,
+        .proporcao-sku-input::-webkit-outer-spin-button {
+            appearance: none;
+        }
+        .proporcao-sku-input:invalid {
+            border-color: #f18b8b;
+        }
         #resumoFornecedorStatus {
             font-size: 0.7rem;
             font-weight: 400;
@@ -2337,6 +2349,71 @@
             return JSON.parse(localStorage.getItem(LS_PROPORCAO_SKU_KEY) || '{}') || {};
         }
 
+        function lerProporcoesDaLista(listaId) {
+            try { return lerProporcoesSku()[listaId] || {}; } catch (_erro) { return {}; }
+        }
+
+        function proporcaoSalvaSku(porSku, sku) {
+            const valor = Number(String(porSku[sku.toUpperCase()] ?? '').replace(',', '.').replace('%', '').trim());
+            return Number.isFinite(valor) && valor > 0 ? valor : 100;
+        }
+
+        function salvarProporcoesSku(listaId, porSku) {
+            const mapa = lerProporcoesSku();
+            localStorage.setItem(LS_PROPORCAO_SKU_KEY, JSON.stringify({
+                ...mapa,
+                [listaId]: { ...mapa[listaId], ...porSku },
+            }));
+        }
+
+        function sincronizarProporcoesVisiveis() {
+            const listaId = getListaIdDaUrl();
+            if (String(ultimaListaCarregada?.id || '') !== listaId) return;
+            const porSku = lerProporcoesDaLista(listaId);
+            document.querySelectorAll('#tbodyLista .proporcao-sku-input').forEach(campo => {
+                const editando = campo === document.activeElement && campo.value !== campo.defaultValue;
+                campo.defaultValue = proporcaoSalvaSku(porSku, campo.closest('tr').dataset.sku);
+                if (!editando) campo.value = campo.defaultValue;
+            });
+            const form = document.getElementById('resumoProporcaoForm');
+            if (form) form.querySelector('.proporcao-status').textContent = '';
+            configurarProporcaoLista(form, listaId, ultimosItensCarregados);
+            atualizarCustosUnitariosVisiveis();
+        }
+
+        function configurarProporcaoSku(campo, listaId, sku) {
+            campo.addEventListener('input', () => campo.setCustomValidity(''));
+            campo.addEventListener('change', () => {
+                if (!campo.isConnected || listaId !== getListaIdDaUrl() || !campo.validity.valid) return;
+                const valor = campo.valueAsNumber;
+                if (valor === Number(campo.defaultValue)) return;
+                try {
+                    salvarProporcoesSku(listaId, { [sku.toUpperCase()]: String(valor) });
+                } catch (_erro) {
+                    campo.setCustomValidity('Não foi possível salvar a proporção.');
+                    campo.reportValidity();
+                    return;
+                }
+                sincronizarProporcoesVisiveis();
+            });
+            campo.addEventListener('keydown', evento => {
+                if (evento.key !== 'Enter' && evento.key !== 'Escape') return;
+                evento.preventDefault();
+                if (evento.key === 'Escape') {
+                    campo.value = campo.defaultValue;
+                    campo.setCustomValidity('');
+                }
+                if (campo.reportValidity()) campo.blur();
+            });
+            campo.addEventListener('blur', () => {
+                if (!campo.validity.valid) {
+                    campo.value = campo.defaultValue;
+                    campo.setCustomValidity('');
+                }
+                queueMicrotask(aplicarPreferenciasColunasPendentes);
+            });
+        }
+
         function configurarProporcaoLista(form, listaId, itens) {
             if (!form) return;
             const skus = [...new Set(itens.map(item => String(item?.SKU || '').trim().toUpperCase()).filter(Boolean))];
@@ -2345,13 +2422,9 @@
             const ativo = Boolean(listaId && skus.length);
             campo.disabled = form.querySelector('button').disabled = !ativo;
 
-            if (!form.dataset.editado && document.activeElement !== campo) {
-                let mapa = {};
-                try { mapa = lerProporcoesSku()[listaId] || {}; } catch (_e) { /* sem valor legível */ }
-                const valores = new Set(skus.map(sku => {
-                    const valor = Number(String(mapa[sku] ?? '').replace(',', '.').replace('%', '').trim());
-                    return Number.isFinite(valor) && valor > 0 ? valor : 100;
-                }));
+            if (!form.dataset.editado) {
+                const porSku = lerProporcoesDaLista(listaId);
+                const valores = new Set(skus.map(sku => proporcaoSalvaSku(porSku, sku)));
                 campo.value = valores.size === 1 ? [...valores][0] : '';
                 campo.placeholder = valores.size > 1 ? 'Variada' : '%';
             }
@@ -2365,14 +2438,10 @@
                 const valor = campo.valueAsNumber;
                 if (!ativo || listaId !== getListaIdDaUrl() || !Number.isFinite(valor) || valor <= 0 || valor > 100) return;
                 try {
-                    const mapa = lerProporcoesSku();
                     const porSku = Object.fromEntries(skus.map(sku => [sku, String(valor)]));
-                    localStorage.setItem(LS_PROPORCAO_SKU_KEY, JSON.stringify({
-                        ...mapa,
-                        [listaId]: { ...mapa[listaId], ...porSku },
-                    }));
+                    salvarProporcoesSku(listaId, porSku);
                     delete form.dataset.editado;
-                    atualizarCustosUnitariosVisiveis();
+                    sincronizarProporcoesVisiveis();
                     status.textContent = `Aplicada a ${skus.length} ${skus.length === 1 ? 'SKU' : 'SKUs'}.`;
                 } catch (_e) {
                     status.textContent = 'Não foi possível salvar a proporção.';
@@ -2768,6 +2837,7 @@
             { key: 'm3', label: 'M³', width: 100 },
             { key: 'valor_usd', label: 'Valor em dólar', width: 145 },
             { key: 'frete_internacional', label: 'Frete Internacional', width: 170 },
+            { key: 'proporcao', label: 'Proporção (%)', width: 112 },
             { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
             { key: 'ultimo_custo_cadastrado', label: 'Último custo cadastrado', width: 190 },
             { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
@@ -2778,6 +2848,13 @@
 
         function adicionarColunasNovasNaOrdem(ordenadas, mapa) {
             mapa.forEach((coluna) => {
+                if (coluna.key === 'proporcao') {
+                    const indiceValorUnitario = ordenadas.findIndex((item) => item.key === 'valor_unit_brl');
+                    if (indiceValorUnitario >= 0) {
+                        ordenadas.splice(indiceValorUnitario, 0, coluna);
+                        return;
+                    }
+                }
                 if (coluna.key === 'ultimo_custo_cadastrado') {
                     const indiceValorUnitario = ordenadas.findIndex((item) => item.key === 'valor_unit_brl');
                     if (indiceValorUnitario >= 0) {
@@ -2907,7 +2984,8 @@
 
         function aplicarPreferenciasColunasPendentes() {
             const pendente = preferenciasColunasPendentes;
-            if (!pendente || skuArrastadoIndex >= 0 || skuArrasteSalvando) return;
+            if (!pendente || skuArrastadoIndex >= 0 || skuArrasteSalvando
+                || document.activeElement?.matches('.proporcao-sku-input')) return;
             preferenciasColunasPendentes = null;
             if (!carregamentoVigente(pendente.contexto) || pendente.revisao !== revisaoColunasLocal) return;
             _aplicarPreferenciasColunasNoEstado(pendente.data && pendente.data.ordem_colunas, pendente.data && pendente.data.larguras_colunas);
@@ -3428,8 +3506,7 @@
             });
             const rateioCabecalho = totalM3 > 0 && m3.every(Number.isFinite) && totaisCabecalho.every(Number.isFinite)
                 ? totaisCabecalho.reduce((total, valor) => total + valor, 0) / totalM3 : null;
-            let proporcoes = {};
-            try { proporcoes = lerProporcoesSku()[listaId] || {}; } catch (_erro) { /* usa a proporção padrão */ }
+            const proporcoes = lerProporcoesDaLista(listaId);
 
             document.querySelectorAll('#tbodyLista tr[data-item-index]').forEach(linha => {
                 const celula = linha.querySelector('[data-col-key="valor_unit_brl"]');
@@ -3488,6 +3565,7 @@
             let totalGeral = 0;
             let totalQuantidade = 0;
             let totalM3 = 0;
+            const proporcoes = lerProporcoesDaLista(listaIdAtual);
             tbody.innerHTML = '';
 
             dados.forEach((item, idx) => {
@@ -3528,7 +3606,7 @@
                         abrirLinha();
                     });
                     tr.addEventListener('keydown', (ev) => {
-                        if (ev.key === 'Enter' || ev.key === ' ') {
+                        if (ev.target === tr && (ev.key === 'Enter' || ev.key === ' ')) {
                             ev.preventDefault();
                             abrirLinha();
                         }
@@ -3551,6 +3629,11 @@
                     m3: Number.isFinite(m3) ? formatarM3(m3) : textoM3Ausente(),
                     valor_usd: formatarUSD(valorUnit),
                     frete_internacional: formatarBRL(freteInternacionalItemBrl),
+                    proporcao: sku
+                        ? '<input type="number" class="resumo-select proporcao-sku-input" required min="0.01" max="100" step="0.01"'
+                            + ' aria-label="Proporção (%) do SKU ' + escaparHtml(sku) + '"'
+                            + ' value="' + proporcaoSalvaSku(proporcoes, sku) + '">'
+                        : '—',
                     valor_unit_brl: '—',
                     ultimo_custo_cadastrado: textoUltimoCustoCadastrado(item),
                     valor_total_usd: formatarUSD(valorTotal),
@@ -3573,6 +3656,7 @@
                     m3: 'num-center' + (m3SemMetragem && !mapaM3IndividualCarregando ? ' m3-alerta' : ''),
                     valor_usd: 'num',
                     frete_internacional: 'num',
+                    proporcao: 'num-center',
                     valor_unit_brl: 'num',
                     ultimo_custo_cadastrado: 'num',
                     valor_total_usd: 'num',
@@ -3589,6 +3673,9 @@
                     const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
                     return '<td data-col-key="' + escaparHtml(col.key) + '"' + klass + title + dataColuna + '>' + conteudo + '</td>';
                 }).join('');
+
+                const campoProporcao = tr.querySelector('.proporcao-sku-input');
+                if (campoProporcao) configurarProporcaoSku(campoProporcao, listaIdAtual, sku);
 
                 const btnExcluir = tr.querySelector('[data-excluir-sku]');
                 if (btnExcluir) {
@@ -3739,16 +3826,16 @@
             let copiaVisivel = false;
             let respostaCompleta = false;
             const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
-                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input:not(#resumoProporcaoPercentual)')
-                    || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
-                    await new Promise(resolve => setTimeout(resolve, 120));
-                }
                 if (!dadosVigentes() || !data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)
                     || data.lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
                 const lista = data.lista;
                 const itens = lista.itens;
                 const storeId = String(lista.store_id || '').trim();
                 const assinatura = await assinaturaCustosLista(lista);
+                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input:not(#resumoProporcaoPercentual), #tbodyLista .proporcao-sku-input:focus')
+                    || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
+                    await new Promise(resolve => setTimeout(resolve, 120));
+                }
                 if (!dadosVigentes() || (!atualizarMargens && respostaCompleta)) return false;
                 const mesmaLista = ultimaListaCarregada && String(ultimaListaCarregada.id) === String(lista.id)
                     && String(ultimaListaCarregada.store_id || '') === String(lista.store_id || '');
@@ -3985,7 +4072,7 @@
         const limparContextoLista = () => negarAcessoCacheLista('Cliente ou permissões alterados. Abra a lista novamente.');
         window.addEventListener('storage', evento => { if (!evento.key || ['user_data', 'permissions'].includes(evento.key)) limparContextoLista(); });
         window.addEventListener('storage', evento => {
-            if (evento.key === LS_PROPORCAO_SKU_KEY) atualizarCustosUnitariosVisiveis();
+            if (evento.key === LS_PROPORCAO_SKU_KEY) sincronizarProporcoesVisiveis();
         });
         ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoLista));
 
