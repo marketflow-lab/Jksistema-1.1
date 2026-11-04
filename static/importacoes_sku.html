@@ -2377,9 +2377,10 @@
         function montarMeta(listaNome, sku) {
             const meta = document.getElementById('meta');
             if (!meta) return;
+            const listaHref = document.getElementById('btnVoltar').getAttribute('href');
             meta.innerHTML =
-                '<span class="chip">Lista: ' + (listaNome || '-') + '</span>' +
-                '<span class="chip">SKU: ' + (sku || '-') + '</span>';
+                '<a class="chip" href="' + escaparHtml(listaHref) + '">Lista: ' + escaparHtml(listaNome || '-') + '</a>' +
+                '<span class="chip">SKU: ' + escaparHtml(sku || '-') + '</span>';
         }
 
         function obterUrlFoto(valor) {

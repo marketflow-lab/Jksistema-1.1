@@ -214,10 +214,17 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
     const confirmados = Number(p.dias_confirmados);
     const total = Number(p.dias_total);
     const possuiCobertura = Number.isFinite(confirmados) && Number.isFinite(total) && total > 0;
-    const valor = possuiCobertura ? Math.floor(Math.max(0, confirmados) / total * 100) : Number(p.percentual || 0);
+    const listaLojas = Array.isArray(lojas) ? lojas : [];
+    const diasPendentesComAtencao = listaLojas
+        .filter(loja => estadoSyncLojaVendas(loja)[0] === 'attention')
+        .reduce((dias, loja) => dias + Math.max(0, (Number(loja.dias_total) || 0) - (Number(loja.dias_concluidos) || 0)), 0);
+    const diasAproveitados = possuiCobertura ? Math.max(0, Math.min(total, confirmados)) : Number(p.dias_aproveitados);
+    const diasPendentes = possuiCobertura
+        ? Math.max(0, total - diasAproveitados - diasPendentesComAtencao) : Number(p.dias_pendentes);
+    const valor = possuiCobertura
+        ? Math.floor(diasAproveitados / Math.max(1, diasAproveitados + diasPendentes) * 100) : Number(p.percentual || 0);
     const limite = possuiCobertura && p.concluido !== true ? 99 : 100;
     const percent = Number.isFinite(valor) ? Math.max(0, Math.min(limite, valor)) : 0;
-    const listaLojas = Array.isArray(lojas) ? lojas : [];
     const lojasAtivas = listaLojas.filter(loja =>
         ['running', 'executando', 'em_execucao'].includes(String(loja?.status || '').toLowerCase()));
     const registros = logsSyncVendas(logs);
@@ -226,8 +233,6 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
         ? `<div class="vendas-sync-alert">${escaparHtmlVendas(p.mensagem || 'Falha na sincronização.')}</div>` : '';
     const detalhes = !listaLojas.length && (registros || p.mensagem)
         ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
-    const diasAproveitados = possuiCobertura ? Math.max(0, Math.min(total, confirmados)) : Number(p.dias_aproveitados);
-    const diasPendentes = possuiCobertura ? Math.max(0, total - diasAproveitados) : Number(p.dias_pendentes);
     const cobertura = Number.isFinite(diasAproveitados) && Number.isFinite(diasPendentes)
         ? `<div class="vendas-sync-muted">${Math.max(0, diasAproveitados)} dia(s) já concluído(s) · ${Math.max(0, diasPendentes)} dia(s) pendente(s)</div>` : '';
     painel.className = 'status-bar loading';
@@ -360,7 +365,8 @@ function aplicarEstadoMonitorSyncVendas(data) {
     } else if (etapa === 'cancelamento' && !loteLocalAtivo) {
         statusEl.className = 'status-bar';
         statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Sincronização pausada.');
-    } else if (estavaVerificandoConexoes && !loteLocalAtivo) {
+    } else if (!loteLocalAtivo && (estavaVerificandoConexoes
+        || (etapa === 'pendente' && statusEl.querySelector?.('.vendas-sync-progress')))) {
         statusEl.className = 'status-bar';
         statusEl.textContent = corrigirTextoVendas(progresso?.mensagem || 'Verificação encerrada. Acompanhe as pendências das lojas.');
     }
