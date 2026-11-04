@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from backend.services.medias_compras_leitura import consulta_medias, fotos_da_consulta, leitura_medias, medir_etapa
 
+import asyncio
 import copy
 from hashlib import sha256
 import io
@@ -30,6 +31,7 @@ from backend.schemas import (
     MediasComprasSkusOcultosRequest,
 )
 from backend.services import medias_compras_common as medias_common
+from backend.services.importacoes_consultas_cache import CacheConsultas
 from backend.services.medias_compras_common import *
 from backend.services.medias_compras_excel import *
 from backend.services.medias_compras_fiscal import *
@@ -359,6 +361,50 @@ def _consultar_subsidio_promocao_ativa(
         return None
 
 
+def _consultar_tarifa_frete_margem(
+    client_id: str, contexto: dict, item_id: str, preco: float, deps: dict,
+) -> tuple[tuple[float, str, float, str] | None, str]:
+    loja = contexto["loja"]
+    item = contexto["item"]
+    cfg = dict(contexto["cfg"])
+    motivo_conta = "A conexão da conta do anúncio mudou durante a consulta financeira."
+    try:
+        tarifa_dados, cfg = deps["ml_obter_taxas_anuncio"](
+            client_id, loja, cfg, {**item, "price": preco},
+        )
+        tarifa_dados = dict(tarifa_dados or {})
+    except Exception:
+        tarifa_dados = {}
+    if not _cfg_confere_dono_anuncio(cfg, contexto):
+        return None, motivo_conta
+    tarifa = _numero_finito_margem(tarifa_dados.get("ad_cost"))
+    preco_tarifa = _numero_finito_margem(tarifa_dados.get("ad_cost_price_context"))
+    if (tarifa is None or tarifa < 0 or not tarifa_dados.get("ad_cost_exact_for_price")
+            or preco_tarifa is None or abs(preco_tarifa - preco) > 0.02):
+        return None, "Tarifa exata do Mercado Livre não disponível para este preço."
+
+    try:
+        frete_dados, cfg = deps["ml_obter_frete_detalhado"](
+            client_id, loja, cfg, item_id, item.get("shipping") or {},
+            reconsultar_zero=True, contexto_frete=deps["ml_contexto_frete_item"](item, preco),
+        )
+        frete_dados = dict(frete_dados or {})
+    except Exception:
+        frete_dados = {}
+    contexto["cfg"] = cfg
+    if not _cfg_confere_dono_anuncio(cfg, contexto):
+        return None, motivo_conta
+    frete = _numero_finito_margem(frete_dados.get("shipping_cost"))
+    preco_frete = _numero_finito_margem(frete_dados.get("shipping_price_context"))
+    if (frete is None or frete < 0 or not frete_dados.get("shipping_exact_for_price")
+            or preco_frete is None or abs(preco_frete - preco) > 0.02):
+        return None, "Frete exato do Mercado Livre não disponível para este preço."
+
+    tarifa_fonte = str(tarifa_dados.get("ad_cost_source") or "")
+    frete_fonte = str(frete_dados.get("shipping_cost_retry_source") or frete_dados.get("shipping_cost_source_path") or "")
+    return (tarifa, tarifa_fonte, frete, frete_fonte), ""
+
+
 def _calcular_margens_concorrentes_promocoes(
     client_id: str,
     loja_lista: str,
@@ -392,6 +438,7 @@ def _calcular_margens_concorrentes_promocoes(
     cache_contextos = cache_escopo.setdefault("anuncios", {})
     cache_cadastro = cache_escopo.setdefault("cadastro", {})
     cache_cotacoes = cache_escopo.setdefault("cotacoes", {})
+    cache_tarifa_frete = cache_escopo.setdefault("tarifa_frete", {})
 
     for chave in sorted(precos_concorrentes):
         preco_venda = float(precos_concorrentes[chave])
@@ -433,7 +480,6 @@ def _calcular_margens_concorrentes_promocoes(
                     preco_venda, item_id, "O anúncio da loja da lista não confirmou o SKU solicitado.", loja=loja,
                 )
                 continue
-        cfg = dict(contexto.get("cfg") or {})
         cadastro_key = (store_id, sku)
         if cadastro_key not in cache_cadastro:
             try:
@@ -464,73 +510,27 @@ def _calcular_margens_concorrentes_promocoes(
             )
             continue
 
-        item_preco = dict(item)
-        item_preco["price"] = preco_venda
-        try:
-            tarifa_dados, cfg = deps["ml_obter_taxas_anuncio"](
-                client_id,
-                loja,
-                cfg,
-                item_preco,
-            )
-            tarifa_dados = dict(tarifa_dados or {})
-        except Exception:
-            tarifa_dados = {}
+        # Próprio e concorrente usam a mesma tarifa/frete quando o anúncio,
+        # a conta e o preço são iguais. O subsídio segue exclusivo do próprio.
+        chave_tarifa_frete = (item_id, preco_venda)
+        insumos = cache_tarifa_frete.get(chave_tarifa_frete)
+        if insumos is None:
+            insumos, motivo = _consultar_tarifa_frete_margem(client_id, contexto, item_id, preco_venda, deps)
+            if insumos is None:
+                margens[chave] = _margem_concorrente_indisponivel(preco_venda, item_id, motivo, loja=loja)
+                continue
+            cache_tarifa_frete[chave_tarifa_frete] = insumos
+        tarifa_ml, tarifa_fonte, frete_ml, frete_fonte = insumos
+        cfg = dict(contexto["cfg"])
         if not _cfg_confere_dono_anuncio(cfg, contexto):
             margens[chave] = _margem_concorrente_indisponivel(
                 preco_venda, item_id, "A conexão da conta do anúncio mudou durante a consulta financeira.", loja=loja,
             )
             continue
-        tarifa_ml = _numero_finito_margem(tarifa_dados.get("ad_cost"))
-        contexto_tarifa = _numero_finito_margem(tarifa_dados.get("ad_cost_price_context"))
-        tarifa_exata = bool(tarifa_dados.get("ad_cost_exact_for_price"))
-        tarifa_exata = tarifa_exata and contexto_tarifa is not None and abs(contexto_tarifa - preco_venda) <= 0.02
-        if tarifa_ml is None or tarifa_ml < 0 or not tarifa_exata:
-            margens[chave] = _margem_concorrente_indisponivel(
-                preco_venda,
-                item_id,
-                "Tarifa exata do Mercado Livre não disponível para este preço.",
-                loja=loja,
-            )
-            continue
-
-        try:
-            frete_dados, cfg = deps["ml_obter_frete_detalhado"](
-                client_id,
-                loja,
-                cfg,
-                item_id,
-                item.get("shipping") or {},
-                reconsultar_zero=True,
-                contexto_frete=deps["ml_contexto_frete_item"](item, preco_venda),
-            )
-            frete_dados = dict(frete_dados or {})
-        except Exception:
-            frete_dados = {}
-        contexto["cfg"] = cfg
-        if not _cfg_confere_dono_anuncio(cfg, contexto):
-            margens[chave] = _margem_concorrente_indisponivel(
-                preco_venda, item_id, "A conexão da conta do anúncio mudou durante a consulta financeira.", loja=loja,
-            )
-            continue
-        frete_ml = _numero_finito_margem(frete_dados.get("shipping_cost"))
-        contexto_frete = _numero_finito_margem(frete_dados.get("shipping_price_context"))
-        frete_exato = bool(frete_dados.get("shipping_exact_for_price"))
-        frete_exato = frete_exato and contexto_frete is not None and abs(contexto_frete - preco_venda) <= 0.02
-        if frete_ml is None or frete_ml < 0 or not frete_exato:
-            margens[chave] = _margem_concorrente_indisponivel(
-                preco_venda,
-                item_id,
-                "Frete exato do Mercado Livre não disponível para este preço.",
-                loja=loja,
-            )
-            continue
-
-        frete_fonte = str(frete_dados.get("shipping_cost_retry_source") or frete_dados.get("shipping_cost_source_path") or "")
         subsidio = None
         if anuncios_proprios and item.get("status") == "paused":
             subsidio = 0.0
-        elif anuncios_proprios and tarifa_dados.get("ad_cost_source") == "sites/MLB/listing_prices":
+        elif anuncios_proprios and tarifa_fonte == "sites/MLB/listing_prices":
             subsidio = _consultar_subsidio_promocao_ativa(
                 deps, client_id, contexto, cfg, item_id, preco_venda, tarifa_ml, frete_ml, frete_fonte,
             )
@@ -566,12 +566,8 @@ def _calcular_margens_concorrentes_promocoes(
             "valor_liquido": round(float(financeiro["valor_liquido"]), 2),
             "margem_percentual": round(float(financeiro["margem_percentual"]), 2),
             "financeiro_exato": True,
-            "tarifa_fonte": str(tarifa_dados.get("ad_cost_source") or "")[:120],
-            "frete_fonte": str(
-                frete_dados.get("shipping_cost_retry_source")
-                or frete_dados.get("shipping_cost_source_path")
-                or ""
-            )[:120],
+            "tarifa_fonte": tarifa_fonte[:120],
+            "frete_fonte": frete_fonte[:120],
         }
         if simulacao:
             margens[chave]["fonte_custo"] = "simulacao_importacao_sku"
@@ -579,10 +575,6 @@ def _calcular_margens_concorrentes_promocoes(
             margens[chave].update(subsidio_ml=subsidio, tarifa_ml_efetiva=round(tarifa_efetiva, 2))
         cache_cotacoes[cotacao_chave] = dict(margens[chave])
 
-    for chave, dados in margens.items():
-        item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))
-        if item_id:
-            cache_cotacoes[(item_id, float(precos_concorrentes[chave]))] = dict(dados)
     return margens
 
 
@@ -737,73 +729,114 @@ async def api_medias_compras_concorrentes_links(
     client_id: str = Depends(medias_common.get_tenant_id),
     lista_id: str | None = None,
     anuncios_da_lista: bool = False,
+    somente_proprios: bool = False,
 ):
-    from backend.services.blocking_workers import run_heavy
-
-    return await run_heavy(
-        _api_medias_compras_concorrentes_links_sync,
-        sku=sku, client_id=client_id, lista_id=lista_id,
-        **({"anuncios_da_lista": True} if anuncios_da_lista else {}),
+    from backend.services.blocking_workers import run_blocking, run_heavy, run_import_offer_source
+    from backend.services.importacoes_sku_anuncios import (
+        buscar_anuncios_sku_da_lista, confirmar_escopo_anuncios_sku,
     )
 
-
-def _api_medias_compras_concorrentes_links_sync(
-    sku: str,
-    client_id: str = Depends(medias_common.get_tenant_id),
-    lista_id: str | None = None,
-    anuncios_da_lista: bool = False,
-):
     sku_in = str(sku or "").strip()
     if not sku_in:
-        raise HTTPException(status_code=400, detail="SKU ÃƒÂ© obrigatÃƒÂ³rio")
+        raise HTTPException(400, "SKU é obrigatório.")
+    if somente_proprios and not anuncios_da_lista:
+        raise HTTPException(400, "Informe anuncios_da_lista para consultar somente os anúncios próprios.")
     if anuncios_da_lista and not str(lista_id or "").strip():
-        raise HTTPException(status_code=400, detail="Informe a lista para consultar os anúncios deste SKU na loja vinculada.")
-
-    lista = None
-    if lista_id is not None:
-        listas = _carregar_listas_pedidos(client_id)
-        lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
-        if not lista:
-            raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
-        sku_norm = _normalizar_sku_planilha_concorrentes(_normalizar_sku_mes(sku_in))
-        if not any(
-            _normalizar_sku_planilha_concorrentes(_sku_item_lista_pedido(item)) == sku_norm
-            for item in (lista.get("itens") or []) if isinstance(item, dict)
-        ):
-            raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+        raise HTTPException(400, "Informe a lista para consultar os anúncios deste SKU na loja vinculada.")
 
     try:
-        indice, fontes_versao = _indice_concorrentes_lista(client_id, lista)
-        payload = {
-            **_payload_concorrentes_planilha(sku_in, indice.get(_normalizar_sku_planilha_concorrentes(sku_in))),
-            "fontes_versao": fontes_versao,
-        }
-        if anuncios_da_lista:
-            from backend.services.importacoes_sku_anuncios import buscar_anuncios_sku_da_lista
+        if not anuncios_da_lista:
+            return await run_heavy(_links_concorrentes_planilha, client_id, lista_id, sku_in)
 
-            anuncios = buscar_anuncios_sku_da_lista(client_id, lista, sku_in)
-            payload["concorrentes_mlb"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
-            payload["concorrentes_preco"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
-            payload["anuncios_loja_status"] = {}
-            for numero, anuncio in enumerate((anuncios.get("anuncios") or [])[:5], start=1):
-                chave = f"concorrente_{numero}"
-                payload["concorrentes_mlb"][chave] = anuncio["url"]
-                payload["anuncios_loja_status"][chave] = anuncio.get("status")
-                payload["concorrentes_preco"][chave] = anuncio.get("preco") if anuncio.get("preco") is not None else ""
-            payload.update({
-                "anuncios_loja_store_id": anuncios["store_id"],
-                "anuncios_loja_nome": anuncios["loja"],
-                "anuncios_loja_fonte": "loja_lista_sku",
-                "anuncios_loja_total": anuncios.get("total_encontrado", len(anuncios.get("anuncios") or [])),
-                "anuncios_loja_truncado": bool(anuncios.get("truncado")),
-                "anuncios_loja_limite": anuncios.get("limite", 5),
-            })
-        return payload
+        lista, cache_scope = await run_blocking(_preparar_anuncios_lista, client_id, lista_id, sku_in)
+        consulta_anuncios = lambda: run_import_offer_source(
+            "anuncios", buscar_anuncios_sku_da_lista, client_id, lista, sku_in, cache_scope=cache_scope,
+        )
+        if somente_proprios:
+            _, fontes_versao = await run_blocking(_fonte_concorrentes_lista, client_id, lista)
+            indice, consultado_planilha = {}, None
+            anuncios = await consulta_anuncios()
+        else:
+            (indice, fontes_versao, consultado_planilha), anuncios = await asyncio.gather(
+                run_import_offer_source("planilha", _indice_concorrentes_sku_cache, client_id, lista, cache_scope),
+                consulta_anuncios(),
+            )
+            # The sheet may have finished after the ad lookup checked its credentials.
+            await run_blocking(confirmar_escopo_anuncios_sku, client_id, anuncios)
+
+        dados = _payload_concorrentes_sku(sku_in, indice, fontes_versao)
+        return _aplicar_anuncios_proprios(dados, anuncios, consultado_planilha)
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception(f"Erro ao buscar links de concorrentes para SKU '{sku_in}': {e}")
-        raise HTTPException(status_code=500, detail="Erro ao buscar links de concorrentes")
+    except Exception:
+        logger.exception("Erro ao buscar fontes de anúncios do SKU")
+        raise HTTPException(500, "Erro ao buscar links de concorrentes")
+
+
+def _carregar_lista_links_concorrentes(client_id: str, lista_id: str | None, sku: str) -> dict | None:
+    if lista_id is None:
+        return None
+    listas = _carregar_listas_pedidos(client_id)
+    lista = next((item for item in listas if str(item.get("id", "")) == str(lista_id)), None)
+    if not lista:
+        raise HTTPException(404, "Lista de pedidos nao encontrada")
+    sku_norm = _normalizar_sku_planilha_concorrentes(_normalizar_sku_mes(sku))
+    if not any(
+        _normalizar_sku_planilha_concorrentes(_sku_item_lista_pedido(item)) == sku_norm
+        for item in (lista.get("itens") or []) if isinstance(item, dict)
+    ):
+        raise HTTPException(404, "SKU nao encontrado na lista de pedidos")
+    return lista
+
+
+def _payload_concorrentes_sku(sku: str, indice: dict, versao: int) -> dict:
+    return {
+        **_payload_concorrentes_planilha(sku, indice.get(_normalizar_sku_planilha_concorrentes(sku))),
+        "fontes_versao": versao,
+    }
+
+
+def _links_concorrentes_planilha(client_id: str, lista_id: str | None, sku: str) -> dict:
+    lista = _carregar_lista_links_concorrentes(client_id, lista_id, sku)
+    indice, versao = _indice_concorrentes_lista(client_id, lista)
+    return _payload_concorrentes_sku(sku, indice, versao)
+
+
+def _preparar_anuncios_lista(client_id: str, lista_id: str, sku: str) -> tuple[dict, str]:
+    from backend.services.medias_compras_leitura import chave_arquivo
+
+    lista = _carregar_lista_links_concorrentes(client_id, lista_id, sku)
+    if not str(lista.get("store_id") or "").strip():
+        escopo = medias_common._resolver_escopo_loja_medias(client_id, lista.get("loja"), None)
+        if escopo["scope"] == "store" and escopo["store_id"]:
+            # A list opened through the compact detail need not have a persisted store ID.
+            lista = {**lista, "store_id": escopo["store_id"], "loja": escopo["loja"]}
+    return lista, chave_arquivo(get_tenant_path(client_id))
+
+
+def _aplicar_anuncios_proprios(payload: dict, anuncios: dict, consultado_planilha: int | None) -> dict:
+    consultado_anuncios = anuncios["consultado_em_ms"]
+    consultado_em = min(consultado_planilha, consultado_anuncios) if consultado_planilha is not None else consultado_anuncios
+    payload["concorrentes_mlb"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
+    payload["concorrentes_preco"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
+    payload["anuncios_loja_status"] = {}
+    for numero, anuncio in enumerate((anuncios.get("anuncios") or [])[:5], start=1):
+        chave = f"concorrente_{numero}"
+        payload["concorrentes_mlb"][chave] = anuncio["url"]
+        payload["anuncios_loja_status"][chave] = anuncio.get("status")
+        payload["concorrentes_preco"][chave] = anuncio["preco"] if anuncio.get("preco") is not None else ""
+    payload.update({
+        "anuncios_loja_store_id": anuncios["store_id"],
+        "anuncios_loja_nome": anuncios["loja"],
+        "anuncios_loja_seller_id": anuncios["seller_id"],
+        "anuncios_loja_site_id": anuncios["site_id"],
+        "consultado_em_ms": consultado_em,
+        "anuncios_loja_fonte": "loja_lista_sku",
+        "anuncios_loja_total": anuncios.get("total_encontrado", len(anuncios.get("anuncios") or [])),
+        "anuncios_loja_truncado": bool(anuncios.get("truncado")),
+        "anuncios_loja_limite": anuncios.get("limite", 5),
+    })
+    return payload
 
 
 def _normalizar_sku_planilha_concorrentes(valor: Any) -> str:
@@ -841,6 +874,20 @@ def _indice_concorrentes_lista(client_id: str, lista: dict | None) -> tuple[dict
     planilha, versao = _fonte_concorrentes_lista(client_id, lista)
     linhas = _carregar_linhas_planilha_concorrentes(planilha) if planilha else []
     return _indexar_linhas_planilha_concorrentes(linhas), versao
+
+
+_CACHE_INDICES_CONCORRENTES = CacheConsultas(16)
+
+
+def _indice_concorrentes_sku_cache(client_id: str, lista: dict, cache_scope: str):
+    planilha, versao = _fonte_concorrentes_lista(client_id, lista)
+    if not planilha:
+        return {}, versao, None
+    consulta = _CACHE_INDICES_CONCORRENTES.consultar(
+        (client_id, cache_scope, planilha, versao),
+        lambda: _indexar_linhas_planilha_concorrentes(_carregar_linhas_planilha_concorrentes(planilha)),
+    )
+    return consulta.valor, versao, consulta.consultado_em_ms
 
 
 def _indexar_linhas_planilha_concorrentes(rows: list[list[str]]) -> dict[str, list[str]]:
@@ -1509,12 +1556,30 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     return await run_financial(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
 
 
+async def api_medias_compras_lista_pedido_previa_analise_concorrentes_sku(
+    lista_id: str,
+    sku: str,
+    req: ListaPedidoSkuAnaliseConcorrentesRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_financial
+
+    if (req.fonte_custo != "simulacao_importacao_sku"
+            or req.precos_concorrentes or not req.precos_anuncios_loja):
+        raise HTTPException(400, "A prévia exige apenas os preços dos anúncios próprios do SKU.")
+    return await run_financial(
+        _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync,
+        lista_id=lista_id, sku=sku, req=req, client_id=client_id, somente_previa=True,
+    )
+
+
 @_retry_listas_pedidos
 def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     lista_id: str,
     sku: str,
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
+    *, somente_previa: bool = False,
 ):
     listas = _carregar_listas_pedidos(client_id)
     idx_lista = next((i for i, l in enumerate(listas) if str(l.get("id", "")) == str(lista_id)), -1)
@@ -1615,8 +1680,12 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
                 for chave, preco_venda in precos.items()
             }
 
-    margens = calcular_precos(precos_normalizados)
-    margens_anuncios_loja = calcular_precos(precos_loja_normalizados, anuncios_proprios=True)
+    if simulacao:
+        margens_anuncios_loja = calcular_precos(precos_loja_normalizados, anuncios_proprios=True)
+        margens = calcular_precos(precos_normalizados)
+    else:
+        margens = calcular_precos(precos_normalizados)
+        margens_anuncios_loja = calcular_precos(precos_loja_normalizados, anuncios_proprios=True)
     custos_cadastro = {
         float(dados["custo_unitario"])
         for dados in [*margens.values(), *margens_anuncios_loja.values()]
@@ -1669,6 +1738,13 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
 
     item_atual = itens_atuais[idx_item_atual]
+    if somente_previa:
+        analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
+        return {
+            "success": True,
+            "sku": str(item_atual.get("SKU") or sku),
+            "analise_concorrentes": analise_concorrentes,
+        }
     if req.precos_anuncios_loja is not None:
         analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
     else:
@@ -2276,6 +2352,7 @@ __all__ = [
     "api_medias_compras_lista_pedido_custo_posto",
     "api_medias_compras_lista_pedido_editar",
     "api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku",
+    "api_medias_compras_lista_pedido_previa_analise_concorrentes_sku",
     "api_medias_compras_lista_pedido_atualizar_aprovacao_sku",
     "api_medias_compras_lista_pedido_adicionar_sku",
     "api_medias_compras_lista_pedido_atualizar_status",

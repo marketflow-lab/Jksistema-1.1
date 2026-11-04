@@ -312,7 +312,7 @@ class PromocoesFreteTests(unittest.TestCase):
         self.assertEqual(resultado["shipping_cost"], 13.25)
         self.assertTrue(resultado["shipping_exact_for_price"])
 
-    def test_shipping_cache_separates_price_and_dimensions(self):
+    def test_shipping_cache_separates_price_dimensions_and_account(self):
         cache_keys = []
 
         def cache_get(_cache, key, _ttl):
@@ -332,16 +332,17 @@ class PromocoesFreteTests(unittest.TestCase):
         for item in patches:
             item.start()
         try:
-            for preco, dimensions, free_shipping in (
-                (71.0, "6x15x20,500", True),
-                (95.11, "6x15x20,500", True),
-                (95.11, "6x15x20,600", True),
-                (95.11, "6x15x20,600", False),
+            for preco, dimensions, free_shipping, seller in (
+                (71.0, "6x15x20,500", True, "123"),
+                (95.11, "6x15x20,500", True, "123"),
+                (95.11, "6x15x20,600", True, "123"),
+                (95.11, "6x15x20,600", False, "123"),
+                (95.11, "6x15x20,600", False, "456"),
             ):
                 pricing._ml_obter_frete_detalhado(
                     "000002",
                     "JK Pecas",
-                    {"user_id": "123"},
+                    {"user_id": seller, "_store_id_context": "store-id", "site_id": "MLB"},
                     "MLB4321924928",
                     {"free_shipping": True, "mode": "me2", "logistic_type": "fulfillment"},
                     request_fn=request_fn,
@@ -359,9 +360,9 @@ class PromocoesFreteTests(unittest.TestCase):
             for item in reversed(patches):
                 item.stop()
 
-        self.assertEqual(len(cache_keys), 4)
-        self.assertEqual(len(set(cache_keys)), 4)
-        self.assertTrue(all(key.startswith("v7:") for key in cache_keys))
+        self.assertEqual(len(cache_keys), 5)
+        self.assertEqual(len(set(cache_keys)), 5)
+        self.assertTrue(all(key.startswith("v8:") for key in cache_keys))
 
     def test_contextual_shipping_prefers_authoritative_all_country_over_regional_minimum(self):
         payload = {

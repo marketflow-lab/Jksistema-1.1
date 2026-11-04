@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import partial
-from typing import Callable, TypeVar
+from typing import Callable, Literal, TypeVar
 
 import anyio
 from anyio.lowlevel import RunVar
@@ -13,6 +13,7 @@ from anyio.lowlevel import RunVar
 _Result = TypeVar("_Result")
 _HEAVY_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_heavy_worker_limiter")
 _FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_financial_worker_limiter")
+_IMPORT_OFFER_LIMITERS: RunVar[dict[str, anyio.CapacityLimiter]] = RunVar("jk_import_offer_limiters")
 _PENDING_WORKERS: RunVar[set[asyncio.Task]] = RunVar("jk_pending_blocking_workers")
 HEAVY_WORKER_LIMIT = 2
 FINANCIAL_WORKER_LIMIT = 1
@@ -62,6 +63,18 @@ async def run_financial(function: Callable[..., _Result], *args, **kwargs) -> _R
 async def run_blocking(function: Callable[..., _Result], *args, **kwargs) -> _Result:
     """Use normal worker admission for short operational reads such as stores."""
     return await _run_worker(partial(function, *args, **kwargs), None)
+
+
+async def run_import_offer_source(
+    source: Literal["planilha", "anuncios"], function: Callable[..., _Result], *args, **kwargs,
+) -> _Result:
+    """Keep provider waits independent from each other and from cost workers."""
+    try:
+        limiters = _IMPORT_OFFER_LIMITERS.get()
+    except LookupError:
+        limiters = {"planilha": anyio.CapacityLimiter(2), "anuncios": anyio.CapacityLimiter(2)}
+        _IMPORT_OFFER_LIMITERS.set(limiters)
+    return await _run_worker(partial(function, *args, **kwargs), limiters[source])
 
 
 async def _run_worker(function: Callable[[], _Result], limiter) -> _Result:

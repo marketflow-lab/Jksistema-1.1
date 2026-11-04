@@ -94,6 +94,9 @@ async function environment(browser, options = {}) {
         if (pathname.endsWith('/analise-concorrentes')) return json(route, { analise_concorrentes: { margens: {} } });
         if (pathname === '/api/medias-compras/concorrentes-links') return json(route, { concorrentes: {} });
         if (url.hostname === 'economia.awesomeapi.com.br') return json(route, { USDBRL: { bid: '5' } });
+        if (/^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+$/.test(pathname)) {
+            return json(route, { detail: 'Not Found' }, 404);
+        }
         if (pathname.startsWith('/api/')) return json(route, {});
         return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
     });
@@ -114,7 +117,9 @@ async function expectText(locator, expected) {
 }
 
 (async () => {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     try {
         const table = await environment(browser);
         await table.page.goto(origin + '/importacoes_lista.html?lista_id=A');

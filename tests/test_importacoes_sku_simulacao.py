@@ -1,7 +1,10 @@
 """SKU import simulations use their displayed cost and the import list's store."""
 
+import asyncio
+import asyncio
 import copy
 import json
+from threading import Event
 
 import pytest
 from fastapi import HTTPException
@@ -121,6 +124,43 @@ def test_subsidio_da_promocao_ativa_apenas_na_margem_propria(monkeypatch, offers
     assert propria["margem_percentual"] == (27.51 if expected else 24.60)
     assert analysis["margens"]["concorrente_1"]["margem_percentual"] == 24.60
     assert len(chamadas_promocoes) == 1
+
+
+def test_previa_propria_calcula_sem_gravar_e_patch_reutiliza_tarifa_e_frete(monkeypatch):
+    state, harness = _setup(monkeypatch)
+    original = copy.deepcopy(state)
+    req = ListaPedidoSkuAnaliseConcorrentesRequest(
+        fonte_custo="simulacao_importacao_sku", custo_unitario=14.2,
+        precos_anuncios_loja={"concorrente_1": 100}, anuncios_loja={"concorrente_1": "MLB111"},
+    )
+
+    previa = asyncio.run(service.api_medias_compras_lista_pedido_previa_analise_concorrentes_sku(
+        "lista-1", "001", req, client_id="tenant-a",
+    ))["analise_concorrentes"]
+    assert previa["margens"] == {}
+    assert previa["margens_anuncios_loja"]["concorrente_1"]["margem_percentual"] == 52.8
+    assert state == original
+
+    harness.calls.clear()
+    resultado = _request(monkeypatch, state)["analise_concorrentes"]
+    assert resultado["margens_anuncios_loja"] == previa["margens_anuncios_loja"]
+    assert resultado["margens"]["concorrente_1"]["margem_percentual"] == 52.8
+    assert sum(call[0] == "fee" for call in harness.calls) == 1
+    assert sum(call[0] == "shipping" for call in harness.calls) == 1
+
+
+def test_previa_propria_rejeita_precos_de_concorrentes(monkeypatch):
+    _setup(monkeypatch)
+    req = ListaPedidoSkuAnaliseConcorrentesRequest(
+        fonte_custo="simulacao_importacao_sku", custo_unitario=14.2,
+        precos_anuncios_loja={"concorrente_1": 100}, precos_concorrentes={"concorrente_1": 90},
+        anuncios_loja={"concorrente_1": "MLB111"},
+    )
+    with pytest.raises(HTTPException) as erro:
+        asyncio.run(service.api_medias_compras_lista_pedido_previa_analise_concorrentes_sku(
+            "lista-1", "001", req, client_id="tenant-a",
+        ))
+    assert erro.value.status_code == 400
 
 
 def test_schema_defaults_to_catalog_and_rejects_unknown_cost_source():
@@ -308,14 +348,25 @@ def test_ambiguous_legacy_store_is_rejected_before_any_marketplace_call(monkeypa
 
 
 def _market_sheet(monkeypatch):
+    from backend.services import importacoes_sku_anuncios as ads
+
     row = ["001", "", "MLB777", "999", "https://example.test/market", "100"]
+    monkeypatch.setattr(service, "_fonte_concorrentes_lista", lambda client, order: ("planilha-teste", 1))
+    monkeypatch.setattr(ads, "confirmar_escopo_anuncios_sku", lambda *args: None)
     monkeypatch.setattr(service, "_indice_concorrentes_lista", lambda client, order: ({"001": row}, 1))
+    monkeypatch.setattr(service, "get_tenant_path", lambda client: client)
+    monkeypatch.setattr(service, "_indice_concorrentes_sku_cache", lambda client, order, scope: ({"001": row}, 1, 1000))
+
+
+
+def _consulta_links(*args, **kwargs):
+    return asyncio.run(service.api_medias_compras_concorrentes_links(*args, **kwargs))
 
 
 def test_list_ad_query_requires_a_list_before_reading_market_sources(monkeypatch):
     monkeypatch.setattr(service, "_indice_concorrentes_lista", lambda *args: pytest.fail("Missing list must fail first"))
     with pytest.raises(HTTPException) as error:
-        service._api_medias_compras_concorrentes_links_sync("001", client_id="tenant-a", anuncios_da_lista=True)
+        _consulta_links("001", client_id="tenant-a", anuncios_da_lista=True)
     assert error.value.status_code == 400
 
 
@@ -325,7 +376,7 @@ def test_default_links_query_preserves_sheet_ad_mapping(monkeypatch):
     _setup(monkeypatch)
     _market_sheet(monkeypatch)
     monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", lambda *args: pytest.fail("Legacy lookup must remain unchanged"))
-    result = service._api_medias_compras_concorrentes_links_sync("001", client_id="tenant-a", lista_id="lista-1")
+    result = _consulta_links("001", client_id="tenant-a", lista_id="lista-1")
     assert result["concorrentes_mlb"]["concorrente_1"] == "MLB777"
     assert result["concorrentes_preco"]["concorrente_1"] == "999"
     assert "anuncios_loja_fonte" not in result
@@ -336,18 +387,19 @@ def test_opt_in_links_replace_only_own_ads_and_keep_competitor_comparisons(monke
 
     _setup(monkeypatch)
     _market_sheet(monkeypatch)
-    legacy = service._api_medias_compras_concorrentes_links_sync("001", client_id="tenant-a", lista_id="lista-1")
+    legacy = _consulta_links("001", client_id="tenant-a", lista_id="lista-1")
     calls = []
 
-    def lookup(client, order, sku):
+    def lookup(client, order, sku, *, cache_scope):
         calls.append((client, order["store_id"], sku))
-        return {"store_id": "store-carlos", "loja": "Carlos", "anuncios": [
+        return {"store_id": "store-carlos", "loja": "Carlos", "seller_id": "111", "site_id": "MLB",
+                "consultado_em_ms": 2000, "anuncios": [
             {"item_id": "MLB111", "preco": 30, "url": "https://produto.mercadolivre.com.br/MLB-111-peca"},
             {"item_id": "MLB222", "preco": 35, "url": "https://produto.mercadolivre.com.br/MLB-222-peca"},
         ], "total_encontrado": 6, "limite": 5, "truncado": True}
 
     monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", lookup)
-    result = service._api_medias_compras_concorrentes_links_sync(
+    result = _consulta_links(
         "001", client_id="tenant-a", lista_id="lista-1", anuncios_da_lista=True,
     )
     assert calls == [("tenant-a", "store-carlos", "001")]
@@ -361,8 +413,105 @@ def test_opt_in_links_replace_only_own_ads_and_keep_competitor_comparisons(monke
     assert result["concorrentes_preco"]["concorrente_3"] == ""
     assert result["anuncios_loja_store_id"] == "store-carlos"
     assert result["anuncios_loja_nome"] == "Carlos"
+    assert result["anuncios_loja_seller_id"] == "111" and result["anuncios_loja_site_id"] == "MLB"
+    assert result["consultado_em_ms"] == 1000
     assert result["anuncios_loja_fonte"] == "loja_lista_sku"
     assert result["anuncios_loja_total"] == 6 and result["anuncios_loja_truncado"] is True
+
+
+def test_somente_proprios_nao_le_planilha_e_mantem_fonte_e_escopo(monkeypatch):
+    from backend.services import importacoes_sku_anuncios as ads
+
+    _setup(monkeypatch)
+    _market_sheet(monkeypatch)
+    monkeypatch.setattr(service, "_indice_concorrentes_sku_cache",
+                        lambda *args: pytest.fail("A prévia própria não depende da planilha"))
+
+    def lookup(client, lista, sku, *, cache_scope):
+        assert (client, lista["store_id"], sku) == ("tenant-a", "store-carlos", "001")
+        return {"store_id": "store-carlos", "loja": "Carlos", "seller_id": "111", "site_id": "MLB",
+                "consultado_em_ms": 2000, "anuncios": [
+                    {"url": "https://produto.mercadolivre.com.br/MLB-111-peca", "preco": 30, "status": "active"},
+                ]}
+
+    monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", lookup)
+    with pytest.raises(HTTPException) as sem_escopo:
+        _consulta_links("001", client_id="tenant-a", lista_id="lista-1", somente_proprios=True)
+    assert sem_escopo.value.status_code == 400
+
+    result = _consulta_links("001", client_id="tenant-a", lista_id="lista-1",
+                             anuncios_da_lista=True, somente_proprios=True)
+    assert result["concorrentes_preco"]["concorrente_1"] == 30
+    assert not any(result["concorrentes_valores"].values())
+    assert not any(result["concorrentes"].values())
+    assert result["fontes_versao"] == 1
+    assert result["consultado_em_ms"] == 2000
+
+
+def test_fontes_avancam_em_paralelo_e_proprios_nao_esperam_planilha(monkeypatch):
+    from backend.services import importacoes_sku_anuncios as ads
+
+    _setup(monkeypatch)
+    _market_sheet(monkeypatch)
+    iniciou_planilha, iniciou_anuncios, liberar_planilha = Event(), Event(), Event()
+
+    def planilha(*args):
+        iniciou_planilha.set()
+        assert liberar_planilha.wait(10), "A consulta de teste da planilha não foi liberada"
+        return {"001": ["001", "", "", "", "https://example.test/market", "100"]}, 1, 1000
+
+    def lookup(client, lista, sku, *, cache_scope):
+        iniciou_anuncios.set()
+        return {"store_id": "store-carlos", "loja": "Carlos", "seller_id": "111", "site_id": "MLB",
+                "consultado_em_ms": 2000, "anuncios": [
+                    {"url": "https://produto.mercadolivre.com.br/MLB-111-peca", "preco": 30, "status": "active"},
+                ]}
+
+    monkeypatch.setattr(service, "_indice_concorrentes_sku_cache", planilha)
+    monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", lookup)
+
+    async def consultar():
+        params = dict(sku="001", client_id="tenant-a", lista_id="lista-1", anuncios_da_lista=True)
+        completa = asyncio.create_task(service.api_medias_compras_concorrentes_links(**params))
+        try:
+            assert await asyncio.to_thread(iniciou_planilha.wait, 2)
+            assert await asyncio.to_thread(iniciou_anuncios.wait, 2)
+            propria = await asyncio.wait_for(
+                service.api_medias_compras_concorrentes_links(**params, somente_proprios=True), timeout=2,
+            )
+            assert propria["concorrentes_preco"]["concorrente_1"] == 30
+            assert not completa.done()
+        finally:
+            liberar_planilha.set()
+        final = await asyncio.wait_for(completa, timeout=2)
+        assert final["concorrentes_valores"]["concorrente_1"] == "100"
+        assert final["concorrentes_preco"]["concorrente_1"] == 30
+
+    asyncio.run(consultar())
+
+
+def test_opt_in_legacy_list_resolves_store_without_rewriting_it(monkeypatch):
+    from backend.services import importacoes_sku_anuncios as ads
+
+    state, _ = _setup(monkeypatch)
+    _market_sheet(monkeypatch)
+    order = state["tenant-a"][0]
+    order.pop("store_id")
+    monkeypatch.setattr(service.medias_common, "_resolver_escopo_loja_medias", lambda *_: {
+        "scope": "store", "store_id": "store-carlos", "loja": "Carlos",
+    })
+
+    def lookup(client, lista, sku, *, cache_scope):
+        assert (client, lista["store_id"], sku) == ("tenant-a", "store-carlos", "001")
+        return {"store_id": lista["store_id"], "loja": lista["loja"], "seller_id": "111", "site_id": "MLB",
+                "consultado_em_ms": 2000, "anuncios": []}
+
+    monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", lookup)
+    result = _consulta_links(
+        "001", client_id="tenant-a", lista_id="lista-1", anuncios_da_lista=True,
+    )
+    assert result["anuncios_loja_store_id"] == "store-carlos"
+    assert "store_id" not in order
 
 
 def test_opt_in_lookup_failure_does_not_fallback_to_sheet_own_ads(monkeypatch):
@@ -371,12 +520,12 @@ def test_opt_in_lookup_failure_does_not_fallback_to_sheet_own_ads(monkeypatch):
     _setup(monkeypatch)
     _market_sheet(monkeypatch)
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         raise HTTPException(401, "Reconnect this store")
 
     monkeypatch.setattr(ads, "buscar_anuncios_sku_da_lista", denied)
     with pytest.raises(HTTPException) as error:
-        service._api_medias_compras_concorrentes_links_sync(
+        _consulta_links(
             "001", client_id="tenant-a", lista_id="lista-1", anuncios_da_lista=True,
         )
     assert error.value.status_code == 401

@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { chromium } = require('playwright');
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(process.env.JK_SKU_TEST_SOURCE_ROOT || path.join(__dirname, '..'));
 const temporaryRoot = path.resolve(process.env.JK_TEST_TMP || os.tmpdir());
 const profile = fs.mkdtempSync(path.join(temporaryRoot, 'jk-importacoes-cache-'));
 const origin = 'http://127.0.0.1:8128';
@@ -28,7 +28,9 @@ function lista(revisao = 1) {
 }
 
 async function launch(mode = 'live') {
-    context = await chromium.launchPersistentContext(profile, { headless: true });
+    context = await chromium.launchPersistentContext(profile, { headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     const state = { mode, revisao: 1, pending: gate(), complementsForbidden: false, costFailure: false, logistics: {},
         calls: { detail: 0, index: 0, cost: 0, patches: 0 }, analyses: [], errors: [] };
     await context.addInitScript(() => {
@@ -80,6 +82,9 @@ async function launch(mode = 'live') {
         if (pathname === '/api/cadastro/nacionalizadores') return json(route, []);
         if (pathname === '/api/lojas') return json(route, [{ store_id: 'store-A', nome: 'Loja A' }]);
         if (pathname.endsWith('/preferencias-colunas')) return json(route, {});
+        if (/^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+$/.test(pathname)) {
+            return json(route, { detail: 'Not Found' }, 404);
+        }
         if (pathname.startsWith('/api/')) {
             if (pathname.endsWith('/landed-cost')) state.calls.cost++;
             if (pathname.endsWith('/landed-cost') && state.costPending) await state.costPending.promise;

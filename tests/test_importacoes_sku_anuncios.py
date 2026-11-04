@@ -260,3 +260,36 @@ def test_current_sale_price_is_used_without_falling_back_to_item(env, amount, cu
         if path.endswith("/sale_price") else None
     )
     assert lookup(env)["anuncios"][0]["preco"] == expected
+
+
+def test_ad_cache_reuses_prices_until_expiry_and_checks_access(env, monkeypatch):
+    from backend.services import importacoes_consultas_cache as cache
+
+    now = [100.0]
+    monkeypatch.setattr(cache, "monotonic", lambda: now[0])
+    monkeypatch.setattr(service, "_CACHE_ANUNCIOS", cache.CacheConsultas(8))
+
+    def cached():
+        return service.buscar_anuncios_sku_da_lista(
+            env["client"], {"store_id": env["store"], "itens": [{"SKU": "35"}]},
+            "35", cache_scope="isolated",
+        )
+
+    first = cached()
+    calls = len(env["calls"])
+    first["anuncios"][0]["preco"] = 1
+    assert cached()["anuncios"][0]["preco"] == 50
+    assert len(env["calls"]) == calls
+
+    env["revoke_at"] = len(env["cfg_calls"]) + 1
+    with pytest.raises(HTTPException) as denied:
+        cached()
+    assert denied.value.status_code == 403
+    assert len(env["calls"]) == calls
+    env["revoke_at"] = None
+
+    now[0] += 60
+    item_id = env["ids"][0]
+    env["items"][item_id] = product(item_id, price=70)
+    assert cached()["anuncios"][0]["preco"] == 70
+    assert len(env["calls"]) > calls

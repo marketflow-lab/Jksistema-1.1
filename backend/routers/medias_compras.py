@@ -140,10 +140,22 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_editar",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/skus/{sku}",
+        medias_compras.api_importacoes_sku_detalhe,
+        methods=["GET"],
+        name="api_importacoes_sku_detalhe",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}/skus/{sku}/analise-concorrentes",
         medias_compras.api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku,
         methods=["PATCH"],
         name="api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku",
+    )
+    medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/skus/{sku}/analise-concorrentes/previa",
+        medias_compras.api_medias_compras_lista_pedido_previa_analise_concorrentes_sku,
+        methods=["POST"],
+        name="api_medias_compras_lista_pedido_previa_analise_concorrentes_sku",
     )
     medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}/skus/{sku}/aprovacao",

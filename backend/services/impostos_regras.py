@@ -255,8 +255,12 @@ def _aplicar_classificacao_fiscal_fallback(df: pd.DataFrame, client_id: str) -> 
     return df
 
 
-def _carregar_cadastro_para_impostos(client_id: str) -> tuple[pd.DataFrame, str]:
-    arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
+def _carregar_cadastro_para_impostos(client_id: str, *, filtro_sku=None) -> tuple[pd.DataFrame, str]:
+    if filtro_sku is None:
+        arquivo = _migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS)
+    else:
+        # O detalhe de Importações consulta somente o catálogo já publicado.
+        arquivo = os.path.join(get_tenant_path(client_id), "cadastro_produtos.csv")
     if not arquivo or not os.path.exists(arquivo):
         return pd.DataFrame(), arquivo
     df = ler_csv(arquivo, dtype=str).fillna("")
@@ -264,17 +268,20 @@ def _carregar_cadastro_para_impostos(client_id: str) -> tuple[pd.DataFrame, str]
     for c in ["sku", "nome", "ncm", "cest", "custo", "preco", "imposto"]:
         if c not in df.columns:
             df[c] = ""
+    if filtro_sku is not None:
+        df = df.loc[df["sku"].map(filtro_sku).astype(bool)].copy()
     df = _aplicar_classificacao_fiscal_fallback(df, client_id)
     return df, arquivo
 
 
 
-def _montar_simulacao_impostos(client_id: str, reserva_percentual: float = 0.0) -> dict:
+def _montar_simulacao_impostos(client_id: str, reserva_percentual: float = 0.0, *, filtro_sku=None) -> dict:
     regras = _carregar_regras_impostos(client_id)
     idx_regras = _indice_regras_impostos(regras)
     idx_ncm_ref = _indice_ncm_referencia_por_ncm(client_id)
     convenio_rows = _carregar_convenio_mg_referencia(client_id)
-    df, _ = _carregar_cadastro_para_impostos(client_id)
+    opcoes = {"filtro_sku": filtro_sku} if filtro_sku is not None else {}
+    df, _ = _carregar_cadastro_para_impostos(client_id, **opcoes)
     if df.empty:
         return {"reserva_percentual": max(0.0, float(reserva_percentual)), "produtos": [], "resumo": {"qtd_produtos": 0, "qtd_com_regra": 0, "imposto_total_estimado": 0.0, "faturamento_total": 0.0, "margem_liquida_total": 0.0}}
 

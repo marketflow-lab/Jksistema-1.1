@@ -296,7 +296,8 @@ class ResultadoCache:
             with self._lock:
                 self._flights.pop(key, None)
 
-    async def consultar(self, tenant: str, query: tuple, probe, load, *, stale: bool, persistir_em=None):
+    async def consultar(self, tenant: str, query: tuple, probe, load, *, stale: bool, persistir_em=None,
+                       preferir_fresco: bool = False):
         # No registry lock is held during filesystem work or authentication.
         started = time.perf_counter()
         source = await run_blocking(probe)
@@ -332,9 +333,12 @@ class ResultadoCache:
             running = flight is not None
             fresh = bool(result and result.fontes.assinatura == compact_source.assinatura
                          and (persistir_em or now - result.instante <= self.FRESH_SECONDS))
-            if stale and fresh and not running:
+            if (stale or preferir_fresco) and fresh and not running:
                 self._results.move_to_end(key)
-                return {**json.loads(result.body), "_cache": self._metadata(result, compact_source)}
+                value = json.loads(result.body)
+                if stale:
+                    value["_cache"] = self._metadata(result, compact_source)
+                return value
             error_record = self._errors.get(key)
             error = error_record[1] if error_record else None
             if not flight and not (stale and error):

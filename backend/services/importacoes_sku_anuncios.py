@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 import re
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -11,6 +12,7 @@ import requests
 from fastapi import HTTPException
 
 from backend.services import integracoes
+from backend.services.importacoes_consultas_cache import CacheConsultas
 from backend.services.mercadolivre_legacy_api import _ml_api_request
 from backend.services.perguntas_loading_transport import read_budget
 from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
@@ -21,6 +23,7 @@ TAMANHO_PAGINA = 50
 LIMITE_CANDIDATOS = 100
 LIMITE_PAGINAS = 3
 TEMPO_TOTAL_SEGUNDOS = 20
+_CACHE_ANUNCIOS = CacheConsultas(512)
 _SKU_FIELDS = ("seller_sku", "sellerSku", "SELLER_SKU", "sku", "SKU",
                "seller_custom_field", "sellerCustomField", "SELLER_CUSTOM_FIELD", "custom_sku", "item_sku")
 _SKU_ATTRIBUTES = {"SELLER_SKU", "SKU", "SELLER_CUSTOM_FIELD"}
@@ -218,15 +221,10 @@ def _buscar_ids(client_id: str, scope: dict, sku: str, status: str) -> list[str]
     _erro(503, "sku_ads_search_limit", "A consulta atingiu o limite de páginas dos anúncios deste SKU.")
 
 
-def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
-    """Read the selected account only; publish at most five verified own ads."""
-    target = _sku_texto(sku)
-    store_id = str((lista or {}).get("store_id") or "").strip()
+def resolver_escopo_anuncios_sku(client_id: str, store_id: str) -> dict:
+    """Resolve the configured identity without contacting Mercado Livre."""
     if not store_id:
         _erro(409, "sku_ads_store_required", "A lista precisa identificar sua loja para consultar anúncios próprios.")
-    if not target or not any(isinstance(item, dict) and _sku_texto(item.get("SKU", item.get("sku"))) == target
-                             for item in lista.get("itens") or []):
-        _erro(404, "sku_ads_sku_not_in_list", "O SKU não pertence a esta lista de importação.")
     rows = [row for row in integracoes.ler_lojas(client_id) if isinstance(row, dict)
             and str(row.get("store_id") or "") == store_id]
     if len(rows) != 1:
@@ -243,6 +241,34 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
         _erro(401, "sku_ads_connection_unavailable", "Confira a conexão desta loja ao Mercado Livre.")
     if not scope["loja"] or not scope["seller_id"] or str(provider.get("site_id") or row.get("site_id") or "") != "MLB":
         _erro(409, "sku_ads_identity_unconfirmed", "Confirme a identidade e o site da conta desta lista.")
+    return {**scope, "site_id": "MLB"}
+
+
+def confirmar_escopo_anuncios_sku(client_id: str, resultado: dict) -> None:
+    """Revalidate store credentials after an independent provider wait."""
+    _cfg_atual(client_id, resultado)
+
+
+def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str, *, cache_scope: str = "") -> dict:
+    """Read the selected account only; publish at most five verified own ads."""
+    target = _sku_texto(sku)
+    store_id = str((lista or {}).get("store_id") or "").strip()
+    if not store_id:
+        _erro(409, "sku_ads_store_required", "A lista precisa identificar sua loja para consultar anúncios próprios.")
+    if not target or not any(isinstance(item, dict) and _sku_texto(item.get("SKU", item.get("sku"))) == target
+                             for item in lista.get("itens") or []):
+        _erro(404, "sku_ads_sku_not_in_list", "O SKU não pertence a esta lista de importação.")
+    scope = resolver_escopo_anuncios_sku(client_id, store_id)
+    if not cache_scope:
+        return _consultar_anuncios_sku(client_id, scope, target)
+
+    chave = (client_id, cache_scope, store_id, scope["loja"], scope["seller_id"], "MLB", target)
+    consulta = _CACHE_ANUNCIOS.consultar(chave, lambda: _consultar_anuncios_sku(client_id, scope, target))
+    _cfg_atual(client_id, scope)  # Cached data still requires current account access.
+    return {**deepcopy(consulta.valor), "consultado_em_ms": consulta.consultado_em_ms}
+
+
+def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
     try:
         with read_budget(TEMPO_TOTAL_SEGUNDOS):
             ads = []
@@ -281,7 +307,8 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str) -> dict:
                 # The item price is only a listing check. A missing sale price cannot quote a margin.
                 ad["preco"] = _preco({"price": sale.get("amount"), "currency_id": sale.get("currency_id")})
             _cfg_atual(client_id, scope)  # Recheck authorization after the last network response.
-            return {"store_id": store_id, "loja": scope["loja"], "anuncios": ads[:LIMITE_ANUNCIOS],
+            return {"store_id": scope["store_id"], "loja": scope["loja"], "seller_id": scope["seller_id"],
+                    "site_id": "MLB", "anuncios": ads[:LIMITE_ANUNCIOS],
                     "total_encontrado": len(ads), "total_candidatos": total_candidatos,
                     "limite": LIMITE_ANUNCIOS, "truncado": len(ads) > LIMITE_ANUNCIOS}
     except requests.Timeout:

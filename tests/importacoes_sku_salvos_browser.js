@@ -32,6 +32,19 @@ function completo(id = 'A', quantidade = 9, overrides = {}) {
     } };
 }
 
+function detalheCompacto(id = 'A', somenteSalvos = false, overrides = {}) {
+    const { itens: [item], ...order } = lista(id, somenteSalvos ? 2 : 9);
+    return {
+        success: true, lista: { ...order, analise_concorrentes_fontes_versao: 7 }, item,
+        rateio: { total_usd: item['Valor total'], total_m3: item.Quantidade * .1,
+            m3_completo: true, valor_por_m3: 100 },
+        cadastro: somenteSalvos ? null : { store_id: order.store_id, sku: '001', nome: 'Cadastro ' + id,
+            ncm: '00000001', 'M3 individual': .1, custo: '11.25' },
+        fiscal: null, fiscal_pronto: !somenteSalvos, revisao: 'custos-' + id,
+        anuncios_identidade: { seller_id: 'seller-store-' + id, site_id: 'MLB', fontes_versao: 7 }, ...overrides,
+    };
+}
+
 function aguardando() {
     return { status: 202, body: { success: true, dados: null, _cache: {
         estado: 'waiting', stale: true, atualizando: true, completo: false, retry_after_ms: 1000,
@@ -106,7 +119,7 @@ async function environment(browser, options = {}) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     const state = {
-        calls: [], complements: [], patches: [], errors: [], pending: [],
+        calls: [], complements: [], patches: [], previas: [], errors: [], pending: [],
         backgroundById: {}, phase: 'waiting',
     };
     page.setDefaultTimeout(10000);
@@ -168,6 +181,21 @@ async function environment(browser, options = {}) {
                 contentType: 'application/javascript',
                 body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});',
             });
+            const skuRoute = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])\/skus\/001$/);
+            if (skuRoute) {
+                if (!options.compact) return json(route, { status: 404, body: { detail: 'Not Found' } });
+                const id = skuRoute[1];
+                if (url.searchParams.get('validar_margem') === 'true') {
+                    if (!options.validarMargem) return json(route, { status: 404, body: { detail: 'Not Found' } });
+                    state.calls.push({ id, kind: 'compact-validation', method: route.request().method() });
+                    return json(route, await options.validarMargem({ id, state }));
+                }
+                const saved = url.searchParams.get('somente_salvos') === 'true';
+                state.calls.push({ id, kind: saved ? 'compact-saved' : 'compact', method: route.request().method() });
+                const result = typeof options.compact === 'function'
+                    ? await options.compact({ id, saved, state, page }) : detalheCompacto(id, saved);
+                return json(route, result);
+            }
             const match = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])$/);
             if (match) {
                 const id = match[1];
@@ -182,6 +210,15 @@ async function environment(browser, options = {}) {
                 const result = handler ? await handler({ id, state, index: state.backgroundById[id], page })
                     : kind === 'saved' ? { lista: lista(id) } : completo(id);
                 return json(route, result);
+            }
+            if (pathname.endsWith('/analise-concorrentes/previa')) {
+                assert.strictEqual(route.request().method(), 'POST');
+                const payload = route.request().postDataJSON();
+                assert.deepStrictEqual(payload.precos_concorrentes, {});
+                state.previas.push(payload);
+                const resposta = respostaFinanceira(payload, null, pathname.includes('/B/') ? 'store-B' : 'store-A');
+                resposta.analise_concorrentes.margens = {};
+                return json(route, resposta);
             }
             if (pathname.endsWith('/analise-concorrentes')) {
                 assert.strictEqual(route.request().method(), 'PATCH');
@@ -198,6 +235,9 @@ async function environment(browser, options = {}) {
                 } });
             }
             if (pathname.startsWith('/api/')) {
+                if (url.searchParams.get('somente_proprios') === 'true' && !options.proprios) {
+                    return json(route, { status: 404, body: { detail: 'Not Found' } });
+                }
                 state.complements.push(pathname);
                 if (pathname === '/api/medias-compras/concorrentes-links') {
                     assert.strictEqual(url.searchParams.get('anuncios_da_lista'), 'true',
@@ -287,7 +327,9 @@ async function run(browser, name, options, check) {
 }
 
 (async () => {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     try {
         await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
             await open(env);
@@ -897,6 +939,267 @@ async function run(browser, name, options, check) {
             assert.strictEqual(await env.page.locator('#vQtd').textContent(), '2');
             assert.strictEqual(env.state.patches.length, 1, 'O custo simulado válido permite análise durante a fila da lista.');
         });
+        await run(browser, 'consulta compacta atualiza o custo da cópia sem esperar anúncios', {
+            compact: ({ id, saved, state }) => {
+                const body = detalheCompacto(id, saved);
+                if (state.phase === 'new-rate') {
+                    body.lista.exchange_rate = 5.75;
+                    body.revisao += '-changed';
+                }
+                return body;
+            },
+            complement: async ({ pathname, state }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                if (state.phase === 'new-rate') {
+                    const pendente = gate();
+                    state.pending.push(pendente);
+                    await pendente.promise;
+                }
+                return { status: 502, body: { detail: 'Anúncios indisponíveis' } };
+            },
+        }, async env => {
+            await open(env);
+            await env.page.waitForFunction(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:custo'))?.dados));
+            const custoAnterior = await env.page.locator('#vValorUnitarioProduto').textContent();
+            assert.notStrictEqual(custoAnterior, '-');
+            env.state.phase = 'new-rate';
+            await open(env);
+            await waitUntil(() => env.state.pending.length > 0);
+            await env.page.waitForFunction(custo => {
+                const atual = document.getElementById('vValorUnitarioProduto').textContent;
+                return atual !== '-' && atual !== custo;
+            }, custoAnterior);
+            assert.strictEqual(await env.page.locator('#vDolarCompra').textContent(), 'R$ 5,75');
+            assert.strictEqual(env.state.patches.length, 0);
+            env.state.pending.forEach(item => item.resolve());
+            await env.page.waitForFunction(() =>
+                /indispon|possível/i.test(document.getElementById('analiseSkuStatus').textContent));
+            assert.notStrictEqual(await env.page.locator('#vValorUnitarioProduto').textContent(), '-');
+            assert(env.state.calls.every(call => call.kind.startsWith('compact')));
+            assert(!env.state.complements.some(pathname => pathname.includes('/api/cadastro/') || pathname.includes('/api/impostos/')));
+        });
+
+        const instante = new Date('2026-11-04T12:00:00Z').getTime();
+        await run(browser, 'consulta compacta reaproveita análise válida e expira margem sem perder preço', opcoesFinanceiras({
+            compact: ({ id, saved, state }) => {
+                const dados = detalheCompacto(id, saved);
+                if (state.phase === 'different-seller') dados.anuncios_identidade.seller_id = 'seller-new';
+                return dados;
+            },
+            complement: ({ pathname, state, url }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                if (state.phase === 'fail' || state.phase === 'different-seller') {
+                    return { status: 502, body: { detail: 'Anúncios indisponíveis' } };
+                }
+                const resposta = { ...fontesFinanceiras(url.searchParams.get('lista_id')), fontes_versao: 7,
+                    anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB',
+                    consultado_em_ms: state.phase === 'changed' ? instante + 61000 : instante };
+                if (state.phase === 'changed') resposta.concorrentes_preco.concorrente_1 = 'R$ 330,00';
+                return resposta;
+            },
+        }), async env => {
+            await env.page.clock.setFixedTime(new Date(instante));
+            await open(env);
+            const margem = env.page.locator('#vMargemMlb1');
+            await env.page.waitForFunction(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise));
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent.includes('%'));
+            const primeiraMargem = await margem.textContent();
+            assert.strictEqual(env.state.patches.length, 1);
+
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent.includes('%')
+                && /^Preços consultados/.test(document.getElementById('analiseSkuStatus').textContent));
+            assert.strictEqual(await margem.textContent(), primeiraMargem);
+            assert.strictEqual(env.state.patches.length, 1, 'Reabrir uma análise válida não deve gerar novo PATCH.');
+
+            env.state.phase = 'fail';
+            await env.page.clock.setFixedTime(new Date(instante + 61000));
+            await open(env);
+            await env.page.waitForFunction(() =>
+                /indispon|possível|salv/i.test(document.getElementById('analiseSkuStatus').textContent)
+                && document.getElementById('vMlb1').textContent.includes('300')
+                && /^Última margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(env.state.patches.length, 1);
+
+            env.state.phase = 'changed';
+            await open(env);
+            await env.page.waitForFunction(() => /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(env.state.patches.length, 2);
+            assert.strictEqual(env.state.patches[1].payload.precos_anuncios_loja.concorrente_1, 330);
+            await env.page.waitForFunction(async () =>
+                (await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise
+                    ?.margens_anuncios_loja?.concorrente_1?.preco_venda === 330);
+
+            env.state.phase = 'different-seller';
+            await open(env);
+            await env.page.waitForFunction(() =>
+                /indispon/i.test(document.getElementById('analiseSkuStatus').textContent));
+            assert.strictEqual(await margem.textContent(), 'Margem: -');
+            assert.strictEqual(await env.page.locator('#vMlb1').textContent(), '-');
+            assert.strictEqual(env.state.patches.length, 2);
+        });
+
+        await run(browser, 'consulta compacta renova anúncios vencidos com o detalhe aberto', opcoesFinanceiras({
+            compact: true,
+            complement: ({ pathname, state }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                if (state.phase === 'fail') return { status: 502, body: { detail: 'Fonte indisponível' } };
+                return { ...fontesFinanceiras(), fontes_versao: 7, anuncios_loja_seller_id: 'seller-store-A',
+                    anuncios_loja_site_id: 'MLB', consultado_em_ms: instante };
+            },
+        }), async env => {
+            await env.page.clock.install({ time: new Date(instante) });
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent.includes('%')
+                && /^Preços consultados/.test(document.getElementById('analiseSkuStatus').textContent));
+            env.state.phase = 'fail';
+            await env.page.clock.fastForward(61000);
+            await env.page.waitForFunction(() => /indispon/i.test(document.getElementById('analiseSkuStatus').textContent));
+            assert.strictEqual(env.state.complements.filter(pathname => pathname.endsWith('/concorrentes-links')).length, 2);
+            assert.match(await env.page.locator('#vMargemMlb1').textContent(), /^Última margem: .+%/);
+            assert.notStrictEqual(await env.page.locator('#vMlb1').textContent(), '-');
+            assert.notStrictEqual(await env.page.locator('#vValorUnitarioProduto').textContent(), '-');
+            assert.strictEqual(env.state.patches.length, 1);
+        });
+
+        await run(browser, 'margem compacta mantém os cartões compatíveis enquanto atualiza', opcoesFinanceiras({
+            compact: true,
+            complement: async ({ pathname, state }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                const renovando = state.phase === 'renovar';
+                if (renovando) {
+                    const espera = gate();
+                    state.pending.push(espera);
+                    await espera.promise;
+                }
+                const fontes = { ...fontesFinanceiras(), fontes_versao: 7,
+                    anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB',
+                    consultado_em_ms: instante + (renovando ? 61000 : 0) };
+                if (renovando) fontes.concorrentes_preco.concorrente_1 = 'R$ 330,00';
+                return fontes;
+            },
+            patch: async ({ payload, state }) => {
+                if (state.phase === 'renovar') {
+                    const espera = gate();
+                    state.pending.push(espera);
+                    await espera.promise;
+                }
+                const resposta = respostaFinanceira(payload);
+                if (state.phase === 'renovar') {
+                    resposta.analise_concorrentes.margens.concorrente_1 = {
+                        financeiro_exato: false, motivo_indisponivel: 'Frete indisponível nesta consulta',
+                    };
+                }
+                return resposta;
+            },
+        }), async env => {
+            await env.page.clock.install({ time: new Date(instante) });
+            await open(env);
+            const propria = env.page.locator('#vMargemMlb1');
+            const mercado = env.page.locator('#vMargemConcorrente1');
+            await env.page.waitForFunction(() =>
+                /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent)
+                && /^Margem: .+%/.test(document.getElementById('vMargemConcorrente1').textContent));
+            const valorAnterior = (await propria.textContent()).replace('Margem: ', '');
+            env.state.phase = 'renovar';
+            await env.page.clock.fastForward(61000);
+            await waitUntil(() => env.state.pending.length === 1);
+            assert.strictEqual(await propria.textContent(), 'Última margem: ' + valorAnterior);
+            assert.match(await mercado.textContent(), /^Última margem: .+%/);
+            env.state.pending[0].resolve();
+            await waitUntil(() => env.state.pending.length === 2);
+            assert.strictEqual(await propria.textContent(), 'Margem: -', 'Preço alterado exige outro cálculo no cartão afetado.');
+            assert.match(await mercado.textContent(), /^Última margem: .+%/);
+            env.state.pending[1].resolve();
+            await env.page.waitForFunction(() => /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(env.state.patches.length, 2);
+            assert.notStrictEqual(await propria.textContent(), 'Margem: ' + valorAnterior);
+            assert.match(await mercado.textContent(), /^Última margem: .+%/);
+            assert.match(await mercado.getAttribute('title'), /Frete indisponível nesta consulta/);
+        });
+
+        await run(browser, 'margem compacta exibe a prévia própria antes dos concorrentes', opcoesFinanceiras({
+            compact: true, proprios: true,
+            complement: async ({ pathname, state, url }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                const fontes = { ...fontesFinanceiras(), fontes_versao: 7,
+                    anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB' };
+                if (url.searchParams.get('somente_proprios') === 'true') {
+                    return { ...fontes, concorrentes: {}, concorrentes_valores: {} };
+                }
+                const espera = gate();
+                state.pending.push(espera);
+                await espera.promise;
+                return fontes;
+            },
+        }), async env => {
+            await open(env);
+            await env.page.waitForFunction(() => /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(await env.page.locator('#vMargemConcorrente1').textContent(), 'Margem: -');
+            assert.strictEqual(env.state.previas.length, 1);
+            assert.strictEqual(env.state.patches.length, 0, 'A prévia é somente leitura.');
+            env.state.pending[0].resolve();
+            await env.page.waitForFunction(() => /^Margem: .+%/.test(document.getElementById('vMargemConcorrente1').textContent));
+            assert.strictEqual(env.state.patches.length, 1);
+        });
+
+        await run(browser, 'margem compacta valida a cópia sem esperar a consulta completa', opcoesFinanceiras({
+            compact: async ({ id, saved, state }) => {
+                if (!saved && state.phase === 'reabrir') {
+                    const espera = gate();
+                    state.pending.push(espera);
+                    await espera.promise;
+                }
+                return detalheCompacto(id, saved, { revisao_fontes_margem: 'fontes-atuais' });
+            },
+            validarMargem: ({ id }) => ({ revisao_fontes_margem: 'fontes-atuais',
+                anuncios_identidade: detalheCompacto(id).anuncios_identidade }),
+            complement: ({ pathname }) => pathname === '/api/medias-compras/concorrentes-links'
+                ? { ...fontesFinanceiras(), fontes_versao: 7,
+                    anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB' } : undefined,
+        }), async env => {
+            await open(env);
+            await env.page.waitForFunction(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise));
+            env.state.phase = 'reabrir';
+            await open(env);
+            await env.page.waitForFunction(() =>
+                !contextoDetalheSku.listaAtualizada
+                && /^Última margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(env.state.calls.filter(call => call.kind === 'compact-validation').length, 1);
+            assert.strictEqual(env.state.patches.length, 1);
+            env.state.pending[0].resolve();
+            await env.page.waitForFunction(() =>
+                contextoDetalheSku.listaAtualizada
+                && /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+        });
+
+        await run(browser, 'consulta compacta descarta resposta de uma loja que o usuário deixou', {
+            compact: async ({ id, saved, state }) => {
+                if (id !== 'A' || saved) return detalheCompacto(id, saved);
+                const pendente = gate();
+                state.pending.push(pendente);
+                await pendente.promise;
+                return { status: 403, body: { detail: 'Negação antiga de A' } };
+            },
+        }, async env => {
+            await open(env);
+            await visibleSaved(env);
+            await env.page.evaluate(() => {
+                history.replaceState({}, '', '?lista_id=B&sku=001');
+                void carregarDetalheSku();
+            });
+            await env.page.waitForFunction(() =>
+                document.getElementById('vTituloPt').textContent === 'Cadastro B'
+                && document.getElementById('vValorUnitarioProduto').textContent !== '-');
+            env.state.pending.forEach(item => item.resolve());
+            await env.page.waitForLoadState('networkidle');
+            assert.strictEqual(await env.page.locator('#vTituloPt').textContent(), 'Cadastro B');
+            assert.strictEqual(await env.page.locator('#erro').textContent(), '');
+        });
+
         console.log('SKU: dados salvos, fila em segundo plano, cache, prazos e isolamento: OK');
     } finally {
         await browser.close();

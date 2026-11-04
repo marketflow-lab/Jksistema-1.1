@@ -388,3 +388,23 @@ def test_leitor_sem_aba_falha_em_vez_de_retornar_vazio(monkeypatch):
     with pytest.raises(HTTPException) as erro:
         listas._carregar_linhas_planilha_concorrentes(ADICIONAL)
     assert erro.value.status_code == 404
+
+
+def test_indice_do_detalhe_compartilha_leitura_e_respeita_expiracao(fontes, monkeypatch):
+    from backend.services import importacoes_consultas_cache as cache
+
+    now = [100.0]
+    monkeypatch.setattr(cache, "monotonic", lambda: now[0])
+    monkeypatch.setattr(listas, "_CACHE_INDICES_CONCORRENTES", cache.CacheConsultas(8))
+    lista = fontes.listas["tenant-a"][0]
+    indice, versao, timestamp = listas._indice_concorrentes_sku_cache("tenant-a", lista, "root-a")
+    assert indice["001"][2] == _linha("001", 400)[2]
+    assert listas._indice_concorrentes_sku_cache("tenant-a", lista, "root-a") == (indice, versao, timestamp)
+    assert fontes.leituras == [ADICIONAL]
+
+    now[0] += 60
+    fontes.planilhas[ADICIONAL] = [HEADER, _linha("001", 555)]
+    indice_novo, versao_nova, _ = listas._indice_concorrentes_sku_cache("tenant-a", lista, "root-a")
+    assert indice_novo["001"][2] == _linha("001", 555)[2]
+    assert versao_nova == versao
+    assert fontes.leituras == [ADICIONAL, ADICIONAL]

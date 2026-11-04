@@ -216,7 +216,7 @@ def _merge_meta_sku(destino: dict[str, dict], chave: str, payload: dict) -> None
             atual[campo] = valor_txt
 
 
-def _caminhos_cadastros_meta(client_id: str) -> list[str]:
+def _caminhos_cadastros_meta(client_id: str, *, migrar_legado: bool = True) -> list[str]:
     caminhos: list[str] = []
 
     def _add(caminho: str | None) -> None:
@@ -224,10 +224,11 @@ def _caminhos_cadastros_meta(client_id: str) -> list[str]:
         if caminho_txt and os.path.exists(caminho_txt) and caminho_txt not in caminhos:
             caminhos.append(caminho_txt)
 
-    try:
-        _add(_migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS))
-    except Exception:
-        pass
+    if migrar_legado:
+        try:
+            _add(_migrar_arquivo_legado_para_tenant(client_id, "cadastro_produtos.csv", ARQUIVO_DB_CADASTRO_PRODUTOS))
+        except Exception:
+            pass
 
     try:
         pasta = get_tenant_path(client_id)
@@ -530,6 +531,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     loja: str = "",
     contexto_cadastro: _ContextoCadastroLista | None = None,
     preservar_cubagem: bool = False,
+    filtrar_cadastro_fiscal: bool = False,
 ) -> list[dict]:
     lista_itens = itens if isinstance(itens, list) else []
     if not lista_itens:
@@ -563,7 +565,10 @@ def _enriquecer_itens_lista_pedido_com_impostos(
         return normalized_columns[key]
 
     with medir_etapa("catalogo_fiscal"):
-        df_cad, caminho_cadastro_principal = _carregar_cadastro_para_impostos(client_id)
+        opcoes_fiscais = {
+            "filtro_sku": lambda sku: _sku_interessa(*_sku_lookup_keys_sync_ncm(sku)),
+        } if filtrar_cadastro_fiscal else {}
+        df_cad, caminho_cadastro_principal = _carregar_cadastro_para_impostos(client_id, **opcoes_fiscais)
     sku_para_fiscal: dict[str, dict] = {}
     sku_para_meta: dict[str, dict] = {}
     sku_para_meta_fallback: dict[str, dict] = {}
@@ -678,7 +683,8 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     registrar_tempo("metadados_principal", principal_started)
     historico_started = time.perf_counter()
     caminho_principal_abs = os.path.abspath(caminho_cadastro_principal) if caminho_cadastro_principal else ""
-    for caminho_meta in _caminhos_cadastros_meta(client_id):
+    opcoes_meta = {"migrar_legado": False} if filtrar_cadastro_fiscal else {}
+    for caminho_meta in _caminhos_cadastros_meta(client_id, **opcoes_meta):
         try:
             if caminho_principal_abs and os.path.abspath(caminho_meta) == caminho_principal_abs:
                 continue

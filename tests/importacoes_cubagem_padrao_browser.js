@@ -31,7 +31,7 @@ async function environment(browser, options = {}) {
     const page = await context.newPage();
     const state = { catalog: 0, global: 0, errors: [], detailGate: gate(), detailRequested: false };
     page.on('pageerror', error => state.errors.push(error.message));
-    const json = (route, value) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(value) }).catch(() => {});
+    const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) }).catch(() => {});
     await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         const pathname = url.pathname;
@@ -65,6 +65,9 @@ async function environment(browser, options = {}) {
         if (pathname === '/api/impostos/produtos') return json(route, { produtos: [] });
         if (pathname === '/api/medias-compras/concorrentes-links') return json(route, { concorrentes: {} });
         if (url.hostname === 'economia.awesomeapi.com.br') return json(route, { USDBRL: { bid: '5' } });
+        if (/^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+$/.test(pathname)) {
+            return json(route, { detail: 'Not Found' }, 404);
+        }
         if (pathname.startsWith('/api/')) return json(route, {});
         return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
     });
@@ -72,7 +75,9 @@ async function environment(browser, options = {}) {
 }
 
 (async () => {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     try {
         const lista = await environment(browser);
         await lista.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');

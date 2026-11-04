@@ -259,6 +259,10 @@ def _ml_contexto_frete_item(item: dict, item_price: Any = None) -> dict:
     return contexto
 
 
+def _escopo_cache_cotacao(cfg: dict) -> tuple:
+    return (cfg.get("_store_id_context"), cfg.get("user_id"), cfg.get("site_id"))
+
+
 def _ml_obter_frete_detalhado(
     client_id: str,
     loja: str,
@@ -328,7 +332,8 @@ def _ml_obter_frete_detalhado(
         f"{contexto_logistic_type}:d{dimensions_cache}:fs{int(contexto_free_shipping)}"
     )
 
-    cache_key = f"v7:{client_id}:{loja}:{item_id}{contexto_cache}"
+    conta = _escopo_cache_cotacao(cfg)
+    cache_key = f"v8:{client_id}:{loja}:{conta!r}:{item_id}{contexto_cache}"
     cached = _cache_get(ML_ITEM_SHIPPING_CACHE, cache_key, ML_ITEM_SHIPPING_CACHE_TTL)
     exige_frete_exato = bool(contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"))
     cache_utilizavel = bool(
@@ -546,7 +551,8 @@ def _ml_obter_frete_detalhado(
                 fonte_contextual,
                 exato_para_preco=True,
             ):
-                _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
+                if conta == _escopo_cache_cotacao(cfg):
+                    _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
                 return info, cfg
         except Exception as e:
             logger.warning(f"[ML API] Falha ao consultar frete contextual do item {item_id}: {e}")
@@ -668,7 +674,8 @@ def _ml_obter_frete_detalhado(
         except Exception as e:
             logger.warning(f"[ML API] Falha ao consultar frete grÃ¡tis do item {item_id}: {e}")
 
-    _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
+    if conta == _escopo_cache_cotacao(cfg):
+        _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
     return info, cfg
 
 
@@ -781,7 +788,8 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
     shipping_mode = str(shipping_info.get("mode") or "").strip()
     info["ad_cost_context_complete"] = bool(logistic_type and shipping_mode)
 
-    cache_key = f"v6:{client_id}:{category_id}:{listing_type_id}:{price}:{logistic_type}:{shipping_mode}"
+    conta = _escopo_cache_cotacao(cfg)
+    cache_key = f"v7:{client_id}:{loja}:{conta!r}:{category_id}:{listing_type_id}:{price}:{logistic_type}:{shipping_mode}"
     cached = _cache_get(ML_LISTING_FEE_CACHE, cache_key, ML_LISTING_FEE_CACHE_TTL)
     if cached:
         return cached, cfg
@@ -886,7 +894,8 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             else:
                 info["fee_breakdown"] = f"Taxa fixa (estimada): R$ {estimada:.2f}"
 
-    _cache_set(ML_LISTING_FEE_CACHE, cache_key, info)
+    if conta == _escopo_cache_cotacao(cfg):
+        _cache_set(ML_LISTING_FEE_CACHE, cache_key, info)
     return info, cfg
 
 

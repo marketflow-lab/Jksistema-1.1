@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
-const root = path.resolve(__dirname, '..');
+const root = path.resolve(process.env.JK_SKU_TEST_SOURCE_ROOT || path.join(__dirname, '..'));
 
 function gate() {
     let resolve;
@@ -47,7 +47,7 @@ async function environment(browser, options = {}) {
     if (options.fastTimeout) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
         window.restoreTimeout = () => { window.setTimeout = timeout; };
-        window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000, 120000].includes(delay) ? 50 : delay, ...args);
+        window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000, 120000].includes(delay) ? 200 : delay, ...args);
     });
     if (options.fastPolling) await page.addInitScript(() => {
         const timeout = window.setTimeout.bind(window);
@@ -124,6 +124,9 @@ async function environment(browser, options = {}) {
                 concorrentes: { concorrente_1: options.holdPrice && state.calls.concorrentes === 1 ? 'https://produto.mercadolivre.com.br/MLB-1234567890' : '' },
                 concorrentes_valores: { concorrente_1: options.holdPrice && state.calls.concorrentes === 1 ? '' : 'R$ 200,00' } });
         }
+        if (/^\/api\/medias-compras\/listas-pedidos\/[AB]\/skus\/001$/.test(pathname)) {
+            return json(route, { detail: 'Not Found' }, 404);
+        }
         const lista = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])$/);
         if (lista) {
             const saved = url.searchParams.get('somente_salvos') === 'true';
@@ -181,7 +184,9 @@ function releaseComplements(state) {
 }
 
 (async () => {
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
+            ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     try {
         const queued = await environment(browser, { queuedDetail: true, fastPolling: true, complete: true, cacheStub: true });
         await queued.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');

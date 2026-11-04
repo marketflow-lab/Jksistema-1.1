@@ -348,11 +348,16 @@
             const context = contexto();
             let tags = [];
             let method = 'GET';
+            let leituraComPost = false;
             try {
                 method = String(init?.method || input?.method || 'GET').toUpperCase();
                 const source = typeof input === 'string' || input instanceof global.URL ? input : input.url;
                 const url = new global.URL(source, global.location.href);
-                if (url.origin === global.location.origin) tags = families(url.pathname, method);
+                if (url.origin === global.location.origin) {
+                    tags = families(url.pathname, method);
+                    leituraComPost = method === 'POST'
+                        && /^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+\/analise-concorrentes\/previa$/.test(url.pathname);
+                }
             } catch (_error) {}
             const response = await originalFetch(input, init);
             if (tags.length && await sessionDenied(response)) {
@@ -365,7 +370,7 @@
                     await invalidate(['vendas', 'importacoes'], 'auth');
                     emit('jk:cache-persistente-auth-negado', { status: response.status });
                 }
-            } else if (tags.length && response.ok && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+            } else if (tags.length && response.ok && !leituraComPost && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
                 const captured = contexts.get(context);
                 const receipt = { before: captured.revisions, session: captured.session };
                 if (await invalidate(tags, 'mutation', receipt)) mutationReceipts.set(response, receipt);

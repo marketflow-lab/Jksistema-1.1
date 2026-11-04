@@ -118,7 +118,8 @@ def assinatura_arquivo(path, entry=None):
         return (os.path.normcase(os.path.abspath(path)), None)
 
 
-def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None, escopo=()):
+def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None, escopo=(),
+                    inventariar_fotos=True):
     root = Path(tenant)
     paths = set()
     authority = set()
@@ -151,8 +152,10 @@ def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None,
         authority.add(root / "lojas_config.json")
     authority.add(root.parent / ".cadastro_tenant_trust.json")
     authority.update(Path(path) for path in extras if path and Path(path).name == ".cadastro_tenant_trust.json")
-    photo_dirs = [root / "cadastro_fotos"]
-    photo_dirs.extend(Path(path) for path in extras if path and Path(path).name == "cadastro_fotos")
+    photo_dirs = []
+    if inventariar_fotos:
+        photo_dirs = [root / "cadastro_fotos"]
+        photo_dirs.extend(Path(path) for path in extras if path and Path(path).name == "cadastro_fotos")
     for directory in photo_dirs:
         paths.add(directory)
         stack = [directory] if directory.is_dir() and not directory.is_symlink() else []

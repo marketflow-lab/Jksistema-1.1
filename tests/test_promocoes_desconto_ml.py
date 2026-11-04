@@ -416,6 +416,36 @@ class PromocoesDescontoMlTests(unittest.TestCase):
         self.assertEqual(requisicao["logistic_type"], "cross_docking")
         self.assertEqual(requisicao["shipping_mode"], "me2")
 
+    def test_listing_prices_reaproveita_cotacao_apenas_na_mesma_conta(self):
+        from backend.services.mercadolivre_legacy_items import _cache_get, _cache_set
+
+        item = {
+            "id": "MLB999000111", "price": 100, "category_id": "MLB123",
+            "listing_type_id": "gold_special",
+            "shipping": {"logistic_type": "cross_docking", "mode": "me2"},
+        }
+        chamadas = []
+
+        def request_fn(_client, _loja, cfg, *_args, **_kwargs):
+            chamadas.append(cfg["user_id"])
+            return _FakeResponse(200, {"sale_fee_amount": {"111": 16, "222": 18}[cfg["user_id"]]}), cfg
+
+        with (
+            patch.object(pricing, "_ml_nome_tipo_anuncio", return_value="Classico", create=True),
+            patch.object(pricing, "_cache_get", _cache_get, create=True),
+            patch.object(pricing, "_cache_set", _cache_set, create=True),
+            patch.object(pricing, "ML_LISTING_FEE_CACHE", {}, create=True),
+            patch.object(pricing, "ML_LISTING_FEE_CACHE_TTL", 60, create=True),
+        ):
+            def cotar(store, seller):
+                cfg = {"_store_id_context": store, "user_id": seller, "site_id": "MLB"}
+                return pricing._ml_obter_taxas_anuncio("tenant-a", "Loja", cfg, item, request_fn=request_fn)[0]
+
+            self.assertEqual(cotar("store-1", "111")["ad_cost"], 16)
+            self.assertEqual(cotar("store-1", "111")["ad_cost"], 16)
+            self.assertEqual(cotar("store-2", "222")["ad_cost"], 18)
+        self.assertEqual(chamadas, ["111", "222"])
+
     def test_listing_prices_sem_contexto_logistico_nao_autoriza_margem(self):
         item = {
             "id": "MLB999000111",
