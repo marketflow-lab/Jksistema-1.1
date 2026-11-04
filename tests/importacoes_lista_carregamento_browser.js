@@ -176,7 +176,7 @@ async function waitUntil(predicate) {
     const first = await environment(browser, { holdCost: true, holdSupplier: true });
     const { page, state } = first;
     Object.assign(state.lists.A, { dolar_hoje: 5, 'Valor por M³': 50 });
-    Object.assign(state.lists.A.itens[0], { II: '10%', IPI: '5%', PIS: '2%', COFINS: '8%', 'Valor Unitário R$': 999 });
+    Object.assign(state.lists.A.itens[0], { II: '10%', IPI: '5%', PIS: '2%', COFINS: '8%', 'Valor Unitário R$': 999, 'Frete Internacional': 10 });
     await page.addInitScript(() => {
       const chave = 'importacoes_sku_proporcao_v1';
       if (!localStorage.getItem(chave)) localStorage.setItem(chave, JSON.stringify({ A: { '001': '80' }, B: { '001': '60' } }));
@@ -196,6 +196,15 @@ async function waitUntil(predicate) {
     await page.waitForFunction(() => document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent !== '—');
     assert.match(await custo001.textContent(), /123,29/);
     assert.strictEqual(await custo002.textContent(), '—');
+    const frete001 = page.locator('tr[data-sku="001"] [data-col-key="frete_internacional"]');
+    assert.match(await frete001.textContent(), /50,00/);
+    await waitUntil(() => state.calls.cost === 1);
+    await page.evaluate(() => atualizarCampoLogisticoLista('A', 'exchange_rate', '6'));
+    assert.match(await custo001.textContent(), /147,95/, 'A cotação editada prevalece sobre o dólar legado no custo unitário.');
+    assert.match(await frete001.textContent(), /60,00/, 'O frete em reais acompanha a cotação editada sem recarregar a página.');
+    await page.evaluate(() => atualizarCampoLogisticoLista('A', 'exchange_rate', '5'));
+    assert.match(await custo001.textContent(), /123,29/);
+    assert.match(await frete001.textContent(), /50,00/);
     const proporcao = page.locator('#resumoProporcaoForm');
     const percentual = proporcao.locator('input');
     const aplicar = proporcao.getByRole('button', { name: 'Aplicar a todos' });

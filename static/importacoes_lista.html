@@ -2177,6 +2177,7 @@
                 if (dados.lista) Object.assign(ultimaListaCarregada, dados.lista);
                 else ultimaListaCarregada[campo] = bodyValue;
                 confirmarMutacaoLista(contextoAnterior, resp);
+                if (campo === 'exchange_rate') renderItens(ultimosItensCarregados, ultimaListaCarregada);
                 if (campo === 'numero_invoice') salvarResumoEditavel(listaId, campo, '');
                 ultimaAnaliseCustoPosto = null;
                 await carregarCustoPostoBackend(listaId);
@@ -3414,7 +3415,7 @@
             const itens = ultimosItensCarregados;
             const m3 = itens.map(obterM3TotalItem);
             const totalM3 = m3.reduce((total, valor) => total + valor, 0);
-            const cotacao = numero(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
+            const cotacao = numero(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
             const cotacaoBase = cotacao > 0 ? cotacao : cotacaoDolarTopo;
             const editadoM3 = numero(carregarResumoEditavel(listaId).valor_por_m3);
             const totaisCabecalho = itens.map(item => {
@@ -3473,7 +3474,7 @@
             const listaIdAtual = getListaIdDaUrl();
             if (!tbody) return;
 
-            const dolarCompra = valorNumerico(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const dolarCompra = valorNumerico(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
             const dolarBase = dolarCompra > 0 ? dolarCompra : cotacaoDolarTopo;
 
             const dados = Array.isArray(itens) ? itens : [];

@@ -2484,7 +2484,7 @@
                 : getFieldItemOuLista(item, lista, ['Descrição do NCM', 'Descri??o do NCM', 'Descricao do NCM', 'Descrição NCM', 'Descri??o NCM', 'Descricao NCM'], '-');
 
             const valorPorM3Usd = obterValorPorM3Usd(lista, item, itensLista, mapaM3Cadastro);
-            const dolarCompra = getNumber(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+            const dolarCompra = getNumber(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
             const dolarBase = (dolarCompra !== null && dolarCompra > 0) ? dolarCompra : cotacaoDolarHoje;
             ultimaCotacaoBase = (dolarBase !== null && dolarBase > 0) ? dolarBase : 0;
             // Frete Internacional = Valor por M³ (USD) × Dólar da Compra × M³ do SKU
@@ -2940,7 +2940,7 @@
             if (!dadosSkuVigentes(contexto)) return;
             const { lista, item } = validarListaSku(data, contexto);
             if (!contexto.temDados) {
-                atualizarFxCompraTopo(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
+                atualizarFxCompraTopo(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
                 montarMeta(String(lista.nome_lista || '-'), contexto.sku);
                 await preencherCampos(item, lista, null, lista.itens, new Map(), { somenteDadosLista: true });
                 if (!dadosSkuVigentes(contexto)) return;
@@ -2968,7 +2968,7 @@
             const aliquotas = ['II', 'IPI', 'PIS', 'COFINS'].map(chave => getNumber(getField(item, [chave], '')));
             return !(fiscalPronto && obterM3TotalItemCadastro(item, mapaM3) !== null && frete !== null
                 && aliquotas.every(valor => valor !== null) && getNumber(item.Quantidade) > 0
-                && ((getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
+                && ((getNumber(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
         }
 
         async function preservarCacheAposAnaliseSku(contexto, lista, resposta, links) {
@@ -3020,7 +3020,7 @@
                 consultas.cadastro,
                 carregarMapaM3Cadastro(storeId, itens, contexto),
                 consultarMapaProdutosImpostos(contexto),
-                (getNumber(lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
+                (getNumber(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
             ]);
             // O título não depende da fila de recálculo nem da simulação fiscal.
             void consultas.cadastro.then(cad => {
@@ -3191,7 +3191,7 @@
                 const { lista } = validarListaSku(data, contexto);
                 contexto.listaAtualizada = true;
                 contexto.listaPronta = lista;
-                atualizarFxCompraTopo(lista && (lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
+                atualizarFxCompraTopo(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
                 const itens = Array.isArray(lista.itens) ? lista.itens : [];
                 const skuNorm = normSku(sku);
                 const item = itens.find(i => normSku(i && i.SKU) === skuNorm);

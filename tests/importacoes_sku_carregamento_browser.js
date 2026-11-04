@@ -150,6 +150,7 @@ async function environment(browser, options = {}) {
             if (options.queuedDetail && !saved && state.ready) data.itens[0].Quantidade = 4;
             if (options.zeroQuantity) data.itens.push({ SKU: 'ZERO', Quantidade: 0 });
             if (options.noDollar) delete data.dolar_hoje;
+            if (options.exchangeRate !== undefined) data.exchange_rate = options.exchangeRate;
             if (options.missingValues) { delete data.itens[0]['Valor unidade']; delete data.itens[0]['Valor total']; }
             return json(route, { lista: data });
         }
@@ -342,6 +343,20 @@ function releaseComplements(state) {
         assert(Math.abs(rateioComZero - 10 / 0.3) < 1e-10, 'Total zero informado não deve ser substituído pelo preço unitário');
         assert.deepStrictEqual(zeroQuantity.state.errors, []);
         await zeroQuantity.context.close();
+
+        for (const noDollar of [false, true]) {
+            const purchaseFx = await environment(browser, { complete: true, exchangeRate: 6, noDollar, holdFx: true });
+            await purchaseFx.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
+            await waitUntil(() => purchaseFx.state.patches.length === 1);
+            assert.strictEqual(await purchaseFx.page.evaluate(() => ultimoValorUnitarioProduto), 130.29,
+                'Cotação na compra prevalece sobre o dólar legado e dispensa a cotação externa pendente.');
+            assert.match(await purchaseFx.page.locator('#vDolarCompra').textContent(), /6,00/);
+            assert.match(await purchaseFx.page.locator('#vFreteInternacional').textContent(), /52,50/);
+            assert.strictEqual(purchaseFx.state.patches[0].payload.custo_unitario, 130.29);
+            assert.deepStrictEqual(purchaseFx.state.errors, []);
+            await purchaseFx.context.close();
+            purchaseFx.state.fx.resolve();
+        }
 
         const fallbackFx = await environment(browser, { complete: true, noDollar: true });
         await fallbackFx.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=001');
