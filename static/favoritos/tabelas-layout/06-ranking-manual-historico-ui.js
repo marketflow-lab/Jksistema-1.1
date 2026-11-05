@@ -550,35 +550,55 @@
             return normalizado;
         }
 
-        async function coletarAtualizacaoAnuncioRankingFavoritos(anuncioOriginal, sku) {
-            const idOriginal = extrairItemIdAnuncio(anuncioOriginal && (anuncioOriginal.id || anuncioOriginal.mlb || anuncioOriginal.url || anuncioOriginal.permalink || anuncioOriginal.link))
-                || String(anuncioOriginal && (anuncioOriginal.id || anuncioOriginal.mlb) || '').trim().toUpperCase().replace(/-/g, '');
-            const urlOriginal = normalizarUrlAnuncioSkuModal(anuncioOriginal && (anuncioOriginal.url || anuncioOriginal.permalink || anuncioOriginal.link) || '')
-                || construirUrlAnuncioFavoritosPorItemId(idOriginal);
-            const alvo = normalizarEntradaIncluirAnuncioRanking(urlOriginal || idOriginal);
-            if (!alvo || !alvo.id) {
+        function obterAlvoSincronizacaoRankingFavoritos(anuncio) {
+            const idSalvo = normalizarMlbFavoritosCanonico(anuncio?.id)
+                || normalizarMlbFavoritosCanonico(anuncio?.mlb)
+                || normalizarMlbFavoritosCanonico(anuncio?.item_id);
+            const urlSalva = normalizarUrlAnuncioSkuModal(anuncio?.url || anuncio?.permalink || anuncio?.link);
+            const idUrl = normalizarMlbFavoritosCanonico(urlSalva);
+            const id = idSalvo || idUrl;
+            if (!id) return null;
+
+            const url = id === idUrl ? urlSalva : construirUrlProdutoMercadoLivreCanonico(id);
+            return { id, url };
+        }
+
+        async function coletarAtualizacaoAnuncioRankingFavoritos(anuncioOriginal, sku, alvo) {
+            if (!alvo) {
                 throw new Error('Nao foi possivel identificar o MLB deste anuncio.');
             }
 
+            const { id, url: urlAlvo } = alvo;
             const anuncio = {
                 ...(anuncioOriginal || {}),
-                id: alvo.id,
-                mlb: alvo.id,
-                url: alvo.url || urlOriginal || construirUrlAnuncioFavoritosPorItemId(alvo.id),
-                permalink: alvo.url || urlOriginal || construirUrlAnuncioFavoritosPorItemId(alvo.id),
-                link: alvo.url || urlOriginal || construirUrlAnuncioFavoritosPorItemId(alvo.id),
+                id,
+                mlb: id,
+                url: urlAlvo,
+                permalink: urlAlvo,
+                link: urlAlvo,
                 sku_favorito: sku,
                 origem_dados: 'sincronizacao_manual_avantpro'
             };
 
-            if (consultarItemApiMercadoLivre.cache && alvo.id) {
-                consultarItemApiMercadoLivre.cache.delete(alvo.id);
-            }
-            const apiInfo = await consultarItemApiMercadoLivre(alvo.id).catch(() => null);
-            mesclarInfoAnuncioIncluidoRanking(anuncio, apiInfo, 'api_item');
+            const mesclarAtualizacao = (info, fonte) => {
+                if (!info) return;
+                const urlInfo = normalizarUrlAnuncioSkuModal(info.url || info.permalink || info.link);
+                const idUrl = normalizarMlbFavoritosCanonico(urlInfo);
+                const idInfo = normalizarMlbFavoritosCanonico(info.id) || normalizarMlbFavoritosCanonico(info.mlb);
+                // No catalogo, o wid da URL identifica a oferta exibida na pagina.
+                const idResposta = fonte === 'api_item' ? idInfo || idUrl : idUrl || idInfo;
+                if (idResposta && idResposta !== id) return;
+
+                const urlAtualizada = idUrl === id ? urlInfo : anuncio.url;
+                mesclarInfoAnuncioIncluidoRanking(anuncio, { ...info, id, url: urlAtualizada }, fonte);
+            };
+
+            consultarItemApiMercadoLivre.cache?.delete(id);
+            const apiInfo = await consultarItemApiMercadoLivre(id).catch(() => null);
+            mesclarAtualizacao(apiInfo, 'api_item');
 
             if (hasInternalBrowserApi || usarNavegadorMlNoShellElectron()) {
-                const url = anuncio.url || construirUrlAnuncioFavoritosPorItemId(alvo.id);
+                const url = anuncio.url;
                 if (mlUrlInput) mlUrlInput.value = url;
                 abrirBalaoResultadosMl({
                     titulo: 'Sincronizando anuncio do ranking',
@@ -586,7 +606,7 @@
                     browserCompleto: true,
                     forcarExibicao: true
                 });
-                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Abrindo ${alvo.id} e relendo dados do Avant Pro...`);
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`Abrindo ${id} e relendo dados do Avant Pro...`);
                 await navegarMlWebview(url);
                 await aguardarAvantProNoWebview({
                     timeoutMs: 9000,
@@ -602,14 +622,14 @@
                     aguardarEstabilidadeAvant: true
                 }).catch(() => null);
                 const snapshot = await extrairSnapshotProdutoWebviewFavoritos();
-                mesclarInfoAnuncioIncluidoRanking(anuncio, snapshot, 'pagina_produto');
+                mesclarAtualizacao(snapshot, 'pagina_produto');
                 const dadosProdutoAvant = await extrairDadosAvantProdutoAtualWebviewFavoritos();
-                mesclarInfoAnuncioIncluidoRanking(anuncio, dadosProdutoAvant, 'avantpro_produto');
+                mesclarAtualizacao(dadosProdutoAvant, 'avantpro_produto');
                 const dadosAvant = await mlWebviewEl.executeJavaScript(ML_DATE_EXTRACT_SCRIPT, true).catch(() => null);
-                mesclarInfoAnuncioIncluidoRanking(anuncio, dadosAvant, dadosAvant && dadosAvant.source || 'avantpro_dom');
+                mesclarAtualizacao(dadosAvant, dadosAvant && dadosAvant.source || 'avantpro_dom');
             } else if (window.electronAPI && typeof window.electronAPI.getMlBrowserItemInfo === 'function') {
-                const browserInfo = await window.electronAPI.getMlBrowserItemInfo(alvo.id, anuncio.url).catch(() => null);
-                mesclarInfoAnuncioIncluidoRanking(anuncio, browserInfo, browserInfo && browserInfo.source || 'browser_item');
+                const browserInfo = await window.electronAPI.getMlBrowserItemInfo(id, anuncio.url).catch(() => null);
+                mesclarAtualizacao(browserInfo, browserInfo && browserInfo.source || 'browser_item');
             }
 
             const normalizado = window.FavoritosV2.searchRanking.publicApi.listings.normalizarAnuncioFavoritosPesquisa(anuncio, sku, {
@@ -701,8 +721,8 @@
                 });
                 return;
             }
-            const id = extrairItemIdAnuncio(anuncio.id || anuncio.mlb || anuncio.url || anuncio.permalink || anuncio.link)
-                || String(anuncio.id || anuncio.mlb || '').trim().toUpperCase().replace(/-/g, '');
+            const alvo = obterAlvoSincronizacaoRankingFavoritos(anuncio);
+            const id = alvo?.id;
             const chaveSync = `${entradaSelecionada}|${skuChaveSku(skuSelecionado)}|${id || anuncio.url || ''}`;
             if (mlFavoritosRankingSyncEmExecucao.has(chaveSync)) return;
             mlFavoritosRankingSyncEmExecucao.add(chaveSync);
@@ -721,7 +741,7 @@
             }
 
             try {
-                const atualizado = await coletarAtualizacaoAnuncioRankingFavoritos(anuncio, skuSelecionado);
+                const atualizado = await coletarAtualizacaoAnuncioRankingFavoritos(anuncio, skuSelecionado, alvo);
                 const resultado = inserirAnuncioRankingFavoritos(skuSelecionado, atualizado, {
                     entradaId: entradaSelecionada,
                     sincronizacao: true
@@ -734,11 +754,11 @@
                     renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
                 }
                 const posicao = resultado.posicao ? ` na posicao #${resultado.posicao}` : '';
-                const alvo = atualizado.id || id || 'Anuncio';
+                const idAtualizado = atualizado.id || id || 'Anuncio';
                 if (favMlStatusEl) {
-                    favMlStatusEl.textContent = `${alvo} sincronizado pelo Avant Pro e reclassificado${posicao}.`;
+                    favMlStatusEl.textContent = `${idAtualizado} sincronizado pelo Avant Pro e reclassificado${posicao}.`;
                 }
-                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`${alvo} sincronizado e reclassificado${posicao}.`, { tempoMs: 4500 });
+                window.FavoritosV2.searchRanking.publicApi.status.mostrarBalaoFavoritosStatus(`${idAtualizado} sincronizado e reclassificado${posicao}.`, { tempoMs: 4500 });
                 fecharBalaoResultadosMl({ forcar: true });
             } catch (err) {
                 const mensagem = err && err.message ? err.message : String(err);

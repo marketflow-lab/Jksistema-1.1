@@ -1021,12 +1021,16 @@
                     await window.JKCachePersistente?.invalidar(['importacoes']);
                     throw new Error('Acesso à lista negado.');
                 }
-                const dados = await resp.json();
+                const dados = await resp.json().catch(erro => {
+                    if (resp.status === 503) return null;
+                    throw erro;
+                });
                 if (!detalheSkuVigente(contexto)) throw new Error('Carregamento substituído.');
                 if (!resp.ok) {
-                    const erro = new Error(typeof dados.detail === 'string' ? dados.detail : dados.detail?.message || 'Consulta indisponível.');
+                    const detalhe = dados?.detail;
+                    const erro = new Error(typeof detalhe === 'string' ? detalhe : detalhe?.message || 'Consulta indisponível.');
                     erro.status = resp.status;
-                    erro.code = dados.detail?.code;
+                    erro.code = detalhe?.code;
                     throw erro;
                 }
                 if (leitura && !await dadosSkuAposMutacao(contexto)) {
@@ -3376,10 +3380,27 @@
             });
         }
 
+        async function consultarDetalheCompacto(url, contexto) {
+            const intervalos = [1000, 2000, 5000];
+            for (let tentativa = 0; ; tentativa++) {
+                try {
+                    return await consultarJsonDetalheSku(url, contexto, { salvarCache: false });
+                } catch (erro) {
+                    const transitorio = erro.name === 'TimeoutError' || erro.status === 503
+                        || (erro.status === 409 && (!erro.code || erro.code === 'sources_changing'));
+                    const espera = intervalos[tentativa];
+                    if (!transitorio || !espera || !await dadosSkuAposMutacao(contexto)) throw erro;
+                    statusCacheSku(contexto.temDados ? 'Dados salvos do SKU · Atualizando custos...' : 'Atualizando custos do SKU...');
+                    await aguardarNovaConsultaSku(contexto, espera);
+                    if (!await dadosSkuAposMutacao(contexto)) throw erro;
+                }
+            }
+        }
+
         async function carregarDetalheCompacto(contexto) {
             const url = rotaDetalheSku(contexto);
             if (contexto.dadosCompactos) conferirCopiaAnaliseSku(contexto, iniciarOfertasCompactas(contexto), url);
-            const atualizacao = consultarJsonDetalheSku(url, contexto, { salvarCache: false });
+            const atualizacao = consultarDetalheCompacto(url, contexto);
             if (!contexto.temDados) {
                 void consultarJsonDetalheSku(url + '?somente_salvos=true', contexto, {
                     salvarCache: false, timeoutMs: 5000,
@@ -3575,7 +3596,7 @@
             return consultas;
         }
 
-        function aguardarConsultaListaSku(contexto, espera) {
+        function aguardarNovaConsultaSku(contexto, espera) {
             const controller = new AbortController();
             controladoresDetalheSku.add(controller);
             return new Promise((resolve, reject) => {
@@ -3639,7 +3660,7 @@
                 const intervalo = tentativa < 5 ? 1000 : tentativa < 10 ? 2000 : 5000;
                 const espera = Math.min(Math.max(intervalo, esperaMinima), limiteMs - (Date.now() - inicio));
                 if (espera <= 0) break;
-                await aguardarConsultaListaSku(contexto, espera);
+                await aguardarNovaConsultaSku(contexto, espera);
             }
             if (await dadosSkuAposMutacao(contexto)) {
                 statusCacheSku(contexto.temDados ? 'Exibindo os dados salvos. Não foi possível atualizar agora; os cálculos continuam pendentes.'

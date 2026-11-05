@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Detalhe da Lista - Importações</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
+    <script src="/cache-persistente.js?v=20261104-importacoes-lista-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
@@ -3808,22 +3808,41 @@
             }
         }
 
-        async function carregarDetalheLista({ propagarErro = false } = {}) {
+        async function carregarDetalheLista({ propagarErro = false, reconsultas = 2,
+            limite = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS } = {}) {
+            const persistencia = window.JKCachePersistente;
+            const listaId = getListaIdDaUrl();
+            const podeManter = contexto => !contexto || (persistencia?.podeManterDados
+                ? persistencia.podeManterDados(contexto)
+                : persistencia?.dadosVigentes?.(contexto) !== false);
+            let copiaVisivel = !!ultimaListaCarregada && String(ultimaListaCarregada.id) === listaId;
+            if (ultimaListaCarregada && (!copiaVisivel || !podeManter(contextoPersistenteLista))) {
+                negarAcessoCacheLista('Consultando a lista...');
+                copiaVisivel = false;
+            }
             const geracao = ++geracaoCarregamentoLista;
             fiscalCustoSkuLista = null;
-            const persistencia = window.JKCachePersistente;
             const candidato = persistencia?.contexto();
             const contextoPersistente = persistencia?.vigente(candidato) ? candidato : null;
             contextoPersistenteLista = contextoPersistente;
             controladoresAuxiliares.forEach(controller => controller.abort());
-            const listaId = getListaIdDaUrl();
             const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId);
             const chave = 'importacoes:GET:' + url;
             const vigente = () => geracao === geracaoCarregamentoLista && listaId === getListaIdDaUrl()
                 && (!contextoPersistente || persistencia.vigente(contextoPersistente));
             const dadosVigentes = () => vigente() && (!contextoPersistente || !persistencia.dadosVigentes
                 || persistencia.dadosVigentes(contextoPersistente, ['importacoes']));
-            let copiaVisivel = false;
+            const reconsultar = async (propagar = propagarErro) => {
+                if (!vigente()) return;
+                if (reconsultas > 0 && Date.now() < limite) {
+                    statusCacheLista('Consultando a versão atual da lista...');
+                    return carregarDetalheLista({ propagarErro: propagar, reconsultas: reconsultas - 1, limite });
+                }
+                const mensagem = 'A atualização da lista continua pendente. Tente novamente.';
+                if (!podeManter(contextoPersistente)) negarAcessoCacheLista(mensagem);
+                else statusCacheLista(mensagem);
+                if (propagar) throw new Error(mensagem);
+            };
             let respostaCompleta = false;
             const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
                 if (!dadosVigentes() || !data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)
@@ -3832,7 +3851,7 @@
                 const itens = lista.itens;
                 const storeId = String(lista.store_id || '').trim();
                 const assinatura = await assinaturaCustosLista(lista);
-                while (aguardarEdicao && vigente() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input:not(#resumoProporcaoPercentual), #tbodyLista .proporcao-sku-input:focus')
+                while (aguardarEdicao && dadosVigentes() && (document.querySelector('#resumoTopo [data-editando="1"], #resumoTopo input:not(#resumoProporcaoPercentual), #tbodyLista .proporcao-sku-input:focus')
                     || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
                     await new Promise(resolve => setTimeout(resolve, 120));
                 }
@@ -3890,8 +3909,8 @@
                     // Grava os itens novos junto com os complementos que ainda são válidos.
                     await salvarSnapshotLista(contexto);
                     if (!dadosListaVigentes(contexto)) {
-                        if (carregamentoVigente(contexto)) statusCacheLista('Itens atualizados. Informações complementares pendentes.');
-                        return false;
+                        if (carregamentoVigente(contexto)) void reconsultar(false);
+                        return true;
                     }
                     statusCacheLista(ultimaAnaliseCustoPosto && faturamentoVendas12m !== null
                         ? 'Dados salvos da lista · Atualizando em segundo plano...'
@@ -3914,9 +3933,7 @@
                     }).catch(() => {
                         if (carregamentoVigente(contexto)) statusCacheLista('Itens atualizados. Algumas informações complementares continuam pendentes.');
                     }).finally(() => {
-                        if (carregamentoVigente(contexto) && !dadosListaVigentes(contexto)) {
-                            statusCacheLista('Os dados mudaram durante a consulta. Recarregue a lista para atualizar.');
-                        }
+                        if (carregamentoVigente(contexto) && !dadosListaVigentes(contexto)) void reconsultar(false);
                     });
                 } else {
                     void carregarCustosCadastro(contexto);
@@ -3927,7 +3944,8 @@
                 setErro('');
                 if (!listaId) throw new Error('Lista não informada.');
                 try {
-                    const copia = contextoPersistente ? await persistencia.ler(chave, { contexto: contextoPersistente }) : null;
+                    const copia = !copiaVisivel && contextoPersistente
+                        ? await persistencia.ler(chave, { contexto: contextoPersistente }) : null;
                     if (!vigente()) return;
                     if (copia && await aplicar(copia.dados)) {
                         copiaVisivel = true;
@@ -3936,6 +3954,7 @@
                 } catch (_cacheError) { /* A consulta principal também atende uma cópia inválida. */ }
                 if (!copiaVisivel && contextoPersistente) {
                     const controller = new AbortController();
+                    controladoresAuxiliares.add(controller);
                     const timeout = setTimeout(() => controller.abort(), 5000);
                     void fetch(url + '?somente_salvos=true', { headers: { ...obterAuthHeaders() }, signal: controller.signal })
                         .then(resp => resp.ok ? resp.json() : null)
@@ -3944,13 +3963,16 @@
                                 copiaVisivel = true;
                                 statusCacheLista('Dados salvos da lista · Atualizando informações complementares...');
                             }
-                        }).catch(() => {}).finally(() => clearTimeout(timeout));
+                        }).catch(() => {}).finally(() => {
+                            clearTimeout(timeout);
+                            controladoresAuxiliares.delete(controller);
+                        });
                 }
-                const limite = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS;
                 const transitorios = new Set(['sources_changing', 'cache_capacity', 'stores_snapshot_initializing',
                     'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
                 for (let tentativa = 0; tentativa < 32 && Date.now() < limite; tentativa++) {
                     if (!vigente()) return;
+                    if (!dadosVigentes()) return reconsultar();
                     const controller = new AbortController();
                     controladoresAuxiliares.add(controller);
                     const timeout = setTimeout(() => controller.abort(), Math.min(AUXILIAR_TIMEOUT_MS, limite - Date.now()));
@@ -3983,6 +4005,7 @@
                         controladoresAuxiliares.delete(controller);
                     }
                     if (!vigente()) return;
+                    if (!dadosVigentes()) return reconsultar();
                     if (data) {
                         const meta = data._cache;
                         if (data.lista) {
@@ -3990,8 +4013,9 @@
                             const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
                             if (pronta) {
                                 respostaCompleta = true;
-                                await aplicar(data, copiaVisivel, true);
-                                return;
+                                if (await aplicar(data, copiaVisivel, true) || !vigente()) return;
+                                if (!dadosVigentes()) return reconsultar();
+                                throw new Error('Dados da lista inválidos.');
                             }
                             if (!copiaVisivel && await aplicar(data)) copiaVisivel = true;
                         } else if (!meta) {
@@ -4013,6 +4037,7 @@
             } catch (e) {
                 if (!vigente()) return;
                 respostaCompleta = true;
+                if (!dadosVigentes()) return reconsultar();
                 if (propagarErro) throw e;
                 if (copiaVisivel) {
                     statusCacheLista('Exibindo os dados salvos. Não foi possível atualizar agora.');
@@ -4021,10 +4046,6 @@
                 setErro(e.message || 'Erro ao carregar lista de importação.');
                 renderResumoTopo({}, []);
                 renderItens([], {});
-            } finally {
-                if (vigente() && !dadosVigentes()) {
-                    statusCacheLista('Os dados mudaram durante a consulta. Recarregue a lista para atualizar.');
-                }
             }
         }
 

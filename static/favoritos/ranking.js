@@ -1,3 +1,5 @@
+        let mlAnunciosIgnoradosPersistenciaFila = Promise.resolve();
+
         function normalizarNomeVendedorParaBusca(value) {
             return normalizarNomeVendedor(value)
                 .toLowerCase()
@@ -292,10 +294,18 @@
 
         function agendarSalvarAnunciosIgnoradosSkuServidor() {
             if (mlAnunciosIgnoradosSaveTimer) clearTimeout(mlAnunciosIgnoradosSaveTimer);
+            const mapa = obterAnunciosIgnoradosSku();
             mlAnunciosIgnoradosSaveTimer = setTimeout(() => {
                 mlAnunciosIgnoradosSaveTimer = null;
                 salvarAnunciosIgnoradosSkuServidor().catch(err => {
                     console.warn('Nao foi possivel salvar anuncios ignorados por SKU no servidor:', err);
+                    if (mapa !== obterAnunciosIgnoradosSku()) return;
+                    const statusEl = document.getElementById('aba-historico')?.classList.contains('active')
+                        ? mlHistoricoFavoritosStatusEl
+                        : favMlStatusEl;
+                    if (statusEl) {
+                        statusEl.textContent = 'Ranking atualizado nesta tela. Falha ao salvar os anúncios ignorados no servidor.';
+                    }
                 });
             }, mlAnunciosIgnoradosServidorCarregado ? 250 : 800);
         }
@@ -339,19 +349,38 @@
             }
         }
 
-        async function salvarAnunciosIgnoradosSkuServidor() {
-            const response = await fetch('/api/favoritos/preferencias-anuncios-ignorados', {
-                method: 'PUT',
-                headers: headersJsonAutenticado(),
-                body: JSON.stringify({ anuncios_ignorados: obterAnunciosIgnoradosSku() })
+        function salvarAnunciosIgnoradosSkuServidor() {
+            const mapa = obterAnunciosIgnoradosSku();
+            const body = JSON.stringify({ anuncios_ignorados: mapa });
+            const headers = headersJsonAutenticado();
+            const tarefa = mlAnunciosIgnoradosPersistenciaFila.catch(() => null).then(async () => {
+                const controller = typeof AbortController === 'function' ? new AbortController() : null;
+                const timeout = controller ? setTimeout(() => controller.abort(), 30000) : null;
+                let data;
+                try {
+                    const response = await fetch('/api/favoritos/preferencias-anuncios-ignorados', {
+                        method: 'PUT',
+                        headers,
+                        body,
+                        ...(controller ? { signal: controller.signal } : {})
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    data = await response.json();
+                } finally {
+                    if (timeout) clearTimeout(timeout);
+                }
+                mlAnunciosIgnoradosServidorCarregado = true;
+                if (mapa === obterAnunciosIgnoradosSku()) {
+                    mlAnunciosIgnoradosSku = normalizarMapaAnunciosIgnoradosSku(data.anuncios_ignorados || mapa);
+                    salvarAnunciosIgnoradosSkuLocal();
+                    if (document.getElementById('aba-anuncios-ignorados')?.classList.contains('active')) {
+                        renderizarAnunciosIgnoradosSku();
+                    }
+                }
+                return data;
             });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const data = await response.json();
-            mlAnunciosIgnoradosServidorCarregado = true;
-            mlAnunciosIgnoradosSku = normalizarMapaAnunciosIgnoradosSku(data.anuncios_ignorados || obterAnunciosIgnoradosSku());
-            salvarAnunciosIgnoradosSkuLocal();
-            renderizarAnunciosIgnoradosSku();
-            return data;
+            mlAnunciosIgnoradosPersistenciaFila = tarefa;
+            return tarefa;
         }
 
         function anuncioIgnoradoNoSku(sku, anuncio) {
@@ -374,7 +403,6 @@
                 mapa[chaveSku].unshift(item);
                 mapa[chaveSku] = mapa[chaveSku].slice(0, 500);
                 salvarAnunciosIgnoradosSku();
-                renderizarAnunciosIgnoradosSku();
                 return true;
             }
             return false;

@@ -39,6 +39,7 @@ def test_http_opt_in_cold_warm_auth_edit_delete_and_legacy(ambiente):
         assert first.json()["dados"] is None
         assert set(first.json()["_cache"]) == {"estado", "gerado_em", "versao", "stale", "atualizando", "retry_after_ms", "erro", "autoridade", "politica_fotos", "pendente_fontes", "completo"}
         ready = _ready(client)
+        assert set(ready) == {"success", "lista", "_cache"}
         calls_before = ambiente["counts"]["contexto_catalogo"]
         repeated = _ready(client)
         assert repeated == ready
@@ -52,7 +53,7 @@ def test_http_opt_in_cold_warm_auth_edit_delete_and_legacy(ambiente):
         updated = _ready(client)
         assert updated["lista"]["itens"][0]["Quantidade"] == 7
         legacy = client.get("/listas/lista").json()
-        assert "_cache" not in legacy
+        assert set(legacy) == {"success", "lista"}
         assert legacy["lista"] == updated["lista"]
         ambiente["lists"]["cliente-a"].clear()
         assert client.get("/listas/lista?cache_mode=stale").status_code == 404

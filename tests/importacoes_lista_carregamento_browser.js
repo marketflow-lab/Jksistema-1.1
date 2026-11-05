@@ -30,14 +30,15 @@ async function environment(browser, options = {}) {
   const state = { lists: { A: fixture('A', options.complete), B: fixture('B', true) },
     prefs: gate(), catalog: gate(), supplier: gate(), oldCost: gate(), detail: gate(), margins: gate(), marginPatch: gate(),
     calls: { prefs: 0, catalog: 0, globalCatalog: 0, cost: 0, detail: 0, saved: 0, polling: 0, margins: 0 },
-    ready: false, transientRemaining: options.transient ? [503, 409] : [],
+    ready: false, deniedStatus: options.denyDetail ? 403 : null,
+    transientRemaining: options.transient ? [503, 409] : [],
     updates: [], patches: [], errors: [] };
   if (options.needMargins) delete state.lists.A.itens[0].analise_concorrentes;
   if (options.queuedDetail) state.lists.A.itens[0].Quantidade = 4;
   page.on('pageerror', error => state.errors.push(error.message));
   if (options.fastTimeout) await page.addInitScript(() => {
     const timeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 40 : delay, ...args);
+    window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 150 : delay, ...args);
   });
   if (options.scaledCatalogBudget) await page.addInitScript(() => {
     const timeout = window.setTimeout.bind(window);
@@ -62,6 +63,9 @@ async function environment(browser, options = {}) {
       salvar: async (key, data) => { window.cacheWrites.push({ key, data }); },
     };
   });
+  if (options.realCache) await page.addInitScript(() => {
+    localStorage.setItem('user_data', JSON.stringify({ client_id: 'synthetic', username: 'tester', store_id: 'store-A' }));
+  });
   if (options.oldPolling403) await page.addInitScript(() => {
     const fetch = window.fetch.bind(window);
     // Simulate a transport that delivers a completed old request after abort.
@@ -79,8 +83,10 @@ async function environment(browser, options = {}) {
       body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
     if (pathname === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript',
       body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });
-    if (pathname.startsWith('/medias_compras/')) return route.fulfill({ status: 200, contentType: 'application/javascript',
-      body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
+    if ((options.realCache && pathname === '/cache-persistente.js') || pathname.startsWith('/medias_compras/')) {
+      return route.fulfill({ status: 200, contentType: 'application/javascript',
+        body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
+    }
     const fiscalSku = { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' };
     if (pathname === '/api/impostos/produtos') return json(route, { produtos: [fiscalSku] });
     if (pathname === '/api/medias-compras/listas-pedidos/A/skus/001') {
@@ -137,13 +143,18 @@ async function environment(browser, options = {}) {
       if (method === 'GET') {
         if (url.searchParams.get('somente_salvos') === 'true') {
           ++state.calls.saved;
-          if (options.denyDetail) return json(route, { detail: 'Acesso negado.' }, 403);
+          if (state.deniedStatus) return json(route, { detail: 'Acesso negado.' }, state.deniedStatus);
           return json(route, { lista: fixture(match[1], options.complete) });
         }
         ++state.calls.detail;
-        if (options.denyDetail) return json(route, { detail: 'Acesso negado.' }, 403);
+        if (state.deniedStatus) return json(route, { detail: 'Acesso negado.' }, state.deniedStatus);
         if (url.searchParams.get('cache_mode') === 'stale') {
           ++state.calls.polling;
+          if (options.holdFirstReady && state.calls.polling === 1) {
+            const lista = structuredClone(state.lists[match[1]]);
+            await state.detail.promise;
+            return json(route, { lista });
+          }
           if (state.transientRemaining.length) return json(route, {
             detail: { code: 'sources_changing', message: 'Fontes em atualização.' },
           }, state.transientRemaining.shift());
@@ -372,6 +383,75 @@ async function waitUntil(predicate) {
       'Resposta 202 não substitui o snapshot válido');
     assert.deepStrictEqual(queued.state.errors, []);
     await queued.context.close();
+
+    for (const listaEditada of ['B', 'A']) {
+      const revisao = await environment(browser, { realCache: true, holdFirstReady: true, queuedDetail: true, complete: true });
+      revisao.state.ready = true;
+      revisao.state.prefs.resolve();
+      await revisao.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
+      const quantidade = revisao.page.locator('tr[data-sku="001"] [data-col-key="quantidade"]');
+      await quantidade.waitFor();
+      assert.strictEqual(await quantidade.textContent(), '2');
+      await waitUntil(() => revisao.state.calls.polling === 1);
+      const editor = revisao.page.locator('tr[data-sku="001"] .proporcao-sku-input');
+      if (listaEditada === 'B') await editor.focus();
+      const itens = structuredClone(revisao.state.lists[listaEditada].itens);
+      itens[0].Quantidade = 9;
+      const status = await revisao.page.evaluate(async ({ id, itens }) => {
+        const resposta = await fetch('/api/medias-compras/listas-pedidos/' + id, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itens }),
+        });
+        return resposta.status;
+      }, { id: listaEditada, itens });
+      assert.strictEqual(status, 200);
+      revisao.state.detail.resolve();
+      if (listaEditada === 'B') {
+        await waitUntil(() => revisao.state.calls.polling === 2);
+        assert.strictEqual(await quantidade.textContent(), '2', 'A reconsulta aguarda a edição ativa');
+        assert.strictEqual(await editor.evaluate(campo => campo === document.activeElement), true);
+        await editor.blur();
+      }
+      const quantidadeAtual = listaEditada === 'A' ? 9 : 4;
+      await revisao.page.waitForFunction(esperada => ultimosItensCarregados[0]?.Quantidade === esperada, quantidadeAtual);
+      assert.strictEqual(await quantidade.textContent(), String(quantidadeAtual));
+      assert.strictEqual(revisao.state.calls.polling, 2);
+      assert.strictEqual(revisao.state.calls.saved, 1, 'A reconsulta preserva a cópia já visível');
+      if (listaEditada === 'A') {
+        const podeManter = await revisao.page.evaluate(() => {
+          const contexto = JKCachePersistente.contexto();
+          const usuario = JSON.parse(localStorage.getItem('user_data'));
+          localStorage.setItem('user_data', JSON.stringify({ ...usuario, store_id: 'store-B' }));
+          const mesmaAutorizacao = JKCachePersistente.podeManterDados(contexto);
+          window.dispatchEvent(new StorageEvent('storage', { key: 'user_data' }));
+          return mesmaAutorizacao;
+        });
+        assert.strictEqual(podeManter, false);
+        assert.strictEqual(await revisao.page.locator('tr[data-sku]').count(), 0);
+      }
+      assert.deepStrictEqual(revisao.state.errors, []);
+      await revisao.context.close();
+    }
+
+    for (const status of [401, 403]) {
+      const revogacao = await environment(browser, { realCache: true, holdFirstReady: true, complete: true });
+      await revogacao.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
+      await revogacao.page.locator('tr[data-sku="001"]').waitFor();
+      await waitUntil(() => revogacao.state.calls.polling === 1);
+      revogacao.state.deniedStatus = status;
+      const podeManter = await revogacao.page.evaluate(async () => {
+        const contexto = JKCachePersistente.contexto();
+        await JKCachePersistente.invalidar(['importacoes']);
+        return JKCachePersistente.podeManterDados(contexto);
+      });
+      assert.strictEqual(podeManter, false);
+      revogacao.state.detail.resolve();
+      await revogacao.page.waitForFunction(() => document.getElementById('cacheListaStatus').textContent
+        .startsWith('Acesso expirado ou negado.'));
+      assert.strictEqual(await revogacao.page.locator('tr[data-sku]').count(), 0);
+      assert.strictEqual(revogacao.state.calls.cost, 0);
+      assert.deepStrictEqual(revogacao.state.errors, []);
+      await revogacao.context.close();
+    }
 
     const denied = await environment(browser, { denyDetail: true, complete: true, cacheStub: true });
     await denied.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');

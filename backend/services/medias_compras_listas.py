@@ -1005,7 +1005,17 @@ async def api_medias_compras_lista_pedido_detalhe(
     somente_salvos: bool = False,
     cache_mode: Literal["stale"] | None = None,
 ):
-    from backend.services.blocking_workers import run_blocking, run_heavy
+    detalhe = await _consultar_detalhe_lista_pedido(lista_id, client_id, somente_salvos, cache_mode)
+    if isinstance(detalhe, dict):
+        detalhe.pop("_revisao_lista_custo_posto", None)
+    return detalhe
+
+
+async def _consultar_detalhe_lista_pedido(
+    lista_id: str, client_id: str, somente_salvos: bool = False,
+    cache_mode: Literal["stale"] | None = None, *, preferir_fresco: bool = False,
+):
+    from backend.services.blocking_workers import run_blocking
 
     if somente_salvos and cache_mode is None:
         return await run_blocking(
@@ -1055,10 +1065,17 @@ async def api_medias_compras_lista_pedido_detalhe(
 
     # The owner controls the two-attempt budget, including transaction conflicts.
     core = _api_medias_compras_lista_pedido_detalhe_sync.__wrapped__
+
+    def carregar(source):
+        detalhe = core(lista_id=lista_id, client_id=client_id, _snapshot=source.snapshot)
+        # O backfill do detalhe pode atualizar a lista antes de publicar o resultado.
+        alvo = next(row for row in source.snapshot if str(row.get("id", "")) == str(lista_id))
+        detalhe["_revisao_lista_custo_posto"] = digest_lista(alvo)
+        return detalhe
+
     return await resultados_medias.consultar(
-        client_id, (tenant_key, "lista", str(lista_id)), probe,
-        lambda source: core(lista_id=lista_id, client_id=client_id, _snapshot=source.snapshot),
-        stale=cache_mode == "stale",
+        client_id, (tenant_key, "lista", str(lista_id)), probe, carregar,
+        stale=cache_mode == "stale", preferir_fresco=preferir_fresco,
     )
 
 
@@ -1257,28 +1274,40 @@ async def api_medias_compras_lista_pedido_custo_posto(
     """Return the backend-authoritative landed-cost calculation for one import list."""
     from backend.services.blocking_workers import run_heavy
 
-    return await run_heavy(_api_medias_compras_lista_pedido_custo_posto_sync, lista_id=lista_id, client_id=client_id)
+    detalhe = await _consultar_detalhe_lista_pedido(lista_id, client_id, preferir_fresco=True)
+    return await run_heavy(
+        _api_medias_compras_lista_pedido_custo_posto_sync, lista_id=lista_id, client_id=client_id, detalhe=detalhe,
+    )
 
 
 def _api_medias_compras_lista_pedido_custo_posto_sync(
     lista_id: str,
-    client_id: str = Depends(medias_common.get_tenant_id),
+    client_id: str,
+    detalhe: dict,
 ):
     """Return landed cost only after the order cubagem has been resolved."""
     from backend.services import codex_reports_advanced
+    from backend.services.medias_compras_fontes import digest_lista
 
-    detalhe = _api_medias_compras_lista_pedido_detalhe_sync(lista_id, client_id=client_id)
     if not (detalhe.get("lista") or {}).get("m3_completo", False):
         raise HTTPException(
             status_code=409,
             detail="Cubagem pendente: complete os m³ dos produtos antes de calcular o custo posto.",
         )
 
+    def validar_lista(alvo):
+        if digest_lista(alvo) != detalhe["_revisao_lista_custo_posto"]:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "sources_changing", "message": "A lista mudou durante o cálculo do custo posto. Tente novamente."},
+            )
+
     context = codex_reports_advanced.build_profile_context(
         info_base=str(medias_common.PASTA_INFO or ""),
         client_id=str(client_id or "default"),
         profile="import_order",
         import_list_id=str(lista_id or ""),
+        validate_import_order=validar_lista,
         margin_rows=[],
     )
     analysis = context.get("import_analysis") if isinstance(context.get("import_analysis"), dict) else None

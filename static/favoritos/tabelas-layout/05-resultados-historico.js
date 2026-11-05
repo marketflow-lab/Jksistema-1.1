@@ -439,21 +439,22 @@
             }
         }
 
-        function salvarHistoricoFavoritosLocal(lista) {
+        function salvarHistoricoFavoritosLocal(lista, normalizado = false) {
             try {
                 if (window.localStorage) {
-                    window.localStorage.setItem(chaveHistoricoFavoritos(), JSON.stringify(normalizarHistoricoFavoritosFrontend(lista)));
+                    const historico = normalizado ? lista : normalizarHistoricoFavoritosFrontend(lista);
+                    window.localStorage.setItem(chaveHistoricoFavoritos(), JSON.stringify(historico));
                 }
             } catch (err) {
                 console.warn('Nao foi possivel salvar cache local do historico de favoritos:', err);
             }
         }
 
-        function lerHistoricoFavoritos() {
+        function lerHistoricoFavoritos({ usarCache = false } = {}) {
             if (!mlHistoricoFavoritosCache.length && !mlHistoricoFavoritosServidorCarregado) {
                 mlHistoricoFavoritosCache = lerHistoricoFavoritosLocal();
             }
-            return normalizarHistoricoFavoritosFrontend(mlHistoricoFavoritosCache);
+            return usarCache ? mlHistoricoFavoritosCache : normalizarHistoricoFavoritosFrontend(mlHistoricoFavoritosCache);
         }
 
         async function salvarHistoricoFavoritosServidor(lista, opcoes = {}) {
@@ -493,10 +494,6 @@
             }
             const data = await response.json();
             const remoto = normalizarHistoricoFavoritosFrontend(data.historico);
-            mlHistoricoFavoritosCache = remoto;
-            mlHistoricoFavoritosServidorCarregado = true;
-            salvarHistoricoFavoritosLocal(remoto);
-            agendarSincronizacaoHistoricoFavoritosVinculos();
             return {
                 historico: remoto,
                 duracao_execucao_ms: normalizarDuracaoExecucaoFavoritosMs(data.duracao_execucao_ms),
@@ -507,10 +504,20 @@
 
         function enfileirarSalvamentoHistoricoFavoritosServidor(lista, opcoes = {}) {
             const historico = normalizarHistoricoFavoritosFrontend(lista);
+            const cacheAoEnfileirar = mlHistoricoFavoritosCache;
             const anterior = mlHistoricoFavoritosPersistenciaFila || Promise.resolve({ success: true, historico: [] });
             const tarefa = Promise.resolve(anterior)
                 .catch(() => null)
                 .then(() => salvarHistoricoFavoritosServidor(historico, opcoes))
+                .then(resultadoServidor => {
+                    if (mlHistoricoFavoritosCache === cacheAoEnfileirar) {
+                        mlHistoricoFavoritosCache = resultadoServidor.historico;
+                        mlHistoricoFavoritosServidorCarregado = true;
+                        salvarHistoricoFavoritosLocal(resultadoServidor.historico, true);
+                    }
+                    agendarSincronizacaoHistoricoFavoritosVinculos();
+                    return resultadoServidor;
+                })
                 .then(resultadoServidor => ({
                     success: true,
                     historico: normalizarHistoricoFavoritosFrontend(resultadoServidor && resultadoServidor.historico),
@@ -522,7 +529,7 @@
                     erro: ''
                 }))
                 .catch(err => {
-                    tratarErroSalvarHistoricoFavoritosServidor(err);
+                    if (mlHistoricoFavoritosCache === cacheAoEnfileirar) tratarErroSalvarHistoricoFavoritosServidor(err);
                     return {
                         success: false,
                         historico: [],
@@ -588,12 +595,11 @@
             };
         }
 
-        function agendarSalvarHistoricoFavoritosServidor(lista) {
-            const historico = normalizarHistoricoFavoritosFrontend(lista);
+        function agendarSalvarHistoricoFavoritosServidor() {
             if (mlHistoricoFavoritosSaveTimer) clearTimeout(mlHistoricoFavoritosSaveTimer);
             mlHistoricoFavoritosSaveTimer = setTimeout(() => {
                 mlHistoricoFavoritosSaveTimer = null;
-                enfileirarSalvamentoHistoricoFavoritosServidor(historico);
+                enfileirarSalvamentoHistoricoFavoritosServidor(mlHistoricoFavoritosCache);
             }, 300);
         }
 
@@ -602,12 +608,15 @@
             if (mlHistoricoFavoritosStatusEl && document.getElementById('aba-historico')?.classList.contains('active')) {
                 mlHistoricoFavoritosStatusEl.textContent = `Historico mantido em cache local, mas ainda nao foi salvo no servidor: ${err && err.message ? err.message : err}`;
             }
+            if (favMlStatusEl && document.getElementById('aba-favoritos')?.classList.contains('active')) {
+                favMlStatusEl.textContent = 'Ranking atualizado nesta tela. Falha ao salvar o histórico no servidor.';
+            }
         }
 
         function salvarHistoricoFavoritos(lista, opcoes = {}) {
-            const historico = normalizarHistoricoFavoritosFrontend(lista);
+            const historico = opcoes?.normalizado ? lista : normalizarHistoricoFavoritosFrontend(lista);
             mlHistoricoFavoritosCache = historico;
-            salvarHistoricoFavoritosLocal(historico);
+            salvarHistoricoFavoritosLocal(historico, true);
             if (opcoes && opcoes.imediato) {
                 if (mlHistoricoFavoritosSaveTimer) {
                     clearTimeout(mlHistoricoFavoritosSaveTimer);
@@ -615,7 +624,7 @@
                 }
                 return enfileirarSalvamentoHistoricoFavoritosServidor(historico, opcoes);
             } else {
-                agendarSalvarHistoricoFavoritosServidor(historico);
+                agendarSalvarHistoricoFavoritosServidor();
             }
             return null;
         }
@@ -677,8 +686,11 @@
         }
 
         async function carregarHistoricoFavoritosServidor() {
+            const fila = mlHistoricoFavoritosPersistenciaFila;
+            await fila;
+            if (mlHistoricoFavoritosSaveTimer || fila !== mlHistoricoFavoritosPersistenciaFila) return;
             const historicoLocal = lerHistoricoFavoritosLocal();
-            mlHistoricoFavoritosCache = historicoLocal;
+            const cacheAoConsultar = mlHistoricoFavoritosCache;
             try {
                 const response = await fetch('/api/favoritos/historico', {
                     headers: obterAuthHeaders(),
@@ -693,6 +705,8 @@
                     throw new Error(detalhe);
                 }
                 const data = await response.json();
+                if (mlHistoricoFavoritosCache !== cacheAoConsultar || mlHistoricoFavoritosSaveTimer
+                    || fila !== mlHistoricoFavoritosPersistenciaFila) return;
                 const historicoServidor = normalizarHistoricoFavoritosFrontend(data.historico);
                 mlHistoricoFavoritosServidorCarregado = true;
                 const historicoAtual = mesclarHistoricosFavoritos(mlHistoricoFavoritosCache, lerHistoricoFavoritosLocal(), historicoLocal);
@@ -1201,7 +1215,7 @@
             const chave = skuChaveSku(sku);
             const idSelecionado = String(entradaId || '').trim();
             if (!chave || !idSelecionado) return null;
-            for (const entrada of filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos(), sku)) {
+            for (const entrada of filtrarHistoricoFavoritosPorLojaAtual(lerHistoricoFavoritos({ usarCache: true }), sku)) {
                 if (idEntradaHistoricoFavoritos(entrada) !== idSelecionado) continue;
                 const grupo = (entrada.grupos || []).find(item => skuChaveSku(item && item.sku) === chave);
                 if (!grupo) return null;
@@ -2431,7 +2445,8 @@
                 if (grupoAtualAlterado) mlFavoritosResultadosPorSku.set(chaveSku, grupoAtual);
             }
 
-            const historico = lerHistoricoFavoritos();
+            const agruparSalvamento = opcoes.agruparSalvamento === true;
+            const historico = lerHistoricoFavoritos({ usarCache: agruparSalvamento }).slice();
             const alvoHistorico = encontrarGrupoHistoricoRankingFavoritos(historico, chaveSku, entradaId);
             let historicoAlterado = false;
             if (alvoHistorico) {
@@ -2443,7 +2458,13 @@
                     if (!grupoAtual) mlFavoritosResultadosPorSku.set(chaveSku, alvoHistorico.grupo);
                 }
             }
-            if (historicoAlterado) salvarHistoricoFavoritos(historico, { imediato: true });
+            if (historicoAlterado) {
+                if (agruparSalvamento) {
+                    const posicao = historico.indexOf(alvoHistorico.entrada);
+                    historico[posicao] = normalizarHistoricoFavoritosFrontend([alvoHistorico.entrada])[0];
+                }
+                salvarHistoricoFavoritos(historico, { imediato: !agruparSalvamento, normalizado: agruparSalvamento });
+            }
 
             return {
                 mudou: grupoAtualAlterado || historicoAlterado,
@@ -2453,12 +2474,12 @@
             };
         }
 
-        function renderizarMutacaoRankingFavoritos(skuSelecionado) {
+        function renderizarMutacaoRankingFavoritos(skuSelecionado, incluirHistorico = true) {
             renderizarFavoritosOutrosAnuncios(skuSelecionado);
             if (skuChaveSku(skuSelecionado) === skuChaveSku(favMlSkuSelecionado) && Array.isArray(favMlAnunciosSkuAtual)) {
                 renderizarFavoritosAnunciosMl(favMlAnunciosSkuAtual, favMlSkuSelecionado);
             }
-            renderizarHistoricoFavoritos();
+            if (incluirHistorico) renderizarHistoricoFavoritos();
         }
 
         function atualizarStatusRankingFavoritosReordenado(skuSelecionado) {
@@ -2480,17 +2501,18 @@
             const salvoIgnorado = adicionarAnuncioIgnoradoSku(skuSelecionado, anuncio);
             const resultado = aplicarMutacaoGrupoRankingFavoritos(skuSelecionado, grupo => (
                 removerAnuncioDeGrupoRankingFavoritos(grupo, chavesAlvo) > 0
-            ), opcoes);
+            ), { ...opcoes, agruparSalvamento: true });
             const removido = resultado.mudou;
 
-            renderizarMutacaoRankingFavoritos(skuSelecionado);
-            renderizarAnunciosIgnoradosSku();
+            const historicoAtivo = document.getElementById('aba-historico')?.classList.contains('active');
+            if (historicoAtivo) renderizarHistoricoFavoritos();
+            else renderizarMutacaoRankingFavoritos(skuSelecionado, false);
             if (favMlStatusEl) {
                 favMlStatusEl.textContent = removido || salvoIgnorado
                     ? `Anuncio ignorado para o SKU ${skuSelecionado}. Ele nao entra mais no ranking desse SKU.`
                     : `Nao localizei esse anuncio salvo no ranking do SKU ${skuSelecionado}.`;
             }
-            if (mlHistoricoFavoritosStatusEl && document.getElementById('aba-historico')?.classList.contains('active') && removido) {
+            if (mlHistoricoFavoritosStatusEl && historicoAtivo && removido) {
                 mlHistoricoFavoritosStatusEl.textContent = `Anuncio ignorado para o SKU ${skuSelecionado}.`;
             }
         }

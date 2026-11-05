@@ -110,7 +110,9 @@ def test_health_html_auth_and_stores_respond_during_50_second_import_workers(tmp
     # before entering its heavy worker. Keep those sources synthetic and stable.
     slow_import.__wrapped__ = slow_import
     monkeypatch.setattr(medias_compras_listas, "get_tenant_path", lambda client_id: str(tmp_path))
-    monkeypatch.setattr(medias_compras_listas, "_carregar_listas_pedidos", lambda client_id: [{"id": "list-a", "itens": []}])
+    monkeypatch.setattr(medias_compras_listas, "_carregar_listas_pedidos", lambda client_id: [
+        {"id": "list-a" if client_id == "tenant-a" else "list-b", "itens": []},
+    ])
     monkeypatch.setattr(medias_compras_fontes, "extras_runtime", lambda module: ())
     monkeypatch.setattr(medias_compras_cache, "resultados_medias", medias_compras_cache.ResultadoCache())
     monkeypatch.setattr(medias_compras_listas, "_api_medias_compras_lista_pedido_detalhe_sync", slow_import)

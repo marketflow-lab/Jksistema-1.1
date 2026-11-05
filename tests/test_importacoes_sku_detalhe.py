@@ -1,5 +1,6 @@
 import asyncio
 from copy import deepcopy
+from threading import Event
 
 import pandas as pd
 import pytest
@@ -36,6 +37,7 @@ def ambiente(monkeypatch, tmp_path):
     monkeypatch.setattr(service.common, "_carregar_listas_pedidos",
                         lambda tenant: [deepcopy(estado)] if tenant == "tenant-a" else [])
     monkeypatch.setattr(service, "_rateios", service.ResultadoCache())
+    monkeypatch.setattr(service, "_projecoes", service.ResultadoCache())
     monkeypatch.setattr(service.cadastro_compatibilidade, "visao_produtos_cadastro_contexto_loja", buscar)
     monkeypatch.setattr(service, "_enriquecer_itens_lista_pedido_com_impostos", lambda _client, itens, **_: itens)
     monkeypatch.setattr(service, "_impostos_sku", lambda _client, sku: {"sku": sku, "convenio_mg_st_minas": "SIM"})
@@ -86,6 +88,40 @@ def test_detalhe_compacto_reusa_rateio_entre_skus_e_invalida_somente_entradas(am
         assert recubado["rateio"]["total_m3"] == pytest.approx(2.0)
         assert recubado["item"]["M3"] == pytest.approx(1.6)
         assert len(chamadas_lote()) == 3
+
+    asyncio.run(conferir())
+
+
+def test_detalhe_compacto_reusa_projecao_apos_cancelar_consulta(ambiente, monkeypatch):
+    iniciou, liberar = Event(), Event()
+    projetar = service._projetar_sku
+    chamadas = []
+
+    def bloquear_projecao(*args, **kwargs):
+        chamadas.append(1)
+        iniciou.set()
+        assert liberar.wait(10)
+        return projetar(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_projetar_sku", bloquear_projecao)
+
+    async def conferir():
+        def consultar():
+            return service.api_importacoes_sku_detalhe("lista-a", "001", "tenant-a")
+
+        primeira = asyncio.create_task(consultar())
+        try:
+            assert await asyncio.to_thread(iniciou.wait, 10)
+            primeira.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await primeira
+            segunda = asyncio.create_task(consultar())
+        finally:
+            liberar.set()
+        detalhe = await segunda
+        assert detalhe["item"]["SKU"] == "001"
+        assert await consultar() == detalhe
+        assert chamadas == [1]
 
     asyncio.run(conferir())
 

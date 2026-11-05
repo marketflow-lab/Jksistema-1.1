@@ -85,8 +85,10 @@ class ResultadoCache:
     TENANT_INFLIGHT = 4
     ERROR_RETRY_SECONDS = 5
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, clock: Callable[[], float] = time.monotonic, *,
+                 reter_resultado: Callable[[dict], bool] | None = None):
         self.clock = clock
+        self._reter_resultado = reter_resultado
         self._lock = threading.RLock()
         self._results: OrderedDict[tuple, _Resultado] = OrderedDict()
         self._flights: dict[tuple, tuple[str, asyncio.Task]] = {}
@@ -275,7 +277,10 @@ class ResultadoCache:
             publish_started = time.perf_counter()
             saved_result = None
             with self._lock:
-                if self._store(key, value, source, persistente=bool(persistir_em)):
+                if self._reter_resultado is not None and not self._reter_resultado(value):
+                    self._results.pop(key, None)
+                    self._errors.pop(key, None)
+                elif self._store(key, value, source, persistente=bool(persistir_em)):
                     self._errors.pop(key, None)
                     saved_result = self._results.get(key)
                 else:

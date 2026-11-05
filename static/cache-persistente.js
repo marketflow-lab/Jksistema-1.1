@@ -113,6 +113,12 @@
             && sameRevisions(captured.revocations, revisions(REVOCATION_KEY), tags);
     }
 
+    function podeManterDados(context, tags = ['vendas', 'importacoes']) {
+        const captured = contexts.get(context);
+        return vigente(context) && sameRevisions(captured.revocations, revisions(REVOCATION_KEY), tags)
+            && dataOnlyChanges(captured.revisions, revisions(), tags);
+    }
+
     function confirmarMutacao(previous, response) {
         const receipt = mutationReceipts.get(response);
         const captured = contexts.get(previous);
@@ -396,6 +402,6 @@
             void invalidate(['vendas', 'importacoes'], 'sync');
         }
     });
-    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, confirmarMutacao, ler, salvar,
+    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, podeManterDados, confirmarMutacao, ler, salvar,
         invalidar: tags => invalidate(tags) });
 })(window);

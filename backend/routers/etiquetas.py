@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from backend.schemas import EtiquetaQrCodePayload, ImpressaoAvulsaPayload, ImpressaoEditorPayload
@@ -186,7 +186,7 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
     @etiquetas_router.get("/api/etiquetas/download/{file_id}")
     async def download_etiqueta(file_id: str, client_id: str = Depends(config.get_tenant_id)):
         file_bytes = ler_pdf(file_id, client_id)
-        return StreamingResponse(io.BytesIO(file_bytes), media_type="application/pdf")
+        return Response(content=file_bytes, media_type="application/pdf")
 
     @etiquetas_router.get("/api/etiquetas/preview/{file_id}")
     async def preview_etiqueta(

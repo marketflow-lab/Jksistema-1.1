@@ -126,10 +126,14 @@ async function testarFilaHistorico() {
         Map,
         Math,
         Number,
+        mlHistoricoFavoritosCache: [],
+        mlHistoricoFavoritosServidorCarregado: false,
         mlHistoricoFavoritosPersistenciaFila: Promise.resolve({ success: true, historico: [] }),
         mlHistoricoFavoritosUltimaPersistenciaPromise: Promise.resolve({ success: true, historico: [] }),
         normalizarHistoricoFavoritosFrontend: lista => Array.isArray(lista) ? lista.map(item => ({ ...item })) : [],
         tratarErroSalvarHistoricoFavoritosServidor: () => {},
+        salvarHistoricoFavoritosLocal: () => {},
+        agendarSincronizacaoHistoricoFavoritosVinculos: () => {},
         lerHistoricoFavoritos: () => [],
         salvarHistoricoFavoritosServidor: lista => new Promise((resolve, reject) => {
             chamadas.push(lista.map(item => item.id));
@@ -146,11 +150,14 @@ async function testarFilaHistorico() {
     const confirmar = extractFunction(historySource, 'confirmarSalvamentoHistoricoFavoritosServidor', context);
 
     const primeira = enfileirar([{ id: 'a' }]);
-    const segunda = enfileirar([{ id: 'a' }, { id: 'b' }]);
+    const cacheMaisRecente = [{ id: 'a' }, { id: 'b' }];
+    context.mlHistoricoFavoritosCache = cacheMaisRecente;
+    const segunda = enfileirar(cacheMaisRecente);
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(chamadas, [['a']], 'segundo PUT deve aguardar o primeiro');
     liberacoes[0].resolve({ historico: liberacoes[0].lista });
     await primeira;
+    assert.strictEqual(context.mlHistoricoFavoritosCache, cacheMaisRecente, 'resposta antiga deve preservar a edicao local mais recente');
     await new Promise(resolve => setImmediate(resolve));
     assert.deepStrictEqual(chamadas, [['a'], ['a', 'b']]);
     liberacoes[1].resolve({ historico: liberacoes[1].lista });

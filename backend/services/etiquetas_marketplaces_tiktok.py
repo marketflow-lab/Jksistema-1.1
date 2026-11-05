@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import re
 import time
+from collections import defaultdict
 from io import BytesIO
 
 import fitz
 
 from backend.services import etiquetas_marketplaces_context as marketplace_ctx
+from backend.services.etiquetas_marketplaces_common import ordenar_etiquetas
+
+
+_ORDER_ID = re.compile(r'\b(?:Order\s*ID|ID\s*do\s*pedido)\s*[:#-]?\s*(\d{10,})\b', re.IGNORECASE)
+_PACKAGE_ID = re.compile(
+    r'\b(?:Package\s*ID|ID\s*do\s*pacote)\s*[:#-]?\s*((?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{9,})\b',
+    re.IGNORECASE,
+)
+
 
 def _eh_pagina_lista_tiktok(texto_pagina):
     """Identifica paginas de lista/packing do TikTok dentro do PDF principal."""
@@ -23,8 +33,16 @@ def _eh_pagina_lista_tiktok(texto_pagina):
 
 
 def _extrair_order_id_tiktok(texto_pagina):
-    match = re.search(r'\bOrder\s*ID\s*:\s*(\d{10,})', texto_pagina or "", flags=re.IGNORECASE)
+    match = _ORDER_ID.search(texto_pagina or "")
     return match.group(1) if match else None
+
+
+def _extrair_ids_tiktok(texto):
+    order_ids = set(_ORDER_ID.findall(texto))
+    package_ids = {valor.upper() for valor in _PACKAGE_ID.findall(texto)}
+    if len(order_ids) > 1 or len(package_ids) > 1:
+        return None
+    return next(iter(order_ids), None), next(iter(package_ids), None)
 
 
 def _extrair_sku_qtd_tiktok(texto_pagina):
@@ -88,27 +106,53 @@ def _extrair_sku_qtd_tiktok(texto_pagina):
     return None
 
 
-def _parse_tiktok_picking_doc(doc):
-    mapa_tiktok = {}
-    lista_sequencial = []
-    paginas_lista = []
-
+def _ler_picking_tiktok(doc):
+    registros = []
     for page_index, page in enumerate(doc):
         texto = page.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        if not _eh_pagina_lista_tiktok(texto):
-            continue
+        if _eh_pagina_lista_tiktok(texto):
+            registros.append((page_index, _extrair_ids_tiktok(texto), _extrair_sku_qtd_tiktok(texto)))
+    return registros
 
-        paginas_lista.append(page_index)
-        dados_sku = _extrair_sku_qtd_tiktok(texto)
-        if not dados_sku:
-            continue
 
-        order_id = _extrair_order_id_tiktok(texto)
-        if order_id:
-            mapa_tiktok[order_id] = dados_sku
-        lista_sequencial.append(dados_sku)
-
+def _parse_tiktok_picking_doc(doc):
+    registros = _ler_picking_tiktok(doc)
+    mapa_tiktok = {ids[0]: dados for _, ids, dados in registros if ids and ids[0] and dados}
+    lista_sequencial = [dados for _, _, dados in registros if dados]
+    paginas_lista = [indice for indice, _, _ in registros]
     return mapa_tiktok, lista_sequencial, paginas_lista
+
+
+def _indexar_picking_tiktok(registros):
+    por_id = defaultdict(set)
+    for indice, ids, dados in registros:
+        if ids is not None:
+            for tipo, valor in enumerate(ids):
+                if valor:
+                    por_id[tipo, valor].add((indice, ids, dados))
+    return por_id
+
+
+def _vincular_picking_tiktok(ids_etiqueta, por_id):
+    if ids_etiqueta is None:
+        return None, None, []
+
+    order_id, package_id = ids_etiqueta
+    # Um ID em comum precisa concordar com os outros IDs presentes nas duas fontes.
+    correspondencias = {
+        (indice, ids_lista, dados)
+        for tipo, valor in enumerate(ids_etiqueta)
+        if valor
+        for indice, ids_lista, dados in por_id.get((tipo, valor), ())
+        if all(not etiqueta or not lista or etiqueta == lista for etiqueta, lista in zip(ids_etiqueta, ids_lista))
+    }
+    pedidos_lista = {ids_lista[0] for _, ids_lista, _ in correspondencias if ids_lista[0]}
+    paginas = sorted(indice for indice, _, _ in correspondencias) if len(pedidos_lista) <= 1 else []
+    candidatos = {(ids_lista[0] or order_id, dados) for _, ids_lista, dados in correspondencias if dados}
+    if len(candidatos) == 1:
+        pedido, dados = candidatos.pop()
+        return dados, pedido or package_id, paginas
+    return None, order_id or package_id, paginas
 
 
 def parse_tiktok_picking_list(file_obj):
@@ -133,40 +177,29 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
     doc_etiquetas = fitz.open()
     doc_lista = fitz.open()
     
-    lista_sequencial_fallback = []
-    
     progress_bar.progress(10, text="Analisando Picking List do TikTok...")
-    
-    if uploaded_list:
-        mapa_tiktok, lista_seq = parse_tiktok_picking_list(uploaded_list)
-        lista_sequencial_fallback = lista_seq
 
-        # Salva a lista original para impressão
-        uploaded_list.seek(0)
-        doc_lista_origem = fitz.open(stream=uploaded_list.read(), filetype="pdf")
-        doc_lista.insert_pdf(doc_lista_origem)
-        doc_lista_origem.close()
+    if uploaded_list:
+        with fitz.open(stream=uploaded_list.read(), filetype="pdf") as doc_lista_origem:
+            registros_picking = _ler_picking_tiktok(doc_lista_origem)
+            doc_lista.insert_pdf(doc_lista_origem)
+        indice_na_lista = {indice: indice for indice in range(len(doc_lista))}
     else:
-        mapa_tiktok, lista_seq, paginas_lista = _parse_tiktok_picking_doc(doc_origem)
-        lista_sequencial_fallback = lista_seq
-        for pagina_lista in paginas_lista:
+        registros_picking = _ler_picking_tiktok(doc_origem)
+        indice_na_lista = {}
+        for pagina_lista, _, _ in registros_picking:
+            indice_na_lista[pagina_lista] = len(doc_lista)
             doc_lista.insert_pdf(doc_origem, from_page=pagina_lista, to_page=pagina_lista)
-        if not lista_sequencial_fallback:
+        if not any(dados for _, _, dados in registros_picking):
             marketplace_ctx.st.warning("Lista de picking do TikTok nao foi encontrada; SKUs ficarao como N/D.")
-    
+
     progress_bar.progress(40, text="Separando e formatando etiquetas...")
 
-    count_etiquetas = 0
-    total_paginas = len(doc_origem)
-    w_page = 283
-    h_page = 425
-    i = 0
-    fallback_seq_index = 0
-    
-    while i < total_paginas:
-        page_atual = doc_origem[i]
-        texto_atual = page_atual.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE).upper()
-        
+    paginas_etiquetas = []
+    for i, page_atual in enumerate(doc_origem):
+        texto = page_atual.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+        texto_atual = texto.upper()
+
         # Filtros de páginas indesejadas
         eh_lista = (
             any(s in texto_atual for s in ["MANIFESTO", "RESUMO DO PEDIDO", "RELATÓRIO DE", "PICKING LIST", "PACKING LIST"])
@@ -174,27 +207,55 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
         )
         eh_danfe = any(s in texto_atual for s in ["DANFE", "DOCUMENTO AUXILIAR", "VALOR TOTAL DA NOTA"])
         eh_declaracao_conteudo_solta = "DECLARAÇÃO DE CONTEÚDO" in texto_atual and "REMETENTE" in texto_atual and len(re.findall(r'ETIQUETA', texto_atual)) == 0
-        
+
         if eh_lista or eh_danfe or eh_declaracao_conteudo_solta:
-            i += 1
             continue
 
         eh_etiqueta = "DESTINATÁRIO" in texto_atual or "RECEBEDOR" in texto_atual
         if not eh_etiqueta and "REMETENTE" in texto_atual and "ETIQUETA" in texto_atual:
-             eh_etiqueta = True
+            eh_etiqueta = True
 
-        if not eh_etiqueta:
-            i += 1
-            continue
+        if eh_etiqueta:
+            paginas_etiquetas.append((i, _extrair_ids_tiktok(texto)))
 
-        # Processamento da Etiqueta
+    por_id = _indexar_picking_tiktok(registros_picking)
+    etiquetas = []
+    for i, ids in paginas_etiquetas:
+        dados_sku, pedido, paginas = _vincular_picking_tiktok(ids, por_id)
+        # Preserva o vínculo unitário quando etiqueta e lista vieram no mesmo PDF.
+        if (
+            not uploaded_list
+            and ids == (None, None)
+            and len(paginas_etiquetas) == len(registros_picking) == 1
+        ):
+            indice_lista, ids_lista, dados_lista = registros_picking[0]
+            if ids_lista is not None and dados_lista:
+                dados_sku = dados_lista
+                pedido = ids_lista[0] or ids_lista[1]
+                paginas = [indice_lista]
+        etiquetas.append((i, dados_sku, pedido, paginas))
+
+    etiquetas = ordenar_etiquetas(
+        etiquetas,
+        sku=lambda etiqueta: etiqueta[1][0] if etiqueta[1] else None,
+        quantidade=lambda etiqueta: etiqueta[1][1] if etiqueta[1] else None,
+        pedido=lambda etiqueta: etiqueta[2],
+    )
+
+    # Move páginas inteiras de picking na sequência das etiquetas. Páginas sem
+    # vínculo ficam ao final na ordem original, e cada página é copiada só uma vez.
+    ordem_original = list(range(len(doc_lista)))
+    ordem_lista = dict.fromkeys(indice_na_lista[indice] for _, _, _, paginas in etiquetas for indice in paginas)
+    ordem_lista.update(dict.fromkeys(ordem_original))
+    if list(ordem_lista) != ordem_original:
+        doc_lista.select(list(ordem_lista))
+
+    count_etiquetas = 0
+    w_page = 283
+    h_page = 425
+    for i, dados_sku, _, _ in etiquetas:
         nova_pagina = doc_etiquetas.new_page(width=w_page, height=h_page)
-        
-        dados_sku = None
-        if fallback_seq_index < len(lista_sequencial_fallback):
-            dados_sku = lista_sequencial_fallback[fallback_seq_index]
-            fallback_seq_index += 1
-        
+
         if layout is not None:
             from backend.services.etiquetas_layout import renderizar_etiqueta_layout
             renderizar_etiqueta_layout(
@@ -203,7 +264,6 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
                 counter=count_etiquetas + 1, embedded_danfe=True, collector=component_collector,
             )
             count_etiquetas += 1
-            i += 1
             if limite_etiquetas and count_etiquetas >= limite_etiquetas:
                 break
             continue
@@ -239,7 +299,6 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
         nova_pagina.draw_rect(fitz.Rect(250, 0, 283, 15), color=None, fill=(1,1,1)) 
         nova_pagina.insert_text(fitz.Point(255, 12), num_pag_text, fontsize=12, color=(0,0,0))
         
-        i += 1 
         if limite_etiquetas and count_etiquetas >= limite_etiquetas:
             break
 

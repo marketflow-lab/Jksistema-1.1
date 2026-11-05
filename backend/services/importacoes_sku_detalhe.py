@@ -6,12 +6,13 @@ import asyncio
 import math
 import re
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import Depends, HTTPException
 
 from backend.services import cadastro_compatibilidade, impostos_regras, medias_compras_common as common
-from backend.services.blocking_workers import run_blocking, run_heavy
+from backend.services.blocking_workers import run_blocking
 from backend.services.cadastro_cubagem import normalizar_sku_cubagem, resolver_cubagem_produtos
 from backend.services.importacoes_sku_anuncios import resolver_escopo_anuncios_sku
 from backend.services.medias_compras_cache import ResultadoCache, digest_json
@@ -27,6 +28,7 @@ from backend.services.medias_compras_listas import _fonte_concorrentes_lista, _i
 
 
 _rateios = ResultadoCache()
+_projecoes = ResultadoCache(reter_resultado=lambda detalhe: detalhe["projecao"]["fiscal_pronto"])
 _MESES = dict(zip("JAN FEV MAR ABR MAI JUN JUL AGO SET OUT NOV DEZ".split(), range(1, 13)))
 _CAMPOS_CUBAGEM = (
     "M3", "m3", common.CBM_LISTA_PEDIDO_KEY, "M3 individual",
@@ -189,19 +191,22 @@ def _identidade_anuncios(client_id, lista):
     return {"seller_id": escopo["seller_id"], "site_id": escopo["site_id"], "fontes_versao": fontes_versao}
 
 
-def _capturar_fontes_sku(raiz, lista):
+def _capturar_fontes_sku(raiz, lista, *, inventariar_fotos=False):
     raiz = Path(raiz)
+    fontes_runtime = extras_runtime(impostos_regras)
+    if inventariar_fotos and common.PASTA_INFO:
+        fontes_runtime.append(Path(common.PASTA_INFO) / "default" / "cadastro_fotos")
     return capturar_fontes(
         raiz, detalhe=True,
         extras=(
-            *extras_runtime(impostos_regras),
+            *fontes_runtime,
             raiz / "impostos_regras.json",
             raiz / "impostos_convenio_mg.db",
             *raiz.glob("cadastro_produtos.backup_classificacao*.csv"),
         ),
         alvo=_revisao_rateio(lista), snapshot=lista,
         escopo=(str(lista["id"]), _referencia_loja(lista)),
-        inventariar_fotos=False,
+        inventariar_fotos=inventariar_fotos,
     )
 
 
@@ -229,8 +234,9 @@ def _validar_margem_salva(client_id, lista_id, sku):
 
 
 @consulta_medias
-def _projetar_sku(client_id, lista_id, sku, somente_salvos):
-    lista = _lista(client_id, lista_id)
+def _projetar_sku(client_id, lista_id, sku, somente_salvos, *, lista=None):
+    if lista is None:
+        lista = _lista(client_id, lista_id)
     salvo = _item(lista, sku)
     item = _itens_salvos_lista_pedido_no_escopo(client_id, {**lista, "itens": [salvo]})[0]
     resumo = {
@@ -290,24 +296,42 @@ async def api_importacoes_sku_detalhe(
     raiz = common.get_tenant_path(client_id)
     raiz_chave = chave_arquivo(raiz)
 
-    def probe():
+    def ler_lista_atual():
         if chave_arquivo(common.get_tenant_path(client_id)) != raiz_chave:
-            raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
-        lista = _lista(client_id, lista_id)
+            raise HTTPException(409, {"code": "sources_changing", "message": "A origem dos dados mudou durante a consulta."})
+        return _lista(client_id, lista_id)
+
+    def probe_rateio():
+        lista = ler_lista_atual()
         _item(lista, sku)
         return _capturar_fontes_sku(raiz, lista)
+
+    def probe_projecao():
+        lista = ler_lista_atual()
+        item = _item(lista, sku)
+        fonte = _capturar_fontes_sku(raiz, lista, inventariar_fotos=True)
+        cabecalho = {campo: valor for campo, valor in lista.items() if campo != "itens"}
+        return replace(fonte, alvo=digest_json((fonte.alvo, cabecalho, item)))
+
+    def calcular_projecao(fonte):
+        projecao, revisao, loja = _projetar_sku(client_id, lista_id, sku, False, lista=fonte.snapshot)
+        return {"projecao": projecao, "revisao": revisao, "store_id": loja}
 
     def calcular_agregado(fonte):
         return {**_calcular_rateio(client_id, fonte.snapshot, fonte.alvo), "_selo_fontes": _selo_fontes(client_id, fonte)}
 
-    agregado, (projecao, revisao, loja_projetada) = await asyncio.gather(
+    agregado, detalhe = await asyncio.gather(
         _rateios.consultar(
-            client_id, (raiz_chave, "rateio_importacoes_sku", lista_id), probe,
+            client_id, (raiz_chave, "rateio_importacoes_sku", lista_id), probe_rateio,
             calcular_agregado,
             stale=False, preferir_fresco=True,
         ),
-        run_heavy(_projetar_sku, client_id, lista_id, sku, False),
+        _projecoes.consultar(
+            client_id, (raiz_chave, "projecao_importacoes_sku", lista_id, sku), probe_projecao,
+            calcular_projecao, stale=False, preferir_fresco=True,
+        ),
     )
+    projecao, revisao, loja_projetada = detalhe["projecao"], detalhe["revisao"], detalhe["store_id"]
     if agregado["revisao"] != revisao or (
         agregado["store_id"] and agregado["store_id"] != loja_projetada
     ):

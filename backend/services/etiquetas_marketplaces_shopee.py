@@ -3,41 +3,42 @@
 from __future__ import annotations
 
 import re
-from io import BytesIO
+from dataclasses import dataclass
 
 import fitz
 
 from backend.services import etiquetas_marketplaces_context as marketplace_ctx
-from backend.services.etiquetas_marketplaces_common import extrair_chave_acesso, gerar_imagem_barcode
+from backend.services.etiquetas_manifesto import LinhaListaPDF, inserir_lista_ordenada
+from backend.services.etiquetas_marketplaces_common import ordenar_etiquetas
+
+
+_PADRAO_ID_PEDIDO = r"2[0-9]{5}[A-Z0-9]{6,}"
+_ID_PEDIDO = re.compile(r"(?<![A-Z0-9])" + _PADRAO_ID_PEDIDO, re.IGNORECASE)
+_POSSIVEL_ID_PEDIDO = re.compile(r"(?<![0-9])" + _PADRAO_ID_PEDIDO, re.IGNORECASE)
+_CHAVE_FISCAL = re.compile(r"(?<!\d)(?:\d[ \t]*){44}(?![ \t]*\d)")
+_LINHA_CORTE = re.compile(r"[\s._\-–—]*corte[\s_]*aqui[\s._\-–—]*", re.IGNORECASE)
+
+
+def _ids_pedido(texto, *, padrao=_ID_PEDIDO):
+    ids = {match[0].upper().split("PACKAGE", 1)[0] for match in padrao.finditer(texto)}
+    return {pedido_id for pedido_id in ids if len(pedido_id) != 44 or not pedido_id.isdigit()}
+
 
 def extract_shopee_data(doc):
     mapa_pedidos = {}
-    full_text = ""
+    ambiguos = set()
+    blocos = []
     for page in doc:
-        # Apenas páginas de checklist ou corte aqui para garantir performance e precisão
         text = page.get_text("text")
         if "checklist" in text.lower() or "corte aqui" in text.lower():
-            full_text += page.get_text("text") + "\n"
-
-    # Separação por blocos de pedido usando "Corte aqui" como delimitador
-    blocos = re.split(r'Corte[\s_]*aqui', full_text, flags=re.IGNORECASE)
+            blocos.extend(re.split(r'Corte[\s_]*aqui', text, flags=re.IGNORECASE))
 
     for bloco in blocos:
-        if not bloco.strip():
+        ids = _ids_pedido(bloco)
+        if len(ids) != 1:
             continue
+        pedido_id = ids.pop()
 
-        # 1. Busca ID do Pedido (Shopee IDs começam com 2 e têm data YYMMDD)
-        match_id = re.search(r'(2[0-9]{5}[A-Z0-9]{6,})', bloco, re.IGNORECASE)
-        if not match_id:
-            continue
-        
-        raw_id = match_id.group(1).upper()
-        # Correção para IDs capturados com sufixo 'PACKAGE' que quebram o vínculo
-        if "PACKAGE" in raw_id:
-            pedido_id = raw_id.split("PACKAGE")[0]
-        else:
-            pedido_id = raw_id
-        
         sku = "N/D"
         qty = "1"
         product_name = ""
@@ -95,119 +96,175 @@ def extract_shopee_data(doc):
         if sku != "N/D" and sku.upper() in ["UNIVERSAL", "GERADOR", "DIRIGIR", "PRODUTO", "VARIAÇÃO", "SHOPEE"]:
             sku = "N/D"
 
-        mapa_pedidos[pedido_id] = (sku, qty, product_name)
-        
-    return mapa_pedidos
+        dados = (sku, qty, product_name)
+        if pedido_id in mapa_pedidos and mapa_pedidos[pedido_id] != dados:
+            ambiguos.add(pedido_id)
+        mapa_pedidos[pedido_id] = dados
+
+    return {pedido_id: dados for pedido_id, dados in mapa_pedidos.items() if pedido_id not in ambiguos}
+
+
+@dataclass(frozen=True)
+class _EtiquetaShopee:
+    pagina: int
+    recorte: fitz.Rect
+    pedido_id: str | None
+    sku: str
+    quantidade: str
+    produto: str
+    comprador: str
+
+
+def _extrair_comprador(texto):
+    linhas = [linha.strip() for linha in texto.splitlines() if linha.strip()]
+    termos_ignorados = (
+        "NF:", "DANFE", "SÉRIE", "EMISSÃO", "DESTINATÁRIO", "REMETENTE", "RETIRADA", "PELO", "COMPRADOR",
+    )
+    for i, linha in enumerate(linhas):
+        if re.search(r'\d{2}/\d{2}/\d{4}', linha):
+            for candidata in linhas[i + 1 : i + 5]:
+                if len(candidata) > 2 and not any(termo in candidata.upper() for termo in termos_ignorados):
+                    return candidata
+    return ""
+
+
+def _recortes_etiquetas(page):
+    rect = page.rect
+    if rect.width <= 400:
+        return [rect]
+
+    mid_w, mid_h = rect.width / 2, rect.height / 2
+    return [
+        fitz.Rect(0, mid_h, mid_w, rect.height),
+        fitz.Rect(mid_w, mid_h, rect.width, rect.height),
+        fitz.Rect(0, 0, mid_w, mid_h),
+        fitz.Rect(mid_w, 0, rect.width, mid_h),
+    ]
+
+
+def _linhas_checklist(page, ids_pagina):
+    # Só recorta quando há divisórias horizontais e um pedido por seção.
+    if page.rotation or len(ids_pagina) < 2:
+        return ()
+
+    cortes = set()
+    blocos = page.get_text("dict", flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)["blocks"]
+    for bloco in blocos:
+        for linha in bloco.get("lines", ()):
+            texto = "".join(span["text"] for span in linha["spans"])
+            if linha["dir"] == (1.0, 0.0) and _LINHA_CORTE.fullmatch(texto):
+                cortes.add(linha["bbox"][3])
+    if not cortes:
+        return ()
+
+    area = page.rect
+    limites = [area.y0, *sorted(corte for corte in cortes if area.y0 < corte < area.y1), area.y1]
+    secoes = [
+        _ids_pedido(page.get_text(clip=fitz.Rect(area.x0, topo, area.x1, base)))
+        for topo, base in zip(limites, limites[1:])
+    ]
+    com_pedido = [indice for indice, ids in enumerate(secoes) if ids]
+    if not com_pedido:
+        return ()
+
+    primeiro, ultimo = com_pedido[0], com_pedido[-1]
+    linhas = []
+    for indice in range(primeiro, ultimo + 1):
+        ids = secoes[indice]
+        if len(ids) != 1:
+            return ()
+        linhas.append(LinhaListaPDF(
+            pedidos=tuple(ids), topo=limites[indice], base=limites[indice + 1],
+        ))
+
+    return tuple(linhas) if {linha.pedidos[0] for linha in linhas} == ids_pagina else ()
 
 
 def processar_shopee(uploaded_file, *, layout=None, component_collector=None, limite_etiquetas=None):
     try:
-        file_bytes = uploaded_file.read()
-        doc = fitz.open(stream=file_bytes, filetype="pdf")
-        mapa_global = extract_shopee_data(doc)
-        
-        output_labels = fitz.open()
-        output_manifest = fitz.open()
-        A6_W, A6_H = 283, 425
-        count_labels = 0
-        
-        for page_index in range(len(doc)):
-            if limite_etiquetas and count_labels >= limite_etiquetas:
-                break
-            page = doc[page_index]
-            text = page.get_text("text").lower()
-            
-            # Verifica se é página de checklist/manifesto
-            if "checklist" in text or "manifesto" in text or "corte aqui" in text:
-                output_manifest.insert_pdf(doc, from_page=page_index, to_page=page_index)
-            else:
-                rect = page.rect
-                is_large_page = rect.width > 400
-                quads = [rect]
-                if is_large_page:
-                    mid_w, mid_h = rect.width/2, rect.height/2
-                    quads = [
-                        fitz.Rect(0, mid_h, mid_w, rect.height), fitz.Rect(mid_w, mid_h, rect.width, rect.height),
-                        fitz.Rect(0, 0, mid_w, mid_h), fitz.Rect(mid_w, 0, rect.width, mid_h)
-                    ]
-                
-                for q in quads:
-                    if limite_etiquetas and count_labels >= limite_etiquetas:
-                        break
-                    q_text = page.get_text(clip=q)
-                    q_text_clean = q_text.replace(" ", "").replace("\n", "").upper()
-                    
-                    pedido_id = None
-                    
-                    # 1. Tenta encontrar ID conhecido do checklist (Mais confiável)
-                    if mapa_global:
-                        for known_id in mapa_global:
-                            if known_id in q_text_clean:
-                                pedido_id = known_id
-                                break
-                    
-                    # 2. Fallback Regex
-                    if not pedido_id:
-                        id_match = re.search(r'(2[0-9]{5}[A-Z0-9]{6,})', q_text_clean)
-                        if id_match:
-                            pedido_id = id_match.group(1)
-                    
-                    if pedido_id:
-                        # Extrair Nome do Cliente (Geralmente após a data de envio/impressão)
-                        nome_cliente = ""
-                        lines_raw = [l.strip() for l in q_text.split('\n') if l.strip()]
-                        for i, line in enumerate(lines_raw):
-                            if re.search(r'\d{2}/\d{2}/\d{4}', line):
-                                # Procura nas próximas 4 linhas por um nome válido
-                                for offset in range(1, 5):
-                                    if i + offset < len(lines_raw):
-                                        candidate = lines_raw[i+offset]
-                                        if len(candidate) > 2 and not any(x in candidate.upper() for x in ["NF:", "DANFE", "SÉRIE", "EMISSÃO", "DESTINATÁRIO", "REMETENTE", "RETIRADA", "PELO", "COMPRADOR"]):
-                                            nome_cliente = candidate
-                                            break
-                                if nome_cliente: break
+        with (
+            fitz.open(stream=uploaded_file.read(), filetype="pdf") as doc,
+            fitz.open() as output_labels,
+            fitz.open() as output_manifest,
+        ):
+            mapa_global = extract_shopee_data(doc)
+            etiquetas = []
+            paginas_manifesto = {}
+            linhas_manifesto = {}
+            for page_index, page in enumerate(doc):
+                text = page.get_text("text").lower()
+                if any(termo in text for termo in ("checklist", "manifesto", "corte aqui")):
+                    ids = _ids_pedido(text)
+                    paginas_manifesto[page_index] = tuple(ids) if len(ids) == 1 else ()
+                    linhas = _linhas_checklist(page, ids)
+                    if linhas:
+                        linhas_manifesto[page_index] = linhas
+                    continue
 
-                        count_labels += 1
-                        new_page = output_labels.new_page(width=A6_W, height=A6_H)
-                        if layout is not None:
-                            from backend.services.etiquetas_layout import renderizar_etiqueta_layout
-                            info = mapa_global.get(pedido_id)
-                            sku = f"SKU: {info[0]} (x{info[1]})" if info and info[0] != "N/D" else "SKU N/D"
-                            extra = (info[2] if info and len(info) > 2 else "") + "\n" + nome_cliente
-                            renderizar_etiqueta_layout(
-                                new_page, doc, page_index, clip=q, layout=layout, sku_text=sku, store='Shopee',
-                                extra_text=extra, counter=count_labels, embedded_danfe=True, collector=component_collector,
-                            )
+                for recorte in _recortes_etiquetas(page):
+                    texto = page.get_text(clip=recorte)
+                    ids = _ids_pedido(texto)
+                    if not ids:
+                        texto_sem_chave = _CHAVE_FISCAL.sub(" ", texto)
+                        texto_compacto = re.sub(r"\s+", "", texto_sem_chave)
+                        if not _ids_pedido(texto_compacto, padrao=_POSSIVEL_ID_PEDIDO):
                             continue
-                        new_page.show_pdf_page(fitz.Rect(0, 0, A6_W, A6_H), doc, page_index, clip=q)
-                        
-                        sku_info = mapa_global.get(pedido_id)
-                        prod_txt = ""
-                        if sku_info and sku_info[0] != "N/D":
-                            sku_txt = f"SKU: {sku_info[0]} (x{sku_info[1]})"
-                            if len(sku_info) > 2: prod_txt = sku_info[2]
-                            color = (0, 0, 0)
-                        else:
-                            sku_txt = "SKU N/D"
-                            color = (1, 0, 0)
-                        
-                        new_page.insert_text(fitz.Point(279, 350), sku_txt, fontsize=12, color=color, rotate=90)
-                        
-                        # Nome do Produto (Abaixo do SKU)
-                        if prod_txt:
-                            new_page.insert_text(fitz.Point(265, 350), prod_txt[:45], fontsize=8, color=(0, 0, 0), rotate=90)
 
-                        # Nome do Cliente (Abaixo do Produto)
-                        if nome_cliente:
-                            new_page.insert_text(fitz.Point(250, 350), nome_cliente[:35], fontsize=9, color=(0, 0, 0), rotate=90)
+                    conhecidos = ids.intersection(mapa_global)
+                    candidatos = conhecidos or ids
+                    pedido_id = next(iter(candidatos)) if len(candidatos) == 1 else None
+                    sku, quantidade, produto = mapa_global.get(pedido_id, ("N/D", "1", ""))
+                    etiquetas.append(_EtiquetaShopee(
+                        page_index, recorte, pedido_id, sku, quantidade, produto, _extrair_comprador(texto),
+                    ))
 
-                        new_page.insert_text(fitz.Point(240, 20), f"#{count_labels}", fontsize=10, color=(0.5, 0.5, 0.5))
+            etiquetas = ordenar_etiquetas(
+                etiquetas,
+                sku=lambda etiqueta: etiqueta.sku,
+                quantidade=lambda etiqueta: etiqueta.quantidade,
+                pedido=lambda etiqueta: etiqueta.pedido_id,
+            )
+            posicoes = {}
+            for posicao, etiqueta in enumerate(etiquetas):
+                if etiqueta.pedido_id:
+                    posicoes.setdefault(etiqueta.pedido_id, posicao)
+            inserir_lista_ordenada(
+                output_manifest, doc, paginas_manifesto, posicoes, linhas_por_pagina=linhas_manifesto,
+            )
 
-        labels_bytes = output_labels.tobytes() if count_labels > 0 else None
-        manifest_bytes = output_manifest.tobytes() if len(output_manifest) > 0 else None
-        
-        output_labels.close(); output_manifest.close()
-        return labels_bytes, manifest_bytes, count_labels
+            if limite_etiquetas:
+                etiquetas = etiquetas[:limite_etiquetas]
+
+            for numero, etiqueta in enumerate(etiquetas, start=1):
+                new_page = output_labels.new_page(width=283, height=425)
+                tem_sku = etiqueta.sku != "N/D"
+                sku_text = f"SKU: {etiqueta.sku} (x{etiqueta.quantidade})" if tem_sku else "SKU N/D"
+                if layout is not None:
+                    from backend.services.etiquetas_layout import renderizar_etiqueta_layout
+
+                    renderizar_etiqueta_layout(
+                        new_page, doc, etiqueta.pagina, clip=etiqueta.recorte, layout=layout,
+                        sku_text=sku_text, store="Shopee", extra_text=f"{etiqueta.produto}\n{etiqueta.comprador}",
+                        counter=numero, embedded_danfe=True, collector=component_collector,
+                    )
+                    continue
+
+                new_page.show_pdf_page(new_page.rect, doc, etiqueta.pagina, clip=etiqueta.recorte)
+                color = (0, 0, 0) if tem_sku else (1, 0, 0)
+                new_page.insert_text(fitz.Point(279, 350), sku_text, fontsize=12, color=color, rotate=90)
+                if tem_sku and etiqueta.produto:
+                    new_page.insert_text(
+                        fitz.Point(265, 350), etiqueta.produto[:45], fontsize=8, color=(0, 0, 0), rotate=90,
+                    )
+                if etiqueta.comprador:
+                    new_page.insert_text(
+                        fitz.Point(250, 350), etiqueta.comprador[:35], fontsize=9, color=(0, 0, 0), rotate=90,
+                    )
+                new_page.insert_text(fitz.Point(240, 20), f"#{numero}", fontsize=10, color=(0.5, 0.5, 0.5))
+
+            labels_bytes = output_labels.tobytes() if etiquetas else None
+            manifest_bytes = output_manifest.tobytes() if len(output_manifest) > 0 else None
+            return labels_bytes, manifest_bytes, len(etiquetas)
 
     except Exception as e:
         marketplace_ctx.st.error(f"Erro no processamento Shopee: {str(e)}")

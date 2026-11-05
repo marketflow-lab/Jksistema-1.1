@@ -13,7 +13,8 @@ const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCA
 const stores = ['Mercado Livre', 'Shopee', 'TikTok', 'Amazon'];
 const defaults = JSON.parse(fs.readFileSync(path.join(root, 'static', 'etiquetas', 'layout-defaults.json'), 'utf8'));
 const state = { configs: [], previews: [], processing: [], errors: [], alerts: [], defaultsRequests: 0,
-  failPreview: false, apiStatus: null, delayedPreview: null, delayedConfig: null, configLayout: null, canSelectDanfe: null };
+  failPreview: false, apiStatus: null, delayedPreview: null, delayedConfig: null, configLayout: null, canSelectDanfe: null,
+  downloads: [], delayedDownload: null, failDownload: false };
 const modal = page => page.locator('#etiquetas-layout-dialog');
 const gear = (page, store) => page.locator('[data-layout-store="' + store + '"]');
 const item = (page, name) => modal(page).locator('[data-layout-item="' + name + '"]');
@@ -108,7 +109,19 @@ async function routes(page) {
       if (pathname === '/api/etiquetas/processar') {
         const fields = multipart(request);
         state.processing.push({ store: fields.store, layout: fields.layout ? JSON.parse(fields.layout) : null });
-        return json(route, { success: true, qtd: 1, id_etiquetas: 'synthetic-result', id_lista: null });
+        return json(route, { success: true, qtd: 1, id_etiquetas: 'synthetic-result', id_lista: 'synthetic-list' });
+      }
+      if (pathname.startsWith('/api/etiquetas/download/')) {
+        assert.strictEqual(request.method(), 'GET');
+        assert.strictEqual(request.headers().authorization, 'Bearer synthetic-token');
+        const fileId = pathname.split('/').at(-1);
+        assert(['synthetic-result', 'synthetic-list'].includes(fileId));
+        state.downloads.push(fileId);
+        if (fileId === 'synthetic-result') {
+          if (state.delayedDownload) await state.delayedDownload;
+          if (state.failDownload) return json(route, { detail: 'Falha sintética no download' }, 500);
+        }
+        return route.fulfill({ contentType: 'application/pdf', body: fixture.buffer });
       }
       return route.fulfill({ contentType: pathname.endsWith('.css') ? 'text/css' : 'application/javascript', body: '' });
     } catch (error) {
@@ -116,6 +129,56 @@ async function routes(page) {
       return json(route, { detail: error.message }, 500);
     }
   });
+}
+
+async function esperarStatusDownload(page, tipo, texto) {
+  const id = 'status-download-' + tipo;
+  await page.waitForFunction(({ id, texto }) => document.getElementById(id)?.textContent.trim() === texto, { id, texto });
+  assert.strictEqual(await page.locator('#' + id).isVisible(), true);
+}
+
+async function verificarDownloadDoResultado(page) {
+  const etiquetas = page.locator('#btn-download-etiquetas');
+  const lista = page.locator('#btn-download-lista');
+  const pending = deferred();
+  state.delayedDownload = pending.promise;
+  const downloadEtiquetas = () => page.waitForEvent('download', {
+    predicate: download => download.suggestedFilename() === 'etiquetas_processadas.pdf',
+  });
+
+  await etiquetas.click();
+  await until(() => state.downloads.length > 0);
+  await esperarStatusDownload(page, 'etiquetas', 'Baixando…');
+  assert.strictEqual(await etiquetas.isDisabled(), true);
+  await etiquetas.evaluate(button => { button.click(); button.click(); });
+
+  assert.strictEqual(await lista.isEnabled(), true);
+  const [downloadLista] = await Promise.all([
+    page.waitForEvent('download', { predicate: download => download.suggestedFilename() === 'lista_processada.pdf' }),
+    lista.click(),
+  ]);
+  assert.strictEqual(await downloadLista.failure(), null);
+  await esperarStatusDownload(page, 'lista', 'Download iniciado.');
+  await esperarStatusDownload(page, 'etiquetas', 'Baixando…');
+  assert.deepStrictEqual(state.downloads, ['synthetic-result', 'synthetic-list']);
+
+  const primeiraEtiqueta = downloadEtiquetas();
+  state.delayedDownload = null;
+  pending.resolve();
+  assert.strictEqual(await (await primeiraEtiqueta).failure(), null);
+  await esperarStatusDownload(page, 'etiquetas', 'Download iniciado.');
+  assert.strictEqual(await etiquetas.isEnabled(), true);
+
+  state.failDownload = true;
+  await etiquetas.click();
+  await esperarStatusDownload(page, 'etiquetas', 'Não foi possível baixar o arquivo. Tente novamente.');
+  assert.strictEqual(await etiquetas.isEnabled(), true);
+
+  state.failDownload = false;
+  const [novaEtiqueta] = await Promise.all([downloadEtiquetas(), etiquetas.click()]);
+  assert.strictEqual(await novaEtiqueta.failure(), null);
+  await esperarStatusDownload(page, 'etiquetas', 'Download iniciado.');
+  assert.deepStrictEqual(state.downloads, ['synthetic-result', 'synthetic-list', 'synthetic-result', 'synthetic-result']);
 }
 
 async function open(page, store) {
@@ -446,6 +509,7 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
     await page.waitForFunction(() => !document.getElementById('btn-processar').disabled);
     assert.deepStrictEqual(state.processing.at(-1), { store: 'Mercado Livre', layout: saved },
       'Processamento deve receber a mesma geometria salva no editor');
+    await verificarDownloadDoResultado(page);
 
     // DANFE integrado só se torna uma camada separada depois da seleção explícita.
     await page.locator('input[name="loja"][value="Shopee"]').check();
@@ -554,6 +618,6 @@ async function stored(page, tenant = 'tenant-a', user = 'user-a', store = 'Merca
     withinPage(await values(page), defaultLayout('TikTok').page);
     await modal(page).locator('#layout-cancel').click();
     assert.deepStrictEqual(state.errors, []);
-    console.log('etiquetas_layout_browser: OK (config GET, defaults imediatos, API lenta/405, sessão durante JSON, 4 lojas, camadas, arraste, flag e recorte DANFE, cancelamento, isolamento, processamento e mobile)');
+    console.log('etiquetas_layout_browser: OK (config GET, defaults imediatos, API lenta/405, sessão durante JSON, 4 lojas, camadas, arraste, flag e recorte DANFE, cancelamento, isolamento, processamento, downloads e mobile)');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

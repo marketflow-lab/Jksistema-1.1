@@ -109,7 +109,7 @@
             .excel-wrap { overflow-x: auto; overflow-y: visible; }
         }
     </style>
-    <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261008-fluido-v2">
+    <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261105-status-download">
     <link rel="stylesheet" href="/etiquetas/styles/layout-editor.css?v=20261102-config-atual-v2">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -189,8 +189,14 @@
                 </div>
             </div>
             <div class="actions">
-                <a href="#" class="btn-download" id="btn-download-etiquetas" style="display:none" target="_blank"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar etiquetas</span></a>
-                <a href="#" class="btn-download btn-secondary" id="btn-download-lista" style="display:none" target="_blank"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar lista / manifesto</span></a>
+                <div class="shipping-download" hidden>
+                    <button type="button" class="btn-download" id="btn-download-etiquetas" aria-describedby="status-download-etiquetas"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar etiquetas</span></button>
+                    <p class="download-status" id="status-download-etiquetas"></p>
+                </div>
+                <div class="shipping-download" hidden>
+                    <button type="button" class="btn-download btn-secondary" id="btn-download-lista" aria-describedby="status-download-lista"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg><span>Baixar lista / manifesto</span></button>
+                    <p class="download-status" id="status-download-lista"></p>
+                </div>
             </div>
             <p class="result-note">Processamento concluído. Baixe os arquivos disponíveis para continuar sua expedição.</p>
             </div>
@@ -977,6 +983,39 @@
         window.URL.revokeObjectURL(url);
     }
 
+    function configurarDownloadEnvio(tipo, fileId, nomeArquivo) {
+        const botao = document.getElementById(`btn-download-${tipo}`);
+        const status = document.getElementById(`status-download-${tipo}`);
+        botao.parentElement.hidden = !fileId;
+        botao.disabled = false;
+        status.textContent = '';
+        status.classList.remove('download-error');
+
+        async function baixar() {
+            if (botao.disabled) return;
+            botao.disabled = true;
+            status.classList.remove('download-error');
+            status.textContent = 'Baixando…';
+
+            let mensagem = 'Download iniciado.';
+            let falhou = false;
+            try {
+                await baixarArquivoProtegido(fileId, nomeArquivo);
+            } catch {
+                mensagem = 'Não foi possível baixar o arquivo. Tente novamente.';
+                falhou = true;
+            }
+            // A conclusão de um download anterior não altera um novo resultado.
+            if (botao.onclick === baixar) {
+                status.textContent = mensagem;
+                status.classList.toggle('download-error', falhou);
+                botao.disabled = false;
+            }
+        }
+
+        botao.onclick = fileId ? baixar : null;
+    }
+
     function limparPreviewAvulsa() {
         if (avulsaPreviewUrl) {
             window.URL.revokeObjectURL(avulsaPreviewUrl);
@@ -1072,20 +1111,8 @@
             if (!response.ok) throw new Error(data.detail || 'Erro ao processar');
             if (!data.success) throw new Error(data.message || 'Erro desconhecido.');
             document.getElementById('qtd-etiquetas').textContent = data.qtd;
-            const btnEt = document.getElementById('btn-download-etiquetas');
-            const btnLi = document.getElementById('btn-download-lista');
-            if (data.id_etiquetas) {
-                btnEt.onclick = async (ev) => { ev.preventDefault(); await baixarArquivoProtegido(data.id_etiquetas, 'etiquetas_processadas.pdf'); };
-                btnEt.style.display = 'block';
-            } else {
-                btnEt.style.display = 'none';
-            }
-            if (data.id_lista) {
-                btnLi.onclick = async (ev) => { ev.preventDefault(); await baixarArquivoProtegido(data.id_lista, 'lista_processada.pdf'); };
-                btnLi.style.display = 'block';
-            } else {
-                btnLi.style.display = 'none';
-            }
+            configurarDownloadEnvio('etiquetas', data.id_etiquetas, 'etiquetas_processadas.pdf');
+            configurarDownloadEnvio('lista', data.id_lista, 'lista_processada.pdf');
             resultSection.style.display = 'block';
         } catch (e) {
             console.error(e);

@@ -1,5 +1,6 @@
 """Cubagem exercised through the real list enrichment and summaries."""
 import copy
+import json
 from decimal import Decimal
 import pandas as pd
 import pytest
@@ -153,17 +154,46 @@ def test_landed_cost_cannot_use_partial_volume(monkeypatch):
     from backend.services import medias_compras_listas as listas
     from backend.services import codex_reports_advanced as reports
     from fastapi import HTTPException
-    monkeypatch.setattr(listas,"_api_medias_compras_lista_pedido_detalhe_sync",lambda *a,**k:{"lista":{"m3_completo":False}})
     monkeypatch.setattr(reports,"build_profile_context",lambda **k:pytest.fail("partial volume entered financial calculation"))
     with pytest.raises(HTTPException) as exc:
-        listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido","tenant-a")
+        listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido","tenant-a",{"lista":{"m3_completo":False}})
     assert exc.value.status_code == 409
 
 def test_landed_cost_keeps_public_response_when_volume_complete(monkeypatch):
     from backend.services import medias_compras_listas as listas
     from backend.services import codex_reports_advanced as reports
-    monkeypatch.setattr(listas,"_api_medias_compras_lista_pedido_detalhe_sync",lambda *a,**k:{"lista":{"m3_completo":True}})
     monkeypatch.setattr(reports,"build_profile_context",lambda **k:{"import_analysis":{"ok":True},"scope":{"store_id":"loja-a"}})
-    result=listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido","tenant-a")
+    result=listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido","tenant-a",{"lista":{"m3_completo":True}})
     assert result["success"] is True and result["analysis"] == {"ok":True}
     assert result["scope"] == {"store_id":"loja-a"}
+
+
+def test_landed_cost_uses_only_the_validated_saved_order(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from backend.services import codex_reports_advanced as reports
+    from backend.services import medias_compras_listas as listas
+    from backend.services.medias_compras_fontes import digest_lista
+
+    tenant = tmp_path / "tenant-a"
+    tenant.mkdir()
+    arquivo = tenant / "listas_pedidos.json"
+    pedido = {
+        "id": "pedido", "exchange_rate": 5.5,
+        "itens": [{"SKU": "001", "Quantidade": 4, "Valor total": 40, "M3": 0.1}],
+    }
+    arquivo.write_text(json.dumps([pedido]), encoding="utf-8")
+    monkeypatch.setattr(common, "PASTA_INFO", str(tmp_path))
+    detalhe = {"lista": {"m3_completo": True}, "_revisao_lista_custo_posto": digest_lista(pedido)}
+    esperado = reports.build_profile_context(
+        info_base=str(tmp_path), client_id="tenant-a", profile="import_order", import_list_id="pedido", margin_rows=[],
+    )["import_analysis"]
+    assert esperado["cash_required_brl"] > 0
+    assert listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido", "tenant-a", detalhe)["analysis"] == esperado
+
+    pedido["itens"][0]["M3"] = ""
+    arquivo.write_text(json.dumps([pedido]), encoding="utf-8")
+    monkeypatch.setattr(reports, "_landed_cost_analysis", lambda *args: pytest.fail("cubagem de outra revisão entrou no cálculo"))
+    with pytest.raises(HTTPException) as exc:
+        listas._api_medias_compras_lista_pedido_custo_posto_sync("pedido", "tenant-a", detalhe)
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "sources_changing"

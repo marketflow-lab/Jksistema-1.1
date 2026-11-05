@@ -77,6 +77,11 @@ button.primary:disabled { background: #d5e1f2; color: #627899; box-shadow: none;
 .btn-download:hover { background: #174eaf; }
 .btn-secondary, .btn-light { border: 1px solid #c4d9f4; background: #eaf2ff; color: #174eaf; box-shadow: none; }
 .btn-secondary:hover, .btn-light:hover { background: #ddeaff; }
+.shipping-download .btn-download { width: 100%; }
+.shipping-download .btn-download:disabled { cursor: wait; opacity: .72; }
+.download-status { margin: 6px 0 0; color: #315c94; font-size: 12px; text-align: center; }
+.download-status:empty { margin: 0; }
+.download-status.download-error { color: #b91c1c; }
 .btn-danger { background: #fff1f2; color: #be123c; border: 1px solid #fecdd3; box-shadow: none; }
 .btn-danger:hover { background: #ffe4e6; }
 .result-note { color: #526b90; text-align: center; font-size: 11px; line-height: 1.6; margin: 16px 0 0; }

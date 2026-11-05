@@ -18,7 +18,7 @@ import statistics
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from statistics import NormalDist
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from backend.services import codex_assistant_storage
 from backend.services.cadastro_fornecedores import resolver_fornecedor_lista
@@ -833,13 +833,20 @@ def _siscomex(ncm_count: int) -> float:
     return 786.54 + (count - 50) * 3.86
 
 
-def _load_import_order(tenant: str, list_id: str) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
+def _load_import_order(
+    tenant: str, list_id: str, *, validate: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
     lists = _read_json(os.path.join(tenant, "listas_pedidos.json"), [])
     if not isinstance(lists, list):
         return None, []
-    normalized = [normalize_text_tree(item) for item in lists if isinstance(item, dict)]
-    selected = next((item for item in normalized if str(item.get("id") or "") == str(list_id or "")), None)
-    return selected, normalized
+    raw_orders = [item for item in lists if isinstance(item, dict)]
+    normalized = [normalize_text_tree(item) for item in raw_orders]
+    for raw_order, order in zip(raw_orders, normalized):
+        if str(order.get("id") or "") == str(list_id or ""):
+            if validate is not None:
+                validate(raw_order)
+            return order, normalized
+    return None, normalized
 
 
 def _landed_cost_analysis(
@@ -1111,6 +1118,7 @@ def build_profile_context(
     import_list_id: str = "",
     context: Optional[dict[str, Any]] = None,
     margin_rows: Optional[list[dict[str, Any]]] = None,
+    validate_import_order: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     profile = profile if profile in REPORT_PROFILES else "custom"
     context = context if isinstance(context, dict) else {}
@@ -1122,6 +1130,9 @@ def build_profile_context(
     comparison_start = date.fromisoformat(period["comparison_start"])
     comparison_end = date.fromisoformat(period["comparison_end"])
     tenant = _tenant_path(info_base, client_id)
+    checked_import_order = None
+    if profile == "import_order" and validate_import_order is not None:
+        checked_import_order = _load_import_order(tenant, import_list_id, validate=validate_import_order)
     sales_source_available = _tenant_has_table(tenant, "vendas")
     returns_source_available = _tenant_has_table(tenant, "notas_entrada_itens")
     pipeline_source_available = isinstance(_read_json(os.path.join(tenant, "listas_pedidos.json"), None), list)
@@ -1446,7 +1457,7 @@ def build_profile_context(
     import_analysis = None
     supplier_performance = None
     if profile == "import_order":
-        order, all_orders = _load_import_order(tenant, import_list_id)
+        order, all_orders = checked_import_order if checked_import_order is not None else _load_import_order(tenant, import_list_id)
         if order is None:
             warnings.append("Pedido de importação não encontrado.")
         else:

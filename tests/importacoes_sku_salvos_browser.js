@@ -980,6 +980,51 @@ async function run(browser, name, options, check) {
             assert(!env.state.complements.some(pathname => pathname.includes('/api/cadastro/') || pathname.includes('/api/impostos/')));
         });
 
+        await run(browser, 'consulta compacta recupera conflito e fila sem perder os dados salvos', {
+            compact: async ({ id, saved, state }) => {
+                if (saved) return detalheCompacto(id, true);
+                const tentativa = state.calls.filter(call => call.kind === 'compact').length;
+                if (tentativa === 1) {
+                    const pendente = gate();
+                    state.pending.push(pendente);
+                    await pendente.promise;
+                    return { status: 409, body: { detail: { code: 'sources_changing', message: 'Fontes em atualização.' } } };
+                }
+                if (tentativa === 2) return { status: 503, body: { detail: 'Há consultas em andamento.' } };
+                return detalheCompacto(id);
+            },
+        }, async env => {
+            await open(env);
+            await visibleSaved(env);
+            assert.strictEqual(await env.page.locator('#vValorUnitarioProduto').textContent(), '-');
+            await waitUntil(() => env.state.pending.length === 1);
+            env.state.pending[0].resolve();
+            await visibleSaved(env, '9');
+            await env.page.waitForFunction(() => document.getElementById('vValorUnitarioProduto').textContent !== '-');
+            assert.strictEqual(env.state.calls.filter(call => call.kind === 'compact').length, 3);
+            assert.strictEqual(env.state.calls.filter(call => call.kind === 'compact-saved').length, 1);
+            assert(env.state.calls.every(call => call.kind.startsWith('compact')));
+        });
+
+        await run(browser, 'consulta compacta limita novas tentativas após timeout', {
+            fastRequestTimeout: true,
+            compact: async ({ id, saved, state }) => {
+                if (saved) return detalheCompacto(id, true);
+                const pendente = gate();
+                state.pending.push(pendente);
+                await pendente.promise;
+                return detalheCompacto(id);
+            },
+        }, async env => {
+            await open(env);
+            await visibleSaved(env);
+            await env.page.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent
+                === 'Exibindo os dados salvos. Não foi possível atualizar agora.');
+            assert.strictEqual(env.state.calls.filter(call => call.kind === 'compact').length, 4);
+            assert(env.state.calls.every(call => call.kind.startsWith('compact')));
+            await visibleSaved(env);
+        });
+
         const instante = new Date('2026-11-04T12:00:00Z').getTime();
         await run(browser, 'consulta compacta reaproveita análise válida e expira margem sem perder preço', opcoesFinanceiras({
             compact: ({ id, saved, state }) => {

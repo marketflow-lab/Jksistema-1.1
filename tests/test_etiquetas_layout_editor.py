@@ -197,7 +197,7 @@ def test_http_layout_invalido_retorna_422_sem_criar_arquivo(http_client):
 
 
 def test_download_e_preview_de_arquivo_gerado_exigem_tenant_proprietario(http_client):
-    client, _ = http_client
+    client, storage = http_client
     response = client.post(
         "/api/etiquetas/processar",
         data={"store": "Mercado Livre", "layout": json.dumps(_layout_livre())},
@@ -209,10 +209,17 @@ def test_download_e_preview_de_arquivo_gerado_exigem_tenant_proprietario(http_cl
     assert payload["success"] is True, payload
     for file_id in (payload["id_etiquetas"], payload["id_lista"]):
         assert file_id
-        for operation in ("download", "preview"):
-            url = f"/api/etiquetas/{operation}/{file_id}"
-            assert client.get(url, headers={"X-Tenant": "cliente-a"}).status_code == 200
-            assert client.get(url, headers={"X-Tenant": "cliente-b"}).status_code == 404
+        download = f"/api/etiquetas/download/{file_id}"
+        arquivo = client.get(download, headers={"X-Tenant": "cliente-a"})
+        assert arquivo.status_code == 200
+        assert arquivo.headers["content-type"] == "application/pdf"
+        assert arquivo.headers["content-length"] == str(len(storage[file_id]))
+        assert arquivo.content == storage[file_id]
+        assert client.get(download, headers={"X-Tenant": "cliente-b"}).status_code == 404
+
+        preview = f"/api/etiquetas/preview/{file_id}"
+        assert client.get(preview, headers={"X-Tenant": "cliente-a"}).status_code == 200
+        assert client.get(preview, headers={"X-Tenant": "cliente-b"}).status_code == 404
 
 
 def _fonte_embutida(store):
