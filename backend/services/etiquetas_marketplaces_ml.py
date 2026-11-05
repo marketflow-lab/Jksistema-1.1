@@ -10,8 +10,14 @@ from unicodedata import combining, normalize
 import fitz
 
 from backend.services import etiquetas_marketplaces_context as marketplace_ctx
-from backend.services.etiquetas_manifesto import LinhaListaPDF, inserir_lista_ordenada
+from backend.services.etiquetas_manifesto import (
+    LinhaListaPDF,
+    ProdutoListaPDF,
+    SeloQuantidadeListaPDF,
+    inserir_lista_ordenada,
+)
 from backend.services.etiquetas_marketplaces_common import (
+    desenhar_rodape_sku,
     extrair_chave_acesso,
     gerar_imagem_barcode,
     ordenar_etiquetas,
@@ -38,6 +44,11 @@ _SKU_SEM_MARCADOR_ML = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _SKUS_INVALIDOS_ML = {"N/D", "SKU", "QTD", "QTY", "QUANT", "QUANTIDADE"}
+_QUANTIDADE_TABELA_ML = re.compile(
+    r"^[ \t]*(?:QTD|QTY|QUANTIDADE|QUANT)\b[ \t]*[:#]?[ \t]*(?:\n[ \t]*)?"
+    r"([0-9]{1,3}(?:\.[0-9]{3}){1,2}|[0-9]{1,9})[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _FRASE_LISTA_ML = "DESPACHEM AS SUAS VENDAS O QUANTO ANTES"
 
 
@@ -158,6 +169,79 @@ def _dados_segmento_manifesto_ml(texto):
     return (skus[0], _extrair_qtd_ml(texto)) if len(skus) == 1 else None
 
 
+def _selos_quantidade_ml(pagina, faixa, bordas, quantidades, marcas, glifos):
+    def caixa_do_caractere(caractere):
+        texto = caractere["c"]
+        if len(texto) == 1:
+            chave = (ord(texto), caractere["origin"])
+            if chave in glifos:
+                return fitz.Rect(glifos[chave])
+        return fitz.Rect(caractere["bbox"])
+
+    flags = fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_PRESERVE_IMAGES
+    blocos = pagina.get_text("rawdict", clip=faixa, flags=flags)["blocks"]
+    linhas = [
+        (linha, [caractere for span in linha["spans"] for caractere in span["chars"]])
+        for bloco in blocos if bloco["type"] == 0
+        for linha in bloco["lines"]
+    ]
+    encontrados = []
+    selos = []
+    area = faixa & fitz.Rect(bordas[0], faixa.y0 + 0.5, bordas[1], faixa.y1 - 0.5)
+    for linha, caracteres in linhas:
+        texto = "".join(c["c"] for c in caracteres)
+        quantidade = _QUANTIDADE_TABELA_ML.fullmatch(texto)
+        if quantidade is None or linha["dir"] != (1.0, 0.0):
+            continue
+        valor = int(quantidade[1].replace(".", ""))
+        encontrados.append(valor)
+        if valor < 2:
+            continue
+
+        inicio, fim = quantidade.span(1)
+        numero = fitz.Rect()
+        for caractere in caracteres[inicio:fim]:
+            numero |= caixa_do_caractere(caractere)
+        linha_base = caracteres[inicio]["origin"][1]
+        tamanho = min(7.4, numero.height)
+        if tamanho < 6:
+            continue
+        texto_selo = f"{quantidade[1]} UNIDADES"
+        largura = fitz.get_text_length(texto_selo, fontname="hebo", fontsize=tamanho) + 8
+        caixa = fitz.Rect(
+            numero.x0 - 0.4, min(numero.y0, linha_base - tamanho),
+            numero.x0 - 0.4 + largura, max(numero.y1, linha_base + tamanho * 0.35),
+        )
+        if not area.contains(caixa) or not caixa.contains(numero):
+            continue
+        if any(
+            caixa.intersects(caixa_do_caractere(c))
+            for outra_linha, outros in linhas
+            for indice, c in enumerate(outros)
+            if not c["c"].isspace() and (outra_linha is not linha or not inicio <= indice < fim)
+        ):
+            continue
+        # Permite o fundo da linha, mas preserva ícones, imagens e traços vizinhos.
+        if any(caixa.intersects(marca) and not (tipo == "fill-path" and marca.contains(caixa))
+               for tipo, marca in marcas):
+            continue
+        selos.append(SeloQuantidadeListaPDF(texto_selo, caixa, linha_base, tamanho))
+
+    return tuple(selos) if encontrados == quantidades else ()
+
+
+def _produto_tabela_ml(texto, sku, bordas, pagina, faixa, marcas, glifos):
+    quantidades = [int(valor.replace(".", "")) for valor in _QUANTIDADE_TABELA_ML.findall(texto)]
+    ocorrencias = sum(codigo.upper() == sku.upper() for codigo in _SKU_EXPLICITO_ML.findall(texto))
+    # Para a lista, o total depende da quantidade impressa de cada ocorrência do SKU.
+    total = sum(quantidades) if len(quantidades) == max(1, ocorrencias) and all(quantidades) else None
+    selos = (
+        _selos_quantidade_ml(pagina, faixa, bordas, quantidades, marcas, glifos)
+        if total and max(quantidades) > 1 else ()
+    )
+    return ProdutoListaPDF(sku, total, bordas, selos)
+
+
 def _eh_lista_ml(texto):
     texto = texto.upper()
     return (
@@ -215,6 +299,7 @@ def _divisorias_tabela_ml(pagina, esquerda, direita):
         faixas[-1][1].append((x0, x1))
 
     limites = [fim_cabecalho]
+    bordas = None
     for y, trechos in faixas:
         # A borda horizontal da tabela pode ser desenhada por célula.
         unidos = []
@@ -223,11 +308,15 @@ def _divisorias_tabela_ml(pagina, esquerda, direita):
                 unidos[-1] = (unidos[-1][0], max(unidos[-1][1], x1))
             else:
                 unidos.append((x0, x1))
-        if y - limites[-1] >= 0.75 and any(
-            x1 - x0 >= largura_minima and x0 <= esquerda.x1 and x1 >= direita.x0 for x0, x1 in unidos
-        ):
+        faixa = next((
+            (x0, x1) for x0, x1 in unidos
+            if x1 - x0 >= largura_minima and x0 <= esquerda.x1 and x1 >= direita.x0
+        ), None)
+        if y - limites[-1] >= 0.75 and faixa:
             limites.append(y)
-    return limites
+            if bordas is None:
+                bordas = faixa
+    return limites, bordas
 
 
 def _ids_linha_tabela_ml(identificacao):
@@ -271,7 +360,10 @@ def _base_ultima_linha_ml(pagina, topo):
 
 def _linhas_tabela_ml(pagina, cabecalho):
     esquerda, direita = cabecalho
-    limites = _divisorias_tabela_ml(pagina, esquerda, direita)
+    limites, bordas = _divisorias_tabela_ml(pagina, esquerda, direita)
+    if bordas is None:
+        margem = min(max(0, esquerda.x0 - 5), pagina.rect.width * 0.1)
+        bordas = margem, pagina.rect.width - margem
     # A segunda coluna pode começar alguns pontos antes do seu título.
     divisao = direita.x0 - 4
     col_esquerda = fitz.Rect(pagina.rect.x0, limites[0], divisao, pagina.rect.y1)
@@ -289,6 +381,17 @@ def _linhas_tabela_ml(pagina, cabecalho):
 
     linhas = []
     ids_recortados = set()
+    marcas = [
+        (tipo, fitz.Rect(caixa))
+        for tipo, caixa in pagina.get_bboxlog()
+        if tipo not in {"fill-text", "stroke-text", "ignore-text"}
+    ]
+    # As caixas de get_text são mais altas que os glifos e se sobrepõem em linhas próximas.
+    glifos = {
+        (codigo, origem): caixa
+        for trecho in pagina.get_texttrace()
+        for codigo, _, origem, caixa in trecho["chars"]
+    }
     for topo, base in zip(limites, limites[1:]):
         identificacao = pagina.get_text(clip=fitz.Rect(col_esquerda.x0, topo, divisao, base))
         ids = _ids_linha_tabela_ml(identificacao)
@@ -298,8 +401,14 @@ def _linhas_tabela_ml(pagina, cabecalho):
             continue
         if linhas and topo != linhas[-1][0].base:
             return ()
-        produtos = pagina.get_text(clip=fitz.Rect(divisao, topo, pagina.rect.x1, base))
-        linhas.append((LinhaListaPDF(ids, topo, base), _dados_segmento_manifesto_ml(produtos)))
+        faixa_produtos = fitz.Rect(divisao, topo, pagina.rect.x1, base)
+        produtos = pagina.get_text(clip=faixa_produtos)
+        dados = _dados_segmento_manifesto_ml(produtos)
+        produto = (
+            _produto_tabela_ml(produtos, dados[0], bordas, pagina, faixa_produtos, marcas, glifos)
+            if dados else None
+        )
+        linhas.append((LinhaListaPDF(ids, topo, base, produto), dados))
         ids_recortados.update(_extrair_ids_ml(identificacao))
 
     # Um quadro sem divisórias suficientes fica no PDF com sua página inteira.
@@ -477,13 +586,15 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
 
         i, id_correspondente = etiqueta.pagina, etiqueta.pedido
         dados_sku, chave_numeros = etiqueta.dados_sku, etiqueta.chave
+        sku_text = f"SKU {dados_sku[0]}  x  {dados_sku[1]}" if dados_sku else "SKU N/D"
+        quantidade_sku = dados_sku[1] if dados_sku else None
         count_etiquetas += 1
         nova_pagina = doc_etiquetas.new_page(width=283, height=425)
         if layout is not None:
             from backend.services.etiquetas_layout import renderizar_etiqueta_layout
             renderizar_etiqueta_layout(
                 nova_pagina, doc_origem, i, layout=layout, store='Mercado Livre',
-                sku_text=f"SKU {dados_sku[0]}  x  {dados_sku[1]}" if dados_sku else "SKU N/D",
+                sku_text=sku_text, quantidade_sku=quantidade_sku,
                 code=chave_numeros or id_correspondente,
                 code_text=chave_numeros or (f"VENDA {id_correspondente}" if id_correspondente else None),
                 counter=count_etiquetas, embedded_danfe=etiqueta.danfe_embutida,
@@ -492,30 +603,11 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
             continue
 
         # Mantem a escala original; a DANFE usa a margem lateral existente.
+        if quantidade_sku is not None and int(quantidade_sku) > 1:
+            nova_pagina.insert_font(fontname="hebo")
         nova_pagina.show_pdf_page(fitz.Rect(0, 0, 283, 390), doc_origem, i)
-        
-        if dados_sku:
-            sku_text = f"SKU {dados_sku[0]}  x  {dados_sku[1]}"
-            color_sku = (0, 0, 0)
-        else:
-            sku_text = "SKU N/D"
-            color_sku = (1, 0, 0)
-
-        nova_pagina.draw_line(fitz.Point(0, 390), fitz.Point(283, 390), color=(0,0,0), width=1)
-        for tamanho_sku in (12, 11, 10, 9, 8, 7):
-            linhas_sku = [""]
-            for caractere in sku_text:
-                candidato = linhas_sku[-1] + caractere
-                if fitz.get_text_length(candidato, fontname="hebo", fontsize=tamanho_sku) > 271:
-                    linhas_sku.append(caractere)
-                else:
-                    linhas_sku[-1] = candidato
-            espaco_restante = nova_pagina.insert_textbox(
-                fitz.Rect(6, 397, 277, 424), "\n".join(linha.strip() for linha in linhas_sku),
-                fontsize=tamanho_sku, fontname="hebo", color=color_sku, align=1,
-            )
-            if espaco_restante >= 0:
-                break
+        cor_sku = (0, 0, 0) if dados_sku else (1, 0, 0)
+        desenhar_rodape_sku(nova_pagina, sku_text, cor=cor_sku, quantidade=quantidade_sku)
 
         codigo_barra_base = chave_numeros or id_correspondente
         titulo_codigo = "CHAVE DE ACESSO / VENDA"

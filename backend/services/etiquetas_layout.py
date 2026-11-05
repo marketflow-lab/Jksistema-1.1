@@ -12,7 +12,7 @@ import math
 
 import fitz
 
-from backend.services.etiquetas_marketplaces_common import gerar_imagem_barcode
+from backend.services.etiquetas_marketplaces_common import desenhar_rodape_sku, gerar_imagem_barcode
 
 
 MM = 72 / 25.4
@@ -194,7 +194,7 @@ def _pdf_original(doc, page_index: int, clip=None, *, counter: int | None = None
 
 
 def _overlay_atual(store: str, name: str, *, sku_text="", extra_text="",
-                   code=None, code_text=None) -> bytes | None:
+                   code=None, code_text=None, quantidade_sku=None) -> bytes | None:
     """Build isolated layers at the unchanged processor's point coordinates."""
     with fitz.open() as overlay:
         page = overlay.new_page(width=283, height=425)
@@ -213,18 +213,7 @@ def _overlay_atual(store: str, name: str, *, sku_text="", extra_text="",
                     sku_text = prefix[:30] + "..." + separator + quantity
                 page.insert_text(fitz.Point(281, 300), sku_text, fontsize=8, color=color, rotate=90)
             else:
-                page.draw_line(fitz.Point(0, 390), fitz.Point(283, 390), color=(0, 0, 0), width=1)
-                for size in (12, 11, 10, 9, 8, 7):
-                    lines = [""]
-                    for char in sku_text:
-                        candidate = lines[-1] + char
-                        if fitz.get_text_length(candidate, fontname="hebo", fontsize=size) > 271:
-                            lines.append(char)
-                        else:
-                            lines[-1] = candidate
-                    if page.insert_textbox(fitz.Rect(6, 397, 277, 424), "\n".join(line.strip() for line in lines),
-                                           fontsize=size, fontname="hebo", color=color, align=1) >= 0:
-                        break
+                desenhar_rodape_sku(page, sku_text, cor=color, quantidade=quantidade_sku)
         else:
             title = "CHAVE DE ACESSO / VENDA"
             text = (code_text or code) if code else "CODIGO NAO ENCONTRADO"
@@ -285,12 +274,14 @@ def _separar_danfe(original: bytes, selection: dict) -> tuple[bytes, bytes]:
 def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
                                code=None, code_text=None, clip=None,
                                extra_text="", counter=None, embedded_danfe=False,
-                               collector=None, store="Mercado Livre") -> None:
+                               collector=None, store="Mercado Livre", quantidade_sku=None) -> None:
     """Compose raw source plus new layers once, for print and for preview."""
     original = _pdf_original(doc, page_index, clip, counter=counter, store=store)
     components = {
         "etiqueta": original,
-        "sku": _overlay_atual(store, "sku", sku_text=sku_text, extra_text=extra_text),
+        "sku": _overlay_atual(
+            store, "sku", sku_text=sku_text, extra_text=extra_text, quantidade_sku=quantidade_sku,
+        ),
         "danfe": None if embedded_danfe else _overlay_atual(store, "danfe", code=code, code_text=code_text),
     }
     warnings = []
@@ -332,7 +323,9 @@ def _componentes_amostra(store: str) -> dict:
     original = _pdf_original(doc, 0, counter=1, store=store)
     doc.close()
     sku = "SKU EXEMPLO-001  x  2" if not embedded else "SKU: EXEMPLO-001 (x2)"
-    return {"etiqueta": original, "sku": _overlay_atual(store, "sku", sku_text=sku),
+    return {"etiqueta": original, "sku": _overlay_atual(
+                store, "sku", sku_text=sku, quantidade_sku="2" if store == "Mercado Livre" else None,
+            ),
             "danfe": None if embedded else _overlay_atual(store, "danfe", code=code, code_text=code)}
 
 

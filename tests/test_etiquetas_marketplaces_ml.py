@@ -12,12 +12,12 @@ from backend.services.etiquetas_marketplaces import processar_etiquetas_loja
 CHAVE_ACESSO = "12345678901234567890123456789012345678901234"
 
 
-def _pdf_mercado_livre(*, incluir_chave: bool, sku: str = "TESTE-ML") -> bytes:
+def _pdf_mercado_livre(*, incluir_chave: bool, sku: str = "TESTE-ML", quantidade: int = 1) -> bytes:
     documento = fitz.open()
     etiqueta = documento.new_page(width=283, height=390)
     etiqueta.insert_textbox(
         fitz.Rect(20, 20, 263, 180),
-        f"DESTINATARIO\nPEDIDO ABC123456\nSKU {sku}\nQTD 1",
+        f"DESTINATARIO\nPEDIDO ABC123456\nSKU {sku}\nQTD {quantidade}",
         fontsize=4 if len(sku) > 30 else 7,
     )
     etiqueta.insert_text(fitz.Point(240, 380), "BORDA", fontsize=6)
@@ -165,6 +165,23 @@ def test_sku_longo_permanece_completo_no_rodape() -> None:
             assert pagina.rect.contains(fitz.Rect(linha["bbox"]))
 
 
+@pytest.mark.parametrize("personalizado", [False, True])
+def test_selo_de_quantidade_preserva_sku_longo_e_fica_no_rodape(personalizado) -> None:
+    sku = "W" * 60
+    resultado = processar_etiquetas_loja(
+        "Mercado Livre", _pdf_mercado_livre(incluir_chave=True, sku=sku, quantidade=3), None, None,
+        layout=layout_padrao("Mercado Livre") if personalizado else None,
+    )
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as documento:
+        pagina = documento[0]
+        rodape = pagina.get_text(clip=fitz.Rect(0, 390, 283, 425))
+        assert "".join(rodape.split()) == f"SKU{sku}3UNIDADES"
+        caixa = pagina.search_for("3 UNIDADES")[0]
+        amostra = pagina.get_pixmap(clip=(caixa.x0 - 4, caixa.y0 + 3, caixa.x0 - 3, caixa.y0 + 4))
+        assert all(canal < 65 for canal in amostra.samples)
+        assert pagina.search_for(CHAVE_ACESSO)[0].y1 < 390
+
+
 def test_etiqueta_sem_sku_ou_codigo_mantem_avisos() -> None:
     with fitz.open() as fonte:
         fonte.new_page(width=283, height=390).insert_text(fitz.Point(20, 30), "12")
@@ -242,7 +259,9 @@ def test_ordenacao_preserva_pedido_sku_e_chave_de_cada_etiqueta(personalizado) -
             texto = pagina.get_text()
             assert f"PEDIDO {pedido}" in texto
             assert f"CLIENTE {indice}" in texto
-            assert f"SKU {sku}  x  {qtd}" in texto
+            sku_text = f"SKU {sku}  x  1" if qtd == 1 else f"SKU {sku} {qtd} UNIDADES"
+            rodape = pagina.get_text(clip=fitz.Rect(0, 390, 283, 425))
+            assert rodape.split() == sku_text.split()
             assert [chave for chave in chaves if chave in texto.replace(" ", "").replace("\n", "")] == [chaves[indice]]
             assert str(ordem) in pagina.get_text(clip=fitz.Rect(252, 0, 283, 20)).splitlines()
     with fitz.open(stream=resultado["out_lista"], filetype="pdf") as lista:
@@ -312,13 +331,18 @@ def test_manifesto_tabular_segue_etiquetas_e_preserva_a_linha_completa(
         for pagina, indice in zip(etiquetas, ordem_esperada):
             assert f"ORIGINAL {indice}" in pagina.get_text()
             _, _, sku, qtd, _ = pedidos[indice]
-            assert f"SKU {sku}  x  {qtd}" in pagina.get_text()
+            sku_text = f"SKU {sku}  x  1" if qtd == 1 else f"SKU {sku} {qtd} UNIDADES"
+            rodape = pagina.get_text(clip=fitz.Rect(0, 390, 283, 425))
+            assert rodape.split() == sku_text.split()
 
     ordem_manifesto = []
+    totais = set()
     with fitz.open(stream=resultado["out_lista"], filetype="pdf") as manifesto:
         for pagina in manifesto:
             assert pagina.search_for(titulo_identificacao) and pagina.search_for("Produtos")
             assert pagina.search_for("RODAPE ORIGINAL")
+            totais.update(linha for linha in pagina.get_text().splitlines() if linha.startswith("Total:"))
+            selos = [fitz.Rect(imagem["bbox"]) for imagem in pagina.get_image_info()]
             pedidos_na_pagina = []
             for indice, (venda, pack, sku, qtd, _) in enumerate(pedidos):
                 vendas = pagina.search_for(f"Venda: {venda}")
@@ -330,13 +354,90 @@ def test_manifesto_tabular_segue_etiquetas_e_preserva_a_linha_completa(
                 assert any(abs(rect.y0 - (linha - 24)) < 0.1 for rect in pagina.search_for(f"PRODUTO TESTE {indice}"))
                 assert any(abs(rect.y0 - (linha - 12)) < 0.1 for rect in pagina.search_for(f"Pack ID: {pack}"))
                 assert any(abs(rect.y0 - (linha - 12)) < 0.1 for rect in pagina.search_for(f"SKU: {sku}"))
-                assert any(abs(rect.y0 - linha) < 0.1 for rect in pagina.search_for(f"Quantidade: {qtd}"))
+                quantidade = next(rect for rect in pagina.search_for(f"Quantidade: {qtd}") if abs(rect.y0 - linha) < 0.1)
+                selos_na_linha = [selo for selo in selos if selo.intersects(quantidade)]
+                assert len(selos_na_linha) == (1 if qtd > 1 else 0)
+                if selos_na_linha:
+                    selo = selos_na_linha[0]
+                    assert selo.x0 > quantidade.x0 and selo.x1 > quantidade.x1
+                    amostra = pagina.get_pixmap(clip=selo, colorspace=fitz.csGRAY)
+                    pixels = amostra.samples
+                    assert sum(pixel < 65 for pixel in pixels) > len(pixels) / 2
                 assert any(abs(rect.y0 - (linha + 12)) < 0.1 for rect in pagina.search_for(f"COMPRADOR {indice}"))
                 assert any(abs(rect.y0 - (linha + 12)) < 0.1 for rect in pagina.search_for(f"ATRIBUTO TESTE {indice}"))
                 pedidos_na_pagina.append((linha, indice))
             ordem_manifesto.extend(indice for _, indice in sorted(pedidos_na_pagina))
     assert ordem_manifesto == ordem_esperada
+    assert totais == {"Total: 6 itens", "Total: 3 itens", "Total: 2 itens"}
 
+
+def test_manifesto_ja_ordenado_repete_cabecalho_e_total_na_quebra_de_pagina() -> None:
+    pedidos = (
+        ("ABC400001", "10-A", 7),
+        ("ABC400002", "81-K", 3),
+        ("ABC400003", "81-K", 2),
+        ("ABC400004", "81-K", 1),
+        ("ABC400005", "81-F", 1),
+        ("ABC400006", "90-Z", None),
+    )
+    with fitz.open() as fonte:
+        for venda, sku, qtd in pedidos:
+            etiqueta = fonte.new_page(width=283, height=390)
+            etiqueta.insert_text((20, 30), f"DESTINATARIO\nVenda: {venda}\nSKU {sku}\nQTD {qtd or 1}", fontsize=9)
+
+        for inicio in range(0, len(pedidos), 2):
+            pagina = fonte.new_page(width=420, height=320)
+            pagina.draw_rect((18, 44, 402, 68), color=None, fill=(0.83,) * 3)
+            pagina.insert_text((24, 60), "Identificação", fontsize=10)
+            pagina.insert_text((163, 60), "Produtos", fontsize=10, fontname="hebo")
+            for indice, (venda, sku, qtd) in enumerate(pedidos[inicio:inicio + 2]):
+                topo = 68 + indice * 86
+                pagina.draw_rect((18, topo, 402, topo + 86), color=None, fill=(1, 1, 1))
+                pagina.insert_text((24, topo + 20), f"Venda: {venda}", fontsize=9)
+                pagina.insert_text((163, topo + 20), f"SKU: {sku}", fontsize=9)
+                if qtd is not None:
+                    pagina.insert_text((163, topo + 33), f"Quantidade: {qtd}", fontsize=9)
+                if venda == "ABC400001":
+                    # O selo não pode cobrir o ícone ao lado da quantidade.
+                    pagina.draw_rect((240, topo + 26, 246, topo + 34), color=(0, 0, 0))
+                if venda == "ABC400003":
+                    pagina.insert_text((163, topo + 51), f"SKU: {sku}", fontsize=9)
+                    pagina.insert_text((163, topo + 64), "Quantidade: 4", fontsize=9)
+                pagina.draw_line((18, topo + 86), (402, topo + 86), width=0.5)
+            pagina.insert_text((24, 300), "RODAPE ORIGINAL", fontsize=8)
+
+        resultado = processar_etiquetas_loja("Mercado Livre", fonte.tobytes(), None, None)
+
+    with fitz.open(stream=resultado["out_lista"], filetype="pdf") as manifesto:
+        assert len(manifesto) == 3
+        vendas = []
+        paginas_sku_81k = 0
+        for pagina in manifesto:
+            texto = pagina.get_text().splitlines()
+            vendas.extend(linha for linha in texto if linha.startswith("Venda:"))
+            assert "RODAPE ORIGINAL" in texto
+            if "SKU: 81-K" in texto:
+                paginas_sku_81k += 1
+                assert texto.count("SKU 81-K") == 1
+                assert texto.count("Total: 10 itens") == 1
+                cabecalho = pagina.search_for("SKU 81-K")[0]
+                assert cabecalho.y1 < pagina.search_for("SKU: 81-K")[0].y0
+                spans = [
+                    span for bloco in pagina.get_text("dict", clip=cabecalho)["blocks"]
+                    for linha in bloco.get("lines", []) for span in linha["spans"]
+                ]
+                assert [(span["text"], span["font"]) for span in spans] == [("SKU 81-K", "Helvetica-Bold")]
+                amostra = pagina.get_pixmap(clip=fitz.Rect(380, cabecalho.y1 + 10, 381, cabecalho.y1 + 11))
+                assert all(215 <= canal <= 221 for canal in amostra.samples)
+        assert paginas_sku_81k == 2
+        assert vendas == [f"Venda: {venda}" for venda, *_ in pedidos]
+        for pagina, valores in ((manifesto[0], (3,)), (manifesto[1], (2, 4))):
+            selos = [fitz.Rect(imagem["bbox"]) for imagem in pagina.get_image_info()]
+            assert len(selos) == len(valores)
+            for quantidade in valores:
+                assert any(selo.intersects(pagina.search_for(f"Quantidade: {quantidade}")[0]) for selo in selos)
+        assert "Total: 1 item" in manifesto[2].get_text().splitlines()
+        assert "Total indisponível" in manifesto[2].get_text().splitlines()
 
 
 def test_manifesto_tabular_sem_divisoria_segura_preserva_pagina_original() -> None:

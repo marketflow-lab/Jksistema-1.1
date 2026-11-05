@@ -6,6 +6,7 @@ import re
 from io import BytesIO
 
 import barcode
+import fitz
 from barcode.writer import ImageWriter
 
 def extrair_chave_acesso(texto_pagina):
@@ -26,6 +27,53 @@ def gerar_imagem_barcode(numero_chave):
         code128.write(buffer, options={"write_text": False, "quiet_zone": 1, "module_height": 4.0})
         return buffer.getvalue()
     except Exception: return None
+
+
+def _linhas_rodape_sku(texto, tamanho, largura):
+    linhas = [""]
+    for caractere in texto:
+        candidato = linhas[-1] + caractere
+        if fitz.get_text_length(candidato, fontname="hebo", fontsize=tamanho) > largura:
+            linhas.append(caractere)
+        else:
+            linhas[-1] = candidato
+    return [linha.strip() for linha in linhas]
+
+
+def desenhar_rodape_sku(pagina, sku_text, *, cor, quantidade=None):
+    pagina.draw_line((0, 390), (283, 390), color=(0, 0, 0), width=1)
+    if quantidade is None or int(quantidade) <= 1:
+        for tamanho in (12, 11, 10, 9, 8, 7):
+            linhas = _linhas_rodape_sku(sku_text, tamanho, 271)
+            if pagina.insert_textbox(
+                fitz.Rect(6, 397, 277, 424), "\n".join(linhas),
+                fontsize=tamanho, fontname="hebo", color=cor, align=1,
+            ) >= 0:
+                break
+        return
+
+    sku = sku_text.removesuffix(f"  x  {quantidade}")
+    selo = f"{int(quantidade)} UNIDADES"
+    largura_selo = fitz.get_text_length(selo, fontname="hebo", fontsize=11) + 20
+    largura_disponivel = 271 - 12 - largura_selo
+    for tamanho in (12, 11, 10, 9, 8, 7):
+        linhas = _linhas_rodape_sku(sku, tamanho, largura_disponivel)
+        entrelinha = tamanho + 1
+        if (len(linhas) - 1) * entrelinha + tamanho * 1.38 <= 32:
+            break
+
+    larguras = [fitz.get_text_length(linha, fontname="hebo", fontsize=tamanho) for linha in linhas]
+    largura_sku = max(larguras)
+    x_sku = (283 - largura_sku - 12 - largura_selo) / 2
+    x_selo = x_sku + largura_sku + 12
+    y_sku = 411 - (len(linhas) - 1) * entrelinha / 2
+    for indice, (linha, largura) in enumerate(zip(linhas, larguras)):
+        pagina.insert_text(
+            (x_sku + (largura_sku - largura) / 2, y_sku + indice * entrelinha),
+            linha, fontname="hebo", fontsize=tamanho, color=cor,
+        )
+    pagina.draw_rect((x_selo, 396, x_selo + largura_selo, 418), color=None, fill=(0.19,) * 3, radius=0.2)
+    pagina.insert_text((x_selo + 10, 411), selo, fontname="hebo", fontsize=11, color=(1, 1, 1))
 
 
 def ordenar_etiquetas(registros, *, sku, quantidade, pedido):
