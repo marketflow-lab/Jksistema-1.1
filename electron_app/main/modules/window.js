@@ -243,8 +243,76 @@ function bindMainWindowZoomShortcuts(win) {
     bindAppWindowShortcuts(win.webContents, win);
 }
 
+function requestBackgroundStockSync(expectedOrigin) {
+    if (location.origin !== expectedOrigin) return 'retry';
+    const token = localStorage.getItem('access_token');
+    if (!token) return 'retry';
+
+    // Keep the token in the app frame and avoid navigation on session expiry.
+    return new Promise(resolve => {
+        const request = new XMLHttpRequest();
+        request.open('POST', `${expectedOrigin}/api/estoque/sync`);
+        request.timeout = 20000;
+        request.responseType = 'json';
+        request.setRequestHeader('Authorization', `Bearer ${token}`);
+        request.setRequestHeader('Content-Type', 'application/json');
+        request.addEventListener('loadend', () => {
+            const scopeConflict = request.status === 409
+                && request.response?.detail?.code === 'estoque_sync_scope_conflict';
+            const shouldRetry = scopeConflict || [0, 401, 429].includes(request.status)
+                || request.status >= 500;
+            resolve(shouldRetry ? 'retry' : 'next-cycle');
+        });
+        request.send(JSON.stringify({
+            loja: 'Todas as lojas',
+            store_id: '__todas',
+            todas_lojas: true
+        }));
+    });
+}
+
+function configureBackgroundStockSync(win, appUrl) {
+    const origin = isLocalBackendAppUrl(appUrl) ? new URL(appUrl).origin : '';
+    if (win.backgroundStockSync?.origin === origin) return;
+    win.backgroundStockSync?.stop();
+    if (!origin) return;
+
+    const script = `(${requestBackgroundStockSync.toString()})(${JSON.stringify(origin)})`;
+    const intervalMs = 2 * 60 * 60 * 1000;
+    const retryMs = 30 * 1000;
+    let timer = setTimeout(run, 60 * 1000);
+    let stopped = false;
+    win.backgroundStockSync = { origin, stop };
+    win.once('closed', stop);
+
+    function stop() {
+        stopped = true;
+        clearTimeout(timer);
+        win.removeListener('closed', stop);
+        delete win.backgroundStockSync;
+    }
+
+    async function run() {
+        if (stopped || win.isDestroyed()) return;
+        let delay = retryMs;
+        try {
+            const mainFrame = win.webContents.mainFrame;
+            const frame = mainFrame.origin === origin ? mainFrame : mainFrame.frames.find(
+                candidate => candidate.name === 'jk-background-stock-sync' && candidate.origin === origin
+            );
+            if (frame && await frame.executeJavaScript(script) === 'next-cycle') {
+                delay = intervalMs;
+            }
+        } catch (_err) {
+            // A tab can navigate or close while the request is being scheduled.
+        }
+        if (!stopped && !win.isDestroyed()) timer = setTimeout(run, delay);
+    }
+}
+
 function loadConfiguredApp(win, clientConfig = null) {
     const config = clientConfig || loadClientConfig();
+    if (win === mainWindow) configureBackgroundStockSync(win, config.appUrl);
     logElectronLifecycle('client-config-loaded', { appUrl: config.appUrl, configPath: config.configPath });
     if (isLocalBackendAppUrl(config.appUrl)) {
         renderLocalBackendStartupScreen(win);
@@ -2188,7 +2256,8 @@ function loadElectronTabbedShell(win, appUrl) {
         return;
     }
 
-    const shellUrl = `${pathToFileURL(shellPath).toString()}?appUrl=${encodeURIComponent(appUrl)}&tabPreload=${encodeURIComponent(pathToFileURL(tabPreloadPath).toString())}&browserPartition=${encodeURIComponent(getBrowserSessionPartition())}`;
+    const stockSyncParam = win.backgroundStockSync ? '&backgroundStockSync=1' : '';
+    const shellUrl = `${pathToFileURL(shellPath).toString()}?appUrl=${encodeURIComponent(appUrl)}&tabPreload=${encodeURIComponent(pathToFileURL(tabPreloadPath).toString())}&browserPartition=${encodeURIComponent(getBrowserSessionPartition())}${stockSyncParam}`;
     win.loadURL(shellUrl).catch((err) => {
         if (isIgnorableNavigationAbort(null, err && err.message ? err.message : String(err))) {
             logElectronLifecycle('local-backend-startup-screen-aborted-ignored', {

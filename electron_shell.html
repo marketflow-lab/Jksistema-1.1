@@ -3177,6 +3177,15 @@
         initializeWindowZoom();
         initializeScreenSearch();
 
+        if (params.get('backgroundStockSync') === '1') {
+            // This frame keeps the local session available even with all tabs closed.
+            const stockSyncFrame = document.createElement('iframe');
+            stockSyncFrame.name = 'jk-background-stock-sync';
+            stockSyncFrame.hidden = true;
+            stockSyncFrame.src = new URL('/health', appUrl).href;
+            document.body.appendChild(stockSyncFrame);
+        }
+
         if (!restoreTabsAfterUpdate()) {
             createTab(appUrl, 'Inicio');
         }

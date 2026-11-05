@@ -127,6 +127,13 @@
             line-height: 1.1;
         }
         td.num { text-align: center; }
+        .foto-produto {
+            display: inline-grid;
+            place-items: center;
+        }
+        .foto-produto > * { grid-area: 1 / 1; }
+        .foto-sku:not([src]) { visibility: hidden; }
+        .foto-sku[src] + .muted { visibility: hidden; }
         .foto-sku {
             width: 42px;
             height: 42px;
@@ -225,6 +232,7 @@
 
     const query = new URLSearchParams(window.location.search);
     let lojaSelecionada = String(query.get('loja') || '__todas');
+    const storeIdSelecionado = String(query.get('store_id') || '').trim();
     let faixaAtual = '3m';
     let ordemAtual = 'desc';
 
@@ -298,6 +306,8 @@
     function renderTabela(itens) {
         const tbody = document.getElementById('tbodySemVenda');
         if (!tbody) return;
+        const media = window.JKAuthenticatedMedia;
+        media?.liberar(tbody);
         tbody.innerHTML = '';
 
         if (!Array.isArray(itens) || !itens.length) {
@@ -308,18 +318,33 @@
         itens.forEach(item => {
             const tr = document.createElement('tr');
             tr.className = obterLinhaClasse(item.meses_sem_vender);
-            const fotoUrl = String(item.foto || '').trim();
             const badgeClasse = obterBadgeClasse(item.meses_sem_vender);
             tr.innerHTML = '' +
                 '<td>' + escaparHtml(item.sku || '') + '</td>' +
-                '<td>' + (fotoUrl ? '<img class="foto-sku" src="' + escaparHtml(fotoUrl) + '" alt="Foto" loading="lazy">' : '<span class="muted">Sem foto</span>') + '</td>' +
+                '<td><span class="foto-produto"><span class="muted">Sem foto</span></span></td>' +
                 '<td>' + escaparHtml(item.titulo_anuncio || '') + '</td>' +
                 '<td class="num">' + escaparHtml(formatarData(item.ultima_venda || '')) + '</td>' +
                 '<td class="num"><strong>' + numero(item.meses_sem_vender || 0) + '</strong></td>' +
                 '<td class="num">' + numero(item.saldo_atual_estoque || 0) + '</td>' +
                 '<td><span class="badge-msg ' + badgeClasse + '">' + escaparHtml(item.aviso_sem_venda || '') + '</span></td>';
+
+            const fotoUrl = media?.normalizarUrlFotoCadastro(item.foto);
+            if (fotoUrl) {
+                const img = document.createElement('img');
+                img.className = 'foto-sku';
+                img.alt = 'Foto do SKU ' + String(item.sku || '');
+                img.loading = 'lazy';
+                img.addEventListener('error', () => img.removeAttribute('src'));
+                if (media.ehUrlProtegidaCadastro(fotoUrl)) {
+                    img.setAttribute('data-jk-auth-src', fotoUrl);
+                } else {
+                    img.src = fotoUrl;
+                }
+                tr.cells[1].firstElementChild.prepend(img);
+            }
             tbody.appendChild(tr);
         });
+        media?.hidratar(tbody);
     }
 
     async function carregarProdutosSemVenda() {
@@ -332,6 +357,7 @@
             if (lojaSelecionada && lojaSelecionada !== '__todas') {
                 params.set('loja', lojaSelecionada);
             }
+            if (storeIdSelecionado) params.set('store_id', storeIdSelecionado);
 
             const resp = await fetch('/api/medias-compras/produtos-sem-venda?' + params.toString(), {
                 method: 'GET',
