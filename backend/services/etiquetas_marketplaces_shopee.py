@@ -188,27 +188,57 @@ class _EtiquetaShopee:
     quantidade_confirmada: int | None
 
 
-def _extrair_comprador(texto):
+def _extrair_comprador(pagina, recorte, texto):
     linhas = [linha.strip() for linha in texto.splitlines() if linha.strip()]
     termos_ignorados = (
-        "NF:", "DANFE", "SÉRIE", "EMISSÃO", "DESTINATÁRIO", "REMETENTE", "RETIRADA", "PELO", "COMPRADOR",
+        "NF:", "DANFE", "SÉRIE", "EMISSÃO", "DESTINATÁRIO", "REMETENTE", "RETIRADA", "COMPRADOR",
         "PEDIDO", "ENDEREÇO", "CEP", "RUA ", "AVENIDA ", "SHOPEE",
     )
-    def nome_valido(candidato):
+    rotulos_ignorados = {termo.strip(" :") for termo in termos_ignorados} | {"CPF", "CNPJ", "CPF/CNPJ"}
+
+    def nome_valido(candidato, *, no_campo=False):
+        maiusculo = candidato.upper()
+        if maiusculo.rstrip(":").rstrip() in {"RESIDENCIAL", "COMERCIAL"} or not any(
+            letra.isalpha() for letra in candidato
+        ):
+            return False
+        if no_campo:
+            # Preserve o nome cadastrado quando o campo foi localizado, inclusive números.
+            return re.split(r"[\s:]+", maiusculo, maxsplit=1)[0] not in rotulos_ignorados
         return (
-            any(letra.isalpha() for letra in candidato)
-            and all(letra.isalpha() or letra in " '’-.\u00a0" for letra in candidato)
-            and not any(termo in candidato.upper() for termo in termos_ignorados)
+            all(letra.isalpha() or letra in " '’-.\u00a0" for letra in candidato)
+            and not any(termo in maiusculo for termo in termos_ignorados)
         )
 
-    for indice, linha in enumerate(linhas):
+    # A ordem do texto no PDF pode colocar o tipo de endereço logo depois do título.
+    blocos = pagina.get_text("dict", clip=recorte, flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES)["blocks"]
+    linhas_no_pdf = [
+        ("".join(span["text"] for span in linha["spans"]).strip(), fitz.Rect(linha["bbox"]))
+        for bloco in blocos
+        for linha in bloco.get("lines", ())
+        if linha["dir"] == (1.0, 0.0)
+    ]
+    titulos = [
+        caixa for linha, caixa in linhas_no_pdf
+        if re.fullmatch(r"destinat[áa]rio\s*:?", linha, re.IGNORECASE)
+    ] or [
+        caixa for linha, caixa in linhas_no_pdf
+        if re.fullmatch(r"comprador\s*:?", linha, re.IGNORECASE)
+    ]
+    nomes = set()
+    for titulo in titulos:
+        for linha, caixa in linhas_no_pdf:
+            if abs(caixa.x0 - titulo.x0) <= titulo.height / 2 and -0.5 <= caixa.y0 - titulo.y1 <= titulo.height * 1.5:
+                candidato = re.sub(r"^nome\s*:\s*", "", linha, flags=re.IGNORECASE)
+                if nome_valido(candidato, no_campo=True):
+                    nomes.add(candidato)
+    if titulos:
+        return next(iter(nomes)) if len(nomes) == 1 else ""
+
+    for linha in linhas:
         nome = re.fullmatch(r"(?:destinat[áa]rio|recebedor|comprador)\s*:\s*(.+)", linha, re.IGNORECASE)
         if nome and nome_valido(nome[1]):
             return nome[1].strip()
-        if indice + 1 < len(linhas) and re.fullmatch(r"(?:destinat[áa]rio|comprador)\s*:?", linha, re.IGNORECASE):
-            candidato = re.sub(r"^nome\s*:\s*", "", linhas[indice + 1], flags=re.IGNORECASE)
-            if nome_valido(candidato):
-                return candidato
     for i, linha in enumerate(linhas):
         if re.search(r'\d{2}/\d{2}/\d{4}', linha):
             for candidata in linhas[i + 1 : i + 5]:
@@ -358,7 +388,7 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
                     item = itens_confirmados.get(pedido_id)
                     etiquetas.append(_EtiquetaShopee(
                         page_index, recorte, pedido_id, item.sku if item else sku,
-                        str(item.quantidade) if item else quantidade, _extrair_comprador(texto),
+                        str(item.quantidade) if item else quantidade, _extrair_comprador(page, recorte, texto),
                         item.quantidade if item else None,
                     ))
 

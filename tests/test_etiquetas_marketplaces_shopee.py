@@ -8,8 +8,8 @@ from backend.services.etiquetas_marketplaces import processar_etiquetas_loja
 
 
 PEDIDOS = (
-    ("261101ABC123", "20-A", 3, "Produto Azul", "Ana Júlia Azul"),
-    ("261101ABC1234", "10-VERDE", 5, "Produto Verde", "Bia Verde"),
+    ("261101ABC123", "20-A", 3, "Produto Azul", "Ana Júlia Azul 7"),
+    ("261101ABC1234", "10-VERDE", 5, "Produto Verde", "Bia Capelotto Verde"),
     ("261101ABC125", "10-VERDE", 1, "Produto Verde", "Caio Verde"),
     ("261101ABC126", "2-A", 3, "Produto Branco", "Duda Branca"),
 )
@@ -24,8 +24,16 @@ def _pdf_shopee(*, checklist_em_blocos=False, multiproduto=False):
         etiquetas = doc.new_page(width=566, height=850)
         for i, (pedido, _, _, _, comprador) in enumerate(PEDIDOS):
             x, y = (i % 2) * 283 + 20, (i // 2) * 425 + 30
-            destinatario = f"Destinatário:\nNome: {comprador}" if i == 0 else f"04/11/2026\n{comprador}"
-            etiquetas.insert_text((x, y), f"Pedido {pedido}\n{destinatario}", fontsize=9)
+            if i < 2:
+                etiquetas.insert_text((x, y), f"Pedido {pedido}\nDestinatário:", fontsize=9)
+                # Na Shopee, este campo lateral pode vir antes do nome no texto extraído.
+                tipo_endereco = "RESIDENCIAL" if i == 0 else "COMERCIAL"
+                etiquetas.insert_text((x + 120, y + 62), tipo_endereco, fontsize=9)
+                nome = f"Nome: {comprador}" if i == 0 else comprador
+                etiquetas.insert_text((x, y + 27), nome, fontsize=9)
+            else:
+                destinatario = f"Destinatário: {comprador}" if i == 2 else f"04/11/2026\n{comprador}"
+                etiquetas.insert_text((x, y), f"Pedido {pedido}\n{destinatario}", fontsize=9)
         doc.new_page(width=283, height=425).insert_text(
             (20, 30), "Pedido 261101\nABC127\n04/11/2026\nEva Sem SKU", fontsize=9,
         )
@@ -93,6 +101,7 @@ def test_ordena_recortes_da_shopee_mantendo_dados_de_cada_pedido(usar_layout):
 
 def _verificar_checklist(pagina):
     texto = pagina.get_text().splitlines()
+    assert not {"RESIDENCIAL", "COMERCIAL"}.intersection(texto)
     assert [linha for linha in texto if linha.startswith("Pedido ")] == [
         f"Pedido {PEDIDOS[i][0]}" for i in ORDEM_ESPERADA
     ]
