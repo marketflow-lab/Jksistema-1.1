@@ -322,12 +322,23 @@ def test_configuracao_inicial_usa_folha_e_anchors_atuais_e_asset_identico(store)
     assert original["height"] * MM == pytest.approx(425 if store in ("Shopee", "TikTok") else 390)
     sku = layout["items"]["sku"]
     expected = {"Mercado Livre": (0, 389, 283, 36, 0), "Amazon": (0, 389, 283, 36, 0),
-                "Shopee": (240, 0, 43, 350, 90), "TikTok": (272, 0, 11, 300, 90)}[store]
+                "Shopee": (256, 0, 27, 350, 90), "TikTok": (272, 0, 11, 300, 90)}[store]
     assert [sku[key] * MM for key in ("x", "y", "width", "height")] == pytest.approx(expected[:4])
     assert sku["rotation"] == expected[4]
     asset = json.loads((Path(__file__).resolve().parents[1] / "static/etiquetas/layout-defaults.json").read_text(encoding="utf-8"))
     assert set(asset) == {"version", "stores"} and asset["version"] == 1
     assert asset["stores"][store] == layout
+
+
+def test_shopee_atualiza_faixa_padrao_salva_e_preserva_posicao_personalizada():
+    layout = layout_padrao("Shopee")
+    sku = layout["items"]["sku"]
+    sku.update(x=240 / MM, width=43 / MM, visible=False)
+    normalizado = validar_layout(layout, "Shopee")["items"]["sku"]
+    assert normalizado == {**layout_padrao("Shopee")["items"]["sku"], "visible": False}
+
+    sku.update(x=230 / MM)
+    assert validar_layout(layout, "Shopee")["items"]["sku"] == sku
 
 
 @pytest.mark.parametrize("store", ["Mercado Livre", "Shopee", "TikTok"])

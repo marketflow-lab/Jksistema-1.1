@@ -65,7 +65,7 @@
 
     async function getCurrentLayout(store) {
         if (!defaultsPromise) {
-            defaultsPromise = fetch('/etiquetas/layout-defaults.json?v=20261102-config-atual-v2')
+            defaultsPromise = fetch('/etiquetas/layout-defaults.json?v=20261106-shopee-faixa')
                 .then(async response => {
                     if (!response.ok) throw new Error('Não foi possível carregar a configuração atual.');
                     const data = await response.json();

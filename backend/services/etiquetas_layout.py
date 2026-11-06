@@ -12,7 +12,7 @@ import math
 
 import fitz
 
-from backend.services.etiquetas_marketplaces_common import desenhar_rodape_sku, gerar_imagem_barcode
+from backend.services.etiquetas_marketplaces_common import desenhar_rodape_sku, desenhar_sku_lateral, gerar_imagem_barcode
 
 
 MM = 72 / 25.4
@@ -30,7 +30,7 @@ def layout_padrao(store: str) -> dict:
     }
     if store in ("Shopee", "TikTok"):
         bounds["etiqueta"] = (0, 0, 283, 425, 0, True)
-        bounds["sku"] = (240, 0, 283, 350, 90, True) if store == "Shopee" else (272, 0, 283, 300, 90, True)
+        bounds["sku"] = (256, 0, 283, 350, 90, True) if store == "Shopee" else (272, 0, 283, 300, 90, True)
         bounds["danfe"] = (256, 15, 283, 390, 90, False)
     items = {
         name: {"x": x0 / MM, "y": y0 / MM, "width": (x1 - x0) / MM,
@@ -127,6 +127,11 @@ def validar_layout(raw, store: str) -> dict:
         normalized[name] = {"x": x, "y": y, "width": w, "height": h,
                             "rotation": item["rotation"], "visible": item["visible"]}
     output = {"version": 1, "page": {"width": width, "height": height}, "items": normalized}
+    sku = normalized["sku"]
+    if store == "Shopee" and (
+        sku["x"], sku["y"], sku["width"], sku["height"], sku["rotation"]
+    ) == (240 / MM, 0, 43 / MM, 350 / MM, 90):
+        sku.update(x=256 / MM, width=27 / MM)
     if "danfe_source" in raw:
         source = raw["danfe_source"]
         if not isinstance(source, dict) or set(source) != {"x", "y", "width", "height"}:
@@ -193,25 +198,15 @@ def _pdf_original(doc, page_index: int, clip=None, *, counter: int | None = None
     return output
 
 
-def _overlay_atual(store: str, name: str, *, sku_text="", extra_text="",
+def _overlay_atual(store: str, name: str, *, sku_text="",
                    code=None, code_text=None, quantidade_sku=None) -> bytes | None:
     """Build isolated layers at the unchanged processor's point coordinates."""
     with fitz.open() as overlay:
         page = overlay.new_page(width=283, height=425)
         if name == "sku":
             color = (1, 0, 0) if "N/D" in sku_text else (0, 0, 0)
-            if store == "Shopee":
-                page.insert_text(fitz.Point(279, 350), sku_text, fontsize=12, color=color, rotate=90)
-                product, _, customer = extra_text.partition("\n")
-                if product:
-                    page.insert_text(fitz.Point(265, 350), product[:45], fontsize=8, rotate=90)
-                if customer:
-                    page.insert_text(fitz.Point(250, 350), customer[:35], fontsize=9, rotate=90)
-            elif store == "TikTok":
-                prefix, separator, quantity = sku_text.rpartition("  (x")
-                if separator and prefix.startswith("SKU: ") and len(prefix[5:]) > 25:
-                    sku_text = prefix[:30] + "..." + separator + quantity
-                page.insert_text(fitz.Point(281, 300), sku_text, fontsize=8, color=color, rotate=90)
+            if store in ("Shopee", "TikTok"):
+                desenhar_sku_lateral(page, sku_text, loja=store, quantidade=quantidade_sku)
             else:
                 desenhar_rodape_sku(page, sku_text, cor=color, quantidade=quantidade_sku)
         else:
@@ -280,7 +275,7 @@ def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
     components = {
         "etiqueta": original,
         "sku": _overlay_atual(
-            store, "sku", sku_text=sku_text, extra_text=extra_text, quantidade_sku=quantidade_sku,
+            store, "sku", sku_text=sku_text, quantidade_sku=quantidade_sku,
         ),
         "danfe": None if embedded_danfe else _overlay_atual(store, "danfe", code=code, code_text=code_text),
     }
@@ -307,24 +302,26 @@ def _componentes_amostra(store: str) -> dict:
     doc = fitz.open()
     embedded = store in ("Shopee", "TikTok")
     page = doc.new_page(width=283, height=425 if embedded else 390)
-    page.draw_rect(fitz.Rect(8, 8, 275, 417 if embedded else 382), width=1)
+    largura_corpo = 256 if embedded else 275
+    limite_codigo = 244 if embedded else 258
+    page.draw_rect(fitz.Rect(8, 8, largura_corpo, 417 if embedded else 382), width=1)
     page.insert_textbox(fitz.Rect(18, 20, 265, 155),
                         f"{store}\nAMOSTRA DE ETIQUETA\n\nDESTINATARIO\nCliente de exemplo\nEndereco de exemplo\nPedido de exemplo", fontsize=12)
     tracking = gerar_imagem_barcode("AMOSTRA000001")
     if tracking:
-        page.insert_image(fitz.Rect(25, 210, 258, 260), stream=tracking)
+        page.insert_image(fitz.Rect(25, 210, limite_codigo, 260), stream=tracking)
     page.insert_text(fitz.Point(85, 330), "SEM VALOR FISCAL", fontsize=10)
     code = "12345678901234567890123456789012345678901234"
     if embedded:
         fiscal = gerar_imagem_barcode(code)
         if fiscal:
-            page.insert_image(fitz.Rect(25, 355, 258, 385), stream=fiscal)
+            page.insert_image(fitz.Rect(25, 355, limite_codigo, 385), stream=fiscal)
         page.insert_text(fitz.Point(25, 398), code, fontsize=6)
     original = _pdf_original(doc, 0, counter=1, store=store)
     doc.close()
     sku = "SKU EXEMPLO-001  x  2" if not embedded else "SKU: EXEMPLO-001 (x2)"
     return {"etiqueta": original, "sku": _overlay_atual(
-                store, "sku", sku_text=sku, quantidade_sku="2" if store == "Mercado Livre" else None,
+                store, "sku", sku_text=sku, quantidade_sku=None if store == "Amazon" else "2",
             ),
             "danfe": None if embedded else _overlay_atual(store, "danfe", code=code, code_text=code)}
 

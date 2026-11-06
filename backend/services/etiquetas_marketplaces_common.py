@@ -76,6 +76,44 @@ def desenhar_rodape_sku(pagina, sku_text, *, cor, quantidade=None):
     pagina.insert_text((x_selo + 10, 411), selo, fontname="hebo", fontsize=11, color=(1, 1, 1))
 
 
+def desenhar_sku_lateral(pagina, sku_text, *, loja, quantidade=None):
+    shopee = loja == "Shopee"
+    x, y, tamanho = (278.5, 350, 12) if shopee else (280.5, 300, 7.8)
+    prefixo, separador, sufixo = sku_text.rpartition(" (x")
+    sku = prefixo.rstrip() if separador else sku_text
+    if not shopee and len(sku) > 30:
+        sku = sku[:30] + "..."
+
+    selo = None
+    espaco = y - 4
+    fonte = "helv"
+    if quantidade is not None and int(quantidade) > 1:
+        fonte = "hebo"
+        selo = f"{int(quantidade)} {'UNIDADES' if shopee else 'UN.'}"
+        tamanho_selo, margem = (10, 6) if shopee else (7.4, 5)
+        comprimento_selo = fitz.get_text_length(selo, fontname=fonte, fontsize=tamanho_selo) + 2 * margem
+        intervalo = 10 if shopee else 8
+        espaco -= comprimento_selo + intervalo
+    elif separador:
+        sku += (" " if shopee else "  ") + "(x" + sufixo
+
+    medida = fitz.Font(fontname=fonte).text_length
+    largura = medida(sku, fontsize=tamanho)
+    if largura > espaco:
+        tamanho = espaco * tamanho / largura
+        largura = espaco
+    cor = (1, 0, 0) if sku_text == "SKU N/D" else (0, 0, 0)
+    pagina.insert_text((x, y), sku, fontsize=tamanho, fontname=fonte, color=cor, rotate=90)
+
+    if selo is not None:
+        fim = y - largura - intervalo
+        esquerda, direita = (268, 282) if shopee else (272, 282.7)
+        pagina.draw_rect((esquerda, fim - comprimento_selo, direita, fim),
+                         color=None, fill=(0.19,) * 3, radius=0.22)
+        pagina.insert_text((278.8 if shopee else 280.1, fim - margem), selo, fontsize=tamanho_selo,
+                           fontname=fonte, color=(1, 1, 1), rotate=90)
+
+
 def ordenar_etiquetas(registros, *, sku, quantidade, pedido):
     """Prioriza quantidade, número de pedidos por SKU e prefixo, nessa ordem."""
     pedidos = {}
