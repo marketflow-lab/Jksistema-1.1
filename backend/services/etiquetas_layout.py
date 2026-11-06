@@ -12,7 +12,13 @@ import math
 
 import fitz
 
-from backend.services.etiquetas_marketplaces_common import desenhar_rodape_sku, desenhar_sku_lateral, gerar_imagem_barcode
+from backend.services.etiquetas_marketplaces_common import (
+    SHOPEE_FAIXA_SKU_X,
+    desenhar_rodape_sku,
+    desenhar_sku_lateral,
+    encaixar_etiqueta_shopee,
+    gerar_imagem_barcode,
+)
 
 
 MM = 72 / 25.4
@@ -30,7 +36,7 @@ def layout_padrao(store: str) -> dict:
     }
     if store in ("Shopee", "TikTok"):
         bounds["etiqueta"] = (0, 0, 283, 425, 0, True)
-        bounds["sku"] = (256, 0, 283, 350, 90, True) if store == "Shopee" else (272, 0, 283, 300, 90, True)
+        bounds["sku"] = (SHOPEE_FAIXA_SKU_X, 0, 283, 350, 90, True) if store == "Shopee" else (272, 0, 283, 300, 90, True)
         bounds["danfe"] = (256, 15, 283, 390, 90, False)
     items = {
         name: {"x": x0 / MM, "y": y0 / MM, "width": (x1 - x0) / MM,
@@ -177,12 +183,15 @@ def _pdf_codigo(code: str | None, text: str | None = None) -> bytes | None:
 
 
 def _pdf_original(doc, page_index: int, clip=None, *, counter: int | None = None,
-                  store: str = "Mercado Livre") -> bytes:
+                  store: str = "Mercado Livre", reservar_faixa_shopee: bool = False) -> bytes:
     source = doc[page_index]
     area = fitz.Rect(clip) if clip is not None else source.rect
     component = fitz.open()
     page = component.new_page(width=283, height=390 if store in ("Mercado Livre", "Amazon") else 425)
-    page.show_pdf_page(page.rect, doc, page_index, clip=area)
+    if reservar_faixa_shopee:
+        encaixar_etiqueta_shopee(page, doc, page_index, clip=area)
+    else:
+        page.show_pdf_page(page.rect, doc, page_index, clip=area)
     if counter is not None:
         label = str(counter)
         if store == "Shopee":
@@ -271,7 +280,10 @@ def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
                                extra_text="", counter=None, embedded_danfe=False,
                                collector=None, store="Mercado Livre", quantidade_sku=None) -> None:
     """Compose raw source plus new layers once, for print and for preview."""
-    original = _pdf_original(doc, page_index, clip, counter=counter, store=store)
+    reservar_faixa = store == "Shopee" and layout_e_padrao_atual(layout, store)
+    original = _pdf_original(
+        doc, page_index, clip, counter=counter, store=store, reservar_faixa_shopee=reservar_faixa,
+    )
     components = {
         "etiqueta": original,
         "sku": _overlay_atual(
@@ -288,7 +300,8 @@ def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
         warnings.append("Codigo DANFE nao encontrado neste arquivo.")
     _compose(page, components, layout)
     if collector is not None and not collector:
-        collector.append({"components": components, "warnings": warnings, "source": original,
+        source = _pdf_original(doc, page_index, clip, counter=counter, store=store) if reservar_faixa else original
+        collector.append({"components": components, "warnings": warnings, "source": source,
                           "can_select_danfe": bool(embedded_danfe or not code or layout.get("danfe_source"))})
 
 
@@ -302,7 +315,7 @@ def _componentes_amostra(store: str) -> dict:
     doc = fitz.open()
     embedded = store in ("Shopee", "TikTok")
     page = doc.new_page(width=283, height=425 if embedded else 390)
-    largura_corpo = 256 if embedded else 275
+    largura_corpo = 254 if store == "Shopee" else 256 if embedded else 275
     limite_codigo = 244 if embedded else 258
     page.draw_rect(fitz.Rect(8, 8, largura_corpo, 417 if embedded else 382), width=1)
     page.insert_textbox(fitz.Rect(18, 20, 265, 155),

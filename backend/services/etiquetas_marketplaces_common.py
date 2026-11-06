@@ -9,6 +9,26 @@ import barcode
 import fitz
 from barcode.writer import ImageWriter
 
+SHOPEE_FAIXA_SKU_X = 256
+
+
+def encaixar_etiqueta_shopee(pagina, origem, indice, *, clip=None):
+    """Reserve a faixa do SKU se a arte original a ocupar, mantendo a proporção."""
+    fonte = origem[indice]
+    area = fitz.Rect(clip) if clip is not None else fonte.rect
+    destino = fitz.Rect(pagina.rect)
+    escala = min(destino.width / area.width, destino.height / area.height)
+    margem_esquerda = (destino.width - area.width * escala) / 2
+    inicio_faixa = area.x0 + (SHOPEE_FAIXA_SKU_X - margem_esquerda) / escala
+    if inicio_faixa < area.x1:
+        faixa = fitz.Rect(max(area.x0, inicio_faixa), area.y0, area.x1, area.y1)
+        amostra = fonte.get_pixmap(
+            matrix=fitz.Matrix(2, 2), colorspace=fitz.csGRAY, clip=faixa, annots=False,
+        )
+        if min(amostra.samples, default=255) < 250:
+            destino.x1 = SHOPEE_FAIXA_SKU_X
+    pagina.show_pdf_page(destino, origem, indice, clip=area)
+
 def extrair_chave_acesso(texto_pagina):
     """Extrai os 44 dígitos da chave de acesso da NF-e."""
     match = re.search(r'(?:\d[\W_]?){44}', texto_pagina)

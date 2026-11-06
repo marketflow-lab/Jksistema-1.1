@@ -341,6 +341,37 @@ def test_shopee_atualiza_faixa_padrao_salva_e_preserva_posicao_personalizada():
     assert validar_layout(layout, "Shopee")["items"]["sku"] == sku
 
 
+def test_shopee_reserva_faixa_do_sku_sem_cortar_arte_e_preserva_layout_personalizado():
+    with fitz.open(stream=_fonte_embutida("Shopee"), filetype="pdf") as doc:
+        page = doc[0]
+        page.draw_line((15, 348.7), (277.6, 348.7), width=1.4)
+        marca_original = page.search_for("FISCAL MARKER")[0]
+        source = doc.tobytes()
+
+    preview = gerar_preview_layout("Shopee", bytes_etiquetas=source)
+    assert preview["success"]
+    original = _png(preview["source"])
+    corpo = _png(preview["components"]["etiqueta"])
+    assert original.pixel(550, 697)[:3] == (0, 0, 0)
+    assert corpo.pixel(550, 697)[3] == 0
+
+    atual = processar_etiquetas_loja("Shopee", source, None, None)
+    with fitz.open(stream=atual["out_etiquetas"], filetype="pdf") as doc:
+        page = doc[0]
+        marca = page.search_for("FISCAL MARKER")[0]
+        assert marca.width / marca_original.width == pytest.approx(256 / 283, abs=0.001)
+        assert marca.height / marca_original.height == pytest.approx(256 / 283, abs=0.001)
+        assert page.search_for("SKU: SKU-SHOPEE")[0].x0 > 256
+        assert _png(preview["preview"]).samples == page.get_pixmap(matrix=fitz.Matrix(2, 2)).samples
+
+    layout = layout_padrao("Shopee")
+    layout["items"]["sku"]["visible"] = False
+    personalizado = processar_etiquetas_loja("Shopee", source, None, None, layout=layout)
+    with fitz.open(stream=personalizado["out_etiquetas"], filetype="pdf") as doc:
+        assert doc[0].search_for("FISCAL MARKER")[0] == marca_original
+        assert doc[0].get_pixmap(matrix=fitz.Matrix(2, 2)).pixel(550, 697) == (0, 0, 0)
+
+
 @pytest.mark.parametrize("store", ["Mercado Livre", "Shopee", "TikTok"])
 def test_preview_padrao_coincide_com_primeira_pagina_da_impressao_atual(store):
     source = _fonte_ml() if store == "Mercado Livre" else _fonte_embutida(store)

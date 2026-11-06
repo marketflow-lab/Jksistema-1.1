@@ -10,8 +10,9 @@ import fitz
 
 from backend.services import etiquetas_marketplaces_context as marketplace_ctx
 from backend.services.etiquetas_checklist_shopee import ItemChecklistShopee, inserir_checklist_shopee
+from backend.services.etiquetas_checklist_shopee_grade import ler_grade_shopee
 from backend.services.etiquetas_manifesto import LinhaListaPDF
-from backend.services.etiquetas_marketplaces_common import desenhar_sku_lateral, ordenar_etiquetas
+from backend.services.etiquetas_marketplaces_common import desenhar_sku_lateral, encaixar_etiqueta_shopee, ordenar_etiquetas
 
 
 _PADRAO_ID_PEDIDO = r"2[0-9]{5}[A-Z0-9]{6,}"
@@ -150,20 +151,23 @@ def _texto_secao(page, recorte):
     return page.get_text(clip=(page.rect.x0, recorte.topo, page.rect.x1, recorte.base))
 
 
-def _itens_confirmados(doc, secoes, textos_paginas):
+def _itens_confirmados(doc, secoes, textos_paginas, grades):
     itens = {}
     ambiguos = set()
     for indice, (_, recortes) in secoes.items():
-        page = doc[indice]
-        blocos = (
-            (_texto_secao(page, recorte) for recorte in recortes)
-            if recortes else (textos_paginas[indice],)
-        )
-        for bloco in blocos:
-            ids = _ids_pedido(bloco)
+        grade = grades.get(indice)
+        if grade:
+            registros = (({item.pedido}, item) for item in grade)
+        else:
+            page = doc[indice]
+            blocos = (
+                (_texto_secao(page, recorte) for recorte in recortes)
+                if recortes else (textos_paginas[indice],)
+            )
+            registros = ((_ids_pedido(bloco), _item_checklist(bloco)) for bloco in blocos)
+        for ids, item in registros:
             if not ids:
                 continue
-            item = _item_checklist(bloco)
             if len(ids) != 1 or not item or item.pedido not in ids:
                 ambiguos.update(ids)
                 continue
@@ -190,17 +194,25 @@ def _extrair_comprador(texto):
         "NF:", "DANFE", "SÉRIE", "EMISSÃO", "DESTINATÁRIO", "REMETENTE", "RETIRADA", "PELO", "COMPRADOR",
         "PEDIDO", "ENDEREÇO", "CEP", "RUA ", "AVENIDA ", "SHOPEE",
     )
-    for linha in linhas:
+    def nome_valido(candidato):
+        return (
+            any(letra.isalpha() for letra in candidato)
+            and all(letra.isalpha() or letra in " '’-.\u00a0" for letra in candidato)
+            and not any(termo in candidato.upper() for termo in termos_ignorados)
+        )
+
+    for indice, linha in enumerate(linhas):
         nome = re.fullmatch(r"(?:destinat[áa]rio|recebedor|comprador)\s*:\s*(.+)", linha, re.IGNORECASE)
-        if nome and any(letra.isalpha() for letra in nome[1]) and not any(letra.isdigit() for letra in nome[1]):
+        if nome and nome_valido(nome[1]):
             return nome[1].strip()
+        if indice + 1 < len(linhas) and re.fullmatch(r"(?:destinat[áa]rio|comprador)\s*:?", linha, re.IGNORECASE):
+            candidato = re.sub(r"^nome\s*:\s*", "", linhas[indice + 1], flags=re.IGNORECASE)
+            if nome_valido(candidato):
+                return candidato
     for i, linha in enumerate(linhas):
         if re.search(r'\d{2}/\d{2}/\d{4}', linha):
             for candidata in linhas[i + 1 : i + 5]:
-                if (
-                    len(candidata.split()) >= 2 and all(letra.isalpha() or letra in " '-." for letra in candidata)
-                    and not any(termo in candidata.upper() for termo in termos_ignorados)
-                ):
+                if len(candidata.split()) >= 2 and nome_valido(candidata):
                     return candidata
     return ""
 
@@ -257,8 +269,12 @@ def _linhas_checklist(page, ids_pagina):
     return tuple(linhas) if {linha.pedidos[0] for linha in linhas} == ids_pagina else ()
 
 
-def _checklist_seguro(page, ids, recortes, itens, compradores):
+def _checklist_seguro(page, ids, recortes, itens, compradores, grade=()):
     if page.rotation or page.first_annot or page.first_widget or page.get_links():
+        return None
+    if grade:
+        if all(item == itens.get(item.pedido) for item in grade):
+            return [(item, compradores.get(item.pedido, "Cliente não identificado")) for item in grade], ((), ())
         return None
     if any(tipo in {"fill-image", "fill-shade"} for tipo, _ in page.get_bboxlog()):
         return None
@@ -303,6 +319,7 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
             mapa_global = _extrair_dados_checklist(textos_paginas)
             paginas_manifesto = {}
             secoes_manifesto = {}
+            grades_manifesto = {}
             contagem_pedidos = Counter()
             for page_index, texto_pagina in enumerate(textos_paginas):
                 text = texto_pagina.casefold()
@@ -310,13 +327,17 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
                     ids = _ids_pedido(text)
                     paginas_manifesto[page_index] = tuple(ids) if len(ids) == 1 else ()
                     linhas = _linhas_checklist(doc[page_index], ids)
+                    if not linhas:
+                        grade = ler_grade_shopee(doc[page_index], ids)
+                        if grade:
+                            grades_manifesto[page_index] = grade
                     secoes_manifesto[page_index] = (ids, linhas)
                     contagem_pedidos.update(ids)
                     contagem_pedidos.update(
                         pedido for pedido, total in Counter(linha.pedidos[0] for linha in linhas).items()
                         if total > 1
                     )
-            itens_confirmados = _itens_confirmados(doc, secoes_manifesto, textos_paginas)
+            itens_confirmados = _itens_confirmados(doc, secoes_manifesto, textos_paginas, grades_manifesto)
             etiquetas = []
             for page_index, page in enumerate(doc):
                 if page_index in paginas_manifesto:
@@ -360,7 +381,9 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
             checklists = {}
             for indice, (ids, linhas) in secoes_manifesto.items():
                 if ids and all(contagem_pedidos[pedido] == 1 for pedido in ids):
-                    checklist = _checklist_seguro(doc[indice], ids, linhas, itens_confirmados, compradores)
+                    checklist = _checklist_seguro(
+                        doc[indice], ids, linhas, itens_confirmados, compradores, grades_manifesto.get(indice, ()),
+                    )
                     if checklist:
                         checklists[indice] = checklist
             linhas_originais = {indice: linhas for indice, (_, linhas) in secoes_manifesto.items() if linhas}
@@ -387,7 +410,7 @@ def processar_shopee(uploaded_file, *, layout=None, component_collector=None, li
 
                 new_page.insert_font(fontname="hebo")
                 new_page.insert_font(fontname="helv")
-                new_page.show_pdf_page(new_page.rect, doc, etiqueta.pagina, clip=etiqueta.recorte)
+                encaixar_etiqueta_shopee(new_page, doc, etiqueta.pagina, clip=etiqueta.recorte)
                 desenhar_sku_lateral(new_page, sku_text, loja="Shopee", quantidade=etiqueta.quantidade_confirmada)
                 new_page.insert_text(fitz.Point(240, 20), f"#{numero}", fontsize=10, color=(0.5, 0.5, 0.5))
 

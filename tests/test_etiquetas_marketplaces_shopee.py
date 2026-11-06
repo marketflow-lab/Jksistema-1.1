@@ -24,7 +24,7 @@ def _pdf_shopee(*, checklist_em_blocos=False, multiproduto=False):
         etiquetas = doc.new_page(width=566, height=850)
         for i, (pedido, _, _, _, comprador) in enumerate(PEDIDOS):
             x, y = (i % 2) * 283 + 20, (i // 2) * 425 + 30
-            destinatario = f"Destinatário: {comprador}" if i == 0 else f"04/11/2026\n{comprador}"
+            destinatario = f"Destinatário:\nNome: {comprador}" if i == 0 else f"04/11/2026\n{comprador}"
             etiquetas.insert_text((x, y), f"Pedido {pedido}\n{destinatario}", fontsize=9)
         doc.new_page(width=283, height=425).insert_text(
             (20, 30), "Pedido 261101\nABC127\n04/11/2026\nEva Sem SKU", fontsize=9,
@@ -129,6 +129,38 @@ def test_ordena_blocos_do_checklist_sem_separar_dados_do_pedido():
         assert "Cabecalho do checklist" in linhas
         assert "Rodape do checklist" in linhas
         assert manifesto[1].get_text().splitlines() == ["Manifesto", *IDS_SEM_DIVISORIA]
+
+
+def test_grade_girada_da_shopee_exibe_quantidades_e_checklist_por_sku():
+    with fitz.open() as doc, fitz.open(stream=_pdf_shopee(), filetype="pdf") as fonte, fitz.open() as blocos:
+        doc.insert_pdf(fonte, from_page=0, to_page=0)
+        checklist = doc.new_page(width=595, height=842)
+        imagem = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 8, 8), False)
+        imagem.clear_with(70)
+        for indice, (pedido, sku, quantidade, produto, _) in enumerate(PEDIDOS):
+            bloco = blocos.new_page(width=421, height=297.5)
+            for x, rotulo in zip((16, 193, 336, 357), ("Produto", "Variação", "Qnt", "SKU")):
+                bloco.insert_text((x, 97), rotulo, fontsize=8)
+            variacao = "Azul claro" if indice == 0 else "-"
+            for x, valor in zip((5, 16, 193, 336, 357), ("1", produto, variacao, str(quantidade), sku)):
+                bloco.insert_text((x, 117), valor, fontsize=8)
+            bloco.insert_text((186, 40), "Checklist de carregamento", fontsize=8)
+            bloco.insert_text((16, 70), "ID Pedido", fontsize=8)
+            bloco.insert_text((65, 70), f"{pedido} PACKAGE", fontsize=8)
+            bloco.insert_text((200, 8), "Corte aqui", fontsize=7)
+            bloco.insert_image((70, 15, 115, 35), pixmap=imagem)
+        for indice in range(len(blocos)):
+            x, y = (indice % 2) * 297.5, (indice // 2) * 421
+            checklist.show_pdf_page(fitz.Rect(x, y, x + 297.5, y + 421), blocos, indice, rotate=90)
+        resultado = processar_etiquetas_loja("Shopee", doc.tobytes(), None, None)
+
+    with fitz.open(stream=resultado["out_lista"], filetype="pdf") as manifesto:
+        assert len(manifesto) == 1
+        _verificar_checklist(manifesto[0])
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as etiquetas:
+        assert len(etiquetas) == len(PEDIDOS)
+        assert etiquetas[0].search_for("5 UNIDADES")
+        assert etiquetas[1].search_for("SKU: 10-VERDE (x1)")
 
 
 def test_pedido_com_varios_produtos_preserva_checklist_sem_selo_inferido():
