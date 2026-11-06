@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from io import BytesIO
@@ -15,6 +16,8 @@ from backend.services.etiquetas_marketplaces_common import desenhar_sku_lateral,
 from backend.services.etiquetas_picking_tiktok import (
     ItemPickingTikTok,
     extrair_itens_picking_tiktok,
+    extrair_itens_tabela_packing_tiktok,
+    extrair_pedidos_tabela_picking_tiktok,
     inserir_resumo_picking_tiktok,
 )
 
@@ -24,6 +27,84 @@ _PACKAGE_ID = re.compile(
     r'\b(?:Package\s*ID|ID\s*do\s*pacote)\s*[:#-]?\s*((?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{9,})\b',
     re.IGNORECASE,
 )
+_RASTREIO_NA_LISTA = re.compile(r"\bTracking[ \t]+number[ \t]*:[ \t]*([A-Z]{2}[0-9]{9}[A-Z]{2})\b", re.IGNORECASE)
+_RASTREIO_NA_ETIQUETA = re.compile(
+    r"^[ \t]*([A-Z]{2}[ \t]*(?:[0-9]{3}[ \t]*){3}[A-Z]{2})[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_CAMPO_DESTINATARIO = re.compile(r"destinat[áa]rio(?:\s*:\s*(.*))?", re.IGNORECASE)
+_ROTULO_NOME = re.compile(r"^nome\s*:\s*", re.IGNORECASE)
+_NOME_NO_IDENTIFICADOR = re.compile(r"([^\W\d_]{3,30})[0-9]{8}\.")
+_NAO_NOME = re.compile(
+    r"^(?:rua|av(?:enida)?|travessa|alameda|estrada|rodovia|pra[çc]a|bairro|quadra|"
+    r"lote|bloco|condom[íi]nio|apartamento|complemento|endere[çc]o|cep|cidade|estado|"
+    r"cpf|cnpj|telefone|remetente|recebedor|destinat[áa]rio|pedido|pacote|rastreio|"
+    r"c[óo]digo|residencial|comercial|cliente|comprador|usu[áa]rio|user|tiktok|conta|"
+    r"an[ôo]nimo|oculto|n[ãa]o|sem nome)\b"
+    r"|\bx{2,}\b|\.{2,}",
+    re.IGNORECASE,
+)
+
+
+def _extrair_destinatario_tiktok(pagina: fitz.Page) -> str | None:
+    flags = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
+    linhas = [
+        (
+            " ".join("".join(span["text"] for span in linha["spans"]).split()),
+            fitz.Rect(linha["bbox"]),
+            all(span["flags"] & fitz.TEXT_FONT_BOLD for span in linha["spans"] if span["text"].strip()),
+        )
+        for bloco in pagina.get_text("dict", flags=flags)["blocks"]
+        for linha in bloco.get("lines", ())
+        if linha["dir"] == (1.0, 0.0)
+    ]
+    campos = [
+        (campo[1], caixa)
+        for texto, caixa, _ in linhas
+        if (campo := _CAMPO_DESTINATARIO.fullmatch(texto))
+    ]
+    if len(campos) != 1:
+        return None
+
+    candidato, titulo = campos[0]
+    campo_explicito = bool(candidato)
+    nome_em_negrito = False
+    if not candidato:
+        abaixo = [
+            (caixa.y0, texto, negrito)
+            for texto, caixa, negrito in linhas
+            if texto
+            and abs(caixa.x0 - titulo.x0) <= titulo.height / 2
+            and -0.5 <= caixa.y0 - titulo.y1 <= titulo.height * 1.5
+        ]
+        if not abaixo:
+            return None
+        primeiro_y = min(y for y, _, _ in abaixo)
+        adjacentes = [(texto, negrito) for y, texto, negrito in abaixo if y - primeiro_y <= 1]
+        candidatos = {texto for texto, _ in adjacentes}
+        if len(candidatos) != 1:
+            return None
+        # O código de destinatário pode ocupar esse campo. Nunca procure o nome na linha seguinte.
+        candidato = candidatos.pop()
+        nome_em_negrito = all(negrito for _, negrito in adjacentes)
+
+    nome, rotulo_explicito = _ROTULO_NOME.subn("", candidato)
+    nome = unicodedata.normalize("NFC", nome)
+    # Neste formato, o TikTok imprime o nome seguido de oito dígitos e um ponto.
+    nome_no_identificador = _NOME_NO_IDENTIFICADOR.fullmatch(nome)
+    if nome_no_identificador:
+        nome = nome_no_identificador[1].capitalize()
+    if (
+        not any(letra.isalpha() for letra in nome)
+        or not all(letra.isalpha() or unicodedata.combining(letra) or letra in " '-’." for letra in nome)
+        or _NAO_NOME.search(nome)
+        or (
+            len(nome.split()) < 2
+            and not (campo_explicito or rotulo_explicito or nome_no_identificador or nome_em_negrito)
+        )
+    ):
+        return None
+    return nome
 
 
 def _eh_pagina_lista_tiktok(texto_pagina):
@@ -118,6 +199,8 @@ class _RegistroPicking:
     ids: tuple[str | None, str | None] | None
     dados_legados: tuple[str, str] | None
     itens: tuple[ItemPickingTikTok, ...]
+    pedido_na_coluna: bool = False
+    rastreio: str | None = None
 
     @property
     def dados_confirmados(self):
@@ -135,22 +218,42 @@ def _ler_picking_tiktok(doc):
     registros = []
     for page_index, page in enumerate(doc):
         texto = page.get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE)
-        if _eh_pagina_lista_tiktok(texto):
-            registros.append(_RegistroPicking(
-                page_index, _extrair_ids_tiktok(texto), _extrair_sku_qtd_tiktok(texto),
-                extrair_itens_picking_tiktok(texto),
-            ))
+        if not _eh_pagina_lista_tiktok(texto):
+            continue
+        pedidos = extrair_pedidos_tabela_picking_tiktok(page)
+        if pedidos is None:
+            ids = _extrair_ids_tiktok(texto)
+            itens_packing = extrair_itens_tabela_packing_tiktok(page)
+            if itens_packing is None:
+                registros.append(_RegistroPicking(
+                    page_index, ids, _extrair_sku_qtd_tiktok(texto), extrair_itens_picking_tiktok(texto),
+                ))
+                continue
+            # Os IDs ficam fora da grade compacta. Só confirme itens com um pedido identificado.
+            itens = itens_packing if ids and ids[0] else ()
+            rastreios = set(_RASTREIO_NA_LISTA.findall(texto.upper())) if itens else set()
+            rastreio = next(iter(rastreios)) if len(rastreios) == 1 else None
+            registros.append(_RegistroPicking(page_index, ids, None, itens, rastreio=rastreio))
+        elif pedidos:
+            registros.extend(
+                _RegistroPicking(page_index, (pedido, None), None, itens, pedido_na_coluna=True)
+                for pedido, itens in pedidos
+            )
+        else:
+            # Preserva a página original de uma tabela que não pôde ser lida.
+            registros.append(_RegistroPicking(page_index, None, None, ()))
     return registros
 
 
 def _parse_tiktok_picking_doc(doc):
     registros = _ler_picking_tiktok(doc)
-    mapa_tiktok = {
-        registro.ids[0]: registro.dados_legados for registro in registros
-        if registro.ids and registro.ids[0] and registro.dados_legados
-    }
-    lista_sequencial = [registro.dados_legados for registro in registros if registro.dados_legados]
-    paginas_lista = [registro.indice for registro in registros]
+    dados_por_registro = [
+        (registro.ids, registro.dados_legados or registro.dados_confirmados)
+        for registro in registros
+    ]
+    mapa_tiktok = {ids[0]: dados for ids, dados in dados_por_registro if ids and ids[0] and dados}
+    lista_sequencial = [dados for _, dados in dados_por_registro if dados]
+    paginas_lista = list(dict.fromkeys(registro.indice for registro in registros))
     return mapa_tiktok, lista_sequencial, paginas_lista
 
 
@@ -158,26 +261,36 @@ def _indexar_picking_tiktok(registros):
     por_id = defaultdict(set)
     for registro in registros:
         if registro.ids is not None:
-            for tipo, valor in enumerate(registro.ids):
+            for tipo, valor in enumerate((*registro.ids, registro.rastreio)):
                 if valor:
                     por_id[tipo, valor].add(registro)
     return por_id
 
 
-def _vincular_picking_tiktok(ids_etiqueta, por_id):
+def _vincular_picking_tiktok(ids_etiqueta, por_id, *, rastreio=None):
     if ids_etiqueta is None:
-        return None, None, [], None
+        return None, None, [], None, None
 
     order_id, package_id = ids_etiqueta
+    identificadores = (*ids_etiqueta, rastreio)
     # Um ID em comum precisa concordar com os outros IDs presentes nas duas fontes.
     correspondencias = {
         registro
-        for tipo, valor in enumerate(ids_etiqueta)
+        for tipo, valor in enumerate(identificadores)
         if valor
         for registro in por_id.get((tipo, valor), ())
-        if all(not etiqueta or not lista or etiqueta == lista for etiqueta, lista in zip(ids_etiqueta, registro.ids))
+        if all(
+            not etiqueta or not lista or etiqueta == lista
+            for etiqueta, lista in zip(identificadores, (*registro.ids, registro.rastreio))
+        )
     }
+    rastreados = {registro for registro in correspondencias if rastreio and registro.rastreio == rastreio}
+    if rastreados:
+        if len({registro.ids for registro in rastreados}) != 1:
+            return None, order_id or package_id, [], None, None
+        correspondencias = rastreados
     pedidos_lista = {registro.ids[0] for registro in correspondencias if registro.ids[0]}
+    pedido_vinculado = next(iter(pedidos_lista)) if len(pedidos_lista) == 1 else None
     paginas = sorted(registro.indice for registro in correspondencias) if len(pedidos_lista) <= 1 else []
     fontes_do_pacote = {registro for registro in correspondencias if package_id and registro.ids[1] == package_id}
     fontes = fontes_do_pacote or correspondencias
@@ -191,22 +304,23 @@ def _vincular_picking_tiktok(ids_etiqueta, por_id):
         confirmada = dados[1] if len(pacotes_lista) <= 1 and all(
             registro.dados_confirmados == dados for registro in fontes
         ) else None
-        return dados, pedido or package_id, paginas, confirmada
-    return None, order_id or package_id, paginas, None
+        return dados, pedido or package_id, paginas, confirmada, pedido_vinculado
+    return None, order_id or package_id, paginas, None, pedido_vinculado
 
 
 def _itens_resumo_tiktok(registros, indice_na_lista, ordem_lista):
-    por_indice = {indice_na_lista[registro.indice]: registro for registro in registros}
+    por_indice = defaultdict(list)
+    for registro in registros:
+        if registro.ids and registro.ids[0] and registro.itens:
+            por_indice[indice_na_lista[registro.indice]].append(registro)
     por_pedido = {}
     for indice in ordem_lista:
-        registro = por_indice.get(indice)
-        if registro is None or not registro.ids or not registro.ids[0] or not registro.itens:
-            continue
-        pedido, pacote = registro.ids
-        # Cópias da mesma tabela não multiplicam unidades. Linhas repetidas dentro
-        # da própria tabela preservam sua multiplicidade.
-        itens = por_pedido.setdefault(pedido, {}).setdefault(pacote, Counter())
-        itens |= Counter(registro.itens)
+        for registro in por_indice.get(indice, ()):
+            pedido, pacote = registro.ids
+            # Cópias da mesma tabela não multiplicam unidades. Linhas repetidas dentro
+            # da própria tabela preservam sua multiplicidade.
+            itens = por_pedido.setdefault(pedido, {}).setdefault(pacote, Counter())
+            itens |= Counter(registro.itens)
 
     for pedido, pacotes in por_pedido.items():
         produtos_com_pacote = {(item.sku, item.produto) for pacote, itens in pacotes.items() if pacote for item in itens}
@@ -255,8 +369,7 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
     else:
         registros_picking = _ler_picking_tiktok(doc_origem)
         indice_na_lista = {}
-        for registro in registros_picking:
-            pagina_lista = registro.indice
+        for pagina_lista in dict.fromkeys(registro.indice for registro in registros_picking):
             indice_na_lista[pagina_lista] = len(doc_lista)
             doc_lista.insert_pdf(doc_origem, from_page=pagina_lista, to_page=pagina_lista)
         if not any(registro.dados_etiqueta for registro in registros_picking):
@@ -285,25 +398,40 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
             eh_etiqueta = True
 
         if eh_etiqueta:
-            paginas_etiquetas.append((i, _extrair_ids_tiktok(texto)))
+            rastreios = {
+                "".join(codigo.split()).upper()
+                for codigo in _RASTREIO_NA_ETIQUETA.findall(texto)
+            } if not uploaded_list else set()
+            paginas_etiquetas.append((i, _extrair_ids_tiktok(texto), rastreios))
 
     por_id = _indexar_picking_tiktok(registros_picking)
     etiquetas = []
-    for i, ids in paginas_etiquetas:
-        dados_sku, pedido, paginas, confirmada = _vincular_picking_tiktok(ids, por_id)
-        # Preserva o vínculo unitário quando etiqueta e lista vieram no mesmo PDF.
-        if (
-            not uploaded_list
-            and ids == (None, None)
-            and len(paginas_etiquetas) == len(registros_picking) == 1
-        ):
+    nomes_por_pedido = defaultdict(dict)
+    for i, ids, rastreios in paginas_etiquetas:
+        rastreio = next(iter(rastreios)) if len(rastreios) == 1 else None
+        dados_sku, pedido, paginas, confirmada, pedido_vinculado = _vincular_picking_tiktok(
+            ids, por_id, rastreio=rastreio,
+        )
+        if not paginas and ids == (None, None) and len(paginas_etiquetas) == len(registros_picking) == 1:
             registro = registros_picking[0]
-            if registro.ids is not None and registro.dados_etiqueta:
+            # O formato com Order ID na linha permite vincular um único pedido
+            # confirmado a uma etiqueta sem IDs, quando os dois PDFs têm uma página.
+            par_externo_unitario = registro.pedido_na_coluna and len(doc_origem) == len(doc_lista) == 1
+            rastreio_compativel = not registro.rastreio or not rastreios or rastreios == {registro.rastreio}
+            if (
+                (not uploaded_list or par_externo_unitario)
+                and rastreio_compativel
+                and registro.ids is not None
+                and registro.dados_etiqueta
+            ):
                 dados_sku = registro.dados_etiqueta
-                pedido = registro.ids[0] or registro.ids[1]
+                pedido_vinculado = registro.ids[0]
+                pedido = pedido_vinculado or registro.ids[1]
                 paginas = [registro.indice]
                 if pedido and registro.dados_confirmados:
                     confirmada = registro.dados_confirmados[1]
+        if pedido_vinculado and (nome := _extrair_destinatario_tiktok(doc_origem[i])):
+            nomes_por_pedido[pedido_vinculado].setdefault(nome.casefold(), nome)
         etiquetas.append((i, dados_sku, pedido, paginas, confirmada))
 
     etiquetas = ordenar_etiquetas(
@@ -320,7 +448,16 @@ def processar_tiktok(uploaded_file, uploaded_list=None, *, layout=None, componen
     ordem_lista.update(dict.fromkeys(ordem_original))
     if list(ordem_lista) != ordem_original:
         doc_lista.select(list(ordem_lista))
-    inserir_resumo_picking_tiktok(doc_lista, _itens_resumo_tiktok(registros_picking, indice_na_lista, ordem_lista))
+    destinatarios = {
+        pedido: next(iter(nomes.values()))
+        for pedido, nomes in nomes_por_pedido.items()
+        if len(nomes) == 1
+    }
+    inserir_resumo_picking_tiktok(
+        doc_lista,
+        _itens_resumo_tiktok(registros_picking, indice_na_lista, ordem_lista),
+        destinatarios=destinatarios,
+    )
 
     count_etiquetas = 0
     w_page = 283

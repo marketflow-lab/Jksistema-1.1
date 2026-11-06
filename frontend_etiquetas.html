@@ -1111,8 +1111,10 @@
             if (!response.ok) throw new Error(data.detail || 'Erro ao processar');
             if (!data.success) throw new Error(data.message || 'Erro desconhecido.');
             document.getElementById('qtd-etiquetas').textContent = data.qtd;
-            configurarDownloadEnvio('etiquetas', data.id_etiquetas, 'etiquetas_processadas.pdf');
-            configurarDownloadEnvio('lista', data.id_lista, 'lista_processada.pdf');
+            const arquivoOrigem = loja === 'Amazon' ? fileNf : fileEtiquetas;
+            const arquivoLista = loja === 'TikTok' && fileLista ? fileLista : arquivoOrigem;
+            configurarDownloadEnvio('etiquetas', data.id_etiquetas, `E ${arquivoOrigem.name}`);
+            configurarDownloadEnvio('lista', data.id_lista, `L ${arquivoLista.name}`);
             resultSection.style.display = 'block';
         } catch (e) {
             console.error(e);

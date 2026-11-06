@@ -20,7 +20,7 @@ const gear = (page, store) => page.locator('[data-layout-store="' + store + '"]'
 const item = (page, name) => modal(page).locator('[data-layout-item="' + name + '"]');
 const field = (page, name) => modal(page).locator('[data-layout-field="' + name + '"]');
 const storageKey = (tenant, user, store) => 'jk:etiquetas-layout:v1:' + JSON.stringify([tenant, user, store]);
-const fixture = { name: 'synthetic-label.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nSynthetic label\n%%EOF') };
+const fixture = { name: 'Etiquetas de expedição 01.PDF', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nSynthetic label\n%%EOF') };
 const previewDirectory = process.env.JK_ETIQUETAS_PREVIEW_DIR;
 const clone = value => JSON.parse(JSON.stringify(value));
 const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
@@ -142,9 +142,8 @@ async function verificarDownloadDoResultado(page) {
   const lista = page.locator('#btn-download-lista');
   const pending = deferred();
   state.delayedDownload = pending.promise;
-  const downloadEtiquetas = () => page.waitForEvent('download', {
-    predicate: download => download.suggestedFilename() === 'etiquetas_processadas.pdf',
-  });
+  const nomeEtiqueta = 'E Etiquetas de expedição 01.PDF';
+  const nomeLista = 'L Etiquetas de expedição 01.PDF';
 
   await etiquetas.click();
   await until(() => state.downloads.length > 0);
@@ -154,18 +153,21 @@ async function verificarDownloadDoResultado(page) {
 
   assert.strictEqual(await lista.isEnabled(), true);
   const [downloadLista] = await Promise.all([
-    page.waitForEvent('download', { predicate: download => download.suggestedFilename() === 'lista_processada.pdf' }),
+    page.waitForEvent('download'),
     lista.click(),
   ]);
+  assert.strictEqual(downloadLista.suggestedFilename(), nomeLista);
   assert.strictEqual(await downloadLista.failure(), null);
   await esperarStatusDownload(page, 'lista', 'Download iniciado.');
   await esperarStatusDownload(page, 'etiquetas', 'Baixando…');
   assert.deepStrictEqual(state.downloads, ['synthetic-result', 'synthetic-list']);
 
-  const primeiraEtiqueta = downloadEtiquetas();
+  const primeiraEtiqueta = page.waitForEvent('download');
   state.delayedDownload = null;
   pending.resolve();
-  assert.strictEqual(await (await primeiraEtiqueta).failure(), null);
+  const downloadEtiqueta = await primeiraEtiqueta;
+  assert.strictEqual(downloadEtiqueta.suggestedFilename(), nomeEtiqueta);
+  assert.strictEqual(await downloadEtiqueta.failure(), null);
   await esperarStatusDownload(page, 'etiquetas', 'Download iniciado.');
   assert.strictEqual(await etiquetas.isEnabled(), true);
 
@@ -175,7 +177,8 @@ async function verificarDownloadDoResultado(page) {
   assert.strictEqual(await etiquetas.isEnabled(), true);
 
   state.failDownload = false;
-  const [novaEtiqueta] = await Promise.all([downloadEtiquetas(), etiquetas.click()]);
+  const [novaEtiqueta] = await Promise.all([page.waitForEvent('download'), etiquetas.click()]);
+  assert.strictEqual(novaEtiqueta.suggestedFilename(), nomeEtiqueta);
   assert.strictEqual(await novaEtiqueta.failure(), null);
   await esperarStatusDownload(page, 'etiquetas', 'Download iniciado.');
   assert.deepStrictEqual(state.downloads, ['synthetic-result', 'synthetic-list', 'synthetic-result', 'synthetic-result']);

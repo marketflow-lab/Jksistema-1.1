@@ -5,6 +5,7 @@ import pytest
 
 from backend.services.etiquetas_layout import layout_padrao
 from backend.services.etiquetas_marketplaces import processar_etiquetas_loja
+from backend.services.etiquetas_marketplaces_tiktok import _extrair_destinatario_tiktok
 
 
 def _pdf_tiktok(paginas):
@@ -20,6 +21,24 @@ def _pagina_picking(order_id, sku, qtd, package_id=""):
         f"PICKING LIST\nOrder ID: {order_id}\nPackage ID: {package_id}\n"
         f"Product Name\nSeller SKU\nQty\nProduto exemplo\n{sku}\n{qtd}\nQty Total"
     )
+
+
+def _picking_tabular_tiktok(linhas):
+    with fitz.open() as pdf:
+        pagina = pdf.new_page(width=595, height=842)
+        pagina.insert_text((24, 39), "Picking List", fontsize=12)
+        pagina.insert_text((24, 88), f"Total Orders: {len(linhas)}", fontsize=9)
+        colunas = (24, 132, 270, 342, 409, 456)
+        cabecalhos = ("No", "Product Name", "SKU", "Seller SKU", "Qty", "Order ID")
+        for x, nome in zip(colunas, cabecalhos):
+            pagina.insert_text((x, 147), nome, fontsize=9)
+        for numero, (pedido, produto, sku_plataforma, sku_vendedor, quantidade) in enumerate(linhas, 1):
+            y = 184 + 48 * (numero - 1)
+            valores = (str(numero), produto, sku_plataforma, sku_vendedor, str(quantidade), pedido)
+            for x, valor in zip(colunas, valores):
+                pagina.insert_text((x, y), valor, fontsize=8)
+        return pdf.tobytes()
+
 
 @pytest.mark.parametrize("lista_embutida", [False, True])
 def test_ordena_etiquetas_e_lista_tiktok_sem_trocar_pedidos(lista_embutida):
@@ -187,3 +206,191 @@ def test_tiktok_soma_pacotes_distintos_e_preserva_selo_no_layout_personalizado()
             assert "3 UN." in texto
             assert pacote in texto
             assert pagina.rect.contains(pagina.search_for("3 UN.")[0])
+
+
+@pytest.mark.parametrize(("fonte", "valor", "esperado"), [
+    ("hebo", "Iara", "Iara"),
+    ("helv", "Iara", None),
+    ("hebo", "AB1234", None),
+    ("hebo", "Rua", None),
+])
+def test_destinatario_tiktok_unitario_exige_negrito_e_valor_de_nome(fonte, valor, esperado):
+    with fitz.open() as pdf:
+        pagina = pdf.new_page(width=298, height=420)
+        pagina.insert_text((19, 212), "Destinatário", fontsize=8)
+        pagina.insert_text((17.2, 227), valor, fontsize=8, fontname=fonte)
+        pagina.insert_text((17.2, 239), "Rua de Exemplo, 10", fontsize=7)
+        assert _extrair_destinatario_tiktok(pagina) == esperado
+
+
+def _verificar_nome_do_pedido(pagina, pedido, nome):
+    [area_pedido] = pagina.search_for(pedido)
+    [area_nome] = pagina.search_for(nome)
+    assert 0 < area_nome.y0 - area_pedido.y0 < 2 * area_pedido.height
+    assert area_pedido.x0 <= area_nome.x0 < area_pedido.x1
+
+
+@pytest.mark.parametrize(("destinatario", "identificacao", "sku_esperado", "nome_esperado"), [
+    ("Ana Exemplo", "", "SKU: 10-A 3 UN.", "Ana Exemplo"),
+    ("maria12345678.", "", "SKU: 10-A 3 UN.", "Maria"),
+    ("usuario12345678.", "", "SKU: 10-A 3 UN.", "Nome não informado"),
+    ("JKB19Z45\nRua das Amostras, 10", "", "SKU: 10-A 3 UN.", "Nome não informado"),
+    ("Nome Conflitante", "\nOrder ID: 200000000000000002", "SKU N/D", "Nome não informado"),
+])
+def test_picking_tabular_tiktok_externo_unitario(destinatario, identificacao, sku_esperado, nome_esperado):
+    pedido = "100000000000000001"
+    etiquetas = _pdf_tiktok([f"Destinatário:\n{destinatario}{identificacao}"])
+    lista = _picking_tabular_tiktok([(pedido, "Kit de cabos\npara teste", "CAT-10", "10-A", 3)])
+
+    resultado = processar_etiquetas_loja("TikTok", etiquetas, lista, None)
+
+    assert resultado["qtd"] == 1
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as pdf:
+        texto = " ".join(pdf[0].get_text().split())
+        assert sku_esperado in texto
+        assert "CAT-10" not in texto
+    with (
+        fitz.open(stream=resultado["out_lista"], filetype="pdf") as pdf,
+        fitz.open(stream=lista, filetype="pdf") as original,
+    ):
+        assert pdf.page_count == 2
+        resumo = pdf[0].get_text()
+        assert "Resumo de separação" in resumo
+        assert pedido in resumo
+        assert "Kit de cabos para teste" in resumo
+        assert nome_esperado in resumo.splitlines()
+        _verificar_nome_do_pedido(pdf[0], pedido, nome_esperado)
+        assert "12345678." not in resumo
+        assert "JKB19Z45" not in resumo
+        assert "Rua das Amostras" not in resumo
+        assert "Nome Conflitante" not in resumo
+        assert "SKU 10-A" in resumo
+        assert "3 UNIDADES" in resumo
+        assert "CAT-10" not in resumo
+        assert pdf[1].get_text() == original[0].get_text()
+        assert pdf[1].get_pixmap().samples == original[0].get_pixmap().samples
+
+
+@pytest.mark.parametrize("lista_embutida", [False, True])
+def test_picking_tabular_tiktok_separa_pedidos_na_mesma_pagina(lista_embutida):
+    primeiro = "100000000000000001"
+    segundo = "200000000000000002"
+    etiquetas = _pdf_tiktok([
+        f"ETIQUETA A\nDestinatário:\nAna Exemplo\nOrder ID: {primeiro}",
+        "ETIQUETA SEM ID\nDestinatário:\nCris Exemplo",
+        f"ETIQUETA B\nDestinatário:\nBruno Exemplo\nOrder ID: {segundo}",
+    ])
+    lista = _picking_tabular_tiktok([
+        (segundo, "Jogo de juntas", "CAT-20", "20-B", 2),
+        (primeiro, "Kit de cabos", "CAT-10", "10-A", 1),
+    ])
+
+    if lista_embutida:
+        with fitz.open(stream=etiquetas, filetype="pdf") as doc, fitz.open(stream=lista, filetype="pdf") as picking:
+            doc.insert_pdf(picking)
+            etiquetas = doc.tobytes()
+
+    resultado = processar_etiquetas_loja("TikTok", etiquetas, None if lista_embutida else lista, None)
+
+    assert resultado["qtd"] == 3
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as pdf:
+        esperados = (
+            ("ETIQUETA B", "SKU: 20-B 2 UN."),
+            ("ETIQUETA A", "SKU: 10-A (x1)"),
+            ("ETIQUETA SEM ID", "SKU N/D"),
+        )
+        for pagina, (marcador, sku) in zip(pdf, esperados, strict=True):
+            texto = " ".join(pagina.get_text().split())
+            assert marcador in texto
+            assert sku in texto
+    with fitz.open(stream=resultado["out_lista"], filetype="pdf") as pdf:
+        assert pdf.page_count == 2
+        resumo = pdf[0]
+        _verificar_nome_do_pedido(resumo, primeiro, "Ana Exemplo")
+        _verificar_nome_do_pedido(resumo, segundo, "Bruno Exemplo")
+        texto = resumo.get_text()
+        assert "Resumo de separação" in texto
+        assert "Cris Exemplo" not in texto
+        texto_sem_nomes = texto.replace("Ana Exemplo\n", "").replace("Bruno Exemplo\n", "")
+        assert f"{primeiro}\nKit de cabos\n1\n" in texto_sem_nomes
+        assert f"{segundo}\nJogo de juntas\n2 UNIDADES\n" in texto_sem_nomes
+
+
+def _etiqueta_com_rastreio_tiktok(pdf, marcador, destinatario, rastreio):
+    pagina = pdf.new_page(width=298, height=420)
+    pagina.insert_text((14, 36), marcador, fontsize=9)
+    pagina.insert_text((14, 68), rastreio, fontsize=9)
+    pagina.insert_text((14, 142), f"Destinatário:\n{destinatario}", fontsize=8)
+
+
+def _packing_compacto_tiktok(pdf, pedido, pacote, rastreio, produto, sku, qtd, *, total=None):
+    pagina = pdf.new_page(width=298, height=420)
+    pagina.insert_text((11, 17), "Packing List", fontsize=12)
+    identificacao = f"Order ID: {pedido}\nPackage ID: {pacote}"
+    pagina.insert_text((11, 33), identificacao, fontsize=8)
+    pagina.insert_text((11, 59), f"Tracking number: {rastreio}", fontsize=8)
+    colunas = (11, 130, 177, 270)
+    for x, nome in zip(colunas, ("Product Name", "SKU", "Seller SKU", "Qty")):
+        pagina.insert_text((x, 75), nome, fontsize=7)
+    for x, texto in zip(colunas, (produto, f"PLAT-{sku}", sku, str(qtd))):
+        pagina.insert_text((x, 93), texto, fontsize=7)
+    pagina.insert_text((251, 118), "Qty Total:", fontsize=6)
+    pagina.insert_text((281, 118), str(qtd if total is None else total), fontsize=7)
+    pagina.insert_text((11, 135), identificacao, fontsize=8)
+
+
+def test_tiktok_pdf_unico_vincula_packing_compacto_por_rastreio():
+    pedido_a = "100000000000000001"
+    pedido_b = "200000000000000002"
+    with fitz.open() as origem:
+        _etiqueta_com_rastreio_tiktok(origem, "ETIQUETA B", "Bruno Exemplo", "BB 400 500 602 BR")
+        _packing_compacto_tiktok(origem, pedido_a, "PK100000000001", "AA100200301BR", "Kit de cabos", "10-A", 1)
+        _etiqueta_com_rastreio_tiktok(origem, "ETIQUETA A", "Ana Exemplo", "AA 100 200 301 BR")
+        _packing_compacto_tiktok(origem, pedido_b, "PK200000000002", "BB400500602BR", "Jogo de juntas\npara teste", "20-B", 3)
+
+        resultado = processar_etiquetas_loja("TikTok", origem.tobytes(), None, None)
+
+        assert resultado["qtd"] == 2
+        with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as pdf:
+            assert pdf.page_count == 2
+            etiqueta_b, etiqueta_a = (" ".join(pagina.get_text().split()) for pagina in pdf)
+            assert "ETIQUETA B" in etiqueta_b and "SKU: 20-B 3 UN." in etiqueta_b
+            assert "ETIQUETA A" in etiqueta_a and "SKU: 10-A (x1)" in etiqueta_a
+
+        with fitz.open(stream=resultado["out_lista"], filetype="pdf") as pdf:
+            assert pdf.page_count == 3
+            resumo = pdf[0].get_text()
+            assert "Resumo de separação" in resumo
+            assert "SKU 20-B" in resumo and "SKU 10-A" in resumo
+            assert f"{pedido_b}\nBruno Exemplo\nJogo de juntas para teste\n3 UNIDADES\n" in resumo
+            assert f"{pedido_a}\nAna Exemplo\nKit de cabos\n1\n" in resumo
+            assert "PLAT-" not in resumo
+            for pagina, indice_origem in zip(pdf.pages(start=1), (3, 1), strict=True):
+                original = origem[indice_origem]
+                assert pagina.get_text() == original.get_text()
+                assert pagina.get_pixmap().samples == original.get_pixmap().samples
+
+
+@pytest.mark.parametrize(("rastreio_packing", "total", "paginas_lista"), [
+    ("CC700800903BR", 2, 2),
+    ("AA100200301BR", 4, 1),
+])
+def test_tiktok_pdf_unico_nao_confirma_rastreio_ou_total_conflitante(rastreio_packing, total, paginas_lista):
+    with fitz.open() as origem:
+        _etiqueta_com_rastreio_tiktok(origem, "ETIQUETA A", "Ana Exemplo", "AA 100 200 301 BR")
+        _packing_compacto_tiktok(
+            origem, "100000000000000001", "PK100000000001", rastreio_packing, "Kit de cabos", "10-A", 2, total=total
+        )
+        resultado = processar_etiquetas_loja("TikTok", origem.tobytes(), None, None)
+
+        assert resultado["qtd"] == 1
+        with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as pdf:
+            assert "SKU N/D" in pdf[0].get_text()
+        with fitz.open(stream=resultado["out_lista"], filetype="pdf") as pdf:
+            assert pdf.page_count == paginas_lista
+            if paginas_lista == 2:
+                resumo = pdf[0].get_text()
+                assert "SKU 10-A" in resumo
+                assert "Nome não informado" in resumo
+                assert "Ana Exemplo" not in resumo
+            assert pdf[-1].get_pixmap().samples == origem[1].get_pixmap().samples
