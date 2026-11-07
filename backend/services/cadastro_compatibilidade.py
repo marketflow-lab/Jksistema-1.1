@@ -355,12 +355,15 @@ def _capturar_cadastro_para_leitura_sem_cache(client_id: str):
 def visao_compatibilidade_produtos_lojas(
     client_id: str, *, skus: Iterable[Any] | None = None,
     _normalizar_sku_consulta: Callable[[Any], str] | None = None,
+    _incluir_fotos: bool = True,
 ) -> dict[str, Any]:
     """Return safe global rows plus every SKU owned by the new store file."""
 
     skus = tuple(skus) if skus is not None else None
     opcoes_filtro = ({"_normalizar_sku_consulta": _normalizar_sku_consulta}
                      if _normalizar_sku_consulta is not None else {})
+    if not _incluir_fotos:
+        opcoes_filtro["_incluir_fotos"] = False
     registros, lojas_atuais, fontes, fotos = _capturar_cadastro_para_leitura(client_id)
     with _cadastro_fotos_contexto_leitura(fotos):
         skus_controlados = {
@@ -405,6 +408,7 @@ def visao_produtos_cadastro_contexto_loja(
     *,
     skus: Iterable[Any] | None = None,
     _normalizar_sku_consulta: Callable[[Any], str] | None = None,
+    _incluir_fotos: bool = True,
 ) -> dict[str, Any]:
     """Resolve uma loja somente para leitura e falha fechado se for ambigua.
 
@@ -418,6 +422,8 @@ def visao_produtos_cadastro_contexto_loja(
     referencia_norm = _normalizar_loja_leitura(referencia)
     opcoes_filtro = ({"_normalizar_sku_consulta": _normalizar_sku_consulta}
                      if _normalizar_sku_consulta is not None else {})
+    if not _incluir_fotos:
+        opcoes_filtro["_incluir_fotos"] = False
     if referencia_norm in {"", "todas", "todas as lojas"} or referencia == "__todas":
         visao = visao_compatibilidade_produtos_lojas(client_id, skus=skus, **opcoes_filtro)
         return {
@@ -481,10 +487,17 @@ def mesclar_produtos_legados_com_contexto_loja(
     loja_referencia: Any = "",
     *,
     skus: Iterable[Any] | None = None,
+    _normalizar_sku_consulta: Callable[[Any], str] | None = None,
+    _incluir_fotos: bool = True,
 ) -> dict[str, Any]:
     """Adapta consumidores legados sem permitir fallback entre lojas."""
 
-    visao = visao_produtos_cadastro_contexto_loja(client_id, loja_referencia, skus=skus)
+    opcoes = {}
+    if _normalizar_sku_consulta is not None:
+        opcoes["_normalizar_sku_consulta"] = _normalizar_sku_consulta
+    if not _incluir_fotos:
+        opcoes["_incluir_fotos"] = False
+    visao = visao_produtos_cadastro_contexto_loja(client_id, loja_referencia, skus=skus, **opcoes)
     if visao["scope"] == "store":
         return visao
     if visao["scope"] == "unresolved":

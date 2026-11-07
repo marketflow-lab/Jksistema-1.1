@@ -7,6 +7,7 @@
         let escopoConsulta = '';
         let atualizacaoAdiada = null;
         let metaVisaoExibida = null;
+        let fotosAdiadasVisao = false;
         let ultimoStatus = '';
         let situacaoVisao = 'inicial';
         const edicoesPorEscopo = new Map();
@@ -31,14 +32,24 @@
             setStatus('');
         }
 
+        function obterMetaFotosVisao() {
+            return fotosAdiadasVisao && itensVisaoAtual.length ? metaVisaoExibida || {} : null;
+        }
+
         function aplicarResultado(data, escopo, geracao) {
             if (escopo !== escopoConsulta || geracao !== geracaoCarregamentoVisao) return false;
+            if (fotosAdiadasVisao && metaVisaoExibida?.politica_fotos
+                && data._cache?.politica_fotos !== metaVisaoExibida.politica_fotos) {
+                fotosAdiadasVisao = false;
+                modules.tabela?.cancelarFotosVisao();
+            }
             if (document.querySelector('#tblResultado .compra-sugerida-input')) {
                 atualizacaoAdiada = { data, escopo, geracao };
                 return false;
             }
             atualizacaoAdiada = null;
             metaVisaoExibida = data._cache || null;
+            fotosAdiadasVisao = data.fotos_adiadas === true;
             colunasMesesAtuais = modules.resultados.copiarResultado(data.colunas_meses || []);
             itensVisaoAtual = modules.resultados.copiarResultado(data.itens || []);
             for (const item of itensVisaoAtual) {
@@ -68,7 +79,7 @@
             if (abaAtual === 'listas_pedidos') { cancelarCarregamentoVisao(); return; }
             if (app.state.inicializacaoMediasPendente) return;
             const lojaSolicitada = lojaSelecionada;
-            const params = new URLSearchParams({ meses: String(periodoAtual) });
+            const params = new URLSearchParams({ meses: String(periodoAtual), fotos: 'adiadas' });
             if (lojaSolicitada && lojaSolicitada !== '__todas') {
                 params.set('loja', lojaSolicitada);
                 params.set('store_id', String(storeIdSelecionado || ''));
@@ -164,6 +175,7 @@
             renderAbaAtual();
             setStatus('A sessão mudou. Reabra a tela para carregar os dados atuais.');
         });
-        return { carregarVisao, cancelarCarregamentoVisao, concluirEdicaoVisao, confirmarVisaoAtualizada, obterMensagemVisaoVazia };
+        return { carregarVisao, cancelarCarregamentoVisao, concluirEdicaoVisao, confirmarVisaoAtualizada,
+            obterMensagemVisaoVazia, obterMetaFotosVisao };
     });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

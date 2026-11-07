@@ -70,6 +70,7 @@ __all__ = [
     "_gerar_excel_lista_pedido_bytes",
     "api_medias_compras_calcular",
     "api_medias_compras_visao",
+    "api_medias_compras_visao_fotos",
     "api_medias_compras_posicao_estoque",
     "api_medias_compras_gerar_lista_compra",
     "api_medias_compras_gerar_lista_compra_get",

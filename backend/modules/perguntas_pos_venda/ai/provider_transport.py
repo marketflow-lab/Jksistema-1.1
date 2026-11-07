@@ -27,7 +27,7 @@ from backend.services.ia_providers import (
     _vertex_modelo_nome_curto,
 )
 from .deep_research_contracts import PUBLIC_RESEARCH_MAX_DECOMPRESSED_BYTES
-from .unified_response_agent import UNIFIED_RESPONSE_AGENT_SCHEMA
+from .unified_response_agent import UNIFIED_RESPONSE_AGENT_SCHEMA, UNIFIED_RESPONSE_AGENT_STAGE
 
 
 TECHNICAL_QUESTION_PLAN_SCHEMA_VERSION = "jk_ml_technical_question_plan_v1"
@@ -755,12 +755,19 @@ def invoke_model(client_id: str, payload: IAChatRequest, model_req: str) -> tupl
         output_schema = _codex_output_schema_for_context(context)
         on_thread_ready = context.pop("_codex_on_thread_ready", None)
         thread_id = str(context.get("_codex_thread_id") or "").strip()
-        if context.get("_codex_persist_thread") or thread_id:
+        persist_thread = bool(context.get("_codex_persist_thread") or thread_id)
+        active_turn_key = str(context.get("_codex_active_turn_key") or "")
+        cancellable_recovery = bool(
+            active_turn_key and context.get("context_collection_stage") == UNIFIED_RESPONSE_AGENT_STAGE
+        )
+        if persist_thread or cancellable_recovery:
             thread_kwargs: dict[str, Any] = {
                 "thread_id": thread_id,
-                "persist_thread": True,
-                "conversation_key": str(context.get("_codex_conversation_key") or context.get("_codex_job_id") or ""),
-                "active_turn_key": str(context.get("_codex_active_turn_key") or context.get("_codex_job_id") or ""),
+                "persist_thread": persist_thread,
+                "conversation_key": str(
+                    context.get("_codex_conversation_key") or context.get("_codex_job_id") or ""
+                ) if persist_thread else "",
+                "active_turn_key": active_turn_key or str(context.get("_codex_job_id") or ""),
                 "on_thread_ready": on_thread_ready if callable(on_thread_ready) else None,
             }
             if output_schema is not None:

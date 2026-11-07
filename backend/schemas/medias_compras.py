@@ -1,6 +1,6 @@
 """Pydantic schemas for medias compras."""
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -17,6 +17,14 @@ class MediasComprasItem(BaseModel):
 class MediasComprasRequest(BaseModel):
     meses_cobertura: float = 2
     itens: list[MediasComprasItem]
+
+
+class MediasVisaoFotosRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    loja: str = "__todas"
+    store_id: str = ""
+    skus: list[Annotated[str, Field(min_length=1, max_length=256)]] = Field(min_length=1, max_length=64)
 
 
 class ListaCompraRequest(BaseModel):

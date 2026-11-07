@@ -263,6 +263,7 @@ class _PerguntasVertexGeminiV2Client:
         # path. Evidence-graph turns are therefore always ephemeral and never
         # resume or update the job's persistent operational thread.
         isolated_turn = bool(isolated or stage == "technical_evidence_graph")
+        recovery_turn = isolated and stage == "unified_response_agent"
         subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
         final_review_stage = stage in {"factual_critic", "factual_revision"}
         if subquestions and not self.sku_question_context and not final_review_stage:
@@ -293,7 +294,8 @@ class _PerguntasVertexGeminiV2Client:
                 + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history, 0)
             )
         effective_tool_results = list(tool_results or [])
-        prompt, effective_tool_results = policy_stage_context(self, prompt, effective_tool_results)
+        if not recovery_turn:
+            prompt, effective_tool_results = policy_stage_context(self, prompt, effective_tool_results)
         if not fluxo_pos_venda and self.sku_question_context and stage != "unified_response_agent":
             prompt, _ = bounded_stage_prompt(
                 prompt,
@@ -328,7 +330,7 @@ class _PerguntasVertexGeminiV2Client:
                     or self.agent_input.get("_codex_job_id")
                 ),
                 "_codex_job_id": str(self.agent_input.get("_codex_job_id") or ""),
-                "_codex_active_turn_key": "" if isolated_turn else str(
+                "_codex_active_turn_key": "" if isolated_turn and not recovery_turn else str(
                     self.agent_input.get("_codex_active_turn_key")
                     or self.agent_input.get("_codex_job_id")
                     or ""

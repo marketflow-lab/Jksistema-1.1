@@ -228,7 +228,9 @@ def _ia_agent_perguntas_inclui_contato_ou_pagamento_externo(texto: str) -> bool:
     )
 
 
-def _ia_agent_perguntas_contexto_validacao(agent_input: dict, resposta: str) -> dict:
+def _ia_agent_perguntas_contexto_validacao(
+    agent_input: dict, resposta: str, *, intent: dict | None = None,
+) -> dict:
     texto = str(resposta or "").strip()
     question = agent_input.get("question") if isinstance(agent_input.get("question"), dict) else {}
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
@@ -254,7 +256,7 @@ def _ia_agent_perguntas_contexto_validacao(agent_input: dict, resposta: str) -> 
         "pergunta_sem_acentos": _favoritos_normalizar_sem_acentos(texto_comprador),
         "rascunho_atual_norm": _normalizar_texto(str(question.get("current_draft_to_avoid") or "")),
         "loja": str(agent_input.get("store") or agent_input.get("loja") or "").strip(),
-        "intent": _perguntas_ia_intencao_agent(agent_input),
+        "intent": intent if intent is not None else _perguntas_ia_intencao_agent(agent_input),
         "categoria": _perguntas_ia_categoria_classificada(agent_input),
     }
 
@@ -416,11 +418,13 @@ def _ia_agent_perguntas_violacoes_aderencia(contexto: dict) -> list[str]:
     return violacoes
 
 
-def _ia_agent_perguntas_violacoes_resposta(agent_input: dict, resposta: str) -> list[str]:
+def _ia_agent_perguntas_violacoes_resposta(
+    agent_input: dict, resposta: str, *, intent: dict | None = None,
+) -> list[str]:
     texto = str(resposta or "").strip()
     if not texto:
         return []
-    contexto = _ia_agent_perguntas_contexto_validacao(agent_input, texto)
+    contexto = _ia_agent_perguntas_contexto_validacao(agent_input, texto, intent=intent)
     violacoes = _ia_agent_perguntas_violacoes_politica(contexto)
     violacoes.extend(_ia_agent_perguntas_violacoes_aderencia(contexto))
     return list(dict.fromkeys(violacoes))

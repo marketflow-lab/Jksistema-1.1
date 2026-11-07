@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 
 from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from ml_questions_gemini.schemas import (
@@ -13,6 +14,7 @@ from ml_questions_gemini.schemas import (
 )
 from fastapi import HTTPException
 from backend.services.compatibility_coverage import COMPATIBILITY_COVERAGE_VERSION
+from ..research_failures import MANUAL_RESEARCH_RECOVERY, safe_research_failures
 
 from .runtime import (
     EVIDENCE_ENVELOPE_V2,
@@ -86,6 +88,7 @@ from .model_context import (
     unified_agent_input_for_model,
     unified_initial_context_for_model,
 )
+from .unified_presale import build_presale_recovery_context, invoke_unified_turn
 from .unified_response_agent import (
     UnifiedResponseAgentOperationalError,
     run_unified_response_agent,
@@ -463,11 +466,13 @@ def _perguntas_ia_repassar_falha_unificada(
     failure.unified_error_code = error_code
     failure.unified_error_round = error_round
     failure.unified_repair_type = repair_type
+    failure.research_failures = exc.research_failures
     raise failure from exc
 
 
 def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
     agent_input = contexto["agent_input"]
+    manual_recovery = agent_input.pop("_manual_research_recovery", None) is MANUAL_RESEARCH_RECOVERY
     settings = contexto["settings"]
     question_ctx, listing_snapshot, previous_questions, seller_rules = context_from_agent_input(
         agent_input, auto_publish_enabled=settings.auto_publish_enabled,
@@ -525,6 +530,15 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
         "agent_input": model_agent_input,
         "initial_read_only_context": unified_initial_context_for_model(initial_context),
     }
+    recovery_options = {}
+    if manual_recovery and not contexto["post_sale"]:
+        recovery_options["invoke_recovery_turn"] = partial(invoke_unified_turn, client, isolated=True)
+        recovery_options["research_recovery_context"] = build_presale_recovery_context(
+            agent_input,
+            initial_context.get("sku_question_context") or {},
+            signature,
+            unified_context["response_policy"],
+        )
     try:
         unified = run_unified_response_agent(
             flow=contexto["flow"],
@@ -532,7 +546,16 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
             invoke_turn=client.invoke_unified_turn,
             execute_research=client.execute_unified_research,
             max_research_rounds=2,
+            **recovery_options,
         )
+        failures = safe_research_failures(unified.get("research_failures"))
+        if failures and _ia_agent_perguntas_violacoes_resposta(
+            agent_input, unified["answer"], intent={"fluxo": "perguntas_anuncio"},
+        ):
+            raise UnifiedResponseAgentOperationalError(
+                "research_execution_failed", "recovered draft violated the response policy",
+                research_failures=failures,
+            )
     except UnifiedResponseAgentOperationalError as exc:
         _perguntas_ia_repassar_falha_unificada(exc, client)
 
@@ -695,6 +718,9 @@ def _perguntas_ia_atualizar_diagnostico(
         "subquestions": list(unified.get("subquestions") or contexto["agent_input"].get("subquestions") or []),
         "evidence_envelope": _perguntas_ia_evidencia_publica(contexto["agent_input"], contexto["loja"], client),
     })
+    failures = safe_research_failures(unified.get("research_failures"))
+    if failures:
+        contexto["diagnostics"][0]["result"]["research_failures"] = failures
     _ia_agent_perguntas_log_perf(
         contexto["client_id"], contexto["loja"], contexto["agent_input"], "v3_orquestrador_codex",
         time.perf_counter() - perf_orq_t0, tentativa=1, modelo=model_usado,

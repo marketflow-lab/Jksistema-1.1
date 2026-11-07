@@ -2,9 +2,143 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'visao-carregamento'], (context) => {
+    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'visao-carregamento'], (context) => {
+        const { api, resultados } = context.modules;
+        const seletorCelulaFoto = '[data-jk-medias-foto]';
+        const placeholderFoto = '<span class="foto-empty foto-reserva">—</span>';
+        const limiteLoteFotos = 64;
         let controladorTabelaVirtual = null;
         let escopoTabelaVirtual = '';
+        let fotosVisao = null;
+        let revisaoCadastroFotos = 0;
+
+        function cancelarFotosVisao() {
+            if (!fotosVisao) return;
+            const anterior = fotosVisao;
+            fotosVisao = null;
+            if (anterior.frame !== null) global.cancelAnimationFrame(anterior.frame);
+            global.clearTimeout(anterior.prazo);
+            anterior.controller?.abort();
+            for (const celula of anterior.tbody.querySelectorAll(seletorCelulaFoto)) {
+                delete celula.dataset.jkMediasFotoPronta;
+                celula.innerHTML = placeholderFoto;
+            }
+        }
+
+        function prepararFotosVisao(tbody, meta) {
+            if (!meta) {
+                cancelarFotosVisao();
+                return null;
+            }
+            const headers = { ...api.authHeaders() };
+            const sessao = resultados.identidadeSessao(headers);
+            const loja = lojaSelecionada || '__todas';
+            const storeId = loja === '__todas' ? '' : String(storeIdSelecionado || '');
+            const politica = meta.politica_fotos || '';
+            const revisao = JSON.stringify([meta.versao ?? '', revisaoCadastroFotos]);
+            const chave = JSON.stringify([sessao, tenantKey, loja, storeId, periodoAtual, politica, revisao]);
+            if (fotosVisao?.chave === chave) return fotosVisao;
+            cancelarFotosVisao();
+            fotosVisao = {
+                chave, tbody, headers, sessao, loja, storeId, politica, revisao,
+                fotos: new Map(), tentadas: new WeakSet(), frame: null, controller: null,
+            };
+            return fotosVisao;
+        }
+
+        function fotosVigentes(estado) {
+            return fotosVisao === estado && abaAtual !== 'listas_pedidos'
+                && estado.sessao === resultados.identidadeSessao();
+        }
+
+        function agendarFotosMontadas() {
+            const estado = fotosVisao;
+            if (!estado || estado.frame !== null || estado.controller) return;
+            // Aguarda o navegador apresentar as linhas antes de consultar as fotos.
+            estado.frame = global.requestAnimationFrame(() => {
+                estado.frame = global.requestAnimationFrame(() => {
+                    estado.frame = null;
+                    if (fotosVigentes(estado)) void preencherFotosMontadas(estado);
+                });
+            });
+        }
+
+        function preencherCelulaFoto(celula, foto, revisao) {
+            if (celula.dataset.jkMediasFotoPronta) return;
+            celula.dataset.jkMediasFotoPronta = '1';
+            const url = obterUrlFoto(foto);
+            celula.innerHTML = url
+                ? '<img class="foto-sku" ' + atributoSrcFotoCadastro(url)
+                    + ' data-jk-photo-revision="' + escaparHtml(revisao)
+                    + '" alt="Foto ' + escaparHtml(celula.dataset.jkMediasFoto) + '" loading="lazy" decoding="async">'
+                : '<span class="foto-empty foto-reserva">Sem foto</span>';
+        }
+
+        async function preencherFotosMontadas(estado) {
+            const skus = new Set();
+            for (const celula of estado.tbody.querySelectorAll(seletorCelulaFoto)) {
+                const sku = celula.dataset.jkMediasFoto;
+                if (estado.fotos.has(sku)) {
+                    preencherCelulaFoto(celula, estado.fotos.get(sku), estado.revisao);
+                } else if (!estado.tentadas.has(celula) && (skus.size < limiteLoteFotos || skus.has(sku))) {
+                    skus.add(sku);
+                    estado.tentadas.add(celula);
+                }
+            }
+            if (!skus.size) return;
+
+            const controller = new global.AbortController();
+            estado.controller = controller;
+            estado.prazo = global.setTimeout(() => controller.abort(), 15000);
+            try {
+                const resposta = await api.request('/api/medias-compras/visao/fotos', {
+                    method: 'POST',
+                    headers: { ...estado.headers, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ loja: estado.loja, store_id: estado.storeId, skus: [...skus] }),
+                    signal: controller.signal,
+                    cache: 'no-store',
+                });
+                if (controller.signal.aborted || !fotosVigentes(estado)) return;
+                if ([401, 403].includes(resposta.status)) {
+                    cancelarFotosVisao();
+                    return;
+                }
+                if (!resposta.ok) return;
+                const dados = await resposta.json();
+                if (controller.signal.aborted || !fotosVigentes(estado)) return;
+                if (typeof dados?.politica_fotos !== 'string' || !dados.politica_fotos) return;
+                if (estado.politica && estado.politica !== dados.politica_fotos) {
+                    cancelarFotosVisao();
+                    return;
+                }
+                if (!dados.fotos || typeof dados.fotos !== 'object' || Array.isArray(dados.fotos)) return;
+                estado.politica = dados.politica_fotos;
+                global.JKAuthenticatedMedia?.atualizarPoliticaRaiz?.(document, estado.politica);
+                for (const sku of skus) {
+                    const foto = Object.hasOwn(dados.fotos, sku) ? dados.fotos[sku] : '';
+                    estado.fotos.set(sku, typeof foto === 'string' ? foto : '');
+                }
+            } catch (_erro) {
+                // Uma nova montagem pode tentar de novo sem ocupar a tabela ou suas ações.
+            } finally {
+                global.clearTimeout(estado.prazo);
+                estado.controller = null;
+                if (fotosVigentes(estado)) agendarFotosMontadas();
+            }
+        }
+
+        resultados.aoMudarSessao(cancelarFotosVisao);
+        for (const evento of ['pagehide', 'jk-tenant-changed', 'jk-photo-policy-changed']) {
+            global.addEventListener(evento, cancelarFotosVisao);
+        }
+        global.addEventListener('jk:cadastro-operation-finished', () => {
+            revisaoCadastroFotos += 1;
+            const tbody = fotosVisao?.tbody;
+            cancelarFotosVisao();
+            if (!tbody || abaAtual === 'listas_pedidos') return;
+            prepararFotosVisao(tbody, context.modules['visao-carregamento'].obterMetaFotosVisao());
+            agendarFotosMontadas();
+        });
 
         function obterQuantidadesSugeridasEditadas() {
             const quantidades = {};
@@ -87,7 +221,6 @@
                     } else {
                         itens.push({
                             sku,
-                            foto: '',
                             titulo_anuncio: '',
                             vendas_mensais: {},
                             total_vendas_periodo: 0,
@@ -128,6 +261,7 @@
             }
 
             if (abaAtual === 'listas_pedidos') {
+                cancelarFotosVisao();
                 if (titulo) titulo.textContent = 'Lista de pedidos';
                 if (statusOcultados) {
                     if (pesquisaAtiva) {
@@ -229,7 +363,7 @@
             return { headers, tbody };
         }
 
-        function criarLinhaResultado(i, indice, colunasMeses, modo, marcarComentario) {
+        function criarLinhaResultado(i, indice, colunasMeses, modo, fotosAdiadas, marcarComentario) {
             const tr = document.createElement('tr');
             tr.classList.add(indice % 2 === 0 ? 'linha-impar' : 'linha-par');
 
@@ -251,7 +385,10 @@
             tds.push('<td>' + escaparHtml(i.sku || '') + '</td>');
 
             const fotoUrl = obterUrlFoto(i.foto || '');
-            if (fotoUrl) {
+            const skuFoto = fotosAdiadas && Object.hasOwn(i, 'foto') ? String(i.sku || '').trim() : '';
+            if (skuFoto && [...skuFoto].length <= 256) {
+                tds.push('<td data-jk-medias-foto="' + escaparHtml(skuFoto) + '">' + placeholderFoto + '</td>');
+            } else if (fotoUrl) {
                 tds.push('<td><img class="foto-sku" ' + atributoSrcFotoCadastro(fotoUrl) + ' alt="Foto ' + escaparHtml(i.sku || '') + '" loading="lazy"></td>');
             } else {
                 tds.push('<td><span class="foto-empty">Sem foto</span></td>');
@@ -318,6 +455,7 @@
             const { headers, tbody } = prepararEstruturaTabela(colunasMeses);
             const tabela = document.getElementById('tblResultado');
             if (!ancora) raiz.scrollTop = 0;
+            const fotos = prepararFotosVisao(tbody, context.modules['visao-carregamento'].obterMetaFotosVisao());
             if (!itens.length) {
                 tabela.setAttribute('aria-rowcount', '1');
                 tabela.dataset.totalRows = '0';
@@ -334,7 +472,8 @@
                 const marcarComentario = global.JKComentariosSku?.paraTabela(lojaSelecionada, storeIdSelecionado);
                 controladorTabelaVirtual = context.modules['tabela-virtual'].criarTabelaVirtual({
                     raiz, tabela, tbody, colunas: headers.length, overscan: 10,
-                    renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo, marcarComentario),
+                    renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo, !!fotos, marcarComentario),
+                    aoMontarLinhas: fotos ? agendarFotosMontadas : null,
                 });
                 controladorTabelaVirtual.atualizarItens(itens, { ancora });
             }
@@ -348,6 +487,7 @@
             obterItensVisiveis,
             obterItensOcultados,
             renderAbaAtual,
+            cancelarFotosVisao,
             carregarVisao: context.modules['visao-carregamento'].carregarVisao,
             cancelarCarregamentoVisao: context.modules['visao-carregamento'].cancelarCarregamentoVisao,
             renderTabela

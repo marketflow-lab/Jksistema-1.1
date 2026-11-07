@@ -908,6 +908,11 @@
             color: #8b95a7;
             font-size: 0.8rem;
         }
+        .foto-reserva {
+            display: inline-flex;
+            align-items: center;
+            min-height: 44px;
+        }
         .titulo-anuncio {
             overflow: hidden;
             text-overflow: ellipsis;

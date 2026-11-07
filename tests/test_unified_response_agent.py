@@ -418,6 +418,154 @@ def test_empty_or_unavailable_research_is_an_operational_failure(research_result
     assert error.value.code == "research_execution_failed"
 
 
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("error_result", "error"),
+        ("partial_result", "error"),
+        ("timeout", "timeout"),
+        ("empty", "no_results"),
+    ],
+)
+def test_failed_research_draft_uses_confirmed_facts_and_names_the_source(failure, reason):
+    internal_detail = "DETALHE PRIVADO DO PROVEDOR"
+    turns = []
+    research_calls = []
+    draft = "Pode ficar ligada continuamente, conforme a especificação do anúncio."
+
+    def invoke(prompt, results, force_answer):
+        turns.append((prompt, results, force_answer))
+        if not force_answer:
+            return _research()
+        return _answer(
+            answer=draft,
+            evidence_basis="exact_listing",
+            evidence_refs=["listing:description"],
+        )
+
+    def research(requests, round_number):
+        research_calls.append(([request["type"] for request in requests], round_number))
+        if failure == "timeout":
+            raise TimeoutError(internal_detail)
+        if failure == "empty":
+            return []
+        failed_result = {
+            "function": "web_search_question_context",
+            "result": {"found": False, "error": internal_detail},
+        }
+        if failure == "partial_result":
+            return [{
+                "function": "web_search_product_identity",
+                "result": {"found": True, "context": "FONTE NOVA SEM PROVA"},
+            }, failed_result]
+        return [failed_result]
+
+    result = run_unified_response_agent(
+        flow="pre_sale",
+        context={"unconfirmed": "FONTE SEM PROVA"},
+        research_recovery_context={
+            "question": "A bomba admite uso contínuo?",
+            "confirmed_facts": {"listing:description": "A bomba admite uso contínuo."},
+        },
+        invoke_turn=invoke,
+        execute_research=research,
+    )
+
+    assert result["answer"] == draft
+    assert result["requires_human_review"] is True
+    assert result["research_failures"] == [{"source": "technical_web", "reason": reason}]
+    assert research_calls == [(["technical_web"], 1)]
+    assert len(turns) == 2
+    recovery_prompt, recovery_results, force_answer = turns[-1]
+    assert force_answer and recovery_results == []
+    assert "A bomba admite uso contínuo." in recovery_prompt
+    assert "UNTRUSTED_REFERENCE_DATA" in recovery_prompt
+    assert "FONTE SEM PROVA" not in recovery_prompt
+    assert "FONTE NOVA SEM PROVA" not in recovery_prompt
+    assert internal_detail not in recovery_prompt and internal_detail not in str(result)
+
+
+def test_failed_research_with_no_confirmed_facts_returns_no_draft():
+    def invoke(_prompt, _results, force_answer):
+        assert not force_answer, "A recuperação não deve consultar a IA sem fatos confirmados"
+        return _research()
+
+    with pytest.raises(UnifiedResponseAgentOperationalError) as error:
+        run_unified_response_agent(
+            flow="pre_sale",
+            context={},
+            research_recovery_context={},
+            invoke_turn=invoke,
+            execute_research=lambda *_args: [{
+                "function": "get_bling_product",
+                "result": {"found": False, "unavailable": True},
+            }],
+        )
+
+    assert error.value.code == "research_execution_failed"
+    assert error.value.research_failures == [{"source": "bling", "reason": "unavailable"}]
+
+
+@pytest.mark.parametrize(
+    "draft_overrides",
+    [
+        {"evidence_refs": ["listing:invented_reference"]},
+        {"evidence_refs": []},
+        {"research_requests": _research()["research_requests"]},
+        {"decision": "insufficient", "answer": ""},
+        {"missing_fact_owner": "internal", "requires_human_review": True},
+    ],
+)
+def test_failed_research_rejects_a_draft_without_a_confirmed_basis(draft_overrides):
+    candidate = _answer(**({
+        "evidence_basis": "exact_listing",
+        "evidence_refs": ["listing:description"],
+    } | draft_overrides))
+    turns = iter([_research(), candidate])
+
+    with pytest.raises(UnifiedResponseAgentOperationalError) as error:
+        run_unified_response_agent(
+            flow="pre_sale",
+            context={},
+            research_recovery_context={
+                "confirmed_facts": {"listing:description": "Uso contínuo."},
+            },
+            invoke_turn=lambda *_args: next(turns),
+            execute_research=lambda *_args: [],
+        )
+
+    assert error.value.code == "research_execution_failed"
+    assert error.value.research_failures == [{"source": "technical_web", "reason": "no_results"}]
+
+
+def test_failed_research_cannot_confirm_an_unresolved_variation():
+    candidate = _answer(
+        category="compatibility",
+        evidence_basis="exact_listing",
+        evidence_refs=["listing:description"],
+        compatibility_analysis={
+            **_compatibility(),
+            "applicable": True,
+            "target": "Modelo A",
+            "decision": "yes",
+            "evidence_refs": ["listing:description"],
+        },
+    )
+    turns = iter([_research(), candidate])
+
+    with pytest.raises(UnifiedResponseAgentOperationalError, match="without a supported draft"):
+        run_unified_response_agent(
+            flow="pre_sale",
+            context={},
+            research_recovery_context={
+                "confirmed_facts": {"listing:description": "Uma versão serve no Modelo A."},
+                "unresolved_variation": True,
+            },
+            invoke_turn=lambda *_args: next(turns),
+            execute_research=lambda *_args: [],
+        )
+
+
 def test_technical_consensus_requires_human_review():
     invalid_consensus = _answer(
         evidence_basis="technical_consensus",

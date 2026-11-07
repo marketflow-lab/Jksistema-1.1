@@ -107,9 +107,10 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Base f51ac1b7 has 537 routes / 535 pairs; SKU comments add GET and PUT.
-        "routes": 539,
-        "pairs": 537,
+        # The 1.0.327 base has 539 routes / 537 method-path pairs.
+        # Deferred Medias photos add one POST.
+        "routes": 540,
+        "pairs": 538,
         "duplicates": [],
         "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }

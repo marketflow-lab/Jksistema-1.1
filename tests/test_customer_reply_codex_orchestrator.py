@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from backend.modules.perguntas_pos_venda.endpoints import question_automation
+from backend.modules.perguntas_pos_venda.endpoints import jobs, question_automation
 from backend.modules.perguntas_pos_venda.ai.contracts import PerguntasIARespostaPoliticaInvalida
 from backend.schemas.perguntas_pos_venda import PerguntasGerarRespostaRequest, PosVendaGerarRespostaRequest
 from backend.services import codex_assistant_storage
@@ -1858,6 +1858,74 @@ def test_unified_research_failure_finishes_without_buyer_draft(tmp_path, monkeyp
     assert completed["blocked_without_draft"] is True
     assert completed["result"]["resposta"] == ""
     assert completed["result"]["error_code"] == "research_execution_failed"
+
+
+@pytest.mark.parametrize("has_draft", [True, False])
+def test_manual_research_diagnostic_survives_worker_restart(tmp_path, monkeypatch, has_draft):
+    monkeypatch.setattr(orchestrator, "_RUNTIME", _runtime(tmp_path))
+    monkeypatch.setattr(customer_reply_state, "_customer_reply_sealed_results_enabled", lambda: True)
+    monkeypatch.setattr(
+        customer_reply_state, "_customer_reply_result_key", lambda _client_id, *, create: b"R" * 32,
+    )
+    job_id = "job-research-diagnostic"
+    job = {
+        "job_id": job_id,
+        "client_id": "cliente",
+        "profile": orchestrator.PROFILE,
+        "task_type": "public_question",
+        "subject_key": "Q-RESEARCH-DIAGNOSTIC",
+        "store": "Loja",
+        "store_id": "loja-id",
+        "seller_id": "17",
+        "site_id": "MLB",
+        "status": "queued",
+        "agent_state": "planejando",
+        "queue_origin": orchestrator.QUEUE_ORIGIN_MANUAL,
+        "queue_policy_version": orchestrator.QUEUE_POLICY_VERSION,
+        "prompt_version": orchestrator.PROMPT_VERSION,
+        "prompt_hash": orchestrator.PROMPT_HASH,
+        "schema_version": orchestrator.SCHEMA_VERSION,
+    }
+    codex_assistant_storage.codex_assistant_customer_reply_job_save(str(tmp_path), "cliente", job)
+    failures = [{"source": "technical_web", "reason": "timeout", "query": "CANARY_PRIVATE_QUERY"}]
+    answer = "O produto tem 34 dentes."
+    if has_draft:
+        monkeypatch.setattr(orchestrator, "_load_question_context", lambda _job: (answer, {
+            "research_failures": failures,
+            "ia_validacao_ok": True,
+            "ia_requer_revisao_humana": True,
+            "ia_requer_revisao_humana_intrinseca": True,
+        }))
+    else:
+        def generation_failed(_job):
+            error = perguntas_state.PerguntasIARespostaIndisponivel("Consulta indisponivel")
+            error.unified_error_code = "research_execution_failed"
+            error.research_failures = failures
+            raise error
+        monkeypatch.setattr(orchestrator, "_load_question_context", generation_failed)
+
+    orchestrator._run_job("cliente", job_id)
+    with customer_reply_state._CUSTOMER_REPLY_TRANSIENT_LOCK:
+        customer_reply_state._CUSTOMER_REPLY_TRANSIENT.clear()
+
+    result = orchestrator.get_job("cliente", job_id)
+    assert result["research_failures"] == [{"source": "technical_web", "reason": "timeout"}]
+    assert "CANARY_PRIVATE_QUERY" not in json.dumps(result)
+    assert result["blocked_without_draft"] is not has_draft
+    assert result["review_required"] is True
+    if has_draft:
+        assert result["result"]["resposta"] == answer
+        assert result["completion_reason"] == "research_recovered_for_review"
+        assert result["agent_state"] == "aguardando_aprovacao"
+        assert result["result"]["requires_approval"] is True
+        # Even when the other direct-send requirements pass, intrinsic review wins.
+        monkeypatch.setattr(orchestrator, "approval_job_current", lambda *_args: True)
+        assert jobs._customer_reply_requires_approval("cliente", {"solicitar_aprovacao": False}, {
+            **result["result"]["contexto"], "data_sufficient": True, "codex_job_id": job_id,
+        })
+    else:
+        assert not result["result"].get("resposta")
+        assert result["completion_reason"] == "unified_agent_research_failure"
 
 
 def test_evoque_continuation_reaches_evidence_and_finishes_safe_partial_in_one_cycle(

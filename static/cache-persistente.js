@@ -361,8 +361,10 @@
                 const url = new global.URL(source, global.location.href);
                 if (url.origin === global.location.origin) {
                     tags = families(url.pathname, method);
-                    leituraComPost = method === 'POST'
-                        && /^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+\/analise-concorrentes\/previa$/.test(url.pathname);
+                    leituraComPost = method === 'POST' && (
+                        url.pathname === '/api/medias-compras/visao/fotos'
+                        || /^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+\/analise-concorrentes\/previa$/.test(url.pathname)
+                    );
                 }
             } catch (_error) {}
             const response = await originalFetch(input, init);

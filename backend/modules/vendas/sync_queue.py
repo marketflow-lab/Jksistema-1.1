@@ -655,16 +655,17 @@ class SyncQueue:
                     last_success = ? WHERE store_id = ?""",
                              (cursor, now + HISTORY_INTERVAL_SECONDS, now, job["store_id"]))
             else:
-                covered_until = min(_date(job["data_fim"]), today)
                 plan = conn.execute("SELECT data_inicio, last_success_day FROM plans WHERE store_id = ?",
                                     (job["store_id"],)).fetchone()
                 previous = plan["last_success_day"] if plan else None
                 frontier = _date(previous) + dt.timedelta(days=1) if previous else _date(plan["data_inicio"])
                 # A later manual interval cannot turn an unvisited gap into coverage.
-                watermark = max(previous or "", str(covered_until)) if _date(job["data_inicio"]) <= frontier else previous
+                watermark = max(previous or "", str(eligible_end)) if _date(job["data_inicio"]) <= frontier else previous
+                # A job that finishes after its final day leaves today's collection due.
+                next_due = now if eligible_end < today else now + INTERVAL_SECONDS
                 conn.execute("""UPDATE plans SET next_due = ?, last_success = ?,
                     last_success_day = ? WHERE store_id = ?""",
-                             (now + INTERVAL_SECONDS, now, watermark, job["store_id"]))
+                             (next_due, now, watermark, job["store_id"]))
             return self._job(conn, job_id)
 
     def fail_job(self, job_id, owner, message, retryable=True, retry_after=None, now=None):
@@ -887,12 +888,14 @@ class SyncQueue:
             return self._job(conn, job_id)
 
     def schedule_due(self, today, now=None):
-        """Schedule only uncovered dates and today's open collection.
+        """Schedule uncovered dates through today for each enabled plan.
 
-        Historical jobs left by older versions remain resumable. New automatic
-        jobs do not periodically review completed historical dates.
+        The end of the original request belongs to that job. Automatic cycles
+        follow the calendar and reuse confirmed closed days.
         """
         today, now = _date(today), _time(now)
+        midnight = dt.datetime.combine(today, dt.time.min, SYNC_TIMEZONE).timestamp()
+        first_due_from_today = midnight + INTERVAL_SECONDS
         scheduled = []
         with self._transaction() as conn:
             plans = conn.execute("SELECT * FROM plans WHERE enabled = 1 ORDER BY store_id").fetchall()
@@ -901,20 +904,18 @@ class SyncQueue:
                                 (plan["store_id"],)).fetchone():
                     continue
                 start = _date(plan["data_inicio"])
-                end = min(_date(plan["data_fim"]), today)
-                if start > end:
+                if start > today:
                     continue
-                if plan["next_due"] <= now:
-                    covered = self._confirmed_days(conn, plan["store_id"], str(start), str(end), now)
-                    begin = start
-                    while begin <= end and str(begin) in covered:
-                        begin += dt.timedelta(days=1)
-                    if begin > end:
-                        conn.execute("UPDATE plans SET next_due = ? WHERE store_id = ?",
-                                     (now + INTERVAL_SECONDS, plan["store_id"]))
-                        continue
-                    scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
-                        str(begin), str(end), False, True, "recent", now, plan["requires_session"]))
+                # A cooldown set before midnight must not delay the new day's first collection.
+                next_due = plan["next_due"]
+                if next_due > now and next_due >= first_due_from_today:
+                    continue
+                covered = self._confirmed_days(conn, plan["store_id"], str(start), str(today), now)
+                begin = start
+                while begin < today and str(begin) in covered:
+                    begin += dt.timedelta(days=1)
+                scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
+                    str(begin), str(today), False, True, "recent", now, plan["requires_session"]))
             if scheduled:
                 self._request_connection_check(conn, requires_session=any(
                     job["requires_session"] for job in scheduled))

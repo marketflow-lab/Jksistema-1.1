@@ -10,14 +10,19 @@ from collections import Counter
 
 import pandas as pd
 import pytest
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.testclient import TestClient
 
 from backend.services import cadastro_compatibilidade as cadastro
 from backend.services import cadastro_fotos as fotos
 from backend.services import cadastro_lojas_produtos as produtos
 from backend.services import integracoes, store_public_snapshot
+from backend.routers.medias_compras import create_medias_compras_router
+from backend.services import medias_compras_cache as cache
 from backend.services import medias_compras_common as common
 from backend.services import medias_compras_fiscal as fiscal
 from backend.services import medias_compras_listas as listas
+from backend.services import medias_compras_visao as visao
 
 
 def _csv(path, rows):
@@ -122,6 +127,107 @@ def ambiente(monkeypatch, tmp_path):
     monkeypatch.setattr(listas, "_salvar_listas_pedidos", save)
     monkeypatch.setattr(listas, "_limpar_cache_lista_pedido", lambda *_args, **_kwargs: None)
     return state
+
+
+def test_visao_fotos_adiadas_preservam_fotos_legadas_e_escopo(ambiente, monkeypatch):
+    root = ambiente["root"]
+    catalog_path = root / "cliente-a" / "cadastro_produtos_lojas.csv"
+    with catalog_path.open(encoding="utf-8-sig", newline="") as stream:
+        catalog = list(csv.DictReader(stream))
+    for store_id in ("store-a", "store-b"):
+        catalog.append({
+            "store_id": store_id, "sku": "sku-legado", "sku_normalizado": "SKU-LEGADO",
+            "foto": "https://example.test/foto-compartilhada.png",
+        })
+    _csv(catalog_path, catalog)
+
+    def authorize(request: Request):
+        tenant = request.headers.get("X-Test-Tenant", "cliente-a")
+        if tenant not in ambiente["stores"]:
+            raise HTTPException(403, "denied")
+        return tenant
+
+    monkeypatch.setattr(visao, "PASTA_INFO", str(root))
+    monkeypatch.setattr(visao, "get_tenant_path", common.get_tenant_path)
+    monkeypatch.setattr(visao, "ARQUIVO_DB_PRODUTOS", "", raising=False)
+    monkeypatch.setattr(visao, "ARQUIVO_DB_CADASTRO_PRODUTOS", "", raising=False)
+    monkeypatch.setattr(
+        visao, "_migrar_arquivo_legado_para_tenant",
+        lambda tenant, name, _legacy: str(root / tenant / name), raising=False,
+    )
+    monkeypatch.setattr(visao, "_listar_bancos_vendas_tenant", lambda *_args: [], raising=False)
+    monkeypatch.setattr(visao, "_sql_filtro_loja_vendas", lambda _loja: ("", ()), raising=False)
+    monkeypatch.setattr(visao, "_mapa_estoque_em_transito_detalhado_por_sku", lambda *_args: {})
+    monkeypatch.setattr(visao, "normalizar_texto", str, raising=False)
+    monkeypatch.setattr(cache, "resultados_medias", cache.ResultadoCache())
+
+    mapas = []
+    mapa_original = fotos._cadastro_mapa_fotos_locais
+
+    def mapa(tenant, store_id=None, **kwargs):
+        mapas.append((tenant, store_id))
+        return mapa_original(tenant, store_id, **kwargs)
+
+    monkeypatch.setattr(produtos, "_cadastro_mapa_fotos_locais", mapa)
+    monkeypatch.setattr(visao, "_cadastro_mapa_fotos_locais", mapa, raising=False)
+    monkeypatch.setattr(
+        visao, "_cadastro_resolver_foto_local", fotos._cadastro_resolver_foto_local, raising=False,
+    )
+    app = FastAPI()
+    app.dependency_overrides[common.get_tenant_id] = authorize
+    app.include_router(create_medias_compras_router())
+    url = "/api/medias-compras/visao"
+
+    with TestClient(app) as client:
+        for params in ({"meses": 6}, {"meses": 6, "store_id": "store-a"}):
+            legacy_response = client.get(url, params=params)
+            assert legacy_response.status_code == 200, legacy_response.text
+            legacy = legacy_response.json()
+            assert "fotos_adiadas" not in legacy
+            esperadas = {item["sku"]: item["foto"] for item in legacy["itens"]}
+            assert esperadas["001"] == (
+                ambiente["refs"]["cliente-a", "store-a"] if "store_id" in params else ""
+            )
+            mapas.clear()
+
+            client.get(url, params={**params, "fotos": "adiadas"})
+            adiada = client.get(url, params={**params, "fotos": "adiadas", "cache_mode": "stale"}).json()
+            assert adiada.pop("fotos_adiadas") is True
+            policy = adiada.pop("_cache")["politica_fotos"]
+            assert mapas == [], "A tabela deve estar pronta antes de resolver fotos"
+            for item in legacy["itens"]:
+                item["foto"] = ""
+            assert adiada == legacy
+
+            batch = {"store_id": params.get("store_id", ""), "skus": list(esperadas)}
+            resposta = client.post(url + "/fotos", json=batch)
+            assert resposta.status_code == 200
+            assert resposta.json() == {"fotos": esperadas, "politica_fotos": policy}
+
+        assert client.post(url + "/fotos", json={"skus": ["001"] * 65}).status_code == 422
+        assert client.post(
+            url + "/fotos", json={"skus": ["001"]}, headers={"X-Test-Tenant": "unauthorized"},
+        ).status_code == 403
+        outra_loja = client.post(url + "/fotos", json={"store_id": "store-b", "skus": ["001"]})
+        assert outra_loja.json()["fotos"]["001"] == ambiente["refs"]["cliente-a", "store-b"]
+        outro_cliente = client.post(
+            url + "/fotos", json={"store_id": "store-a", "skus": ["001"]},
+            headers={"X-Test-Tenant": "cliente-b"},
+        )
+        assert outro_cliente.json()["fotos"]["001"] == ambiente["refs"]["cliente-b", "store-a"]
+
+        carregar = visao._carregar_contexto_cadastro_visao
+
+        def mudar_politica(*args, **kwargs):
+            resultado = carregar(*args, **kwargs)
+            config = root / "cliente-a" / fotos.CADASTRO_FOTOS_CONFIG_ARQUIVO
+            config.write_text(config.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            return resultado
+
+        monkeypatch.setattr(visao, "_carregar_contexto_cadastro_visao", mudar_politica)
+        alterada = client.post(url + "/fotos", json={"store_id": "store-a", "skus": ["001"]})
+        assert alterada.status_code == 409
+        assert "fotos" not in alterada.json()
 
 
 def _detail(client_id="cliente-a"):

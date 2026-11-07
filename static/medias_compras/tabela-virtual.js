@@ -2,7 +2,7 @@
     'use strict';
 
     global.JKMedias.defineModule('tabela-virtual', [], () => {
-        function criarTabelaVirtual({ raiz, tabela, tbody, colunas, renderizarLinha, overscan = 10 }) {
+        function criarTabelaVirtual({ raiz, tabela, tbody, colunas, renderizarLinha, aoMontarLinhas, overscan = 10 }) {
             let itens = [], alturas = [], offsets = [0], frame = null, encerrada = false;
             let geometriaPendente = false, ancoraPendente = null, ancoraEstavel = null;
             const linhas = new Map();
@@ -129,12 +129,14 @@
                 if (ativa && tbody.contains(ativa)) indices.add(Number(ativa.dataset.virtualIndex));
                 const ordenados = [...indices].sort((a, b) => a - b);
                 const desejados = [];
+                let montouLinhas = false;
                 let anterior = 0;
                 for (const indice of ordenados) {
                     if (indice > anterior) desejados.push(espacador(anterior, indice));
                     let linha = linhas.get(indice);
                     if (!linha) {
                         linha = renderizarLinha(itens[indice], indice);
+                        montouLinhas = true;
                         linha.dataset.jkVirtualRow = '1';
                         linha.dataset.virtualIndex = String(indice);
                         linha.dataset.virtualKey = chaveItem(itens[indice]);
@@ -167,6 +169,7 @@
                     raiz.scrollTop = ancora.fim ? raiz.scrollHeight - raiz.clientHeight : scroll;
                 }
                 ancoraEstavel = capturarAncora();
+                if (montouLinhas) aoMontarLinhas?.();
                 // Novas linhas so podem ser medidas depois de inseridas. O observador
                 // confirma a altura sem exigir a montagem das linhas fora da janela.
                 if (!observer && desejados.some(node => node.dataset.jkVirtualRow)) {

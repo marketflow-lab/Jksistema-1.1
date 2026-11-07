@@ -147,6 +147,7 @@ from .vendas import (
 from .medias_compras import (
     MediasComprasItem,
     MediasComprasRequest,
+    MediasVisaoFotosRequest,
     ListaCompraRequest,
     ListaPedidoUpdateRequest,
     ListaPedidoStatusRequest,
@@ -261,6 +262,7 @@ __all__ = [
     "VendasSyncRequest",
     "MediasComprasItem",
     "MediasComprasRequest",
+    "MediasVisaoFotosRequest",
     "ListaCompraRequest",
     "ListaPedidoUpdateRequest",
     "ListaPedidoStatusRequest",

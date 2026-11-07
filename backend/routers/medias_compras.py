@@ -26,6 +26,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_visao",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/visao/fotos",
+        medias_compras.api_medias_compras_visao_fotos,
+        methods=["POST"],
+        name="api_medias_compras_visao_fotos",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/posicao-estoque",
         medias_compras.api_medias_compras_posicao_estoque,
         methods=["GET"],

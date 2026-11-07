@@ -239,11 +239,43 @@ def test_scheduler_uses_the_same_sao_paulo_day_as_completion(isolated, monkeypat
     monkeypatch.setattr(sync_automation, "datetime", FixedClock)
     monkeypatch.setattr(sync_automation, "_tenants", lambda: ["tenant-a"])
     monkeypatch.setattr(sync_automation, "SyncQueue", lambda _: SimpleNamespace(
-        schedule_due=lambda today: captured.append(today)))
+        schedule_due=lambda today, *, now: captured.append((today, now.date()))))
     monkeypatch.setattr(sync_automation, "dispatch", lambda *_: None)
     sync_automation._STOP.clear()
     sync_automation.tick()
-    assert captured == [date(2026, 10, 15)]
+    assert captured == [(date(2026, 10, 15), date(2026, 10, 15))]
+
+
+@pytest.mark.parametrize("completion_offset", [-1, 1])
+def test_scheduler_extends_saved_automatic_plan_after_midnight(isolated, monkeypatch, completion_offset):
+    from datetime import datetime, timedelta, timezone
+
+    midnight = datetime(2026, 11, 6, 3, tzinfo=timezone.utc)
+    started = midnight.timestamp() - 60
+    completed = midnight.timestamp() + completion_offset
+    queue = SyncQueue("tenant-a")
+    original = queue.enqueue("store-a", "A", "2026-11-04", "2026-11-05", automatico=True, now=started)
+    queue.claim("first", now=started)
+    for day in ("2026-11-04", "2026-11-05"):
+        queue.complete_day(original["id"], "first", day, {}, now=completed, collection_started_at=started)
+    queue.complete_job(original["id"], "first", now=completed)
+
+    class FixedClock:
+        @classmethod
+        def now(cls, tz):
+            return (midnight + timedelta(seconds=15)).astimezone(tz)
+
+    monkeypatch.setattr(sync_automation, "datetime", FixedClock)
+    monkeypatch.setattr(sync_automation, "dispatch", lambda *_: None)
+    sync_automation._STOP.clear()
+    sync_automation.tick()
+    sync_automation.tick()
+
+    recent, previous = queue.list_jobs()
+    assert previous["id"] == original["id"] and previous["status"] == "complete"
+    assert recent["kind"] == "recent" and recent["automatico"]
+    assert (recent["data_inicio"], recent["data_fim"]) == ("2026-11-05", "2026-11-06")
+    assert recent["dias_concluidos"] == []
 
 
 def _composition_hook(monkeypatch, callback):

@@ -241,6 +241,22 @@ def test_schedule_revisits_only_today_and_does_not_rotate_closed_history(queue):
             "tenant", "jobs", "plans", "days", "connection_alert_ack", "connection_check_state", "store_sources", "sync_revision"}
 
 
+def test_legacy_history_completion_does_not_delay_the_first_cycle_of_the_day(queue):
+    midnight = dt.datetime.fromisoformat("2026-11-06T00:00:00-03:00").timestamp()
+    now = midnight - 60
+    enqueue(queue, start="2026-11-05", end="2026-11-05", automatico=True, now=now)
+    enqueue(queue, start="2026-11-04", end="2026-11-04", automatico=True, kind="history", now=now)
+    recent = queue.claim("daily", now=now)
+    assert recent["kind"] == "manual"
+    finish(queue, recent, "daily", now=midnight - 1)
+    history = queue.claim("history", now=midnight)
+    assert history["kind"] == "history"
+    finish(queue, history, "history", now=midnight + 1, today="2026-11-06")
+
+    scheduled = queue.schedule_due("2026-11-06", now=midnight + 2)
+    assert [(job["data_inicio"], job["data_fim"]) for job in scheduled] == [("2026-11-05", "2026-11-06")]
+
+
 def test_future_empty_days_do_not_hide_gap_after_long_downtime(queue):
     now = stamp("2026-10-15")
     enqueue(queue, start="2026-10-01", end="2026-12-31", automatico=True, now=now)
@@ -248,7 +264,7 @@ def test_future_empty_days_do_not_hide_gap_after_long_downtime(queue):
     scheduled = queue.schedule_due(dt.date(2027, 1, 15), now=stamp("2027-01-15"))
     recent = next(job for job in scheduled if job["kind"] == "recent")
     assert recent["data_inicio"] == "2026-10-15"
-    assert recent["data_fim"] == "2026-12-31"
+    assert recent["data_fim"] == "2027-01-15"
 
 
 def test_newer_manual_period_does_not_forget_original_start_or_unvisited_gap(queue):

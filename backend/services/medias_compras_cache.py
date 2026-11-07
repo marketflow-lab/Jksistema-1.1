@@ -195,6 +195,7 @@ class ResultadoCache:
             "metadados_principal", "metadados_historico", "metadados_contexto", "fiscal",
             "enriquecimento", "frete", "itens", "fotos", "fotos_resolucao", "historico",
             "csv_leitura", "csv_parse", "csv_copia", "comparacao", "persistencia", "resumo",
+            "estoque", "transito", "catalogo", "cache_etapas",
         )
         try:
             for attempt in range(2):
@@ -233,6 +234,10 @@ class ResultadoCache:
                     probe_started = time.perf_counter()
                     after = probe()
                     metrics["fontes"] = metrics.get("fontes", 0) + (time.perf_counter() - probe_started) * 1000
+                    if isinstance(before.snapshot, dict) and (etapas := before.snapshot.get("etapas_visao")) is not None:
+                        cache_started = time.perf_counter()
+                        etapas.confirmar(after)
+                        metrics["cache_etapas"] = metrics.get("cache_etapas", 0) + (time.perf_counter() - cache_started) * 1000
                     expected_target = receipt[-1] if receipt else before.alvo
                     validation_started = time.perf_counter()
                     consistent = (not before.pendente and not after.pendente and
@@ -258,7 +263,9 @@ class ResultadoCache:
                     stage_ms = {name: round(metrics.get(name, 0) - previous_metrics.get(name, 0), 1) for name in diagnostic_stages}
                     stage_ms["total"] = round((time.perf_counter() - attempt_started) * 1000, 1)
                     counts = {name: int(metrics.get(name, 0) - previous_metrics.get(name, 0)) for name in (
-                        "leituras_fisicas", "csv_parses", "csv_copias",
+                        "leituras_fisicas", "csv_parses", "csv_copias", "historico_bancos_lidos", "historico_linhas_lidas",
+                        "historico_cache_hits", "estoque_cache_hits", "transito_cache_hits", "catalogo_cache_hits",
+                        "fotos_cache_hits",
                     )}
                     logger.info("[MEDIAS_ATTEMPT] execucao=%s tentativa=%d tempos_ms=%s contagens=%s", execution, attempts,
                                 json.dumps(stage_ms, sort_keys=True, separators=(",", ":")),

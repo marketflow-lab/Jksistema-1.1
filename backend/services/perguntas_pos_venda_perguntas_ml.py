@@ -41,6 +41,7 @@ from fastapi.responses import StreamingResponse
 from backend.services.codex_turn_context import EVIDENCE_ENVELOPE_V2, normalize_evidence_envelope
 from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
 from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
+from backend.modules.perguntas_pos_venda.research_failures import MANUAL_RESEARCH_RECOVERY, safe_research_failures
 from backend.services.perguntas_pos_venda_state import (
     PerguntasIARespostaIndisponivel,
 )
@@ -1899,6 +1900,8 @@ def _perguntas_ia_gerar_resposta(
     model_req = _normalizar_ia_modelo_padrao(_ia_modelo_perguntas_configurado())
     payload.model = model_req
     agent_input = perguntas_agent_api.build_agent_input(client_id, loja, pergunta, item, contexto, prompt)
+    if (pergunta or {}).get("_manual_research_recovery") is MANUAL_RESEARCH_RECOVERY:
+        agent_input["_manual_research_recovery"] = MANUAL_RESEARCH_RECOVERY
     agent_result = perguntas_agent_api.generate_response(client_id, agent_input)
     resposta_ia = agent_result.answer
     if not isinstance(resposta_ia, str) or not resposta_ia.strip():
@@ -1932,6 +1935,9 @@ def _perguntas_ia_gerar_resposta(
         "confianca": diagnostico_v2.get("confidence") or 0.0,
         "source": "unified_response_agent",
     }
+    failures = safe_research_failures(diagnostico_v2.get("research_failures"))
+    if failures:
+        contexto["research_failures"] = failures
     return resposta_ia, cfg, {
         **contexto,
         "model": model_usado,

@@ -14,6 +14,7 @@ from typing import Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from backend.modules.perguntas_pos_venda.research_failures import safe_research_failures
 from backend.services import secure_credentials
 
 from .common import _safe_id
@@ -401,6 +402,9 @@ def _customer_reply_durable_payload(payload: dict[str, Any]) -> tuple[dict[str, 
     if str(source.get("queue_origin") or "") == "manual":
         source = _manual_safe_job_payload(source)
     durable = {key: value for key, value in source.items() if key in _CUSTOMER_REPLY_DURABLE_FIELDS}
+    research_failures = safe_research_failures(source.pop("research_failures", None))
+    if research_failures:
+        durable["research_failures"] = research_failures
     scope = source.get("scope_verifiers") if isinstance(source.get("scope_verifiers"), dict) else {}
     durable_scope = {
         key: str(value or "")[:160]

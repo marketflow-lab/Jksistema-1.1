@@ -14,6 +14,7 @@ import time
 class LeituraMedias:
     values: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
+    arquivos_fixados: dict[str, bytes] = field(default_factory=dict)
 
 
 _LEITURA = ContextVar("medias_read_snapshot", default=None)
@@ -105,10 +106,14 @@ def chave_arquivo(path):
     return os.path.normcase(os.path.realpath(os.fspath(path)))
 
 
-def capturar_bytes(path, content=None):
+def capturar_bytes(path, content=None, *, fixar=False):
     current = _LEITURA.get()
     if current is None:
         return content if content is not None else Path(path).read_bytes()
+    if fixar or current.arquivos_fixados:
+        lexical = os.path.normcase(os.path.abspath(path))
+        if lexical in current.arquivos_fixados:
+            return current.arquivos_fixados[lexical]
     key = ("bytes", chave_arquivo(path))
     if content is not None and current is not None:
         current.values.setdefault(key, content)
@@ -116,7 +121,12 @@ def capturar_bytes(path, content=None):
         registrar_contagem("leituras_fisicas")
         with medir_etapa("csv_leitura"):
             return Path(path).read_bytes()
-    return reutilizar(key, read)
+    data = reutilizar(key, read)
+    if fixar:
+        # The catalog signature and calculation use these exact captured
+        # bytes even if the original path is replaced during this attempt.
+        current.arquivos_fixados[lexical] = data
+    return data
 
 
 def ler_csv(path, **kwargs):

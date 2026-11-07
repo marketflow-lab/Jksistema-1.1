@@ -161,13 +161,18 @@ def test_future_dates_and_days_outside_selection_are_not_claimed_as_work(queue):
     assert selected["proximo_dia"] == "2026-10-26" and selected["dias_total"] == 2
 
 
-def test_automatic_mode_does_not_expand_a_completed_historical_selection(queue):
-    job = enqueue(queue, "A", start="2026-10-01", end="2026-10-01", automatico=True)
+@pytest.mark.parametrize("automatico, expected", [
+    (False, []),
+    (True, [("2026-10-02", "2026-10-26")]),
+])
+def test_only_automatic_mode_catches_up_after_a_historical_selection(queue, automatico, expected):
+    job = enqueue(queue, "A", start="2026-10-01", end="2026-10-01", automatico=automatico)
     queue.claim("first", now=NOW)
     queue.complete_day(job["id"], "first", "2026-10-01", {}, now=NOW)
     queue.complete_job(job["id"], "first", now=NOW)
-    assert queue.schedule_due("2026-10-26", now=NOW + INTERVAL_SECONDS) == []
-    assert len(queue.list_jobs()) == 1
+    scheduled = queue.schedule_due("2026-10-26", now=NOW)
+    assert [(item["data_inicio"], item["data_fim"]) for item in scheduled] == expected
+    assert queue.get_job(job["id"])["data_fim"] == "2026-10-01"
 
 
 def test_progress_excludes_completed_requests_from_a_previous_batch(queue):

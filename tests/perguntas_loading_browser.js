@@ -326,6 +326,7 @@ async function verifyCompletedJobDraftRecovery({ page, control }) {
     job_id: jobId,
     store_id: fixture.firstStoreId,
     question_id: fixture.firstQuestionId,
+    research_failures: [{ source: 'technical_web', reason: 'timeout' }],
     result: {
       resposta: 'Resposta concluída enquanto a pergunta estava fora do detalhe.',
       proposal_id: 'proposal-browser-offscreen',
@@ -348,10 +349,12 @@ async function verifyCompletedJobDraftRecovery({ page, control }) {
   await page.waitForFunction(key => state.perguntaSelecionadaKey === key, fixture.secondKey);
   await page.evaluate(key => garantirPollingJobAtendimentoCodex(key), fixture.firstKey);
   assert.strictEqual(await page.locator('.question-answer-text').inputValue(), '', 'conclusão da pergunta A não pode preencher o composer da pergunta B');
+  assert.strictEqual(await page.locator('.question-research-notice').isVisible(), false, 'aviso da pergunta A não pode aparecer na pergunta B');
 
   await page.locator(`[data-question-select="${fixture.firstKey}"]`).click();
   await page.waitForFunction(key => state.perguntaSelecionadaKey === key, fixture.firstKey);
   await page.waitForFunction(() => document.querySelector('.question-answer-text')?.value === 'Resposta concluída enquanto a pergunta estava fora do detalhe.');
+  assert.match(await page.locator('.question-research-notice').innerText(), /pesquisa técnica na web.*tempo limite.*Revise o rascunho/);
   let restored = await page.evaluate(() => {
     const textarea = document.querySelector('.question-answer-text');
     return {
@@ -397,6 +400,7 @@ async function verifyCompletedJobDraftRecovery({ page, control }) {
     [completed.result.resposta, 'proposal-browser-offscreen', '11', 'hash-browser-offscreen'],
     `reload deve recuperar somente a proposta persistida da pergunta selecionada: ${JSON.stringify(restored)}`
   );
+  assert.match(await page.locator('.question-research-notice').innerText(), /pesquisa técnica na web.*Revise o rascunho/);
   const edited = 'Última edição confirmada no backend.';
   await page.locator('.question-answer-text').fill(edited);
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -405,6 +409,7 @@ async function verifyCompletedJobDraftRecovery({ page, control }) {
   }
   assert.strictEqual(control.jobs.get(jobId)?.result?.resposta, edited, 'autosave deve confirmar a edição manual no backend');
   assert.strictEqual(control.jobs.get(jobId)?.result?.proposal_version, 12);
+  assert.match(await page.locator('.question-research-notice').innerText(), /pesquisa técnica na web.*Revise o rascunho/);
   assert.strictEqual(
     await page.evaluate(answer => Object.values(sessionStorage).some(value => String(value).includes(answer)), edited),
     false,

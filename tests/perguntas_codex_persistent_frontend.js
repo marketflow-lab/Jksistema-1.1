@@ -15,8 +15,8 @@ assert.match(source, /next_retry_at_epoch|next_retry_in_seconds|Nova tentativa/)
 assert.match(source, /\/api\/mercadolivre\/assistant\/jobs\/\$\{encodeURIComponent\(jobId\)\}\/cancel/);
 assert.match(source, /question-ai-cancel-btn[\s\S]*Cancelar pesquisa/);
 assert.match(source, /cancelarPesquisaAtendimentoCodex\(questionKey\)/);
-assert.match(html, /perguntas\.js\?v=20260921-question-draft-recovery-v1/);
-assert.match(html, /loading\.js\?v=20260921-question-draft-recovery-v1/);
+assert.match(html, /perguntas\.js\?v=20261107-pesquisa-envio-v1/);
+assert.match(html, /loading\.js\?v=20261107-motivo-anuncio-v1/);
 assert.match(html, /lojas-snapshot\.js\?v=20260921-question-draft-recovery-v1/);
 assert.doesNotMatch(source, /A pesquisa terminou sem rascunho/);
 assert.match(source, /Rascunho gerado com as informacoes disponiveis/);
@@ -48,6 +48,7 @@ function makeCard(questionKey) {
         button: { dataset: {}, disabled: false, classList: new FakeClassList() },
         generate: { disabled: false },
         status: { textContent: '', className: '' },
+        researchNotice: { textContent: '', classList: new FakeClassList() },
         textarea: { value: '', dataset: {}, dispatchEvent: () => true, focus: () => true }
     };
     return {
@@ -58,6 +59,7 @@ function makeCard(questionKey) {
             if (selector === '.question-ai-answer-btn') return elements.generate;
             if (selector === '.question-answer-composer .question-answer-status') return elements.status;
             if (selector === '.question-answer-text') return elements.textarea;
+            if (selector === '.question-research-notice') return elements.researchNotice;
             return null;
         }
     };
@@ -105,6 +107,7 @@ const context = {
     window: {
         JKPerguntasLoading: {
             rejeitarContexto: (_question, component, _blocked, reason) => { rejectedContext = { component, reason }; },
+            tratarNegacaoGeracao: () => null,
             obterRascunhoPorChave: questionKey => {
                 const draft = loadingDrafts.get(String(questionKey || ''));
                 return draft ? { ...draft } : null;
@@ -124,6 +127,10 @@ const stateStart = source.indexOf("const CODEX_JOB_STORAGE_PREFIX");
 const stateEnd = source.indexOf("window.aguardarJobAtendimentoCodex", stateStart);
 assert(stateStart >= 0 && stateEnd > stateStart, 'helpers persistentes do job nao encontrados');
 vm.runInContext(source.slice(stateStart, stateEnd), context);
+const generationStart = source.indexOf('async function gerarRespostaPerguntaIa', stateEnd);
+const generationEnd = source.indexOf('async function enviarRespostaPerguntaManual', generationStart);
+assert(generationStart >= 0 && generationEnd > generationStart, 'fluxo do botão Gerar IA não encontrado');
+vm.runInContext(source.slice(generationStart, generationEnd), context);
 
 assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_authentication_required' }).kind, 'auth');
 assert.strictEqual(context.classificarFalhaGeracaoAtendimento({ error_reason: 'codex_runtime_disabled' }).kind, 'runtime');
@@ -166,6 +173,60 @@ assert.strictEqual(preservedContextState._contextHubState, 'partial');
     assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho do operador preservado');
     assert.strictEqual(currentCard.elements.status.textContent, 'Não foi possível gerar a sugestão. Tente novamente.');
     assert.strictEqual(rejectedContext, null, 'falha sem componente não pode virar erro de contexto');
+
+    currentCard = makeCard('Loja A::Q-RESEARCH');
+    currentCard.elements.textarea.value = 'Rascunho manual durante a falha';
+    context.state.perguntas = [{ question_key: 'Loja A::Q-RESEARCH' }];
+    context.chavePerguntaAtendimento = (question) => question.question_key;
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-RESEARCH', {
+        research_failures: [
+            { source: 'technical_web', reason: 'timeout' },
+            { source: 'technical_web', reason: 'timeout' },
+            { source: 'same_store_listing', reason: 'no_results' },
+            { source: 'internal_catalog', reason: 'Detalhe interno' },
+            { source: '__proto__', reason: 'error' }
+        ],
+        result: { resposta: '', blocked_without_draft: true }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Rascunho manual durante a falha');
+    assert.strictEqual(currentCard.elements.researchNotice.classList.contains('hidden'), false);
+    assert.strictEqual(
+        currentCard.elements.researchNotice.textContent,
+        'Consultas com limitações em pesquisa técnica na web (tempo limite atingido) e outros anúncios da loja (sem resultados).'
+    );
+    assert.strictEqual(rejectedContext, null, 'falha opcional de pesquisa não invalida o contexto principal');
+
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-RESEARCH', {
+        resposta: 'Sugestão recuperada.',
+        contexto: { research_failures: [{ source: 'bling', reason: 'unavailable' }] }
+    });
+    assert.strictEqual(currentCard.elements.textarea.value, 'Sugestão recuperada.');
+    assert.match(currentCard.elements.researchNotice.textContent, /Bling \(indisponível\).*Revise o rascunho/);
+    context.aplicarResultadoJobAtendimentoCodex('Loja A::Q-RESEARCH', { resposta: 'Nova sugestão completa.' });
+    assert.strictEqual(currentCard.elements.researchNotice.classList.contains('hidden'), true);
+
+    const perguntaPronta = { question_key: 'Loja A::Q-RESEARCH', _itemReady: true, _detailReady: true };
+    context.state.perguntas = [perguntaPronta];
+    context.obterPerguntaPorId = () => perguntaPronta;
+    context.lojaOrigemItem = () => 'Loja A';
+    const fetchAnterior = fetchImpl;
+    fetchImpl = async (url) => {
+        assert.strictEqual(url, '/api/mercadolivre/perguntas/resposta/gerar');
+        return {
+            ok: false,
+            status: 503,
+            json: async () => ({
+                detail: 'Nenhum rascunho foi disponibilizado.',
+                research_failures: [{ source: 'internal_catalog', reason: 'error' }]
+            })
+        };
+    };
+    const { textarea, generate, status } = currentCard.elements;
+    await context.gerarRespostaPerguntaIa('Q-RESEARCH', 'Loja A', textarea, { disabled: false }, generate, null, status);
+    fetchImpl = fetchAnterior;
+    assert.strictEqual(textarea.value, 'Nova sugestão completa.');
+    assert.match(currentCard.elements.researchNotice.textContent, /catálogo interno \(falha na consulta\)/);
+    assert.strictEqual(generate.disabled, false);
 
     currentCard = makeCard('Loja A::Q-AUTH');
     currentCard.elements.textarea.value = 'Rascunho preservado sem autenticação do Codex';

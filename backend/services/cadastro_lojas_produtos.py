@@ -1050,12 +1050,15 @@ def _contexto_legado_de_tenant(
     }
 
 
-def _contexto_legado(client_id: str, loja: dict[str, str]) -> dict[str, Any]:
+def _contexto_legado(
+    client_id: str, loja: dict[str, str], *, fotos: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return _contexto_legado_de_tenant(
         client_id,
         loja,
         get_tenant_path(client_id),
         _lojas_atuais(client_id),
+        fotos=fotos,
     )
 
 
@@ -1723,16 +1726,26 @@ def _listar_produtos_loja_sync(
             registros, _ = _ler_registros_persistidos(client_id)
     else:
         registros = _registros_persistidos
+    opcoes_contexto = {"fotos": {}} if not _incluir_fotos or chaves_skus is not None else {}
     contexto = (
-        _contexto_legado(client_id, loja)
+        _contexto_legado(client_id, loja, **opcoes_contexto)
         if _lojas_capturadas is None
         else _contexto_legado_de_tenant(
             client_id, loja, get_tenant_path(client_id), _lojas_capturadas,
             fontes_capturadas=_fontes_capturadas,
             sku_interessa=sku_interessa if chaves_skus is not None else None,
             chave_filtro=(frozenset(chaves_skus), _normalizar_sku_consulta) if chaves_skus is not None else None,
+            **opcoes_contexto,
         )
     )
+    if _incluir_fotos and chaves_skus is not None:
+        skus_fotos = {
+            produto.get("sku") or produto.get("sku_normalizado") or ""
+            for grupo in (registros, contexto["sombras"].values())
+            for produto in grupo
+            if produto.get("store_id") == loja["store_id"] and sku_interessa(produto)
+        }
+        contexto["fotos"] = _cadastro_mapa_fotos_locais(client_id, loja["store_id"], skus=skus_fotos)
     saida: list[dict[str, Any]] = []
     chaves_explicitadas: set[str] = set()
     # Keep the default call compatible with legacy readers/instrumentation.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from backend.modules.perguntas_pos_venda.endpoints.runtime import runtime_adapter
 from backend.modules.perguntas_pos_venda.endpoints.security import get_tenant_id
@@ -14,10 +15,12 @@ from backend.services.perguntas_pos_venda_state import ML_RESPOSTA_PERGUNTA_MAX_
 from backend.modules.perguntas_pos_venda.endpoints.jobs import (
     _customer_reply_wait_or_raise,
 )
-from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope
+from backend.modules.perguntas_pos_venda.endpoints.questions_loading_support import resolve_scope, validate_id
+from backend.services.perguntas_loading_transport import read_budget
 from backend.services.cadastro_compatibilidade import resolver_loja_ativa_para_leitura
 from backend.modules.perguntas_pos_venda.ai.catalog_context import bind_official_listing_catalog_identity
 from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
+from backend.modules.perguntas_pos_venda.research_failures import MANUAL_RESEARCH_RECOVERY, safe_research_failures
 
 _ml_api_item = runtime_adapter("_ml_api_item")
 _ml_api_item_com_oauth_tenant = runtime_adapter("_ml_api_item_com_oauth_tenant")
@@ -52,6 +55,19 @@ def _manual_generation_scope(
         raise HTTPException(status_code=400, detail="Informe o store_id exato da loja.")
     scope = resolve_scope(request, client_id, exact_store_id)
     return scope
+
+
+def _generation_unavailable_response(exc: PerguntasIARespostaIndisponivel) -> JSONResponse:
+    failures = safe_research_failures(getattr(exc, "research_failures", None))
+    if not failures:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "A pesquisa nao permitiu concluir um rascunho para revisao.",
+            "research_failures": failures,
+        },
+    )
 
 
 def ml_perguntas_gerar_resposta_manual(
@@ -146,11 +162,12 @@ def ml_perguntas_gerar_resposta_manual(
     if item and not _ml_extrair_sku(item):
         item = _ml_perguntas_completar_skus_itens(client_id, loja, cfg, [item])[0]
     item["_ppv_official_current_listing"] = official_current_listing
+    pergunta["_manual_research_recovery"] = MANUAL_RESEARCH_RECOVERY
 
     try:
         resposta, cfg, contexto = _perguntas_ia_gerar_resposta(client_id, loja, cfg, pergunta, item)
     except PerguntasIARespostaIndisponivel as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _generation_unavailable_response(exc)
     context_status = canonical.get("context_status") or {}
     warnings = ([perguntas_generation_preflight.HISTORY_TRUNCATED_WARNING]
                 if canonical.get("history_truncated") else [])
@@ -171,6 +188,82 @@ def ml_perguntas_gerar_resposta_manual(
         "context_status": context_status,
         "context_hub_status": hub_status,
     }
+
+
+_ML_ITEM_INACTIVE = "ml_item_inactive"
+_ML_ACTIVE_ITEM_REQUIRED = "O Mercado Livre só permite responder quando o anúncio está ativo."
+_ML_LISTING_STATUS_MESSAGES = {
+    "paused": "Anúncio pausado no Mercado Livre.",
+    "closed": "Anúncio encerrado no Mercado Livre.",
+    "under_review": "Anúncio em análise pelo Mercado Livre.",
+    "inactive": "Anúncio desativado no Mercado Livre.",
+}
+_ML_LISTING_REASON_MESSAGES = {
+    "paused": {
+        "out_of_stock": "Anúncio pausado por falta de estoque no Mercado Livre.",
+        "paused_by_seller": "Anúncio pausado pelo vendedor no Mercado Livre.",
+        "picture_downloading_pending": "Anúncio pausado enquanto o Mercado Livre carrega as fotos.",
+    },
+    "closed": {
+        "expired": "Anúncio encerrado no Mercado Livre porque o prazo da publicação terminou.",
+    },
+    "under_review": {
+        "forbidden": "Anúncio desativado pelo Mercado Livre.",
+        "waiting_for_patch": "Anúncio em análise pelo Mercado Livre, aguardando correções.",
+        "pending_documentation": "Anúncio em análise pelo Mercado Livre, com documentação pendente.",
+    },
+}
+
+
+def _motivo_anuncio_inativo_ml(client_id: str, loja: str, cfg: dict, question_id: str) -> str:
+    store_id = str(cfg.get("_store_id_context") or "").strip()
+    seller_id = str(cfg.get("user_id") or "").strip()
+    site_id = str(cfg.get("site_id") or "").strip() or None
+    if not store_id or not seller_id:
+        return _ML_ACTIVE_ITEM_REQUIRED
+
+    try:
+        validate_id(question_id, "ID da pergunta", r"\d{1,30}")
+        with read_budget(seconds=5):
+            # The POST may have refreshed the token. Read the current credentials
+            # for the same store and seller before consulting canonical records.
+            current = obter_cfg_ml_snapshot(
+                client_id, loja, store_id=store_id, seller_id=seller_id,
+                site_id=site_id, require_name_match=True,
+            )
+
+            def consultar(path, *, params=None):
+                response, _ = _ml_api_request(
+                    client_id, loja, current, "GET", "https://api.mercadolibre.com" + path,
+                    params=params, timeout=5, retry_unauthorized=False,
+                )
+                data = response.json() if response.status_code == 200 else None
+                return data if isinstance(data, dict) else {}
+
+            question = consultar(f"/questions/{question_id}", params={"api_version": 4})
+            if str(question.get("id") or "") != question_id or str(question.get("seller_id") or "") != seller_id:
+                return _ML_ACTIVE_ITEM_REQUIRED
+            item_id = validate_id(question.get("item_id"), "ID do anúncio", r"[A-Z]{3}\d{1,20}")
+            current_site = str(current.get("site_id") or "").strip()
+            if current_site and item_id[:3] != current_site:
+                return _ML_ACTIVE_ITEM_REQUIRED
+
+            item = consultar(f"/items/{item_id}")
+            if (item.get("id") != item_id
+                    or str(item.get("seller_id") or "") != seller_id
+                    or str(item.get("site_id") or item_id[:3]) != item_id[:3]):
+                return _ML_ACTIVE_ITEM_REQUIRED
+    except Exception:
+        # The confirmed refusal still applies if its extra context is unavailable.
+        return _ML_ACTIVE_ITEM_REQUIRED
+
+    status = str(item.get("status") or "").strip().lower()
+    sub_status = item.get("sub_status")
+    if isinstance(sub_status, list):
+        for reason, message in _ML_LISTING_REASON_MESSAGES.get(status, {}).items():
+            if reason in sub_status:
+                return message
+    return _ML_LISTING_STATUS_MESSAGES.get(status, _ML_ACTIVE_ITEM_REQUIRED)
 
 
 def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id: str = Depends(get_tenant_id)):
@@ -214,7 +307,7 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
             raise HTTPException(status_code=403, detail="A proposta nao pertence a esta loja.")
     try:
         resposta_ml, cfg = _perguntas_ia_enviar_resposta_ml(client_id, loja, cfg, question_id, resposta)
-    except Exception:
+    except Exception as error:
         if proposal_info:
             try:
                 perguntas_pos_venda_codex.mark_verified(
@@ -224,6 +317,14 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
                 )
             except Exception:
                 logger.warning("[ML PERGUNTAS] evento=registrar_falha_envio status=erro")
+        if isinstance(error, HTTPException) and isinstance(error.detail, str) and any(
+            part.strip().rstrip(".").casefold() == "item must be active" for part in error.detail.split("|")
+        ):
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": _ML_ITEM_INACTIVE, "message": _motivo_anuncio_inativo_ml(client_id, loja, cfg, question_id)},
+                headers=error.headers,
+            ) from error
         raise
     # Mercado Livre confirmed the POST. Local bookkeeping must not report a
     # send failure and invite the operator to publish the same answer again.

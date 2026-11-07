@@ -707,6 +707,7 @@
         renderizarSeguro: renderSafe,
         request,
         verificarSessao: checkSession,
+        identidadeSessaoPorHeaders: headers => sessionIdentity(JSON.stringify(headers)),
         QuestionPager
     };
     root.addEventListener('pagehide', () => clear(false, false));

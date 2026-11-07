@@ -226,7 +226,8 @@ def tick():
             return
         try:
             queue = SyncQueue(client_id)
-            queue.schedule_due(datetime.now(SYNC_TIMEZONE).date())
+            now = datetime.now(SYNC_TIMEZONE)
+            queue.schedule_due(now.date(), now=now)
             dispatch(client_id)
         except Exception:
             # A failed queue is never converted to an empty/successful queue.

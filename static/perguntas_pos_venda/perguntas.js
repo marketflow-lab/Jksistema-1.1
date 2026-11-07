@@ -265,6 +265,8 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
     const chatPerguntas = renderizarChatPerguntas(pergunta);
     const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
     const dataKey = chavePerguntaAtendimento(pergunta);
+    const motivoFalhaEnvio = window.JKPerguntasLoading?.obterRascunhoPorChave?.(dataKey)?.motivoFalhaEnvio;
+    const erroResposta = motivoFalhaEnvio || pergunta._generationError;
     const notaSku = textoNotaSkuAtendimento(sku);
     const linkAnuncio = pergunta.item_permalink
         ? `<a class="action-btn secondary" href="${escapeHtml(pergunta.item_permalink)}" target="_blank" rel="noopener">Abrir an&uacute;ncio</a>`
@@ -288,6 +290,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
         ${pergunta._historyTruncated ? '<span>Histórico limitado às 50 perguntas recentes do anúncio, filtradas pelo comprador.</span>' : ''}
         ${podeRepetir ? `<button class="action-btn secondary question-loading-retry" type="button">${rotuloRepetir}</button>` : ''}
     </div>`;
+    const avisoPesquisa = window.JKPerguntasLoading?.obterRascunhoPorChave?.(dataKey)?.researchNotice || '';
     const composer = podeResponder ? `
         <div class="question-answer-composer">
             <textarea class="question-answer-text" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
@@ -301,8 +304,9 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                 <button class="action-btn secondary question-save-example-btn" type="button" data-action="salvar-exemplo" disabled>Salvar exemplo</button>
                 <button class="action-btn secondary question-send-save-example-btn" type="button" data-action="enviar-salvar-exemplo" disabled>Responder e salvar exemplo</button>
                 <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Responder</button>
-                <span class="question-answer-status ${pergunta._generationError ? 'error' : ''}">${escapeHtml(pergunta._generationError || 'Limite do Mercado Livre: 2000 caracteres.')}</span>
+                <span class="question-answer-status ${erroResposta ? 'error' : ''}">${escapeHtml(erroResposta || 'Limite do Mercado Livre: 2000 caracteres.')}</span>
             </div>
+            <p class="question-research-notice${avisoPesquisa ? '' : ' hidden'}" role="status">${escapeHtml(avisoPesquisa)}</p>
         </div>
     ` : '';
 
@@ -414,18 +418,20 @@ function renderizarPerguntas() {
             : '<div class="answer-box empty">Sem resposta registrada.</div>';
         const chatPerguntas = renderizarChatPerguntas(pergunta);
         const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
+        const dataKey = chavePerguntaAtendimento(pergunta);
+        const motivoFalhaEnvio = window.JKPerguntasLoading?.obterRascunhoPorChave?.(dataKey)?.motivoFalhaEnvio;
         const composer = podeResponder ? `
             <div class="question-answer-composer">
                 <textarea class="question-answer-text" placeholder="Digite a resposta manualmente ou gere uma sugestao com IA para editar antes de enviar."></textarea>
                 <div class="question-answer-actions">
                     <button class="action-btn secondary question-ai-answer-btn" type="button" data-action="gerar-ia">Gerar resposta com IA</button>
                     <button class="action-btn question-send-answer-btn" type="button" data-action="enviar-resposta" disabled>Enviar resposta</button>
-                    <span class="question-answer-status">Limite do Mercado Livre: 2000 caracteres.</span>
+                    <span class="question-answer-status ${motivoFalhaEnvio ? 'error' : ''}">${escapeHtml(motivoFalhaEnvio || 'Limite do Mercado Livre: 2000 caracteres.')}</span>
                 </div>
             </div>
         ` : '';
         return `
-            <article class="question-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}" data-question-loja="${escapeHtml(lojaOrigem)}">
+            <article class="question-card" data-question-card data-question-id="${escapeHtml(pergunta.id || '')}" data-question-loja="${escapeHtml(lojaOrigem)}" data-question-key="${escapeHtml(dataKey)}">
                 <div class="question-body">
                     <div class="question-thumb">${foto}</div>
                     <div>
@@ -743,9 +749,9 @@ function configurarAcoesRespostaPerguntas() {
         textarea.addEventListener('blur', () => {
             flushAutosaveRascunhoAtendimentoCodex(questionKey).catch(() => {});
         });
-        btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviar, btnGerar, status));
+        btnEnviar.addEventListener('click', () => enviarRespostaPerguntaManual(questionKey, textarea, btnEnviar, btnGerar, status));
         if (btnEnviarSalvar) {
-            btnEnviarSalvar.addEventListener('click', () => enviarRespostaPerguntaManual(questionId, questionLoja, textarea, btnEnviarSalvar, btnGerar, status, { salvarExemplo: true, botoesExtras: [btnEnviar, btnSalvarExemplo] }));
+            btnEnviarSalvar.addEventListener('click', () => enviarRespostaPerguntaManual(questionKey, textarea, btnEnviarSalvar, btnGerar, status, { salvarExemplo: true, botoesExtras: [btnEnviar, btnSalvarExemplo] }));
         }
         if (btnSalvarExemplo) {
             btnSalvarExemplo.addEventListener('click', () => salvarExemploRespostaPergunta(questionId, questionLoja, textarea, btnSalvarExemplo, status));
@@ -901,6 +907,22 @@ const GENERATION_FAILURE_REASONS = Object.freeze({
     ])
 });
 const GENERATION_CONTEXT_COMPONENTS = new Set(['identity', 'question', 'history', 'item', 'context', 'context_hub']);
+const FONTES_PESQUISA_ATENDIMENTO = Object.freeze({
+    technical_web: 'pesquisa técnica na web',
+    product_identity_web: 'identificação do produto na web',
+    listing: 'anúncio atual',
+    internal_catalog: 'catálogo interno',
+    bling: 'Bling',
+    context_hub: 'Obsidian',
+    same_store_listing: 'outros anúncios da loja',
+    research: 'etapa de pesquisa'
+});
+const MOTIVOS_PESQUISA_ATENDIMENTO = Object.freeze({
+    timeout: 'tempo limite atingido',
+    unavailable: 'indisponível',
+    error: 'falha na consulta',
+    no_results: 'sem resultados'
+});
 
 function marcarAtualizacaoProgramaticaRascunhoAtendimentoCodex(textarea, callback) {
     if (!textarea || typeof callback !== 'function') return undefined;
@@ -1538,6 +1560,36 @@ function avisoContextHubResultado(status) {
     return 'As informações do Obsidian estavam indisponíveis. O rascunho foi gerado com as demais evidências disponíveis.';
 }
 
+function avisoPesquisasAtendimento(data, temRascunho = false) {
+    const result = resultadoJobAtendimentoCodex(data);
+    const falhas = data?.research_failures ?? result.contexto?.research_failures;
+    if (!Array.isArray(falhas)) return '';
+    const consultas = new Set();
+    for (const falha of falhas) {
+        const { source, reason } = falha || {};
+        if (typeof source !== 'string' || !Object.hasOwn(FONTES_PESQUISA_ATENDIMENTO, source)) continue;
+        if (typeof reason !== 'string' || !Object.hasOwn(MOTIVOS_PESQUISA_ATENDIMENTO, reason)) continue;
+        consultas.add(`${FONTES_PESQUISA_ATENDIMENTO[source]} (${MOTIVOS_PESQUISA_ATENDIMENTO[reason]})`);
+    }
+    if (!consultas.size) return '';
+    const fontes = new Intl.ListFormat('pt-BR').format([...consultas]);
+    return `Consultas com limitações em ${fontes}.${temRascunho ? ' Revise o rascunho antes de enviar.' : ''}`;
+}
+
+function atualizarAvisoPesquisaAtendimento(questionKey, mensagem, tenantScope) {
+    if (tenantScope !== tenantJobAtendimentoCodex()) return;
+    const loading = window.JKPerguntasLoading;
+    if (mensagem || loading?.obterRascunhoPorChave?.(questionKey)?.researchNotice) {
+        loading?.atualizarRascunhoPorChave?.(questionKey, { researchNotice: mensagem });
+    }
+    cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+        const aviso = card.querySelector('.question-research-notice');
+        if (!aviso) return;
+        aviso.classList.toggle('hidden', !mensagem);
+        aviso.textContent = mensagem;
+    });
+}
+
 function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = tenantJobAtendimentoCodex()) {
     if (String(tenantScope || 'default') !== tenantJobAtendimentoCodex()) return;
     const result = data && data.result && typeof data.result === 'object' ? data.result : (data || {});
@@ -1560,7 +1612,13 @@ function aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope = te
     const localEditPending = sameRevision
         && hasConfirmedResponse
         && String(existing.resposta ?? '') !== String(existing.confirmedResponse ?? '');
-    if ((sameProposal && incomingVersion > 0 && existingVersion > incomingVersion) || localEditPending) return;
+    if (sameProposal && incomingVersion > 0 && existingVersion > incomingVersion) return;
+    atualizarAvisoPesquisaAtendimento(
+        questionKey,
+        draftCleared ? '' : avisoPesquisasAtendimento(data, Boolean(respostaResultado.trim())),
+        tenantScope
+    );
+    if (localEditPending) return;
     if (respostaResultado.trim() || draftCleared) {
         window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(questionKey, {
             resposta: draftCleared ? '' : respostaResultado,
@@ -1767,6 +1825,10 @@ async function garantirPollingJobAtendimentoCodex(questionKey) {
         if (!draftCleared && !String(result.resposta ?? data?.resposta ?? '').trim()) limparEstadoJobAtendimentoCodex(key, tenantScope);
         return data;
     }).catch((error) => {
+        if (tenantScope !== tenantJobAtendimentoCodex()) {
+            limparEstadoJobAtendimentoCodex(key, tenantScope);
+            throw error;
+        }
         if (error && error.cancelled) {
             cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
                 card.querySelector('.question-answer-composer .question-answer-status'),
@@ -1774,12 +1836,15 @@ async function garantirPollingJobAtendimentoCodex(questionKey) {
             ));
         } else {
             const fallback = mensagemErro(error) || 'Não foi possível acompanhar a geração da resposta.';
-            const failure = error?.generationFailure
+            const { failure, message } = error?.generationFailure
                 ? aplicarFalhaGeracaoAtendimento(key, error.generationFailure)
                 : { message: fallback };
+            if (!['session', 'store'].includes(failure?.kind)) {
+                atualizarAvisoPesquisaAtendimento(key, avisoPesquisasAtendimento(error?.generationFailure), tenantScope);
+            }
             cardsAtuaisJobAtendimentoCodex(key).forEach((card) => setStatusRespostaPergunta(
                 card.querySelector('.question-answer-composer .question-answer-status'),
-                failure.message,
+                message,
                 'error'
             ));
         }
@@ -1850,8 +1915,11 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
     const questionKey = chavePerguntaAtendimento(pergunta);
+    const tenantScope = tenantJobAtendimentoCodex();
     try { await flushAutosaveRascunhoAtendimentoCodex(questionKey); } catch (_error) {}
+    if (tenantScope !== tenantJobAtendimentoCodex()) return;
     limparFalhaGeracaoAtendimento(pergunta);
+    atualizarAvisoPesquisaAtendimento(questionKey, '', tenantScope);
     btnGerar.disabled = true;
     btnEnviar.disabled = true;
     setStatusRespostaPergunta(status, 'Gerando sugestao com IA...');
@@ -1871,6 +1939,7 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             })
         });
         let data = await response.json().catch(() => ({}));
+        if (tenantScope !== tenantJobAtendimentoCodex()) return;
         const acceptedContextStatus = data?.context_status && typeof data.context_status === 'object'
             ? data.context_status
             : null;
@@ -1886,6 +1955,9 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             if (!['session', 'store', 'context'].includes(failure.kind)) {
                 pergunta._generationError = mensagemFalhaGeracaoAtendimento(failure);
             }
+            if (!['session', 'store'].includes(failure.kind)) {
+                atualizarAvisoPesquisaAtendimento(questionKey, avisoPesquisasAtendimento(data), tenantScope);
+            }
             const generationError = new Error(apiMessage);
             generationError.contextHandled = true;
             throw generationError;
@@ -1900,16 +1972,18 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
                 can_cancel: data.can_cancel !== false,
                 polling_active: true,
                 cancelled: false
-            });
-            aplicarEstadoJobAtendimentoCodex(questionKey);
+            }, tenantScope);
+            aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope);
             data = await garantirPollingJobAtendimentoCodex(questionKey);
         }
         if (acceptedContextStatus && !data.context_status && !data.result?.context_status) {
             data.context_status = acceptedContextStatus;
         }
-        aplicarResultadoJobAtendimentoCodex(questionKey, data);
+        if (tenantScope !== tenantJobAtendimentoCodex()) return;
+        aplicarResultadoJobAtendimentoCodex(questionKey, data, tenantScope);
         cardsAtuaisJobAtendimentoCodex(questionKey)[0]?.querySelector('.question-answer-text')?.focus();
     } catch (error) {
+        if (tenantScope !== tenantJobAtendimentoCodex()) return;
         if (error && error.cancelled) {
             setStatusRespostaPergunta(status, 'Pesquisa cancelada pelo usuario.');
         } else {
@@ -1918,23 +1992,32 @@ async function gerarRespostaPerguntaIa(questionId, loja, textarea, btnEnviar, bt
             setStatusRespostaPergunta(currentStatus, pergunta._generationError, 'error');
         }
     } finally {
-        aplicarEstadoJobAtendimentoCodex(questionKey);
-        const currentCard = cardsAtuaisJobAtendimentoCodex(questionKey)[0];
-        const currentTextarea = currentCard?.querySelector('.question-answer-text') || textarea;
-        const currentGenerate = currentCard?.querySelector('.question-ai-answer-btn') || btnGerar;
-        const currentSend = currentCard?.querySelector('.question-send-answer-btn') || btnEnviar;
-        currentGenerate.disabled = Boolean(obterEstadoJobAtendimentoCodex(questionKey)?.polling_active) || !pergunta._itemReady || !pergunta._detailReady;
-        currentSend.disabled = !String(currentTextarea?.value || '').trim() || pergunta._questionState === 'blocked';
+        if (tenantScope === tenantJobAtendimentoCodex()) {
+            aplicarEstadoJobAtendimentoCodex(questionKey, tenantScope);
+            const currentCard = cardsAtuaisJobAtendimentoCodex(questionKey)[0];
+            const currentTextarea = currentCard?.querySelector('.question-answer-text') || textarea;
+            const currentGenerate = currentCard?.querySelector('.question-ai-answer-btn') || btnGerar;
+            const currentSend = currentCard?.querySelector('.question-send-answer-btn') || btnEnviar;
+            currentGenerate.disabled = Boolean(obterEstadoJobAtendimentoCodex(questionKey, tenantScope)?.polling_active) || !pergunta._itemReady || !pergunta._detailReady;
+            currentSend.disabled = !String(currentTextarea?.value || '').trim() || pergunta._questionState === 'blocked';
+        }
     }
 }
 
-async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnviar, btnGerar, status, opcoes = {}) {
-    const pergunta = obterPerguntaPorId(questionId, loja);
+async function enviarRespostaPerguntaManual(questionKey, textarea, btnEnviar, btnGerar, status, opcoes = {}) {
+    const pergunta = perguntaAtendimentoPorChave(questionKey);
     const lojaResposta = lojaOrigemItem(pergunta) || (todasAsLojasSelecionadas() ? '' : state.lojaSelecionada);
     if (!pergunta || !lojaResposta) return;
-    const questionKey = chavePerguntaAtendimento(pergunta);
     let texto = String(textarea.value || '');
     if (!texto.trim()) return;
+    const headersEnvio = obterAuthHeaders();
+    const identificarSessao = window.JKPerguntasLoading?.identidadeSessaoPorHeaders || JSON.stringify;
+    const chaveSessaoEnvio = identificarSessao(headersEnvio);
+    const mesmaSessaoEnvio = () => {
+        if (identificarSessao(obterAuthHeaders()) === chaveSessaoEnvio) return true;
+        window.JKPerguntasLoading?.verificarSessao?.();
+        return false;
+    };
     const skuResposta = skuRealPergunta(pergunta);
     const itemIdResposta = String((pergunta.item_id || '')).trim();
     const botoesExtras = Array.isArray(opcoes.botoesExtras) ? opcoes.botoesExtras.filter(Boolean) : [];
@@ -1945,18 +2028,17 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
     let envioConfirmado = false;
     try {
         window.JKPerguntasLoading?.salvarRascunho?.();
+        window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(questionKey, { motivoFalhaEnvio: '' });
         await flushAutosaveRascunhoAtendimentoCodex(questionKey);
+        if (!mesmaSessaoEnvio()) return;
         texto = String(textarea.value || '');
         if (!texto.trim()) throw new Error('A resposta está vazia.');
         const response = await fetch('/api/mercadolivre/perguntas/responder', {
             method: 'POST',
-            headers: {
-                ...obterAuthHeaders(),
-                'Content-Type': 'application/json'
-            },
+            headers: { ...headersEnvio, 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 loja: lojaResposta,
-                question_id: questionId,
+                question_id: String(pergunta.id || '').trim(),
                 store_id: String(pergunta.store_id || ''),
                 resposta: texto,
                 pergunta,
@@ -1968,7 +2050,14 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
             })
         });
         const data = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
+        if (!mesmaSessaoEnvio()) return;
+        if (!response.ok) {
+            const detalhe = data?.detail;
+            const erro = new Error(mensagemErroApi(data, 'Erro ao enviar resposta.'));
+            erro.anuncioInativo = detalhe?.code === 'ml_item_inactive'
+                && typeof detalhe.message === 'string' && Boolean(detalhe.message.trim());
+            throw erro;
+        }
         envioConfirmado = true;
         pergunta.answer = {
             text: data.resposta ?? texto,
@@ -2001,12 +2090,20 @@ async function enviarRespostaPerguntaManual(questionId, loja, textarea, btnEnvia
         renderizarPerguntas();
         carregarContadoresNotificacoes(true);
     } catch (error) {
+        if (!mesmaSessaoEnvio()) return;
         if (envioConfirmado) {
             perguntasStatus.textContent = 'Resposta enviada ao Mercado Livre. Atualize a lista para conferir; não é necessário reenviar.';
             setStatusRespostaPergunta(status, perguntasStatus.textContent);
             return;
         }
-        setStatusRespostaPergunta(status, `Erro ao enviar: ${mensagemErro(error)}`, 'error');
+        const mensagem = mensagemErro(error);
+        setStatusRespostaPergunta(status, error?.anuncioInativo ? mensagem : `Erro ao enviar: ${mensagem}`, 'error');
+        if (error?.anuncioInativo) {
+            window.JKPerguntasLoading?.atualizarRascunhoPorChave?.(questionKey, { motivoFalhaEnvio: mensagem });
+            cardsAtuaisJobAtendimentoCodex(questionKey).forEach((card) => {
+                setStatusRespostaPergunta(card.querySelector('.question-answer-composer .question-answer-status'), mensagem, 'error');
+            });
+        }
         btnEnviar.disabled = !textarea.value.trim();
         botoesExtras.forEach((botao) => { botao.disabled = !textarea.value.trim(); });
         if (btnGerar) btnGerar.disabled = false;

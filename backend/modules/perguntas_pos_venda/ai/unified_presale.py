@@ -7,11 +7,13 @@ import re
 import unicodedata
 from typing import Any
 
+from backend.services.perguntas_pos_venda_state import _perguntas_ia_prompt_injection_evidente
+
 from .client_workflows import GeneralBindings, _classified_tool, _mandatory_web_tool
 from .general_commercial import _collect_general_internal_sources
 from .inputs import _perguntas_ia_research_input
 from .model_context import context_hub_packet_for_model
-from .sku_question_context import bind_client_sku_question_context
+from .sku_question_context import _listing_attribute_rows, bind_client_sku_question_context
 
 
 def invoke_unified_turn(
@@ -19,10 +21,12 @@ def invoke_unified_turn(
     prompt: str,
     tool_results: list[dict[str, Any]],
     force_answer: bool,
+    *,
+    isolated: bool = False,
 ) -> dict[str, Any]:
-    """Run one structured turn without leaving the client's provider thread."""
+    """Run a structured turn, optionally starting with only the confirmed context."""
 
-    thread_reused = bool(client.codex_thread_id)
+    thread_reused = bool(client.codex_thread_id) and not isolated
     payload = client._call_structured_model(
         prompt,
         {
@@ -31,6 +35,7 @@ def invoke_unified_turn(
         },
         stage="unified_response_agent",
         tool_results=list(tool_results or []),
+        **({"isolated": True} if isolated else {}),
     )
     category = str(payload.get("category") or "unknown").strip().lower()
     subquestions = [
@@ -326,6 +331,86 @@ def _packet_store_sku_bound(packet: dict[str, Any]) -> bool:
         and str(packet.get("binding_hash") or "").strip()
         and not gaps.intersection(_UNBOUND_STORE_SKU_GAPS)
     )
+
+
+def build_presale_recovery_context(
+    agent_input: dict[str, Any], packet: dict[str, Any], signature: str, policy: str,
+) -> dict[str, Any]:
+    """Select factual references from the already authorized question and item."""
+    question = agent_input.get("question") or {}
+    item = agent_input.get("item") or {}
+    item_id = str(item.get("id") or "").strip()
+    question_text = str(question.get("text") or "").strip()
+    if (
+        not question_text
+        or _perguntas_ia_prompt_injection_evidente(question_text)
+        or item.get("official_current_listing") is not True
+        or not item_id
+        or str(question.get("item_id") or "").strip() != item_id
+        or packet.get("conflicts")
+    ):
+        return {}
+
+    facts: dict[str, Any] = {
+        f"listing:{key}": item[key]
+        for key in ("title", "description", "condition")
+        if isinstance(item.get(key), str) and item[key].strip()
+    }
+    for field, prefix in (("attributes", "attribute"), ("sale_terms", "sale_term")):
+        for row in _listing_attribute_rows(item.get(field)):
+            if row.get("id") and row.get("value_name"):
+                facts[f"listing:{prefix}:{row['id']}"] = row
+
+    variation_id = str((agent_input.get("context") or {}).get("variation_id") or "").strip()
+    variations = item.get("variations") or []
+    matches = [
+        variation for variation in variations
+        if variation_id and str(variation.get("id") or "").strip() == variation_id
+    ]
+    selected = matches[0] if len(matches) == 1 else {}
+    unresolved_variation = bool(variations and not selected)
+    if not unresolved_variation:
+        commercial = selected or item
+        quantity = commercial.get("available_quantity")
+        if type(quantity) is int and quantity >= 0:
+            facts["listing:available_quantity"] = quantity
+        price = commercial.get("price")
+        if type(price) in (int, float) and price > 0 and item.get("currency_id"):
+            facts["listing:price"] = {"value": price, "currency": item["currency_id"]}
+        if isinstance(item.get("shipping"), dict) and item["shipping"]:
+            facts["listing:shipping"] = item["shipping"]
+
+    for field in ("attributes", "attribute_combinations"):
+        for row in _listing_attribute_rows(selected.get(field)):
+            if row.get("id") and row.get("value_name"):
+                facts[f"listing:variation_attribute:{row['id']}"] = row
+
+    # This packet only contains catalog_document after the repository verified
+    # its scope. Canonical store/SKU facts additionally require an approved binding.
+    identity = packet.get("identity") or {}
+    if not unresolved_variation and (
+        str(identity.get("item_id") or "") == item_id
+        and str(identity.get("variation_id") or "") == variation_id
+    ):
+        catalog = packet.get("catalog_document") or {}
+        if catalog.get("fields"):
+            facts["sku:catalog"] = catalog["fields"]
+        if _packet_store_sku_bound(packet):
+            document = packet.get("canonical_document") or {}
+            for key in (
+                "nome_produto", "o_que_e", "para_que_serve", "caracteristicas_tecnicas",
+                "medidas_do_produto", "modo_de_funcionamento", "instalacao", "oem", "aplicacao",
+            ):
+                if document.get(key) not in (None, "", [], {}):
+                    facts[f"sku:{key}"] = document[key]
+
+    return {
+        "question": question_text,
+        "confirmed_facts": facts,
+        "unresolved_variation": unresolved_variation,
+        "response_signature": signature,
+        "response_policy": policy,
+    }
 
 
 def _packet_listing_item_bound(packet: dict[str, Any], value: object) -> bool:

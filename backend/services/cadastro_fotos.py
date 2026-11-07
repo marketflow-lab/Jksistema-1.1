@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from backend.services.medias_compras_leitura import etapa
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from fastapi import Header, HTTPException, Request
 
@@ -564,13 +564,20 @@ def _salvar_foto_data_url_no_tenant(
 
 
 @etapa("fotos")
-def _cadastro_mapa_fotos_locais(client_id: str, store_id: str | None = None) -> dict[str, str]:
+def _cadastro_mapa_fotos_locais(
+    client_id: str, store_id: str | None = None, *, skus: Iterable[str] | None = None,
+) -> dict[str, str]:
     """Mapeia fotos jÃ¡ salvas em cadastro_fotos pelo SKU do nome do arquivo."""
     store_exato = _cadastro_store_id_foto_exato(store_id)
     store_seguro = _cadastro_store_id_foto_segmento(store_exato)
     escopo_estrito = _cadastro_fotos_escopo_estrito(client_id)
     tenant_path = _cadastro_tenant_path_fotos_seguro(client_id)
     if not tenant_path:
+        return {}
+    chaves_skus = None if skus is None else {
+        _cadastro_sku_sem_zeros_blocos(_normalizar_sku_mes(sku)) for sku in skus
+    }
+    if chaves_skus is not None and not chaves_skus:
         return {}
     candidatos_dir: list[tuple[str, str, str]] = []
     if store_seguro:
@@ -612,20 +619,21 @@ def _cadastro_mapa_fotos_locais(client_id: str, store_id: str | None = None) -> 
             continue
 
         for nome in arquivos:
-            caminho_absoluto = os.path.join(pasta, nome)
-            if _cadastro_caminho_e_link(caminho_absoluto) or not os.path.isfile(
-                caminho_absoluto
-            ):
-                continue
             base, ext = os.path.splitext(nome)
             if ext.lower() not in extensoes:
                 continue
             sku_norm = _normalizar_sku_mes(base)
             if not sku_norm:
                 continue
+            chave_sku = _cadastro_sku_sem_zeros_blocos(sku_norm)
+            if chaves_skus is not None and chave_sku not in chaves_skus:
+                continue
+            caminho_absoluto = os.path.join(pasta, nome)
+            if _cadastro_caminho_e_link(caminho_absoluto) or not os.path.isfile(caminho_absoluto):
+                continue
             caminho_relativo = f"{prefixo_relativo}/{nome}"
             mapa.setdefault(f"exact:{sku_norm}", caminho_relativo)
-            mapa.setdefault(f"soft:{_cadastro_sku_sem_zeros_blocos(sku_norm)}", caminho_relativo)
+            mapa.setdefault(f"soft:{chave_sku}", caminho_relativo)
 
     return mapa
 

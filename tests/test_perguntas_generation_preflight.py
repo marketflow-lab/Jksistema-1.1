@@ -173,6 +173,35 @@ def test_synchronous_generation_exposes_context_hub_status(monkeypatch, surface)
     assert result["warnings"] == ["Context Hub indisponivel."]
 
 
+def test_direct_generation_failure_returns_only_safe_research_diagnostics(monkeypatch):
+    monkeypatch.setattr(manual, "_manual_generation_scope", lambda *_args: scope())
+    monkeypatch.setattr(preflight, "load_context", lambda *_args: context())
+    monkeypatch.setattr(manual.perguntas_pos_venda_codex, "enabled", lambda: False)
+    monkeypatch.setattr(manual, "_obter_cfg_ml", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(manual, "_ml_extrair_sku", lambda _item: "001")
+    monkeypatch.setattr(manual, "bind_official_listing_catalog_identity", lambda *_args, **_kwargs: None)
+
+    def generation_failed(_client_id, _store, _cfg, question, item):
+        assert question["_manual_research_recovery"] is manual.MANUAL_RESEARCH_RECOVERY
+        assert item["_ppv_official_current_listing"] is True
+        error = manual.PerguntasIARespostaIndisponivel("CANARY_RAW_PROVIDER_ERROR")
+        error.research_failures = [
+            {"source": "bling", "reason": "timeout", "query": "CANARY_PRIVATE_QUERY"},
+            {"source": "unknown", "reason": "CANARY_RAW_PROVIDER_ERROR"},
+        ]
+        raise error
+
+    monkeypatch.setattr(manual, "_perguntas_ia_gerar_resposta", generation_failed)
+    result = manual.ml_perguntas_gerar_resposta_manual(
+        PerguntasGerarRespostaRequest(loja="Loja", store_id="store-a", pergunta={"id": "23"}),
+        request(),
+        "tenant-a",
+    )
+    assert result.status_code == 503
+    assert json.loads(result.body)["research_failures"] == [{"source": "bling", "reason": "timeout"}]
+    assert b"CANARY" not in result.body
+
+
 @pytest.mark.parametrize("surface", ["manual", "v2"])
 def test_manual_job_persists_only_the_opaque_context_reference(monkeypatch, surface):
     captured = {}

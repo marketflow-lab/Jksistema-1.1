@@ -123,8 +123,9 @@ async function openFixture(browser, { tenant = 'tenant-a', timers = 'fast', resp
           assert([3, 6, 12].includes(call.months));
           if (call.storeId) assert.strictEqual(stores.find(store => store.store_id === call.storeId)?.nome, call.storeName);
           else assert.strictEqual(call.storeName, '');
-          assert.deepStrictEqual([...url.searchParams.keys()].sort(), call.storeId ? ['cache_mode', 'loja', 'meses', 'store_id'] : ['cache_mode', 'meses']);
+          assert.deepStrictEqual([...url.searchParams.keys()].sort(), call.storeId ? ['cache_mode', 'fotos', 'loja', 'meses', 'store_id'] : ['cache_mode', 'fotos', 'meses']);
           assert.strictEqual(url.searchParams.get('cache_mode'), 'stale');
+          assert.strictEqual(url.searchParams.get('fotos'), 'adiadas');
           state.calls.push(call);
           response = respond ? await respond(call, state) : success(tenant, call);
         } else throw new Error('Rota de API inesperada na fixture: ' + url.pathname);

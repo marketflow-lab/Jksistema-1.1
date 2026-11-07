@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from requests import exceptions as requests_exceptions
 
+from backend.modules.perguntas_pos_venda.research_failures import MANUAL_RESEARCH_RECOVERY, safe_research_failures
 from backend.services import codex_agent_runtime, codex_assistant_storage
 from backend.services.perguntas_generation_preflight import (
     GenerationContextUnavailable,
@@ -1495,6 +1496,27 @@ def _clear_failure_metadata(value: dict[str, Any]) -> None:
             result.pop(key, None)
 
 
+def _save_research_result(job: dict[str, Any]) -> dict[str, Any]:
+    """Publish the diagnostic or draft only for the request generation that produced it."""
+    saved = customer_reply_storage._codex_assistant_customer_reply_job_save_cas(
+        _runtime_info_base(),
+        str(job.get("client_id") or "default"),
+        job,
+        expected_lease_owner=_WORKER_ID,
+        expected_lease_generation=_lease_generation(job),
+        expected_request_generation=_request_generation(job),
+    )
+    applied = saved.pop("_request_generation_cas_applied", False)
+    if (
+        not applied
+        and saved.get("status") == "running"
+        and _lease_generation(saved) == _lease_generation(job)
+        and _request_generation(saved) > _request_generation(job)
+    ):
+        return _persist_retry(saved, error="orientacao_do_operador_atualizada", immediate=True)
+    return saved
+
+
 def _complete_without_draft(
     job: dict[str, Any],
     *,
@@ -1517,7 +1539,8 @@ def _complete_without_draft(
     partial_context = partial.get("contexto") if isinstance(partial.get("contexto"), dict) else {}
     partial_diagnostic = _diagnostic_result(partial_context)
     validated_partial = bool(
-        partial_answer.strip()
+        not job.get("research_failures")
+        and partial_answer.strip()
         and partial_diagnostic.get("validation_ok") is True
         and _safe_insufficient_draft(partial_answer, partial_context)
     )
@@ -1584,6 +1607,8 @@ def _complete_without_draft(
     job.pop("last_partial_result", None)
     job.pop("error", None)
     _cancel_retry_timer(str(job.get("job_id") or ""))
+    if job.get("research_failures"):
+        return _save_research_result(job)
     return codex_assistant_storage.codex_assistant_customer_reply_job_save(
         info_base,
         client_id,
@@ -2942,7 +2967,9 @@ def _public_job(job: dict[str, Any], *, queue_position: int = 0) -> dict[str, An
     completion_reason = str(result.get("completion_reason") or job.get("completion_reason") or "")
     if completion_reason:
         result["completion_reason"] = completion_reason
+    research_failures = safe_research_failures(job.get("research_failures"))
     return {
+        **({"research_failures": research_failures} if research_failures else {}),
         "success": str(job.get("status") or "") == "completed" and not blocked_without_draft,
         "queued": str(job.get("status") or "") in ACTIVE_STATUSES,
         "job_id": str(job.get("job_id") or ""),
@@ -4823,6 +4850,7 @@ def _load_question_context_impl(job: dict[str, Any]) -> tuple[str, dict[str, Any
     if canonical:
         from backend.services.perguntas_generation_preflight import run_with_session
         run_with_session(job, lambda: None)  # Recheck expiry after enrichment, before AI.
+        question["_manual_research_recovery"] = MANUAL_RESEARCH_RECOVERY
     answer, _cfg, context = runtime._perguntas_ia_gerar_resposta(client_id, store, cfg, question, item or {})
     context = context if isinstance(context, dict) else {}
     context_hub_status = _context_hub_status(context)
@@ -4988,6 +5016,7 @@ def _run_job(client_id: str, job_id: str) -> None:
         )
         return
     _clear_failure_metadata(job)
+    job.pop("research_failures", None)
     job["restart_requested"] = False
     heartbeat_stop = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -5000,6 +5029,7 @@ def _run_job(client_id: str, job_id: str) -> None:
     started = time.monotonic()
     answer = ""
     context: dict[str, Any] = {}
+    research_failures: list[dict[str, str]] = []
     try:
         job = _save_step(job, "planejando", "entender", "Separando os assuntos da pergunta.")
         if _cancelled(job):
@@ -5009,6 +5039,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             answer, context = _load_post_sale_context(job)
         else:
             answer, context = _load_question_context(job)
+            research_failures = safe_research_failures(context.get("research_failures"))
             job["subquestions"] = _ai_subquestions(context)
         if time.monotonic() - started > MAX_SECONDS:
             raise TimeoutError("O ciclo do agente excedeu o prazo operacional permitido.")
@@ -5068,6 +5099,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "answer": answer,
             }
         )
+        completion_reason = "research_recovered_for_review" if research_failures else "evidence_confirmed"
         result = {
             "resposta": answer,
             "contexto": context,
@@ -5086,7 +5118,7 @@ def _run_job(client_id: str, job_id: str) -> None:
             "proposal_hash": proposal_hash,
             "requires_approval": True,
             "publish_attempted": False,
-            "completion_reason": "evidence_confirmed",
+            "completion_reason": completion_reason,
             "draft_source": "ai",
         }
         latest = codex_assistant_storage.codex_assistant_customer_reply_job_get(info_base, client_id, job_id)
@@ -5108,15 +5140,15 @@ def _run_job(client_id: str, job_id: str) -> None:
         ):
             _persist_retry(
                 latest,
-                answer=answer,
-                context=context,
-                matrix=matrix,
+                answer="" if research_failures else answer,
+                context={} if research_failures else context,
+                matrix=[] if research_failures else matrix,
                 warnings=[*warnings, "A orientacao do operador mudou durante a pesquisa; iniciando nova tentativa."],
                 error="orientacao_do_operador_atualizada",
                 immediate=True,
             )
             return
-        if not sufficient:
+        if not sufficient and not research_failures:
             _complete_with_best_available(
                 job,
                 answer=answer,
@@ -5129,6 +5161,9 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
             return
         _clear_failure_metadata(job)
+        if research_failures:
+            result.update(review_required=True, completed_with_partial=True)
+            job.update(research_failures=research_failures, review_required=True, completed_with_partial=True)
         job.update(
             {
                 "status": "completed",
@@ -5138,7 +5173,7 @@ def _run_job(client_id: str, job_id: str) -> None:
                 "evidence_status": matrix,
                 "warnings": warnings,
                 "result": result,
-                "completion_reason": "evidence_confirmed",
+                "completion_reason": completion_reason,
                 "draft_source": "ai",
                 "lease_owner": "",
                 "lease_expires_ts": 0.0,
@@ -5155,34 +5190,40 @@ def _run_job(client_id: str, job_id: str) -> None:
             }
         )
         job["agent_steps"] = history[-60:]
-        saved = codex_assistant_storage.codex_assistant_customer_reply_job_save(
-            info_base,
-            client_id,
-            job,
-            expected_lease_owner=_WORKER_ID,
-            expected_lease_generation=_lease_generation(job),
+        saved = (
+            _save_research_result(job) if research_failures
+            else codex_assistant_storage.codex_assistant_customer_reply_job_save(
+                info_base,
+                client_id,
+                job,
+                expected_lease_owner=_WORKER_ID,
+                expected_lease_generation=_lease_generation(job),
+            )
         )
         if not _saved_by_same_lease(saved, job, status="completed", proposal_hash=proposal_hash):
             return
         plan_id = str(job.get("plan_id") or "")
         if plan_id:
-            codex_agent_runtime.transition_plan(
-                info_base,
-                client_id,
-                plan_id,
-                "aguardando_aprovacao",
-                current_step="aprovar",
-                step_status="in_progress",
-                proposal={
-                    "proposal_id": job_id,
-                    "version": version,
-                    "proposal_hash": proposal_hash,
-                    "action_id": "ml.pergunta_responder",
-                    "channels_allowed": ["app", "whatsapp"],
-                    "requires_confirmation": True,
-                },
-                details={"data_sufficient": sufficient, "completion_reason": "evidence_confirmed"},
-            )
+            try:
+                codex_agent_runtime.transition_plan(
+                    info_base,
+                    client_id,
+                    plan_id,
+                    "aguardando_aprovacao",
+                    current_step="aprovar",
+                    step_status="in_progress",
+                    proposal={
+                        "proposal_id": job_id,
+                        "version": version,
+                        "proposal_hash": proposal_hash,
+                        "action_id": "ml.pergunta_responder",
+                        "channels_allowed": ["app", "whatsapp"],
+                        "requires_confirmation": True,
+                    },
+                    details={"data_sufficient": sufficient, "completion_reason": completion_reason},
+                )
+            except Exception:
+                logger.warning("[PPV CODEX] evento=concluir_plano status=erro")
     except GenerationContextUnavailable as error:
         _complete_generation_blocked(job, error)
     except _LeaseLost:
@@ -5207,7 +5248,8 @@ def _run_job(client_id: str, job_id: str) -> None:
             expected_lease_generation=_lease_generation(job),
         )
     except Exception as exc:
-        if isinstance(answer, str) and answer.strip():
+        research_failures = safe_research_failures(getattr(exc, "research_failures", None)) or research_failures
+        if isinstance(answer, str) and answer.strip() and not research_failures:
             _complete_with_best_available(
                 job,
                 answer=answer,
@@ -5256,6 +5298,16 @@ def _run_job(client_id: str, job_id: str) -> None:
             )
         else:
             logger.warning("[PPV CODEX] evento=executar_job status=erro tipo=%s", type(exc).__name__)
+        if research_failures:
+            job["research_failures"] = research_failures
+            _complete_without_draft(
+                job,
+                warning="A pesquisa nao permitiu concluir um rascunho para revisao.",
+                completion_reason="unified_agent_research_failure",
+                deadline_reached=False,
+                error_metadata=unified_failure or {"error_code": "research_execution_failed"},
+            )
+            return
         if unified_failure and not isinstance(exc, PerguntasIAProviderIndisponivel):
             error_code = str(unified_failure.get("error_code") or "unified_agent_error")
             _complete_without_draft(
