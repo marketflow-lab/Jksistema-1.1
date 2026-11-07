@@ -229,7 +229,7 @@
             return { headers, tbody };
         }
 
-        function criarLinhaResultado(i, indice, colunasMeses, modo) {
+        function criarLinhaResultado(i, indice, colunasMeses, modo, marcarComentario) {
             const tr = document.createElement('tr');
             tr.classList.add(indice % 2 === 0 ? 'linha-impar' : 'linha-par');
 
@@ -289,6 +289,7 @@
             }
 
             tr.innerHTML = tds.join('');
+            marcarComentario?.(tr, tr.firstElementChild, i.sku);
             const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
             configurarBalaoEstoqueEmTransito(
                 tr.querySelector('.transito-quantidade--detalhes'),
@@ -330,9 +331,10 @@
                 tr.innerHTML = '<td colspan="' + headers.length + '">' + msgVazio + '</td>';
                 tbody.appendChild(tr);
             } else {
+                const marcarComentario = global.JKComentariosSku?.paraTabela(lojaSelecionada, storeIdSelecionado);
                 controladorTabelaVirtual = context.modules['tabela-virtual'].criarTabelaVirtual({
                     raiz, tabela, tbody, colunas: headers.length, overscan: 10,
-                    renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo),
+                    renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo, marcarComentario),
                 });
                 controladorTabelaVirtual.atualizarItens(itens, { ancora });
             }

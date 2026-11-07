@@ -1,0 +1,107 @@
+.jk-sku-comment-anchor.jk-sku-has-comment::after {
+    content: "💬";
+    margin-inline-start: .4em;
+    font-size: .85em;
+}
+
+.jk-sku-comment-anchor:focus-visible {
+    outline: 2px solid #7dd3fc;
+    outline-offset: -2px;
+}
+
+.jk-sku-comment-menu,
+#jk-sku-comment-tooltip,
+.jk-sku-comment-dialog {
+    color: #f0f6ff;
+    background: #172337;
+    border: 1px solid #456181;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px #0008;
+    font: 14px/1.45 system-ui, sans-serif;
+    box-sizing: border-box;
+}
+
+.jk-sku-comment-menu,
+#jk-sku-comment-tooltip {
+    position: fixed;
+    inset: 0 auto auto 0;
+    z-index: 11000;
+    margin: 0;
+    padding: 8px 12px;
+    max-width: calc(100vw - 16px);
+}
+
+.jk-sku-comment-menu { cursor: pointer; }
+.jk-sku-comment-menu:hover, .jk-sku-comment-menu:focus-visible { background: #234369; }
+
+#jk-sku-comment-tooltip {
+    z-index: 10999;
+    width: max-content;
+    max-width: min(420px, calc(100vw - 16px));
+    max-height: min(50vh, 24rem);
+    overflow: auto;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.jk-sku-comment-dialog {
+    width: min(480px, calc(100vw - 24px));
+    padding: 20px;
+}
+
+.jk-sku-comment-dialog::backdrop { background: #070e1ac0; }
+
+.jk-sku-comment-dialog h2 {
+    margin: 0;
+    font-size: 18px;
+    overflow-wrap: anywhere;
+}
+
+.jk-sku-comment-scope {
+    color: #b9cde8;
+    margin: 4px 0 16px;
+}
+
+.jk-sku-comment-dialog textarea {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 4px;
+    padding: 8px;
+    border: 1px solid #577496;
+    border-radius: 6px;
+    color: inherit;
+    background: #0e1726;
+    font: inherit;
+    resize: vertical;
+}
+
+.jk-sku-comment-status {
+    color: #ffd0a8;
+    min-height: 1.45em;
+    margin: 6px 0;
+}
+
+.jk-sku-comment-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.jk-sku-comment-actions button {
+    padding: 7px 11px;
+    border: 1px solid #577496;
+    border-radius: 6px;
+    background: #253954;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+}
+
+.jk-sku-comment-actions button[data-salvar] { background: #225b96; }
+.jk-sku-comment-actions button[data-remover] { margin-inline-end: auto; }
+.jk-sku-comment-actions button:disabled { opacity: .6; cursor: default; }
+.jk-sku-comment-menu[hidden],
+#jk-sku-comment-tooltip[hidden],
+.jk-sku-comment-actions [hidden] { display: none; }

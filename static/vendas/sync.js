@@ -269,6 +269,7 @@ function renderTabelaAgrupada(lista) {
 
     let index = 0;
     const CHUNK = 180;
+    const marcarComentario = window.JKComentariosSku?.paraTabela(lojaSelecionada);
 
     const renderChunk = () => {
         if (tokenAtual !== tabelaRenderToken) return;
@@ -313,6 +314,7 @@ function renderTabelaAgrupada(lista) {
 
                 tr.appendChild(td);
             });
+            marcarComentario?.(tr, tr.firstElementChild, item.sku);
             frag.appendChild(tr);
         }
 

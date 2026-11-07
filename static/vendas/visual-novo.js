@@ -454,7 +454,13 @@
                 find('vnProductTableBody').replaceChildren();
             } else {
                 find('vnProductGrid').replaceChildren();
-                find('vnProductTableBody').innerHTML = shown.map(row => `<tr><td><button type="button" class="vn-row-product" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-row-photo')}<span class="vn-row-product-name">${escape(row.produto || 'Produto sem descrição')}</span></button></td><td class="vn-sku">${escape(row.sku)}</td><td class="vn-num">${formatInteger(row.pedidos)}</td><td class="vn-num" title="${escape(compositionDescription(row))}">${formatQuantity(row.itens)}</td><td class="vn-num ${numeric(row.devolucoes) > 0 ? 'vn-returns-num' : ''}" title="${escape(compositionDescription(row, true))}">${formatInteger(row.devolucoes)}</td><td class="vn-num vn-money" title="${numeric(row.valor) > 0 ? 'Valor vendido' : numeric(row.valorDevolucao) > 0 ? 'Valor devolvido' : 'Valor'}">${formatMoney(rowValue(row))}</td></tr>`).join('');
+                const tbody = find('vnProductTableBody');
+                tbody.innerHTML = shown.map(row => `<tr><td><button type="button" class="vn-row-product" data-vn-sku="${escape(row.sku)}">${photo(row, 'vn-row-photo')}<span class="vn-row-product-name">${escape(row.produto || 'Produto sem descrição')}</span></button></td><td class="vn-sku">${escape(row.sku)}</td><td class="vn-num">${formatInteger(row.pedidos)}</td><td class="vn-num" title="${escape(compositionDescription(row))}">${formatQuantity(row.itens)}</td><td class="vn-num ${numeric(row.devolucoes) > 0 ? 'vn-returns-num' : ''}" title="${escape(compositionDescription(row, true))}">${formatInteger(row.devolucoes)}</td><td class="vn-num vn-money" title="${numeric(row.valor) > 0 ? 'Valor vendido' : numeric(row.valorDevolucao) > 0 ? 'Valor devolvido' : 'Valor'}">${formatMoney(rowValue(row))}</td></tr>`).join('');
+                const marcarComentario = window.JKComentariosSku?.paraTabela(state.snapshot?.filters?.loja);
+                if (marcarComentario) shown.forEach((row, index) => {
+                    const linha = tbody.rows[index];
+                    marcarComentario(linha, linha.cells[1], row.sku);
+                });
             }
             hydratePhotos();
         }

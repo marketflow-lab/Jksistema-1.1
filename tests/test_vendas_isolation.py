@@ -98,6 +98,7 @@ for route in routes:
     for method in set(getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}:
         pairs.append((method, route.path))
 duplicates=[item for item,count in collections.Counter(pairs).items() if count > 1]
+assert {method for method, path in pairs if path == "/api/comentarios-sku"} == {"GET", "PUT"}
 paths={path:item for path,item in backend_api.app.openapi().get("paths",{}).items() if path.startswith("/api/vendas") or path.startswith("/api/notas-entrada") or path.startswith("/api/unidades-negocios")}
 raw=json.dumps(paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
 print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest()}))
@@ -106,10 +107,9 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # Base 84e12f7a already has 533 routes / 531 method-path pairs.
-        # This extension adds somente_salvos/cache_mode to the existing summary GET.
-        "routes": 533,
-        "pairs": 531,
+        # Base f51ac1b7 has 537 routes / 535 pairs; SKU comments add GET and PUT.
+        "routes": 539,
+        "pairs": 537,
         "duplicates": [],
         "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }

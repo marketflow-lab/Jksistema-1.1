@@ -1,7 +1,8 @@
 param(
     [string]$ResourcesRoot = "",
     [string]$WorkBase = "",
-    [switch]$KeepWorkDir
+    [switch]$KeepWorkDir,
+    [string]$UpdateResourcesRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -192,6 +193,31 @@ try {
     }
     if ((Get-FileHash -LiteralPath $venvPython -Algorithm SHA256).Hash -ne $venvPythonBefore) {
         throw "Executavel da .venv foi alterado durante a execucao idempotente."
+    }
+
+    if ($UpdateResourcesRoot) {
+        $updateApp = Join-Path ([IO.Path]::GetFullPath($UpdateResourcesRoot)) "local_app"
+        $updateProvisioner = Join-Path $updateApp "scripts\provision_python_runtime.py"
+        $updateContract = Join-Path $updateApp "installer-runtime.lock.json"
+        if (-not (Test-Path -LiteralPath $updateProvisioner -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $updateContract -PathType Leaf) -or
+            (Test-Path -LiteralPath (Join-Path $updateApp "python_runtime\portable\python.exe"))) {
+            throw "O pacote Update nao tem o perfil de reutilizacao do runtime esperado."
+        }
+
+        Write-Host "[offline-smoke] Validando o Update leve sobre o runtime preparado pelo Setup..."
+        $updateArgs = @(
+            "-B", "-I", $updateProvisioner, "--source-root", $updateApp, "--target-root", $targetApp,
+            "--log-file", $logFile, "--lock-timeout", "15", "--quick-reuse"
+        )
+        & $runtimePython @updateArgs
+        if ($LASTEXITCODE -ne 0) { throw "O Update leve nao conseguiu reutilizar o runtime do Setup." }
+        $updateStatus = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json
+        if ([string]$updateStatus.state -ne "ready" -or [string]$updateStatus.action -ne "quick_reused" -or
+            [string]$updateStatus.runtime_id -ne [string]$status.runtime_id -or
+            (Get-FileHash -LiteralPath $venvPython -Algorithm SHA256).Hash -ne $venvPythonBefore) {
+            throw "O Update leve nao preservou o ambiente validado pelo Setup."
+        }
     }
 
     Write-Host "[offline-smoke] OK - runtime portatil, instalacao offline, backend e idempotencia aprovados."

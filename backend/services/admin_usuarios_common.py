@@ -100,6 +100,8 @@ def _permissao_exigida_por_rota(path: str, method: str = "GET") -> Optional[Any]
         or rota.startswith("/api/unidades-negocios")
     ):
         return "vendas"
+    if rota == "/api/comentarios-sku":
+        return ("medias_compras", "vendas")
     if rota.startswith("/api/medias-compras/"):
         return "medias_compras"
     if rota.startswith("/api/full/"):

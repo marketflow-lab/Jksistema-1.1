@@ -116,6 +116,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
 
+from backend.routers.comentarios_sku import create_comentarios_sku_router
 from backend.routers import (
     ConfiguracoesRouterConfig,
     FinancialComparisonRouterConfig,
@@ -2578,6 +2579,7 @@ globals().update({
     if hasattr(_medias_compras_module, name) and name not in {"PASTA_INFO", "get_tenant_path"}
 })
 app.include_router(create_medias_compras_router())
+app.include_router(create_comentarios_sku_router(get_tenant_id, get_tenant_path))
 app.include_router(create_importacoes_router(sys.modules[__name__]))
 
 _frontend_router_config = FrontendRouterConfig(

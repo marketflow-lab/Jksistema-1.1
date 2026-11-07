@@ -121,6 +121,12 @@ jobs:
         if: inputs.release_mode == 'runtime-update'
         run: node electron_app/scripts/verify-installer-package.js --packaged electron_app/dist-client-setup/win-unpacked/resources --deep-runtime
 
+      - name: Smoke test Setup and runtime reuse for app update
+        if: inputs.release_mode == 'app-update'
+        shell: pwsh
+        run: |
+          .\scripts\verify-installer-offline.ps1 -ResourcesRoot 'electron_app/dist-client-setup/win-unpacked/resources' -UpdateResourcesRoot 'electron_app/dist-client-update/win-unpacked/resources'
+
       - name: Stage selected release artifacts
         shell: pwsh
         run: |
