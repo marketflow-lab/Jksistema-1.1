@@ -109,7 +109,7 @@ async function aguardarMargens(env) {
 
 async function waitUntil(predicate, message) {
     for (let attempt = 0; attempt < 500; attempt++) {
-        if (predicate()) return;
+        if (await predicate()) return;
         await new Promise(resolve => setTimeout(resolve, 10));
     }
     throw new Error(message || 'Condição da fixture não atingida.');
@@ -152,8 +152,9 @@ async function environment(browser, options = {}) {
             }) };
         }
         const original = window.setTimeout.bind(window);
+        // Keep the timeout tests fast without racing the ordinary intercepted requests.
         window.setTimeout = (callback, delay, ...args) => original(callback,
-            fastRequestTimeout && [5000, 20000, 120000].includes(delay) ? 75 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
+            fastRequestTimeout && [5000, 20000, 120000].includes(delay) ? 500 : [1000, 2000].includes(delay) ? 25 : delay, ...args);
     }, { testOrigin: origin, fastRequestTimeout: Boolean(options.fastRequestTimeout),
         ignoreBackgroundAbort: Boolean(options.ignoreBackgroundAbort), holdPrices: Boolean(options.holdPrices) });
     const json = (route, result) => route.fulfill({
@@ -959,8 +960,9 @@ async function run(browser, name, options, check) {
             },
         }, async env => {
             await open(env);
-            await env.page.waitForFunction(async () =>
-                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:custo'))?.dados));
+            await waitUntil(() => env.page.evaluate(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:custo'))?.dados)),
+                'A cópia do custo deve estar salva antes de reabrir o SKU.');
             const custoAnterior = await env.page.locator('#vValorUnitarioProduto').textContent();
             assert.notStrictEqual(custoAnterior, '-');
             env.state.phase = 'new-rate';
@@ -1047,8 +1049,9 @@ async function run(browser, name, options, check) {
             await env.page.clock.setFixedTime(new Date(instante));
             await open(env);
             const margem = env.page.locator('#vMargemMlb1');
-            await env.page.waitForFunction(async () =>
-                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise));
+            await waitUntil(() => env.page.evaluate(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise)),
+                'A análise inicial deve estar salva antes de reabrir o SKU.');
             await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent.includes('%'));
             const primeiraMargem = await margem.textContent();
             assert.strictEqual(env.state.patches.length, 1);
@@ -1073,9 +1076,10 @@ async function run(browser, name, options, check) {
             await env.page.waitForFunction(() => /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
             assert.strictEqual(env.state.patches.length, 2);
             assert.strictEqual(env.state.patches[1].payload.precos_anuncios_loja.concorrente_1, 330);
-            await env.page.waitForFunction(async () =>
+            await waitUntil(() => env.page.evaluate(async () =>
                 (await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise
-                    ?.margens_anuncios_loja?.concorrente_1?.preco_venda === 330);
+                    ?.margens_anuncios_loja?.concorrente_1?.preco_venda === 330),
+                'A cópia da análise deve conter o preço renovado.');
 
             env.state.phase = 'different-seller';
             await open(env);
@@ -1206,13 +1210,18 @@ async function run(browser, name, options, check) {
                     anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB' } : undefined,
         }), async env => {
             await open(env);
-            await env.page.waitForFunction(async () =>
-                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise));
+            await waitUntil(() => env.page.evaluate(async () =>
+                Boolean((await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))?.dados?.analise)),
+                'A análise inicial deve estar salva antes de reabrir o SKU.');
+            const margemSalva = await env.page.locator('#vMargemMlb1').textContent();
+            assert.match(margemSalva, /^Margem: .+%/);
             env.state.phase = 'reabrir';
             await open(env);
             await env.page.waitForFunction(() =>
                 !contextoDetalheSku.listaAtualizada
                 && /^Última margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(),
+                margemSalva.replace(/^Margem:/, 'Última margem:'));
             assert.strictEqual(env.state.calls.filter(call => call.kind === 'compact-validation').length, 1);
             assert.strictEqual(env.state.patches.length, 1);
             env.state.pending[0].resolve();

@@ -65,12 +65,12 @@ const trechosSku = [
     'body: JSON.stringify(payload)',
     'timeoutMs: 120000',
     'precos_anuncios_loja: precosAnunciosLoja',
-    'ultimaAnaliseConcorrentes.margens_anuncios_loja',
-    'dados.financeiro_exato === true',
+    'propria ? analise?.margens_anuncios_loja : analise?.margens',
+    'dados?.financeiro_exato === true',
     'dados.imposto_valor',
     'dados.tarifa_ml',
     'dados.frete_ml',
-    'function aplicarAnaliseConcorrentes(analise)',
+    'function aplicarAnaliseConcorrentes(analise,',
     'const promessaDadosImposto = preencherCampos(item, lista, cad, itens, mapaM3Cadastro);',
     'await promessaDadosImposto;',
     'enriquecerPromocoesSkuEmSegundoPlano(contexto, lista, cad, mapaM3Cadastro, linksConc);',
@@ -109,7 +109,7 @@ assert.equal(Object.keys(payloadPausado.precos_concorrentes).length, 4);
 assert.deepEqual(Object.values(payloadPausado.anuncios_loja), Array(4).fill(referencia));
 
 const inicioPreparacao = skuHtml.indexOf('function prepararComplementosSku(');
-const inicioCarregamento = skuHtml.indexOf('async function carregarDetalheSku()');
+const inicioCarregamento = skuHtml.indexOf('async function carregarDetalheSku(');
 const salvaIndependente = skuHtml.indexOf('salvarAnaliseConcorrentes(contexto.listaId, contexto.sku)', inicioPreparacao);
 const consultaPromocoes = skuHtml.indexOf('enriquecerPromocoesSkuEmSegundoPlano(', inicioCarregamento);
 const guardAnalise = skuHtml.slice(skuHtml.indexOf('async function salvarAnaliseConcorrentes'), skuHtml.indexOf('function atualizarCustoTotalProduto'));

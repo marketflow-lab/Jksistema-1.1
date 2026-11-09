@@ -457,8 +457,11 @@ def test_router_expoe_endpoint_dedicado_de_analise():
 
 
 def test_endpoint_em_lote_carrega_planilha_uma_vez_e_isola_lista(monkeypatch):
+    from backend.services import favoritos_planilhas_colar
+
     estado = _configurar_estado(monkeypatch)
     estado["tenant-a"][0]["itens"].append({"SKU": "002", "Quantidade": 5})
+    estado["tenant-b"][0]["itens"] = [{"SKU": "003", "Quantidade": 20}]
     chamadas = []
     header = ["SKU"] + [f"coluna-{indice}" for indice in range(1, 22)]
     linha_001 = ["001"] + [""] * 21
@@ -469,11 +472,17 @@ def test_endpoint_em_lote_carrega_planilha_uma_vez_e_isola_lista(monkeypatch):
     linha_002[2] = "MLB22222222"
     linha_002[4] = "MLB99999992"
     linha_002[5] = "R$ 200,00"
+    linha_003 = ["003"] + [""] * 21
 
-    def carregar_planilha():
-        chamadas.append("planilha")
-        return [header, linha_001, linha_002]
+    def planilha_da_loja(client_id, loja):
+        chamadas.append(("fonte", client_id, loja))
+        return "planilha-loja-a"
 
+    def carregar_planilha(planilha_id):
+        chamadas.append(("leitura", planilha_id))
+        return [header, linha_001, linha_002, linha_003]
+
+    monkeypatch.setattr(favoritos_planilhas_colar, "id_planilha_favoritos_loja", planilha_da_loja)
     monkeypatch.setattr(listas_service, "_carregar_linhas_planilha_concorrentes", carregar_planilha)
     monkeypatch.setattr(
         listas_service.medias_common, "_resolver_escopo_loja_medias",
@@ -487,7 +496,7 @@ def test_endpoint_em_lote_carrega_planilha_uma_vez_e_isola_lista(monkeypatch):
         )
     )
 
-    assert chamadas == ["planilha"]
+    assert chamadas == [("fonte", "tenant-a", "Loja A"), ("leitura", "planilha-loja-a")]
     assert resultado["total"] == 2
     assert set(resultado["resultados"]) == {"001", "002"}
     assert resultado["resultados"]["001"]["concorrentes_valores"]["concorrente_1"] == "R$ 100,00"

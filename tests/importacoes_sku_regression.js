@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 
 const htmlPath = path.join(__dirname, '..', 'static', 'importacoes_sku.html');
 const html = fs.readFileSync(htmlPath, 'utf8');
@@ -20,10 +21,10 @@ const requiredSnippets = [
     "method: 'PATCH'",
     'body: JSON.stringify({ aprovada: aprovar })',
     'getNumber(cardValor && cardValor.textContent)',
-    'dados.financeiro_exato === true',
+    'dados?.financeiro_exato === true',
     'margens_anuncios_loja',
     'precos_anuncios_loja: precosAnunciosLoja',
-    'itemIdAnalisado === itemIdAtual',
+    'extrairCodigoMlbOferta(dados?.item_id_loja) === itemIdAtual',
     'dados.imposto_valor',
     'dados.tarifa_ml',
     'dados.frete_ml',
@@ -32,7 +33,7 @@ const requiredSnippets = [
     "fonte_custo: 'simulacao_importacao_sku'",
     'custo_unitario: ultimoValorUnitarioProduto',
     'analise_simulacao_importacao_sku',
-    'anuncios_loja: { ...ultimosAnunciosLojaConcorrentes }',
+    'anuncios_loja: anunciosLoja',
     '.analysis-comparison-card {',
     '.analysis-price-original {',
     '.analysis-promo-badge {',
@@ -101,12 +102,19 @@ for (let index = 1; index <= 5; index += 1) {
 }
 
 const mainScript = inlineScripts.find((source) => source.includes('function normalizarDetalhePrecoOferta'));
-const pricingStart = mainScript.indexOf('function getNumber(');
-const pricingEnd = mainScript.indexOf('function setText(', pricingStart);
+const pricingStart = mainScript.indexOf('function primeiroNumeroPreco(');
+const pricingEnd = mainScript.indexOf('function aplicarDetalhePrecoOferta(', pricingStart);
+if (pricingStart < 0 || pricingEnd <= pricingStart) {
+    throw new Error('Funções reais de normalização do preço não encontradas');
+}
 const pricingFunctions = mainScript.slice(pricingStart, pricingEnd);
+const context = { window: {} };
+const custoSimuladoPath = path.join(__dirname, '..', 'static', 'medias_compras', 'importacoes-custo-simulado.js');
+vm.runInNewContext(fs.readFileSync(custoSimuladoPath, 'utf8'), context, { filename: custoSimuladoPath });
 const { normalizarDetalhePrecoOferta, manterPrecoPlanilhaComPromocao } = new Function(
+    'getNumber',
     `${pricingFunctions}; return { normalizarDetalhePrecoOferta, manterPrecoPlanilhaComPromocao };`,
-)();
+)(context.window.JKImportacoesCustoSimulado.numero);
 
 const promotional = normalizarDetalhePrecoOferta('R$ 80,00', {
     price: 80,

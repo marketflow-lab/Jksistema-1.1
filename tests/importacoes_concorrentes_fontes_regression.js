@@ -91,9 +91,13 @@ async function verifySkuContextAndVersion() {
     const cells = new Map();
     const current = { listaId: 'JK61 / A&B', sku: 'D104-32', storeId: 'store-lista', lojaNome: 'Loja da lista' };
     const validity = { data: true };
+    const custoSimuladoPath = path.join(root, 'static', 'medias_compras', 'importacoes-custo-simulado.js');
+    const contextoCusto = { window: {} };
+    vm.runInNewContext(fs.readFileSync(custoSimuladoPath, 'utf8'), contextoCusto, { filename: custoSimuladoPath });
     const bindings = {
         ultimaVersaoFontesConcorrentes: null,
         ultimosAnunciosLojaConcorrentes: {},
+        ultimoAnuncioPausadoReferencia: '',
         contextoDetalheSku: current,
         analiseComplementosPronta: true,
         custoComplementosPendente: false,
@@ -102,7 +106,9 @@ async function verifySkuContextAndVersion() {
         dadosSkuVigentes: context => context === bindings.contextoDetalheSku && validity.data,
         obterAuthHeaders: () => ({}),
         document: { getElementById: id => cells.get(id) || null },
+        getNumber: contextoCusto.window.JKImportacoesCustoSimulado.numero,
         setLinkConcorrente: () => {},
+        atualizarTodasMargensConcorrentes: () => {},
         normalizarDetalhePrecoOferta: value => value,
         aplicarDetalhePrecoOferta: (kind, number, value) => {
             cells.set((kind === 'mlb' ? 'vMlb' : 'vConcorrente') + number, { textContent: value });
@@ -121,7 +127,7 @@ async function verifySkuContextAndVersion() {
         },
     };
     const context = loadFunctions(skuHtml, [
-        'normSku', 'getNumber', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
+        'normSku', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
         'fontesAnunciosDaLista', 'custoSimuladoDisponivel',
         'aplicarLinksCacheSku', 'coletarAnaliseConcorrentes', 'salvarAnaliseConcorrentes',
     ], bindings);
