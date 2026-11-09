@@ -5120,10 +5120,18 @@
             var listaCheck = document.getElementById('modalListasCheck');
             var tituloEl = document.getElementById('modalEmbarqueTitulo');
             if (!modal || !inputNome || !listaCheck) return;
+            var embarques = carregarEmbarques();
             var embarqueAtual = embarqueId
-                ? (carregarEmbarques().find(function(e) { return e.id === embarqueId; }) || null)
+                ? (embarques.find(function(e) { return e.id === embarqueId; }) || null)
                 : null;
-            var idsAtivos = new Set((embarqueAtual ? embarqueAtual.lista_ids : []).map(String));
+            var idsAtivos = new Set((embarqueAtual?.lista_ids || []).map(String));
+            var idsEmbarcados = new Set(embarques.flatMap(function(e) {
+                return (e.lista_ids || []).map(String);
+            }));
+            var listasDisponiveis = (todasListas || []).filter(function(l) {
+                var listaId = String(l.id || '');
+                return idsAtivos.has(listaId) || !idsEmbarcados.has(listaId);
+            });
             if (tituloEl) tituloEl.textContent = embarqueAtual ? 'Editar Embarque' : 'Organizar Embarque';
             inputNome.value = embarqueAtual ? (embarqueAtual.nome || '') : '';
             var camposRastreamento = [
@@ -5146,10 +5154,10 @@
             });
             preencherArmadorSugerido();
             listaCheck.innerHTML = '';
-            if (!todasListas || !todasListas.length) {
+            if (!listasDisponiveis.length) {
                 listaCheck.innerHTML = '<div class="muted">Nenhuma lista disponível.</div>';
             } else {
-                todasListas.forEach(function(l) {
+                listasDisponiveis.forEach(function(l) {
                     var listaId = String(l.id || '');
                     var lojaLista = obterLojaLista(l);
                     var div = document.createElement('label');
