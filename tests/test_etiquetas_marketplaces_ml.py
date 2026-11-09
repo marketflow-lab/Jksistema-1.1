@@ -226,7 +226,10 @@ def test_ordenacao_preserva_pedido_sku_e_chave_de_cada_etiqueta(personalizado) -
             if indice == 1:
                 etiqueta.insert_text((20, 80), f"SKU {sku}\nQTD {qtd}", fontsize=8)
             danfe = fonte.new_page(width=283, height=390)
-            danfe.insert_text((20, 30), f"DANFE\nPEDIDO {pedido}\nCHAVE DE ACESSO\n{chave}", fontsize=7)
+            identificacao = f"DANFE\nPEDIDO {pedido}"
+            if indice == 2:
+                identificacao = "DANFE SIMPLIFICADO\nDESTINATARIO: CLIENTE TESTE"
+            danfe.insert_text((20, 30), f"{identificacao}\nCHAVE DE ACESSO\n{chave}", fontsize=7)
 
         # A lista vem em outra sequência e um registro diverge do SKU na etiqueta.
         ordem_manifesto = [3, 2, 5, 1, 0]
@@ -263,6 +266,8 @@ def test_ordenacao_preserva_pedido_sku_e_chave_de_cada_etiqueta(personalizado) -
             rodape = pagina.get_text(clip=fitz.Rect(0, 390, 283, 425))
             assert rodape.split() == sku_text.split()
             assert [chave for chave in chaves if chave in texto.replace(" ", "").replace("\n", "")] == [chaves[indice]]
+            codigo_barras = fitz.Pixmap(gerar_imagem_barcode(chaves[indice]))
+            assert codigo_barras.digest in {imagem["digest"] for imagem in pagina.get_image_info(hashes=True)}
             assert str(ordem) in pagina.get_text(clip=fitz.Rect(252, 0, 283, 20)).splitlines()
     with fitz.open(stream=resultado["out_lista"], filetype="pdf") as lista:
         assert [pagina.get_text().splitlines() for pagina in lista] == [linhas_inversas, linhas]
@@ -464,3 +469,113 @@ def test_manifesto_tabular_sem_divisoria_segura_preserva_pagina_original() -> No
     with fitz.open(stream=resultado["out_lista"], filetype="pdf") as manifesto:
         assert len(manifesto) == 1
         assert manifesto[0].get_pixmap().samples == original
+
+
+def _pdf_flex_com_lista(pedidos) -> bytes:
+    with fitz.open() as doc:
+        for cabecalho, _, sku, _ in pedidos:
+            etiqueta = doc.new_page(width=283, height=425)
+            etiqueta.insert_text((16, 25), f"MERCADO ENVIOS FLEX\n{cabecalho}", fontsize=9)
+            etiqueta.insert_text((16, 360), "Destinatario: Exemplo", fontsize=8)
+            etiqueta.insert_text((16, 380), f"ARTE {sku}", fontsize=8)
+            etiqueta.draw_rect((82, 130, 190, 238), width=1)
+
+        lista = doc.new_page(width=595, height=842)
+        singular = len(pedidos) == 1
+        titulo = "Despache a sua venda" if singular else "Despachem as suas vendas"
+        lista.insert_text((28, 60), f"{titulo} o quanto antes.", fontsize=10)
+        lista.insert_text((34, 98), "Identifiicação", fontsize=9)
+        lista.insert_text((260, 98), "Produto" if singular else "Produtos", fontsize=9)
+        lista.draw_line((28, 108), (566, 108))
+        topo = 108
+        for indice, (_, refs, sku, qtd) in enumerate(pedidos):
+            lista.insert_text((34, topo + 17), refs, fontsize=9)
+            lista.insert_text(
+                (260, topo + 17), f"Produto {indice}\nSKU: {sku}\nQuantidade: {qtd}", fontsize=9,
+            )
+            topo += 62
+            lista.draw_line((28, topo), (566, topo))
+        return doc.tobytes()
+
+
+@pytest.mark.parametrize("personalizado", [False, True])
+@pytest.mark.parametrize("singular", [False, True])
+def test_flex_vincula_venda_pack_e_envio_a_lista_de_separacao(singular, personalizado) -> None:
+    pedidos = [
+        ("Envio: 7700000 0001\nPack ID: 23000 00000000001",
+         "Pack ID: 2300000000000001\nVenda: 2300000000000010", "7-KIT", 1),
+        ("Envio: 7700000 0002", "Envio: 77000000002", "2-ITEM", 3),
+        ("Envio: 7700000 0003\nVenda: 23000 00000000003", "Envio: 77000000003", "7-KIT", 2),
+        ("Venda: 23000 00000000004", "Venda: 2300000000000004", "7-KIT", 5),
+    ]
+    etiquetas_esperadas = [
+        ("VENDA 2300000000000001", "SKU 7-KIT x 1"),
+        ("ENVIO 77000000002", "SKU 2-ITEM 3 UNIDADES"),
+        ("VENDA 2300000000000003", "SKU 7-KIT 2 UNIDADES"),
+        ("VENDA 2300000000000004", "SKU 7-KIT 5 UNIDADES"),
+    ]
+    if singular:
+        pedidos = pedidos[:1]
+    ordem = [0] if singular else [3, 2, 0, 1]
+    resultado = processar_etiquetas_loja(
+        "Mercado Livre", _pdf_flex_com_lista(pedidos), None, None,
+        layout=layout_padrao("Mercado Livre") if personalizado else None,
+    )
+
+    assert resultado["qtd"] == len(ordem)
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as etiquetas:
+        assert len(etiquetas) == len(ordem)
+        for pagina, indice in zip(etiquetas, ordem, strict=True):
+            codigo, sku = etiquetas_esperadas[indice]
+            rodape = pagina.get_text(clip=fitz.Rect(0, 390, 283, 425))
+            lateral = pagina.get_text(clip=fitz.Rect(256, 20, 283, 385))
+            assert rodape.split() == sku.split()
+            assert codigo in lateral.splitlines()
+            if codigo.startswith("ENVIO"):
+                assert "CHAVE DE ACESSO / ENVIO" in lateral
+    texto_lista = _texto_pdf(resultado["out_lista"])
+    posicoes = [texto_lista.index(f"Produto {i}") for i in ordem]
+    assert posicoes == sorted(posicoes)
+    assert ("Total: 1 item" if singular else "Total: 8 itens") in texto_lista
+
+
+@pytest.mark.parametrize("personalizado", [False, True])
+def test_reprocessa_pdf_do_jk_sem_perder_etiquetas_ou_duplicar_camadas(personalizado) -> None:
+    dados = [
+        ("Pack ID: 2300000000000001", "SKU 7-KIT", "5 UNIDADES",
+         "VENDA 2300000000000001", "VENDA 2300000000000001"),
+        ("Pack ID: 2300000000000002", "SKU 2-ITEM  x  1", None, CHAVE_ACESSO, CHAVE_ACESSO),
+        ("Envio: 77000000003", "SKU N/D", None, "CODIGO NAO ENCONTRADO", "ENVIO 77000000003"),
+        ("Envio: 77000000004", "SKU N/D", None, "CODIGO NAO ENCONTRADO", "ENVIO 77000000004"),
+    ]
+    with fitz.open() as artes, fitz.open() as antigo:
+        for indice, (identificacao, *_) in enumerate(dados):
+            arte = artes.new_page(width=283, height=390)
+            arte.insert_text((20, 50), f"{identificacao}\nROTA X 28\nENDERECO EXEMPLO", fontsize=8)
+            arte.insert_text((259, 389), f"MARCA{indice}", fontsize=4)
+        for indice, (_, sku, selo, codigo, _) in enumerate(dados):
+            etiqueta = antigo.new_page(width=283, height=425)
+            etiqueta.show_pdf_page(fitz.Rect(0, 0, 283, 390), artes, indice)
+            etiqueta.insert_text((20, 411), sku, fontsize=11)
+            if selo:
+                etiqueta.insert_text((110, 411), selo, fontsize=11)
+            etiqueta.insert_text((262, 250), "CHAVE DE ACESSO / VENDA", rotate=90, fontsize=5)
+            etiqueta.insert_text((262, 160), codigo, rotate=90, fontsize=5)
+        resultado = processar_etiquetas_loja(
+            "Mercado Livre", antigo.tobytes(), None, None,
+            layout=layout_padrao("Mercado Livre") if personalizado else None,
+        )
+
+    assert resultado["qtd"] == len(dados)
+    assert resultado["out_lista"] is None
+    with fitz.open(stream=resultado["out_etiquetas"], filetype="pdf") as etiquetas:
+        assert len(etiquetas) == len(dados)
+        for indice, (pagina, (_, sku, selo, _, codigo)) in enumerate(zip(etiquetas, dados, strict=True)):
+            texto = pagina.get_text()
+            assert texto.count("SKU ") == 1
+            assert texto.count("CHAVE DE ACESSO /") == 1
+            assert f"MARCA{indice}" in texto
+            assert pagina.search_for(f"MARCA{indice}")[0].x0 == pytest.approx(259, abs=0.2)
+            assert codigo in texto
+            assert "CODIGO NAO ENCONTRADO" not in texto
+            assert pagina.get_text(clip=fitz.Rect(0, 390, 283, 425)).split() == (sku + " " + (selo or "")).split()

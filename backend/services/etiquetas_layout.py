@@ -208,7 +208,7 @@ def _pdf_original(doc, page_index: int, clip=None, *, counter: int | None = None
 
 
 def _overlay_atual(store: str, name: str, *, sku_text="",
-                   code=None, code_text=None, quantidade_sku=None) -> bytes | None:
+                   code=None, code_text=None, code_title=None, quantidade_sku=None) -> bytes | None:
     """Build isolated layers at the unchanged processor's point coordinates."""
     with fitz.open() as overlay:
         page = overlay.new_page(width=283, height=425)
@@ -219,7 +219,7 @@ def _overlay_atual(store: str, name: str, *, sku_text="",
             else:
                 desenhar_rodape_sku(page, sku_text, cor=color, quantidade=quantidade_sku)
         else:
-            title = "CHAVE DE ACESSO / VENDA"
+            title = code_title or "CHAVE DE ACESSO / VENDA"
             text = (code_text or code) if code else "CODIGO NAO ENCONTRADO"
             text_size = 5.5 if code else 5
             text_color = (0, 0, 0) if code else (0.5, 0.5, 0.5)
@@ -276,7 +276,7 @@ def _separar_danfe(original: bytes, selection: dict) -> tuple[bytes, bytes]:
 
 
 def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
-                               code=None, code_text=None, clip=None,
+                               code=None, code_text=None, code_title=None, clip=None,
                                extra_text="", counter=None, embedded_danfe=False,
                                collector=None, store="Mercado Livre", quantidade_sku=None) -> None:
     """Compose raw source plus new layers once, for print and for preview."""
@@ -289,7 +289,9 @@ def renderizar_etiqueta_layout(page, doc, page_index, *, layout, sku_text,
         "sku": _overlay_atual(
             store, "sku", sku_text=sku_text, quantidade_sku=quantidade_sku,
         ),
-        "danfe": None if embedded_danfe else _overlay_atual(store, "danfe", code=code, code_text=code_text),
+        "danfe": None if embedded_danfe else _overlay_atual(
+            store, "danfe", code=code, code_text=code_text, code_title=code_title,
+        ),
     }
     warnings = []
     if layout.get("danfe_source"):

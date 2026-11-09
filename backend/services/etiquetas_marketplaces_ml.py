@@ -26,8 +26,22 @@ from backend.services.etiquetas_marketplaces_common import (
 
 _ID_VENDA_ML = r"\b(?:N[\u00ba\u00b0o]?\s*DA\s*VENDA|ID\s*DA\s*VENDA|VENDA|PEDIDO)\b"
 _ID_PACK_ML = r"\b(?:PACK\s*ID|ID\s*DO\s*PACK|ID\s*DO\s*PACOTE|PACOTE)\b"
-_ID_VALOR_ML = r"\s*[:#-]?\s*(?P<identificador>[A-Z0-9.\-]{6,})(?![\w.\-])"
-_IDS_ML = re.compile(rf"(?:(?P<venda>{_ID_VENDA_ML})|(?P<pacote>{_ID_PACK_ML})){_ID_VALOR_ML}", re.IGNORECASE)
+_ESPACO_HORIZONTAL_ML = r"[^\S\r\n]"
+# No Flex, a venda ou pack de 16 dígitos pode vir separado em 5 + 11.
+_ID_VALOR_ML = (
+    rf"\s*[:#-]?\s*(?P<identificador>[0-9]{{5}}{_ESPACO_HORIZONTAL_ML}+[0-9]{{11}}"
+    r"|[A-Z0-9.\-]{6,})(?![\w.\-])"
+)
+# O envio aparece como campo próprio e pode vir em 7 + 4 dígitos na etiqueta.
+_ID_ENVIO_ML = (
+    rf"^{_ESPACO_HORIZONTAL_ML}*ENVIO{_ESPACO_HORIZONTAL_ML}*:{_ESPACO_HORIZONTAL_ML}*"
+    rf"(?P<envio>[0-9]{{7}}{_ESPACO_HORIZONTAL_ML}*[0-9]{{4}}){_ESPACO_HORIZONTAL_ML}*$"
+)
+_IDS_ML = re.compile(
+    rf"(?:(?P<venda>{_ID_VENDA_ML})|(?P<pacote>{_ID_PACK_ML})){_ID_VALOR_ML}|{_ID_ENVIO_ML}",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ORDEM_IDS_ML = ("venda", "pacote", "envio")
 _CODIGO_ENVIO_ML = re.compile(
     r"(?:[A-F0-9]{8}(?:-[A-F0-9]{4}){3}-[A-F0-9]{12}|MEL(?=[A-Z0-9]*[0-9])[A-Z0-9]{6,})",
     re.IGNORECASE,
@@ -49,13 +63,29 @@ _QUANTIDADE_TABELA_ML = re.compile(
     r"([0-9]{1,3}(?:\.[0-9]{3}){1,2}|[0-9]{1,9})[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
 )
-_FRASE_LISTA_ML = "DESPACHEM AS SUAS VENDAS O QUANTO ANTES"
+_TITULOS_LISTA_ML = (
+    "DESPACHEM AS SUAS VENDAS O QUANTO ANTES",
+    "DESPACHE A SUA VENDA O QUANTO ANTES",
+    "MANIFESTO",
+    "RESUMO DO PEDIDO",
+    "RELATÓRIO DE",
+)
+_TITULO_VENDA_ML = "CHAVE DE ACESSO / VENDA"
+_TITULO_ENVIO_ML = "CHAVE DE ACESSO / ENVIO"
+_TITULOS_CODIGO_ML = (_TITULO_VENDA_ML, _TITULO_ENVIO_ML)
+_AREA_ARTE_ML = fitz.Rect(0, 0, 283, 390)
+_RODAPE_PROCESSADO_ML = re.compile(
+    r"SKU (?P<sku>[A-Z0-9_.\-/]+(?: [A-Z0-9_.\-/]+)*?) "
+    r"(?:X (?P<simples>[0-9]{1,9})|(?P<unidades>[0-9]{1,9}) UNIDADES)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
 class _EtiquetaMl:
     pagina: int
     ids: tuple[str, ...]
+    tipo_pedido: str
     dados_sku: tuple[str, str] | None
     chave: str | None
     danfe_embutida: bool
@@ -65,28 +95,36 @@ class _EtiquetaMl:
         return self.ids[0] if self.ids else None
 
 
+@dataclass(frozen=True)
+class _DadosEtiquetaProcessadaMl:
+    dados_sku: tuple[str, str] | None
+    chave: str | None
+    referencia: tuple[str, str] | None
+
+
 def _normalizar_id_ml(valor):
-    """Normaliza IDs de venda/pack para facilitar o vínculo entre lista e etiqueta."""
+    """Normaliza IDs de venda, pack e envio para vincular lista e etiqueta."""
     if not valor:
         return None
     return re.sub(r'[^A-Z0-9]', '', str(valor).upper())
 
 
+def _referencia_ml(match):
+    tipo = "envio" if match["envio"] else "venda" if match["venda"] else "pacote"
+    return tipo, _normalizar_id_ml(match["envio"] or match["identificador"])
+
+
+def _extrair_referencias_ml(texto):
+    referencias = dict.fromkeys(_referencia_ml(match) for match in _IDS_ML.finditer(texto or ""))
+    return sorted(
+        (ref for ref in referencias if ref[1]),
+        key=lambda ref: _ORDEM_IDS_ML.index(ref[0]),
+    )
+
+
 def _extrair_ids_ml(texto):
-    """Extrai possíveis IDs de venda/pack em layouts diversos (inclui Flex)."""
-    if not texto:
-        return []
-
-    padroes = (_ID_VENDA_ML + _ID_VALOR_ML, _ID_PACK_ML + _ID_VALOR_ML)
-
-    ids = []
-    texto_up = texto.upper()
-    for padrao in padroes:
-        for m in re.finditer(padrao, texto_up, flags=re.IGNORECASE):
-            valor = _normalizar_id_ml(m.group(1))
-            if valor and valor not in ids:
-                ids.append(valor)
-    return ids
+    """Extrai IDs de venda, pack e envio, em ordem de prioridade."""
+    return list(dict.fromkeys(identificador for _, identificador in _extrair_referencias_ml(texto)))
 
 
 def _extrair_sku_do_segmento_ml(segmento):
@@ -242,11 +280,16 @@ def _produto_tabela_ml(texto, sku, bordas, pagina, faixa, marcas, glifos):
     return ProdutoListaPDF(sku, total, bordas, selos)
 
 
+def _eh_danfe_ml(texto_maiusculo):
+    return any(marcador in texto_maiusculo for marcador in (
+        "DANFE", "DOCUMENTO AUXILIAR", "VALOR TOTAL DA NOTA", "BASE DE CÁLCULO", "VALOR DO ICMS",
+    ))
+
+
 def _eh_lista_ml(texto):
     texto = texto.upper()
     return (
-        _FRASE_LISTA_ML in texto
-        or any(titulo in texto for titulo in ("MANIFESTO", "RESUMO DO PEDIDO", "RELATÓRIO DE"))
+        any(titulo in texto for titulo in _TITULOS_LISTA_ML)
         or (texto.count("PACK ID") >= 6 and "DESTINATÁRIO" not in texto)
     )
 
@@ -259,7 +302,7 @@ def _cabecalho_tabela_ml(pagina):
         # Alguns PDFs do Mercado Livre extraem o título com um "i" duplicado.
         if titulo in {"identificacao", "identifiicacao"}:
             identificacoes.append(fitz.Rect(palavra[:4]))
-        elif titulo == "produtos":
+        elif titulo in {"produto", "produtos"}:
             produtos.append(fitz.Rect(palavra[:4]))
 
     for esquerda in sorted(identificacoes, key=lambda caixa: caixa.y0):
@@ -320,16 +363,13 @@ def _divisorias_tabela_ml(pagina, esquerda, direita):
 
 
 def _ids_linha_tabela_ml(identificacao):
-    vendas, pacotes = set(), set()
-    for match in _IDS_ML.finditer(identificacao):
-        identificador = _normalizar_id_ml(match.group("identificador"))
-        (vendas if match.group("venda") else pacotes).add(identificador)
+    referencias = _extrair_referencias_ml(identificacao)
     codigos = [linha.strip() for linha in identificacao.splitlines() if linha.strip()]
-    envios = [codigo for codigo in codigos if _CODIGO_ENVIO_ML.fullmatch(codigo)]
-    if len(vendas) > 1 or len(pacotes) > 1 or len(envios) > 1:
+    codigos_sem_legenda = [codigo for codigo in codigos if _CODIGO_ENVIO_ML.fullmatch(codigo)]
+    if len(referencias) > len({tipo for tipo, _ in referencias}) or len(codigos_sem_legenda) > 1:
         return None
 
-    ids = _extrair_ids_ml(identificacao)
+    ids = [identificador for _, identificador in referencias]
     if ids and codigos and _CODIGO_ENVIO_ML.fullmatch(codigos[0]):
         ids.append(_normalizar_id_ml(codigos[0]))
     return tuple(dict.fromkeys(ids))
@@ -452,21 +492,74 @@ def _mapear_manifestos_ml(textos, linhas_tabela=()):
             if not dados:
                 continue
 
-            aliases = [match.group("identificador")]
+            tipo, identificador = _referencia_ml(match)
+            registrar(identificador, dados)
             if indice > 0 and re.fullmatch(r"[ \t]*(?:\n[ \t]*)?", segmentos[indice]):
-                anterior = ids[indice - 1]
-                if bool(anterior.group("venda")) != bool(match.group("venda")):
-                    aliases.append(anterior.group("identificador"))
-
-            for alias in aliases:
-                identificador = _normalizar_id_ml(alias)
-                registrar(identificador, dados)
+                tipo_anterior, id_anterior = _referencia_ml(ids[indice - 1])
+                if tipo_anterior != tipo:
+                    registrar(id_anterior, dados)
 
     return {identificador: dados for identificador, dados in dados_por_id.items() if identificador not in conflitos}
 
 
-def _resolver_pedido_ml(texto, mapa_ids_dados):
-    ids = _extrair_ids_ml(texto)
+def _reaproveitar_etiqueta_processada_ml(pagina, texto):
+    """Separa a arte do rodapé e da coluna de uma saída padrão do JK."""
+    if (
+        pagina.rotation or pagina.rect != fitz.Rect(0, 0, 283, 425)
+        or not any(titulo in texto for titulo in _TITULOS_CODIGO_ML)
+    ):
+        return None
+
+    rodape = " ".join(pagina.get_text(clip=fitz.Rect(0, 390, 283, 425)).split())
+    dados_sku = None
+    if rodape != "SKU N/D":
+        sku = _RODAPE_PROCESSADO_ML.fullmatch(rodape)
+        if sku is None:
+            return None
+        codigo_sku = sku["sku"].replace(" ", "")
+        if len(codigo_sku) > 60 or codigo_sku.upper() in _SKUS_INVALIDOS_ML:
+            return None
+        dados_sku = (codigo_sku, sku["simples"] or sku["unidades"])
+
+    lateral = pagina.get_text(clip=fitz.Rect(256, 20, 283, 385)).splitlines()
+    codigo = next((
+        valor.strip()
+        for titulo, valor in zip(lateral, lateral[1:])
+        if titulo.strip() in _TITULOS_CODIGO_ML
+    ), "")
+    chave = codigo if re.fullmatch(r"[0-9]{44}", codigo) else None
+    referencia = None
+    if not chave and codigo != "CODIGO NAO ENCONTRADO":
+        match = re.fullmatch(r"(VENDA|ENVIO) ([A-Z0-9]+)", codigo)
+        if not match:
+            return None
+        referencia = (match[1].lower(), match[2])
+
+    # O layout padrão desenha a arte em um único formulário PDF, antes das
+    # camadas do JK. Só remova as camadas quando essa estrutura for confirmada.
+    conteudos = pagina.get_contents()
+    formas = [(nome, caixa) for _, nome, pai, caixa in pagina.get_xobjects() if pai == 0]
+    if len(conteudos) < 2 or len(formas) != 1:
+        return None
+    nome, caixa = formas[0]
+    stream_arte = pagina.parent.xref_stream(conteudos[0]) or b""
+    if (
+        not re.fullmatch(r"fzFrm[0-9]+", nome)
+        or not fitz.Rect(-0.1, -0.1, 283.1, 390.1).contains(fitz.Rect(caixa) * pagina.transformation_matrix)
+        or stream_arte.split() != [b"q", f"/{nome}".encode(), b"Do", b"Q"]
+    ):
+        return None
+
+    pagina.set_contents(conteudos[0])
+    return _DadosEtiquetaProcessadaMl(dados_sku, chave, referencia)
+
+
+def _resolver_pedido_ml(texto, mapa_ids_dados, anterior=None):
+    referencias = _extrair_referencias_ml(texto)
+    if not referencias and anterior and anterior.referencia:
+        referencias.append(anterior.referencia)
+    tipo_pedido = referencias[0][0] if referencias else "venda"
+    ids = list(dict.fromkeys(identificador for _, identificador in referencias))
     if not ids and mapa_ids_dados:
         # Alguns layouts imprimem o código sem a legenda da venda. Compare
         # tokens completos para evitar vincular um ID que é prefixo de outro.
@@ -479,7 +572,9 @@ def _resolver_pedido_ml(texto, mapa_ids_dados):
     dados_sku = next(iter(dados_manifesto)) if len(dados_manifesto) == 1 else None
     skus_etiqueta = _skus_explicitos_ml(texto)
     if len(skus_etiqueta) > 1:
-        return ids, None
+        return ids, None, tipo_pedido
+    if not dados_manifesto and anterior:
+        dados_sku = anterior.dados_sku
     if skus_etiqueta:
         sku_etiqueta = skus_etiqueta[0]
         qtd_etiqueta = _extrair_qtd_ml(texto, default=None)
@@ -487,7 +582,7 @@ def _resolver_pedido_ml(texto, mapa_ids_dados):
             qtd_etiqueta = dados_sku[1]
         dados_sku = (sku_etiqueta, qtd_etiqueta or "1")
 
-    return ids, dados_sku
+    return ids, dados_sku, tipo_pedido
 
 
 def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=None, limite_etiquetas=None):
@@ -498,13 +593,23 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
     doc_etiquetas = fitz.open()
     doc_lista = fitz.open()
     progress_bar.progress(20, text="Mapeando SKUs...")
-    textos_paginas = [pagina.get_text() for pagina in doc_origem]
+    textos_paginas = []
+    processadas = {}
+    for pagina in doc_origem:
+        texto = pagina.get_text()
+        anterior = _reaproveitar_etiqueta_processada_ml(pagina, texto)
+        if anterior is not None:
+            processadas[pagina.number] = anterior
+            texto = pagina.get_text()
+        textos_paginas.append(texto)
     paginas_lista = {}
     linhas_por_pagina = {}
     paginas_tabela = set()
     dados_tabela = []
     for indice, texto in enumerate(textos_paginas):
-        cabecalho = _cabecalho_tabela_ml(doc_origem[indice]) if "produtos" in texto.casefold() else None
+        if indice in processadas:
+            continue
+        cabecalho = _cabecalho_tabela_ml(doc_origem[indice]) if "produto" in texto.casefold() else None
         if not _eh_lista_ml(texto) and cabecalho is None:
             continue
 
@@ -537,29 +642,33 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
             i += 1
             continue
 
-        tem_financeiro = any(t in texto_atual for t in ["VALOR TOTAL DA NOTA", "BASE DE CÁLCULO", "VALOR DO ICMS"])
-        eh_danfe = "DANFE" in texto_atual or "DOCUMENTO AUXILIAR" in texto_atual or tem_financeiro
-        if eh_danfe or ("DECLARAÇÃO DE CONTEÚDO" in texto_atual and "DESTINATÁRIO" in texto_atual and "VALOR TOTAL" in texto_atual):
+        anterior = processadas.get(i)
+        eh_declaracao = all(t in texto_atual for t in ("DECLARAÇÃO DE CONTEÚDO", "DESTINATÁRIO", "VALOR TOTAL"))
+        if anterior is None and (_eh_danfe_ml(texto_atual) or eh_declaracao):
             i += 1
             continue
 
-        ids_pagina, dados_sku = _resolver_pedido_ml(texto_pagina, mapa_ids_dados)
+        ids_pagina, dados_sku, tipo_pedido = _resolver_pedido_ml(texto_pagina, mapa_ids_dados, anterior)
         chave_embutida = extrair_chave_acesso(texto_pagina) if "CHAVE DE ACESSO" in texto_atual else None
-        chave_declaracao = None
+        chave_fiscal = None
         salto = 1
-        if i + 1 < len(textos_paginas) and i + 1 not in paginas_lista:
+        if i + 1 < len(textos_paginas) and i + 1 not in paginas_lista and i + 1 not in processadas:
             texto_prox = textos_paginas[i + 1].upper()
             prox_tem_chave = any(t in texto_prox for t in ("CHAVE DE ACESSO", "DANFE", "DECLARAÇÃO"))
-            prox_eh_etiqueta = any(t in texto_prox for t in ("DESTINATÁRIO", "DESTINATARIO", "RECEBEDOR"))
-            if prox_tem_chave and not prox_eh_etiqueta:
+            prox_eh_etiqueta = any(t in texto_prox for t in (
+                "DESTINATÁRIO", "DESTINATARIO", "RECEBEDOR", *_TITULOS_CODIGO_ML,
+            ))
+            # O DANFE simplificado também traz o campo de destinatário.
+            if prox_tem_chave and (_eh_danfe_ml(texto_prox) or not prox_eh_etiqueta):
                 salto = 2
-                ids_declaracao = _extrair_ids_ml(texto_prox)
-                if not ids_pagina or not ids_declaracao or set(ids_pagina).intersection(ids_declaracao):
-                    chave_declaracao = extrair_chave_acesso(texto_prox)
+                ids_fiscais = _extrair_ids_ml(texto_prox)
+                if not ids_pagina or not ids_fiscais or set(ids_pagina).intersection(ids_fiscais):
+                    chave_fiscal = extrair_chave_acesso(texto_prox)
 
         etiquetas.append(_EtiquetaMl(
-            i, tuple(ids_pagina), dados_sku,
-            chave_embutida or chave_declaracao, bool(chave_embutida),
+            i, tuple(ids_pagina), tipo_pedido, dados_sku,
+            chave_embutida or chave_fiscal or (anterior.chave if anterior else None),
+            bool(chave_embutida),
         ))
         i += salto
 
@@ -586,6 +695,12 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
 
         i, id_correspondente = etiqueta.pagina, etiqueta.pedido
         dados_sku, chave_numeros = etiqueta.dados_sku, etiqueta.chave
+        codigo_barra_base = chave_numeros or id_correspondente
+        codigo_e_envio = not chave_numeros and etiqueta.tipo_pedido == "envio"
+        tipo_codigo = "ENVIO" if codigo_e_envio else "VENDA"
+        titulo_codigo = _TITULO_ENVIO_ML if codigo_e_envio else _TITULO_VENDA_ML
+        texto_codigo = chave_numeros or (f"{tipo_codigo} {id_correspondente}" if id_correspondente else None)
+        recorte = _AREA_ARTE_ML if i in processadas else None
         sku_text = f"SKU {dados_sku[0]}  x  {dados_sku[1]}" if dados_sku else "SKU N/D"
         quantidade_sku = dados_sku[1] if dados_sku else None
         count_etiquetas += 1
@@ -595,8 +710,7 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
             renderizar_etiqueta_layout(
                 nova_pagina, doc_origem, i, layout=layout, store='Mercado Livre',
                 sku_text=sku_text, quantidade_sku=quantidade_sku,
-                code=chave_numeros or id_correspondente,
-                code_text=chave_numeros or (f"VENDA {id_correspondente}" if id_correspondente else None),
+                code=codigo_barra_base, code_text=texto_codigo, code_title=titulo_codigo, clip=recorte,
                 counter=count_etiquetas, embedded_danfe=etiqueta.danfe_embutida,
                 collector=component_collector,
             )
@@ -605,14 +719,11 @@ def processar_mercado_livre(uploaded_file, *, layout=None, component_collector=N
         # Mantem a escala original; a DANFE usa a margem lateral existente.
         if quantidade_sku is not None and int(quantidade_sku) > 1:
             nova_pagina.insert_font(fontname="hebo")
-        nova_pagina.show_pdf_page(fitz.Rect(0, 0, 283, 390), doc_origem, i)
+        nova_pagina.show_pdf_page(_AREA_ARTE_ML, doc_origem, i, clip=recorte)
         cor_sku = (0, 0, 0) if dados_sku else (1, 0, 0)
         desenhar_rodape_sku(nova_pagina, sku_text, cor=cor_sku, quantidade=quantidade_sku)
 
-        codigo_barra_base = chave_numeros or id_correspondente
-        titulo_codigo = "CHAVE DE ACESSO / VENDA"
-        if codigo_barra_base:
-            texto_codigo = chave_numeros if chave_numeros else f"VENDA {id_correspondente}"
+        if texto_codigo:
             tamanho_codigo = 5.5
             cor_codigo = (0, 0, 0)
         else:
