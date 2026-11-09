@@ -43,7 +43,7 @@ async function installRoutes(page) {
       body: fs.readFileSync(path.join(root, 'static/importacoes.html')) });
     if (p === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript',
       body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });
-    if (p.startsWith('/medias_compras/')) return route.fulfill({ status: 200,
+    if (p === '/cache-persistente.js' || p.startsWith('/medias_compras/')) return route.fulfill({ status: 200,
       contentType: p.endsWith('.css') ? 'text/css' : 'application/javascript',
       body: fs.readFileSync(path.join(root, 'static', p.slice(1))) });
     if (p === '/ia-sidebar.js' || p === '/favicon.ico') return route.fulfill({ status: 200, body: '' });

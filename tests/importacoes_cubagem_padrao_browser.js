@@ -96,15 +96,19 @@ async function environment(browser, options = {}) {
         assert.deepStrictEqual(lista.state.errors, []);
         await lista.context.close();
 
-        const fallback = await environment(browser, { list: { ...fixture, status: 'Lista gerada', itens: [
-            { SKU: '001', Quantidade: 2 }, { SKU: '1', Quantidade: 2 }, { SKU: 'A-1', Quantidade: 1 },
-        ] } });
+        const fallback = await environment(browser, { list: {
+            ...fixture, status: 'Lista gerada', total_m3: 0, m3_completo: false,
+            itens: [{ SKU: '001', Quantidade: 2 }, { SKU: '1', Quantidade: 2 }, { SKU: 'A-1', Quantidade: 1 }],
+        } });
         await fallback.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
         await fallback.page.locator('tr[data-sku="001"]').waitFor();
         await fallback.page.waitForFunction(() => mapaM3IndividualCarregado && !mapaM3IndividualCarregando);
         assert.strictEqual(await fallback.page.locator('tr[data-sku="001"] [data-col-key="m3"]').textContent(), 'Cubagem pendente', '001 não herda SKU 1 nem loja X');
         assert.strictEqual(await fallback.page.locator('tr[data-sku="A-1"] [data-col-key="m3"]').textContent(), 'Cubagem pendente', 'A-1 não herda A1');
         assert.strictEqual(await fallback.page.locator('tr[data-sku="1"] [data-col-key="m3"]').textContent(), '0,8000');
+        const resumoParcial = fallback.page.locator('#resumoTopo .resumo-card')
+            .filter({ has: fallback.page.getByText('M³ Total parcial', { exact: true }) });
+        assert.strictEqual(await resumoParcial.locator('.value').textContent(), '0,8000');
         assert.strictEqual(fallback.state.catalog, 1);
         assert.strictEqual(fallback.state.global, 0);
         assert.deepStrictEqual(fallback.state.errors, []);
@@ -140,11 +144,19 @@ async function environment(browser, options = {}) {
 
         const panorama = await environment(browser);
         await panorama.page.goto('http://jk.test/importacoes.html');
-        const calc = await panorama.page.evaluate(itens => ({
-            pendente: embObterM3TotalItem(itens[1]), historico: embObterM3TotalItem(itens[2]), zero: embObterM3TotalItem(itens[3]),
-            resumo: formatarM3Resumo({ total_m3: 0.3, m3_completo: false, m3_pendente_itens: 1 }),
-        }), fixture.itens);
-        assert.deepStrictEqual(calc, { pendente: null, historico: 0.3, zero: 0, resumo: '0,30 m³ (parcial)' });
+        const calc = await panorama.page.evaluate(itens => {
+            function medir(item) {
+                const { totalM3, m3Completo } = JKImportacoesCustoSimulado.calcularResumo({ itens: [item] });
+                return [totalM3, m3Completo];
+            }
+            return {
+                pendente: medir(itens[1]), historico: medir(itens[2]), zero: medir(itens[3]),
+                resumo: formatarM3Resumo({ total_m3: 0.3, m3_completo: false, m3_pendente_itens: 1 }),
+            };
+        }, fixture.itens);
+        assert.deepStrictEqual(calc, {
+            pendente: [0, false], historico: [0.3, true], zero: [0, true], resumo: '0,30 m³ (parcial)',
+        });
         await panorama.context.close();
 
         const cadastro = await environment(browser);

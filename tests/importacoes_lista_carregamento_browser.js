@@ -24,12 +24,18 @@ function fixture(id = 'A', complete = false) {
   };
 }
 
+function prepararDadosCusto(lista, cotacao = 5) {
+  Object.assign(lista, { exchange_rate: cotacao, 'Valor por M³': 50 });
+  Object.assign(lista.itens[0], { II: '10%', IPI: '5%', PIS: '2%', COFINS: '8%' });
+  return lista;
+}
+
 async function environment(browser, options = {}) {
   const context = await browser.newContext();
   const page = await context.newPage();
-  const state = { lists: { A: fixture('A', options.complete), B: fixture('B', true) },
+  const state = { lists: { A: fixture('A', options.complete), B: fixture('B', true) }, savedLists: {},
     prefs: gate(), catalog: gate(), supplier: gate(), oldCost: gate(), detail: gate(), margins: gate(), marginPatch: gate(),
-    calls: { prefs: 0, catalog: 0, globalCatalog: 0, cost: 0, detail: 0, saved: 0, polling: 0, margins: 0 },
+    calls: { prefs: 0, catalog: 0, globalCatalog: 0, cost: 0, fiscal: 0, detail: 0, saved: 0, polling: 0, margins: 0 },
     ready: false, deniedStatus: options.denyDetail ? 403 : null,
     transientRemaining: options.transient ? [503, 409] : [],
     updates: [], patches: [], errors: [] };
@@ -66,13 +72,20 @@ async function environment(browser, options = {}) {
   if (options.realCache) await page.addInitScript(() => {
     localStorage.setItem('user_data', JSON.stringify({ client_id: 'synthetic', username: 'tester', store_id: 'store-A' }));
   });
-  if (options.oldPolling403) await page.addInitScript(() => {
+  if (options.oldResponses) await page.addInitScript(() => {
     const fetch = window.fetch.bind(window);
-    // Simulate a transport that delivers a completed old request after abort.
-    window.fetch = (url, options) => String(url).includes('/listas-pedidos/A?cache_mode=stale')
-      ? new Promise(resolve => { window.releaseOldPolling = () => resolve(new Response(JSON.stringify({ detail: 'Acesso antigo negado.' }),
-        { status: 403, headers: { 'Content-Type': 'application/json' } })); })
-      : fetch(url, options);
+    // Simula respostas que chegam depois do cancelamento da lista anterior.
+    window.fetch = (url, options) => {
+      if (String(url).includes('/listas-pedidos/A?cache_mode=stale')) {
+        return new Promise(resolve => { window.releaseOldPolling = () => resolve(new Response(JSON.stringify({ detail: 'Acesso antigo negado.' }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } })); });
+      }
+      if (url === '/api/impostos/produtos' && !window.releaseOldFiscal) {
+        return new Promise(resolve => { window.releaseOldFiscal = () => resolve(new Response(JSON.stringify({ produtos: [] }),
+          { headers: { 'Content-Type': 'application/json' } })); });
+      }
+      return fetch(url, options);
+    };
   });
   const json = (route, body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
   await page.route('**/*', async route => {
@@ -88,7 +101,10 @@ async function environment(browser, options = {}) {
         body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
     }
     const fiscalSku = { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' };
-    if (pathname === '/api/impostos/produtos') return json(route, { produtos: [fiscalSku] });
+    if (pathname === '/api/impostos/produtos') {
+      ++state.calls.fiscal;
+      return json(route, { produtos: [fiscalSku] });
+    }
     if (pathname === '/api/medias-compras/listas-pedidos/A/skus/001') {
       const { itens, ...lista } = state.lists.A;
       const somenteSalvos = url.searchParams.get('somente_salvos') === 'true';
@@ -144,7 +160,7 @@ async function environment(browser, options = {}) {
         if (url.searchParams.get('somente_salvos') === 'true') {
           ++state.calls.saved;
           if (state.deniedStatus) return json(route, { detail: 'Acesso negado.' }, state.deniedStatus);
-          return json(route, { lista: fixture(match[1], options.complete) });
+          return json(route, { lista: state.savedLists[match[1]] || fixture(match[1], options.complete) });
         }
         ++state.calls.detail;
         if (state.deniedStatus) return json(route, { detail: 'Acesso negado.' }, state.deniedStatus);
@@ -366,12 +382,18 @@ async function waitUntil(predicate) {
     await slowCatalog.context.close();
 
     const queued = await environment(browser, { queuedDetail: true, transient: true, fastPolling: true, complete: true, cacheStub: true });
+    queued.state.savedLists.A = prepararDadosCusto(fixture('A', true));
+    prepararDadosCusto(queued.state.lists.A, 6);
     queued.state.prefs.resolve();
     await queued.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
     await queued.page.locator('#tbodyLista tr[data-sku="001"]').waitFor();
     await waitUntil(() => queued.state.calls.polling >= 3);
     assert.strictEqual(await queued.page.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '2');
-    assert.strictEqual(queued.state.calls.cost, 0, 'Resposta em processamento não inicia complementos nem análise');
+    await queued.page.waitForFunction(() => /131,33/.test(document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent),
+      undefined, { timeout: 5000 });
+    assert.match(await queued.page.locator('#cacheListaStatus').textContent(), /Atualizando cálculos/);
+    assert.strictEqual(queued.state.calls.fiscal, 1);
+    assert.strictEqual(queued.state.calls.cost, 0, 'A análise de custo posto aguarda a lista pronta');
     assert.strictEqual(queued.state.calls.margins, 0);
     assert.strictEqual(await queued.page.locator('#erro').textContent(), '');
     queued.state.ready = true;
@@ -379,6 +401,8 @@ async function waitUntil(predicate) {
     await queued.page.waitForFunction(() => /^(Dados|Itens) atualizados/.test(document.getElementById('cacheListaStatus').textContent)
       && !/Atualizando/.test(document.getElementById('cacheListaStatus').textContent));
     assert.strictEqual(await queued.page.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '4');
+    assert.match(await queued.page.locator('tr[data-sku="001"] [data-col-key="valor_unit_brl"]').textContent(), /157,60/);
+    assert.strictEqual(queued.state.calls.fiscal, 1, 'A versão pronta recalcula com a cotação atual e reutiliza o fiscal');
     assert.strictEqual(await queued.page.evaluate(() => cacheWrites.some(entry => entry.data?._cache?.estado === 'waiting')), false,
       'Resposta 202 não substitui o snapshot válido');
     assert.deepStrictEqual(queued.state.errors, []);
@@ -462,16 +486,20 @@ async function waitUntil(predicate) {
     assert.deepStrictEqual(denied.state.errors, []);
     await denied.context.close();
 
-    const oldDenied = await environment(browser, { oldPolling403: true, complete: true, cacheStub: true });
+    const oldDenied = await environment(browser, { oldResponses: true, complete: true, cacheStub: true });
+    oldDenied.state.savedLists.A = prepararDadosCusto(fixture('A', true));
+    prepararDadosCusto(oldDenied.state.lists.B);
     oldDenied.state.prefs.resolve();
     await oldDenied.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
     await oldDenied.page.locator('#tbodyLista tr[data-sku="001"]').waitFor();
-    await oldDenied.page.waitForFunction(() => typeof releaseOldPolling === 'function');
+    await oldDenied.page.waitForFunction(() => typeof releaseOldPolling === 'function' && typeof releaseOldFiscal === 'function');
     await oldDenied.page.evaluate(() => { history.replaceState({}, '', '?lista_id=B'); return carregarDetalheLista(); });
-    await oldDenied.page.waitForFunction(() => ultimaListaCarregada?.id === 'B');
-    await oldDenied.page.evaluate(async () => { releaseOldPolling(); await new Promise(resolve => setTimeout(resolve, 0)); });
+    const custoListaNova = 'tr[data-sku="001"] [data-col-key="valor_unit_brl"]';
+    await oldDenied.page.waitForFunction(seletor => /131,33/.test(document.querySelector(seletor)?.textContent), custoListaNova);
+    await oldDenied.page.evaluate(async () => { releaseOldPolling(); releaseOldFiscal(); await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.strictEqual(await oldDenied.page.locator('#titulo').textContent(), 'Importações - Lista B');
     assert.strictEqual(await oldDenied.page.locator('#tbodyLista tr[data-sku]').count(), 3);
+    assert.match(await oldDenied.page.locator(custoListaNova).textContent(), /131,33/, 'Resposta fiscal antiga não altera o custo da lista nova');
     assert.strictEqual(await oldDenied.page.evaluate(() => cacheInvalidations), 0, '403 de geração anterior não invalida a lista atual');
     assert.deepStrictEqual(oldDenied.state.errors, []);
     await oldDenied.context.close();

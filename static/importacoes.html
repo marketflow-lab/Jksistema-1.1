@@ -9,6 +9,7 @@
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <script src="/medias_compras/cadastros-lista.js?v=20261005-duplo-clique-v1"></script>
     <script src="/medias_compras/data-pedido-lista.js?v=20261006-data-pedido-v2"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js?v=20261109-resumo-v1"></script>
     <style>
         :root {
             --bg-a: #04070f;
@@ -2351,8 +2352,10 @@
             // verificarSessao já redireciona quando não há token.
         }
 
+        const custosImportacao = window.JKImportacoesCustoSimulado;
         let cotacaoDolarAtual = 0;
         let todasListasCache = [];
+        let detalheEmbarqueAtivo = null;
         const invoicesSalvando = new Set();
         let lojasImportacoesCache = null;
         let lojasImportacoesPromise = null;
@@ -2392,47 +2395,27 @@
             return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
-        const CUSTOS_FIXOS_IMPORTACAO_USD = Object.freeze({
-            blFee: 80,
-            desconsolidacao: 100,
-            handling: 100,
-        });
-        const CUSTOS_FIXOS_IMPORTACAO_BRL = Object.freeze({
-            desembaraco: 900,
-            expediente: 300,
-        });
-        const PICKUP_ORIGEM_USD_POR_M3 = 25.47;
-        const PICKUP_ORIGEM_USD_FIXO = 351.04;
-        const TAXAS_ORIGEM_USD_POR_M3 = 12.74;
-        const TAXAS_ORIGEM_USD_FIXO = 350.52;
-        const TRANSPORTE_RODOVIARIO_BRL_POR_M3 = 509.42;
-        const TRANSPORTE_RODOVIARIO_BRL_FIXO = 1021;
-        const CAPATAZIA_BRL_POR_M3 = 30;
-
-        function calcularPickupOrigemBrl(totalM3, dolar) {
-            const m3 = Number(totalM3 || 0);
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            return ((m3 * PICKUP_ORIGEM_USD_POR_M3) + PICKUP_ORIGEM_USD_FIXO) * cotacao;
+        function formatarValorBrl(valor) {
+            return valor > 0 ? formatarMoedaBRL(valor) : '-';
         }
 
-        function calcularTaxasOrigemBrl(totalM3, dolar) {
-            const m3 = Number(totalM3 || 0);
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            return ((m3 * TAXAS_ORIGEM_USD_POR_M3) + TAXAS_ORIGEM_USD_FIXO) * cotacao;
+        function estimativaBrlHtml(valorUsd, lista = null) {
+            const { salva, efetiva } = custosImportacao.cotacaoResumo(lista, cotacaoDolarAtual);
+            const usd = Number(valorUsd) || 0;
+            const compra = lista ? ' data-estimativa-cotacao="' + escaparHtml(String(salva || 0)) + '"' : '';
+            const valor = custosImportacao.converterUsdParaBrl(usd, efetiva);
+            return '<strong data-estimativa-usd="' + escaparHtml(String(usd)) + '"' + compra + '>' +
+                formatarValorBrl(valor) + '</strong>';
         }
 
-        function calcularTransporteRodoviarioBrl(totalM3) {
-            const m3 = Number(totalM3 || 0);
-            if (!Number.isFinite(m3)) return 0;
-            return (m3 * TRANSPORTE_RODOVIARIO_BRL_POR_M3) + TRANSPORTE_RODOVIARIO_BRL_FIXO;
-        }
-
-        function calcularCapataziaBrl(totalM3) {
-            const m3 = Number(totalM3 || 0);
-            if (!Number.isFinite(m3)) return 0;
-            return m3 * CAPATAZIA_BRL_POR_M3;
+        function repintarValoresBrl() {
+            document.querySelectorAll('[data-estimativa-usd]').forEach(el => {
+                const compra = el.dataset.estimativaCotacao;
+                const lista = compra === undefined ? null : { exchange_rate: Number(compra) };
+                const { efetiva } = custosImportacao.cotacaoResumo(lista, cotacaoDolarAtual);
+                el.textContent = formatarValorBrl(custosImportacao.converterUsdParaBrl(Number(el.dataset.estimativaUsd), efetiva));
+            });
+            if (detalheEmbarqueAtivo?.detalhes) renderCardsEmbarque(detalheEmbarqueAtivo);
         }
 
         function formatarM3(v) {
@@ -2610,15 +2593,19 @@
             }
         }
 
-        function carregarInvoiceLocal(listaId) {
-            if (!listaId) return '';
+        function carregarResumoEditavelImportacoes(listaId) {
+            if (!listaId) return {};
             try {
                 const bruto = JSON.parse(localStorage.getItem('importacoes_lista_resumo_editavel') || '{}') || {};
                 const porLista = bruto[String(listaId)];
-                return (porLista && typeof porLista === 'object') ? String(porLista.numero_invoice || '').trim() : '';
+                return porLista && typeof porLista === 'object' ? porLista : {};
             } catch (_e) {
-                return '';
+                return {};
             }
+        }
+
+        function carregarInvoiceLocal(listaId) {
+            return String(carregarResumoEditavelImportacoes(listaId).numero_invoice || '').trim();
         }
 
         function obterInvoiceLista(lista, listaId) {
@@ -3189,8 +3176,10 @@
                 }
 
                 const agora = new Date();
+                const mudou = cotacaoDolarAtual !== bid;
                 cotacaoDolarAtual = bid;
                 setFx(formatarMoedaBRL(bid), agora.toLocaleTimeString('pt-BR'));
+                if (mudou) repintarValoresBrl();
             } catch (_e) {
                 setFx('Indisponível', new Date().toLocaleTimeString('pt-BR'));
             }
@@ -3723,7 +3712,7 @@
                         '</div>' +
                         '<div class="lista-coluna lista-coluna-valores">' +
                             '<span class="lista-campo-rotulo">Total USD</span><span class="meta-pill meta-usd"><strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
-                            '<div class="lista-valor-brl"><span class="lista-campo-rotulo">Estimado em BRL</span><span class="meta-pill meta-brl"><strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span></div>' +
+                            '<div class="lista-valor-brl"><span class="lista-campo-rotulo">Estimado em BRL</span><span class="meta-pill meta-brl">' + estimativaBrlHtml(l.total_usd, l) + '</span></div>' +
                             '<div class="meta lista-card-atualizacao">Atualizada: ' + escaparHtml(formatarDataHoraCompacta(l.updated_at || l.created_at || '')) + '</div>' +
                         '</div>' +
                     '</div>';
@@ -4041,6 +4030,7 @@
             renderListas([]);
             renderEmbarques([]);
             document.getElementById('embarquesWrap')?.replaceChildren();
+            detalheEmbarqueAtivo = null;
             const detalhe = document.getElementById('embarqueDetalheView');
             if (detalhe) detalhe.style.display = 'none';
             statusCacheImportacoes(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar as listas.');
@@ -4059,260 +4049,82 @@
 
         // ─── Embarques ─────────────────────────────────────────────────────────────
 
-        /* ------- helpers para calcular cards do embarque ------- */
-        function embNormTxt(v) {
-            return String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-        }
-        function embValorNumerico(v) {
-            if (v === null || v === undefined) return 0;
-            if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
-            let s = String(v).trim().replace(/\s+/g, '').replace(/R\$/gi, '').replace(/US\$/gi, '');
-            if (!s) return 0;
-            const hasComma = s.includes(',');
-            const hasDot = s.includes('.');
-            if (hasComma && hasDot) {
-                s = s.lastIndexOf(',') > s.lastIndexOf('.') ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
-            } else if (hasComma) {
-                s = s.replace(',', '.');
-            }
-            const n = Number(s);
-            return Number.isFinite(n) ? n : 0;
-        }
-        function embObterCampo(item, chaves, pad) {
-            for (const k of (Array.isArray(chaves) ? chaves : [chaves])) {
-                if (Object.prototype.hasOwnProperty.call(item || {}, k)) {
-                    const v = item[k];
-                    if (v !== null && v !== undefined && String(v).trim() !== '') return v;
-                }
-            }
-            return pad;
-        }
-        function embObterM3TotalItem(item) {
-            const quantidade = item && item.Quantidade;
-            if (quantidade === null || quantidade === undefined || String(quantidade).trim() === '') return null;
-            const qtd = embValorNumerico(quantidade);
-            if (qtd === 0) return 0;
-            if (qtd < 0) return null;
-            const status = String(item && item['Cubagem status'] || '').trim().toLowerCase();
-            if (status === 'pendente') return null;
-            if (status === 'historico') {
-                const bruto = embObterCampo(item, ['M³', 'M3', 'm3'], '');
-                if (String(bruto).trim()) {
-                    const total = embValorNumerico(bruto);
-                    if (total >= 0) return total;
-                }
-            }
-            const individual = embValorNumerico(embObterCampo(item, ['M3 individual', 'm3 individual'], ''));
-            return individual > 0 ? individual * qtd : null;
-        }
-        function embSomarFrete(itens) {
-            return (itens || []).reduce((s, it) => s + Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0), 0);
-        }
-        function embNormalizarNcm(valor) {
-            return String(valor || '').replace(/\D/g, '');
-        }
-        function embObterNcmItem(item) {
-            const obj = item || {};
-            const aliases = ['ncm', 'codigo ncm', 'código ncm', 'codigo_ncm', 'código_ncm'];
-            for (const k of Object.keys(obj)) {
-                const nk = embNormTxt(k);
-                if (aliases.some(a => nk === a || nk.includes(a))) {
-                    const ncm = embNormalizarNcm(obj[k]);
-                    if (ncm) return ncm;
-                }
-            }
-            return '';
-        }
-        function embContarNcmsDiferentes(itens) {
-            const setNcms = new Set();
-            (Array.isArray(itens) ? itens : []).forEach(function(it) {
-                const ncm = embObterNcmItem(it);
-                if (ncm) setNcms.add(ncm);
-            });
-            return setNcms.size;
-        }
-        function embMediaPct(itens, aliases) {
-            if (!itens || !itens.length) return 0;
-            let soma = 0;
-            itens.forEach(it => {
-                soma += embValorNumerico(String(embObterCampo(it || {}, aliases, 0) ?? '').replace('%','').trim());
-            });
-            return soma / itens.length;
-        }
-        function embFormatarPct(v) {
-            const n = Number(v || 0);
-            if (!Number.isFinite(n)) return '-';
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
-        }
-        function embCalcTaxaSiscomex(totalNcm) {
-            const o36 = Math.max(0, Number(totalNcm) || 0);
-            if (o36 === 0) return 115.67;
-            if (o36 <= 2) return 115.67 + (o36 * 38.56);
-            if (o36 <= 5) return 192.79 + ((o36 - 2) * 30.85);
-            if (o36 <= 10) return 285.34 + ((o36 - 5) * 23.14);
-            if (o36 <= 20) return 401.04 + ((o36 - 10) * 15.42);
-            if (o36 <= 50) return 555.24 + ((o36 - 20) * 7.71);
-            return 786.54 + ((o36 - 50) * 3.86);
-        }
-        function embObterValorResumo(lista, itens, aliases, fallback) {
-            fallback = fallback !== undefined ? fallback : '-';
-            const alvos = (aliases || []).map(embNormTxt).filter(Boolean);
-            if (!alvos.length) return fallback;
-            function busca(obj) {
-                if (!obj || typeof obj !== 'object') return '';
-                for (const k of Object.keys(obj)) {
-                    const nk = embNormTxt(k);
-                    if (!nk) continue;
-                    if (alvos.some(a => nk === a || nk.includes(a) || a.includes(nk))) {
-                        const v = obj[k];
-                        if (v !== null && v !== undefined && String(v).trim() !== '') return String(v).trim();
-                    }
-                }
-                return '';
-            }
-            const vL = busca(lista);
-            if (vL) return vL;
-            for (const it of (itens || [])) { const v = busca(it); if (v) return v; }
-            return fallback;
+        function formatarPercentualEmbarque(valor) {
+            return Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
         }
 
-        function renderCardsEmbarque(todosItens, invoiceStr, cotacao, listaIds) {
-            var el = document.getElementById('embarqueDetalheCards');
+        function obterListaUnicaEmbarque(listaIds, listas) {
+            const ids = new Set(listaIds.map(id => String(id ?? '').trim()).filter(Boolean));
+            if (ids.size !== 1) return null;
+            return listas.find(lista => ids.has(String(lista.id || ''))) || null;
+        }
+
+        function renderCardsEmbarque(estado) {
+            const el = document.getElementById('embarqueDetalheCards');
             if (!el) return;
-            var dados = Array.isArray(todosItens) ? todosItens : [];
-            var dolar = Number(cotacao || cotacaoDolarAtual || 0);
-
-            var totalUsd = dados.reduce(function(s, it) {
-                var qtd = embValorNumerico(it && it.Quantidade);
-                var vt = embValorNumerico(it && it['Valor total']);
-                var vu = embValorNumerico(it && it['Valor unidade']);
-                return s + (it?.valor_total_informado === true || vt > 0 ? vt : qtd * vu);
-            }, 0);
-            var volumes = dados.map(embObterM3TotalItem);
-            var m3Completo = volumes.every(function(v) { return Number.isFinite(v); });
-            var totalM3 = volumes.reduce(function(s, v) { return s + (Number.isFinite(v) ? v : 0); }, 0);
-            var resumo = calcularTotaisEmbarque(listaIds, todasListasCache);
-            if (resumo.listas.length > 0 &&
-                    resumo.listas.every(l => typeof l.total_m3 === 'number' && Number.isFinite(l.total_m3))) {
-                totalM3 = resumo.totalM3;
-                m3Completo = resumo.m3Completo;
-            }
-            var valorPorM3 = m3Completo && totalM3 > 0 ? (totalUsd / totalM3) : 0;
-            var totalNcm = embContarNcmsDiferentes(dados);
-
-            var vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
-            var vmleBrlNum = (totalUsd > 0 && dolar > 0) ? (totalUsd * dolar) : 0;
-            var vmleBrl = vmleBrlNum > 0 ? formatarMoedaBRL(vmleBrlNum) : '-';
-            var freteNum = embSomarFrete(dados);
-            var freteBrlNum = (freteNum > 0 && dolar > 0) ? (freteNum * dolar) : 0;
-            var frete = freteBrlNum > 0 ? formatarMoedaBRL(freteBrlNum) : '-';
-            var freteUsd = freteNum > 0 ? formatarUSD(freteNum) : '';
-            var seguroUsdNum = (totalUsd > 0 && freteNum > 0) ? ((totalUsd + freteNum) * 0.0028) : 0;
-            var seguroNum = (seguroUsdNum > 0 && dolar > 0)
-                ? (seguroUsdNum * dolar) : 0;
-            var seguro = seguroNum > 0 ? formatarMoedaBRL(seguroNum) : '-';
-            var seguroUsd = seguroUsdNum > 0 ? formatarUSD(seguroUsdNum) : '';
-            var vmldBrlNum = vmleBrlNum + freteBrlNum + seguroNum;
-            var vmld = vmldBrlNum > 0 ? formatarMoedaBRL(vmldBrlNum) : '-';
-            var armazenagem = vmldBrlNum > 0 ? formatarMoedaBRL(vmldBrlNum * 0.035) : '-';
-            var pickupOrigemNum = calcularPickupOrigemBrl(totalM3, dolar);
-            var pickupOrigem = pickupOrigemNum > 0 ? formatarMoedaBRL(pickupOrigemNum) : '-';
-            var taxasOrigemNum = calcularTaxasOrigemBrl(totalM3, dolar);
-            var taxasOrigem = taxasOrigemNum > 0 ? formatarMoedaBRL(taxasOrigemNum) : '-';
-            var transporteRodoviarioNum = calcularTransporteRodoviarioBrl(totalM3);
-            var transporteRodoviario = transporteRodoviarioNum > 0 ? formatarMoedaBRL(transporteRodoviarioNum) : '-';
-            var capataziaNum = calcularCapataziaBrl(totalM3);
-            var capatazia = capataziaNum > 0 ? formatarMoedaBRL(capataziaNum) : '-';
-            var afrmm = (freteNum > 0 && dolar > 0) ? formatarMoedaBRL(freteNum * 0.08 * dolar) : '-';
-            var taxaSis = formatarMoedaBRL(embCalcTaxaSiscomex(totalNcm));
-
-            var totTrib = dados.reduce(function(acc, it) {
-                var qtd = embValorNumerico(it && it.Quantidade);
-                var vt = embValorNumerico(it && it['Valor total']);
-                var vu = embValorNumerico(it && it['Valor unidade']);
-                var valorUsd = it?.valor_total_informado === true || vt > 0 ? vt : qtd * vu;
-                var freteIt = Number(embObterCampo(it || {}, ['Frete Internacional'], 0) || 0);
-                var baseBrl = (valorUsd > 0 && dolar > 0) ? (valorUsd + freteIt) * dolar : 0;
-                var prodBrl = (valorUsd > 0 && dolar > 0) ? valorUsd * dolar : 0;
-                var iiPct = embValorNumerico(embObterCampo(it || {}, ['II','ii'], 0));
-                var ipiPct = embValorNumerico(embObterCampo(it || {}, ['IPI','ipi'], 0));
-                var pisPct = embValorNumerico(embObterCampo(it || {}, ['PIS','pis'], 0));
-                var cofPct = embValorNumerico(embObterCampo(it || {}, ['COFINS','cofins','Cofins'], 0));
-                var icmsPct = embValorNumerico(embObterCampo(it || {}, ['ICMS','icms'], 0));
-                var iiBrl = baseBrl > 0 && iiPct > 0 ? baseBrl * (iiPct / 100) : 0;
-                var baseIpi = prodBrl + iiBrl;
-                acc.ii += iiBrl;
-                acc.ipi += (baseIpi > 0 && ipiPct > 0) ? baseIpi * (ipiPct / 100) : 0;
-                acc.pis += baseBrl > 0 && pisPct > 0 ? baseBrl * (pisPct / 100) : 0;
-                acc.cofins += baseBrl > 0 && cofPct > 0 ? baseBrl * (cofPct / 100) : 0;
-                acc.icms += baseBrl > 0 && icmsPct > 0 ? baseBrl * (icmsPct / 100) : 0;
-                return acc;
-            }, { ii: 0, ipi: 0, pis: 0, cofins: 0, icms: 0 });
-
-            var mIi = embMediaPct(dados, ['II','ii']);
-            var mIpi = embMediaPct(dados, ['IPI','ipi']);
-            var mPis = embMediaPct(dados, ['PIS','pis']);
-            var mCof = embMediaPct(dados, ['COFINS','cofins','Cofins']);
-            var mIcms = embMediaPct(dados, ['ICMS','icms']);
-
-            // Lê campos editáveis do localStorage para cada lista do embarque e soma
-            function lerCusto(chave) {
-                try {
-                    var tudo = JSON.parse(localStorage.getItem('importacoes_lista_resumo_editavel') || '{}') || {};
-                    var soma = 0;
-                    (listaIds || []).forEach(function(id) {
-                        var d = tudo[String(id)];
-                        if (d && typeof d === 'object') soma += embValorNumerico(d[chave] || '');
-                    });
-                    return soma > 0 ? formatarMoedaBRL(soma) : '-';
-                } catch (_e) { return '-'; }
-            }
-
-            var honorariosTrading = (vmleBrlNum > 0 || freteBrlNum > 0 || seguroNum > 0)
-                ? formatarMoedaBRL((vmleBrlNum + freteBrlNum + seguroNum) * 0.03)
-                : '-';
-
-            var cards = [
+            const { listas, listaIds, detalhes } = estado;
+            const unica = obterListaUnicaEmbarque(listaIds, listas);
+            const lista = unica ? detalhes.get(String(unica.id)) || null : null;
+            const itens = [...detalhes.values()].flatMap(detalhe => detalhe.itens);
+            const agregado = lista ? null : calcularTotaisEmbarque(listaIds, todasListasCache);
+            const cubagem = agregado?.listas.length &&
+                agregado.listas.every(l => typeof l.total_m3 === 'number' && Number.isFinite(l.total_m3))
+                ? { totalM3: agregado.totalM3, m3Completo: agregado.m3Completo } : undefined;
+            const valorInformado = lista
+                ? custosImportacao.numero(carregarResumoEditavelImportacoes(lista.id).valor_por_m3) : null;
+            const resumo = custosImportacao.calcularResumo({
+                lista, itens, cotacaoAtual: cotacaoDolarAtual, cubagem,
+                valorPorM3Informado: valorInformado > 0 ? valorInformado : null,
+            });
+            const invoiceStr = listas.map(l => {
+                const atual = todasListasCache.find(item => String(item.id) === String(l.id)) || l;
+                return rotuloListaComLoja(atual, obterInvoiceLista(atual, atual.id) || atual.nome_lista || 'Sem nome');
+            }).join(', ');
+            const mostrarValorPorM3 = lista ? Number.isFinite(resumo.valorPorM3) : resumo.valorPorM3 > 0;
+            const pendente = 'Cubagem pendente';
+            const valorDeCubagem = valor => resumo.m3Completo ? formatarValorBrl(valor) : pendente;
+            const dolar = lista ? resumo.cotacaoSalva : resumo.cotacaoEfetiva;
+            const impostos = ['II', 'IPI', 'PIS', 'COFINS', 'ICMS'].map(label => {
+                const { percentual, brl } = resumo.impostos[label.toLowerCase()];
+                return { label, value: formatarPercentualEmbarque(percentual), sub: formatarValorBrl(brl) };
+            });
+            const cards = [
                 { label: 'Modalidade', value: 'Misto' },
                 { label: 'Nº Invoice', value: invoiceStr || '-' },
                 { label: 'Faturamento', value: '-' },
                 { label: 'Faixa de Imposto', value: '-' },
-                { label: m3Completo ? 'M³ Total' : 'M³ Total parcial', value: formatarM3(totalM3) },
-                { label: 'Valor por M³', value: valorPorM3 > 0 ? formatarUSD(valorPorM3) : '-' },
-                { label: 'VMLE', value: vmleUsd, sub: vmleBrl },
-                { label: 'Frete Internacional', value: frete, sub: freteUsd },
-                { label: 'Seguro Internacional 0,28%', value: seguro, sub: seguroUsd },
-                { label: 'Cotação na Compra', value: dolar > 0 ? formatarMoedaBRL(dolar) : '-', cotacao: true },
-                { label: 'VMLD', value: vmld },
-                { label: 'II', value: embFormatarPct(mIi), sub: totTrib.ii > 0 ? formatarMoedaBRL(totTrib.ii) : '-' },
-                { label: 'IPI', value: embFormatarPct(mIpi), sub: totTrib.ipi > 0 ? formatarMoedaBRL(totTrib.ipi) : '-' },
-                { label: 'PIS', value: embFormatarPct(mPis), sub: totTrib.pis > 0 ? formatarMoedaBRL(totTrib.pis) : '-' },
-                { label: 'COFINS', value: embFormatarPct(mCof), sub: totTrib.cofins > 0 ? formatarMoedaBRL(totTrib.cofins) : '-' },
-                { label: 'ICMS', value: embFormatarPct(mIcms), sub: totTrib.icms > 0 ? formatarMoedaBRL(totTrib.icms) : '-' },
-                { label: 'Armazenagem', value: armazenagem },
-                { label: 'Pick-up Origem', value: m3Completo ? pickupOrigem : 'Cubagem pendente' },
-                { label: 'Taxas de Origem', value: m3Completo ? taxasOrigem : 'Cubagem pendente' },
-                { label: 'Capatazia', value: m3Completo ? capatazia : 'Cubagem pendente' },
-                { label: 'BL Fee', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.blFee) },
-                { label: 'Desconsolidação', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao) },
-                { label: 'Handling', value: formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.handling) },
-                { label: 'Honorários Trading', value: honorariosTrading },
-                { label: 'Transporte Rodoviário', value: m3Completo ? transporteRodoviario : 'Cubagem pendente' },
-                { label: 'Desembaraço', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco) },
-                { label: 'Expediente', value: formatarMoedaBRL(CUSTOS_FIXOS_IMPORTACAO_BRL.expediente) },
-                { label: 'Taxa Siscomex', value: taxaSis },
-                { label: 'AFRMM', value: afrmm },
-                { label: 'Total NCM', value: totalNcm > 0 ? totalNcm.toLocaleString('pt-BR') : '-' },
+                { label: resumo.m3Completo ? 'M³ Total' : 'M³ Total parcial', value: formatarM3(resumo.totalM3) },
+                { label: 'Valor por M³', value: mostrarValorPorM3 ? formatarUSD(resumo.valorPorM3) : '-' },
+                { label: 'VMLE', value: resumo.totalUsd > 0 ? formatarUSD(resumo.totalUsd) : '-', sub: formatarValorBrl(resumo.vmleBrl) },
+                { label: 'Frete Internacional', value: formatarValorBrl(resumo.freteBrl), sub: resumo.freteUsd > 0 ? formatarUSD(resumo.freteUsd) : '' },
+                { label: 'Seguro Internacional 0,28%', value: resumo.seguroBrl > 0 ? formatarMoedaBRL(resumo.seguroBrl) : (resumo.seguroInformado || '-'),
+                    sub: resumo.seguroUsd > 0 ? formatarUSD(resumo.seguroUsd) : '' },
+                { label: 'Cotação na Compra', value: formatarValorBrl(dolar), cotacao: true },
+                { label: 'VMLD', value: formatarValorBrl(resumo.vmldBrl) },
+                ...impostos,
+                { label: 'Armazenagem', value: lista ? valorDeCubagem(resumo.armazenagemBrl) : formatarValorBrl(resumo.armazenagemBrl) },
+                { label: 'Pick-up Origem', value: valorDeCubagem(resumo.pickupOrigemBrl) },
+                { label: 'Taxas de Origem', value: valorDeCubagem(resumo.taxasOrigemBrl) },
+                { label: 'Capatazia', value: valorDeCubagem(resumo.capataziaBrl) },
+                { label: 'BL Fee', value: formatarUSD(resumo.fixosUsd.blFee) },
+                { label: 'Desconsolidação', value: formatarUSD(resumo.fixosUsd.desconsolidacao) },
+                { label: 'Handling', value: formatarUSD(resumo.fixosUsd.handling) },
+                { label: 'Honorários Trading', value: resumo.honorariosTradingBrl > 0 ? formatarMoedaBRL(resumo.honorariosTradingBrl) : (resumo.honorariosTradingInformados || '-') },
+                { label: 'Transporte Rodoviário', value: valorDeCubagem(resumo.transporteRodoviarioBrl) },
+                { label: 'Desembaraço', value: formatarMoedaBRL(resumo.fixosBrl.desembaraco) },
+                { label: 'Expediente', value: formatarMoedaBRL(resumo.fixosBrl.expediente) },
+                { label: 'Taxa Siscomex', value: formatarMoedaBRL(resumo.taxaSiscomexBrl) },
+                { label: 'AFRMM', value: formatarValorBrl(resumo.afrmmBrl) },
+                { label: 'Total NCM', value: lista || resumo.totalNcm > 0 ? resumo.totalNcm.toLocaleString('pt-BR') : '-' },
             ];
-            el.innerHTML = cards.map(function(c) {
+            el.innerHTML = cards.map(c => {
                 return '<div class="emb-resumo-card' + (c.cotacao ? ' emb-card-cotacao' : '') + '">' +
-                    '<div class="emb-label">' + c.label + '</div>' +
-                    '<div class="emb-value"' + (c.label === 'Nº Invoice' ? ' data-invoice-summary-ids="' + escaparHtml(JSON.stringify(listaIds || [])) + '"' : '') + '>' +
-                    (c.label === 'Nº Invoice' ? escaparHtml(c.value) : c.value) + (c.sub ? '<span class="emb-value-sub">' + c.sub + '</span>' : '') + '</div>' +
+                    '<div class="emb-label">' + escaparHtml(c.label) + '</div>' +
+                    '<div class="emb-value"' + (c.label === 'Nº Invoice' ? ' data-invoice-summary-ids="' + escaparHtml(JSON.stringify(listaIds)) + '"' : '') + '>' +
+                    escaparHtml(c.value) + (c.sub ? '<span class="emb-value-sub">' + escaparHtml(c.sub) + '</span>' : '') + '</div>' +
                 '</div>';
             }).join('');
         }
-        /* ------- fim helpers cards embarque ------- */
 
         function carregarEmbarques() {
             try { return JSON.parse(localStorage.getItem('jk_embarques_importacoes') || '[]'); }
@@ -4876,6 +4688,7 @@
             box.innerHTML = '';
             embarques.forEach(function(emb) {
                 var totais = calcularTotaisEmbarque(emb.lista_ids, todasListas);
+                const listaUnica = obterListaUnicaEmbarque(emb.lista_ids || [], totais.listas);
                 var el = document.createElement('div');
                 el.className = 'embarque-item';
                 el.setAttribute('role', 'button');
@@ -4903,7 +4716,7 @@
                     '<div class="meta-resumo">' +
                         '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3(totais.totalM3) + (totais.m3Completo ? '' : ' (parcial)') + '</strong></span>' +
                         '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
-                        '<span class="meta-pill meta-brl">Total R$: <strong>' + (totais.totalUsd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(totais.totalUsd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                        '<span class="meta-pill meta-brl">Total R$: ' + estimativaBrlHtml(totais.totalUsd, listaUnica) + '</span>' +
                     '</div>';
                 el.addEventListener('click', function(ev) {
                     var acao = ev.target.closest('[data-acao]');
@@ -4947,7 +4760,10 @@
             var cardsDiv = document.getElementById('embarqueDetalheCards');
             var listasBox = document.getElementById('embarqueDetalheListas');
             if (!view || !main || !listasBox) return;
-            var totais = calcularTotaisEmbarque(embarque.lista_ids, todasListas);
+            const listaIds = Array.isArray(embarque.lista_ids) ? [...embarque.lista_ids] : [];
+            var totais = calcularTotaisEmbarque(listaIds, todasListas);
+            const estado = { listaIds, listas: totais.listas, detalhes: null };
+            detalheEmbarqueAtivo = estado;
             if (titulo) titulo.textContent = embarque.nome || 'Embarque sem nome';
 
             // Monta lista de identificadores: Invoice ou nome da lista como fallback
@@ -4998,32 +4814,35 @@
             // Mostra placeholder enquanto carrega
             if (cardsDiv) cardsDiv.innerHTML = '<span class="emb-cards-loading">Carregando resumo...</span>';
 
-            // Busca itens de todas as listas e renderiza o card grid
-            var invoiceStr = identificadores.join(', ');
-            var _listaIds = embarque.lista_ids || [];
+            // Mantém os metadados e os itens da mesma resposta para calcular o resumo.
             if (totais.listas.length > 0) {
-                var promises = totais.listas.map(function(l) {
-                    var listaId = String(l.id || '');
-                    if (!listaId) return Promise.resolve([]);
-                    return fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
-                        method: 'GET',
-                        headers: Object.assign({}, obterAuthHeaders())
-                    }).then(function(r) {
-                        return r.ok ? r.json() : { lista: { itens: [] } };
-                    }).then(function(d) {
-                        return Array.isArray(d && d.lista && d.lista.itens) ? d.lista.itens : [];
-                    }).catch(function() { return []; });
+                const consultas = totais.listas.map(async l => {
+                    const listaId = String(l.id || '');
+                    if (!listaId) return null;
+                    try {
+                        const resp = await fetch('/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId), {
+                            method: 'GET',
+                            headers: { ...obterAuthHeaders() },
+                        });
+                        if (!resp.ok) return null;
+                        const dados = await resp.json();
+                        const lista = dados?.lista;
+                        return dados?.success !== false && String(lista?.id || '') === listaId && Array.isArray(lista.itens) ? lista : null;
+                    } catch (_erro) {
+                        return null;
+                    }
                 });
-                Promise.all(promises).then(function(resultados) {
-                    var todosItens = [].concat.apply([], resultados);
-                    const invoiceAtual = totais.listas.map(l => {
-                        const atual = todasListasCache.find(item => String(item.id) === String(l.id)) || l;
-                        return rotuloListaComLoja(atual, obterInvoiceLista(atual, atual.id) || atual.nome_lista || 'Sem nome');
-                    }).join(', ');
-                    renderCardsEmbarque(todosItens, invoiceAtual, cotacaoDolarAtual, _listaIds);
+                Promise.all(consultas).then(resultados => {
+                    if (detalheEmbarqueAtivo !== estado) return;
+                    if (resultados.some(lista => !lista)) {
+                        if (cardsDiv) cardsDiv.innerHTML = '<span class="emb-cards-loading" role="status">Resumo indisponível. Tente novamente.</span>';
+                        return;
+                    }
+                    estado.detalhes = new Map(resultados.map(lista => [String(lista.id), lista]));
+                    renderCardsEmbarque(estado);
                 });
-            } else {
-                if (cardsDiv) cardsDiv.innerHTML = '';
+            } else if (cardsDiv) {
+                cardsDiv.innerHTML = '';
             }
 
             listasBox.innerHTML = '';
@@ -5050,7 +4869,7 @@
                             window.JKDataPedidoLista.html(l) +
                             '<span class="meta-pill meta-m3">Total M³: <strong>' + formatarM3Resumo(l) + '</strong></span>' +
                             '<span class="meta-pill meta-usd">Total $: <strong>' + (l.total_usd > 0 ? formatarUSD(l.total_usd) : '-') + '</strong></span>' +
-                            '<span class="meta-pill meta-brl">Total R$: <strong>' + (l.total_usd > 0 && cotacaoDolarAtual > 0 ? formatarMoedaBRL(l.total_usd * cotacaoDolarAtual) : '-') + '</strong></span>' +
+                            '<span class="meta-pill meta-brl">Total R$: ' + estimativaBrlHtml(l.total_usd, l) + '</span>' +
                         '</div>';
                     if (listaId) {
                         var embarqueId = embarque.id || '';
@@ -5079,6 +4898,7 @@
         }
 
         function fecharDetalheEmbarque() {
+            detalheEmbarqueAtivo = null;
             var view = document.getElementById('embarqueDetalheView');
             var main = document.getElementById('vistaMain');
             var invLine = document.getElementById('embarqueInvoiceLine');

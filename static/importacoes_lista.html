@@ -9,7 +9,7 @@
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
-    <script src="/medias_compras/importacoes-custo-simulado.js"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js?v=20261109-resumo-v1"></script>
     <style>
         body {
             margin: 0;
@@ -942,22 +942,6 @@
             return Number(v || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
         }
 
-        const CUSTOS_FIXOS_IMPORTACAO_USD = Object.freeze({
-            blFee: 80,
-            desconsolidacao: 100,
-            handling: 100,
-        });
-        const CUSTOS_FIXOS_IMPORTACAO_BRL = Object.freeze({
-            desembaraco: 900,
-            expediente: 300,
-        });
-        const PICKUP_ORIGEM_USD_POR_M3 = 25.47;
-        const PICKUP_ORIGEM_USD_FIXO = 351.04;
-        const TAXAS_ORIGEM_USD_POR_M3 = 12.74;
-        const TAXAS_ORIGEM_USD_FIXO = 350.52;
-        const TRANSPORTE_RODOVIARIO_BRL_POR_M3 = 509.42;
-        const TRANSPORTE_RODOVIARIO_BRL_FIXO = 1021;
-        const CAPATAZIA_BRL_POR_M3 = 30;
 
         function formatarMoedaBR(v) {
             return Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -1789,36 +1773,6 @@
             else atualizarCustosUnitariosVisiveis();
         }
 
-        function obterValorResumo(lista, itens, aliases, fallback = '-') {
-            const alvos = (aliases || []).map((a) => normTxt(a)).filter(Boolean);
-            if (!alvos.length) return fallback;
-
-            const buscarNoObjeto = (obj) => {
-                if (!obj || typeof obj !== 'object') return '';
-                for (const k of Object.keys(obj)) {
-                    const nk = normTxt(k);
-                    if (!nk) continue;
-                    const bate = alvos.some((a) => nk === a || nk.includes(a) || a.includes(nk));
-                    if (!bate) continue;
-                    const v = obj[k];
-                    if (v !== null && v !== undefined && String(v).trim() !== '') {
-                        return String(v).trim();
-                    }
-                }
-                return '';
-            };
-
-            const vLista = buscarNoObjeto(lista);
-            if (vLista) return vLista;
-
-            const arr = Array.isArray(itens) ? itens : [];
-            for (const item of arr) {
-                const v = buscarNoObjeto(item);
-                if (v) return v;
-            }
-            return fallback;
-        }
-
         function obterValorPorAliasNormalizado(item, aliases, fallback = '') {
             const obj = item && typeof item === 'object' ? item : null;
             if (!obj) return fallback;
@@ -1836,113 +1790,6 @@
                 }
             }
             return fallback;
-        }
-
-        function mediaPercentualItens(itens, aliases) {
-            const dados = Array.isArray(itens) ? itens : [];
-            if (!dados.length) return 0;
-
-            let soma = 0;
-            dados.forEach((item) => {
-                const bruto = obterCampo(item || {}, aliases || [], 0);
-                const texto = String(bruto ?? '').replace('%', '').trim();
-                soma += valorNumerico(texto);
-            });
-
-            return soma / dados.length;
-        }
-
-        function somarFreteInternacionalItensUsd(itens) {
-            const dados = Array.isArray(itens) ? itens : [];
-            return dados.reduce((acc, item) => {
-                const freteItemUsd = Number(obterCampo(item || {}, ['Frete Internacional'], 0) || 0);
-                return acc + (Number.isFinite(freteItemUsd) ? freteItemUsd : 0);
-            }, 0);
-        }
-
-        function normalizarNcmResumo(valor) {
-            return String(valor || '').replace(/\D/g, '');
-        }
-
-        function obterNcmItemResumo(item) {
-            return normalizarNcmResumo(obterCampo(item || {}, [
-                'NCM',
-                'ncm',
-                'Codigo NCM',
-                'Código NCM',
-                'codigo_ncm',
-                'código_ncm'
-            ], ''));
-        }
-
-        function contarNcmsDiferentes(itens) {
-            const setNcms = new Set();
-            (Array.isArray(itens) ? itens : []).forEach((item) => {
-                const ncm = obterNcmItemResumo(item);
-                if (ncm) setNcms.add(ncm);
-            });
-            return setNcms.size;
-        }
-
-        function calcularTaxaSiscomexPorTotalNcm(totalNcm) {
-            const o36 = Math.max(0, Number(totalNcm) || 0);
-            if (o36 === 0) return 115.67;
-            if (o36 <= 2) return 115.67 + (o36 * 38.56);
-            if (o36 <= 5) return 192.79 + ((o36 - 2) * 30.85);
-            if (o36 <= 10) return 285.34 + ((o36 - 5) * 23.14);
-            if (o36 <= 20) return 401.04 + ((o36 - 10) * 15.42);
-            if (o36 <= 50) return 555.24 + ((o36 - 20) * 7.71);
-            return 786.54 + ((o36 - 50) * 3.86);
-        }
-
-        function calcularPickupOrigemBrl(totalM3, dolar) {
-            const m3 = Number(totalM3 || 0);
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            return ((m3 * PICKUP_ORIGEM_USD_POR_M3) + PICKUP_ORIGEM_USD_FIXO) * cotacao;
-        }
-
-        function calcularTaxasOrigemBrl(totalM3, dolar) {
-            const m3 = Number(totalM3 || 0);
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(m3) || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            return ((m3 * TAXAS_ORIGEM_USD_POR_M3) + TAXAS_ORIGEM_USD_FIXO) * cotacao;
-        }
-
-        function calcularTransporteRodoviarioBrl(totalM3) {
-            const m3 = Number(totalM3 || 0);
-            if (!Number.isFinite(m3)) return 0;
-            return (m3 * TRANSPORTE_RODOVIARIO_BRL_POR_M3) + TRANSPORTE_RODOVIARIO_BRL_FIXO;
-        }
-
-        function calcularCapataziaBrl(totalM3) {
-            const m3 = Number(totalM3 || 0);
-            if (!Number.isFinite(m3)) return 0;
-            return m3 * CAPATAZIA_BRL_POR_M3;
-        }
-
-        function calcularTaxasFixasBrl(totalNcm, dolar) {
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            const fixosUsd = CUSTOS_FIXOS_IMPORTACAO_USD.blFee
-                + CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao
-                + CUSTOS_FIXOS_IMPORTACAO_USD.handling
-                + PICKUP_ORIGEM_USD_FIXO
-                + TAXAS_ORIGEM_USD_FIXO;
-            const fixosBrl = CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco
-                + CUSTOS_FIXOS_IMPORTACAO_BRL.expediente
-                + TRANSPORTE_RODOVIARIO_BRL_FIXO
-                + calcularTaxaSiscomexPorTotalNcm(totalNcm);
-            return (fixosUsd * cotacao) + fixosBrl;
-        }
-
-        function calcularTaxasSobreM3Brl(totalM3, dolar) {
-            const m3 = Number(totalM3 || 0);
-            const cotacao = Number(dolar || 0);
-            if (!Number.isFinite(m3) || m3 <= 0 || !Number.isFinite(cotacao) || cotacao <= 0) return 0;
-            const taxasUsdPorM3 = PICKUP_ORIGEM_USD_POR_M3 + TAXAS_ORIGEM_USD_POR_M3;
-            const taxasBrlPorM3 = TRANSPORTE_RODOVIARIO_BRL_POR_M3 + CAPATAZIA_BRL_POR_M3;
-            return (m3 * taxasUsdPorM3 * cotacao) + (m3 * taxasBrlPorM3);
         }
 
         const LS_RESUMO_EDITAVEL_KEY = 'importacoes_lista_resumo_editavel';
@@ -2467,21 +2314,14 @@
             const dados = Array.isArray(itens) ? itens : [];
             const listaId = String((lista && lista.id) || getListaIdDaUrl() || '').trim();
             const resumoEditavel = carregarResumoEditavel(listaId);
-            const totalUsd = dados.reduce((acc, item) => {
-                const qtd = valorNumerico(item && item.Quantidade);
-                const total = valorNumerico(item && item['Valor total']);
-                const unit = valorNumerico(item && item['Valor unidade']);
-                return acc + (item?.valor_total_informado === true ? total : (total > 0 ? total : (qtd * unit)));
-            }, 0);
-            const totalM3 = dados.reduce((acc, item) => {
-                const m3Item = obterM3TotalItem(item);
-                return acc + (Number.isFinite(m3Item) ? m3Item : 0);
-            }, 0);
-            const totalM3Disponivel = dados.every(item => Number.isFinite(obterM3TotalItem(item)));
-            const valorPorM3Calculado = totalM3 > 0 ? (totalUsd / totalM3) : 0;
-            const valorPorM3Editado = valorNumerico((resumoEditavel && resumoEditavel.valor_por_m3) || '');
-            const valorPorM3 = (valorPorM3Editado > 0) ? valorPorM3Editado : valorPorM3Calculado;
-            const totalNcm = contarNcmsDiferentes(dados);
+            const custos = window.JKImportacoesCustoSimulado.calcularResumo({
+                lista,
+                itens: dados,
+                cotacaoAtual: cotacaoDolarTopo,
+                obterM3Item: obterM3TotalItem,
+                valorPorM3Informado: resumoEditavel.valor_por_m3,
+            });
+            const { totalM3, m3Completo: totalM3Disponivel, totalNcm, impostos } = custos;
 
             const modalidadeBase = String(lista && (lista.modalidade || lista.tipo_frete || lista.transporte) || '').trim() || 'Marítimo';
             const LS_MODALIDADE_KEY = 'importacoes_lista_modalidade';
@@ -2519,139 +2359,10 @@
             const faixaImposto = analiseCustoPosto && analiseCustoPosto.tax_band_pct != null
                 ? formatarPct(analiseCustoPosto.tax_band_pct)
                 : ((faturamentoDaLoja !== null) ? calcularFaixaImpostoPorFaturamento(faturamentoDaLoja) : '-');
-            const dolarHoje = valorNumerico(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
-            const dolarHojeCalc = dolarHoje > 0 ? Number(dolarHoje.toFixed(2)) : 0;
-            const dolarBaseCalc = dolarHojeCalc > 0 ? dolarHojeCalc : cotacaoDolarTopo;
-            atualizarFxCompraTopo(dolarHoje);
-            const vmleUsd = totalUsd > 0 ? formatarUSD(totalUsd) : '-';
-            const vmleBrlNum = (totalUsd > 0 && dolarBaseCalc > 0)
-                ? (totalUsd * dolarBaseCalc)
-                : 0;
-            const vmleBrl = vmleBrlNum > 0
-                ? formatarMoedaBR(vmleBrlNum)
-                : '-';
-            const freteInternacionalNum = somarFreteInternacionalItensUsd(dados);
-            const freteInternacionalBrlNum = (freteInternacionalNum > 0 && dolarBaseCalc > 0)
-                ? (freteInternacionalNum * dolarBaseCalc)
-                : 0;
-            const freteInternacional = freteInternacionalBrlNum > 0
-                ? formatarMoedaBR(freteInternacionalBrlNum)
-                : '-';
-            const freteInternacionalUsd = freteInternacionalNum > 0
-                ? formatarUSD(freteInternacionalNum)
-                : '';
-            const seguroInternacionalBruto = obterValorResumo(lista, dados, ['Seguro Internacional 0,28%', 'Seguro Internacional']);
-            const seguroInternacionalUsdNum = (totalUsd > 0 && freteInternacionalNum > 0)
-                ? ((totalUsd + freteInternacionalNum) * 0.0028)
-                : 0;
-            const seguroInternacionalBrlNum = (totalUsd > 0 && freteInternacionalNum > 0 && dolarBaseCalc > 0)
-                ? (seguroInternacionalUsdNum * dolarBaseCalc)
-                : valorNumerico(seguroInternacionalBruto);
-            const seguroInternacional = seguroInternacionalBrlNum > 0
-                ? formatarMoedaBR(seguroInternacionalBrlNum)
-                : seguroInternacionalBruto;
-            const seguroInternacionalUsd = seguroInternacionalUsdNum > 0
-                ? formatarUSD(seguroInternacionalUsdNum)
-                : '';
-            const seguroInternacionalBrlValor = Number.isFinite(seguroInternacionalBrlNum) ? seguroInternacionalBrlNum : 0;
-            const vmldBrlNum = vmleBrlNum + freteInternacionalBrlNum + seguroInternacionalBrlValor;
-            const vmld = vmldBrlNum > 0 ? formatarMoedaBR(vmldBrlNum) : '-';
-            const totaisImpostos = dados.reduce((acc, item) => {
-                const qtd = valorNumerico(item && item.Quantidade);
-                const valorUnit = valorNumerico(item && item['Valor unidade']);
-                const valorTotal = item?.valor_total_informado === true ? Number(item['Valor total'] ?? 0)
-                    : (valorNumerico(item && item['Valor total']) || (qtd * valorUnit));
-                const freteItemUsd = valorNumerico(obterCampo(item || {}, ['Frete Internacional'], 0));
-
-                const iiPct = valorNumerico(obterCampo(item || {}, ['II', 'ii'], 0));
-                const ipiPct = valorNumerico(obterCampo(item || {}, ['IPI', 'ipi'], 0));
-                const pisPct = valorNumerico(obterCampo(item || {}, ['PIS', 'pis'], 0));
-                const cofinsPct = valorNumerico(obterCampo(item || {}, ['COFINS', 'cofins'], 0));
-                const icmsPct = valorNumerico(obterCampo(item || {}, ['ICMS', 'icms'], 0));
-
-                const valorProdutoBrl = (valorTotal > 0 && dolarBaseCalc > 0) ? (valorTotal * dolarBaseCalc) : 0;
-                const baseTributosBrl = (valorTotal > 0 && freteItemUsd >= 0 && dolarBaseCalc > 0)
-                    ? ((valorTotal + freteItemUsd) * dolarBaseCalc)
-                    : 0;
-
-                const iiBrl = (baseTributosBrl > 0 && iiPct > 0) ? (baseTributosBrl * (iiPct / 100)) : 0;
-                const baseIpiBrl = valorProdutoBrl + iiBrl;
-                const ipiBrl = (baseIpiBrl > 0 && ipiPct > 0) ? (baseIpiBrl * (ipiPct / 100)) : 0;
-                const pisBrl = (baseTributosBrl > 0 && pisPct > 0) ? (baseTributosBrl * (pisPct / 100)) : 0;
-                const cofinsBrl = (baseTributosBrl > 0 && cofinsPct > 0) ? (baseTributosBrl * (cofinsPct / 100)) : 0;
-                const icmsBrl = (baseTributosBrl > 0 && icmsPct > 0) ? (baseTributosBrl * (icmsPct / 100)) : 0;
-
-                acc.totalBaseTributos += baseTributosBrl;
-                acc.totalBaseIpi += baseIpiBrl;
-                acc.iiPctSoma += iiPct;
-                acc.ipiPctSoma += ipiPct;
-                acc.pisPctSoma += pisPct;
-                acc.cofinsPctSoma += cofinsPct;
-                acc.icmsPctSoma += icmsPct;
-                acc.iiBrl += iiBrl;
-                acc.ipiBrl += ipiBrl;
-                acc.pisBrl += pisBrl;
-                acc.cofinsBrl += cofinsBrl;
-                acc.icmsBrl += icmsBrl;
-                return acc;
-            }, {
-                totalBaseTributos: 0,
-                totalBaseIpi: 0,
-                iiPctSoma: 0,
-                ipiPctSoma: 0,
-                pisPctSoma: 0,
-                cofinsPctSoma: 0,
-                icmsPctSoma: 0,
-                iiBrl: 0,
-                ipiBrl: 0,
-                pisBrl: 0,
-                cofinsBrl: 0,
-                icmsBrl: 0,
-            });
-
-            const mediaIi = mediaPercentualItens(dados, ['II', 'ii']);
-            const mediaIpi = mediaPercentualItens(dados, ['IPI', 'ipi']);
-            const mediaPis = mediaPercentualItens(dados, ['PIS', 'pis']);
-            const mediaCofins = mediaPercentualItens(dados, ['COFINS', 'cofins', 'Cofins']);
-            const mediaIcms = mediaPercentualItens(dados, ['ICMS', 'icms']);
-
-            const iiResumo = formatarPct(mediaIi);
-            const ipiResumo = formatarPct(mediaIpi);
-            const pisResumo = formatarPct(mediaPis);
-            const cofinsResumo = formatarPct(mediaCofins);
-            const icmsResumo = formatarPct(mediaIcms);
-
-            const iiValorResumo = totaisImpostos.iiBrl > 0 ? formatarMoedaBR(totaisImpostos.iiBrl) : '-';
-            const ipiValorResumo = totaisImpostos.ipiBrl > 0 ? formatarMoedaBR(totaisImpostos.ipiBrl) : '-';
-            const pisValorResumo = totaisImpostos.pisBrl > 0 ? formatarMoedaBR(totaisImpostos.pisBrl) : '-';
-            const cofinsValorResumo = totaisImpostos.cofinsBrl > 0 ? formatarMoedaBR(totaisImpostos.cofinsBrl) : '-';
-            const icmsValorResumo = totaisImpostos.icmsBrl > 0 ? formatarMoedaBR(totaisImpostos.icmsBrl) : '-';
-            const armazenagem = vmldBrlNum > 0 ? formatarMoedaBR(vmldBrlNum * 0.035) : '-';
-            const pickupOrigemBrlNum = calcularPickupOrigemBrl(totalM3, dolarBaseCalc);
-            const pickupOrigem = pickupOrigemBrlNum > 0 ? formatarMoedaBR(pickupOrigemBrlNum) : '-';
-            const taxasOrigemBrlNum = calcularTaxasOrigemBrl(totalM3, dolarBaseCalc);
-            const taxasOrigem = taxasOrigemBrlNum > 0 ? formatarMoedaBR(taxasOrigemBrlNum) : '-';
-            const taxasFixasBrlNum = calcularTaxasFixasBrl(totalNcm, dolarBaseCalc);
-            const taxasFixas = taxasFixasBrlNum > 0 ? formatarMoedaBR(taxasFixasBrlNum) : '-';
-            const taxasSobreM3BrlNum = calcularTaxasSobreM3Brl(totalM3, dolarBaseCalc);
-            const taxasSobreM3 = taxasSobreM3BrlNum > 0 ? formatarMoedaBR(taxasSobreM3BrlNum) : '-';
-            const capataziaBrlNum = calcularCapataziaBrl(totalM3);
-            const capatazia = capataziaBrlNum > 0 ? formatarMoedaBR(capataziaBrlNum) : '-';
-            const blFee = formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.blFee);
-            const desconsolidacao = formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.desconsolidacao);
-            const handling = formatarUSD(CUSTOS_FIXOS_IMPORTACAO_USD.handling);
-            const honorariosTradingBase = vmleBrlNum + freteInternacionalBrlNum + (Number.isFinite(seguroInternacionalBrlNum) ? seguroInternacionalBrlNum : 0);
-            const honorariosTrading = honorariosTradingBase > 0
-                ? formatarMoedaBR(honorariosTradingBase * 0.03)
-                : obterValorResumo(lista, dados, ['Honorários Trading', 'Honorarios Trading']);
-            const transporteRodoviarioBrlNum = calcularTransporteRodoviarioBrl(totalM3);
-            const transporteRodoviario = transporteRodoviarioBrlNum > 0 ? formatarMoedaBR(transporteRodoviarioBrlNum) : '-';
-            const desembaraco = formatarMoedaBR(CUSTOS_FIXOS_IMPORTACAO_BRL.desembaraco);
-            const expediente = formatarMoedaBR(CUSTOS_FIXOS_IMPORTACAO_BRL.expediente);
-            const taxaSiscomex = formatarMoedaBR(calcularTaxaSiscomexPorTotalNcm(totalNcm));
-            const afrmm = (freteInternacionalNum > 0 && dolarBaseCalc > 0)
-                ? formatarMoedaBR((freteInternacionalNum * 0.08) * dolarBaseCalc)
-                : '-';
+            atualizarFxCompraTopo(custos.cotacaoSalva);
+            const emReais = (valor, alternativa = '-') => valor > 0 ? formatarMoedaBR(valor) : alternativa;
+            const usdAdicional = (valor) => valor > 0 ? formatarUSD(valor) : '';
+            const custoComCubagem = (valor) => totalM3Disponivel ? emReais(valor) : textoM3Ausente();
             const custoPostoBackend = analiseCustoPosto && analiseCustoPosto.cash_required_brl != null
                 ? formatarMoedaBR(analiseCustoPosto.cash_required_brl)
                 : '-';
@@ -2671,11 +2382,11 @@
                 { label: 'Faturamento Loja', value: textoFaturamentoLoja },
                 { label: 'Faixa de Imposto', value: faixaImposto },
                 { label: totalM3Disponivel ? 'M³ Total' : 'M³ Total parcial', value: formatarM3(totalM3), alertaM3: !totalM3Disponivel && !mapaM3IndividualCarregando },
-                { label: 'Valor por M³', value: totalM3Disponivel || valorPorM3Editado > 0 ? formatarUSD(valorPorM3) : '-', editable: true },
-                { label: 'VMLE', value: vmleUsd, valueExtra: vmleBrl },
-                { label: 'Frete Internacional', value: freteInternacional, valueExtra: freteInternacionalUsd },
-                { label: 'Seguro Internacional 0,28%', value: seguroInternacional, valueExtra: seguroInternacionalUsd },
-                { label: 'Cotação na Compra', value: dolarHoje > 0 ? formatarMoedaBR(dolarHoje) : '-', editable: true },
+                { label: 'Valor por M³', value: custos.valorPorM3 !== null ? formatarUSD(custos.valorPorM3) : '-', editable: true },
+                { label: 'VMLE', value: custos.totalUsd > 0 ? formatarUSD(custos.totalUsd) : '-', valueExtra: emReais(custos.vmleBrl) },
+                { label: 'Frete Internacional', value: emReais(custos.freteBrl), valueExtra: usdAdicional(custos.freteUsd) },
+                { label: 'Seguro Internacional 0,28%', value: emReais(custos.seguroBrl, custos.seguroInformado), valueExtra: usdAdicional(custos.seguroUsd) },
+                { label: 'Cotação na Compra', value: emReais(custos.cotacaoSalva), editable: true },
                 { label: 'Lead time (dias)', value: String(lista && lista.lead_time_days != null ? lista.lead_time_days : '-'), editable: true },
                 { label: 'Data do pedido', value: String(lista && lista.order_date || '-'), editable: true },
                 { label: 'Embarque previsto', value: String(lista && lista.promised_ship_date || '-'), editable: true },
@@ -2683,30 +2394,30 @@
                 { label: 'Chegada prevista', value: String(lista && lista.eta_date || '-'), editable: true },
                 { label: 'Data desembaraço', value: String(lista && lista.customs_clearance_date || '-'), editable: true },
                 { label: 'Recebido em', value: String(lista && lista.received_at || '-'), editable: true },
-                { label: 'VMLD', value: vmld },
+                { label: 'VMLD', value: emReais(custos.vmldBrl) },
                 { label: 'Custo posto total estimado', value: custoPostoBackend },
                 { label: 'Tributos importação', value: tributosBackend },
                 { label: 'Custos comuns rateados', value: custosComunsBackend },
-                { label: 'II', value: iiResumo, valueExtra: iiValorResumo },
-                { label: 'IPI', value: ipiResumo, valueExtra: ipiValorResumo },
-                { label: 'PIS', value: pisResumo, valueExtra: pisValorResumo },
-                { label: 'COFINS', value: cofinsResumo, valueExtra: cofinsValorResumo },
-                { label: 'ICMS', value: icmsResumo, valueExtra: icmsValorResumo },
-                { label: 'Armazenagem', value: totalM3Disponivel ? armazenagem : textoM3Ausente() },
-                { label: 'Pick-up Origem', value: totalM3Disponivel ? pickupOrigem : textoM3Ausente() },
-                { label: 'Taxas de Origem', value: totalM3Disponivel ? taxasOrigem : textoM3Ausente() },
-                { label: 'Taxas fixas', value: taxasFixas },
-                { label: 'Taxas sobre m³', value: totalM3Disponivel ? taxasSobreM3 : textoM3Ausente() },
-                { label: 'Capatazia', value: totalM3Disponivel ? capatazia : textoM3Ausente() },
-                { label: 'BL Fee', value: blFee },
-                { label: 'Desconsolidação', value: desconsolidacao },
-                { label: 'Handling', value: handling },
-                { label: 'Honorários Trading', value: honorariosTrading },
-                { label: 'Transporte Rodoviário', value: totalM3Disponivel ? transporteRodoviario : textoM3Ausente() },
-                { label: 'Desembaraço', value: desembaraco },
-                { label: 'Expediente', value: expediente },
-                { label: 'Taxa Siscomex', value: taxaSiscomex },
-                { label: 'AFRMM', value: afrmm },
+                { label: 'II', value: formatarPct(impostos.ii.percentual), valueExtra: emReais(impostos.ii.brl) },
+                { label: 'IPI', value: formatarPct(impostos.ipi.percentual), valueExtra: emReais(impostos.ipi.brl) },
+                { label: 'PIS', value: formatarPct(impostos.pis.percentual), valueExtra: emReais(impostos.pis.brl) },
+                { label: 'COFINS', value: formatarPct(impostos.cofins.percentual), valueExtra: emReais(impostos.cofins.brl) },
+                { label: 'ICMS', value: formatarPct(impostos.icms.percentual), valueExtra: emReais(impostos.icms.brl) },
+                { label: 'Armazenagem', value: custoComCubagem(custos.armazenagemBrl) },
+                { label: 'Pick-up Origem', value: custoComCubagem(custos.pickupOrigemBrl) },
+                { label: 'Taxas de Origem', value: custoComCubagem(custos.taxasOrigemBrl) },
+                { label: 'Taxas fixas', value: emReais(custos.taxasFixasBrl) },
+                { label: 'Taxas sobre m³', value: custoComCubagem(custos.taxasSobreM3Brl) },
+                { label: 'Capatazia', value: custoComCubagem(custos.capataziaBrl) },
+                { label: 'BL Fee', value: formatarUSD(custos.fixosUsd.blFee) },
+                { label: 'Desconsolidação', value: formatarUSD(custos.fixosUsd.desconsolidacao) },
+                { label: 'Handling', value: formatarUSD(custos.fixosUsd.handling) },
+                { label: 'Honorários Trading', value: emReais(custos.honorariosTradingBrl, custos.honorariosTradingInformados) },
+                { label: 'Transporte Rodoviário', value: custoComCubagem(custos.transporteRodoviarioBrl) },
+                { label: 'Desembaraço', value: formatarMoedaBR(custos.fixosBrl.desembaraco) },
+                { label: 'Expediente', value: formatarMoedaBR(custos.fixosBrl.expediente) },
+                { label: 'Taxa Siscomex', value: formatarMoedaBR(custos.taxaSiscomexBrl) },
+                { label: 'AFRMM', value: emReais(custos.afrmmBrl) },
                 { label: 'Total NCM', value: totalNcm.toLocaleString('pt-BR') },
                 { label: 'Proporção dos anúncios', proporcao: true },
             ];
@@ -2730,7 +2441,7 @@
                 const valorSalvo = editKey ? String(resumoEditavel[editKey] || '').trim() : '';
                 const invoiceBackendAusente = editKey === 'numero_invoice'
                     && !String(lista && (lista.numero_invoice || lista.invoice) || '').trim();
-                const podeUsarValorLocal = editKey
+                const podeUsarValorLocal = editKey && editKey !== 'valor_por_m3'
                     && (!RESUMO_CARDS_BACKEND.has(editKey) || invoiceBackendAusente);
                 const valorBase = ((podeUsarValorLocal ? valorSalvo : '') || String(c.value || ''));
                 const valorHtml = c.label === 'Modalidade'
@@ -3465,8 +3176,10 @@
         let fiscalCustoSkuLista = null;
         const ALIASES_VALOR_M3_SKU = ['Valor por M³', 'Valor por M?', 'Valor por M3', 'Valor/M³', 'Valor/M?', 'Valor/M3'];
 
-        async function carregarFiscalCustoSkuLista(contexto) {
+        async function carregarFiscalCustoSkuLista(contexto, consultaAntecipada) {
             try {
+                if (consultaAntecipada) await consultaAntecipada;
+                if (!dadosListaVigentes(contexto) || fiscalCustoSkuLista) return;
                 const dados = await consultarComplementoJson('/api/impostos/produtos', contexto);
                 if (!dadosListaVigentes(contexto) || contexto.listaId !== getListaIdDaUrl() || !Array.isArray(dados?.produtos)) return;
                 const porSku = new Map();
@@ -3844,6 +3557,9 @@
                 if (propagar) throw new Error(mensagem);
             };
             let respostaCompleta = false;
+            let consultaFiscalAntecipada = copiaVisivel
+                ? carregarFiscalCustoSkuLista(contextoCarregamentoAtual(listaId))
+                : null;
             const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
                 if (!dadosVigentes() || !data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)
                     || data.lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
@@ -3906,6 +3622,7 @@
                 renderItens(itens, lista);
                 const contexto = contextoCarregamentoAtual(listaId);
                 if (atualizarMargens) {
+                    void carregarFiscalCustoSkuLista(contexto, consultaFiscalAntecipada);
                     // Grava os itens novos junto com os complementos que ainda são válidos.
                     await salvarSnapshotLista(contexto);
                     if (!dadosListaVigentes(contexto)) {
@@ -3917,7 +3634,6 @@
                         : 'Itens atualizados · Atualizando informações complementares...');
                     const complementos = [carregarPreferenciasColunasServidor(contexto), carregarMapaM3Individual(contexto),
                         carregarFaturamentoVendas12m(), carregarCustoPostoBackend(listaId)];
-                    void carregarFiscalCustoSkuLista(contexto);
                     void carregarCustosCadastro(contexto).then(() => salvarSnapshotLista(contexto)).catch(() => {});
                     void Promise.allSettled(complementos).then(async () => {
                         if (!dadosListaVigentes(contexto)) return;
@@ -3936,6 +3652,7 @@
                         if (carregamentoVigente(contexto) && !dadosListaVigentes(contexto)) void reconsultar(false);
                     });
                 } else {
+                    consultaFiscalAntecipada ??= carregarFiscalCustoSkuLista(contexto);
                     void carregarCustosCadastro(contexto);
                 }
                 return true;
