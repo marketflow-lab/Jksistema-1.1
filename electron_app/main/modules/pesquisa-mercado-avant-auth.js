@@ -16,7 +16,7 @@ function allowedPage(value) {
 }
 
 // Only extension-owned controls are inspected/clicked; Mercado Livre's login is untouched.
-function pageSession(action) {
+function pageSession(action, rankingOnly) {
     if (location.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(location.hostname)) return { state: 'unavailable' };
     const visible = node => {
         if (!node || !node.isConnected) return false;
@@ -35,8 +35,10 @@ function pageSession(action) {
     }
     // Menu entries are conditionally rendered but hidden until CSS hover.
     const logout = document.querySelector('.avantpro-menu #btnLogoutMenu, #sideMenuLogout');
-    const login = document.querySelector('.avantpro-menu #btnLoginMenu')
-        || first('#sideMenuLogin, .avantpro-logged-out-combo-cta, .avantpro-logged-out-modern-cta');
+    const rankingLogin = nodes('.tendencias-extra .logged-out-tendency button.avantpro-btn.avantpro-btn-primary')
+        .find(node => visible(node) && !node.disabled && /^login$/i.test(node.textContent.trim()));
+    const login = rankingLogin || (!rankingOnly && (document.querySelector('.avantpro-menu #btnLoginMenu')
+        || first('#sideMenuLogin, .avantpro-logged-out-combo-cta, .avantpro-logged-out-modern-cta')));
     const menu = first('.avantpro-menu .avantpro-menu-icon, .avantpro-menu .avantpro-menu-icon-html, .avantpro-menu-icon, .avantpro-menu-icon-html');
     if (action === 'close-menu') {
         if (menu && (logout || first('#btnLoginMenu'))) menu.click();
@@ -51,7 +53,7 @@ function pageSession(action) {
     if (action === 'open-menu' && menu) { menu.click(); return { state: 'unknown', menuOpened: true }; }
     return { state: 'unknown' };
 }
-const pageScript = action => `(${pageSession.toString()})(${JSON.stringify(action)})`;
+const pageScript = (action, rankingOnly = false) => `(${pageSession.toString()})(${JSON.stringify(action)},${JSON.stringify(rankingOnly)})`;
 
 function submitLogin(email) {
     if (location.origin !== 'https://auth.avantprocloud.com.br' || location.pathname !== '/') return { blocked: true };
@@ -111,7 +113,7 @@ class AvantSession {
         task.finally(() => { if (this.pending === task) this.pending = null; }).catch(() => {});
         return task;
     }
-    async check({ signal } = {}) {
+    async check({ signal, rankingOnly = false } = {}) {
         const contents = this.getContents();
         const context = this.getContext();
         const deadline = Date.now() + this.timeoutMs;
@@ -136,7 +138,7 @@ class AvantSession {
                 guard();
                 if (!allowedPage(contents.getURL())) return { state: 'ml_login' };
                 if (Date.now() >= deadline) throw new Error('avant_timeout');
-                try { return await execute(contents, pageScript(action)); }
+                try { return await execute(contents, pageScript(action, rankingOnly)); }
                 catch (error) {
                     if (error.name === 'AbortError') throw error;
                     guard();
@@ -154,7 +156,7 @@ class AvantSession {
         try {
             guard();
             if (!allowedPage(contents.getURL())) return fail('ml_login_required');
-            const initialDeadline = Date.now() + this.probeMs;
+            const initialDeadline = Date.now() + (rankingOnly ? Math.min(this.probeMs, 3000) : this.probeMs);
             while (Date.now() < deadline) {
                 guard();
                 if (!allowedPage(contents.getURL())) return fail('ml_login_required', attempted);
@@ -200,12 +202,14 @@ class AvantSession {
                             if (result.submitted) { attempted = true; menuTried = false; formDeadline = Date.now() + 22000; }
                         }
                     }
-                } else if (state.state === 'unknown' && !menuTried) {
+                } else if (state.state === 'unknown' && !rankingOnly && !menuTried) {
                     const result = await executePage('open-menu');
                     menuTried = !!result.menuOpened;
                     openedMenu = openedMenu || menuTried;
                 }
-                if (!attempted && !loginOpened && Date.now() >= initialDeadline) return fail('avant_session_unconfirmed');
+                if (!attempted && !loginOpened && Date.now() >= initialDeadline) {
+                    return fail(rankingOnly ? 'avant_ranking_login_not_shown' : 'avant_session_unconfirmed');
+                }
                 if (attempted && Date.now() >= formDeadline) break;
                 await wait(this.pollMs, signal);
             }

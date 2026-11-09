@@ -39,6 +39,13 @@ function marketHtml(options) {
         if (event.data.kind === 'fixture-confirmed') { frame.parentElement.remove(); menu('logged'); }
       });
       if (!settings.unknown) menu(${JSON.stringify(state)});
+      if (settings.rankingLogin) window.revealRankingLogin = () => {
+        const ranking = document.createElement('div');
+        ranking.className = 'tendencias-extra';
+        ranking.innerHTML = '<div class="logged-out-tendency"><button class="avantpro-btn avantpro-btn-lg avantpro-btn-primary">LOGIN</button></div>';
+        ranking.querySelector('button').onclick = openLogin;
+        document.querySelector('#fixture').appendChild(ranking);
+      };
       if (settings.marketCaptcha) { const captcha = document.createElement('div'); captcha.dataset.testid = 'captcha'; captcha.textContent = 'Captcha'; document.body.appendChild(captcha); }
       if (settings.beginPopup) openLogin();
       </script>`;
@@ -63,7 +70,9 @@ function authHtml(options) {
       document.querySelector('form').addEventListener('submit', event => {
         event.preventDefault(); button.disabled = true; button.textContent = 'Entrando...';
         parent.postMessage({kind:'fixture-submitted'}, 'https://lista.mercadolivre.com.br');
-        if (settings.success) setTimeout(() => parent.postMessage({kind:'fixture-confirmed'}, 'https://lista.mercadolivre.com.br'), settings.confirmDelay || 10);
+        if (settings.success && (!settings.rankingLogin || input.value === ${JSON.stringify(FIXTURE_EMAIL)})) {
+          setTimeout(() => parent.postMessage({kind:'fixture-confirmed'}, 'https://lista.mercadolivre.com.br'), settings.confirmDelay || 10);
+        }
       });
       const root = document.querySelector('#avantauth-root');
       const heading = root.querySelector('h1');
@@ -144,6 +153,28 @@ async function main() {
         try { await operation(fixture); cases++; } finally { await fixture.close(); }
     }
     try {
+        await test({ success:true, rankingLogin:true, probeMs:1000 }, async f => {
+            const execute = f.contents.executeJavaScript;
+            let revealed = false;
+            f.contents.executeJavaScript = async code => {
+                const result = await execute(code);
+                if (!revealed && result.state === 'unknown') {
+                    revealed = true;
+                    await f.page.evaluate(() => window.revealRankingLogin());
+                }
+                return result;
+            };
+            assert.deepEqual(await f.session.ensure({ rankingOnly:true }), { authenticated:true, attempted:true });
+            assert(revealed, 'The ranking button must appear after the first probe.');
+            assert.equal(await f.page.evaluate(() => window.fixture.loginClicks), 1);
+            assert.equal(await f.submits(), 1);
+        });
+        await test({ success:true }, async f => {
+            assert.deepEqual(await f.session.ensure({ rankingOnly:true }),
+                { authenticated:false, attempted:false, reason:'avant_ranking_login_not_shown' });
+            assert.equal(await f.page.evaluate(() => window.fixture.loginClicks), 0, 'Without the ranking button, leave other login controls alone.');
+            assert.equal(f.stats.frameExecutions, 0);
+        });
         await test({ loggedIn:true }, async f => {
             assert.equal((await f.probe()).state, 'authenticated', 'Hidden authenticated menu must be detected.');
             assert.deepEqual(await f.session.ensure(), { authenticated:true, attempted:false });

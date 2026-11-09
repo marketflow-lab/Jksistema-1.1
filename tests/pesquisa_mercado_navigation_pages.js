@@ -132,11 +132,37 @@ async function runnerTrendsTransition() {
         categoryBrowse: { key: selected.key, nome: selected.nome, url: browse } };
     const h = runnerFixture({ [source]: trends, [browse]: { anuncios: listings, effectiveCategoryId: selected.key,
         categoryDocumentIdentity: true, categoryIdentityConflict: false } }, selected);
+    h.runner.browser.ensureAvantSession = async () => ({
+        authenticated: false, attempted: false, reason: 'avant_ranking_login_not_shown'
+    });
     const result = await h.runner.read(source);
     assert.equal(result.anuncios.length, 48, 'six Trends recommendations never become the selected category listing');
     assert.equal(result.categoryDocumentIdentity, true);
     assert.equal(result.effectiveCategoryId, selected.key);
     assert.deepEqual(h.visited, [source, browse], 'one observed category template transition reaches a proven document');
+
+    let loginChecks = 0;
+    const requiresLogin = runnerFixture({
+        [source]: () => loginChecks ? trends : { ...trends, categoryBrowse: null },
+        [browse]: { anuncios: listings, effectiveCategoryId: selected.key, categoryDocumentIdentity: true }
+    }, selected);
+    requiresLogin.runner.browser.ensureAvantSession = async ({ rankingOnly }) => {
+        assert.equal(rankingOnly, true);
+        assert.deepEqual(requiresLogin.visited, [source], 'the category must remain open during login');
+        loginChecks += 1;
+        return { authenticated: true, attempted: true };
+    };
+    assert.equal((await requiresLogin.runner.read(source)).anuncios.length, 48,
+        'read the fresh ranking after login before following its listing link');
+    assert.deepEqual(requiresLogin.visited, [source, browse]);
+    assert.equal(loginChecks, 1);
+
+    const manualLogin = runnerFixture({ [source]: trends }, selected);
+    manualLogin.runner.browser.ensureAvantSession = async () => ({
+        authenticated: false, attempted: false, reason: 'avant_manual_login_required'
+    });
+    await assert.rejects(manualLogin.runner.read(source), { waitingLogin: true });
+    assert.deepEqual(manualLogin.visited, [source], 'manual authentication keeps the ranking available');
 
     for (const proof of [
         { effectiveCategoryId: selected.key, categoryDocumentIdentity: false },

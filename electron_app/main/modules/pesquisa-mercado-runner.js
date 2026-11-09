@@ -515,13 +515,13 @@ class PesquisaMercadoRunner {
         finally { signal.removeEventListener('abort', abort); }
     }
 
-    async ensureAvantSession(signal, state, force = false) {
+    async ensureAvantSession(signal, state, { force = false, rankingOnly = false } = {}) {
         if (typeof this.browser.ensureAvantSession !== 'function') return true;
         if (!force && state.checked) return true;
         state.checked = true;
         let result;
         try {
-            result = await this.nameStep(() => this.browser.ensureAvantSession({ signal, force }), signal);
+            result = await this.nameStep(() => this.browser.ensureAvantSession({ signal, force, rankingOnly }), signal);
         } catch (error) {
             if (error && error.status === 404) error.avantSessionRejected = true;
             if (error && (error.name === 'AbortError' || error.status === 401 || error.status === 403 || error.status === 404)) throw error;
@@ -529,6 +529,7 @@ class PesquisaMercadoRunner {
         if (signal.aborted) { const error = new Error('Pesquisa interrompida.'); error.name = 'AbortError'; throw error; }
         state.attempted = state.attempted || !!(result && result.attempted);
         if (result && result.authenticated === true) return true;
+        if (rankingOnly && result?.reason === 'avant_ranking_login_not_shown') return false;
         const error = new Error(result && result.reason === 'ml_login_required'
             ? 'Conclua o login do Mercado Livre no navegador e tente novamente.'
             : 'Nao foi possivel autenticar no Avant Pro. Conclua o login no navegador e tente novamente.');
@@ -540,7 +541,7 @@ class PesquisaMercadoRunner {
         if (!requiresAvantLogin(result) || state.forced || state.attempted
             || typeof this.browser.ensureAvantSession !== 'function') return false;
         state.forced = true;
-        await this.ensureAvantSession(signal, state, true);
+        await this.ensureAvantSession(signal, state, { force: true });
         return true;
     }
 
@@ -832,6 +833,15 @@ class PesquisaMercadoRunner {
                         throw error;
                     }
                 } else { mismatchSignature = ''; mismatchReads = 0; }
+                // Avant adds the ranking button after the category document is ready.
+                if (isCategory && page.categoryTrends && !loading && !avantState.checked
+                    && !page.categoryIdentityConflict && !page.categoryNotFound && page.url
+                    && canonicalUrl(page.url) === canonicalUrl(this.browser.getURL())
+                    && verifiedCategoryPage(url, page.url, categoryId, observedId)) {
+                    await this.ensureAvantSession(this.controller.signal, avantState, { rankingOnly: true });
+                    // The login can reload the ranking. Use the new document before following its links.
+                    if (avantState.attempted) { poll -= 1; continue; }
+                }
                 if (purpose === 'navigation' && expectedChild?.preferTrendsChildren === true
                     && (page.categoryTrends || !page.categoryDocumentIdentity || page.effectiveCategoryId !== categoryId)) {
                     let signature = '';
