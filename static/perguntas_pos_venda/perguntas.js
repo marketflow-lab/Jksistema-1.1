@@ -114,7 +114,9 @@ function renderizarResumo(data) {
 }
 
 function renderizarChatPerguntas(pergunta) {
-    const chat = Array.isArray(pergunta.buyer_question_chat) ? pergunta.buyer_question_chat : [];
+    const chat = Array.isArray(pergunta.buyer_question_chat)
+        ? pergunta.buyer_question_chat.filter(msg => !window.JKPerguntasLoading?.foiExcluida?.(pergunta.store_id, msg.question_id))
+        : [];
     const historicoCount = Number(pergunta.buyer_question_history_count || 0);
     if (historicoCount <= 1 || chat.length <= 2) return '';
     const comprador = escapeHtml(pergunta.buyer_name || pergunta.buyer_nickname || pergunta.from_id || 'Comprador');
@@ -240,6 +242,104 @@ function renderizarVariacoesPerguntaAtendimento(pergunta) {
     </div>`;
 }
 
+let moderacaoPerguntasPendente = null;
+
+function podeModerarPergunta(pergunta) {
+    const id = pergunta?.id;
+    const idExato = typeof id === 'string' ? /^\d+$/.test(id) : Number.isSafeInteger(id) && id > 0;
+    return Boolean(pergunta?.store_id && idExato && pergunta._questionState !== 'blocked');
+}
+
+function atualizarBotoesModeracaoPerguntas() {
+    const pergunta = perguntaAtendimentoPorChave(state.perguntaSelecionadaKey);
+    const desativados = !podeModerarPergunta(pergunta) || Boolean(moderacaoPerguntasPendente);
+    perguntasDetail?.querySelectorAll('[data-question-moderation]').forEach(botao => {
+        botao.disabled = desativados;
+    });
+}
+
+function exibirStatusModeracaoPerguntas(mensagem, tipo = '') {
+    const status = document.getElementById('perguntas-moderacao-status');
+    if (!status) return;
+    status.textContent = mensagem;
+    status.classList.toggle('error', tipo === 'error');
+    status.classList.toggle('ok', tipo === 'ok');
+}
+
+function limparModeracaoPerguntas() {
+    moderacaoPerguntasPendente = null;
+    exibirStatusModeracaoPerguntas('');
+}
+
+async function moderarPergunta(questionKey, acao) {
+    if (acao !== 'excluir' && acao !== 'bloquear-comprador') return;
+    const pergunta = perguntaAtendimentoPorChave(questionKey);
+    if (!podeModerarPergunta(pergunta) || moderacaoPerguntasPendente) return;
+    const storeId = String(pergunta.store_id);
+    const questionId = String(pergunta.id);
+    const conta = lojasMercadoLivreConectadas().find(loja => String(loja.store_id) === storeId);
+    if (!conta) {
+        exibirStatusModeracaoPerguntas('A loja desta pergunta está indisponível.', 'error');
+        return;
+    }
+    const excluir = acao === 'excluir';
+    const { nome, seller_id, site_id } = conta;
+    const headers = obterAuthHeaders();
+    const identificarSessao = window.JKPerguntasLoading?.identidadeSessaoPorHeaders || JSON.stringify;
+    const sessao = identificarSessao(headers);
+    const mesmaConta = () => {
+        if (identificarSessao(obterAuthHeaders()) !== sessao) return false;
+        return lojasMercadoLivreConectadas().some(loja => String(loja.store_id) === storeId
+            && loja.seller_id === seller_id && loja.site_id === site_id);
+    };
+    const confirmar = excluir
+        ? `Excluir esta pergunta do Mercado Livre pela loja ${nome}? A exclusão é definitiva.`
+        : `Bloquear este comprador na loja ${nome}? Ele não poderá fazer novas perguntas nesta conta do Mercado Livre.`;
+    if (!window.confirm(confirmar) || !mesmaConta()) return;
+
+    const operacao = {};
+    moderacaoPerguntasPendente = operacao;
+    exibirStatusModeracaoPerguntas(excluir ? 'Excluindo pergunta…' : 'Bloqueando comprador…');
+    let confirmada = false;
+    try {
+        atualizarBotoesModeracaoPerguntas();
+        const response = await fetch(`/api/mercadolivre/perguntas/moderacao/${acao}`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ store_id: storeId, question_id: questionId }),
+            cache: 'no-store'
+        });
+        const data = await response.json().catch(() => ({}));
+        if (moderacaoPerguntasPendente !== operacao || !mesmaConta()) return;
+        if (!response.ok || data.success !== true) {
+            exibirStatusModeracaoPerguntas(mensagemErroApi(data, 'O Mercado Livre não confirmou a ação.'), 'error');
+            return;
+        }
+        confirmada = true;
+        exibirStatusModeracaoPerguntas(excluir
+            ? `Pergunta excluída no Mercado Livre pela loja ${nome}.`
+            : `Comprador bloqueado para novas perguntas na loja ${nome}.`, 'ok');
+        if (excluir) {
+            limparEstadoJobAtendimentoCodex(questionKey);
+            window.JKPerguntasLoading?.removerExcluida?.({ store_id: storeId, id: questionId });
+            carregarContadoresNotificacoes(true).catch(() => {});
+        }
+    } catch (_error) {
+        if (moderacaoPerguntasPendente === operacao && mesmaConta()) {
+            const mensagem = confirmada
+                ? 'A ação foi confirmada no Mercado Livre. Atualize a lista para conferir.'
+                : 'Não foi possível confirmar a ação. Atualize a lista antes de tentar novamente.';
+            exibirStatusModeracaoPerguntas(mensagem, confirmada ? 'ok' : 'error');
+        }
+    } finally {
+        if (moderacaoPerguntasPendente === operacao) {
+            moderacaoPerguntasPendente = null;
+            if (!mesmaConta()) exibirStatusModeracaoPerguntas('');
+            atualizarBotoesModeracaoPerguntas();
+        }
+    }
+}
+
 function renderizarDetalhePerguntaAtendimento(pergunta) {
     if (!perguntasDetail) return;
     if (!pergunta) {
@@ -265,6 +365,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
     const chatPerguntas = renderizarChatPerguntas(pergunta);
     const podeResponder = !(pergunta.answer && pergunta.answer.text) && String(pergunta.status || '').toUpperCase() === 'UNANSWERED';
     const dataKey = chavePerguntaAtendimento(pergunta);
+    const moderacaoDesativada = !podeModerarPergunta(pergunta) || Boolean(moderacaoPerguntasPendente);
     const motivoFalhaEnvio = window.JKPerguntasLoading?.obterRascunhoPorChave?.(dataKey)?.motivoFalhaEnvio;
     const erroResposta = motivoFalhaEnvio || pergunta._generationError;
     const notaSku = textoNotaSkuAtendimento(sku);
@@ -273,6 +374,10 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
         : '';
     const rotulosCarga = { loading: 'Carregando', ready: 'Pronto', stale: 'Desatualizado', partial: 'Parcial', unavailable: 'Indisponível', blocked: 'Acesso bloqueado' };
     const anuncioEstado = pergunta._itemState || (pergunta._itemReady ? 'ready' : 'loading');
+    const saldoAnuncio = pergunta._itemAvailableQuantity;
+    const estoqueAnuncio = Number.isSafeInteger(saldoAnuncio)
+        ? `${saldoAnuncio.toLocaleString('pt-BR')} ${saldoAnuncio === 1 ? 'unidade' : 'unidades'}`
+        : anuncioEstado === 'loading' ? 'Carregando…' : 'Indisponível';
     const perguntaEstado = pergunta._questionState || (pergunta._detailReady ? 'ready' : 'loading');
     const historicoEstado = pergunta._historyState || (pergunta._detailReady ? 'ready' : 'loading');
     const erroComponente = String(pergunta._generationComponent || '');
@@ -332,7 +437,13 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
             ${statusCarga}
             <div class="question-detail-body">
                 <div class="question-detail-main">
-                    <span class="question-detail-label">Pergunta do comprador</span>
+                    <div class="question-detail-heading">
+                        <span class="question-detail-label">Pergunta do comprador</span>
+                        <div class="question-moderation-actions" role="group" aria-label="Moderação da pergunta">
+                            <button class="action-btn secondary" type="button" data-question-moderation="excluir" ${moderacaoDesativada ? 'disabled' : ''}>Excluir pergunta</button>
+                            <button class="action-btn secondary" type="button" data-question-moderation="bloquear-comprador" ${moderacaoDesativada ? 'disabled' : ''}>Bloquear comprador</button>
+                        </div>
+                    </div>
                     <div class="question-detail-text">${escapeHtml(pergunta.text || '-')}</div>
                     ${chatPerguntas || answer}
                 </div>
@@ -340,6 +451,7 @@ function renderizarDetalhePerguntaAtendimento(pergunta) {
                     <div class="question-context-card">
                         <h3>Dados r&aacute;pidos</h3>
                         <p>${sku ? `SKU ${escapeHtml(sku)} &middot; ${escapeHtml(titulo)}.` : variacoesHtml ? 'Varia&ccedil;&atilde;o n&atilde;o especificada na pergunta.' : `SKU - &middot; ${escapeHtml(titulo)}.`}</p>
+                        <p class="question-item-stock"><strong>Estoque no Mercado Livre:</strong> ${escapeHtml(estoqueAnuncio)}</p>
                         ${variacoesHtml}
                     </div>
                     <div class="question-context-card">
@@ -728,6 +840,9 @@ function configurarAcoesRespostaPerguntas() {
         const statusSku = card.querySelector('.question-sku-guidance-status');
         const status = card.querySelector('.question-answer-composer .question-answer-status');
         card.querySelector('.question-loading-retry')?.addEventListener('click', () => window.JKPerguntasLoading?.tentarNovamente());
+        card.querySelectorAll('[data-question-moderation]').forEach(button => {
+            button.addEventListener('click', () => moderarPergunta(questionKey, button.dataset.questionModeration));
+        });
         if (textareaSku && btnSalvarSku) {
             ajustarAlturaTextareaAtendimento(textareaSku);
             textareaSku.addEventListener('input', () => ajustarAlturaTextareaAtendimento(textareaSku));

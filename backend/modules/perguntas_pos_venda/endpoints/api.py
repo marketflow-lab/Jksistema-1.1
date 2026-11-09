@@ -31,6 +31,10 @@ from backend.modules.perguntas_pos_venda.endpoints.post_sale_queries import (
 from backend.modules.perguntas_pos_venda.endpoints.question_automation import (
     ml_perguntas_automacao_poll,
 )
+from backend.modules.perguntas_pos_venda.endpoints.question_moderation import (
+    ml_perguntas_bloquear_comprador,
+    ml_perguntas_excluir,
+)
 from backend.modules.perguntas_pos_venda.endpoints.questions_listing import ml_listar_perguntas
 from backend.modules.perguntas_pos_venda.endpoints.questions_loading import (
     ml_perguntas_lista_rapida,
@@ -91,6 +95,8 @@ __all__ = [
     "ml_questions_v2_metrics",
     "ml_perguntas_gerar_resposta_manual",
     "ml_perguntas_responder_manual",
+    "ml_perguntas_excluir",
+    "ml_perguntas_bloquear_comprador",
     "ml_ia_treinamento_sincronizacao_obter",
     "ml_ia_treinamento_sincronizacao_solicitar",
     "ml_ia_treinamento_obter",

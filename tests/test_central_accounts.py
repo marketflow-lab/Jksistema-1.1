@@ -360,6 +360,64 @@ def test_provider_destination_and_seller_are_not_caller_controlled(central, path
     assert not central.provider.requests
 
 
+def questions_blacklist_request(**overrides):
+    payload = request("POST", "/users/123/questions_blacklist")
+    return payload.model_copy(update={"body": {"user_id": 456}, **overrides})
+
+
+@pytest.mark.parametrize("permission", ["perguntas_pos_venda", "full"])
+def test_questions_blacklist_accepts_connected_seller_and_moderation_permission(central, permission):
+    _, identity, _ = connected(central)
+    central.users.rows["owner"]["permissions"] = {permission: True}
+    assert central.request(principal(central), identity, questions_blacklist_request())["status"] == 200
+    assert len(central.provider.requests) == 1
+    assert central.provider.requests[0][1] == "/users/123/questions_blacklist"
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"path": "/users/999/questions_blacklist"}, "central_seller_denied"),
+    ({"path": "/users/me/questions_blacklist"}, "central_endpoint_denied"),
+    ({"path": "/users/123/order_blacklist"}, "central_endpoint_denied"),
+    ({"path": "/users/123"}, "central_endpoint_denied"),
+    ({"method": "DELETE", "path": "/users/123/questions_blacklist/456"}, "central_endpoint_denied"),
+    ({"method": "GET"}, "central_endpoint_denied"),
+    ({"params": {"user_id": 123}}, "central_endpoint_denied"),
+    ({"body": {"user_id": 456, "seller_id": 123}}, "central_endpoint_denied"),
+    ({"body": {}}, "central_endpoint_denied"),
+    ({"body": {"user_id": True}}, "central_endpoint_denied"),
+    ({"body": {"user_id": 0}}, "central_endpoint_denied"),
+    ({"body": {"user_id": "456"}}, "central_endpoint_denied"),
+])
+def test_questions_blacklist_keeps_other_sellers_and_requests_out(central, overrides, code):
+    _, identity, _ = connected(central)
+    central.users.rows["owner"]["permissions"] = {"perguntas_pos_venda": True}
+    with pytest.raises(CentralError) as error:
+        central.request(principal(central), identity, questions_blacklist_request(**overrides))
+    assert error.value.code == code
+    assert not central.provider.requests
+
+
+def test_questions_blacklist_requires_store_write_and_moderation_permission(central):
+    owner, identity, _ = connected(central)
+    payload = questions_blacklist_request()
+    central.users.rows["other"]["permissions"] = {"perguntas_pos_venda": True}
+    with pytest.raises(CentralError) as error:
+        central.request(principal(central, "other"), identity, payload)
+    assert error.value.code == "central_store_denied"
+
+    central.grant(owner, identity, StoreGrant(username="other", access="read"))
+    with pytest.raises(CentralError) as error:
+        central.request(principal(central, "other"), identity, payload)
+    assert error.value.code == "central_store_read_only"
+
+    central.grant(owner, identity, StoreGrant(username="other", access="write"))
+    central.users.rows["other"]["permissions"] = {"cadastro": True, "vendas": True, "integracao": True}
+    with pytest.raises(CentralError) as error:
+        central.request(principal(central, "other"), identity, payload)
+    assert error.value.code == "central_permission_denied"
+    assert not central.provider.requests
+
+
 def test_vault_context_prevents_copying_credentials_to_another_connection(central):
     value = central.vault.seal("connection:a", {"refresh_token": "private"})
     from cloud.auth_gateway.app.errors import GatewayUnavailable

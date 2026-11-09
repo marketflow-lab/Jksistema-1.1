@@ -30,6 +30,14 @@ MAX_BYTES = 8 * 1024 * 1024
 SAFE_HEADERS = {"x-format-new", "x-version", "if-match", "if-none-match"}
 
 
+def _is_questions_blacklist_post(payload):
+    return (
+        payload.provider == "mercadolivre"
+        and payload.method == "POST"
+        and re.fullmatch(r"/users/[1-9][0-9]*/questions_blacklist", payload.path) is not None
+    )
+
+
 def assert_provider_permission(principal, payload):
     if principal.permissions.get("full"):
         return
@@ -48,7 +56,9 @@ def assert_provider_permission(principal, payload):
         "seller-promotions": {"analise_promo", "renovacao_fixa", "favoritos"},
         "pricing-automation": {"analise_promo", "renovacao_fixa", "favoritos", "anuncios_ml"},
     }.get(resource, {"cadastro", "anuncios_ml", "favoritos", "analise_promo", "estoque", "vendas", "integracao"})
-    if payload.method != "GET" and resource in {"items", "produtos", "products", "pictures"}:
+    if _is_questions_blacklist_post(payload):
+        permissions = {"perguntas_pos_venda"}
+    elif payload.method != "GET" and resource in {"items", "produtos", "products", "pictures"}:
         permissions = {"cadastro", "anuncios_ml", "favoritos"}
     if not any(principal.permissions.get(permission) for permission in permissions):
         raise CentralError("central_permission_denied", 403)
@@ -79,12 +89,18 @@ class ProviderTransport:
         if _has_secret(payload.params) or _has_secret(payload.body):
             raise CentralError("central_credential_argument_denied", 400)
         resource = decoded.split("/")[1]
-        if resource == "users" and (payload.method != "GET" or not re.fullmatch(
+        questions_blacklist_post = _is_questions_blacklist_post(payload)
+        if resource == "users" and not questions_blacklist_post and (payload.method != "GET" or not re.fullmatch(
                 r"/users/(?:me|[0-9]+)(?:/items/search|/shipping_options/free)?", decoded)):
             raise CentralError("central_endpoint_denied", 400)
+        if questions_blacklist_post:
+            body = payload.body
+            if (payload.params or not isinstance(body, dict) or set(body) != {"user_id"}
+                    or type(body["user_id"]) is not int or body["user_id"] <= 0):
+                raise CentralError("central_endpoint_denied", 400)
         if resource == "configuracoes" and (payload.method != "GET" or decoded != "/configuracoes/lojas-virtuais"):
             raise CentralError("central_endpoint_denied", 400)
-        if payload.method != "GET" and resource not in {
+        if payload.method != "GET" and not questions_blacklist_post and resource not in {
                 "items", "produtos", "pedidos", "nfe", "nfce", "estoques", "stock", "user-products",
                 "seller-promotions", "pricing-automation", "answers", "questions", "messages",
                 "claims", "post-purchase", "pictures", "shipments"}:

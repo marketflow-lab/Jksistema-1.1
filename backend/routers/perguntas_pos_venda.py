@@ -75,10 +75,21 @@ PERGUNTAS_LOADING_ROUTES: tuple[LegacyRouteSpec, ...] = (
 )
 
 
+PERGUNTAS_MODERACAO_ROUTES: tuple[LegacyRouteSpec, ...] = (
+    LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/moderacao/excluir", "ml_perguntas_excluir"),
+    LegacyRouteSpec("POST", "/api/mercadolivre/perguntas/moderacao/bloquear-comprador", "ml_perguntas_bloquear_comprador"),
+)
+
+
 def create_perguntas_pos_venda_router() -> APIRouter:
     perguntas_pos_venda_router = APIRouter(tags=["perguntas-pos-venda"])
 
-    for spec in (*LEGACY_PERGUNTAS_POS_VENDA_ROUTES, *PERGUNTAS_LOADING_ROUTES, *TRAINING_READ_ROUTES):
+    for spec in (
+        *LEGACY_PERGUNTAS_POS_VENDA_ROUTES,
+        *PERGUNTAS_LOADING_ROUTES,
+        *PERGUNTAS_MODERACAO_ROUTES,
+        *TRAINING_READ_ROUTES,
+    ):
         endpoint = getattr(perguntas_pos_venda_endpoints, spec.endpoint_name)
         perguntas_pos_venda_router.add_api_route(
             spec.path,

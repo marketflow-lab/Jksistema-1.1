@@ -34,10 +34,19 @@ function questions(store, offset, limit) {
   }));
 }
 
+const listingStock = {
+  MLB1000: { available_quantity: 10 },
+  MLB1001: { item_sku: 'SKU-ESTOQUE-FIXTURE', available_quantity: 0, variations: [] },
+  MLB1002: { item_sku: 'SKU-ESTOQUE-FIXTURE', variations: [] },
+  MLB1018: { available_quantity: 8 },
+  MLB2000: { item_sku: 'SKU-ESTOQUE-FIXTURE', available_quantity: 1, variations: [] },
+};
+
 async function fixture(browser) {
   const calls = [];
   const errors = [];
-  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, trainingHold: null, trainingPayload: null, jobs: new Map(), counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '', generationFailure: null };
+  const deletedQuestions = new Set();
+  const control = { slowMs: 900, fastMs: 35, deny: '', fail: '', listHold: null, trainingHold: null, trainingPayload: null, jobs: new Map(), counts: {}, detailMs: 75, history: 'ready', detailDeny: false, itemDeny: false, itemHold: null, omitComponents: false, itemMissingOnce: '', detailErrors: [], retryAfter: '0', generationReject: '', generationReason: '', generationFailure: null };
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
@@ -64,7 +73,11 @@ async function fixture(browser) {
       if (url.pathname === '/api/mercadolivre/perguntas' || url.pathname.endsWith('/perguntas/lista')) {
         const store = stores.find(s => s.store_id === call.store || s.nome === call.store);
         assert(store, 'consulta deve identificar uma loja da fixture');
-        const payload = { questions: questions(store, call.offset, call.limit), total: 60, retornadas: Math.min(call.limit, 60 - call.offset), next_offset: call.offset + call.limit < 60 ? call.offset + call.limit : null, status_resumo: { UNANSWERED: 60 }, store_id: store.store_id, loja: store.nome, revision: 0, stale: false, partial: false, source: 'remote', consultado_em: Date.now(), fetched_at: new Date().toISOString() };
+        const rows = questions(store, call.offset, call.limit)
+          .filter(question => !deletedQuestions.has(`${store.store_id}::${question.id}`))
+          .map(question => `${store.store_id}::${question.id}` === control.moderationAnswered
+            ? { ...question, status: 'ANSWERED', answer: { text: 'Resposta sintética' } } : question);
+        const payload = { questions: rows, total: 60, retornadas: rows.length, next_offset: call.offset + call.limit < 60 ? call.offset + call.limit : null, status_resumo: { UNANSWERED: 60 }, store_id: store.store_id, loja: store.nome, revision: 0, stale: false, partial: false, source: 'remote', consultado_em: Date.now(), fetched_at: new Date().toISOString() };
         if (control.listHold) await control.listHold;
         await delay(store === stores[9] ? control.slowMs : control.fastMs);
         call.end = Date.now();
@@ -73,6 +86,7 @@ async function fixture(browser) {
         return json(payload);
       }
       if (url.pathname.endsWith('/perguntas/itens')) {
+        if (control.itemHold) await control.itemHold;
         await delay(50);
         if (control.itemDeny) return route.fulfill({status: 403, contentType: 'application/json', headers: {'X-JK-Error-Scope': 'resource', 'X-JK-Retryable': 'false'}, body: JSON.stringify({detail: 'Anúncio com acesso negado'})}).catch(() => {});
         const ids = url.searchParams.getAll('item_ids').flatMap(value => value.split(','));
@@ -85,6 +99,7 @@ async function fixture(browser) {
             { id: 'beige', attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_name: 'Bege' }], seller_custom_field: 'T74-5', available_quantity: 3 },
             { id: 'black', attribute_combinations: [{ id: 'COLOR', name: 'Cor', value_name: 'Preto' }], seller_custom_field: 'T74-1', available_quantity: 0 },
           ],
+          ...listingStock[id],
         }));
         return json({ itens, items: itens, store_id: call.store, partial: Boolean(missing), item_states: Object.fromEntries(ids.map(id => [id, {state: id === missing ? 'unavailable' : 'ready', retryable: id === missing}])) });
       }
@@ -170,6 +185,16 @@ async function fixture(browser) {
         });
       }
       if (url.pathname.endsWith('/perguntas/responder')) return json({ success: true, resposta: 'Resposta sintética confirmada' });
+      if (url.pathname.includes('/perguntas/moderacao/')) {
+        call.method = route.request().method();
+        call.body = route.request().postDataJSON();
+        if (control.moderationHold) await control.moderationHold;
+        if (control.moderationDenied) return json({ detail: 'Exclusão recusada na fixture.' }, 403);
+        if (url.pathname.endsWith('/excluir')) {
+          deletedQuestions.add(`${call.body.store_id}::${call.body.question_id}`);
+        }
+        return json({ success: true });
+      }
       if (url.pathname.endsWith('/ia-treinamento')) {
         if (control.trainingHold) await control.trainingHold;
         return json(control.trainingPayload || { success: true, store_id: call.store, exemplos: {}, notas_sku: {}, orientacoes: '' });
@@ -205,7 +230,9 @@ async function main() {
     const f = await fixture(browser);
     const { page, calls, errors } = f;
     let releaseTraining;
+    let releaseItems;
     if (!baseline) {
+      f.control.itemHold = new Promise(resolve => { releaseItems = resolve; });
       f.control.trainingHold = new Promise(resolve => { releaseTraining = resolve; });
       f.control.trainingPayload = {
         success: true,
@@ -217,6 +244,14 @@ async function main() {
     }
     await page.goto(`${fixture.origin}/perguntas_pos_venda.html`, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.querySelectorAll('[data-question-select]').length === 20);
+    if (!baseline) {
+      try {
+        await verifyStockText(page, 'Carregando…');
+      } finally {
+        f.control.itemHold = null;
+        releaseItems();
+      }
+    }
     const first = await page.evaluate(() => window.__loadingMetrics);
     const slow = calls.find(call => call.store === 'Fixture 10' || call.store === 'fixture-10');
     if (baseline) assert(slow.end, 'baseline espera pela loja lenta');
@@ -227,6 +262,7 @@ async function main() {
       await verifyResponsiveLayout(f);
       await verifyTrainingRerender(f, releaseTraining);
       await verifyCompletedJobDraftRecovery(f);
+      await verifyListingStock(page);
     }
     if (!baseline) {
       const summaryText = await page.locator('#perguntas-summary').innerText();
@@ -251,12 +287,85 @@ async function main() {
     if (!baseline) assert.strictEqual(callsOnBack, 0, 'voltar página não repete consultas de blocos');
     if (!baseline) await verifyUpdated(f);
     assert.deepStrictEqual(errors, [], 'erros de JavaScript no navegador');
+    if (!baseline) {
+      const moderation = await fixture(browser);
+      try {
+        await verifyModeration(moderation);
+        assert.deepStrictEqual(moderation.errors, [], 'erros no cenário de moderação');
+      } finally {
+        await moderation.context.close();
+      }
+    }
     console.log(JSON.stringify({ mode: baseline ? `baseline ${revision}` : 'updated', firstRowsMs: Math.round(first.firstRows), initialReadCalls: initialCalls, backMs, callsOnBack, passed: true }));
     await f.context.close();
   } finally {
     await browser.close();
     await new Promise(resolve => server.close(resolve));
   }
+}
+
+async function verifyModeration({ page, calls, control }) {
+  const question = page.locator('[data-question-select="fixture-2::2000"]');
+  const otherQuestion = page.locator('[data-question-select="fixture-1::1000"]');
+  const block = page.getByRole('button', { name: 'Bloquear comprador' });
+  const remove = page.getByRole('button', { name: 'Excluir pergunta' });
+  const status = page.locator('#perguntas-moderacao-status');
+  const writes = () => calls.filter(call => call.path.includes('/perguntas/moderacao/'));
+  const expectedBody = { store_id: 'fixture-2', question_id: '2000' };
+
+  async function choose(button, accept, message) {
+    let prompt;
+    page.once('dialog', async dialog => {
+      prompt = dialog.message();
+      if (accept) await dialog.accept();
+      else await dialog.dismiss();
+    });
+    await button.click();
+    assert.match(prompt, message);
+    assert.match(prompt, /Fixture 02/);
+  }
+
+  control.moderationAnswered = 'fixture-2::2000';
+  await page.goto(`${fixture.origin}/perguntas_pos_venda.html`, { waitUntil: 'domcontentloaded' });
+  await question.click();
+  assert.strictEqual(await page.locator('.question-answer-composer').count(), 0);
+
+  await choose(remove, false, /excluir/i);
+  assert.strictEqual(writes().length, 0, 'cancelar a confirmação não consulta a rota de escrita');
+  assert(await question.isVisible());
+
+  control.moderationDenied = true;
+  await choose(remove, true, /excluir/i);
+  await status.filter({ hasText: 'Exclusão recusada na fixture.' }).waitFor();
+  assert(await question.isVisible(), 'recusa do Mercado Livre mantém a pergunta');
+  assert.deepStrictEqual(writes().map(call => call.body), [expectedBody]);
+  control.moderationDenied = false;
+
+  await choose(block, true, /novas perguntas/i);
+  await status.filter({ hasText: /comprador bloqueado/i }).waitFor();
+  assert(await question.isVisible(), 'bloqueio de novas perguntas mantém a pergunta existente');
+
+  let release;
+  control.moderationHold = new Promise(resolve => { release = resolve; });
+  try {
+    await choose(remove, true, /excluir/i);
+    await page.locator('[data-question-moderation="excluir"]:disabled').waitFor();
+    assert(await question.isVisible(), 'a pergunta só deve sumir após a confirmação do Mercado Livre');
+    await otherQuestion.click();
+  } finally {
+    control.moderationHold = null;
+    release();
+  }
+  await question.waitFor({ state: 'detached' });
+  assert.strictEqual(await page.locator('[data-question-card]').getAttribute('data-question-id'), '1000');
+  assert.deepStrictEqual(writes().map(call => [call.method, call.path.split('/').pop(), call.body]), [
+    ['POST', 'excluir', expectedBody],
+    ['POST', 'bloquear-comprador', expectedBody],
+    ['POST', 'excluir', expectedBody],
+  ]);
+  await page.evaluate(() => selecionarLoja('Fixture 02', 'fixture-2'));
+  await page.locator('[data-question-select="fixture-2::2001"]').waitFor();
+  assert.strictEqual(await question.count(), 0);
 }
 
 async function verifyTrainingRerender({ page, calls, control }, releaseTraining) {
@@ -468,6 +577,30 @@ async function verifyUnspecifiedVariations({ page }) {
   ]);
   assert.match(await page.locator('.question-detail-meta').innerText(), /3 variaç(?:ão|ões)/);
   assert.match(await page.locator('.question-context-card').first().innerText(), /Variação não especificada na pergunta/);
+  await verifyStockText(page, '10 unidades');
+}
+
+async function verifyStockText(page, expected) {
+  const stock = page.locator('.question-context-card .question-item-stock');
+  const text = `Estoque no Mercado Livre: ${expected}`;
+  await stock.filter({ hasText: text }).waitFor();
+  assert.strictEqual(await stock.innerText(), text);
+}
+
+async function verifyListingStock(page) {
+  await page.evaluate(() => selecionarLoja('Fixture 01', 'fixture-1'));
+  await page.locator('[data-question-select="fixture-1::1001"]').click();
+  await verifyStockText(page, '0 unidades');
+  assert.match(await page.locator('.question-context-card').first().innerText(), /SKU SKU-ESTOQUE-FIXTURE/);
+  await page.locator('[data-question-select="fixture-1::1002"]').click();
+  await verifyStockText(page, 'Indisponível');
+  await page.evaluate(() => selecionarLoja('Fixture 02', 'fixture-2'));
+  await verifyStockText(page, '1 unidade');
+  await page.evaluate(() => selecionarLoja('Fixture 01', 'fixture-1'));
+  await page.locator('[data-question-select="fixture-1::1000"]').click();
+  await verifyStockText(page, '10 unidades');
+  await page.evaluate(() => selecionarLoja(TODAS_LOJAS_VALUE));
+  await page.waitForFunction(() => !state.carregandoPerguntas);
 }
 
 async function verifyResponsiveLayout({ page }) {
@@ -828,10 +961,12 @@ async function verifyRecovery({ page, calls, control }) {
   assert.strictEqual(await page.locator('.question-ai-answer-btn').isEnabled(), false);
   assert.strictEqual(await page.locator('.question-loading-retry').count(), 1);
   control.retryAfter = '0';
+  await verifyStockText(page, '8 unidades');
   control.itemDeny = true;
   await page.evaluate(() => carregarPerguntas(1, {forcar: true}));
   await page.waitForFunction(() => state.perguntas.every(q => !q._itemPending));
   assert(await page.evaluate(() => state.perguntas.every(q => !q.item_title && q._itemState === 'blocked')), '403 de anúncio remove campos antigos e bloqueia prontidão');
+  await verifyStockText(page, 'Indisponível');
   assert.strictEqual(await page.evaluate(() => state.lojas.length), 11);
   control.itemDeny = false;
   await page.evaluate(() => carregarPerguntas(1, {forcar: true}));

@@ -36,12 +36,12 @@ PUBLIC_EXPORTS = [
     "validate_post_sale_response",
 ]
 CONTRACT_HASHES = {
-    # Current additive routes and intrinsic-versus-policy review diagnostics.
-    "routes": "77bdca722f74a16061e65ea83490c374f16cf1421d697f5cbc9d3af7cc273aea",
+    # Includes the draft PATCH and the two question moderation routes.
+    "routes": "81fb47a957f1ba5d8a795efa636f19d108be6f90659e9c16e5be90366281e95f",
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "6e96ffaedf9396672c647b926bbfbc52347c30fc75b386e7248fcce1f35302cb",
-    "prompts": "d00afbfa7b4f7917a81e390e53ffeef2ce8a0b9ead2f4defb587c79a3e844eb4",
+    "prompts": "c4722023e8eaa2d3a33e4540163388513d7383655244bb1346da627cb8cc3330",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -166,7 +166,7 @@ def _contract_snapshot() -> dict[str, object]:
 
 def test_ppv_public_contract_snapshot() -> None:
     snapshot = _contract_snapshot()
-    assert len(snapshot["routes"]) == 40
+    assert len(snapshot["routes"]) == 43
     assert len(snapshot["aliases"]) == 2
     assert len(snapshot["policy"]["allowed_tools"]) == 7
     assert snapshot["exports"] == PUBLIC_EXPORTS

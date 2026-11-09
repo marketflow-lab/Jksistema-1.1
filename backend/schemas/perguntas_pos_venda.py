@@ -50,6 +50,13 @@ class PerguntasEnviarRespostaRequest(BaseModel):
     proposal_hash: Optional[str] = ""
 
 
+class PerguntasModeracaoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str = Field(min_length=1, max_length=160)
+    question_id: str = Field(pattern=r"^[1-9][0-9]{0,29}$")
+
+
 class PerguntasAssistantDraftPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -129,6 +136,7 @@ __all__ = [
     "PerguntasAprovacaoRequest",
     "PerguntasGerarRespostaRequest",
     "PerguntasEnviarRespostaRequest",
+    "PerguntasModeracaoRequest",
     "PerguntasAssistantDraftPatchRequest",
     "PerguntasAssistantDraftPatchResponse",
     "MLQuestionsV2ProcessRequest",

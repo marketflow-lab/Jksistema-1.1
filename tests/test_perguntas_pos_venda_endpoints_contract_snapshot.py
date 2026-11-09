@@ -25,6 +25,7 @@ MODEL_TYPES = (
     ppv_schemas.PerguntasAprovacaoRequest,
     ppv_schemas.PerguntasGerarRespostaRequest,
     ppv_schemas.PerguntasEnviarRespostaRequest,
+    ppv_schemas.PerguntasModeracaoRequest,
     ppv_schemas.PerguntasAssistantDraftPatchRequest,
     ppv_schemas.PerguntasAssistantDraftPatchResponse,
     ppv_schemas.MLQuestionsV2ProcessRequest,
@@ -38,11 +39,11 @@ MODEL_TYPES = (
     TrainingRefreshRequest,
 )
 CONTRACT_HASHES = {
-    # Additive draft PATCH with optimistic concurrency and sealed persistence.
-    "routes": "aeb09afaf9b2e68a43fec2bdcf7bdae813c3f98600b4df442e194b8488877eb7",
+    # Add question moderation without changing the legacy facade.
+    "routes": "81fb47a957f1ba5d8a795efa636f19d108be6f90659e9c16e5be90366281e95f",
     "exports": "7f4ae8abcba9cd229d40d93ed5da479d36327acaa02fab6ef2efad7903f10390",
     "signatures": "aa38d5fcf4222cfd5ba33e2ce8867d2d22c55e7f8c6c15521c5880f0e253e038",
-    "schemas": "6a1af279285b3daefc049ef09e0a975996abafc95ca7c48e3f970e03ed7c8922",
+    "schemas": "44c6e4305917a8d88b50e06669eaf4f17257c0e34c1b671abc2d997bd845f13d",
     "http_status_codes": "c06ceb69456b4923815b0461ddeef6f9c90b6fcf5c0568dd79b3fdbc888a4546",
     "governance": "5eb6eadbc9ab3bb638bac5e1fadd1fa1d99cc3cfc590850ef86ef65d7c11f400",
 }
@@ -157,9 +158,9 @@ def _snapshot() -> dict[str, object]:
 
 def test_perguntas_pos_venda_endpoints_contract_snapshot() -> None:
     snapshot = _snapshot()
-    assert len(snapshot["routes"]) == 41
+    assert len(snapshot["routes"]) == 43
     assert len(snapshot["exports"]) == 37
-    assert len(snapshot["schemas"]) == 16
+    assert len(snapshot["schemas"]) == 17
     assert {name: _digest(value) for name, value in snapshot.items()} == CONTRACT_HASHES
 
 

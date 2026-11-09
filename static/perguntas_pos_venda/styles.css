@@ -303,7 +303,7 @@
 
         #aba-perguntas.tab-content.active {
             display: grid;
-            grid-template-rows: auto minmax(0, 1fr);
+            grid-template-rows: auto auto minmax(0, 1fr);
             overflow: hidden;
         }
 
@@ -1340,6 +1340,31 @@
             padding: 16px 18px;
         }
 
+        .question-detail-heading,
+        .question-moderation-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .question-detail-heading {
+            justify-content: space-between;
+        }
+
+        .question-moderation-actions .action-btn {
+            min-height: 32px;
+            padding: 0 10px;
+            border-color: rgba(255, 118, 118, 0.38);
+            color: #ffb4b4;
+            font-size: 0.78rem;
+            box-shadow: none;
+        }
+
+        .question-moderation-notice:not(:empty) {
+            padding: 0 0 8px;
+        }
+
         .question-detail-context {
             grid-area: context;
             padding: 7px 18px 16px 0;
@@ -1385,6 +1410,10 @@
 
         .question-context-card p {
             margin: 0;
+        }
+
+        .question-context-card .question-item-stock {
+            margin-top: 6px;
         }
 
         .question-context-card ul {

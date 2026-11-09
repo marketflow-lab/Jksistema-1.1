@@ -96,6 +96,7 @@
     if (!root || !root.document) return;
 
     const views = new Map(), itemCache = new Map(), detailCache = new Map(), drafts = new Map(), revisions = new Map();
+    const deletedQuestions = new Map();
     let generation = 0, controller = null, detailRun = null, session = '', storesFingerprint = '', currentView = '', activePager = null;
     const maxStale = 600000;
     function boundedSet(map, key, value) {
@@ -105,7 +106,8 @@
     function clear(resetStores = true, clearPersistence = true) {
         generation++; controller?.abort(); detailRun?.controller.abort(); detailRun = null;
         if (clearPersistence) root.JKPerguntasPosVenda?.limparPersistenciaRascunhos?.();
-        views.clear(); itemCache.clear(); detailCache.clear(); drafts.clear(); revisions.clear();
+        views.clear(); itemCache.clear(); detailCache.clear(); drafts.clear(); revisions.clear(); deletedQuestions.clear();
+        if (typeof limparModeracaoPerguntas === 'function') limparModeracaoPerguntas();
         currentView = ''; activePager = null;
         state.notificacoes = { carregando: false, atualizadoEm: 0, lojas: {}, totais: {}, erros: {} };
         if (typeof renderizarNotificacoes === 'function') renderizarNotificacoes();
@@ -207,7 +209,7 @@
             .map(q => chavePerguntaAtendimento(q));
         revisions.set(id, (revisions.get(id) || 0) + 1);
         for (const [key, pager] of views) if (pager.stores.some(s => String(s.store.store_id) === id)) views.delete(key);
-        for (const map of [itemCache, detailCache, drafts]) for (const key of map.keys()) if (key.startsWith(`${id}::`)) map.delete(key);
+        for (const map of [itemCache, detailCache, drafts, deletedQuestions]) for (const key of map.keys()) if (key.startsWith(`${id}::`)) map.delete(key);
         state.perguntas = state.perguntas.filter(q => String(q.store_id) !== id);
         if (!state.perguntas.some(q => chavePerguntaAtendimento(q) === state.perguntaSelecionadaKey)) state.perguntaSelecionadaKey = '';
         root.JKPerguntasPosVenda?.limparPersistenciaRascunhos?.({ storeId: id, questionKeys: revokedQuestionKeys });
@@ -309,6 +311,7 @@
     }
     function display(pager, questions, page, completed, background, force = false) {
         saveDraft();
+        questions = questions.filter(q => !deletedQuestions.has(keyOf(q)));
         if (background && state.perguntas.length) {
             const byKey = new Map(questions.map(q => [keyOf(q), q]));
             state.perguntas = state.perguntas.map(q => byKey.get(keyOf(q)) || q);
@@ -346,6 +349,25 @@
             views.forEach(pager => pager.pages.forEach(page => page.forEach(q => { if (keyOf(q) === keyOf(answered)) Object.assign(q, answered); })));
         }
     }
+    function removeDeletedQuestion(question) {
+        const key = keyOf(question);
+        const storeId = String(question.store_id);
+        boundedSet(deletedQuestions, key, true);
+        invalidate(storeId);
+        drafts.delete(key);
+        if (detailRun?.key === key) detailRun.controller.abort();
+        const visible = state.perguntas.some(q => keyOf(q) === key);
+        if (visible) {
+            state.perguntas = state.perguntas.filter(q => keyOf(q) !== key);
+            state.totalPerguntas = Math.max(0, state.totalPerguntas - 1);
+            if (state.perguntaSelecionadaKey === key) state.perguntaSelecionadaKey = '';
+            renderSafe();
+        }
+        if (activePager?.stores.some(entry => String(entry.store.store_id) === storeId)) {
+            const lastPage = Math.max(1, Math.ceil(state.totalPerguntas / state.tamanhoPaginaPerguntas));
+            load(Math.min(state.paginaPerguntas, lastPage), { preservarLista: true }).catch(() => {});
+        }
+    }
     async function load(page = 1, options = {}) {
         checkSession(); saveDraft();
         page = Math.max(1, Number(page) || 1);
@@ -359,9 +381,10 @@
         let pager = views.get(viewKey);
         activePager = pager || null;
         const cached = pager && Date.now() - Number(pager.lastGood || 0) <= maxStale ? pager.pages[page - 1] : null;
+        const manterLista = options.preservarLista && !changed && page === state.paginaPerguntas && state.perguntas.length > 0;
         if (cached && changed && pager.selectedKey) state.perguntaSelecionadaKey = pager.selectedKey;
-        if (cached) display(pager, cached, page, pager.stores.length, false);
-        else if (changed || (pager?.lastGood && Date.now() - pager.lastGood > maxStale)) {
+        if (cached && !manterLista) display(pager, cached, page, pager.stores.length, false);
+        else if (!manterLista && (changed || (pager?.lastGood && Date.now() - pager.lastGood > maxStale))) {
             state.perguntas = []; state.totalPerguntas = 0; state.perguntaSelecionadaKey = '';
             perguntasList.innerHTML = ''; perguntasDetail.innerHTML = ''; perguntasPagination.innerHTML = '';
             perguntasStatus.textContent = 'Carregando perguntas...';
@@ -414,7 +437,7 @@
             const consulted = pager.stores.map(entry => entry.updated).filter(Boolean);
             if (consulted.length) pager.lastGood = Math.min(...consulted);
             boundedSet(views, viewKey, pager);
-            display(pager, questions, page, pager.stores.length, Boolean(cached && !options.forcar), Boolean(options.forcar));
+            display(pager, questions, page, pager.stores.length, Boolean(manterLista || cached && !options.forcar), Boolean(options.forcar));
             if (stores.length === 1) request('resumo', { store_id: stores[0].store_id, metricas: 'true' }, signal).then(data => {
                 if (token !== generation) return;
                 pager.metrics = data.tempo_resposta_ml;
@@ -445,7 +468,7 @@
         if (combinations.length === 1) return combinations[0].value;
         return combinations.map(attribute => attribute.name ? `${attribute.name}: ${attribute.value}` : attribute.value).join(' · ');
     }
-    function itemFields(item, question) {
+    function itemFields(item, question, stockIsCurrent = true) {
         const variations = Array.isArray(item.variations) ? item.variations.filter(value => value && typeof value === 'object') : [];
         const variationId = question.variation_id || question.item_variation_id;
         const variation = variations.find(value => String(value.id) === String(variationId));
@@ -463,8 +486,10 @@
                 available_quantity: Number.isFinite(quantity) ? Math.max(0, Math.trunc(quantity)) : null,
             };
         });
+        const stock = item.available_quantity;
         return { item_title: item.title || item.item_title, item_thumbnail: item.secure_thumbnail || item.thumbnail || item.item_thumbnail,
-            item_permalink: item.permalink || item.item_permalink, item_sku: sku, item_variations: itemVariations, _itemReady: true };
+            item_permalink: item.permalink || item.item_permalink, item_sku: sku, item_variations: itemVariations,
+            _itemAvailableQuantity: stockIsCurrent && Number.isSafeInteger(stock) && stock >= 0 ? stock : null, _itemReady: true };
     }
     function component(data, name) {
         return data?.components?.[name] || { state: data?.stale ? 'stale' : 'unavailable', retryable: false };
@@ -502,7 +527,8 @@
         pool([...groups.values()], async questions => {
             const store = storeFor(questions[0]); if (!store) return;
             const run = { token, signal: controller?.signal, revision: revisions.get(String(store.store_id)) || 0 };
-            questions.forEach(q => Object.assign(q, { _itemRun: run, _itemPending: true, _itemReady: false, _itemState: 'loading', _itemRetryable: true }));
+            questions.forEach(q => Object.assign(q, { _itemRun: run, _itemPending: true, _itemReady: false,
+                _itemState: 'loading', _itemRetryable: true, _itemAvailableQuantity: null }));
             if (token === generation) renderSafe();
             try {
                 const pendingIds = () => [...new Set(questions.filter(q => !q._itemReady && q._itemRetryable !== false).map(q => q.item_id))].join(',');
@@ -520,7 +546,10 @@
                         if (q._itemRun !== run) return;
                         q._itemState = info.state; q._itemReady = info.state === 'ready' && Boolean(item) && !data.stale;
                         q._itemRetryable = Boolean(info.retryable || info.state === 'stale');
-                        if (item) Object.assign(q, itemFields(item, q), { _itemReady: q._itemReady });
+                        // The listing quantity can be current even if the variation lookup failed.
+                        const stockIsCurrent = !data.stale && !['stale', 'blocked'].includes(info.state);
+                        if (item) Object.assign(q, itemFields(item, q, stockIsCurrent), { _itemReady: q._itemReady });
+                        else q._itemAvailableQuantity = null;
                         if (q._itemReady) boundedSet(itemCache, `${q.store_id}::${q.item_id}`, { item, at: Number(data.consultado_em || Date.now()) });
                         else if (info.state === 'blocked') {
                             itemCache.delete(`${q.store_id}::${q.item_id}`);
@@ -535,6 +564,7 @@
                 if (error.name !== 'AbortError' && token === generation) {
                     questions.filter(q => q._itemRun === run && !q._itemReady).forEach(q => {
                         q._itemState = [401, 403].includes(error.status) ? 'blocked' : 'unavailable';
+                        q._itemAvailableQuantity = null;
                         if (q._itemState === 'blocked') {
                             itemCache.delete(`${q.store_id}::${q.item_id}`);
                             for (const name of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku', 'item_variations']) q[name] = '';
@@ -673,7 +703,7 @@
             question._contextHubState = status;
         } else if (name === 'item' || name === 'identity') {
             itemCache.delete(`${question.store_id}::${question.item_id}`);
-            Object.assign(question, { _itemReady: false, _itemState: resourceStatus });
+            Object.assign(question, { _itemReady: false, _itemState: resourceStatus, _itemAvailableQuantity: null });
             if (blocked) for (const field of ['item_title', 'item_thumbnail', 'item_permalink', 'item_sku', 'item_variations']) question[field] = '';
         }
         if (['question', 'history', 'identity'].includes(name)) {
@@ -694,6 +724,8 @@
     root.JKPerguntasLoading = {
         carregar: load,
         invalidar: invalidate,
+        removerExcluida: removeDeletedQuestion,
+        foiExcluida: (storeId, questionId) => deletedQuestions.has(`${storeId}::${questionId}`),
         detalhe: detail,
         tentarNovamente: retrySelected,
         rejeitarContexto: rejectContext,

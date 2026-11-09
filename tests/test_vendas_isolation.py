@@ -109,8 +109,8 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert result == {
         # The 1.0.327 base has 539 routes / 537 method-path pairs.
         # Deferred Medias photos add one POST.
-        "routes": 540,
-        "pairs": 538,
+        "routes": 542,
+        "pairs": 540,
         "duplicates": [],
         "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }
