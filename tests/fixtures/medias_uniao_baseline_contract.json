@@ -7,9 +7,9 @@
     "ListaPedidoStatusRequest": "7b376f623574517734cff36b9529c8fda7d95eed2739bf823313c600d5928b26",
     "ListaPedidoAddSkuRequest": "3ba1702d8e59c01bca82a214202cf89d2bfa82c21411d0f8aef61ec30b1bf7c0",
     "ListaPedidoSkuAprovacaoRequest": "af1cb3288979fec7bf919fe8dab48e8a668ddf9d49ffe3942a4f3008eeaf05ec",
-    "ListaPedidoSkuAnaliseConcorrentesRequest": "588ed9ec96cf7afd792bda07e464b9ea882ca87d36666e98074f03538ba648ab",
+    "ListaPedidoSkuAnaliseConcorrentesRequest": "6e5dfe164df52f97ed90f74b045bfb7327d3d45ab3223396fd288b16bf7370d8",
     "ListaPedidoPreferenciasColunasRequest": "caf03eb999a34b35d74798d6ecb1c9186adbdf12f726da7350eacae3dd216003",
     "MediasComprasSkusOcultosRequest": "1d37fa5557b090f21376a4eaf2d8b46ee987df79cc512572783ce3eed133b2b2"
   },
-  "routes_sha256": "6fe179575cc48e8a527b46cc4ba2f9df544e4dc5a5638960894a457a9eaab1e7"
+  "routes_sha256": "cf1aee33b4df3491d3199eb8e2d92c55d3a4981b11f020bba2e802e6f508c7b9"
 }
