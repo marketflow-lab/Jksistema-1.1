@@ -17,10 +17,12 @@ from backend.services.etiquetas import (
     gerar_pdf_impressao_avulsa,
     gerar_pdf_qrcode_link,
     gerar_preview_pdf_bytes,
-    obter_pdf_temporario,
     processar_etiquetas_loja,
 )
 from backend.services.etiquetas_layout import gerar_preview_layout, layout_e_padrao_atual, validar_layout
+
+
+_PRIVATE_FILE_HEADERS = {"Cache-Control": "no-store"}
 
 
 @dataclass(frozen=True)
@@ -44,9 +46,14 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
 
     def ler_pdf(file_id: str, client_id: str) -> bytes:
         owner = config.temp_file_owners.get(file_id)
-        if owner is not None and owner != str(client_id):
-            raise HTTPException(status_code=404, detail="Arquivo nao encontrado ou expirado.")
-        return obter_pdf_temporario(config.temp_files_storage, file_id)
+        file_bytes = config.temp_files_storage.get(file_id) if owner and owner == str(client_id) else None
+        if file_bytes is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Arquivo nao encontrado ou expirado.",
+                headers=_PRIVATE_FILE_HEADERS,
+            )
+        return file_bytes
 
     @etiquetas_router.post("/api/etiquetas/impressao-editor")
     async def gerar_impressao_editor_endpoint(
@@ -186,7 +193,7 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
     @etiquetas_router.get("/api/etiquetas/download/{file_id}")
     async def download_etiqueta(file_id: str, client_id: str = Depends(config.get_tenant_id)):
         file_bytes = ler_pdf(file_id, client_id)
-        return Response(content=file_bytes, media_type="application/pdf")
+        return Response(content=file_bytes, media_type="application/pdf", headers=_PRIVATE_FILE_HEADERS)
 
     @etiquetas_router.get("/api/etiquetas/preview/{file_id}")
     async def preview_etiqueta(
@@ -196,6 +203,6 @@ def create_etiquetas_router(config: EtiquetasRouterConfig) -> APIRouter:
     ):
         file_bytes = ler_pdf(file_id, client_id)
         png_bytes = gerar_preview_pdf_bytes(file_bytes, page)
-        return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png")
+        return StreamingResponse(io.BytesIO(png_bytes), media_type="image/png", headers=_PRIVATE_FILE_HEADERS)
 
     return etiquetas_router

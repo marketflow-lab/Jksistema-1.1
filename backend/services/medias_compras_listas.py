@@ -2182,6 +2182,10 @@ def _api_medias_compras_lista_pedido_download_sync(lista_id: str, client_id: str
     versao_lista = _versao_cache_lista_pedido(lista)
     cache_key = f"{client_id}:{lista_id}:{versao_lista}"
     caminho_cache = _arquivo_cache_lista_pedido(client_id, str(lista_id), versao_lista)
+    headers = {
+        "Content-Disposition": f"attachment; filename={nome_arquivo}",
+        "Cache-Control": "no-store",
+    }
 
     # Capture complete bytes in the worker: a later list edit may remove the
     # cache before FileResponse would open it in the response phase.
@@ -2191,9 +2195,6 @@ def _api_medias_compras_lista_pedido_download_sync(lista_id: str, client_id: str
     except FileNotFoundError:
         cached_bytes = None
     if cached_bytes:
-        headers = {
-            "Content-Disposition": f"attachment; filename={nome_arquivo}"
-        }
         return StreamingResponse(
             io.BytesIO(cached_bytes),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2218,9 +2219,6 @@ def _api_medias_compras_lista_pedido_download_sync(lista_id: str, client_id: str
 
     _salvar_bytes_cache_lista_pedido(client_id, str(lista_id), versao_lista, file_bytes)
 
-    headers = {
-        "Content-Disposition": f"attachment; filename={nome_arquivo}"
-    }
     return StreamingResponse(
         io.BytesIO(file_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2274,7 +2272,10 @@ def _api_medias_compras_lista_pedido_commercial_invoice_sync(
     return Response(
         content=file_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{nome_arquivo}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{nome_arquivo}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -2327,6 +2328,7 @@ def _api_medias_compras_lista_pedido_gerar_download_sync(lista_id: str, client_i
     file_id = str(uuid.uuid4())
     TEMP_FILES_STORAGE[file_id] = file_bytes
     TEMP_FILES_META[file_id] = {
+        "client_id": client_id,
         "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "filename": nome_arquivo,
     }
@@ -2347,17 +2349,18 @@ async def api_medias_compras_download(file_id: str, client_id: str = Depends(med
 
 
 def _api_medias_compras_download_sync(file_id: str, client_id: str = Depends(medias_common.get_tenant_id)):
-    file_bytes = TEMP_FILES_STORAGE.get(file_id)
-    if not file_bytes:
-        raise HTTPException(status_code=404, detail="Arquivo nÃ£o encontrado ou expirado")
-
+    headers = {"Cache-Control": "no-store"}
     meta = TEMP_FILES_META.get(file_id, {})
+    file_bytes = None
+    if client_id and meta.get("client_id") == client_id:
+        file_bytes = TEMP_FILES_STORAGE.get(file_id)
+    if not file_bytes:
+        raise HTTPException(status_code=404, detail="Arquivo nÃ£o encontrado ou expirado", headers=headers)
+
     media_type = meta.get("mime") or "application/octet-stream"
     filename = meta.get("filename") or f"arquivo_{file_id}.xlsx"
 
-    headers = {
-        "Content-Disposition": f"attachment; filename={filename}"
-    }
+    headers["Content-Disposition"] = f"attachment; filename={filename}"
     return StreamingResponse(io.BytesIO(file_bytes), media_type=media_type, headers=headers)
 
 

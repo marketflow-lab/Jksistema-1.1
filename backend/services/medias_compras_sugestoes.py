@@ -617,6 +617,7 @@ def _api_medias_compras_gerar_lista_compra_sync(
         file_id = str(uuid.uuid4())
         TEMP_FILES_STORAGE[file_id] = file_bytes
         TEMP_FILES_META[file_id] = {
+            "client_id": client_id,
             "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "filename": nome_arquivo,
         }
@@ -784,6 +785,7 @@ def _api_medias_compras_gerar_lista_sugestao_sync(
     filename = f"sugestao_compra_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     TEMP_FILES_STORAGE[file_id] = file_bytes
     TEMP_FILES_META[file_id] = {
+        "client_id": client_id,
         "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "filename": filename,
     }

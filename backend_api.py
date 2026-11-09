@@ -2479,7 +2479,8 @@ app.include_router(
 
 _etiquetas_router_config = EtiquetasRouterConfig(
     get_tenant_id=get_tenant_id,
-    temp_files_storage=TEMP_FILES_STORAGE,
+    # PDFs de Etiquetas ficam separados dos XLSX temporarios de Medias.
+    temp_files_storage={},
 )
 app.include_router(create_etiquetas_router(_etiquetas_router_config))
 

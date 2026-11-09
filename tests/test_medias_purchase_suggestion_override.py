@@ -5,8 +5,9 @@ import pytest
 from fastapi import HTTPException
 
 from backend.schemas.medias_compras import ListaCompraRequest
-from backend.services import medias_compras_sugestoes as sugestoes
 from backend.services import medias_compras_common
+from backend.services import medias_compras_listas as listas
+from backend.services import medias_compras_sugestoes as sugestoes
 
 
 def test_lista_compra_request_accepts_quantidades_sugeridas():
@@ -37,8 +38,26 @@ def test_resolve_quantidade_manual_inclusive_zero():
     assert aplicadas == {"001", "002"}
 
 
+@pytest.fixture
+def armazenamento_temporario(monkeypatch):
+    arquivos, metadados = {}, {}
+    for modulo in (sugestoes, listas):
+        monkeypatch.setattr(modulo, "TEMP_FILES_STORAGE", arquivos)
+        monkeypatch.setattr(modulo, "TEMP_FILES_META", metadados)
+
+
+def _verificar_isolamento_do_download(resultado):
+    file_id = resultado["file_id"]
+    download = listas._api_medias_compras_download_sync(file_id, client_id="000002")
+    assert download.status_code == 200
+    assert download.headers["content-disposition"] == f"attachment; filename={resultado['filename']}"
+    with pytest.raises(HTTPException) as erro:
+        listas._api_medias_compras_download_sync(file_id, client_id="000003")
+    assert erro.value.status_code == 404
+
+
 @pytest.mark.parametrize("via_get", [False, True])
-def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get):
+def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get, armazenamento_temporario):
     estoque_csv = tmp_path / "produtos_compilado.csv"
     estoque_csv.write_text(
         "sku,saldo_loja,loja_sync\n001,5,JK Pecas\n002,5,JK Pecas\n",
@@ -82,8 +101,6 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get)
     monkeypatch.setattr(sugestoes, "_gerar_excel_lista_pedido_bytes", lambda *_args, **_kwargs: b"xlsx")
     monkeypatch.setattr(sugestoes, "_salvar_listas_pedidos", lambda _client_id, listas: listas_salvas.extend(listas), raising=False)
     monkeypatch.setattr(sugestoes, "_salvar_bytes_cache_lista_pedido", lambda *_args: None, raising=False)
-    monkeypatch.setattr(sugestoes, "TEMP_FILES_STORAGE", {})
-    monkeypatch.setattr(sugestoes, "TEMP_FILES_META", {})
 
     payload = dict(
         opcao="media_6m",
@@ -105,9 +122,10 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get)
     assert resultado["total_quantidades_ajustadas"] == 2
     assert listas_salvas[0]["fornecedor_id"] == resultado["fornecedor_id"] == "fornecedor-1"
     assert listas_salvas[0]["supplier"] == resultado["supplier"] == "Fornecedor cadastrado"
+    _verificar_isolamento_do_download(resultado)
 
 
-def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
+def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch, armazenamento_temporario):
     def fake_visao(*, meses, loja, store_id, client_id):
         assert meses == 6
         assert loja == "JK Pecas"
@@ -144,8 +162,6 @@ def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
     monkeypatch.setattr(sugestoes, "_normalizar_item_lista_pedido", lambda item: item)
     monkeypatch.setattr(sugestoes, "_recalcular_frete_internacional_itens_lista", lambda _client_id, itens, **_kwargs: itens)
     monkeypatch.setattr(sugestoes, "_gerar_excel_lista_pedido_bytes", fake_gerar_excel)
-    monkeypatch.setattr(sugestoes, "TEMP_FILES_STORAGE", {})
-    monkeypatch.setattr(sugestoes, "TEMP_FILES_META", {})
 
     resultado = asyncio.run(
         sugestoes.api_medias_compras_gerar_lista_sugestao(
@@ -163,3 +179,4 @@ def test_lista_sugestao_aplica_edicoes_antes_de_gerar_excel(monkeypatch):
     ]
     assert resultado["total_itens"] == 2
     assert resultado["total_quantidades_ajustadas"] == 3
+    _verificar_isolamento_do_download(resultado)

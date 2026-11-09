@@ -4,6 +4,10 @@
 
 Quando o botão azul **LOGIN** aparece no ranking da categoria, o JK entra no Avant Pro com o e-mail salvo. Depois de confirmar a sessão, o sistema relê o ranking e continua a coleta.
 
+## Médias e Etiquetas
+
+Downloads e prévias de arquivos temporários exigem uma sessão válida e ficam restritos ao cliente que gerou o arquivo.
+
 ## Correções incluídas de versões anteriores
 
 - **Perguntas** mostra o motivo confirmado da recusa do Mercado Livre e preserva o rascunho. Também inclui as opções de moderação e a consulta de estoque.
