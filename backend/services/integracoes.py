@@ -3123,6 +3123,18 @@ def _bling_config_atual(
     return dict(((loja.get("integracoes") or {}).get("bling") or {}))
 
 
+def _bling_config_para_commit_refresh(config: dict) -> dict:
+    # A identificação da empresa pode ser gravada enquanto o POST está em voo.
+    # Ela e os rascunhos OAuth não substituem a autorização ativa.
+    metadados = _INTEGRACOES_SYNC_TRANSIENT_KEYS | {
+        "empresa_id", "empresa_oauth_connection_id", "_sync_version", "_sync_updated_at",
+    }
+    # carregar_lojas completa os campos derivados de status em arquivos legados.
+    normalizada = _normalizar_integracao_conectada("bling", dict(config))
+    comparavel = normalizada if isinstance(normalizada, dict) else config
+    return {chave: valor for chave, valor in comparavel.items() if chave not in metadados}
+
+
 def _atualizar_bling_cas(
     client_id: str,
     nome_loja: str,
@@ -3131,6 +3143,7 @@ def _atualizar_bling_cas(
     expected_access_token: str | None = None,
     expected_updated_at: str | None = None,
     expected_sync_version: str | int | None = None,
+    expected_refresh_config: dict | None = None,
     dados_api: dict,
     store_id: str | None = None,
 ) -> tuple[bool, dict]:
@@ -3170,6 +3183,11 @@ def _atualizar_bling_cas(
         if expected_updated_at is not None and str(atual.get("updated_at") or "").strip() != str(expected_updated_at or "").strip():
             return False, atual
         if expected_sync_version is not None and str(atual.get("_sync_version") or "").strip() != str(expected_sync_version or "").strip():
+            return False, atual
+        if expected_refresh_config is not None and (
+            _bling_config_para_commit_refresh(atual)
+            != _bling_config_para_commit_refresh(expected_refresh_config)
+        ):
             return False, atual
         atualizado = dict(atual)
         atualizado.update(dict(dados_api or {}))
@@ -3213,9 +3231,7 @@ def renovar_token_bling_loja(
                 "message": "Informe o store_id exato para renovar o token Bling.",
             },
         )
-    hint = dict(cfg or {})
-    hint.pop("_store_id_context", None)
-    hint.pop("store_id", None)
+    hint = cfg or {}
     expected_refresh = str(hint.get("refresh_token") or "").strip()
     expected_access = str(hint.get("access_token") or "").strip()
     expected_updated_at = str(hint.get("updated_at") or "").strip()
@@ -3242,33 +3258,27 @@ def renovar_token_bling_loja(
         ):
             return resultado(atual, "reused_concurrent")
 
-        base = dict(hint)
-        base.update(atual)
-        client_oauth_id = str(base.get("id") or base.get("client_id") or "").strip()
-        client_secret = str(base.get("secret") or base.get("client_secret") or "").strip()
-        refresh_usado = str(base.get("refresh_token") or expected_refresh or "").strip()
-        access_usado = str(base.get("access_token") or "").strip()
-        updated_at_usado = str(base.get("updated_at") or "").strip()
-        sync_version_usada = base.get("_sync_version")
-        if not (client_oauth_id and client_secret and refresh_usado):
+        client_oauth_id = str(atual.get("id") or atual.get("client_id") or "").strip()
+        client_secret = str(atual.get("secret") or atual.get("client_secret") or "").strip()
+        if not (client_oauth_id and client_secret and refresh_atual):
             raise BlingAuthenticationError(
                 "Credenciais Bling incompletas. Refaca a conexao em Integracoes.",
             )
 
         try:
-            novos = exchange_bling_refresh_token(client_oauth_id, client_secret, refresh_usado)
+            novos = exchange_bling_refresh_token(client_oauth_id, client_secret, refresh_atual)
         except HTTPException as exc:
             if exc.status_code == 401:
                 recente = _bling_config_atual(client_id, nome_loja, store_id_exato)
-                if str(recente.get("refresh_token") or "").strip() != refresh_usado:
+                if str(recente.get("refresh_token") or "").strip() != refresh_atual:
                     return resultado(recente, "reused_concurrent")
                 gravou_invalido, _persistido_invalido = _atualizar_bling_cas(
                     client_id,
                     nome_loja,
-                    expected_refresh_token=refresh_usado,
-                    expected_access_token=access_usado,
-                    expected_updated_at=updated_at_usado,
-                    expected_sync_version=sync_version_usada,
+                    expected_refresh_token=refresh_atual,
+                    expected_access_token=access_atual,
+                    expected_updated_at=updated_at_atual,
+                    expected_sync_version=atual.get("_sync_version"),
                     dados_api={
                         "connected": False,
                         "status": "reautenticacao_necessaria",
@@ -3289,32 +3299,28 @@ def renovar_token_bling_loja(
         access_token = str(novos.get("access_token") or "").strip()
         if not access_token:
             raise HTTPException(status_code=502, detail="Resposta invalida ao renovar token do Bling.")
-        refresh_novo = str(novos.get("refresh_token") or refresh_usado).strip()
-        oauth_connection_id = str(base.get("oauth_connection_id") or "").strip()
+        refresh_novo = str(novos.get("refresh_token") or refresh_atual).strip()
+        oauth_connection_id = str(atual.get("oauth_connection_id") or "").strip()
         if not oauth_connection_id:
             oauth_connection_id = secrets.token_urlsafe(24)
-        atualizado = dict(base)
-        atualizado.update({
-            "id": client_oauth_id,
-            "secret": client_secret,
-            "access_token": access_token,
-            "refresh_token": refresh_novo,
-            "oauth_connection_id": oauth_connection_id,
-            "connected": True,
-            "status": "conectado",
-            "motivo": "",
-            "oauth_invalid": False,
-            "shared_without_oauth_tokens": False,
-            "updated_at": str(time.time()),
-        })
         gravou, persistido = _atualizar_bling_cas(
             client_id,
             nome_loja,
-            expected_refresh_token=refresh_usado,
-            expected_access_token=access_usado,
-            expected_updated_at=updated_at_usado,
-            expected_sync_version=sync_version_usada,
-            dados_api=atualizado,
+            expected_refresh_token=refresh_atual,
+            expected_refresh_config=atual,
+            dados_api={
+                "id": client_oauth_id,
+                "secret": client_secret,
+                "access_token": access_token,
+                "refresh_token": refresh_novo,
+                "oauth_connection_id": oauth_connection_id,
+                "connected": True,
+                "status": "conectado",
+                "motivo": "",
+                "oauth_invalid": False,
+                "shared_without_oauth_tokens": False,
+                "updated_at": str(time.time()),
+            },
             store_id=store_id_exato,
         )
         # Uma reconexao pode vencer o CAS enquanto o POST estava em voo.

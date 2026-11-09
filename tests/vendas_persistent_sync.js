@@ -251,6 +251,39 @@ function freezeState(value) {
     ] } });
     assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /Atualizada/, 'tarefas restantes ou automação habilitada não comprovam atualização');
     assert.doesNotMatch(reopened.elements.syncPersistenteStatus.innerHTML, /vendas-sync-attention/, 'o indicador de alerta só deve aparecer quando há uma pendência de integração');
+
+    const calendar = setup({ payload: {
+        active: false,
+        automacao: { data_referencia: '2026-11-09', lojas: [
+            { loja: 'Nome anterior da Loja A', store_id: 'id-a', status: 'complete', habilitado: true,
+                conferencia_hoje_em: '2026-11-10T01:05:00Z', checkpoint: {} },
+            { loja: 'Loja B', store_id: 'id-b', status: 'complete', habilitado: true,
+                data_fim: '2026-11-08', conferencia_hoje_em: null },
+            { loja: 'Loja manual', status: 'complete', habilitado: false }
+        ] }
+    } });
+    Object.assign(calendar.context, {
+        periodoApplyTimer: null, unidadeNegocioSelect: { value: '__todos' }, lojaBotoes: { children: [] }
+    });
+    calendar.context.lojaSelecionada = 'Loja A';
+    await calendar.context.atualizarSelecao();
+    const calendarPanel = calendar.elements.syncPersistenteStatus;
+    assert.match(calendarPanel.innerHTML, /Todas as lojas · 1 aguardando · 1 atualizada · 1 com período conferido/,
+        'só a loja com conferência registrada para hoje deve contar como atualizada');
+    assert.match(calendarPanel.innerHTML, /Loja selecionada: Loja A<\/strong> · Conferida hoje às 22:05 \(2026-11-09\)/,
+        'a seleção usa a identidade estável e mostra o horário de São Paulo, mesmo sem documentos no checkpoint');
+    assert.match(calendarPanel.innerHTML, /Loja manual.*>Período conferido</);
+    calendar.context.lojaSelecionada = 'Loja B';
+    await calendar.context.atualizarSelecao();
+    assert.match(calendarPanel.innerHTML, /Loja selecionada: Loja B<\/strong> · Aguardando conferência de hoje \(2026-11-09\)/);
+    assert.doesNotMatch(calendarPanel.innerHTML.split('<details')[0], /Loja selecionada: Loja A|Conferida hoje às 22:05/,
+        'trocar a loja não reaproveita a conferência da seleção anterior');
+    assert.match(calendarPanel.innerHTML, /Nome anterior da Loja A<\/strong><span[^>]*>Conferida hoje às 22:05<\/span>/,
+        'os detalhes das lojas mantêm suas respectivas conferências');
+    calendar.context.lojaSelecionada = '__todas';
+    await calendar.context.atualizarSelecao();
+    assert.doesNotMatch(calendarPanel.innerHTML, /Loja selecionada:/);
+
     reopened.context.renderAutomacaoSyncVendas({ automacao: { lojas: [{ loja: 'Loja bloqueada', status: 'blocked' }] } });
     const attentionOnly = reopened.elements.syncPersistenteStatus.innerHTML;
     const attentionSummary = attentionOnly.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1] || '';
@@ -353,11 +386,11 @@ function freezeState(value) {
 
     const mixed = {
         active: true, progress: { percentual: 43, mensagem: 'Coletando página 2' }, logs: ['<registro técnico>'],
-        automacao: { pendentes: 9, habilitadas: 6, lojas: [
+        automacao: { pendentes: 9, habilitadas: 6, data_referencia: '2026-10-15', lojas: [
             { loja: 'Loja A', status: 'running' },
             { loja: 'Loja B', status: 'running', ultimo_erro: 'Falha na tentativa anterior' },
             { loja: 'Loja C', status: 'queued', pendentes: 4 },
-            { loja: 'Loja D', status: 'complete', pendentes: 0 },
+            { loja: 'Loja D', status: 'complete', pendentes: 0, conferencia_hoje_em: '2026-10-15T13:00:00Z' },
             { loja: 'Loja E', status: 'retry', ultimo_erro: 'Sessão expirada. Faça login novamente.' },
             { loja: 'Loja F', status: 'paused' }
         ] }

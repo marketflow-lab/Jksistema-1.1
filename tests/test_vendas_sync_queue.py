@@ -182,8 +182,9 @@ def test_changed_plan_keeps_pending_old_period_and_paused_jobs_resume(queue):
     assert queue.summary()["pendentes"] == 2
     resumed = queue.claim("resumed", now=BASE + 104)
     finish(queue, resumed, "resumed", now=BASE + 105)
+    today, = queue.schedule_due("2026-10-21", now=BASE + 2000)
+    assert today["data_inicio"] == today["data_fim"] == "2026-10-21"
     assert queue.get_job(second["id"])["status"] == "queued"
-    assert queue.schedule_due(dt.date(2026, 10, 15), now=BASE + 2000) == []
 
 
 def test_manual_request_disables_auto_without_dropping_other_period(queue):
@@ -239,6 +240,66 @@ def test_schedule_revisits_only_today_and_does_not_rotate_closed_history(queue):
     with sqlite3.connect(queue.path) as conn:
         assert {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {
             "tenant", "jobs", "plans", "days", "connection_alert_ack", "connection_check_state", "store_sources", "sync_revision"}
+
+
+def test_today_confirmation_comes_from_committed_day_in_sao_paulo(queue):
+    before = dt.datetime.fromisoformat("2026-11-09T02:59:45+00:00").timestamp()
+    after = before + 20
+    queue.enqueue("a", "Loja", "2026-11-08", "2026-11-09", automatico=True, now=before)
+    prior = queue.claim("before-midnight", now=before)
+    finish(queue, prior, "before-midnight", before + 1, today="2026-11-08")
+    yesterday = queue.summary(now=before + 1)
+    assert yesterday["data_referencia"] == "2026-11-08"
+    assert yesterday["lojas"][0]["conferencia_hoje_em"] == "2026-11-09T02:59:46+00:00"
+
+    queue.enqueue("b", "Loja", "2026-11-07", "2026-11-07", now=after)
+    history = queue.claim("history", now=after)
+    finish(queue, history, "history", after + 1, today="2026-11-09")
+    summary = queue.summary(now=after + 1)
+    assert summary["data_referencia"] == "2026-11-09"
+    assert all(store["status"] == "complete" and store["conferencia_hoje_em"] is None
+               for store in summary["lojas"])
+
+    queue.schedule_due("2026-11-09", now=after + 2)
+    today = queue.claim("today", now=after + 2)
+    queue.complete_day(today["id"], "today", "2026-11-09", {"vendas": 0}, now=after + 3,
+                       collection_started_at=after + 2)
+    stores = {store["store_id"]: store for store in queue.summary(now=after + 3)["lojas"]}
+    assert stores["a"]["conferencia_hoje_em"] == "2026-11-09T03:00:08+00:00"
+    assert stores["b"]["conferencia_hoje_em"] is None
+
+    queue.invalidate_store_days("a", "2026-11-09", "2026-11-09", now=after + 4)
+    assert queue.summary(now=after + 4)["lojas"][0]["conferencia_hoje_em"] is None
+
+
+def test_recovered_store_checks_today_before_finishing_older_retries(queue):
+    prior_time, now = stamp("2026-11-08"), stamp("2026-11-09")
+    older = enqueue(queue, start="2026-11-06", end="2026-11-08", automatico=True, now=prior_time)
+    queue.claim("previous", now=prior_time)
+    queue.complete_day(older["id"], "previous", "2026-11-06", {}, now=prior_time + 1)
+    queue.fail_job(older["id"], "previous", "Reconecte a loja.", now=prior_time + 2)
+
+    assert queue.schedule_due("2026-11-09", now=now) == []
+    recovered = queue.claim("recovery", now=now)
+    alerts = queue.connection_alerts(recovered["store_id"])
+    assert queue.acknowledge_connection_alerts(
+        recovered["id"], "recovery", recovered["store_id"], alerts,
+        expected_attempts=recovered["attempts"], now=now + 1,
+    ) == 1
+
+    today, = queue.schedule_due("2026-11-09", now=now + 2)
+    assert today["data_inicio"] == today["data_fim"] == "2026-11-09"
+    assert queue.schedule_due("2026-11-09", now=now + 2) == []
+    assert queue.claim("parallel", now=now + 2) is None
+    queue.yield_job(recovered["id"], "recovery", now=now + 3)
+
+    claimed = queue.claim("today", now=now + 3)
+    assert claimed["id"] == today["id"]
+    finish(queue, claimed, "today", now=now + 4)
+    assert queue.schedule_due("2026-11-09", now=now + 1000) == []
+    remaining = queue.claim("history", now=now + 1000)
+    assert remaining["id"] == older["id"]
+    assert remaining["dias_concluidos"] == ["2026-11-06"]
 
 
 def test_legacy_history_completion_does_not_delay_the_first_cycle_of_the_day(queue):

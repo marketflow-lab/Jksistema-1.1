@@ -98,6 +98,44 @@ function payload(revision, status = 'running', days = ['2026-10-26']) {
     await commits.clock.tick(1); assert.equal(commits.calls.length, 4, 'revisão do mesmo dia confirmado deve atualizar cartões e gráfico');
     assert(commits.calls[2].at - commits.calls[0].at >= 5000);
 
+    const reading = harness();
+    let finishSummary;
+    let finishGraph;
+    reading.context.carregarVendasPromise = new Promise(resolve => { finishSummary = resolve; });
+    reading.context.carregarGraficoPromise = new Promise(resolve => { finishGraph = resolve; });
+    reading.observe(payload(1)); reading.observe(payload(2));
+    await reading.clock.tick(5000);
+    assert.equal(reading.calls.length, 0, 'a revisão não reutiliza uma leitura iniciada antes da confirmação');
+    reading.observe(payload(3));
+    finishSummary(); await reading.clock.tick(0);
+    assert.equal(reading.calls.length, 0, 'a recarga espera a leitura anterior do gráfico terminar');
+    finishGraph(); await reading.clock.tick(0);
+    assert.deepEqual(reading.calls.map(call => call.kind), ['cards', 'graph']);
+    await reading.clock.tick(5000);
+    assert.equal(reading.calls.length, 2, 'as confirmações recebidas durante a espera usam a mesma leitura nova');
+
+    for (const change of ['filter', 'visibility']) {
+        const waiting = harness();
+        let finish;
+        waiting.context.carregarGraficoPromise = new Promise(resolve => { finish = resolve; });
+        waiting.observe(payload(1)); waiting.observe(payload(2));
+        await waiting.clock.tick(5000);
+        if (change === 'filter') {
+            waiting.fixture.start = '2026-10-20';
+            waiting.observe(payload(2));
+        } else {
+            waiting.context.document.visibilityState = 'hidden';
+        }
+        finish(); await waiting.clock.tick(5000);
+        assert.equal(waiting.calls.length, 0, 'a recarga não começa com o filtro anterior ou com a tela oculta');
+        if (change === 'visibility') {
+            waiting.context.document.visibilityState = 'visible';
+            waiting.observe(payload(2));
+            await waiting.clock.tick(5000);
+            assert.deepEqual(waiting.calls.map(call => call.kind), ['cards', 'graph']);
+        }
+    }
+
     const staging = harness();
     staging.observe(payload(undefined, 'running', []));
     const staged = payload(undefined, 'queued', []); staged.automacao.jobs[0].checkpoint = { documentos_salvos: 10 };

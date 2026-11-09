@@ -111,6 +111,7 @@ class SyncQueue:
                     database_name TEXT,
                     PRIMARY KEY(job_id, day)
                 );
+                CREATE INDEX IF NOT EXISTS days_by_day ON days(day);
                 CREATE TABLE IF NOT EXISTS plans (
                     store_id TEXT PRIMARY KEY, loja TEXT NOT NULL, enabled INTEGER NOT NULL,
                     data_inicio TEXT NOT NULL, data_fim TEXT NOT NULL,
@@ -275,6 +276,17 @@ class SyncQueue:
             if row["day"] not in confirmed and self._closed_day(row, now):
                 confirmed[row["day"]] = row
         return confirmed
+
+    @staticmethod
+    def _current_day_confirmations(conn, today, midnight, now):
+        """Use committed work for the local date, including a valid empty day."""
+        return dict(conn.execute("""
+            SELECT j.store_id, MAX(d.completed_at)
+            FROM days d JOIN jobs j ON j.id = d.job_id
+            WHERE d.day = ? AND d.collection_started_at >= ?
+                AND d.collection_started_at <= d.completed_at AND d.completed_at <= ?
+            GROUP BY j.store_id
+        """, (str(today), midnight, now)))
 
     def _reuse_completed_days(self, conn, job_id, now):
         job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -894,15 +906,14 @@ class SyncQueue:
         follow the calendar and reuse confirmed closed days.
         """
         today, now = _date(today), _time(now)
+        today_iso = str(today)
         midnight = dt.datetime.combine(today, dt.time.min, SYNC_TIMEZONE).timestamp()
         first_due_from_today = midnight + INTERVAL_SECONDS
         scheduled = []
         with self._transaction() as conn:
             plans = conn.execute("SELECT * FROM plans WHERE enabled = 1 ORDER BY store_id").fetchall()
+            confirmed_today = self._current_day_confirmations(conn, today, midnight, now) if plans else {}
             for plan in plans:
-                if conn.execute("SELECT 1 FROM jobs WHERE store_id = ? AND status NOT IN ('complete', 'paused') LIMIT 1",
-                                (plan["store_id"],)).fetchone():
-                    continue
                 start = _date(plan["data_inicio"])
                 if start > today:
                     continue
@@ -910,12 +921,30 @@ class SyncQueue:
                 next_due = plan["next_due"]
                 if next_due > now and next_due >= first_due_from_today:
                     continue
-                covered = self._confirmed_days(conn, plan["store_id"], str(start), str(today), now)
-                begin = start
-                while begin < today and str(begin) in covered:
-                    begin += dt.timedelta(days=1)
+                pending = conn.execute("""
+                    SELECT j.id, j.data_fim, j.attempts, j.last_error, a.error_signature
+                    FROM jobs j LEFT JOIN connection_alert_ack a ON a.job_id = j.id
+                    WHERE j.store_id = ? AND j.status NOT IN ('complete', 'paused')
+                """, (plan["store_id"],)).fetchall()
+                if pending:
+                    # Keep retry/backoff on unresolved errors. After connection
+                    # recovery, let today's first turn run ahead of older work
+                    # without replacing its requests, leases or checkpoints.
+                    if plan["store_id"] in confirmed_today or any(
+                        row["data_fim"] >= today_iso or (
+                            row["last_error"] and row["error_signature"] != self._error_signature(row)
+                        )
+                        for row in pending
+                    ):
+                        continue
+                    begin = today
+                else:
+                    covered = self._confirmed_days(conn, plan["store_id"], str(start), today_iso, now)
+                    begin = start
+                    while begin < today and str(begin) in covered:
+                        begin += dt.timedelta(days=1)
                 scheduled.append(self._enqueue(conn, plan["store_id"], plan["loja"],
-                    str(begin), str(today), False, True, "recent", now, plan["requires_session"]))
+                    str(begin), today_iso, False, True, "recent", now, plan["requires_session"]))
             if scheduled:
                 self._request_connection_check(conn, requires_session=any(
                     job["requires_session"] for job in scheduled))
@@ -934,6 +963,8 @@ class SyncQueue:
             jobs = [self._job(conn, row[0], detailed=False) for row in rows]
             current = _time(now)
             today = dt.datetime.fromtimestamp(current, SYNC_TIMEZONE).date()
+            midnight = dt.datetime.combine(today, dt.time.min, SYNC_TIMEZONE).timestamp()
+            confirmed_today = self._current_day_confirmations(conn, today, midnight, current)
             batch_number = conn.execute("SELECT batch_number FROM sync_revision WHERE singleton = 1").fetchone()[0]
             acknowledgements = {row["job_id"]: row["error_signature"] for row in
                                 conn.execute("SELECT job_id, error_signature FROM connection_alert_ack")}
@@ -984,9 +1015,10 @@ class SyncQueue:
                     "ultimo_erro": job["last_error"] if job and not job["aviso_conexao_verificado"] else None,
                     "aviso_conexao_verificado": bool(job and job["aviso_conexao_verificado"]),
                     "ultima_conferencia": _iso(plan["last_success"]),
+                    "conferencia_hoje_em": _iso(confirmed_today.get(plan["store_id"])),
                     "job_id": job["id"] if job else None,
                     "forcar_resync": job["forcar_resync"] if job else bool(plan["forcar_resync"])})
-            return {"lojas": stores, "jobs": jobs,
+            return {"lojas": stores, "jobs": jobs, "data_referencia": str(today),
                     "data_revision": conn.execute("SELECT value FROM sync_revision WHERE singleton = 1").fetchone()[0],
                     "dias_confirmados": sum(store["dias_concluidos"] for store in stores),
                     "dias_total": sum(store["dias_total"] for store in stores),

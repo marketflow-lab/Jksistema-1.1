@@ -15,19 +15,19 @@ KINDS = ("pedido", "nfe_entrada", "nfe_saida")
 
 
 class Response:
-    def __init__(self, status, data):
+    def __init__(self, status, data, *, include_data=True):
         self.status_code = status
         self.headers = {}
-        self.data = data
+        self.body = {"data": data} if include_data else {}
 
     def json(self):
-        return {"data": self.data}
+        return self.body
 
 
 @pytest.fixture
 def collector_api(monkeypatch):
     state = {"listing": [1, 2], "pages": [], "details": [], "maps": [], "failed_detail": None,
-             "failed_page": None, "list_status": 200, "detail_status": 503, "empty_items": False,
+             "failed_page": None, "missing_data_page": None, "list_status": 200, "detail_status": 503, "empty_items": False,
              "revision": 1, "bad_fields": False}
     for name in ("_bling_map_canais_venda_basico", "_bling_map_lojas_virtuais", "_bling_map_unidades_por_canais"):
         def map_call(_token, name=name):
@@ -70,6 +70,8 @@ def collector_api(monkeypatch):
                 return Response(503, {})
             if state["list_status"] != 200:
                 return Response(state["list_status"], {})
+            if page == state["missing_data_page"]:
+                return Response(200, None, include_data=False)
             rows = [listing_row(identity) for identity in state["listing"]] if page == 1 else []
             if state["bad_fields"] and rows:
                 rows[0]["numero"] = {"unexpected": "value"}
@@ -146,6 +148,43 @@ def test_interrupted_enumeration_is_restarted_before_details_and_retains_new_ord
     assert status == 200 and len(rows) == 6
     assert collector_api["pages"] == [1, 2, 1, 2]
     assert collector_api["details"] == [3, 1, 2]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("missing_page", (1, 2))
+def test_listing_without_data_does_not_confirm_a_partial_or_empty_source(tmp_path, collector_api, kind, missing_page):
+    collector_api["missing_data_page"] = missing_page
+    with context(tmp_path):
+        with pytest.raises(HTTPException) as failure:
+            collect(kind)
+        assert failure.value.status_code == 502
+        assert checkpoint.load_collection_manifest(kind) is None
+    assert collector_api["details"] == []
+
+    collector_api["missing_data_page"] = None
+    with context(tmp_path):
+        rows, status = collect(kind)
+        assert checkpoint.collected_source_complete(kind) is True
+    assert status == 200 and len(rows) == 4
+    assert collector_api["details"] == [1, 2]
+
+
+def test_old_manifest_is_relisted_without_fetching_unchanged_documents(tmp_path, collector_api, monkeypatch):
+    with monkeypatch.context() as legacy:
+        legacy.setattr(checkpoint, "_MANIFEST_VERSION", 1)
+        collector_api["listing"] = [1]
+        with context(tmp_path):
+            assert collect("pedido")[1] == 200
+            assert checkpoint.collected_source_complete("pedido") is True
+
+    collector_api["listing"] = [1, 2]
+    with context(tmp_path, "new-period"):
+        assert checkpoint.load_prepared_source("pedido") is None
+        rows, status = collect("pedido")
+        assert checkpoint.collected_source_complete("pedido") is True
+    assert status == 200 and len(rows) == 4
+    assert collector_api["pages"] == [1, 2, 1, 2]
+    assert collector_api["details"] == [1, 2]
 
 
 @pytest.mark.parametrize("kind", KINDS)

@@ -352,6 +352,9 @@ async function atualizarSelecao() {
     Array.from(lojaBotoes.children).forEach(btn => {
         btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
     });
+    if (typeof renderAutomacaoSyncVendas === 'function') {
+        renderAutomacaoSyncVendas(vendasSyncMonitor.getLastPayload());
+    }
     if (typeof reaplicarPeriodoGraficoAposMudancaFiltro === 'function') {
         const periodoAtualizado = await reaplicarPeriodoGraficoAposMudancaFiltro();
         if (periodoAtualizado === false) return;

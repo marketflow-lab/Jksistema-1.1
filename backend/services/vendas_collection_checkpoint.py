@@ -26,7 +26,9 @@ from backend.services.sqlite_coordination import sqlite_lock_for_path
 
 
 _VERSION = 1
-_MANIFEST_VERSION = 1
+# Version 1 could record an absent list as the end of discovery. Relist it while
+# keeping saved document details available through their original listing hash.
+_MANIFEST_VERSION = 2
 _KINDS = {"pedido", "nfe_entrada", "nfe_saida"}
 try:
     _DAY_TIMEZONE = ZoneInfo("America/Sao_Paulo")

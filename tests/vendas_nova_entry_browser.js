@@ -22,7 +22,7 @@ const inline = source => `<script>${source.replace(/<\/script/gi, '<\\/script')}
 const periodSource = read('static/vendas/periodo-cache.js');
 const syncPresentation = `function formatDate(value) {
     return String(value || '').replace(/^(\\d{4})-(\\d{2})-(\\d{2})$/, '$3/$2/$1');
-}\n` + periodSource.slice(periodSource.indexOf('function formatarMomentoSyncVendas('), periodSource.indexOf('let progressMonitorSubscribed'));
+}\n` + periodSource.slice(periodSource.indexOf('function possuiColetaEmExecucaoVendas('), periodSource.indexOf('let progressMonitorSubscribed'));
 
 const auxiliaryIa = path.join(scratch, 'ia-sidebar.js');
 fs.writeFileSync(auxiliaryIa, '// Unrelated lazy assistant asset; no navigation or visibility rules.\n');
@@ -324,12 +324,12 @@ async function verifySyncStatus(context, fixture, width, modern) {
                 active: true, progress: { percentual: 43, etapa: 'Coleta', mensagem: 'Etapa técnica exclusiva do fixture.' },
                 logs: ['LOG_TECNICO_RECOLHIDO <coleta>'],
                 automacao: {
-                    pendentes: 9, habilitadas: 5,
+                    pendentes: 9, habilitadas: 5, data_referencia: '2026-10-20',
                     lojas: [
                         store('RCL', 'running', { checkpoint: { ultimo_tipo: 'pedido', ultimo_id: 'DOC-123', documentos_salvos: 26, atualizado_em: '2026-10-20T10:16:46Z' } }),
                         store('JK Peças', 'running', { ultimo_erro: 'Falha na tentativa anterior <integracao>.' }),
                         store('Carlos José', 'queued'),
-                        store('Aline 2', 'complete'),
+                        store('Aline 2', 'complete', { conferencia_hoje_em: '2026-10-20T10:16:46Z' }),
                         store('Deckas', 'retry', { ultimo_erro: 'Sessão expirada. Faça login novamente para continuar as pendências.' }),
                         store('Randy', 'paused'),
                     ],
@@ -365,7 +365,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
         check('progress and persistent state share the compact wrapper', await bar.evaluate(element =>
             element.classList.contains('vendas-sync-bar') && element.contains(document.querySelector('#' + (element.classList.contains('vn-status') ? 'vnPersistentStatus' : 'syncPersistenteStatus')))), details);
         check('store counts distinguish activity, completion and pause', [
-            '2 sincronizando', '1 aguardando', '1 atualizada', '1 pausada',
+            'Todas as lojas', '2 sincronizando', '1 aguardando', '1 atualizada', '1 pausada',
         ].every(label => visible.includes(label)), details);
         check('job count is not presented as store count', !visible.includes('9 lojas'), details);
         check('technical content and full alerts start collapsed', !/DOC-123|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva|9 tarefas|FALLBACK_TEXTO_NAO_EXIBIR|Sessão expirada|Falha na tentativa anterior/.test(visible), details);

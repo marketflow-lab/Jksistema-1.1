@@ -1,11 +1,12 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from backend.services import integracoes
+from backend.services import bling, bling_accounts, integracoes
 from backend.services.cadastro_fotos_coordenacao import (
     CadastroFotosCoordenacaoErro,
     bloquear_transicao_fotos_tenant,
@@ -1772,6 +1773,106 @@ def test_refresh_concorrente_de_duas_lojas_preserva_ambos_tokens(tmp_path, monke
 
     assert integracoes.buscar_loja("000002", "Loja A")["integracoes"]["bling"]["refresh_token"] == "refresh-a-new"
     assert integracoes.buscar_loja("000002", "Loja B")["integracoes"]["bling"]["refresh_token"] == "refresh-b-new"
+
+
+def test_refresh_preserva_identidade_bling_confirmada_durante_o_post(tmp_path, monkeypatch):
+    _configure(tmp_path)
+    lojas = _bling_lojas()
+    lojas[0]["integracoes"]["bling"].update(
+        empresa_id="", empresa_oauth_connection_id="", oauth_pending_state=None,
+    )
+    integracoes.salvar_lojas("000002", lojas)
+    store_id = lojas[0]["store_id"]
+    snapshot = dict(lojas[0]["integracoes"]["bling"])
+    outra_loja = dict(lojas[1]["integracoes"]["bling"])
+    chamadas = []
+
+    def get_empresa(url, *, headers, **_kwargs):
+        assert url == "https://api.bling.com.br/Api/v3/empresas/me/dados-basicos"
+        assert headers["Authorization"] == f"Bearer {snapshot['access_token']}"
+        return SimpleNamespace(status_code=200, url=url, json=lambda: {"data": {"id": 987}})
+
+    def exchange(_client_id, _client_secret, refresh_token):
+        chamadas.append(refresh_token)
+        assert bling_accounts.resolve_bling_account("000002", "Loja A", store_id=store_id) == "987"
+        integracoes.atualizar_api_loja(
+            "000002", "Loja A", "bling", {"oauth_pending_state": "novo-fluxo"}, store_id=store_id,
+        )
+        return {"access_token": "access-a-rotacionado", "refresh_token": "refresh-a-rotacionado"}
+
+    monkeypatch.setattr(bling, "_bling_get_with_adaptive_limit", get_empresa)
+    monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
+    resultado, disposition = integracoes.renovar_token_bling_loja(
+        "000002", "Loja A", snapshot, store_id=store_id, return_disposition=True,
+    )
+
+    assert chamadas == [snapshot["refresh_token"]]
+    assert disposition == "committed_by_caller"
+    persistido = integracoes.buscar_loja_snapshot("000002", "Loja A", store_id)["integracoes"]["bling"]
+    for config in (resultado, persistido):
+        assert config["access_token"] == "access-a-rotacionado"
+        assert config["refresh_token"] == "refresh-a-rotacionado"
+        assert config["empresa_id"] == "987"
+        assert config["empresa_oauth_connection_id"] == config["oauth_connection_id"]
+        assert config["oauth_connection_id"] == snapshot["oauth_connection_id"]
+        assert config["oauth_pending_state"] == "novo-fluxo"
+        assert config["connected"] is True
+        assert config["oauth_invalid"] is False
+    loja_b = integracoes.buscar_loja_snapshot("000002", "Loja B", lojas[1]["store_id"])
+    assert loja_b["integracoes"]["bling"] == outra_loja
+
+
+def test_refresh_bling_preserva_compatibilidade_com_status_legado(tmp_path, monkeypatch):
+    from backend.services.shared_sync_merge_integracoes import _shared_sync_normalizar_integracao_conectada
+
+    arquivo = _configure(tmp_path)
+    lojas = _bling_lojas()
+    integracoes.salvar_lojas("000002", lojas)
+    store_id = lojas[0]["store_id"]
+    del lojas[0]["integracoes"]["bling"]["_sync_version"]
+    arquivo.write_text(json.dumps(lojas), encoding="utf-8")
+    monkeypatch.setattr(integracoes, "_normalizar_integracao_conectada", _shared_sync_normalizar_integracao_conectada)
+    monkeypatch.setattr(
+        integracoes, "exchange_bling_refresh_token",
+        lambda *_args: {"access_token": "access-legado-novo", "refresh_token": "refresh-legado-novo"},
+    )
+
+    resultado, disposition = integracoes.renovar_token_bling_loja(
+        "000002", "Loja A", store_id=store_id, return_disposition=True,
+    )
+
+    assert disposition == "committed_by_caller"
+    assert resultado["status"] == "conectado"
+    persistido = integracoes.buscar_loja_snapshot("000002", "Loja A", store_id)["integracoes"]["bling"]
+    assert persistido["access_token"] == "access-legado-novo"
+    assert persistido["refresh_token"] == "refresh-legado-novo"
+
+
+@pytest.mark.parametrize(
+    "campo, novo_valor", [("oauth_connection_id", "outra-conexao"), ("secret", "novo-secret")],
+)
+def test_refresh_antigo_respeita_mudanca_de_vinculo_com_mesmos_tokens(tmp_path, monkeypatch, campo, novo_valor):
+    _configure(tmp_path)
+    lojas = _bling_lojas()
+    integracoes.salvar_lojas("000002", lojas)
+    store_id = lojas[0]["store_id"]
+    snapshot = dict(lojas[0]["integracoes"]["bling"])
+
+    def exchange(_client_id, _client_secret, _refresh_token):
+        integracoes.atualizar_api_loja("000002", "Loja A", "bling", {campo: novo_valor}, store_id=store_id)
+        return {"access_token": "access-obsoleto", "refresh_token": "refresh-obsoleto"}
+
+    monkeypatch.setattr(integracoes, "exchange_bling_refresh_token", exchange)
+    resultado, disposition = integracoes.renovar_token_bling_loja(
+        "000002", "Loja A", snapshot, store_id=store_id, return_disposition=True,
+    )
+
+    assert disposition == "cas_lost"
+    persistido = integracoes.buscar_loja_snapshot("000002", "Loja A", store_id)["integracoes"]["bling"]
+    for config in (resultado, persistido):
+        assert config[campo] == novo_valor
+        assert config["access_token"] == snapshot["access_token"]
+        assert config["refresh_token"] == snapshot["refresh_token"]
 
 
 def test_resultado_antigo_nao_sobrescreve_reconexao(tmp_path, monkeypatch):

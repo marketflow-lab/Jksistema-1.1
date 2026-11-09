@@ -159,7 +159,8 @@ def _preparar_manifesto_coleta_bling(kind, access_token, data_inicio, data_fim, 
             return None, response.status_code
         if response.status_code != 200:
             _bling_raise_required_response(response, action)
-        documents = _bling_json_data(response, action=action, default=[], expected_type=list)
+        # Only an explicit empty list proves this page ended discovery.
+        documents = _bling_json_data(response, action=action, default=None, expected_type=list)
         if not documents:
             validate_collection_context()
             save_collection_manifest(kind, entries, started_at=started_at)

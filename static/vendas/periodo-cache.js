@@ -84,6 +84,9 @@ function possuiColetaEmExecucaoVendas(data) {
 }
 
 const mensagemVerificacaoConexoesVendas = 'Verificando conexões Bling com pendências...';
+const formatoHoraConferenciaVendas = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit'
+});
 
 function formatarMomentoSyncVendas(valor) {
     if (!valor) return '';
@@ -115,7 +118,9 @@ function estadoSyncLojaVendas(loja) {
             ? ['pending', 'Pendências preservadas'] : ['attention', 'Requer atenção'];
     }
     if (['complete', 'concluido', 'finalizado'].includes(status) && !(Number(loja?.pendentes) > 0)) {
-        return ['complete', 'Atualizada'];
+        if (Number.isFinite(Date.parse(loja?.conferencia_hoje_em))) return ['complete', 'Atualizada'];
+        return loja?.habilitado
+            ? ['queued', 'Aguardando conferência de hoje'] : ['historical', 'Período conferido'];
     }
     if (['queued', 'pendente', 'retry', 'aguardando', 'complete', 'concluido', 'finalizado'].includes(status)
         || loja?.habilitado || Number(loja?.pendentes) > 0) return ['queued', 'Aguardando'];
@@ -127,21 +132,52 @@ function logsSyncVendas(logs) {
         .map(log => `<div>${escaparHtmlVendas(log)}</div>`).join('');
 }
 
+function resumoLojaSelecionadaSyncVendas(estados, dataReferencia) {
+    const nome = typeof lojaSelecionada !== 'undefined' ? lojaSelecionada : '';
+    if (!nome || nome === '__todas') return '';
+
+    const opcoes = (typeof lojasDisponiveis !== 'undefined' && Array.isArray(lojasDisponiveis) ? lojasDisponiveis : [])
+        .filter(loja => loja?.nome === nome);
+    const storeId = opcoes.length === 1 ? opcoes[0].store_id : null;
+    const candidatas = opcoes.length > 1 ? [] : estados.filter(({ loja }) => (
+        storeId ? String(loja?.store_id) === String(storeId) : mesmaLoja(loja?.loja, nome)
+    ));
+    const selecionada = candidatas.length === 1 ? candidatas[0] : null;
+    const [chave, rotulo] = selecionada?.estado || [];
+    const hora = selecionada?.horaConferencia;
+    const dia = dataReferencia ? ` (${formatDate(dataReferencia)})` : '';
+    const aguardando = chave === 'queued' && selecionada?.loja.habilitado && !hora;
+    let conferencia = aguardando ? 'Aguardando conferência de hoje' : 'Sem conferência registrada hoje';
+    if (opcoes.length > 1 || candidatas.length > 1) {
+        conferencia = 'Conferência da loja indisponível';
+    } else if (hora) {
+        conferencia = `Conferida hoje às ${hora}`;
+    }
+    const estado = rotulo && chave !== 'complete' && !aguardando ? ` · ${rotulo}` : '';
+    return `<div class="vendas-sync-muted"><strong>Loja selecionada: ${escaparHtmlVendas(nome)}</strong> · ${escaparHtmlVendas(conferencia + dia + estado)}</div>`;
+}
+
 function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncPersistenteStatus')) {
     if (!painel) return;
     const automacao = data?.automacao;
     const verificandoConexoes = automacao?.verificando_conexoes === true;
     const coletando = possuiColetaEmExecucaoVendas(data);
     const lojas = Array.isArray(automacao?.lojas) ? automacao.lojas : [];
+    const estados = lojas.map(loja => {
+        const momento = Date.parse(loja?.conferencia_hoje_em);
+        const horaConferencia = Number.isFinite(momento) ? formatoHoraConferenciaVendas.format(momento) : '';
+        return { loja, estado: estadoSyncLojaVendas(loja), horaConferencia };
+    });
+    const lojaSelecionadaResumo = automacao ? resumoLojaSelecionadaSyncVendas(estados, automacao.data_referencia) : '';
     if (!lojas.length && !verificandoConexoes) {
-        painel.innerHTML = '';
+        substituirConteudoSyncVendas(painel, lojaSelecionadaResumo);
         return;
     }
     const pendentes = Math.max(0, Number(automacao?.pendentes || 0));
     const habilitadas = Math.max(0, Number(automacao?.habilitadas || 0));
-    const estados = lojas.map(loja => ({ loja, estado: estadoSyncLojaVendas(loja) }));
     const contagens = [
         ['running', 'sincronizando'], ['queued', 'aguardando'], ['complete', 'atualizada', 'atualizadas'],
+        ['historical', 'com período conferido'],
         ['paused', 'pausada', 'pausadas'], ['pending', 'com pendências'], ['idle', 'sem sincronização']
     ].map(([chave, singular, plural]) => {
         const total = estados.filter(item => item.estado[0] === chave).length;
@@ -158,11 +194,13 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         ? `<span class="vendas-sync-attention">⚠ ${rotuloAlertas}</span>` : '';
     const alertas = lojasComAlerta
         .map(({ loja, estado }) => `<div class="vendas-sync-alert"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}:</strong> ${estado[0] === 'paused' ? 'Última tentativa antes da pausa: ' : ''}${escaparHtmlVendas(loja?.ultimo_erro || 'Verifique a integração da loja para continuar.')}</div>`).join('');
-    const linhas = estados.map(({ loja, estado: [chave, rotulo] }) => {
+    const linhas = estados.map(({ loja, estado: [chave, rotulo], horaConferencia }) => {
         const dia = loja?.dia_atual || loja?.proximo_dia;
         const data = dia && ['running', 'queued'].includes(chave)
             ? `<span class="vendas-sync-muted">${chave === 'running' ? 'Dia' : 'Próximo dia'}: ${escaparHtmlVendas(formatDate(dia))}</span>` : '';
-        return `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong>${data}<span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`;
+        const conferencia = horaConferencia
+            ? `<span class="vendas-sync-muted">Conferida hoje às ${escaparHtmlVendas(horaConferencia)}</span>` : '';
+        return `<div class="vendas-sync-store"><strong>${escaparHtmlVendas(loja?.loja || 'Loja')}</strong>${data}${conferencia}<span class="vendas-sync-label" data-sync-state="${chave}">${rotulo}</span></div>`;
     }).join('');
     const detalhesLojas = estados.map(({ loja, estado: [, rotulo] }) => {
         const periodo = loja?.data_inicio && loja?.data_fim
@@ -192,10 +230,11 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         verificandoConexoes ? mensagemVerificacaoConexoesVendas : ''
     ].filter(Boolean))].join(' ');
     const etapa = mensagemEtapa ? `<div>${escaparHtmlVendas(mensagemEtapa)}</div>` : '';
-    const resumo = verificandoConexoes && !coletando ? mensagemVerificacaoConexoesVendas
-        : contagens ? `Lojas: ${contagens}` : 'Sincronização das lojas';
+    const resumo = ['Todas as lojas', verificandoConexoes && !coletando
+        ? mensagemVerificacaoConexoesVendas : contagens].filter(Boolean).join(' · ');
     painel.className = 'status-bar vendas-sync-status';
-    substituirConteudoSyncVendas(painel, '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
+    substituirConteudoSyncVendas(painel, lojaSelecionadaResumo
+        + '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
         + `<summary><span class="vendas-sync-counts">${escaparHtmlVendas(resumo)}</span>${indicadorAlertas}<span class="vendas-sync-toggle">Detalhes</span></summary>`
         + `<div class="vendas-sync-content">${alertas}${linhas}`
         + '<strong class="vendas-sync-technical-title">Detalhes técnicos</strong>'
@@ -272,12 +311,20 @@ function criarAtualizadorConfirmadoVendas() {
             if (revision !== generation || expected !== scope()) { pending = false; return; }
             // Keep the pending refresh until the visible monitor observes the same revision again.
             if (document.visibilityState === 'hidden') return;
-            pending = false; running = true; progressReloadInFlight = true;
+            running = true; progressReloadInFlight = true;
             try {
+                // A read already in progress may have started before this confirmation.
+                const resumoPendente = typeof carregarVendasPromise !== 'undefined' ? carregarVendasPromise : null;
+                const graficoPendente = typeof carregarGraficoPromise !== 'undefined' ? carregarGraficoPromise : null;
+                if (resumoPendente || graficoPendente) {
+                    await Promise.allSettled([resumoPendente, graficoPendente]);
+                    if (revision !== generation || expected !== scope() || document.visibilityState === 'hidden') return;
+                }
+                pending = false;
                 await Promise.allSettled([carregarVendas({ retornoRapido: true }), carregarGrafico()]);
             } finally {
                 running = false; progressReloadInFlight = false;
-                if (pending && context === scope()) request();
+                if (pending && context === scope() && document.visibilityState !== 'hidden') request();
             }
         }, 5000);
     }
