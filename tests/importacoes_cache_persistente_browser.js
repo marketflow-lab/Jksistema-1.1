@@ -20,6 +20,7 @@ function gate() {
 function lista(revisao = 1) {
     return { id: 'A', nome_lista: 'Pedido ' + revisao, store_id: 'store-A', loja: 'Loja A',
         status: 'Analisando orçamento', fornecedor_id: 'supplier-A', supplier: 'Empresa A', dolar_hoje: 5,
+        numero_invoice: 'INV-ANTIGA',
         total_itens: 1, total_quantidade: revisao === 1 ? 2 : 9, total_usd: 20,
         itens: [{ SKU: '001', Quantidade: revisao === 1 ? 2 : 9, 'M3 individual': 0.1,
             'Valor unidade': 10, 'Valor total': 20, Produto: 'Produto da lista', NCM: '00000001',
@@ -217,19 +218,60 @@ async function saved(page, key, predicate) {
         assert.strictEqual(state.calls.cost, custosAntesDaEdicao + 1, 'PUT confirmado renova contexto e consulta o custo.');
         assert.strictEqual(await detalhe.evaluate(async () => (await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A'))?.dados.lista.exchange_rate), 6);
 
-        state.mode = 'hold';
-        state.pending = gate();
-        const detalhesAntes = state.calls.detail;
-        await detalhe.evaluate(() => { void carregarDetalheLista(); });
-        await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent.includes('Cópia salva'));
-        for (let attempt = 0; state.calls.detail === detalhesAntes && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
-        assert.ok(state.calls.detail > detalhesAntes);
-        await detalhe.evaluate(() => atualizarCampoLogisticoLista('A', 'numero_invoice', 'INV-NOVA'));
-        state.mode = 'live';
-        state.pending.resolve();
-        await detalhe.waitForLoadState('networkidle');
-        assert.strictEqual(await detalhe.evaluate(() => ultimaListaCarregada.numero_invoice), 'INV-NOVA', 'GET antigo não reverte a edição confirmada.');
-        assert.strictEqual(await detalhe.evaluate(async () => (await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A'))?.dados.lista.numero_invoice), 'INV-NOVA');
+        const urlConsultaLista = origin + '/api/medias-compras/listas-pedidos/A?cache_mode=stale';
+        const listaAntiga = { ...lista(state.revisao), ...state.logistics };
+        const liberarAntiga = gate();
+        const liberarReconsulta = gate();
+        let primeiraConsulta = true;
+        const reterConsulta = async route => {
+            if (primeiraConsulta) {
+                primeiraConsulta = false;
+                await liberarAntiga.promise;
+                return route.fulfill({ json: { lista: listaAntiga } });
+            }
+            await liberarReconsulta.promise;
+            return route.fallback();
+        };
+        await detalhe.route(urlConsultaLista, reterConsulta);
+        try {
+            const consultaIniciada = detalhe.waitForRequest(urlConsultaLista);
+            const atualizacao = detalhe.evaluate(() => carregarDetalheLista());
+            const consultaAntiga = await consultaIniciada;
+
+            const cartaoInvoice = detalhe.locator('#resumoTopo [data-edit-key="numero_invoice"]');
+            const valorInvoice = cartaoInvoice.locator('.value');
+            assert.strictEqual(await valorInvoice.innerText(), 'INV-ANTIGA');
+            await cartaoInvoice.dblclick();
+            const editorInvoice = cartaoInvoice.locator('input');
+            await editorInvoice.fill('INV-NOVA');
+            await editorInvoice.press('Enter');
+            await detalhe.waitForFunction(async () => {
+                const copia = await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A');
+                return copia?.dados.lista.numero_invoice === 'INV-NOVA';
+            }, null, { timeout: 10000 });
+            assert.strictEqual(await valorInvoice.innerText(), 'INV-NOVA');
+
+            // Segura a reconsulta para conferir o estado logo após o GET antigo.
+            const processamentoAntigo = Promise.race([atualizacao, detalhe.waitForRequest(urlConsultaLista)]);
+            liberarAntiga.resolve();
+            const respostaAntiga = await consultaAntiga.response();
+            assert.ok(respostaAntiga?.ok(), 'O navegador recebeu a resposta antiga.');
+            assert.strictEqual((await respostaAntiga.json()).lista.numero_invoice, 'INV-ANTIGA');
+            await processamentoAntigo;
+
+            assert.strictEqual(await valorInvoice.innerText(), 'INV-NOVA', 'A tela mantém a edição após a resposta antiga.');
+            const invoiceSalva = await detalhe.evaluate(async () => {
+                const copia = await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A');
+                return copia?.dados.lista.numero_invoice;
+            });
+            assert.strictEqual(invoiceSalva, 'INV-NOVA', 'O cache mantém a edição após a resposta antiga.');
+            liberarReconsulta.resolve();
+            await atualizacao;
+        } finally {
+            liberarAntiga.resolve();
+            liberarReconsulta.resolve();
+            await detalhe.unroute(urlConsultaLista, reterConsulta);
+        }
 
         state.complementsForbidden = true;
         await detalhe.evaluate(() => carregarDetalheLista());

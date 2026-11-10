@@ -12,6 +12,7 @@ const MAX_BYTES = 64 * 1024 * 1024;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 25000;
 const DEADLINE_MS = 40000;
+const SEARCH_RESULT_LIMIT = 40;
 const ID = /^MLB\d+$/;
 
 class TaxonomyError extends Error {
@@ -56,6 +57,10 @@ function categoryUrl(id, permalink) {
 function dateIso(value, fallback) {
     const date = new Date(value);
     return Number.isFinite(date.getTime()) ? date.toISOString() : new Date(fallback).toISOString();
+}
+
+function normalizeSearchName(value) {
+    return value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 function makeSnapshot(records, updatedAt) {
@@ -122,6 +127,8 @@ function makeSnapshot(records, updatedAt) {
         if (!nodes.has(key)) throw new TaxonomyError('Categoria não encontrada na árvore oficial. Atualize a lista.', 'taxonomy_unknown_category');
         return key;
     };
+    const pathFromRoot = key => paths.get(requireKey(key)).map(id => ({ ...nodes.get(id) }));
+    let searchIndex;
     const summary = Object.freeze({ total: nodes.size, rootCount: roots.length, subcategoryCount: nodes.size - roots.length, maxDepth });
     return Object.freeze({
         complete: true,
@@ -130,7 +137,28 @@ function makeSnapshot(records, updatedAt) {
         // Unknown get() is deliberately null; traversal methods reject unknown IDs.
         get(key) { return nodes.get(key) || null; },
         children(key = null) { return (key === null ? roots : relations.get(requireKey(key))).map(id => nodes.get(id)); },
-        pathFromRoot(key) { return paths.get(requireKey(key)).map(id => ({ ...nodes.get(id) })); },
+        pathFromRoot,
+        search(query) {
+            const name = normalizeSearchName(query);
+            if (!name) return { paths: [], total: 0 };
+            if (!searchIndex) {
+                const order = new Intl.Collator('pt-BR');
+                searchIndex = Array.from(nodes.values(), node => ({ key: node.key, name: normalizeSearchName(node.nome) }));
+                searchIndex.sort((left, right) => order.compare(left.name, right.name) || order.compare(left.key, right.key));
+            }
+            const terms = name.split(' ');
+            const matches = [[], [], []];
+            let total = 0;
+            for (const entry of searchIndex) {
+                if (!terms.every(term => entry.name.includes(term))) continue;
+                let priority = 2;
+                if (entry.name === name) priority = 0;
+                else if (entry.name.startsWith(name)) priority = 1;
+                if (matches[priority].length < SEARCH_RESULT_LIMIT) matches[priority].push(entry.key);
+                total += 1;
+            }
+            return { paths: matches.flat().slice(0, SEARCH_RESULT_LIMIT).map(pathFromRoot), total };
+        },
         childCounts(keys = nodes.keys()) {
             const result = {};
             for (const key of keys) result[requireKey(key)] = relations.get(key).length;

@@ -117,6 +117,28 @@ async function main() {
     });
     await scenario(() => {
         const snapshot = parseTaxonomyDump(dump);
+        const broad = snapshot.search(' ITEM ');
+        assert.equal(broad.total, 150);
+        assert.equal(broad.paths.length, 40);
+        assert.deepEqual(broad.paths.at(-1), snapshot.pathFromRoot('MLB239'));
+        assert.deepEqual(snapshot.search('Caminhonetes carros'), { paths: [snapshot.pathFromRoot('MLB1744')], total: 1 });
+        assert.deepEqual(snapshot.search('Categoria inexistente'), { paths: [], total: 0 });
+    });
+    await scenario(() => {
+        const categories = homonymFixture();
+        categories.MLB800 = { id: 'MLB800', name: 'Peças para Ferramentas', permalink: null,
+            path_from_root: [{ id: 'MLB800', name: 'Peças para Ferramentas' }], children_categories: [] };
+        const snapshot = parseTaxonomyDump(categories);
+        const matches = snapshot.search('AnEMoMeTRos');
+        const expected = ['MLB431215', 'MLB455956', 'MLB457024'].map(key => snapshot.pathFromRoot(key));
+        assert.deepEqual(matches, { paths: expected, total: 3 }, 'homônimos preservam todos os ramos oficiais');
+        matches.paths[0][0].nome = 'Outro nome';
+        assert.deepEqual(snapshot.search('anemômetros').paths, expected, 'resultados independentes preservam a árvore');
+        assert.deepEqual(snapshot.search('Ferramentas').paths.map(path => path.at(-1).nome),
+            ['Ferramentas', 'Ferramentas de Trabalho', 'Peças para Ferramentas'], 'correspondências exatas e prefixos aparecem primeiro');
+    });
+    await scenario(() => {
+        const snapshot = parseTaxonomyDump(dump);
         const original = snapshot.pathFromRoot('MLB106');
         const changed = snapshot.pathFromRoot('MLB106');
         const cacheBefore = snapshot.cacheRecords();

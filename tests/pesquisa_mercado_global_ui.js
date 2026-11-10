@@ -175,6 +175,20 @@ async function main() {
             assert.strictEqual(await page.locator('#pm-global-status').textContent(), title);
             assert.doesNotMatch(await page.locator('#pm-global-status-detail').textContent(), /33 anúncios coletados/, 'estado encerrado não mostra atividade de coleta antiga');
         }
+        for (const [reason, title, expectedDetail] of [
+            ['ml_login_required', 'Acesso ao Mercado Livre pendente', /solicitação do Mercado Livre/],
+            ['ml_verification_required', 'Verificação do Mercado Livre pendente', /verificação de segurança/],
+            ['avant_login_required', 'Login do Avant Pro pendente', /Entre no Avant Pro/]
+        ]) {
+            job = { ...job, status: 'waiting_login', revision: job.revision + 1, message: reason,
+                progress: reason === 'ml_login_required' ? undefined : { phase: 'waiting_login', detail: reason } };
+            await page.evaluate(value => window.__pmProgress({ job: value }), job);
+            assert.strictEqual(await page.locator('#pm-global-status').textContent(), title);
+            const detail = await page.locator('#pm-global-status-detail').textContent();
+            assert.match(detail, expectedDetail);
+            assert.match(detail, /Retomar/);
+            assert.strictEqual(await page.locator('#pm-global-browser').isDisabled(), false);
+        }
         job = { ...job, status: 'running', revision: job.revision + 1, progress: undefined,
             message: 'Alguns anuncios ficaram sem dados suficientes do Avant.' };
         await page.evaluate(value => window.__pmProgress({ job: value }), job);

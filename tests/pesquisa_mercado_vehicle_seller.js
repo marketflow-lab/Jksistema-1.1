@@ -38,7 +38,12 @@ async function captchaStockPreservesDiscovery(browser) {
         await page.route('**/*', route => {
             const url = route.request().url();
             servedFixtures.push(url);
-            if (url === PDP) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: main(profile()) });
+            if (url === PDP) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body:
+                '<header><nav aria-label="Minha conta">Minha conta</nav></header>'
+                + main(profile() + '<form id="login_user_form" hidden><input type="password"></form>'
+                    + '<div style="opacity:0" data-testid="captcha">Verificação oculta</div>'
+                    + '<iframe title="Widget oculto" src="/captcha/widget" style="display:none"></iframe>'
+                    + '<div role="dialog" hidden>Avant Pro: faça login</div>') });
             if (url === captchaUrl) return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body:
                 '<!doctype html><title>Segurança — Mercado Livre</title><main><h1>Verificação de segurança</h1>'
                 + '<p>Confirme a verificação para continuar.</p><button type="button" disabled>Continuar</button></main>' });
@@ -82,8 +87,8 @@ async function captchaStockPreservesDiscovery(browser) {
         runner.seenSeeds = new Set(previousSeeds);
         runner.seenSellers = new Set();
 
-        await assert.rejects(runner.processSeed(seed), error => error.waitingLogin === true,
-            'the real parser and runner propagate manual verification before recording a generic discovery failure');
+        await assert.rejects(runner.processSeed(seed), error => error.waitingLogin === true && error.message === 'ml_verification_required',
+            'the logged-in item with hidden controls leads to the seller stock, where an actual verification pauses discovery');
         assert.deepEqual(navigations, [PDP, STOCK], 'discovery follows the public stock href without manufacturing another profile');
         assert.equal(snapshots[0].sellerId, OWNER_ID, 'the public vehicle component identifies its own seller before navigation');
         assert.equal(snapshots[0].perfilUrl, STOCK);

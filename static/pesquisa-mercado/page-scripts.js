@@ -24,8 +24,53 @@
         return nodeRegistry.render(name, params);
     }
 
+    function mercadoLivreRouteAuthReason(pathname) {
+        if (/\/(?:captcha|account-verification|challenge)(?:\/|$)/i.test(pathname)) return 'ml_verification_required';
+        return /\/login(?:\/|$)/i.test(pathname) ? 'ml_login_required' : '';
+    }
+
+    function visibleAuthControl(node) {
+        if (node.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+        const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        if (typeof node.checkVisibility === 'function') {
+            return node.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+        }
+        const style = getComputedStyle(node);
+        return style.visibility === 'visible' && Number(style.opacity) > 0;
+    }
+
+    function readMercadoLivreAuth(routeAuthReason, visible) {
+        if (location.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(location.hostname)) return '';
+        const routeReason = routeAuthReason(location.pathname);
+        if (routeReason) return routeReason;
+        const rendered = selector => Array.from(document.querySelectorAll(selector))
+            .some(node => !node.closest('[class*="avantpro" i], [id*="avantpro" i]') && visible(node));
+        if (rendered('[data-testid="captcha"], iframe[src*="captcha" i]')) return 'ml_verification_required';
+        if (rendered('#login_user_form, input[type="password"], form[action*="login" i]')) return 'ml_login_required';
+        const body = document.body;
+        // A redirect response can arrive as HTTP 200 at the original URL.
+        // Recognize the response without following or returning its destination.
+        if (!body || document.querySelector('main') || body.children.length !== 1 || body.firstElementChild.tagName !== 'P') return '';
+        const text = String(body.innerText || body.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text.length > 2000 || !/^Found\. Redirecting to https:\/\//i.test(text)) return '';
+        const paragraph = body.firstElementChild, links = paragraph.querySelectorAll('a[href]');
+        if (links.length > 1 || Array.from(paragraph.querySelectorAll('*')).some(element => element.tagName !== 'A')) return '';
+        try {
+            const target = new URL(text.replace(/^Found\. Redirecting to\s+/i, ''));
+            if (target.protocol === 'https:' && target.hostname === 'www.mercadolivre.com.br'
+                && !target.username && !target.password && (!target.port || target.port === '443')
+                && /^\/captcha(?:\/|$)/i.test(target.pathname)
+                && (!links.length || new URL(links[0].href).href === target.href)) return 'ml_verification_required';
+        } catch (_error) {}
+        return '';
+    }
+
+    const mercadoLivreAuthScript = () => '(' + readMercadoLivreAuth.toString() + ')('
+        + mercadoLivreRouteAuthReason.toString() + ',' + visibleAuthControl.toString() + ')';
+
     // Self contained: serialized into the Mercado Livre renderer. Never follows pagination.
-    function readPage(options) {
+    function readPage(mlAuthReason, visibleAuthControl, options) {
         const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
         const norm = value => clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
         const nodes = (selector, scope) => Array.from((scope || document).querySelectorAll(selector));
@@ -81,25 +126,7 @@
         // document safely while the coordinator waits for the new listing.
         const content = document.querySelector('main') || document.body || document;
         const url = absolute(location.href);
-        const mlVerificationRequired = (() => {
-            if (/\/captcha(?:\/|$)/i.test(location.pathname)) return true;
-            // A redirect response can arrive as HTTP 200 at the original URL.
-            // Recognize its narrow public body without following or returning
-            // the verification destination (which can contain session data).
-            const body = document.body;
-            if (!body || document.querySelector('main') || body.children.length !== 1 || body.firstElementChild.tagName !== 'P') return false;
-            const text = clean(body.innerText || body.textContent);
-            if (text.length > 2000 || !/^Found\. Redirecting to https:\/\//i.test(text)) return false;
-            const paragraph = body.firstElementChild, links = nodes('a[href]', paragraph);
-            if (links.length > 1 || nodes('*', paragraph).some(element => element.tagName !== 'A')) return false;
-            try {
-                const target = new URL(text.replace(/^Found\. Redirecting to\s+/i, ''));
-                return target.protocol === 'https:' && target.hostname === 'www.mercadolivre.com.br'
-                    && !target.username && !target.password && (!target.port || target.port === '443')
-                    && /^\/captcha(?:\/|$)/i.test(target.pathname)
-                    && (!links.length || new URL(links[0].href).href === target.href);
-            } catch (_error) { return false; }
-        })();
+        const mlVerificationRequired = mlAuthReason === 'ml_verification_required';
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
@@ -469,11 +496,14 @@
             return evidence.size === 1 ? [...evidence][0] : '';
         })();
         const bodyText = norm(document.body && (document.body.innerText || document.body.textContent));
-        const loginForm = document.querySelector('input[type="password"], form[action*="login"], #login_user_form');
-        const authRequired = mlVerificationRequired || /\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b/i.test(location.pathname)
-            || !!loginForm || !!document.querySelector('[data-testid="captcha"], iframe[src*="captcha"]');
+        const authRequired = !!mlAuthReason;
         const avantDialog = nodes('[role="dialog"], [class*="avantpro"][class*="modal"], [class*="avantpro"][class*="login"]')
-            .find(node => /avant\s*pro|avantpro/.test(norm(node.textContent)) && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
+            .some(node => visibleAuthControl(node) && /avant\s*pro|avantpro/.test(norm(node.textContent))
+                && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
+        const avantAuthRequired = avantDialog || (/(^|\.)avantprocloud\.com\.br$/i.test(location.hostname)
+            && location.protocol === 'https:' && (/\/login(?:\/|$)/i.test(location.pathname)
+                || nodes('#avantauth-root form').some(visibleAuthControl)));
+        const authReason = mlAuthReason || (avantAuthRequired ? 'avant_login_required' : '');
         const sellerExcluded = '[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"], .poly-card, .ui-search-layout__item, .ui-search-result, .ui-search-result__wrapper, [data-testid="search-result"]';
         const officialStore = nodes('a[href*="/loja/"]', content).find(anchor => {
             if (!identity(anchor.getAttribute('href')).store || anchor.closest(sellerExcluded)) return false;
@@ -1015,7 +1045,7 @@
         // establish a category ID or make recommendation cards into listings.
         const categoryNavigationHub = (() => {
             if (!categoryTrends || categoryBrowse || categoryDocumentIdentity || categoryIdentityConflict
-                || authRequired || avantDialog || currentIdentity.id || currentIdentity.perfilUrl || isProduct(url)) return null;
+                || authRequired || avantAuthRequired || currentIdentity.id || currentIdentity.perfilUrl || isProduct(url)) return null;
             const headings = nodes('h1', content).filter(node => !node.closest(excludedCategoryArea));
             const canonicals = nodes('link[rel="canonical"]');
             if (headings.length !== 1 || canonicals.length !== 1) return null;
@@ -1032,7 +1062,7 @@
         return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
             categoryTrends, categoryNavigationHub,
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
-            authRequired: !!authRequired, avantAuthRequired: !!avantDialog, hasChildren: categories.length > 0, categoryNotFound,
+            authRequired, avantAuthRequired, authReason, hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16
@@ -1188,11 +1218,12 @@
 
     function create(options) {
         const render = options && options.renderAvantScript || defaultRender;
-        const discoveryScript = () => '/*pm:discovery*/(' + readPage.toString() + ')()';
+        const authArgs = mercadoLivreAuthScript() + ',' + visibleAuthControl.toString();
+        const discoveryScript = () => '/*pm:discovery*/(' + readPage.toString() + ')(' + authArgs + ')';
         const snapshotScript = options => {
             const seller = options && options.seller || {};
             const extract = render('extrair-anuncios-avant-pro-dom-webview-1', { p0: String(Number.MAX_SAFE_INTEGER) }).trim().replace(/;\s*$/, '');
-            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + JSON.stringify({ detail: !!(options && options.detail), seller }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
+            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + authArgs + ',' + JSON.stringify({ detail: !!(options && options.detail), seller }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
         };
         const clickAvantScript = options => {
             if (options && options.detail) return '/*pm:avant-click*/(' + clickDetailAvant.toString() + ')(' + JSON.stringify(options.pending || []) + ')';
@@ -1209,5 +1240,5 @@
         const nextCategoryPageScript = expectedUrl => '/*pm:next-category*/(' + clickNextCategoryPage.toString() + ')(' + JSON.stringify(String(expectedUrl || '')) + ')';
         return Object.freeze({ discoveryScript, sellerInfoScript: discoveryScript, snapshotScript, clickAvantScript, scrollScript, prepareScript, nextCategoryPageScript });
     }
-    return Object.freeze({ create, ...create() });
+    return Object.freeze({ create, mercadoLivreAuthScript, mercadoLivreRouteAuthReason, ...create() });
 });

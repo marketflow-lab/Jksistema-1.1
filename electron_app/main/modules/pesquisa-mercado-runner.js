@@ -530,9 +530,9 @@ class PesquisaMercadoRunner {
         state.attempted = state.attempted || !!(result && result.attempted);
         if (result && result.authenticated === true) return true;
         if (rankingOnly && result?.reason === 'avant_ranking_login_not_shown') return false;
-        const error = new Error(result && result.reason === 'ml_login_required'
-            ? 'Conclua o login do Mercado Livre no navegador e tente novamente.'
-            : 'Nao foi possivel autenticar no Avant Pro. Conclua o login no navegador e tente novamente.');
+        const reason = result?.reason;
+        const error = new Error(reason === 'ml_verification_required' || reason === 'ml_login_required'
+            ? reason : 'Nao foi possivel autenticar no Avant Pro. Conclua o login no navegador e tente novamente.');
         error.waitingLogin = true;
         throw error;
     }
@@ -806,7 +806,7 @@ class PesquisaMercadoRunner {
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 if (page.authRequired || page.avantAuthRequired) {
                     if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
-                        reason: page.authRequired ? 'ml_login_required' : 'avant_login_required' };
+                        reason: page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required') };
                     if (verifyDestination) destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
                 }
@@ -1276,18 +1276,18 @@ class PesquisaMercadoRunner {
                 await this.wait(450);
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 this.check();
+                if (page.authRequired || page.avantAuthRequired) {
+                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
+                        reason: page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required') };
+                    destination.observe(page.url || this.browser.getURL(), false, true);
+                    continue;
+                }
                 const navigationStatus = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
                 if (navigationStatus && [403, 429].includes(navigationStatus.statusCode)
                     && canonicalUrl(navigationStatus.url) === canonicalUrl(page.url || this.browser.getURL())) {
                     const error = new CategoryNavigationError('category_access_denied', itemScope ? itemScope.transportCategoryId : transportCategoryId || this.officialCategoryId());
                     error.sharedCategoryFailure = true;
                     throw error;
-                }
-                if (page.authRequired || page.avantAuthRequired) {
-                    if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
-                        reason: page.authRequired ? 'ml_login_required' : 'avant_login_required' };
-                    destination.observe(page.url || this.browser.getURL(), false, true);
-                    continue;
                 }
                 const ready = canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty);
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
@@ -1371,7 +1371,7 @@ class PesquisaMercadoRunner {
                         const capture = partial => {
                             if (!alive()) return false;
                             const invalid = !partial || partial.authRequired || partial.avantAuthRequired
-                                || ['avant_login_required', 'ml_login_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
+                                || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
                             latestPartial = invalid ? null : clone(partial);
                             return !invalid;
                         };

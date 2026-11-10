@@ -15,16 +15,19 @@ let pesquisaMercadoQuitting = false;
 let pesquisaMercadoCommandQueue = Promise.resolve();
 let pesquisaMercadoCategoriesToken = '';
 let pesquisaMercadoCategoryChoices = new Map();
+let pesquisaMercadoCategorySnapshot = null;
 let pesquisaMercadoCategoryChildren = new Map();
 let pesquisaMercadoCategoryLastUrl = '';
 let pesquisaMercadoNavigationStatus = null;
 
 function rememberPesquisaMercadoCategories(items) {
     const result = [];
+    const seen = new Set();
     for (const raw of items || []) {
         const category = pesquisaMercadoRunnerModule.normalizeCategory({ key: raw.key, nome: raw.nome, url: raw.url });
-        if (!category || result.some(item => item.url === category.url)) continue;
-        pesquisaMercadoCategoryChoices.set(category.url, category);
+        if (!category || seen.has(category.key)) continue;
+        seen.add(category.key);
+        pesquisaMercadoCategoryChoices.set(category.key, category);
         result.push(category);
     }
     return result;
@@ -32,21 +35,42 @@ function rememberPesquisaMercadoCategories(items) {
 
 function knownPesquisaMercadoCategory(raw) {
     const category = pesquisaMercadoRunnerModule.normalizeCategory(raw);
-    const known = category && pesquisaMercadoCategoryChoices.get(category.url);
-    if (!known || known.key !== category.key || known.nome !== category.nome) throw new Error('Escolha uma categoria ou subcategoria na lista do Mercado Livre.');
+    const known = category && pesquisaMercadoCategoryChoices.get(category.key);
+    if (!known || known.url !== category.url || known.nome !== category.nome) throw new Error('Escolha uma categoria ou subcategoria na lista do Mercado Livre.');
     return { ...known };
 }
 
-async function loadPesquisaMercadoCategories(runner, parentCategory, forceRefresh = false) {
+async function loadPesquisaMercadoCategories(runner, payload) {
     if (runner.task) throw new Error('Pause ou encerre a pesquisa antes de consultar outras categorias.');
     if (runner.namesTask) throw new Error('Aguarde ou interrompa a recuperacao dos nomes antes de consultar outras categorias.');
-    const parent = parentCategory == null ? null : knownPesquisaMercadoCategory(parentCategory);
+    const { parentCategory, forceRefresh = false, query } = payload;
     if (typeof forceRefresh !== 'boolean') throw new Error('Atualizacao de categorias invalida.');
+    const searching = Object.prototype.hasOwnProperty.call(payload, 'query');
+    if (searching && (typeof query !== 'string' || query.length > 120 || query.trim().length < 2
+        || parentCategory != null || forceRefresh
+        || Object.keys(payload).some(key => !['authToken', 'parentCategory', 'forceRefresh', 'query'].includes(key)))) {
+        throw new Error('Busca de categoria invalida.');
+    }
+    const parent = parentCategory == null ? null : knownPesquisaMercadoCategory(parentCategory);
     const snapshot = await pesquisaMercadoTaxonomy.load({ forceRefresh });
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-    const previous = [...pesquisaMercadoCategoryChoices.values()].map(item => snapshot.get(item.key)).filter(Boolean);
-    pesquisaMercadoCategoryChoices.clear();
-    rememberPesquisaMercadoCategories(previous);
+    if (snapshot !== pesquisaMercadoCategorySnapshot) {
+        const previous = Array.from(pesquisaMercadoCategoryChoices.keys(), key => snapshot.get(key)).filter(Boolean);
+        pesquisaMercadoCategoryChoices.clear();
+        rememberPesquisaMercadoCategories(previous);
+        pesquisaMercadoCategorySnapshot = snapshot;
+    }
+    if (searching) {
+        const { paths, total } = snapshot.search(query);
+        return {
+            paths: paths.map(categoryPath => {
+                const registeredPath = rememberPesquisaMercadoCategories(categoryPath);
+                if (registeredPath.length !== categoryPath.length) throw new Error('O caminho oficial da categoria nao esta disponivel.');
+                return registeredPath;
+            }),
+            total
+        };
+    }
     const selected = parent ? snapshot.get(parent.key) : null;
     if (parent && !selected) throw new Error('Esta categoria deixou de estar disponivel. Atualize a lista desde Todas as categorias.');
     if (selected) rememberPesquisaMercadoCategories([selected]);
@@ -273,7 +297,7 @@ async function executePesquisaMercadoCommand(action, payload) {
         pesquisaMercadoCategoryChildren.clear();
         pesquisaMercadoCategoryLastUrl = '';
     }
-    if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload.parentCategory, payload.forceRefresh === undefined ? false : payload.forceRefresh);
+    if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload);
     if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
     if (action === 'status') return runner.status(payload.jobId || '');
     if (action === 'resume') return runner.resume(jobId);

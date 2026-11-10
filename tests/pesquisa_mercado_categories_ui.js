@@ -24,6 +24,125 @@ function categoryResponse(parent = null, tree = baseTree, summary = { total: 5, 
         childCounts: Object.fromEntries(items.map(category => [category.key, (tree.get(category.key) || []).length])) };
 }
 
+async function checkCategorySearch(page, url) {
+    const category = (key, nome) => ({ key, nome, url: `https://lista.mercadolivre.com.br/_CatId_${key}` });
+    const vehicles = category('MLB990101', 'Veículos');
+    const motor = category('MLB990102', 'Motor');
+    const motorParts = category('MLB990103', 'Peças');
+    const sports = category('MLB990201', 'Esportes');
+    const cycling = category('MLB990202', 'Ciclismo');
+    const cyclingParts = category('MLB990203', 'Peças');
+    const paths = [[vehicles, motor, motorParts], [sports, cycling, cyclingParts]];
+    const tree = new Map([[null, [vehicles, sports]], [vehicles.key, [motor]], [motor.key, [motorParts]],
+        [sports.key, [cycling]], [cycling.key, [cyclingParts]]]);
+    const summary = { total: 6, rootCount: 2, subcategoryCount: 4, maxDepth: 3 };
+    const directory = Object.fromEntries([null, ...paths.flat()].map(item =>
+        [item?.key || 'root', categoryResponse(item, tree, summary)]));
+    await page.addInitScript(({ directory, paths }) => {
+        const deferred = new Map();
+        const calls = [];
+        window.__pmCategorySearchCalls = calls;
+        window.__pmReleaseCategorySearch = async query => {
+            deferred.get(query)();
+            deferred.delete(query);
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        };
+        localStorage.setItem('access_token', 'fixture-category-search-original');
+        window.electronAPI = {
+            getPesquisaMercadoJobStatus: async () => ({ job: null }),
+            startPesquisaMercadoJob: async payload => {
+                calls.push({ action: 'start', payload });
+                return { job: null };
+            },
+            getPesquisaMercadoCategories: async payload => {
+                calls.push({ action: 'categories', payload });
+                const { query, parentCategory, authToken } = payload;
+                if (!query) return directory[parentCategory?.key || 'root'];
+                const matches = query === 'pecas' ? paths : query === 'motor' ? [paths[0].slice(0, 2)]
+                    : query === 'ciclismo' ? [paths[1].slice(0, 2)] : [];
+                if (query === 'motor' || query === 'pecas' && authToken === 'fixture-category-search-original') {
+                    await new Promise(resolve => deferred.set(query, resolve));
+                }
+                return { paths: matches, total: matches.length };
+            }
+        };
+    }, { directory, paths });
+    await page.clock.install();
+    await page.goto(url);
+    await page.locator('#pm-mode-global').click();
+
+    const search = page.getByLabel('Pesquisar categoria', { exact: true });
+    const clear = page.locator('#pm-global-taxonomy-clear-search');
+    const list = page.locator('#pm-global-taxonomy-list');
+    const breadcrumb = page.locator('#pm-global-taxonomy-breadcrumb');
+    const start = page.locator('#pm-global-start');
+    const result = name => list.getByRole('button', { name });
+    const calls = () => page.evaluate(() => window.__pmCategorySearchCalls);
+    const fillSearch = async value => {
+        await search.fill(value);
+        await page.clock.fastForward(1000);
+    };
+
+    await result('Selecionar Veículos e ver subcategorias').click();
+    await result('Selecionar Motor e ver subcategorias').waitFor();
+    assert.strictEqual(await start.isDisabled(), false);
+    await fillSearch('p');
+    assert.strictEqual((await calls()).some(call => call.payload.query !== undefined), false, 'um caractere não envia busca');
+    await fillSearch('sem correspondência');
+    await page.locator('.pm-taxonomy').getByText(/nenhum[ao] (?:resultado|categoria encontrad[ao])/i).first().waitFor();
+    assert.strictEqual(await list.getByRole('button').count(), 0);
+    assert.strictEqual(await start.isDisabled(), true, 'termo aberto impede iniciar na seleção anterior');
+    await start.dispatchEvent('click');
+    assert.strictEqual((await calls()).some(call => call.action === 'start'), false);
+    await clear.click();
+    await result('Selecionar Motor e ver subcategorias').waitFor();
+    assert.strictEqual(await search.inputValue(), '');
+    assert.deepStrictEqual(await breadcrumb.getByRole('button').allTextContents(), ['Todas as categorias', 'Veículos']);
+    assert.strictEqual(await start.isDisabled(), false, 'limpar restaura a navegação e a seleção anterior');
+
+    await fillSearch('motor');
+    await page.waitForFunction(() => window.__pmCategorySearchCalls.some(call => call.payload.query === 'motor'));
+    await fillSearch('ciclismo');
+    await result('Esportes › Ciclismo').waitFor();
+    await page.evaluate(() => window.__pmReleaseCategorySearch('motor'));
+    assert.strictEqual(await result('Veículos › Motor').count(), 0, 'resposta antiga não substitui o termo atual');
+    assert.strictEqual(await result('Esportes › Ciclismo').count(), 1);
+
+    await fillSearch('pecas');
+    await page.waitForFunction(() => window.__pmCategorySearchCalls.some(call => call.payload.query === 'pecas'));
+    await page.evaluate(() => {
+        localStorage.setItem('access_token', 'fixture-category-search-next');
+        dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));
+    });
+    assert.strictEqual(await search.inputValue(), '', 'trocar a sessão limpa o termo anterior');
+    await page.evaluate(() => window.__pmReleaseCategorySearch('pecas'));
+    assert.strictEqual(await result('Veículos › Motor › Peças').count(), 0);
+    assert.strictEqual(await result('Esportes › Ciclismo › Peças').count(), 0, 'resposta tardia não restaura resultados da outra sessão');
+    if (await list.getByRole('button').count() === 0) await page.locator('#pm-global-taxonomy-refresh').click();
+    await result('Selecionar Veículos e ver subcategorias').waitFor();
+
+    await fillSearch('  pecas  ');
+    const target = result('Esportes › Ciclismo › Peças');
+    const other = result('Veículos › Motor › Peças');
+    await target.waitFor();
+    assert.match(await target.innerText(), /Esportes\s*›\s*Ciclismo/);
+    assert.match(await other.innerText(), /Veículos\s*›\s*Motor/, 'homônimos exibem caminhos distintos');
+    assert.deepStrictEqual((await calls()).at(-1), {
+        action: 'categories', payload: { authToken: 'fixture-category-search-next', query: 'pecas' }
+    });
+    await target.press('Enter');
+    await page.waitForFunction(() => !document.getElementById('pm-global-start').disabled);
+    assert.strictEqual(await search.inputValue(), '');
+    assert.deepStrictEqual(await breadcrumb.getByRole('button').allTextContents(), ['Todas as categorias', 'Esportes', 'Ciclismo', 'Peças']);
+    assert.strictEqual(await list.getByRole('button').count(), 0, 'a escolha abre o último nível correto');
+    assert.deepStrictEqual((await calls()).at(-1).payload.parentCategory, cyclingParts);
+    assert.strictEqual((await calls()).some(call => call.action === 'start'), false, 'selecionar com Enter não inicia a pesquisa');
+    await breadcrumb.getByRole('button', { name: 'Ciclismo', exact: true }).click();
+    await result('Selecionar Peças e ver subcategorias').click();
+    await start.click();
+    assert.deepStrictEqual((await calls()).find(call => call.action === 'start').payload.category, cyclingParts);
+}
+
 async function main() {
     let job = null;
     let mode = 'normal';
@@ -388,8 +507,15 @@ async function main() {
             assert.strictEqual(await disposedPage.evaluate(() => window.__disposedUI.state.taxonomy.loaded), false);
             await disposedPage.close();
         });
+        await scenario(async () => {
+            const searchPage = await browser.newPage();
+            searchPage.on('pageerror', error => errors.push(error.message));
+            try {
+                await checkCategorySearch(searchPage, `http://127.0.0.1:${server.address().port}/pesquisa_mercado.html`);
+            } finally { await searchPage.close(); }
+        });
         assert.deepStrictEqual(errors, []);
-        console.log(`Pesquisa de Mercado categorias UI: ${scenarios} cenários de abas, hierarquia, escopo, erro, login e sessão OK`);
+        console.log(`Pesquisa de Mercado categorias UI: ${scenarios} cenários de abas, hierarquia, busca, escopo, erro, login e sessão OK`);
     } finally {
         if (browser) await browser.close();
         await new Promise(resolve => server.close(resolve));

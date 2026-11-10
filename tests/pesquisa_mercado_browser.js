@@ -6,6 +6,7 @@ const path = require('path');
 const vm = require('vm');
 const { EventEmitter } = require('events');
 const runnerModule = require('../electron_app/main/modules/pesquisa-mercado-runner.js');
+const { parseTaxonomyDump } = require('../electron_app/main/modules/pesquisa-mercado-taxonomy.js');
 const root = path.resolve(__dirname, '..');
 const clone = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -34,21 +35,13 @@ function harness(saved = [], options = {}) {
     const taxonomyCalls = [];
     const taxonomyConstructors = [];
     function taxonomySnapshot() {
-        const dump = options.taxonomyDump;
-        const roots = dump ? Object.values(dump).filter(node => node.path_from_root.length === 1).map(node => node.id)
-            : options.taxonomyRoots || [category];
-        const children = dump ? Object.fromEntries(Object.values(dump).map(node => [node.id, node.children_categories.map(child => child.id)]))
-            : options.taxonomyChildren || {};
+        const roots = options.taxonomyRoots || [category];
+        const children = options.taxonomyChildren || {};
         const nodes = new Map();
-        if (dump) for (const node of Object.values(dump)) nodes.set(node.id, { key: node.id, nome: node.name,
-            url: node.permalink || `https://lista.mercadolivre.com.br/_CatId_${node.id}` });
-        else {
-            for (const node of roots) nodes.set(node.key, clone(node));
-            for (const list of Object.values(children)) for (const node of list) nodes.set(node.key, clone(node));
-        }
-        const rootIds = roots.map(node => typeof node === 'string' ? node : node.key);
-        const childIds = Object.fromEntries(Object.entries(children).map(([key, list]) => [key,
-            list.map(node => typeof node === 'string' ? node : node.key)]));
+        for (const node of roots) nodes.set(node.key, clone(node));
+        for (const list of Object.values(children)) for (const node of list) nodes.set(node.key, clone(node));
+        const rootIds = roots.map(node => node.key);
+        const childIds = Object.fromEntries(Object.entries(children).map(([key, list]) => [key, list.map(node => node.key)]));
         const pending = rootIds.map(key => [key, 1]);
         let maxDepth = 0;
         for (let index = 0; index < pending.length; index += 1) {
@@ -69,6 +62,10 @@ function harness(saved = [], options = {}) {
             events.push({ type: 'taxonomy-load', owner: requests.at(-1) && requests.at(-1).owner, forceRefresh: !!input.forceRefresh });
             if (options.blockTaxonomy) await new Promise(resolve => { releaseTaxonomy = resolve; });
             if (options.taxonomyFailure || input.forceRefresh && options.failRefresh) throw new Error('Fixture: árvore oficial temporariamente indisponível.');
+            if (options.taxonomyDump) {
+                if (!this.snapshot || input.forceRefresh) this.snapshot = parseTaxonomyDump(options.taxonomyDump, '2026-10-06T10:07:07.000Z');
+                return this.snapshot;
+            }
             return taxonomySnapshot();
         }
     }
@@ -447,9 +444,9 @@ async function testCategorySelectionAndIsolation() {
 async function testPublicTaxonomyAuthorizationBeforeCache() {
     const h = harness([], { withoutChoices: true, taxonomyDump: {
         MLB100: { id: 'MLB100', name: 'Categoria oficial', permalink: 'https://www.mercadolivre.com.br/c/ferramentas',
-            path_from_root: [{ id: 'MLB100' }], children_categories: [{ id: 'MLB101' }] },
+            path_from_root: [{ id: 'MLB100', name: 'Categoria oficial' }], children_categories: [{ id: 'MLB101', name: 'Subcategoria oficial' }] },
         MLB101: { id: 'MLB101', name: 'Subcategoria oficial', permalink: null,
-            path_from_root: [{ id: 'MLB100' }, { id: 'MLB101' }], children_categories: [] }
+            path_from_root: [{ id: 'MLB100', name: 'Categoria oficial' }, { id: 'MLB101', name: 'Subcategoria oficial' }], children_categories: [] }
     } });
     const roots = await h.command('categories');
     const again = await h.command('categories');
@@ -469,6 +466,52 @@ async function testPublicTaxonomyAuthorizationBeforeCache() {
     await h.command('categories', 'two');
     await assert.rejects(h.command('start', 'two', null, { category: roots.items[0], authToken: 'fixture-owner-one' }), /Escolha uma categoria/, 'troca de token limpa escolhas, mesmo com cache público comum');
     assert.strictEqual(h.jobs.size, 0);
+    await h.api.quit();
+}
+
+async function testCategorySearchSelectionAndIsolation() {
+    const agro = { key: 'MLB100', nome: 'Agro', url: 'https://lista.mercadolivre.com.br/agro/' };
+    const tools = { key: 'MLB200', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas/' };
+    const permalink = 'https://lista.mercadolivre.com.br/bombas-de-agua/';
+    const first = { key: 'MLB101', nome: 'Bombas de Água', url: permalink };
+    const second = { key: 'MLB201', nome: 'Bombas de Água', url: permalink };
+    const reference = ({ key, nome }) => ({ id: key, name: nome });
+    const record = (node, ancestors, children) => ({
+        ...reference(node), permalink: node.url, path_from_root: [...ancestors, node].map(reference),
+        children_categories: children.map(reference)
+    });
+    const h = harness([], { withoutChoices: true, taxonomyDump: {
+        [agro.key]: record(agro, [], [first]),
+        [first.key]: record(first, [agro], []),
+        [tools.key]: record(tools, [], [second]),
+        [second.key]: record(second, [tools], [])
+    } });
+    const query = ' BOMBA agua ';
+    await assert.rejects(h.api.command(h.trusted, 'categories', { authToken: 'fixture-invalid-owner', query }), /Sessão inválida/);
+    for (const extra of [{ query: null }, { query: ' a ' }, { query: ' '.repeat(119) + 'ab' }, { query, parentCategory: agro },
+        { query, forceRefresh: true }, { query, unexpected: true }]) {
+        await assert.rejects(h.command('categories', 'one', null, extra), /Busca de categoria invalida/);
+    }
+    assert.strictEqual(h.taxonomyCalls.length, 0, 'pedidos inválidos não chegam à árvore oficial');
+    const expected = { paths: [[agro, first], [tools, second]], total: 2 };
+    const result = await h.command('categories', 'one', null, { query });
+    assert.deepStrictEqual(clone(result), expected);
+    assert.strictEqual(h.windows.length, 0, 'buscar não abre o navegador do Mercado Livre');
+    assert.strictEqual(h.jobs.size, 0, 'buscar não inicia pesquisa');
+    const [firstPath, secondPath] = result.paths;
+    for (const categoryPath of [firstPath, secondPath]) {
+        const leaf = categoryPath.at(-1);
+        const leafResponse = await h.command('categories', 'one', null, { parentCategory: leaf });
+        assert.deepStrictEqual(clone(leafResponse.parentCategory), leaf, 'permalink compartilhado preserva a seleção de cada ID');
+        const ancestorResponse = await h.command('categories', 'one', null, { parentCategory: categoryPath[0] });
+        assert.deepStrictEqual(clone(ancestorResponse.items), [leaf], 'o caminho encontrado autoriza voltar pelo ancestral');
+    }
+    await assert.rejects(h.command('start', 'two', null, { category: first }), /Escolha uma categoria/, 'resultados ficam autorizados na sessão da busca');
+    assert.deepStrictEqual(clone(await h.command('categories', 'one', null, { query })), expected);
+    await assert.rejects(h.command('start', 'one', null, { category: { ...first, url: agro.url } }), /Escolha uma categoria/);
+    const started = await h.command('start', 'one', null, { category: first });
+    assert.deepStrictEqual(h.jobs.get(started.job.id).checkpoint.scope.category, first);
+    await assert.rejects(h.command('categories', 'one', null, { query }), /Pause ou encerre/);
     await h.api.quit();
 }
 
@@ -824,6 +867,7 @@ async function main() {
     await testSwitchingPausedJobsShowsOwnedCursor();
     await testCategorySelectionAndIsolation();
     await testPublicTaxonomyAuthorizationBeforeCache();
+    await testCategorySearchSelectionAndIsolation();
     await testTaxonomyRefreshFlagsAndFailure();
     await testTaxonomyRemovedCategoryRefresh();
     await testTaxonomyQuitInflight();

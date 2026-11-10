@@ -1,22 +1,27 @@
 'use strict';
 
+const { mercadoLivreAuthScript, mercadoLivreRouteAuthReason } = require('../../../static/pesquisa-mercado/page-scripts');
 const AUTH_ORIGIN = 'https://auth.avantprocloud.com.br';
 function normalizeEmail(value) {
     if (typeof value !== 'string') return '';
     const email = value.trim();
     return email.length <= 254 && /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+$/.test(email) ? email : '';
 }
-function allowedPage(value) {
+function marketPageBlockReason(value) {
     try {
         const url = new URL(value);
-        return url.protocol === 'https:' && /(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)
-            && !url.username && !url.password && (!url.port || url.port === '443')
-            && !/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b|\/captcha(?:\/|$)/i.test(url.pathname);
-    } catch (_error) { return false; }
+        if (url.protocol === 'https:' && /(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)
+            && !url.username && !url.password && (!url.port || url.port === '443')) {
+            return mercadoLivreRouteAuthReason(url.pathname);
+        }
+    } catch (_error) {}
+    return 'ml_login_required';
 }
 
-// Only extension-owned controls are inspected/clicked; Mercado Livre's login is untouched.
-function pageSession(action, rankingOnly) {
+function allowedPage(value) { return !marketPageBlockReason(value); }
+
+// Only extension-owned controls can be clicked.
+function pageSession(action, rankingOnly, mlAuthReason) {
     if (location.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(location.hostname)) return { state: 'unavailable' };
     const visible = node => {
         if (!node || !node.isConnected) return false;
@@ -26,8 +31,7 @@ function pageSession(action, rankingOnly) {
     };
     const nodes = selector => Array.from(document.querySelectorAll(selector));
     const first = selector => nodes(selector).find(visible);
-    if (/\/(?:jms\/[^/]+\/)?login|\/account-verification|\/challenge\b|\/captcha(?:\/|$)/i.test(location.pathname)
-        || document.querySelector('#login_user_form, input[type="password"], [data-testid="captcha"], iframe[src*="captcha"]')) return { state: 'ml_login' };
+    if (mlAuthReason) return { state: 'ml_login', reason: mlAuthReason };
     const authFrame = first('#avantpro-login-modal #authMfeIframe');
     let frameAllowed = false;
     if (authFrame) {
@@ -53,7 +57,7 @@ function pageSession(action, rankingOnly) {
     if (action === 'open-menu' && menu) { menu.click(); return { state: 'unknown', menuOpened: true }; }
     return { state: 'unknown' };
 }
-const pageScript = (action, rankingOnly = false) => `(${pageSession.toString()})(${JSON.stringify(action)},${JSON.stringify(rankingOnly)})`;
+const pageScript = (action, rankingOnly = false) => `(${pageSession.toString()})(${JSON.stringify(action)},${JSON.stringify(rankingOnly)},${mercadoLivreAuthScript()})`;
 
 function submitLogin(email) {
     if (location.origin !== 'https://auth.avantprocloud.com.br' || location.pathname !== '/') return { blocked: true };
@@ -136,7 +140,8 @@ class AvantSession {
         const executePage = async action => {
             while (true) {
                 guard();
-                if (!allowedPage(contents.getURL())) return { state: 'ml_login' };
+                const blockReason = marketPageBlockReason(contents.getURL());
+                if (blockReason) return { state: 'ml_login', reason: blockReason };
                 if (Date.now() >= deadline) throw new Error('avant_timeout');
                 try { return await execute(contents, pageScript(action, rankingOnly)); }
                 catch (error) {
@@ -155,11 +160,13 @@ class AvantSession {
         let formDeadline = 0;
         try {
             guard();
-            if (!allowedPage(contents.getURL())) return fail('ml_login_required');
+            const initialBlock = marketPageBlockReason(contents.getURL());
+            if (initialBlock) return fail(initialBlock);
             const initialDeadline = Date.now() + (rankingOnly ? Math.min(this.probeMs, 3000) : this.probeMs);
             while (Date.now() < deadline) {
                 guard();
-                if (!allowedPage(contents.getURL())) return fail('ml_login_required', attempted);
+                const blockReason = marketPageBlockReason(contents.getURL());
+                if (blockReason) return fail(blockReason, attempted);
                 if (contents.isLoadingMainFrame()) { menuTried = false; await wait(this.pollMs, signal); continue; }
                 const state = await executePage('probe');
                 if (state.state === 'authenticated') {
@@ -171,7 +178,7 @@ class AvantSession {
                     this.failure = null;
                     return { authenticated: true, attempted };
                 }
-                if (state.state === 'ml_login') return fail('ml_login_required', attempted);
+                if (state.state === 'ml_login') return fail(state.reason || 'ml_login_required', attempted);
                 if (state.state === 'untrusted_form') return fail('avant_form_not_allowed', attempted);
                 if (state.state === 'logged_out' || state.state === 'login_form') {
                     const email = normalizeEmail(this.getEmail());

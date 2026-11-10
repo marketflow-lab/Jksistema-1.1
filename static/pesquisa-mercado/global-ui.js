@@ -11,7 +11,7 @@
     const modes = ['manual', 'global', 'history', 'consolidated'];
     const pageSize = 100;
     const categoryCommandTimeout = 3 * (35000 + 15000) + 30000;
-    const emptyTaxonomy = () => ({ trail: [], parent: null, selected: null, items: [], loaded: false,
+    const emptyTaxonomy = () => ({ trail: [], parent: null, selected: null, items: [], search: null, loaded: false,
         loading: false, authRequired: false, error: false, summary: null, updatedAt: '', childCounts: {}, requestId: 0, message: 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.' });
     const state = {
         activeJob: null, scopeCategory: null, mode: 'manual', taxonomy: emptyTaxonomy(), tab: 'geral', query: '', category: '', seller: '', sellers: [],
@@ -23,6 +23,7 @@
     let unsubscribe = null;
     let polling = null;
     let debounce = null;
+    let taxonomySearchTimer = null;
     let refreshTask = null;
     let refreshRequested = false;
     let synchronizeTask = null;
@@ -34,7 +35,8 @@
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
-        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated', 'avant-email', 'avant-email-note']) elements[name] = el(name);
+        'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated',
+        'taxonomy-search', 'taxonomy-clear-search', 'avant-email', 'avant-email-note']) elements[name] = el(name);
 
     function avantConfigurationIdentity(token) {
         if (!token) return '';
@@ -257,6 +259,7 @@
             state.namesLogin = false;
             state.scopeCategory = null;
             state.taxonomy = emptyTaxonomy();
+            resetTaxonomySearch();
             state.seller = '';
             state.sellers = [];
             state.query = '';
@@ -307,6 +310,7 @@
         if (action === 'start') payload.category = categoryChoice(extras.category);
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
+        if (action === 'categories' && extras.query) payload.query = extras.query;
         if (action === 'browser' && ['categories', 'names'].includes(extras.purpose)) payload.purpose = extras.purpose;
         if (['start', 'resume', 'refresh-names', 'recover-incomplete'].includes(action)) {
             const email = saveAvantConfiguration();
@@ -349,6 +353,15 @@
         elements['status-warning'].hidden = true;
         elements['status-warning'].classList.remove('error');
     }
+    const authPauses = {
+        ml_login_required: { title: 'Acesso ao Mercado Livre pendente',
+            detail: 'Abra o navegador da pesquisa, confira a solicitação do Mercado Livre e clique em Retomar.' },
+        ml_verification_required: { title: 'Verificação do Mercado Livre pendente',
+            detail: 'Conclua a verificação de segurança no navegador da pesquisa e clique em Retomar.' },
+        avant_login_required: { title: 'Login do Avant Pro pendente',
+            detail: 'Entre no Avant Pro pelo navegador da pesquisa e clique em Retomar.' }
+    };
+
     function renderStatus(job) {
         const labels = { queued: 'Preparando a pesquisa', running: 'O sistema está pesquisando', pausing: 'Pausando a pesquisa',
             paused: 'Pesquisa pausada', waiting_login: 'Aguardando login', interrupted: 'Pesquisa interrompida',
@@ -372,11 +385,13 @@
         if (warning && job.status === 'running') warning += ' A pesquisa continua.';
         const detail = active ? safeText(progress.detail || (legacyWarning ? '' : message))
             : progress.phase === job.status ? safeText(progress.detail) : '';
+        const authReason = detail || message;
+        const authPause = job.status === 'waiting_login' && Object.hasOwn(authPauses, authReason) ? authPauses[authReason] : null;
         elements['status-panel'].dataset.state = safeText(job.status || 'idle');
-        elements.status.textContent = labels[job.status] || 'Acompanhando a pesquisa';
+        elements.status.textContent = authPause?.title || labels[job.status] || 'Acompanhando a pesquisa';
         elements.status.classList.toggle('error', job.status === 'failed');
         elements.status.classList.toggle('success', job.status === 'completed');
-        elements['status-detail'].textContent = detail || details[job.status] || 'Acompanhando o progresso salvo.';
+        elements['status-detail'].textContent = authPause?.detail || detail || details[job.status] || 'Acompanhando o progresso salvo.';
         elements['status-warning'].textContent = warning;
         elements['status-warning'].hidden = !warning;
         elements['status-warning'].classList.remove('error');
@@ -390,8 +405,10 @@
         const status = state.activeJob ? state.activeJob.status : '';
         const running = ['queued', 'running', 'pausing'].includes(status);
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status) && !canRecover(state.activeJob);
+        const taxonomy = state.taxonomy;
+        const taxonomyDisabled = !sessionToken || state.busy || taxonomy.loading || isActive(state.activeJob);
         if (elements['avant-email']) elements['avant-email'].disabled = !sessionToken || state.busy || running;
-        elements.start.disabled = !sessionToken || state.busy || isActive(state.activeJob) || state.taxonomy.loading || !state.taxonomy.selected || state.taxonomy.authRequired || state.taxonomy.error;
+        elements.start.disabled = taxonomyDisabled || !taxonomy.selected || taxonomy.authRequired || taxonomy.error || !!taxonomy.search;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !!deleting || !resumable;
         elements.cancel.disabled = state.busy || !!deleting || !(isActive(state.activeJob) || resumable);
@@ -403,8 +420,9 @@
                 ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
         }
         if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !!deleting || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
-        const taxonomyDisabled = !sessionToken || state.busy || state.taxonomy.loading || isActive(state.activeJob);
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
+        elements['taxonomy-search'].disabled = taxonomyDisabled;
+        elements['taxonomy-clear-search'].disabled = taxonomyDisabled;
         elements['taxonomy-browser'].disabled = !sessionToken || state.busy || isActive(state.activeJob);
         for (const button of elements['taxonomy-list'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
         for (const button of elements['taxonomy-breadcrumb'].querySelectorAll('button')) button.disabled = taxonomyDisabled;
@@ -414,63 +432,152 @@
         elements.scope.textContent = state.scopeCategory ? `Escopo da pesquisa: ${scopeName(state.activeJob)}`
             : state.activeJob ? 'Escopo da pesquisa: execução anterior.' : 'Nenhuma pesquisa iniciada.';
     }
+    function taxonomySearchMessage(search) {
+        if (search.query.length < 2) return 'Digite pelo menos dois caracteres para buscar categorias.';
+        if (search.pending) return 'Buscando categorias…';
+        if (search.error) return search.error;
+        if (!search.total) return 'Nenhuma categoria encontrada. Tente outro nome.';
+        if (search.total > search.paths.length) return `Mostrando ${number(search.paths.length)} de ${number(search.total)} categorias. Digite mais para refinar a busca.`;
+        return search.total === 1 ? '1 categoria encontrada. Selecione para abrir.'
+            : `${number(search.total)} categorias encontradas. Selecione para abrir.`;
+    }
+
     function renderTaxonomy() {
         const taxonomy = state.taxonomy;
-        elements['taxonomy-list'].innerHTML = '';
-        elements['taxonomy-breadcrumb'].innerHTML = '';
+        const search = taxonomy.search;
+        const list = elements['taxonomy-list'];
+        const breadcrumbNav = elements['taxonomy-breadcrumb'];
+        list.innerHTML = '';
+        list.classList.toggle('is-searching', !!search);
+        list.setAttribute('aria-label', search ? 'Resultados da busca de categorias' : 'Categorias disponíveis');
+        elements['taxonomy-clear-search'].hidden = !search;
+        breadcrumbNav.hidden = !!search;
+        breadcrumbNav.innerHTML = '';
         const breadcrumb = (name, category, trail, current) => {
             const button = document.createElement('button');
             button.type = 'button';
             button.textContent = name;
             if (current) button.setAttribute('aria-current', 'page');
             button.addEventListener('click', () => loadTaxonomy(category, trail));
-            elements['taxonomy-breadcrumb'].appendChild(button);
+            breadcrumbNav.appendChild(button);
         };
         breadcrumb('Todas as categorias', null, [], !taxonomy.parent);
         taxonomy.trail.forEach((category, index) => {
             const separator = document.createElement('span');
             separator.textContent = '›';
             separator.setAttribute('aria-hidden', 'true');
-            elements['taxonomy-breadcrumb'].appendChild(separator);
+            breadcrumbNav.appendChild(separator);
             breadcrumb(category.nome, category, taxonomy.trail.slice(0, index + 1), index === taxonomy.trail.length - 1);
         });
-        for (const category of taxonomy.items) {
+        const paths = search ? search.paths : taxonomy.items.map(category => taxonomy.trail.concat(category));
+        for (const trail of paths) {
+            const category = trail.at(-1);
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'pm-taxonomy-item';
-            button.setAttribute('aria-label', `Selecionar ${category.nome} e ver subcategorias`);
             const name = document.createElement('span');
             name.textContent = category.nome;
-            const count = document.createElement('span');
-            count.className = 'pm-taxonomy-count';
-            const children = taxonomy.childCounts[category.key];
-            count.textContent = children === 0 ? 'Último nível' : `${number(children)} subcategorias`;
-            button.appendChild(name);
-            button.appendChild(count);
-            button.addEventListener('click', () => loadTaxonomy(category, taxonomy.trail.concat(category)));
-            elements['taxonomy-list'].appendChild(button);
+            const detail = document.createElement('span');
+            if (search) {
+                const path = trail.map(item => item.nome).join(' › ');
+                button.classList.add('pm-taxonomy-result');
+                button.setAttribute('aria-label', `Selecionar ${path}`);
+                name.className = 'pm-taxonomy-result-name';
+                detail.className = 'pm-taxonomy-result-path';
+                detail.textContent = path;
+            } else {
+                button.setAttribute('aria-label', `Selecionar ${category.nome} e ver subcategorias`);
+                detail.className = 'pm-taxonomy-count';
+                const children = taxonomy.childCounts[category.key];
+                detail.textContent = children === 0 ? 'Último nível' : `${number(children)} subcategorias`;
+            }
+            button.append(name, detail);
+            button.addEventListener('click', async () => {
+                if (taxonomy !== state.taxonomy || search !== taxonomy.search) return;
+                await loadTaxonomy(category, trail);
+                if (search && !state.disposed && taxonomy === state.taxonomy && document.activeElement === document.body) {
+                    const current = taxonomy.selected?.key === category.key && breadcrumbNav.querySelector('[aria-current="page"]');
+                    (current || elements['taxonomy-search']).focus({ preventScroll: true });
+                }
+            });
+            list.appendChild(button);
         }
         const message = isActive(state.activeJob) ? 'A seleção de uma nova categoria fica disponível ao concluir ou cancelar esta pesquisa.'
-            : taxonomy.loading ? 'Carregando categorias do Mercado Livre…' : taxonomy.message;
+            : taxonomy.loading ? 'Carregando categorias do Mercado Livre…' : search ? taxonomySearchMessage(search) : taxonomy.message;
         elements['taxonomy-summary'].textContent = taxonomy.summary
             ? `Árvore oficial: ${number(taxonomy.summary.rootCount)} categorias principais · ${number(taxonomy.summary.subcategoryCount)} subcategorias · até ${number(taxonomy.summary.maxDepth)} níveis.` : '';
         elements['taxonomy-updated'].textContent = taxonomy.updatedAt
             ? `Atualizada em ${new Date(taxonomy.updatedAt).toLocaleString('pt-BR')}` : '';
         elements['taxonomy-message'].textContent = message;
-        elements['taxonomy-message'].classList.toggle('error', taxonomy.error);
-        elements['taxonomy-list'].setAttribute('aria-busy', taxonomy.loading ? 'true' : 'false');
+        elements['taxonomy-message'].classList.toggle('error', search ? !!search.error : taxonomy.error);
+        list.setAttribute('aria-busy', taxonomy.loading || search?.pending ? 'true' : 'false');
         elements['taxonomy-browser'].hidden = !taxonomy.authRequired;
         elements['taxonomy-refresh'].textContent = taxonomy.loaded ? 'Atualizar lista' : 'Carregar categorias';
-        elements['taxonomy-selection'].textContent = taxonomy.selected
-            ? `Selecionada: ${taxonomy.trail.map(category => category.nome).join(' › ')}. A pesquisa inclui suas subcategorias.`
-            : 'Nenhuma categoria selecionada.';
+        elements['taxonomy-selection'].textContent = search ? 'Escolha uma categoria nos resultados para iniciar a pesquisa.'
+            : taxonomy.selected ? `Selecionada: ${taxonomy.trail.map(category => category.nome).join(' › ')}. A pesquisa inclui suas subcategorias.`
+                : 'Nenhuma categoria selecionada.';
         renderControls();
     }
+    function resetTaxonomySearch() {
+        window.clearTimeout(taxonomySearchTimer);
+        state.taxonomy.search = null;
+        elements['taxonomy-search'].value = '';
+    }
+
+    async function searchTaxonomy(taxonomy, search) {
+        const isCurrent = () => !state.disposed && state.taxonomy === taxonomy && taxonomy.search === search;
+        currentSession();
+        if (!isCurrent()) return;
+        try {
+            const result = await invoke('categories', { query: search.query });
+            if (!isCurrent()) return;
+            const invalid = 'Não foi possível ler os resultados da busca. Tente novamente.';
+            if (!Array.isArray(result?.paths) || result.paths.length > 40
+                || !Number.isSafeInteger(result.total) || result.total < result.paths.length
+                || (result.total > 0 && !result.paths.length)) throw new Error(invalid);
+            const paths = result.paths.map(path => Array.isArray(path) ? path.map(categoryChoice) : []);
+            if (paths.some(path => !path.length || path.some(category => !category)
+                || new Set(path.map(category => category.key)).size !== path.length)
+                || new Set(paths.map(path => path.at(-1).key)).size !== paths.length) throw new Error(invalid);
+            search.paths = paths;
+            search.total = result.total;
+        } catch (error) {
+            if (isCurrent()) search.error = userErrorMessage(error);
+        } finally {
+            if (isCurrent()) {
+                search.pending = false;
+                renderTaxonomy();
+            }
+        }
+    }
+
+    function taxonomySearchChanged() {
+        currentSession();
+        const input = elements['taxonomy-search'];
+        if (state.disposed || state.mode !== 'global' || input.disabled) return;
+        const taxonomy = state.taxonomy;
+        const query = input.value.trim();
+        if (!query) {
+            resetTaxonomySearch();
+            renderTaxonomy();
+            return;
+        }
+        window.clearTimeout(taxonomySearchTimer);
+        const search = { query, paths: [], total: 0, pending: query.length >= 2, error: '' };
+        taxonomy.search = search;
+        renderTaxonomy();
+        if (search.pending) taxonomySearchTimer = window.setTimeout(() => searchTaxonomy(taxonomy, search), 250);
+    }
+
     async function loadTaxonomy(parentCategory = null, trail = [], forceRefresh = false) {
+        const requestedTaxonomy = state.taxonomy;
+        const search = requestedTaxonomy.search;
         if (synchronizeTask) await synchronizeTask;
         currentSession();
         const taxonomy = state.taxonomy;
-        if (state.disposed || state.mode !== 'global' || !sessionToken || isActive(state.activeJob) || state.busy || taxonomy.loading) return;
+        if (state.disposed || taxonomy.search !== search || ((parentCategory || forceRefresh) && taxonomy !== requestedTaxonomy)
+            || state.mode !== 'global' || !sessionToken || isActive(state.activeJob) || state.busy || taxonomy.loading) return;
+        resetTaxonomySearch();
         const requestId = ++taxonomy.requestId;
         taxonomy.loading = true;
         taxonomy.error = false;
@@ -559,7 +666,7 @@
         elements.category.innerHTML = '<option value="">Todas as categorias</option>'; state.category = '';
         for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = '0';
         elements['category-current'].textContent = 'Aguardando categoria';
-        renderScope(); renderActiveResearch(); renderSellers(); renderRanking(); renderControls();
+        renderScope(); renderActiveResearch(); renderSellers(); renderRanking(); renderTaxonomy();
         renderIncomplete(null);
         showMessage('Escolha uma categoria para iniciar uma pesquisa.');
     }
@@ -591,12 +698,15 @@
             state.generation += 1;
             state.scopeCategory = null;
         }
+        const wasActive = isActive(state.activeJob);
+        const active = isActive(job);
         state.activeJob = job;
+        if (active && !wasActive && state.taxonomy.search) resetTaxonomySearch();
         const scopeCategory = categoryChoice(job.scopeCategory || job.checkpoint && job.checkpoint.scope && job.checkpoint.scope.category);
         if (scopeCategory) state.scopeCategory = scopeCategory;
         renderScope();
         renderActiveResearch();
-        renderTaxonomy();
+        if (active !== wasActive) renderTaxonomy();
         const counters = job.counters || {};
         for (const name of ['categories', 'pages', 'sellers', 'ads', 'pending']) elements[`${name}-count`].textContent = number(counters[name] || 0);
         const checkpoint = job.checkpoint || {};
@@ -764,7 +874,7 @@
             catch (error) { showMessage(userErrorMessage(error), true); }
             return;
         }
-        if (action === 'start'  && state.taxonomy.error) return;
+        if (action === 'start' && (state.taxonomy.error || state.taxonomy.search)) return;
         if (action === 'start' && (!state.taxonomy.selected || state.taxonomy.authRequired)) {
             state.taxonomy.message = 'Escolha uma categoria ou subcategoria para iniciar a pesquisa.';
             state.taxonomy.error = true;
@@ -845,6 +955,12 @@
         debounce = window.setTimeout(refresh, 250);
     }
     for (const action of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete']) if (elements[action]) elements[action].addEventListener('click', () => command(action));
+    elements['taxonomy-search'].addEventListener('input', taxonomySearchChanged);
+    elements['taxonomy-clear-search'].addEventListener('click', () => {
+        resetTaxonomySearch();
+        renderTaxonomy();
+        elements['taxonomy-search'].focus();
+    });
     elements['taxonomy-refresh'].addEventListener('click', () => loadTaxonomy(state.taxonomy.parent, state.taxonomy.trail, true));
     elements['taxonomy-browser'].addEventListener('click', async () => {
         if (state.busy || isActive(state.activeJob) || state.disposed) return;
@@ -926,6 +1042,7 @@
         if (typeof unsubscribe === 'function') unsubscribe();
         window.clearInterval(polling);
         window.clearTimeout(debounce);
+        window.clearTimeout(taxonomySearchTimer);
         window.removeEventListener('message', onMessage);
         window.removeEventListener('storage', onStorage);
         window.removeEventListener('jk-pesquisa-mercado-job-deleted', onJobDeleted);

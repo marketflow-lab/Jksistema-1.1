@@ -287,7 +287,7 @@
             .filter-row input { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261008-foto-hover-v1">
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261110-busca-categoria-v1">
     <link rel="stylesheet" href="/pesquisa-mercado/history-ui.css?v=20261007-apagar-historico-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -339,6 +339,14 @@
                         <button class="btn" type="button" id="pm-global-taxonomy-refresh">Carregar categorias</button>
                     </div>
                     <div class="pm-taxonomy-meta"><span id="pm-global-taxonomy-summary"></span><span id="pm-global-taxonomy-updated"></span></div>
+                    <div class="field pm-taxonomy-search" role="search" aria-label="Pesquisa de categorias">
+                        <label for="pm-global-taxonomy-search">Pesquisar categoria</label>
+                        <div class="pm-taxonomy-search-controls">
+                            <input id="pm-global-taxonomy-search" type="search" maxlength="120" autocomplete="off"
+                                placeholder="Digite o nome, ex.: Ambulâncias" aria-controls="pm-global-taxonomy-list">
+                            <button class="btn" id="pm-global-taxonomy-clear-search" type="button" hidden>Limpar</button>
+                        </div>
+                    </div>
                     <nav class="pm-taxonomy-breadcrumb" id="pm-global-taxonomy-breadcrumb" aria-label="Caminho da categoria"></nav>
                     <div class="pm-taxonomy-list" id="pm-global-taxonomy-list" aria-label="Categorias dispon&iacute;veis"></div>
                     <div class="pm-taxonomy-message" id="pm-global-taxonomy-message" aria-live="polite">Escolha uma categoria ou subcategoria para iniciar a pesquisa.</div>
@@ -511,7 +519,7 @@
 
     <script src="/pesquisa-mercado/core.js?v=20261007-nomes-lojas-v1"></script>
     <script src="/pesquisa-mercado/runtime.js?v=20261007-nomes-lojas-v1"></script>
-    <script src="/pesquisa-mercado/global-ui.js?v=20261008-foto-hover-v1"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261110-busca-categoria-v1"></script>
     <script src="/pesquisa-mercado/history-ui.js?v=20261007-apagar-historico-v1"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>

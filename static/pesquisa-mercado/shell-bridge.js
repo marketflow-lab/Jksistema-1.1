@@ -68,7 +68,7 @@
             return;
         }
         const input = data.payload;
-        const fields = { start: ['authToken', 'category', 'avantLoginEmail'], categories: ['authToken', 'parentCategory', 'forceRefresh'],
+        const fields = { start: ['authToken', 'category', 'avantLoginEmail'], categories: ['authToken', 'parentCategory', 'forceRefresh', 'query'],
             status: ['authToken'], pause: ['authToken', 'jobId'], resume: ['authToken', 'jobId', 'avantLoginEmail'],
             cancel: ['authToken', 'jobId'], 'refresh-names': ['authToken', 'jobId', 'avantLoginEmail'],
             'recover-incomplete': ['authToken', 'jobId', 'expectedRevision', 'avantLoginEmail'], browser: ['authToken', 'jobId', 'purpose'] };
@@ -102,6 +102,14 @@
                 return;
             }
             payload.forceRefresh = input.forceRefresh;
+        }
+        if (data.action === 'categories' && Object.prototype.hasOwnProperty.call(input, 'query')) {
+            if (typeof input.query !== 'string' || input.query.length > 120 || input.query.trim().length < 2
+                || input.parentCategory != null || payload.forceRefresh) {
+                reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Busca de categoria inválida.' });
+                return;
+            }
+            payload.query = input.query;
         }
         if (data.action === 'start' || data.action === 'categories' && input.parentCategory != null) {
             const field = data.action === 'start' ? 'category' : 'parentCategory';

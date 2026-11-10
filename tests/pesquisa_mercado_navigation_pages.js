@@ -332,10 +332,10 @@ async function staticHubOnlySuppliesObservedChildLinks() {
             'a navigation hub cannot make recommendation cards into a category listing');
     }
     const verificationUrl = 'https://www.mercadolivre.com.br/captcha/wall/logged?go_url=https%3A%2F%2Flista.mercadolivre.com.br%2Fcategoria';
-    const verification = fixture({ url: verificationUrl, authRequired: true, categoryNavigationHub: null });
+    const verification = fixture({ url: verificationUrl, authRequired: true, authReason: 'ml_verification_required', categoryNavigationHub: null });
     verification.runner.browser.getURL = () => verificationUrl;
     await assert.rejects(verification.runner.read(cycling, 'navigation', hub.key, child),
-        error => error.waitingLogin === true && error.message === 'ml_login_required',
+        error => error.waitingLogin === true && error.message === 'ml_verification_required',
         'a CAPTCHA redirect preserves the manual waiting_login flow instead of becoming an incomplete category');
     assert.equal(verification.polls(), 1, 'the verification wall stops category retries immediately');
 }

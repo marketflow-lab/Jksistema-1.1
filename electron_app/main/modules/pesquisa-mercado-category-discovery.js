@@ -196,7 +196,10 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
         try { page = await step(() => browser.executeJavaScript(scripts.discoveryScript())); }
         catch (error) { if (navigationContextChanged(error)) return { page: {}, url: '', settled: false }; throw error; }
         if (!page || typeof page !== 'object') return { page: {}, url: '', settled: false };
-        if (page.authRequired || page.avantAuthRequired) throw Object.assign(new Error('Conclua o login para continuar a descoberta de categorias.'), { waitingLogin: true, reason: 'ml_login_required' });
+        if (page.authRequired || page.avantAuthRequired) {
+            const reason = page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required');
+            throw Object.assign(new Error(reason), { waitingLogin: true, reason });
+        }
         const actual = publicUrl(browser.getURL()), observed = publicUrl(page.url);
         const status = typeof browser.getNavigationStatus === 'function' && browser.getNavigationStatus();
         if (status && [403, 429].includes(status.statusCode) && publicUrl(status.url) === actual) {

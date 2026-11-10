@@ -115,7 +115,10 @@
         while (now() - start < timeout) {
             const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }));
             if (!snapshot || typeof snapshot !== 'object') return observe(finish('invalid_page_result'));
-            if (snapshot.authRequired || snapshot.avantAuthRequired) return observe(finish(snapshot.avantAuthRequired ? 'avant_login_required' : 'ml_login_required', true));
+            if (snapshot.authRequired || snapshot.avantAuthRequired) {
+                const reason = snapshot.authReason || (snapshot.authRequired ? 'ml_login_required' : 'avant_login_required');
+                return observe(finish(reason, true));
+            }
             if (snapshot.url && initialUrl && pageKey(snapshot.url) !== initialUrl) return observe(finish('page_changed'));
             empty = !!snapshot.empty;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {

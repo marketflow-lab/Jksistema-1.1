@@ -254,7 +254,7 @@ async function main() {
                 throw new Error('Execution context was destroyed');
             };
             const result = await f.session.ensure();
-            assert.equal(result.reason, 'ml_login_required');
+            assert.equal(result.reason, 'ml_verification_required');
             assert.equal(probes, 1, 'Navigation recovery must validate the new destination before executing.');
             assert.equal(f.stats.frameExecutions, 0);
         });
@@ -291,7 +291,7 @@ async function main() {
                 const result = await f.session.ensure();
                 assert(interrupted, 'The confirmation must encounter navigation during menu cleanup.');
                 assert.equal(result.authenticated, false, 'A previous document cannot confirm the new session.');
-                assert.equal(result.reason, redirect ? 'ml_login_required' : 'avant_email_missing');
+                assert.equal(result.reason, redirect ? 'ml_verification_required' : 'avant_email_missing');
                 assert.equal(f.stats.frameExecutions, 0);
             });
         }
@@ -384,12 +384,21 @@ async function main() {
                 const result = await f.session.ensure(); assert.equal(result.reason, 'avant_manual_login_required'); assert.equal(await f.submits(), 0);
             });
         }
+        await test({ loggedIn:true }, async f => {
+            await f.page.evaluate(() => document.body.insertAdjacentHTML('beforeend',
+                '<form id="login_user_form" hidden><input type="password"></form>'
+                + '<div style="opacity:0"><div data-testid="captcha">Captcha oculto</div></div>'
+                + '<iframe title="Widget oculto" style="display:none" src="/captcha/widget"></iframe>'));
+            const result = await f.session.ensure();
+            assert.equal(result.authenticated, true, 'hidden Mercado Livre controls do not block a confirmed Avant session');
+            assert.equal(f.stats.frameExecutions, 0);
+        });
         await test({ marketCaptcha:true }, async f => {
-            const result = await f.session.ensure(); assert.equal(result.reason, 'ml_login_required'); assert.equal(await f.submits(), 0); assert.equal(f.stats.frameExecutions, 0);
+            const result = await f.session.ensure(); assert.equal(result.reason, 'ml_verification_required'); assert.equal(await f.submits(), 0); assert.equal(f.stats.frameExecutions, 0);
         });
         await test({ marketUrl:'https://lista.mercadolivre.com.br/captcha/wall/logged' }, async f => {
             const result = await f.session.ensure();
-            assert.equal(result.reason, 'ml_login_required');
+            assert.equal(result.reason, 'ml_verification_required');
             assert.equal(f.stats.pageExecutions, 0, 'a verification route is rejected before operating the Avant menu');
             assert.equal(f.stats.frameExecutions, 0);
             assert.equal(await f.submits(), 0);

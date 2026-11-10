@@ -31,7 +31,11 @@ async function main() {
             refreshPesquisaMercadoNames: async payload => { namesCalls.push(payload); return { updated: 1, pending: 0 }; },
             recoverPesquisaMercadoIncomplete: async payload => { recoveryCalls.push(payload); return { job: { id: payload.jobId } }; },
             startPesquisaMercadoJob: async payload => { commands.push(payload); return { job: { id: 'job-1' } }; },
-            getPesquisaMercadoCategories: async payload => { categoryCalls.push(payload); return { items: [], parentCategory: payload.parentCategory || null }; },
+            getPesquisaMercadoCategories: async payload => {
+                categoryCalls.push(payload);
+                if (payload.query) return { paths: [[category]], total: 1 };
+                return { items: [], parentCategory: payload.parentCategory || null };
+            },
             showPesquisaMercadoBrowser: async payload => { browserCalls.push(payload); return { success: true }; },
             onPesquisaMercadoProgress: callback => { progress = callback; return () => { unsubscribed = true; }; }
         })
@@ -71,6 +75,20 @@ async function main() {
     assert.strictEqual(categoryCalls.length, 4, 'refresh exige booleano');
     await send('categories', { authToken: 'fixture-token', parentCategory: { ...category, key: '' } });
     assert.strictEqual(categoryCalls.length, 4, 'categoria incompleta não é encaminhada');
+    const query = '  FeRRaMeNTas  ';
+    await send('categories', { authToken: 'fixture-token', query });
+    assert.deepStrictEqual(categoryCalls.at(-1), { authToken: 'fixture-token', query });
+    assert.deepStrictEqual(messages.at(-1).value.result, { paths: [[category]], total: 1 });
+    for (const invalid of [null, undefined, 5, [], {}, '', ' a ', ' '.repeat(119) + 'ab']) {
+        await send('categories', { authToken: 'fixture-token', query: invalid });
+    }
+    await send('categories', { authToken: 'fixture-token', query, parentCategory: category });
+    await send('categories', { authToken: 'fixture-token', query, forceRefresh: true });
+    await send('categories', { authToken: 'fixture-token', query }, 'https://evil.example');
+    await send('categories', { authToken: 'fixture-token', query }, 'http://127.0.0.1:8001', otherModule);
+    await send('start', { authToken: 'fixture-token', category, query });
+    assert.strictEqual(categoryCalls.length, 5, 'busca preserva as restrições de origem, tamanho e argumentos');
+    assert.strictEqual(commands.length, 1, 'busca fica restrita ao comando de categorias');
     await send('browser', { authToken: 'fixture-token', purpose: 'categories', jobId: 'old-job', code: 'untrusted()' });
     assert.strictEqual(browserCalls.length, 0, 'schema do navegador rejeita campos extras');
     await send('browser', { authToken: 'fixture-token', purpose: 'categories' });
