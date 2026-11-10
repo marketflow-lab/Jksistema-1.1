@@ -73,6 +73,9 @@ async function installRoutes(page, state) {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
           body: fs.readFileSync(path.join(root, 'static', 'importacoes.html')) });
       }
+      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp') {
+        return route.fulfill({ path: path.join(root, 'static', pathname.slice(1)) });
+      }
       if (pathname === '/importacoes_lista.html') {
         return route.fulfill({ status: 200, contentType: 'text/html',
           body: '<!doctype html><html><body>Destino sintético da lista.</body></html>' });

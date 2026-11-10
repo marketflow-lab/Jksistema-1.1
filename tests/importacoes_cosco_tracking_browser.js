@@ -3,6 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 const { EventEmitter } = require('events');
 
 const modulePath = path.join(
@@ -247,6 +248,35 @@ class FallbackBrowserWindow {
 }
 FallbackBrowserWindow.instances = [];
 
+class PublicVesselBrowserWindow extends EventEmitter {
+    constructor(options) {
+        super();
+        this.options = options;
+        this.loadedUrls = [];
+        this.webContents = new EventEmitter();
+        this.webContents.isDestroyed = () => this.isDestroyed();
+        this.webContents.setWindowOpenHandler = (handler) => { this.openHandler = handler; };
+        this.webContents.stop = () => {};
+        PublicVesselBrowserWindow.last = this;
+    }
+    loadURL(url) {
+        this.loadedUrls.push(url);
+        const response = PublicVesselBrowserWindow.responses.shift();
+        if (response !== undefined) {
+            this.webContents.emit('did-navigate', {}, response.url || url, response.status);
+        }
+        // Map tiles can keep the normal load promise pending after the page opens.
+        return new Promise(() => {});
+    }
+    setTitle() {}
+    show() { this.visible = true; }
+    isDestroyed() { return !!this.destroyed; }
+    destroy() {
+        this.destroyed = true;
+        this.emit('closed');
+    }
+}
+
 (async () => {
     const result = await trackingBrowser.trackCoscoShipment(
         { type: 'BOOKING', reference: 'COSU6464481560' },
@@ -290,14 +320,112 @@ FallbackBrowserWindow.instances = [];
     assert(FallbackBrowserWindow.instances[0].loadedUrls[1].includes('trackingType=BOOKING'));
     assert(FallbackBrowserWindow.instances.every(instance => instance.destroyed));
 
+    const publicDependencies = { BrowserWindow: PublicVesselBrowserWindow, session: fakeSessionModule };
+    const vessel = { imo: '9660011', mmsi: '636026610' };
+    PublicVesselBrowserWindow.responses = [{ status: 200 }];
+    const map = await trackingBrowser.openPublicVesselPosition(
+        { ...vessel, mapa: true, bl: 'PRIVATE-TEST-BL' },
+        publicDependencies,
+    );
+    const mapWindow = PublicVesselBrowserWindow.last;
+    assert.deepStrictEqual(map, { success: true, source: 'VesselFinder', view: 'mapa' });
+    assert.deepStrictEqual(mapWindow.loadedUrls, ['https://www.vesselfinder.com/?imo=9660011']);
+    assert.strictEqual(mapWindow.visible, true);
+    assert.strictEqual(fakeSessionModule.partition, 'jk-importacoes-ais-public');
+    assert.strictEqual(mapWindow.options.webPreferences.preload, undefined);
+    assert.strictEqual(mapWindow.options.webPreferences.sandbox, true);
+    assert.strictEqual(mapWindow.openHandler().action, 'deny');
+    let redirectBlocked = false;
+    mapWindow.webContents.emit(
+        'will-redirect',
+        { preventDefault() { redirectBlocked = true; } },
+        'http://127.0.0.1/importacoes.html',
+        false,
+        true,
+    );
+    assert.strictEqual(redirectBlocked, true);
+
+    const wingoPage = 'https://wingo-marine.com/ship/ym-movement-636026610';
+    PublicVesselBrowserWindow.responses = [{ status: 403 }, { status: 200, url: wingoPage }];
+    const fallbackMap = await trackingBrowser.openPublicVesselPosition({ ...vessel, mapa: true }, publicDependencies);
+    assert.deepStrictEqual(fallbackMap, { success: true, source: 'Wingo Marine', view: 'mapa' });
+    assert.strictEqual(mapWindow.isDestroyed(), true);
+    const wingoContents = PublicVesselBrowserWindow.last.webContents;
+    for (const [url, mustBlock] of [
+        [wingoPage, false],
+        ['https://wingo-marine.com/ship/another-ship-356189000', true],
+        ['https://wingo-marine.com/login', true],
+        ['https://www.vesselfinder.com/?imo=9660011', true],
+    ]) {
+        let blocked = false;
+        wingoContents.emit('will-redirect', { preventDefault() { blocked = true; } }, url, false, true);
+        assert.strictEqual(blocked, mustBlock);
+    }
+
+    PublicVesselBrowserWindow.responses = [{ status: 403 }, { status: 403 }, { status: 200 }];
+    const fallbackPosition = await trackingBrowser.openPublicVesselPosition(
+        { ...vessel, mapa: true },
+        publicDependencies,
+    );
+    assert.deepStrictEqual(fallbackPosition, { success: true, source: 'Maritime Optima', view: 'ficha' });
+    assert.deepStrictEqual(PublicVesselBrowserWindow.last.loadedUrls, [
+        'https://www.vesselfinder.com/?imo=9660011',
+        'https://wingo-marine.com/ship/636026610',
+        'https://maritimeoptima.com/public/vessels/pages/imo:9660011/mmsi:636026610/vessel.html',
+    ]);
+    assert.strictEqual(mapWindow.isDestroyed(), true);
+
+    PublicVesselBrowserWindow.responses = [{ status: 200 }];
+    const search = await trackingBrowser.openPublicVesselPosition({ mmsi: vessel.mmsi }, publicDependencies);
+    assert.deepStrictEqual(search, { success: true, source: 'MyShipTracking', view: 'busca' });
+    assert.deepStrictEqual(PublicVesselBrowserWindow.last.loadedUrls, [
+        'https://www.myshiptracking.com/vessels?name=636026610',
+    ]);
+
+    PublicVesselBrowserWindow.responses = [];
+    const unavailable = await trackingBrowser.openPublicVesselPosition(
+        { imo: vessel.imo },
+        { ...publicDependencies, timeoutMs: 25 },
+    );
+    assert.strictEqual(unavailable.success, false);
+    assert.strictEqual(PublicVesselBrowserWindow.last.isDestroyed(), true);
+    assert.strictEqual(trackingSession.listenerCount('will-download'), 0);
+
     const ipcSource = fs.readFileSync(path.join(__dirname, '..', 'electron_app', 'main', 'modules', 'ipc.js'), 'utf8');
     assert(ipcSource.includes("ipcMain.handle('importacoes-cosco-tracking'"));
+    assert(ipcSource.includes("ipcMain.handle('importacoes-cargo-tracking-search'"));
+    assert(ipcSource.includes("ipcMain.handle('importacoes-ais-browser-open'"));
     assert(ipcSource.includes('assertTrustedImportacoesTrackingIpcSender(event)'));
     assert(ipcSource.includes("parsed.protocol === 'http:'"));
     assert(ipcSource.includes("importacoes\\.html$"));
     for (const preloadPath of ['preload.js', 'electron_tab_preload.js', path.join('electron_app', 'preload.js')]) {
         const preloadSource = fs.readFileSync(path.join(__dirname, '..', preloadPath), 'utf8');
         assert(preloadSource.includes("trackCoscoShipment: (payload) => ipcRenderer.invoke('importacoes-cosco-tracking'"));
+        let bridge;
+        const calls = [];
+        vm.runInNewContext(preloadSource, {
+            require: () => ({
+                contextBridge: {
+                    exposeInMainWorld(name, api) { if (name === 'electronAPI') bridge = api; },
+                },
+                ipcRenderer: {
+                    invoke(channel, payload) { calls.push({ channel, payload: { ...payload } }); },
+                },
+            }),
+            window: { addEventListener() {} },
+            process: { on() {} },
+        });
+        assert.strictEqual(typeof bridge?.openPublicVesselPosition, 'function', preloadPath);
+        bridge.openPublicVesselPosition({ ...vessel, mapa: true, bl: 'PRIVATE-TEST-BL' });
+        const cargoQuery = { type: 'BILLOFLADING', reference: 'TEST00012345', carrier: 'hmm' };
+        bridge.searchPublicCargoTracking({ ...cargoQuery, url: 'https://example.invalid/' });
+        assert.deepStrictEqual(calls, [{
+            channel: 'importacoes-ais-browser-open',
+            payload: { ...vessel, mapa: true },
+        }, {
+            channel: 'importacoes-cargo-tracking-search',
+            payload: cargoQuery,
+        }], preloadPath);
     }
     const installerManifest = JSON.parse(fs.readFileSync(
         path.join(__dirname, '..', 'electron_app', 'installer-required-resources.json'),
@@ -305,11 +433,13 @@ FallbackBrowserWindow.instances = [];
     ));
     assert(installerManifest.requiredSourceFiles.includes('electron_app/main/modules/importacoes-tracking-browser.js'));
     assert(installerManifest.requiredPackagedFiles.includes('local_app/electron_app/main/modules/importacoes-tracking-browser.js'));
+    assert(installerManifest.requiredSourceFiles.includes('electron_app/main/modules/importacoes-cargo-tracking-providers.js'));
+    assert(installerManifest.requiredPackagedFiles.includes('local_app/electron_app/main/modules/importacoes-cargo-tracking-providers.js'));
     const electronPackage = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'electron_app', 'package.json'), 'utf8'));
     const localAppResource = electronPackage.build.extraResources.find((item) => item.to === 'local_app');
     assert(localAppResource.filter.includes('electron_app/main/modules/**'));
 
-    console.log('OK: parser COSCO, navegador isolado, origem IPC, preloads e pacote validados.');
+    console.log('OK: rastreamento COSCO e AIS, navegador isolado, origem IPC, preloads e pacote validados.');
 })().catch((error) => {
     console.error(error);
     process.exitCode = 1;

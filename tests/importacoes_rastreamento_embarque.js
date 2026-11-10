@@ -35,11 +35,11 @@ for (const [id, propriedade] of Object.entries(campos)) {
 }
 
 for (const snippet of [
-    'async function atualizarPosicaoNavioApi(embarque, botao)',
+    'async function atualizarPosicaoNavioApi(embarque, botao, mostrarMapa = false)',
     "'/api/importacoes/rastreamento/navio?'",
     'headers: Object.assign({}, obterAuthHeaders())',
     "document.getElementById('embarquePosicaoApi')",
-    'montarPosicaoNavioApiHtml(payload)',
+    'montarPosicaoNavioApiHtml(payload, mostrarMapa)',
     'Abrir coordenadas no mapa',
 ]) {
     assert(html.includes(snippet), `Contrato da API AIS ausente: ${snippet}`);
@@ -61,6 +61,7 @@ const statuses = [];
 const alerts = [];
 const trackingCalls = [];
 const createdElements = [];
+let responderConsultaAis = async () => ({ ok: true, json: async () => ({}) });
 function fakeElement() {
     const listeners = {};
     return {
@@ -110,8 +111,11 @@ const makeHelpers = new Function(
     'fetch',
     'obterAuthHeaders',
     'numero',
-    `${helpersSource}
+    `let detalheEmbarqueAtivo = {};
+    ${helpersSource}
     return {
+        atualizarPosicaoNavioApi,
+        trocarDetalheEmbarque() { detalheEmbarqueAtivo = {}; },
         identificarArmadorEmbarque,
         obterReferenciaRastreamentoEmbarque,
         criarUrlRastreamentoCarga,
@@ -119,6 +123,7 @@ const makeHelpers = new Function(
         erroIdentificadorAisEmbarque,
         criarUrlRastreamentoNavioApi,
         abrirRastreamentoCarga,
+        consultarPortaisRastreamentoCarga,
         montarRastreamentoCargaPopoverHtml,
         montarPosicaoNavioApiHtml,
         montarMetaRastreamentoEmbarqueHtml
@@ -132,7 +137,7 @@ const helpers = makeHelpers(
     (message) => alerts.push(message),
     fakeWindow,
     fakeDocument,
-    async () => ({ ok: true, json: async () => ({}) }),
+    (...args) => responderConsultaAis(...args),
     () => ({ Authorization: 'Bearer teste' }),
     (value) => String(value),
 );
@@ -172,8 +177,12 @@ const armadorExplicitoUrl = helpers.criarUrlRastreamentoCarga({
     armador: 'MSC',
     numero_booking: 'COSU6464481560',
 });
-assert(armadorExplicitoUrl.startsWith('https://www.google.com/search?q='));
-assert(decodeURIComponent(armadorExplicitoUrl).includes('MSC'));
+assert.strictEqual(armadorExplicitoUrl, '', 'Um armador sem portal integrado não deve enviar a referência ao Google');
+const blSemArmador = { numero_bl: 'SZPM12345678', numero_booking: 'BOOK-FIXTURE' };
+assert.strictEqual(helpers.identificarArmadorEmbarque(blSemArmador), null, 'SZPM sozinho não confirma o armador');
+assert.strictEqual(helpers.criarUrlRastreamentoCarga(blSemArmador), '');
+assert.strictEqual(helpers.identificarArmadorEmbarque({ numero_bl: 'HDMUSZPM12345678' }).codigo, 'hmm');
+assert.strictEqual(helpers.identificarArmadorEmbarque({ armador: 'Yang Ming Marine Transport' }).codigo, 'yang-ming');
 
 assert.strictEqual(
     helpers.obterReferenciaRastreamentoEmbarque({
@@ -217,7 +226,7 @@ assert(createdElements[0].innerHTML.includes('Abrir portal oficial'));
 createdElements[0].listeners.click({
     target: {
         closest() {
-            return { getAttribute: () => 'portal' };
+            return { getAttribute: (name) => name === 'data-rastreamento-carga-acao' ? 'portal' : 'cosco' };
         },
     },
 });
@@ -226,7 +235,7 @@ assert.strictEqual(opened[0][0], coscoUrl);
 
 helpers.abrirRastreamentoCarga({ armador: 'CMA CGM', numero_booking: 'BOOKING-123' });
 assert.strictEqual(trackingCalls.length, 0, 'CMA CGM nao deve acionar o leitor exclusivo da COSCO');
-assert(createdElements[0].innerHTML.includes('consulta automática no balão ainda não está disponível para CMA CGM'));
+assert(createdElements[0].innerHTML.includes('Use o portal oficial da CMA CGM'));
 assert(createdElements[0].innerHTML.includes('Abrir portal oficial'));
 
 const popoverHtml = helpers.montarRastreamentoCargaPopoverHtml({
@@ -279,11 +288,11 @@ const meta = helpers.montarMetaRastreamentoEmbarqueHtml({
 }, true, true);
 assert(meta.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 assert(!meta.includes('<script>'));
-for (const label of ['Booking', 'Navio', 'Viagem', 'IMO', 'MMSI', 'Rota', 'ETD', 'ETA', 'Rastrear carga', 'Atualizar posição AIS']) {
+for (const label of ['Booking', 'Navio', 'Viagem', 'IMO', 'MMSI', 'Rota', 'ETD', 'ETA', 'Rastrear carga', 'Atualizar posição AIS', 'Ver mapa AIS']) {
     assert(meta.includes(label), `Resumo nao mostra ${label}`);
 }
 
-const posicaoHtml = helpers.montarPosicaoNavioApiHtml({
+const dadosPosicaoAis = {
     provider: { nome: '<Datalastic>' },
     navio: { nome: '<CMA CGM IRON>', imo: '9996678', mmsi: '249369000' },
     posicao: {
@@ -295,10 +304,135 @@ const posicaoHtml = helpers.montarPosicaoNavioApiHtml({
         atualizada_em_utc: '2026-08-26T14:00:00Z',
     },
     viagem: { destino: '<SANTOS>', eta_utc: '2026-10-08T08:00:00Z' },
-});
+};
+const posicaoHtml = helpers.montarPosicaoNavioApiHtml(dadosPosicaoAis);
 assert(posicaoHtml.includes('&lt;CMA CGM IRON&gt;'));
 assert(posicaoHtml.includes('&lt;SANTOS&gt;'));
 assert(posicaoHtml.includes('openstreetmap.org'));
 assert(!posicaoHtml.includes('<CMA CGM IRON>'));
 
-console.log('OK: campos, persistencia, API AIS, balao e links de rastreamento validados.');
+async function verificarConsultaPublicaAis() {
+    const painel = fakeElement();
+    fakeDocument.getElementById = (id) => id === 'embarquePosicaoApi' ? painel : null;
+    const botao = { disabled: false };
+    const consultas = [];
+    fakeWindow.electronAPI.openPublicVesselPosition = async (identificadores) => {
+        assert(botao.disabled, 'Botão deve aguardar a abertura da consulta');
+        consultas.push(identificadores);
+        return identificadores.mapa
+            ? { success: true, source: 'VesselFinder', view: 'mapa' }
+            : { success: true, source: 'Maritime Optima', view: 'ficha' };
+    };
+
+    const chaveAusente = {
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: { codigo: 'api_nao_configurada' } }),
+    };
+    responderConsultaAis = async (url, options) => {
+        assert.strictEqual(url, '/api/importacoes/rastreamento/navio?imo=9996678');
+        assert.strictEqual(options.headers.Authorization, 'Bearer teste');
+        return chaveAusente;
+    };
+    await helpers.atualizarPosicaoNavioApi(exemplo, botao);
+    assert.deepStrictEqual(consultas, [{ imo: '9996678', mmsi: '249369000', mapa: false }]);
+    assert(painel.textContent.includes('navegador do JK'));
+    assert(painel.textContent.includes('Maritime Optima'));
+    assert(!botao.disabled);
+
+    await helpers.atualizarPosicaoNavioApi(exemplo, botao, true);
+    assert.deepStrictEqual(consultas[1], { imo: '9996678', mmsi: '249369000', mapa: true });
+    assert(painel.textContent.includes('Mapa AIS aberto no navegador do JK'));
+
+    responderConsultaAis = async () => ({
+        ok: true,
+        json: async () => dadosPosicaoAis,
+    });
+    await helpers.atualizarPosicaoNavioApi(exemplo, botao, true);
+    assert.strictEqual(consultas.length, 2, 'API disponível não deve abrir navegador');
+    assert(painel.innerHTML.includes('Datalastic'));
+    assert(painel.innerHTML.includes('openstreetmap.org/export/embed.html'));
+    assert(painel.innerHTML.includes('marker=-23.95%2C-46.31'));
+    assert(!helpers.montarPosicaoNavioApiHtml({ posicao: { latitude: null, longitude: null } }, true).includes('<iframe'));
+
+    responderConsultaAis = async () => ({
+        ok: false,
+        status: 401,
+        json: async () => ({ detail: 'Acesso negado' }),
+    });
+    await helpers.atualizarPosicaoNavioApi(exemplo, botao);
+    assert.strictEqual(consultas.length, 2, 'Acesso negado não deve abrir navegador');
+    assert.strictEqual(painel.textContent, 'Acesso negado');
+
+    responderConsultaAis = async () => chaveAusente;
+    const consultaAnterior = helpers.atualizarPosicaoNavioApi(exemplo, botao);
+    helpers.trocarDetalheEmbarque();
+    painel.textContent = 'Outro embarque';
+    await consultaAnterior;
+    assert.strictEqual(consultas.length, 2, 'O embarque anterior não deve abrir uma consulta');
+    assert.strictEqual(painel.textContent, 'Outro embarque');
+    assert(!botao.disabled);
+
+    const electronAPI = fakeWindow.electronAPI;
+    delete fakeWindow.electronAPI;
+    await helpers.atualizarPosicaoNavioApi(exemplo, botao, true);
+    assert(painel.innerHTML.includes('https://wingo-marine.com/ship/249369000'));
+    assert(painel.innerHTML.includes('rel="noopener noreferrer"'));
+    assert(!botao.disabled);
+
+    fakeWindow.electronAPI = electronAPI;
+    electronAPI.openPublicVesselPosition = async () => { throw new Error('No handler registered'); };
+    await helpers.atualizarPosicaoNavioApi({ numero_imo: exemplo.numero_imo }, botao, true);
+    assert(painel.innerHTML.includes('https://www.vesselfinder.com/?imo=9996678'));
+    assert(!painel.innerHTML.includes('No handler registered'));
+    assert(!botao.disabled);
+}
+
+async function verificarBuscaDoArmador() {
+    const consultas = [];
+    let statusYangMing = 'found';
+    fakeWindow.electronAPI.searchPublicCargoTracking = async (solicitacao) => {
+        consultas.push(solicitacao);
+        return { success: true, results: [
+            { carrier: 'cosco', status: 'not_found' },
+            { carrier: 'cma-cgm', status: 'unavailable' },
+            { carrier: 'hmm', status: 'not_found' },
+            { carrier: 'yang-ming', status: statusYangMing },
+        ], opened: !!solicitacao.carrier };
+    };
+    helpers.abrirRastreamentoCarga(blSemArmador);
+    const painel = createdElements[0];
+    assert(painel.innerHTML.includes('Buscar armador'));
+    assert.strictEqual(consultas.length, 0, 'Abrir o balão ainda não deve transmitir o BL');
+
+    await helpers.consultarPortaisRastreamentoCarga();
+    assert.deepStrictEqual(consultas, [{ type: 'BILLOFLADING', reference: blSemArmador.numero_bl, carrier: undefined }]);
+    assert(painel.innerHTML.includes('Referência localizada em Yang Ming'));
+    assert(painel.innerHTML.includes('Consulta indisponível'));
+    assert(!painel.innerHTML.includes('google.com'));
+    assert(painel.innerHTML.includes('Ver em Yang Ming'));
+    assert.strictEqual(blSemArmador.armador, undefined, 'A consulta não deve alterar o cadastro');
+
+    await helpers.consultarPortaisRastreamentoCarga('yang-ming');
+    assert.deepStrictEqual(consultas[1], { type: 'BILLOFLADING', reference: blSemArmador.numero_bl, carrier: 'yang-ming' });
+
+    statusYangMing = 'not_found';
+    await helpers.consultarPortaisRastreamentoCarga();
+    assert(painel.innerHTML.includes('Os portais que responderam não encontraram a referência.'));
+    assert(painel.innerHTML.includes('Consulta indisponível'));
+    assert(!painel.innerHTML.includes('Ver em Yang Ming'));
+    assert(painel.innerHTML.includes('data-rastreamento-carga-acao="portal" data-rastreamento-armador="cma-cgm"'));
+
+    delete fakeWindow.electronAPI.searchPublicCargoTracking;
+    helpers.abrirRastreamentoCarga(blSemArmador);
+    assert(painel.innerHTML.includes('busca automática está disponível no JK para desktop'));
+    assert(!painel.innerHTML.includes('Pesquisar portal oficial'));
+    assert(painel.innerHTML.includes('HMM'));
+}
+
+verificarBuscaDoArmador().then(verificarConsultaPublicaAis).then(() => {
+    console.log('OK: campos, persistencia, consulta AIS e rastreamento da carga validados.');
+}).catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+});

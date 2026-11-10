@@ -1,11 +1,32 @@
 'use strict';
 
+const { CARGO_FORM_PROVIDERS } = require('./importacoes-cargo-tracking-providers');
+
+const CMA_CGM_ORIGIN = 'https://www.cma-cgm.com';
+const CMA_CGM_TRACKING_PATH = '/ebusiness/tracking';
+const CMA_CGM_SEARCH_PATH = CMA_CGM_TRACKING_PATH + '/search';
+const CARGO_CARRIERS = ['cosco', 'cma-cgm', 'hmm', 'yang-ming'];
+const CARGO_TIMEOUT_MS = 20000;
+const CARGO_PORTAL_NAMES = { cosco: 'COSCO Shipping', 'cma-cgm': 'CMA CGM', hmm: 'HMM', 'yang-ming': 'Yang Ming' };
+
+let shownCargoPortal = null;
+
 const COSCO_TRACKING_ORIGIN = 'https://elines.coscoshipping.com';
 const COSCO_TRACKING_PATH = '/ebusiness/cargoTracking';
 const COSCO_TRACKING_PARTITION = 'jk-importacoes-cosco-public';
 const ALLOWED_REFERENCE_TYPES = new Set(['BOOKING', 'BILLOFLADING', 'CONTAINER']);
 const DEFAULT_TIMEOUT_MS = 25000;
 const POLL_INTERVAL_MS = 700;
+const PUBLIC_VESSEL_PARTITION = 'jk-importacoes-ais-public';
+const PUBLIC_VESSEL_TIMEOUT_MS = 25000;
+const PUBLIC_VESSEL_PAGE_TIMEOUT_MS = 10000;
+const MARITIME_OPTIMA_ORIGIN = 'https://maritimeoptima.com';
+const MY_SHIP_TRACKING_ORIGIN = 'https://www.myshiptracking.com';
+const VESSEL_FINDER_ORIGIN = 'https://www.vesselfinder.com';
+const WINGO_MARINE_ORIGIN = 'https://wingo-marine.com';
+
+let publicVesselWindow = null;
+
 const PAGE_SNAPSHOT_SCRIPT = `(() => {
     const text = document.body ? String(document.body.innerText || '').slice(0, 250000) : '';
     const normalized = text.toLowerCase();
@@ -278,6 +299,13 @@ function safeClose(win) {
 
 async function trackCoscoShipment(payload = {}, dependencies = {}) {
     let request = normalizeTrackingRequest(payload);
+    if (dependencies.strictResult === true) {
+        return queryOfficialCargoPortal('cosco', {
+            url: buildCoscoTrackingUrl,
+            allowUrl: isAllowedCoscoCargoUrl,
+            readResult: readStrictCoscoResult,
+        }, request, dependencies);
+    }
     const requestedReferenceType = request.type;
     let fallbackUsed = false;
     const BrowserWindow = dependencies.BrowserWindow;
@@ -477,6 +505,490 @@ async function trackCoscoShipment(payload = {}, dependencies = {}) {
     }
 }
 
+const CARGO_REFERENCE_LABELS = {
+    BOOKING: 'booking(?:\\s*(?:no\\.?|number|#))?',
+    BILLOFLADING: '(?:b/?l|bill of lading)(?:\\s*(?:no\\.?|number|#))?',
+    CONTAINER: 'container(?:\\s*(?:no\\.?|number|#))?',
+};
+
+function isAllowedCoscoCargoUrl(value) {
+    try {
+        const url = new URL(value);
+        return url.origin === COSCO_TRACKING_ORIGIN && !url.username && !url.password
+            && (url.pathname === COSCO_TRACKING_PATH || /^\/scct\/public\/ct\//i.test(url.pathname));
+    } catch (_err) {
+        return false;
+    }
+}
+
+function isAllowedCmaCargoUrl(value) {
+    try {
+        const url = new URL(value);
+        return url.origin === CMA_CGM_ORIGIN && !url.username && !url.password
+            && (url.pathname === CMA_CGM_TRACKING_PATH || url.pathname === CMA_CGM_SEARCH_PATH);
+    } catch (_err) {
+        return false;
+    }
+}
+
+function buildCmaCargoSubmitScript(request) {
+    return `(() => {
+        if (location.origin !== ${JSON.stringify(CMA_CGM_ORIGIN)}
+            || location.pathname !== ${JSON.stringify(CMA_CGM_TRACKING_PATH)}) return false;
+        const reference = ${JSON.stringify(request.reference)};
+        const visible = (element) => element?.getClientRects().length
+            && (!element.checkVisibility || element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+        const screenText = document.title + '\\n' + (document.body?.innerText || '').slice(0, 3000);
+        if (/verifying the device|checking your browser|just a moment|access denied|forbidden|verify you are human/i.test(screenText)
+            || Array.from(document.querySelectorAll('iframe[src*="captcha" i], iframe[src*="datadome" i], [data-sitekey]')).some(visible)) {
+            return false;
+        }
+        const input = document.querySelector('#Reference');
+        const button = document.querySelector('#btnTracking');
+        if (!visible(input) || !visible(button) || input.disabled || input.readOnly || button.disabled
+            || (input.maxLength >= 0 && reference.length > input.maxLength)) return false;
+        if (input.form && button.form && input.form !== button.form) return false;
+        const actions = [input.form?.action, button.getAttribute('formaction')].filter(Boolean);
+        if (actions.some((action) => {
+            const url = new URL(action, location.href);
+            return url.origin !== location.origin || url.username || url.password
+                || ![${JSON.stringify(CMA_CGM_TRACKING_PATH)}, ${JSON.stringify(CMA_CGM_SEARCH_PATH)}].includes(url.pathname);
+        })) return false;
+        input.value = reference;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        if (input.value !== reference || button.disabled || !visible(button)) return false;
+        button.click();
+        return true;
+    })()`;
+}
+
+function buildCmaCargoResultScript(request) {
+    const reference = JSON.stringify(request.reference);
+    const referenceLabel = JSON.stringify('^' + CARGO_REFERENCE_LABELS[request.type] + '$');
+    return `(() => {
+        const reference = ${reference};
+        if (location.origin !== ${JSON.stringify(CMA_CGM_ORIGIN)}
+            || location.pathname !== ${JSON.stringify(CMA_CGM_SEARCH_PATH)}) return 'waiting';
+        const referenceLabel = new RegExp(${referenceLabel}, 'i');
+        const shipmentLabel = /\\b(?:status|vessel|voyage|origin|destination|load|discharge|last move|date)\\b/i;
+        const screenText = document.title + '\\n' + (document.body?.innerText || '').slice(0, 3000);
+        if (/verifying the device|checking your browser|just a moment/i.test(screenText)) return 'waiting';
+        if (/access denied|forbidden|captcha|verify you are human/i.test(screenText)) return 'unavailable';
+        const visible = (element) => element?.getClientRects().length
+            && (!element.checkVisibility || element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
+        const text = (element) => visible(element) ? String(element.innerText || '').trim() : '';
+        const alert = document.querySelector('#trackingAlertError');
+        if (/Your shipment was not found, please modify your search/i.test(text(alert))) {
+            const input = document.querySelector('#Reference');
+            return visible(input) && String(input.value || '').trim().toUpperCase() === reference
+                ? 'not_found' : 'waiting';
+        }
+        const shipmentValue = (value) => /[\\p{L}\\d]/u.test(value)
+            && !/^(?:N\\/?A|none|null|unknown|invalid|(?:shipment )?not found|no (?:shipment|data|results?|records?))\\b/i.test(value);
+        for (const table of document.querySelectorAll('table')) {
+            if (!visible(table)) continue;
+            const headers = Array.from(table.querySelectorAll('thead tr:last-child th'), text);
+            const index = headers.findIndex((label) => referenceLabel.test(label));
+            if (index < 0) continue;
+            for (const row of table.querySelectorAll('tbody tr')) {
+                if (!visible(row)) continue;
+                const cells = Array.from(row.cells, text);
+                if (cells[index]?.toUpperCase() !== reference) continue;
+                if (headers.some((label, column) => column !== index && shipmentLabel.test(label)
+                    && shipmentValue(cells[column] || ''))) return 'found';
+            }
+        }
+        return 'waiting';
+    })()`;
+}
+
+async function readStrictCoscoResult(contents, request) {
+    const referenceLabel = new RegExp('^' + CARGO_REFERENCE_LABELS[request.type]
+        + '(?:(?:\\s*[:#]\\s*|\\s+)([A-Z0-9-]{4,40}))?$', 'i');
+    for (const frame of collectFrameTree(contents.mainFrame || contents)) {
+        const frameUrl = frame.url || (frame === contents ? contents.getURL() : '');
+        if (!frameUrl || !isAllowedCoscoFrameUrl(frameUrl)) continue;
+        const url = new URL(frameUrl);
+        const outcome = /^\/scct\/public\/ct\/(detailCT|notFoundCT)\/?$/i.exec(url.pathname)?.[1];
+        if (!outcome || url.port || url.username || url.password) continue;
+        let snapshot;
+        try {
+            snapshot = await frame.executeJavaScript(PAGE_SNAPSHOT_SCRIPT);
+        } catch (_err) {
+            continue;
+        }
+        if (snapshot?.hasAccessFailure) return 'unavailable';
+        const text = normalizeVisibleText(snapshot?.text);
+        if (!text) continue;
+        if (outcome.toLowerCase() === 'notfoundct') {
+            if (/no result(?:\(s\)|s)? found|no matching results?/i.test(text)) return 'not_found';
+            continue;
+        }
+        if (snapshot?.hasNoResult) continue;
+        const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+        const matchesReference = lines.some((line, index) => {
+            const match = line.match(referenceLabel);
+            return match && (match[1] || lines[index + 1] || '').toUpperCase() === request.reference;
+        });
+        if (matchesReference && extractCoscoTrackingFromText(text)) return 'found';
+    }
+    return 'waiting';
+}
+
+async function withCargoDeadline(run, deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('Consulta fora do prazo.');
+    let timeout;
+    try {
+        return await Promise.race([
+            run(),
+            new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error('Consulta fora do prazo.')), remaining);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function loadCargoPortal(win, url, allowUrl, deadline, waitForAutomaticAccess) {
+    const contents = win.webContents;
+    let onNavigate;
+    let waitingForAccess = false;
+    try {
+        const committed = new Promise((resolve) => {
+            onNavigate = (_event, loadedUrl, status) => {
+                if (waitForAutomaticAccess && status === 403 && allowUrl(loadedUrl)) {
+                    // The official page may navigate again after its own verification.
+                    waitingForAccess = true;
+                    return;
+                }
+                resolve(status >= 200 && status < 400 && allowUrl(loadedUrl));
+            };
+            contents.on('did-navigate', onNavigate);
+        });
+        const afterInitialLoad = () => waitingForAccess ? committed : false;
+        return await withCargoDeadline(() => Promise.race([
+            committed,
+            win.loadURL(url).then(afterInitialLoad, afterInitialLoad),
+        ]), deadline);
+    } finally {
+        if (!contents.isDestroyed()) contents.removeListener('did-navigate', onNavigate);
+    }
+}
+
+async function readCargoPortalResult(contents, provider, request, deadline) {
+    const resultScript = provider.buildResultScript?.(request);
+    const submitScript = provider.buildSubmitScript?.(request);
+    const readStatus = () => withCargoDeadline(() => provider.readResult
+        ? provider.readResult(contents, request)
+        : contents.executeJavaScript(resultScript), deadline);
+    let submitted = !submitScript;
+    let previousStatus = 'waiting';
+    while (!contents.isDestroyed() && Date.now() < deadline) {
+        if (!provider.allowUrl(contents.getURL())) return 'unavailable';
+        if (!submitted) {
+            previousStatus = await readStatus();
+            if (previousStatus === 'unavailable') return previousStatus;
+            submitted = await withCargoDeadline(() => contents.executeJavaScript(submitScript, true), deadline) === true;
+        }
+        if (submitted) {
+            const status = await readStatus();
+            if (status === 'unavailable') return status;
+            // Ignore a result already present before the form was submitted.
+            if (status !== previousStatus && (status === 'found' || status === 'not_found')) return status;
+            if (status === 'waiting') previousStatus = status;
+        }
+        await wait(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+    }
+    return 'unavailable';
+}
+
+async function queryOfficialCargoPortal(carrier, provider, request, dependencies) {
+    const { BrowserWindow, session, parent, showPortal } = dependencies;
+    const timeoutMs = Math.max(1, Math.min(Number(dependencies.timeoutMs) || CARGO_TIMEOUT_MS, 30000));
+    const deadline = Date.now() + timeoutMs;
+    let win;
+    let loaded = false;
+    let opened = false;
+    let status = 'unavailable';
+    try {
+        const url = typeof provider.url === 'function' ? provider.url(request) : provider.url;
+        if (!provider.allowUrl(url)) return { status, opened };
+        const trackingSession = session.fromPartition('jk-importacoes-carga-' + carrier, { cache: false });
+        trackingSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+        trackingSession.setPermissionCheckHandler(() => false);
+        win = new BrowserWindow({
+            parent: parent && !parent.isDestroyed() ? parent : undefined,
+            title: 'Rastreamento de carga · ' + CARGO_PORTAL_NAMES[carrier],
+            show: false,
+            skipTaskbar: true,
+            width: 1180,
+            height: 820,
+            autoHideMenuBar: true,
+            webPreferences: {
+                session: trackingSession,
+                contextIsolation: true,
+                nodeIntegration: false,
+                sandbox: true,
+                webSecurity: true,
+                allowRunningInsecureContent: false,
+                backgroundThrottling: false,
+                webviewTag: false,
+            },
+        });
+        const denyDownload = (event) => event.preventDefault();
+        trackingSession.on('will-download', denyDownload);
+        win.once('closed', () => {
+            trackingSession.removeListener('will-download', denyDownload);
+            if (shownCargoPortal === win) shownCargoPortal = null;
+        });
+        win.on('page-title-updated', (event) => event.preventDefault());
+        const contents = win.webContents;
+        contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        const guardNavigation = (event, target) => {
+            const targetUrl = typeof target === 'string' ? target : target?.url || event.url;
+            if (!provider.allowUrl(targetUrl)) event.preventDefault();
+        };
+        contents.on('will-navigate', guardNavigation);
+        contents.on('will-redirect', (event, target, _inPlace, isMainFrame) => {
+            if (isMainFrame !== false && event.isMainFrame !== false) guardNavigation(event, target);
+        });
+        loaded = await loadCargoPortal(win, url, provider.allowUrl, deadline, provider.waitForAutomaticAccess);
+        if (loaded && !win.isDestroyed()) {
+            status = await readCargoPortalResult(contents, provider, request, deadline);
+        }
+    } catch (_err) {
+        // Never expose a portal URL or tracking reference in an error.
+    } finally {
+        if (showPortal && loaded && win && !win.isDestroyed()) {
+            try {
+                if (provider.allowUrl(win.webContents.getURL())) {
+                    safeClose(shownCargoPortal);
+                    shownCargoPortal = win;
+                    win.show();
+                    opened = true;
+                }
+            } catch (_err) {}
+        }
+        if (!opened) safeClose(win);
+    }
+    return { status, opened };
+}
+
+async function searchPublicCargoTracking(payload = {}, dependencies = {}) {
+    let request;
+    try {
+        request = normalizeTrackingRequest(payload);
+    } catch (_err) {
+        return { success: false, message: 'Informe uma referência válida para rastrear a carga.' };
+    }
+    const carrier = payload.carrier;
+    if (carrier != null && !CARGO_CARRIERS.includes(carrier)) {
+        return { success: false, message: 'Armador não disponível para consulta pública.' };
+    }
+    if (!dependencies.BrowserWindow || typeof dependencies.session?.fromPartition !== 'function') {
+        return { success: false, message: 'O navegador interno do JK está indisponível.' };
+    }
+    const carriers = carrier ? [carrier] : CARGO_CARRIERS;
+    const options = { ...dependencies, showPortal: !!carrier };
+    const result = await Promise.all(carriers.map(async (code) => {
+        if (code === 'cosco') {
+            return trackCoscoShipment(request, { ...options, strictResult: true });
+        }
+        const provider = code === 'cma-cgm'
+            ? {
+                url: CMA_CGM_ORIGIN + CMA_CGM_TRACKING_PATH,
+                allowUrl: isAllowedCmaCargoUrl,
+                buildSubmitScript: buildCmaCargoSubmitScript,
+                buildResultScript: buildCmaCargoResultScript,
+                waitForAutomaticAccess: true,
+            }
+            : CARGO_FORM_PROVIDERS[code];
+        return queryOfficialCargoPortal(code, provider, request, options);
+    }));
+    return {
+        success: true,
+        results: carriers.map((code, index) => ({ carrier: code, status: result[index].status })),
+        opened: result.some((item) => item.opened),
+    };
+}
+
+function isValidPublicVesselImo(imo) {
+    if (!/^\d{7}$/.test(imo)) return false;
+    const checksum = Array.from(imo.slice(0, 6))
+        .reduce((sum, digit, index) => sum + Number(digit) * (7 - index), 0);
+    return checksum % 10 === Number(imo[6]);
+}
+
+function wingoVesselMmsi(pathname) {
+    return /^\/ship\/(?:[a-z0-9-]+-)?(\d{9})\/?$/i.exec(pathname)?.[1] || '';
+}
+
+function isAllowedPublicVesselUrl(value, origin, mmsi) {
+    try {
+        const url = new URL(value);
+        if (url.origin !== origin || url.username || url.password) return false;
+        if (origin === WINGO_MARINE_ORIGIN) {
+            return !!mmsi && wingoVesselMmsi(url.pathname) === mmsi;
+        }
+        if (url.origin === MARITIME_OPTIMA_ORIGIN) {
+            return /^\/public\/vessels\/pages\/imo:\d{7}\/mmsi:\d{9}\/[^/]+\.html$/
+                .test(decodeURIComponent(url.pathname));
+        }
+        if (url.origin === VESSEL_FINDER_ORIGIN) {
+            return url.pathname === '/'
+                && (isValidPublicVesselImo(url.searchParams.get('imo') || '')
+                    || /^\d{9}$/.test(url.searchParams.get('mmsi') || ''));
+        }
+        if (url.origin !== MY_SHIP_TRACKING_ORIGIN) return false;
+        if (url.pathname === '/') return /^\d{9}$/.test(url.searchParams.get('mmsi') || '');
+        return /^\/vessels(?:\/[^/]+-mmsi-\d{9}-imo-\d{1,7})?\/?$/.test(url.pathname);
+    } catch (_err) {
+        return false;
+    }
+}
+
+async function loadPublicVesselPage(win, url, timeoutMs) {
+    const contents = win.webContents;
+    const expectedUrl = new URL(url);
+    const wingoMmsi = expectedUrl.origin === WINGO_MARINE_ORIGIN ? wingoVesselMmsi(expectedUrl.pathname) : '';
+    let onNavigate;
+    let timeout;
+    let opened = false;
+    try {
+        const committed = new Promise((resolve) => {
+            onNavigate = (_event, pageUrl, status) => {
+                if (!(status >= 200 && status < 400)
+                    || !isAllowedPublicVesselUrl(pageUrl, expectedUrl.origin, wingoMmsi)) {
+                    resolve(false);
+                    return;
+                }
+                const currentUrl = new URL(pageUrl);
+                resolve((!!wingoMmsi || currentUrl.pathname === expectedUrl.pathname)
+                    && currentUrl.search === expectedUrl.search);
+            };
+            contents.once('did-navigate', onNavigate);
+        });
+        // The map can keep fetching tiles after the main document has opened.
+        opened = await Promise.race([
+            committed,
+            win.loadURL(url).then(() => false),
+            new Promise((resolve) => { timeout = setTimeout(() => resolve(false), timeoutMs); }),
+        ]);
+        return opened && !win.isDestroyed();
+    } catch (_err) {
+        return false;
+    } finally {
+        clearTimeout(timeout);
+        if (!contents.isDestroyed()) {
+            contents.removeListener('did-navigate', onNavigate);
+            if (!opened) contents.stop();
+        }
+    }
+}
+
+function normalizePublicVesselNumber(value) {
+    return typeof value === 'string' || Number.isSafeInteger(value) ? String(value).trim() : '';
+}
+
+async function openPublicVesselPosition(payload = {}, dependencies = {}) {
+    const imo = normalizePublicVesselNumber(payload?.imo);
+    const mmsi = normalizePublicVesselNumber(payload?.mmsi);
+    if ((!imo && !mmsi) || (imo && !isValidPublicVesselImo(imo)) || (mmsi && !/^\d{9}$/.test(mmsi))) {
+        return { success: false, message: 'Informe um IMO ou MMSI válido para consultar o navio.' };
+    }
+
+    const { BrowserWindow, session, parent, timeoutMs = PUBLIC_VESSEL_TIMEOUT_MS } = dependencies;
+    if (!BrowserWindow || typeof session?.fromPartition !== 'function') {
+        return { success: false, message: 'O navegador interno do JK está indisponível.' };
+    }
+    const targets = [];
+    if (payload?.mapa === true) {
+        const map = new URL('/', VESSEL_FINDER_ORIGIN);
+        map.searchParams.set(imo ? 'imo' : 'mmsi', imo || mmsi);
+        targets.push({ source: 'VesselFinder', view: 'mapa', url: map.href });
+        if (mmsi) {
+            targets.push({ source: 'Wingo Marine', view: 'mapa', url: WINGO_MARINE_ORIGIN + '/ship/' + mmsi });
+        }
+    }
+    if (imo && mmsi) {
+        targets.push({
+            source: 'Maritime Optima',
+            view: 'ficha',
+            url: MARITIME_OPTIMA_ORIGIN + '/public/vessels/pages/imo:' + imo + '/mmsi:' + mmsi + '/vessel.html',
+        });
+    }
+    const search = new URL('/vessels', MY_SHIP_TRACKING_ORIGIN);
+    search.searchParams.set('name', imo || mmsi);
+    targets.push({ source: 'MyShipTracking', view: 'busca', url: search.href });
+
+    safeClose(publicVesselWindow);
+    let win;
+    let shown = false;
+    try {
+        const trackingSession = session.fromPartition(PUBLIC_VESSEL_PARTITION, { cache: false });
+        trackingSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+        trackingSession.setPermissionCheckHandler(() => false);
+
+        win = new BrowserWindow({
+            parent: parent && !parent.isDestroyed() ? parent : undefined,
+            title: 'Posição AIS do navio',
+            show: false,
+            skipTaskbar: true,
+            width: 1120,
+            height: 760,
+            autoHideMenuBar: true,
+            webPreferences: {
+                session: trackingSession,
+                sandbox: true,
+                contextIsolation: true,
+                nodeIntegration: false,
+                webSecurity: true,
+                allowRunningInsecureContent: false,
+                webviewTag: false,
+            },
+        });
+        publicVesselWindow = win;
+        const denyDownload = (event) => event.preventDefault();
+        trackingSession.on('will-download', denyDownload);
+        win.once('closed', () => {
+            trackingSession.removeListener('will-download', denyDownload);
+            if (publicVesselWindow === win) publicVesselWindow = null;
+        });
+        win.on('page-title-updated', (event) => event.preventDefault());
+        win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+        let activeOrigin;
+        const guardNavigation = (event, url) => {
+            if (!isAllowedPublicVesselUrl(url ?? event.url, activeOrigin, mmsi)) event.preventDefault();
+        };
+        win.webContents.on('will-navigate', guardNavigation);
+        win.webContents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
+            if (isMainFrame !== false && event.isMainFrame !== false) guardNavigation(event, url);
+        });
+
+        const deadline = Date.now() + timeoutMs;
+        for (const target of targets) {
+            const remaining = deadline - Date.now();
+            if (win.isDestroyed() || remaining <= 0) break;
+            activeOrigin = new URL(target.url).origin;
+            if (await loadPublicVesselPage(win, target.url, Math.min(remaining, PUBLIC_VESSEL_PAGE_TIMEOUT_MS))) {
+                const title = target.view === 'mapa' ? 'Mapa AIS do navio' : 'Posição AIS do navio';
+                win.setTitle(title + ' · ' + target.source);
+                win.show();
+                shown = true;
+                return { success: true, source: target.source, view: target.view };
+            }
+        }
+    } catch (_err) {
+        // Falhas do Chromium não devem expor endereços ou argumentos da consulta.
+    } finally {
+        if (!shown) safeClose(win);
+    }
+    return { success: false, message: 'Não foi possível abrir a consulta pública do navio. Tente novamente.' };
+}
+
 module.exports = {
     ALLOWED_REFERENCE_TYPES,
     COSCO_TRACKING_ORIGIN,
@@ -487,4 +999,6 @@ module.exports = {
     isAllowedCoscoTrackingUrl,
     normalizeTrackingRequest,
     trackCoscoShipment,
+    openPublicVesselPosition,
+    searchPublicCargoTracking,
 };

@@ -972,6 +972,22 @@ app.whenReady().then(async () => {
             session
         });
     });
+    ipcMain.handle('importacoes-cargo-tracking-search', (event, payload) => {
+        assertTrustedImportacoesTrackingIpcSender(event);
+        return importacoesTrackingBrowserModule.searchPublicCargoTracking(payload, {
+            BrowserWindow,
+            session,
+            parent: mainWindow
+        });
+    });
+    ipcMain.handle('importacoes-ais-browser-open', (event, payload) => {
+        assertTrustedImportacoesTrackingIpcSender(event);
+        return importacoesTrackingBrowserModule.openPublicVesselPosition(payload, {
+            BrowserWindow,
+            session,
+            parent: mainWindow
+        });
+    });
     ipcMain.handle('check-for-updates', async () => {
         return await checkForUpdates(true);
     });

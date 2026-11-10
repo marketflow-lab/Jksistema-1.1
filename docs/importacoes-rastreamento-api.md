@@ -43,8 +43,37 @@ segunda consulta encontrar a carga, o balao informa o tipo usado e o botao do
 portal passa a abrir a consulta valida. O cadastro original nao e alterado
 automaticamente.
 
-Para outros armadores, o balao preserva os dados cadastrados e oferece o portal
-oficial, sem afirmar que houve consulta automatica.
+Quando o armador estiver em branco ou não puder ser reconhecido, o botão
+**Buscar armador** consulta os portais públicos da COSCO, CMA CGM, HMM e Yang
+Ming em sessões isoladas do Electron. Se houver BL cadastrado, ele tem
+prioridade nessa busca. O JK envia a referência aos portais após o clique e
+mostra o resultado de cada consulta. Só confirma correspondência quando o
+portal apresenta a mesma referência junto com dados do embarque. Portais
+indisponíveis aparecem separados das respostas sem correspondência.
+
+Quando houver correspondência, **Ver em [armador]** abre o resultado no
+navegador do JK. Se mais de um portal encontrar a referência, selecione o
+resultado correspondente ao seu embarque. A busca preserva o campo Armador.
+A versão web oferece links oficiais para a consulta manual.
+
+## Posicao AIS e mapa
+
+**Atualizar posição AIS** mostra os dados da Datalastic quando a API está
+configurada. **Ver mapa AIS** coloca um marcador do último sinal no mapa
+OpenStreetMap dentro do detalhe do embarque.
+
+Sem chave da Datalastic, o aplicativo desktop abre a consulta pública em uma
+janela do navegador do JK. Com IMO e MMSI, a consulta abre a ficha da Maritime
+Optima. Quando a ficha não abre ou só há um identificador, o navegador pesquisa
+pelo número no MyShipTracking. **Ver mapa AIS** tenta o mapa do VesselFinder
+pelo IMO ou MMSI. Se ele não abrir e houver MMSI, tenta a ficha com mapa do Wingo
+Marine. Quando a fonte exibe apenas resultados de busca, selecione a ficha
+correspondente para ver a posição disponível e a data do sinal. Se o navegador
+interno estiver indisponível, o painel oferece um link direto para o mapa público.
+
+A consulta pública é iniciada pelo clique e envia apenas IMO e MMSI conforme
+a página consultada. A sessão do navegador é isolada e a página original
+apresenta os dados e horários da própria fonte.
 
 ## Configuracao da API
 
@@ -67,8 +96,8 @@ JK_DATALASTIC_CACHE_TTL_SECONDS=300
   consumo de creditos.
 - A chave nao deve ser colocada no HTML, localStorage ou repositorio.
 
-Sem uma chave valida, o endpoint local responde com erro controlado e a tela
-informa que a API ainda nao esta configurada.
+Quando não há chave, o endpoint local responde com o código
+`api_nao_configurada`, que aciona a consulta pública no aplicativo desktop.
 
 ## Endpoint interno
 

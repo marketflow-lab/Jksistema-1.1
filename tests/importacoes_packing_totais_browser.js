@@ -41,6 +41,9 @@ async function installRoutes(page) {
     }
     if (p === '/importacoes.html') return route.fulfill({ status: 200, contentType: 'text/html',
       body: fs.readFileSync(path.join(root, 'static/importacoes.html')) });
+    if (p === '/assets/importacoes-bandeiras.svg' || p === '/assets/importacoes-embarque.webp') {
+      return route.fulfill({ path: path.join(root, 'static', p.slice(1)) });
+    }
     if (p === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript',
       body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });
     if (p === '/cache-persistente.js' || p.startsWith('/medias_compras/')) return route.fulfill({ status: 200,
@@ -78,11 +81,19 @@ async function installRoutes(page) {
     page.on('pageerror', error => state.errors.push(error.message));
     page.on('download', () => { state.downloads++; });
     await page.addInitScript(() => localStorage.setItem('jk_embarques_importacoes', JSON.stringify([
-      { id: 'example', nome: 'Embarque exemplo', lista_ids: ['ready', 'upload', 'removed'] },
+      { id: 'example', nome: 'Embarque exemplo', lista_ids: ['ready', 'upload', 'removed'],
+        porto_origem: 'Ningbo', porto_destino: 'Santos', eta: '2026-12-03' },
     ])));
     await installRoutes(page);
     await page.goto('http://jk.test/importacoes.html');
     await block(page, 'ready').waitFor();
+    await page.waitForFunction(() => {
+      const flags = [...document.querySelectorAll('.importacao-contexto svg use')];
+      return flags.length === 4 && flags.every(flag => flag.getBBox().width > 0);
+    });
+    for (const clock of ['clockBrasiliaContexto', 'clockBeijingContexto']) {
+      assert.match(await page.locator('#' + clock).innerText(), /· UTC/);
+    }
     assert((await block(page, 'ready').innerText()).includes('2,46 m³'));
     assert.strictEqual(await block(page, 'ready').locator('[data-transporte-caixas]').innerText(), '38');
     assert.strictEqual(await block(page, 'ready').locator('[data-transporte-peso]').innerText(), '486,00 kg');
@@ -93,11 +104,17 @@ async function installRoutes(page) {
     assert((await block(page, 'unavailable').innerText()).includes('Dados do Packing List indisponíveis'));
     assert((await block(page, 'unavailable').innerText()).includes('(parcial)'));
     assert((await page.locator('#embarquesWrap').innerText()).includes('2,6683573334 m³'));
+    const destaque = page.locator('#embarqueDestaque');
+    assert.strictEqual(await destaque.locator('h2').innerText(), 'Ningbo → Santos');
+    assert((await destaque.innerText()).includes('03/12/2026'));
+    assert.strictEqual(await destaque.locator('.embarque-destaque-metragem').innerText(), '2,6683573334 m³');
+    await destaque.locator('img').evaluate(img => img.decode());
     if (preview) {
       fs.mkdirSync(preview, { recursive: true });
+      await page.screenshot({ path: path.join(preview, 'importacoes-implementado.png'), fullPage: true });
       await page.locator('#tabelaListasImportacoes').screenshot({ path: path.join(preview, 'packing-totais-implementado-desktop.png') });
     }
-    await page.locator('#embarquesWrap .embarque-item').click();
+    await destaque.getByRole('button', { name: 'Ver embarque' }).click();
     const volumeCard = page.locator('.emb-resumo-card').filter({ has: page.locator('.emb-label', { hasText: /^M³ Total$/ }) });
     await volumeCard.locator('.emb-value').waitFor();
     assert.strictEqual(await volumeCard.locator('.emb-value').innerText(), '2,6683573334 m³',
@@ -116,6 +133,7 @@ async function installRoutes(page) {
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-peso]').innerText(), '64,00 kg');
     assert((await block(page, 'upload').innerText()).includes('1,25 m³'));
     assert((await page.locator('#embarquesWrap').innerText()).includes('3,71 m³'));
+    assert.strictEqual(await destaque.locator('.embarque-destaque-metragem').innerText(), '3,71 m³');
     assert.strictEqual(state.uploads, 1);
     assert.strictEqual(state.reads, reads, 'Resposta do upload deve atualizar os totais sem recarregar a lista');
     assert.strictEqual(state.downloads, 0, 'Upload não deve baixar o documento automaticamente');
@@ -129,8 +147,13 @@ async function installRoutes(page) {
         clipped: [...document.querySelectorAll('#listaWrap .lista-transporte-valor')].some(el =>
           parseFloat(getComputedStyle(el).fontSize) < 12 ||
           el.scrollWidth > el.clientWidth + 1 || el.getBoundingClientRect().right > innerWidth + 1),
+        headerClipped: [...document.querySelectorAll('.importacao-contexto > div')].some(el =>
+          el.scrollWidth > el.clientWidth + 1 || el.getBoundingClientRect().right > innerWidth + 1),
+        flagsVisible: [...document.querySelectorAll('.importacao-contexto svg')].filter(el =>
+          el.getBoundingClientRect().height > 0).length,
       }));
-      assert.deepStrictEqual(layout, { overflow: false, clipped: false }, 'Layout de transporte em ' + width + ' px');
+      assert.deepStrictEqual(layout, { overflow: false, clipped: false, headerClipped: false, flagsVisible: 4 },
+        'Cabeçalho e layout de transporte em ' + width + ' px');
     }
     if (preview) await page.locator('#listaWrap .lista-item').first().screenshot({
       path: path.join(preview, 'packing-totais-implementado-mobile.png'),

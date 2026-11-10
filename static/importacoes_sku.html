@@ -9,12 +9,14 @@
     <script src="/medias_compras/importacoes-custo-simulado.js"></script>
     <style>
         :root {
-            --bg: #0b0f1a;
-            --panel: #121a2a;
-            --panel-soft: #17233a;
-            --line: #2f4369;
-            --text: #eef5ff;
-            --muted: #9eb2d3;
+            --bg: #0b1321;
+            --panel: #111d30;
+            --panel-soft: #16243a;
+            --line: #283b56;
+            --text: #edf3fc;
+            --muted: #aabbd3;
+            --accent: #9dc0ff;
+            --primary: #2358c7;
             --c1: #ffd028;
             --c2: #11d1ff;
             --c3: #31c96a;
@@ -29,54 +31,58 @@
         body {
             margin: 0;
             font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-            background: radial-gradient(1200px 600px at 10% -20%, #1a2e52 0%, transparent 60%), var(--bg);
+            background: var(--bg);
             color: var(--text);
         }
 
         .container {
             max-width: 1560px;
             margin: 0 auto;
-            padding: 78px 18px 18px;
+            padding: clamp(14px, 2.5vw, 28px);
         }
 
         .topbar {
             display: grid;
-            grid-template-columns: auto 1fr 1fr 1fr auto;
-            gap: 12px;
-            margin-bottom: 14px;
-            align-items: center;
+            grid-template-columns: minmax(0, 1fr) auto auto auto;
+            gap: 8px;
+            margin-bottom: 12px;
+            align-items: stretch;
         }
         .fx-box, .clock-box {
             display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            min-height: 68px;
-            padding: 10px 14px;
-            border-radius: 13px;
-            border: 1px solid #2a3f5c;
-            background: linear-gradient(180deg, rgba(13,24,43,0.9), rgba(10,19,35,0.95));
-            box-shadow: inset 0 1px 0 rgba(185,226,255,0.1), 0 14px 28px rgba(0,0,0,0.3);
+            align-items: flex-start;
+            gap: 8px;
+            padding: 9px 11px;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: var(--panel-soft);
         }
         .fx-box {
-            border-color: rgba(99,187,255,0.55);
-            background: linear-gradient(180deg, rgba(14,33,59,0.92), rgba(10,22,40,0.96));
+            background: #1d3458;
         }
-        .clock-box {
-            border-color: rgba(255,166,94,0.52);
-            background: linear-gradient(180deg, rgba(56,34,19,0.9), rgba(33,22,14,0.95));
+        .topbar-flags {
+            display: flex;
+            flex: none;
+            align-items: center;
+            margin-top: 2px;
         }
-        .clock-box.brasilia {
-            border-color: rgba(104,214,142,0.54);
-            background: linear-gradient(180deg, rgba(19,60,36,0.9), rgba(13,40,25,0.95));
+        .topbar-flag {
+            display: block;
+            width: 23px;
+            height: 16px;
+            overflow: hidden;
         }
-        .fx-label { color: #9ecfff; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
-        .clock-label { color: #ffca9f; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px; }
-        .clock-box.brasilia .clock-label { color: #9be9b6; }
-        .clock-value { color: #ffc68f; font-size: 1.65rem; font-weight: 800; line-height: 1; }
-        .clock-box.brasilia .clock-value { color: #7bffab; }
-        .fx-value { color: #9dd6ff; font-size: 1.7rem; font-weight: 800; line-height: 1; }
-        .fx-time { color: #d2e6ff; font-size: 0.9rem; font-weight: 700; }
+        .topbar-flag + .topbar-flag { margin-inline-start: -4px; }
+        .fx-label, .clock-label { font-size: 0.75rem; font-weight: 650; }
+        .fx-value, .clock-value {
+            margin: 1px 0 2px;
+            font-size: 1.15rem;
+            font-weight: 700;
+            line-height: 1.2;
+            font-variant-numeric: tabular-nums;
+        }
+        .fx-value { color: var(--accent); }
+        .fx-time, .clock-date { color: var(--muted); font-size: 0.72rem; }
         .fx-chip { display: none; }
 
         .btn {
@@ -97,57 +103,73 @@
         .back-btn {
             display: inline-flex;
             align-items: center;
-            justify-content: center;
-            min-height: 52px;
-            padding: 0 16px;
-            border-radius: 11px;
+            min-height: 34px;
             text-decoration: none;
-            font-size: 1.12rem;
-            font-weight: 800;
-            color: #ffffff;
-            background: linear-gradient(105deg, #63bbff, #7bcfff);
-            border: 1px solid rgba(255, 255, 255, 0.35);
-            box-shadow: 0 14px 26px rgba(33, 152, 255, 0.36);
-            transition: transform 0.18s ease, filter 0.18s ease;
-            position: fixed;
-            top: 16px;
-            right: 18px;
-            z-index: 1200;
+            font-size: 0.85rem;
+            font-weight: 650;
+            color: var(--accent);
         }
 
         .back-btn:hover {
-            transform: translateY(-2px);
-            filter: brightness(0.96);
-            color: #fff;
+            text-decoration: underline;
         }
 
         h1 {
             margin: 0;
-            font-size: 1.4rem;
-            color: #ffe59a;
+            font-size: clamp(1.5rem, 3vw, 2.15rem);
+            font-weight: 700;
+            letter-spacing: -0.03em;
         }
 
         .meta-strip {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
-            margin-bottom: 14px;
+            margin-bottom: 12px;
         }
+
+        .meta-strip:empty { display: none; }
 
         .chip {
             padding: 6px 10px;
             border-radius: 999px;
-            border: 1px solid #385784;
-            background: #16253f;
-            color: #cfe5ff;
-            font-weight: 700;
+            border: 1px solid var(--line);
+            background: var(--panel);
+            color: var(--accent);
+            font-weight: 650;
             font-size: 0.84rem;
+            overflow-wrap: anywhere;
         }
 
         .layout {
             display: grid;
             grid-template-columns: 1.15fr 1fr 0.78fr;
+            grid-template-areas: "produto produto produto" "custos custos analise";
             gap: 14px;
+            align-items: start;
+        }
+
+        .product-card { grid-area: produto; }
+        .tax-card { grid-area: custos; }
+        .analysis-card { grid-area: analise; }
+
+        .product-heading {
+            display: flex;
+            align-items: start;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px 20px;
+            margin-bottom: 16px;
+        }
+
+        .product-heading > div:first-child { flex: 1 1 230px; min-width: 0; }
+
+        .section-kicker {
+            color: var(--accent);
+            font-size: 0.71rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
 
         .analysis-status {
@@ -328,22 +350,22 @@
         .purchase-approval {
             display: flex;
             flex-direction: column;
-            gap: 8px;
-            margin-top: 12px;
+            align-items: flex-end;
+            width: min(100%, 260px);
+            gap: 6px;
         }
 
         .approve-purchase-btn {
-            width: 100%;
-            min-height: 48px;
-            border: 1px solid #35d477;
-            border-radius: 11px;
-            background: linear-gradient(180deg, #27bd67, #168747);
+            min-height: 42px;
+            padding: 8px 14px;
+            border: 1px solid var(--primary);
+            border-radius: 9px;
+            background: var(--primary);
             color: #ffffff;
             font: inherit;
-            font-weight: 900;
-            letter-spacing: 0.2px;
+            font-size: 0.85rem;
+            font-weight: 700;
             cursor: pointer;
-            box-shadow: 0 10px 22px rgba(22, 135, 71, 0.28);
             transition: transform 0.16s ease, filter 0.16s ease, opacity 0.16s ease;
         }
 
@@ -365,29 +387,37 @@
         .purchase-approval-status {
             min-height: 18px;
             color: var(--muted);
-            font-size: 0.8rem;
+            font-size: 0.76rem;
             line-height: 1.35;
-            text-align: center;
+            text-align: right;
         }
 
         .card {
+            min-width: 0;
             border: 1px solid var(--line);
             border-radius: 14px;
-            background: linear-gradient(180deg, #131f34, #10192c);
-            padding: 12px;
+            background: var(--panel);
+            padding: clamp(12px, 1.7vw, 20px);
         }
 
         .card h2 {
             margin: 0 0 10px;
-            color: #9fd4ff;
-            font-size: 1rem;
-            letter-spacing: 0.3px;
+            color: var(--text);
+            font-size: 1.12rem;
+            font-weight: 700;
+        }
+
+        .product-heading h2 {
+            margin: 4px 0 0;
+            font-size: clamp(1.25rem, 2.5vw, 1.8rem);
+            letter-spacing: -0.02em;
+            overflow-wrap: anywhere;
         }
 
         .hero-grid {
             display: grid;
-            grid-template-columns: 220px 1fr;
-            gap: 12px;
+            grid-template-columns: minmax(185px, 1fr) minmax(0, 2.35fr);
+            gap: 14px;
             align-items: start;
         }
 
@@ -397,10 +427,10 @@
         }
 
         .foto-box {
-            border: 2px solid #3d5f92;
-            border-radius: 14px;
-            background: #091122;
-            min-height: 220px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: var(--bg);
+            height: clamp(190px, 24vw, 300px);
             overflow: hidden;
             display: flex;
             align-items: center;
@@ -410,8 +440,7 @@
         .foto-box img {
             width: 100%;
             height: 100%;
-            min-height: 220px;
-            object-fit: cover;
+            object-fit: contain;
             display: block;
         }
 
@@ -424,15 +453,15 @@
 
         .ncm-desc-card {
             border-radius: 12px;
-            border: 1px solid #304a73;
-            background: #13223a;
+            border: 1px solid var(--line);
+            background: var(--panel-soft);
             padding: 10px;
             min-height: 84px;
             position: relative;
         }
 
         .ncm-desc-card .label {
-            color: #b5c8e4;
+            color: var(--muted);
             font-size: 0.75rem;
             text-transform: uppercase;
             letter-spacing: 0.7px;
@@ -519,45 +548,35 @@
 
         .kv-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(180px, 1fr));
-            gap: 10px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
         }
 
         .kv {
-            border-radius: 12px;
-            border: 1px solid #304a73;
-            background: #13223a;
-            padding: 10px;
+            min-width: 0;
+            border-radius: 10px;
+            border: 1px solid var(--line);
+            background: var(--panel-soft);
+            padding: 9px 11px;
         }
 
         .kv .label {
-            color: #b5c8e4;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.7px;
-            margin-bottom: 6px;
-            font-weight: 700;
+            color: var(--muted);
+            font-size: 0.78rem;
+            margin-bottom: 4px;
+            font-weight: 650;
         }
 
         .kv .value {
-            color: #fff;
-            font-size: 1.02rem;
-            font-weight: 800;
-            word-break: break-word;
-        }
-
-        .kv.title {
-            background: linear-gradient(180deg, #1c2f4e, #152640);
-        }
-
-        .kv.sku {
-            border-color: #6f5a13;
-            background: linear-gradient(180deg, #4e3f16, #3f3010);
+            color: var(--text);
+            font-size: 0.96rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
         }
 
         .kv.prop {
-            border-color: #8b206f;
-            background: linear-gradient(180deg, #4f0f42, #3a0c33);
+            border-color: #5b426f;
         }
 
         .kv.prop .value {
@@ -571,19 +590,13 @@
             vertical-align: middle;
         }
 
-        .kv.cost {
-            border-color: #4da6ff;
-            background: linear-gradient(180deg, #173c6a, #112d52);
+        .kv.metric { padding: 12px; }
+        .kv.metric .value { font-size: clamp(1rem, 1.65vw, 1.35rem); }
+        .kv.metric-primary {
+            background: #1d3458;
+            border-color: #3c6096;
         }
-
-        .kv.cost .label {
-            color: #b0d6ff;
-        }
-
-        .kv.cost .value {
-            color: #7ecfff;
-            font-size: 1.08rem;
-        }
+        .kv.metric-primary .value, .kv.metric-volume .value { color: var(--accent); }
 
         .kv.prop input.prop-input {
             width: 100%;
@@ -600,8 +613,8 @@
 
         .section-grid {
             display: grid;
-            grid-template-columns: repeat(4, minmax(132px, 1fr));
-            gap: 6px;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 8px;
         }
 
         .cards-reordenaveis .arrastavel-card {
@@ -642,7 +655,6 @@
             background: #15253f;
             padding: 7px;
             min-height: 74px;
-            height: 74px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -675,6 +687,7 @@
             font-size: 1.02rem;
             font-weight: 800;
             line-height: 1.06;
+            overflow-wrap: anywhere;
         }
         .tile .value-sub {
             display: block;
@@ -756,38 +769,28 @@
         @media (max-width: 1020px) {
             .layout {
                 grid-template-columns: 1fr;
+                grid-template-areas: "produto" "custos" "analise";
             }
-            .hero-grid {
-                grid-template-columns: 1fr;
-            }
-            .foto-box {
-                min-height: 200px;
-            }
-            .kv-grid,
-            .section-grid {
-                grid-template-columns: 1fr;
-            }
-            .analysis-grid {
-                grid-template-columns: 1fr;
-            }
-            .fx-chip {
-                max-width: calc(100% - 28px);
-                width: auto;
-                justify-content: center;
-                top: 8px;
-            }
+            .kv-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
 
-            .back-btn {
-                width: auto;
-                min-height: 44px;
-                font-size: 1rem;
-                padding: 0 13px;
-                top: 12px;
-                right: 12px;
+        @media (max-width: 670px) {
+            .topbar {
+                grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr));
             }
+            .page-heading { grid-column: 1 / -1; }
+        }
+
+        @media (max-width: 560px) {
+            .hero-grid { grid-template-columns: minmax(0, 1fr); }
+            .purchase-approval { align-items: flex-start; }
+            .purchase-approval-status { text-align: left; }
         }
 
         @media (max-width: 520px) {
+            .topbar, .section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .fx-box { grid-column: 1 / -1; }
+
             .analysis-offers {
                 grid-template-columns: 1fr;
             }
@@ -800,40 +803,62 @@
 </head>
 <body>
     <div class="container">
-        <div class="topbar">
-            <a id="btnVoltar" class="back-btn" href="importacoes_lista.html">Voltar</a>
+        <header class="topbar">
+            <div class="page-heading">
+                <a id="btnVoltar" class="back-btn" href="importacoes_lista.html">← Voltar à lista</a>
+                <h1>Importações · Detalhe do SKU</h1>
+            </div>
             <div class="fx-box">
+                <span class="topbar-flags">
+                    <svg class="topbar-flag" role="img" aria-label="Estados Unidos" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-us"></use></svg>
+                    <svg class="topbar-flag" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg>
+                </span>
                 <div>
                     <div class="fx-label">Dólar x Real (USD/BRL)</div>
                     <div id="fxValue" class="fx-value">Carregando...</div>
+                    <div class="fx-time">Atualização <span id="fxTime">--:--:--</span></div>
                 </div>
-                <div id="fxTime" class="fx-time">--:--:--</div>
             </div>
             <div class="clock-box brasilia">
+                <span class="topbar-flags">
+                    <svg class="topbar-flag" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg>
+                </span>
                 <div>
-                    <div class="clock-label">Horário de Brasília</div>
+                    <div class="clock-label">Brasília</div>
                     <div id="clockBrasilia" class="clock-value">--:--:--</div>
+                    <div id="clockBrasiliaData" class="clock-date"></div>
                 </div>
             </div>
             <div class="clock-box">
+                <span class="topbar-flags">
+                    <svg class="topbar-flag" role="img" aria-label="China" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-cn"></use></svg>
+                </span>
                 <div>
-                    <div class="clock-label">Horário em Pequim</div>
+                    <div class="clock-label">Pequim</div>
                     <div id="clockBeijing" class="clock-value">--:--:--</div>
+                    <div id="clockBeijingData" class="clock-date"></div>
                 </div>
             </div>
-            <h1>Importações - Detalhe do SKU</h1>
-        </div>
+        </header>
 
         <div id="meta" class="meta-strip"></div>
         <div id="erro" class="erro"></div>
         <div id="cacheSkuStatus" class="meta-strip" role="status" aria-live="polite"></div>
 
         <div class="layout">
-            <section class="card">
-                <h2>Produto</h2>
+            <section class="card product-card">
+                <div class="product-heading">
+                    <div data-card-id="kv_titulo_pt">
+                        <span class="section-kicker">Produto</span>
+                        <h2 id="vTituloPt">-</h2>
+                    </div>
+                    <div class="purchase-approval">
+                        <button id="btnAprovarCompra" class="approve-purchase-btn" type="button">Aprovar compra</button>
+                        <div id="aprovacaoCompraStatus" class="purchase-approval-status" aria-live="polite">Registra a decisão de compra deste SKU; não cria pedido nem altera o estoque.</div>
+                    </div>
+                </div>
                 <div class="hero-grid">
                     <div class="foto-col">
-                        <div class="kv title" data-card-id="kv_titulo_pt"><div class="label">Título em português</div><div id="vTituloPt" class="value">-</div></div>
                         <div id="fotoBox" class="foto-box"><div class="sem-foto">Sem foto</div></div>
                         <div id="ncmDescCard" class="ncm-desc-card">
                             <div class="label">Descrição do NCM</div>
@@ -844,16 +869,16 @@
                         </div>
                     </div>
                     <div class="kv-grid">
+                        <div class="kv metric metric-primary" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário (R$)</div><div id="vValorUnitarioProduto" class="value">-</div></div>
+                        <div class="kv metric" data-card-id="kv_ultimo_custo_cadastrado"><div class="label">Último custo cadastrado</div><div id="vUltimoCustoCadastrado" class="value">Carregando...</div></div>
+                        <div class="kv metric" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
+                        <div class="kv metric metric-volume" data-card-id="kv_m3"><div class="label">Metragem do lote (m³)</div><div id="vM3" class="value">-</div></div>
                         <div class="kv sku" data-card-id="kv_sku"><div class="label">SKU</div><div id="vSku" class="value">-</div></div>
                         <div class="kv prop" data-card-id="kv_prop"><div class="label">Proporção</div><div id="vProp" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_dolar"><div class="label">Valor em dólar</div><div id="vDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_dolar"><div class="label">Total em Dólar</div><div id="vValorTotalDolar" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_total_reais"><div class="label">Valor total em reais</div><div id="vValorTotalBrl" class="value">-</div></div>
-                        <div class="kv cost" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
-                        <div class="kv cost" data-card-id="kv_valor_unitario_produto"><div class="label">Valor unitário</div><div id="vValorUnitarioProduto" class="value">-</div></div>
-                        <div class="kv cost" data-card-id="kv_ultimo_custo_cadastrado"><div class="label">Último custo cadastrado</div><div id="vUltimoCustoCadastrado" class="value">Carregando...</div></div>
-                        <div class="kv" data-card-id="kv_quantidade"><div class="label">Quantidade</div><div id="vQtd" class="value">-</div></div>
-                        <div class="kv" data-card-id="kv_m3"><div class="label">M3</div><div id="vM3" class="value">-</div></div>
+                        <div class="kv" data-card-id="kv_custo_total_produto"><div class="label">Custo total do produto</div><div id="vCustoTotalProduto" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_valor_por_m3"><div class="label">Valor por M³</div><div id="vValorPorM3" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_peso"><div class="label">Peso</div><div id="vPeso" class="value">-</div></div>
                         <div class="kv" data-card-id="kv_ncm"><div class="label">NCM</div><div id="vNcm" class="value">-</div></div>
@@ -863,7 +888,7 @@
                 </div>
             </section>
 
-            <section class="card">
+            <section class="card tax-card">
                 <h2>Impostos e Custos</h2>
                 <div class="section-grid">
                     <div class="tile green" data-card-id="custo_ii"><div id="lblIi" class="label">II</div><div id="vIi" class="value">-</div></div>
@@ -897,7 +922,7 @@
                 </div>
             </section>
 
-            <section class="card">
+            <section class="card analysis-card">
                 <h2>Análise</h2>
                 <div id="analiseSkuStatus" class="analysis-status" role="status" hidden></div>
                 <div class="analysis-grid">
@@ -936,10 +961,6 @@
                             <div class="analysis-offer competitor"><div class="analysis-offer-role">Mercado</div><div id="lblConcorrente5" class="analysis-offer-link">Concorrente 5</div><div class="analysis-price-stack"><div id="vConcorrenteOriginal5" class="analysis-price-original" hidden>-</div><div id="vConcorrente5" class="analysis-price-current">-</div><div id="vPromoConcorrente5" class="analysis-promo-row" hidden><span class="analysis-promo-badge">-</span><span class="analysis-promo-label">Promoção</span></div></div><div id="vMargemConcorrente5" class="analysis-margin unavailable">Margem: -</div></div>
                         </div>
                     </article>
-                </div>
-                <div class="purchase-approval">
-                    <button id="btnAprovarCompra" class="approve-purchase-btn" type="button">Aprovar compra</button>
-                    <div id="aprovacaoCompraStatus" class="purchase-approval-status" aria-live="polite">Registra a decisão de compra deste SKU; não cria pedido nem altera o estoque.</div>
                 </div>
             </section>
         </div>
@@ -1781,24 +1802,21 @@
             // legado — sem uso com novo layout
         }
 
-        function atualizarHorarioBrasilia() {
-            const el = document.getElementById('clockBrasilia');
-            if (!el) return;
-            try {
-                el.textContent = new Intl.DateTimeFormat('pt-BR', {
-                    timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-                }).format(new Date());
-            } catch (_e) { el.textContent = '--:--:--'; }
-        }
-
-        function atualizarHorarioPequim() {
-            const el = document.getElementById('clockBeijing');
-            if (!el) return;
-            try {
-                el.textContent = new Intl.DateTimeFormat('pt-BR', {
-                    timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-                }).format(new Date());
-            } catch (_e) { el.textContent = '--:--:--'; }
+        function criarRelogioTopo(id, timeZone) {
+            const visor = document.getElementById(id);
+            const data = document.getElementById(id + 'Data');
+            const horario = new Intl.DateTimeFormat('pt-BR', {
+                timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+            });
+            const calendario = new Intl.DateTimeFormat('pt-BR', {
+                timeZone, day: '2-digit', month: 'short', timeZoneName: 'shortOffset',
+            });
+            return (agora) => {
+                visor.textContent = horario.format(agora);
+                const partes = Object.fromEntries(calendario.formatToParts(agora).map(({ type, value }) => [type, value]));
+                const contexto = partes.day + ' ' + partes.month + ' · ' + partes.timeZoneName.replace(/^GMT/, 'UTC');
+                if (data.textContent !== contexto) data.textContent = contexto;
+            };
         }
 
         let ultimoFiscalSimulacaoSku = null;
@@ -2419,12 +2437,17 @@
             const box = document.getElementById('fotoBox');
             if (!box) return;
             const foto = String(url || '').trim();
+            const semFoto = '<div class="sem-foto">Sem foto</div>';
             if (!foto) {
-                box.innerHTML = '<div class="sem-foto">Sem foto</div>';
+                box.innerHTML = semFoto;
                 return;
             }
-            const alt = String(sku || 'Produto').replace(/"/g, '&quot;');
-            box.innerHTML = '<img ' + atributoSrcFotoCadastro(foto) + ' alt="' + alt + '" loading="lazy" onerror="this.remove(); this.parentElement.innerHTML=\'<div class=\'sem-foto\'>Sem foto</div>\';">';
+            const alt = escaparHtml(sku || 'Produto');
+            box.innerHTML = '<img ' + atributoSrcFotoCadastro(foto) + ' alt="' + alt + '" loading="lazy">';
+            const imagem = box.firstElementChild;
+            imagem.addEventListener('error', () => {
+                if (imagem.parentElement === box) box.innerHTML = semFoto;
+            }, { once: true });
         }
 
         function montarMeta(listaNome, sku) {
@@ -3890,10 +3913,15 @@
         ['jk-auth-changed', 'jk-tenant-changed'].forEach(evento => window.addEventListener(evento, limparContextoSku));
 
         promessaCotacaoTopo = carregarFxTopo();
-        atualizarHorarioBrasilia();
-        setInterval(atualizarHorarioBrasilia, 1000);
-        atualizarHorarioPequim();
-        setInterval(atualizarHorarioPequim, 1000);
+        const atualizarBrasilia = criarRelogioTopo('clockBrasilia', 'America/Sao_Paulo');
+        const atualizarPequim = criarRelogioTopo('clockBeijing', 'Asia/Shanghai');
+        function atualizarRelogiosTopo() {
+            const agora = new Date();
+            atualizarBrasilia(agora);
+            atualizarPequim(agora);
+        }
+        atualizarRelogiosTopo();
+        setInterval(atualizarRelogiosTopo, 1000);
         inicializarReordenacaoDosCards();
         carregarDetalheSku();
     </script>

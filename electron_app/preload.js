@@ -32,6 +32,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
         typeof authToken === 'string' ? authToken : ''
     ),
     trackCoscoShipment: (payload) => ipcRenderer.invoke('importacoes-cosco-tracking', payload || {}),
+    searchPublicCargoTracking: (payload) => ipcRenderer.invoke('importacoes-cargo-tracking-search', {
+        type: payload?.type,
+        reference: payload?.reference,
+        carrier: payload?.carrier
+    }),
+    openPublicVesselPosition: (payload) => ipcRenderer.invoke('importacoes-ais-browser-open', {
+        imo: payload?.imo,
+        mmsi: payload?.mmsi,
+        mapa: payload?.mapa === true
+    }),
     getClientConfig: () => ipcRenderer.invoke('get-client-config'),
     saveClientConfig: (appUrl) => ipcRenderer.invoke('save-client-config', appUrl),
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),

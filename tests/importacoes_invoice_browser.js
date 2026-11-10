@@ -85,6 +85,9 @@ async function installRoutes(page) {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
           body: fs.readFileSync(path.join(root, 'static', 'importacoes.html')) });
       }
+      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp') {
+        return route.fulfill({ path: path.join(root, 'static', pathname.slice(1)) });
+      }
       if (pathname === '/cache-persistente.js') {
         return route.fulfill({ status: 200, contentType: 'application/javascript',
           body: fs.readFileSync(path.join(root, 'static', 'cache-persistente.js')) });
