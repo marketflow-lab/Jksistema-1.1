@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
     <script src="/medias_compras/importacoes-custo-simulado.js?v=20261109-resumo-v1"></script>
+    <script src="/medias_compras/importacoes-lista-carregamento.js?v=20261110-v1"></script>
     <style>
         :root {
             color-scheme: dark;
@@ -1118,25 +1119,6 @@
         function statusCacheLista(texto) {
             const el = document.getElementById('cacheListaStatus');
             if (el) el.textContent = texto;
-        }
-
-        function aguardarAtualizacaoLista(vigente, espera) {
-            const controller = new AbortController();
-            controladoresAuxiliares.add(controller);
-            return new Promise((resolve, reject) => {
-                let timer;
-                const encerrar = erro => {
-                    clearTimeout(timer);
-                    controller.signal.removeEventListener('abort', cancelar);
-                    controladoresAuxiliares.delete(controller);
-                    if (erro) reject(erro);
-                    else resolve();
-                };
-                const cancelar = () => encerrar(new Error('Carregamento substituído.'));
-                controller.signal.addEventListener('abort', cancelar, { once: true });
-                timer = setTimeout(() => encerrar(), espera);
-                if (!vigente()) controller.abort();
-            });
         }
 
         async function salvarSnapshotLista(contexto) {
@@ -3673,13 +3655,8 @@
             }
         }
 
-        async function carregarDetalheLista({ propagarErro = false, reconsultas = 2,
-            limite = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS } = {}) {
-            const persistencia = window.JKCachePersistente;
+        function iniciarCarregamentoDetalheLista(persistencia, podeManter) {
             const listaId = getListaIdDaUrl();
-            const podeManter = contexto => !contexto || (persistencia?.podeManterDados
-                ? persistencia.podeManterDados(contexto)
-                : persistencia?.dadosVigentes?.(contexto) !== false);
             let copiaVisivel = !!ultimaListaCarregada && String(ultimaListaCarregada.id) === listaId;
             if (ultimaListaCarregada && (!copiaVisivel || !podeManter(contextoPersistenteLista))) {
                 negarAcessoCacheLista('Consultando a lista...');
@@ -3691,28 +3668,14 @@
             const contextoPersistente = persistencia?.vigente(candidato) ? candidato : null;
             contextoPersistenteLista = contextoPersistente;
             controladoresAuxiliares.forEach(controller => controller.abort());
-            const url = '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId);
-            const chave = 'importacoes:GET:' + url;
             const vigente = () => geracao === geracaoCarregamentoLista && listaId === getListaIdDaUrl()
                 && (!contextoPersistente || persistencia.vigente(contextoPersistente));
             const dadosVigentes = () => vigente() && (!contextoPersistente || !persistencia.dadosVigentes
                 || persistencia.dadosVigentes(contextoPersistente, ['importacoes']));
-            const reconsultar = async (propagar = propagarErro) => {
-                if (!vigente()) return;
-                if (reconsultas > 0 && Date.now() < limite) {
-                    statusCacheLista('Consultando a versão atual da lista...');
-                    return carregarDetalheLista({ propagarErro: propagar, reconsultas: reconsultas - 1, limite });
-                }
-                const mensagem = 'A atualização da lista continua pendente. Tente novamente.';
-                if (!podeManter(contextoPersistente)) negarAcessoCacheLista(mensagem);
-                else statusCacheLista(mensagem);
-                if (propagar) throw new Error(mensagem);
-            };
-            let respostaCompleta = false;
             let consultaFiscalAntecipada = copiaVisivel
                 ? carregarFiscalCustoSkuLista(contextoCarregamentoAtual(listaId))
                 : null;
-            const aplicar = async (data, aguardarEdicao = false, atualizarMargens = false) => {
+            const aplicar = async (data, { aguardarEdicao, completa, podeAplicar, reconsultar }) => {
                 if (!dadosVigentes() || !data?.lista || String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)
                     || data.lista.itens.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return false;
                 const lista = data.lista;
@@ -3723,7 +3686,7 @@
                     || fornecedorResumoSalvando || skuArrastadoIndex >= 0 || skuArrasteSalvando || colunaArrastadaKey || colunaRedimensionando)) {
                     await new Promise(resolve => setTimeout(resolve, 120));
                 }
-                if (!dadosVigentes() || (!atualizarMargens && respostaCompleta)) return false;
+                if (!podeAplicar()) return false;
                 const mesmaLista = ultimaListaCarregada && String(ultimaListaCarregada.id) === String(lista.id)
                     && String(ultimaListaCarregada.store_id || '') === String(lista.store_id || '');
                 ultimaListaCarregada = lista;
@@ -3765,7 +3728,7 @@
                     });
                     mapaM3IndividualCarregado = !!complemento.mapaM3Carregado;
                 }
-                if (atualizarMargens) mapaM3IndividualCarregado = false;
+                if (completa) mapaM3IndividualCarregado = false;
                 mapaM3StoreId = storeId;
                 mapaM3IndividualCarregando = !!storeId && itens.some(item => !statusCubagemItem(item) && !Number.isFinite(obterM3TotalItem(item))) && !mapaM3IndividualCarregado;
                 renderCabecalho();
@@ -3773,7 +3736,7 @@
                 renderResumoTopo(lista, itens);
                 renderItens(itens, lista);
                 const contexto = contextoCarregamentoAtual(listaId);
-                if (atualizarMargens) {
+                if (completa) {
                     void carregarFiscalCustoSkuLista(contexto, consultaFiscalAntecipada);
                     // Grava os itens novos junto com os complementos que ainda são válidos.
                     await salvarSnapshotLista(contexto);
@@ -3809,113 +3772,25 @@
                 }
                 return true;
             };
-            try {
-                setErro('');
-                if (!listaId) throw new Error('Lista não informada.');
-                try {
-                    const copia = !copiaVisivel && contextoPersistente
-                        ? await persistencia.ler(chave, { contexto: contextoPersistente }) : null;
-                    if (!vigente()) return;
-                    if (copia && await aplicar(copia.dados)) {
-                        copiaVisivel = true;
-                        statusCacheLista('Cópia salva em ' + new Date(copia.salvoEm).toLocaleString('pt-BR') + ' · Atualizando...');
-                    }
-                } catch (_cacheError) { /* A consulta principal também atende uma cópia inválida. */ }
-                if (!copiaVisivel && contextoPersistente) {
-                    const controller = new AbortController();
-                    controladoresAuxiliares.add(controller);
-                    const timeout = setTimeout(() => controller.abort(), 5000);
-                    void fetch(url + '?somente_salvos=true', { headers: { ...obterAuthHeaders() }, signal: controller.signal })
-                        .then(resp => resp.ok ? resp.json() : null)
-                        .then(async data => {
-                            if (!respostaCompleta && vigente() && await aplicar(data)) {
-                                copiaVisivel = true;
-                                statusCacheLista('Dados salvos da lista · Atualizando informações complementares...');
-                            }
-                        }).catch(() => {}).finally(() => {
-                            clearTimeout(timeout);
-                            controladoresAuxiliares.delete(controller);
-                        });
-                }
-                const transitorios = new Set(['sources_changing', 'cache_capacity', 'stores_snapshot_initializing',
-                    'stores_snapshot_unavailable', 'stores_snapshot_credentials_unavailable']);
-                for (let tentativa = 0; tentativa < 32 && Date.now() < limite; tentativa++) {
-                    if (!vigente()) return;
-                    if (!dadosVigentes()) return reconsultar();
-                    const controller = new AbortController();
-                    controladoresAuxiliares.add(controller);
-                    const timeout = setTimeout(() => controller.abort(), Math.min(AUXILIAR_TIMEOUT_MS, limite - Date.now()));
-                    let data, esperaMinima = 0;
-                    try {
-                        const resp = await fetch(url + '?cache_mode=stale', {
-                            method: 'GET', headers: { ...obterAuthHeaders() }, signal: controller.signal,
-                        });
-                        if (!vigente()) return;
-                        if ([401, 403].includes(resp.status)) {
-                            negarAcessoCacheLista();
-                            await persistencia?.invalidar(['importacoes']);
-                            if (propagarErro) throw new Error('Acesso à lista indisponível após a atualização.');
-                            return;
-                        }
-                        if (!resp.ok) {
-                            const err = await resp.json().catch(() => ({}));
-                            const code = err.detail?.code || err.code;
-                            if (![409, 503].includes(resp.status) || !transitorios.has(code)) {
-                                throw new Error(err.detail?.message || err.detail || 'Falha ao carregar detalhes da lista.');
-                            }
-                            esperaMinima = 5000;
-                        } else {
-                            data = await resp.json();
-                        }
-                    } catch (erro) {
-                        if (!controller.signal.aborted) throw erro;
-                    } finally {
-                        clearTimeout(timeout);
-                        controladoresAuxiliares.delete(controller);
-                    }
-                    if (!vigente()) return;
-                    if (!dadosVigentes()) return reconsultar();
-                    if (data) {
-                        const meta = data._cache;
-                        if (data.lista) {
-                            if (String(data.lista.id) !== listaId || !Array.isArray(data.lista.itens)) throw new Error('Dados da lista inválidos.');
-                            const pronta = !meta || (meta.estado === 'ready' && meta.completo !== false && !meta.stale && !meta.atualizando);
-                            if (pronta) {
-                                respostaCompleta = true;
-                                if (await aplicar(data, copiaVisivel, true) || !vigente()) return;
-                                if (!dadosVigentes()) return reconsultar();
-                                throw new Error('Dados da lista inválidos.');
-                            }
-                            if (!copiaVisivel && await aplicar(data)) copiaVisivel = true;
-                        } else if (!meta) {
-                            throw new Error('Dados da lista inválidos.');
-                        }
-                        if (meta?.erro && !meta.atualizando) {
-                            if (!transitorios.has(meta.erro.code)) throw new Error(meta.erro.message || 'Não foi possível atualizar a lista.');
-                            esperaMinima = 5000;
-                        }
-                        esperaMinima = Math.max(esperaMinima, Math.min(10000, Number(meta?.retry_after_ms) || 0));
-                    }
-                    statusCacheLista(copiaVisivel ? 'Dados salvos da lista · Atualizando cálculos...'
-                        : 'Preparando os dados da lista...');
-                    const intervalo = tentativa < 5 ? 1000 : tentativa < 10 ? 2000 : 5000;
-                    const espera = Math.min(Math.max(intervalo, esperaMinima), limite - Date.now());
-                    if (espera > 0) await aguardarAtualizacaoLista(vigente, espera);
-                }
-                throw new Error('A atualização dos cálculos continua pendente. Tente novamente.');
-            } catch (e) {
-                if (!vigente()) return;
-                respostaCompleta = true;
-                if (!dadosVigentes()) return reconsultar();
-                if (propagarErro) throw e;
-                if (copiaVisivel) {
-                    statusCacheLista('Exibindo os dados salvos. Não foi possível atualizar agora.');
-                    return;
-                }
-                setErro(e.message || 'Erro ao carregar lista de importação.');
-                renderResumoTopo({}, []);
-                renderItens([], {});
-            }
+            return { listaId, contextoPersistente, copiaVisivel, vigente, dadosVigentes, aplicar };
+        }
+
+        async function carregarDetalheLista({ propagarErro = false, reconsultas = 2,
+            limite = Date.now() + ATUALIZACAO_LISTA_LIMITE_MS } = {}) {
+            return window.JKImportacoesListaCarregamento.carregar({
+                get persistencia() { return window.JKCachePersistente; },
+                iniciar: iniciarCarregamentoDetalheLista,
+                controladoresAuxiliares,
+                obterAuthHeaders: () => obterAuthHeaders(),
+                statusCacheLista,
+                negarAcessoCacheLista,
+                setErro,
+                limparExibicao: () => {
+                    renderResumoTopo({}, []);
+                    renderItens([], {});
+                },
+                timeoutConsultaMs: AUXILIAR_TIMEOUT_MS,
+            }, { propagarErro, reconsultas, limite });
         }
 
         async function carregarCustoPostoBackend(listaId) {

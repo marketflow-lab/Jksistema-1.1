@@ -7,6 +7,7 @@
 
 ## Importações
 
+- O detalhe da lista separa o carregamento e a atualização dos dados da renderização da tela.
 - O teste de cache persistente verifica se as alterações salvas na lista são recuperadas ao reabrir o aplicativo.
 
 Distribuição pelo canal `app-update`.
