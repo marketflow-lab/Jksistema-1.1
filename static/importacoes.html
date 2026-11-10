@@ -64,7 +64,7 @@
             padding: 24px clamp(14px, 2vw, 28px) 34px;
         }
 
-        body:has(> .jk-nav-card-group) .container { padding-top: 84px; }
+        body:has(> .jk-nav-card-group:not([data-jk-shell-nav-container-empty="1"])) .container { padding-top: 84px; }
 
         .topbar {
             display: grid;
@@ -249,10 +249,11 @@
 
         .toolbar {
             display: flex;
-            gap: 10px;
+            gap: 6px 14px;
             align-items: center;
-            margin-bottom: 14px;
+            justify-content: flex-end;
             flex-wrap: wrap;
+            padding: 3px 0;
             position: relative;
             z-index: 1;
         }
@@ -1085,7 +1086,7 @@
         }
 
         @media (max-width: 760px) {
-            body:has(> .jk-nav-card-group) .container { padding-top: 70px; }
+            body:has(> .jk-nav-card-group:not([data-jk-shell-nav-container-empty="1"])) .container { padding-top: 70px; }
 
             .container {
                 padding: 18px 14px 24px;
@@ -1094,10 +1095,6 @@
             .topbar {
                 grid-template-columns: 1fr;
                 gap: 10px;
-            }
-
-            .toolbar {
-                gap: 8px;
             }
 
             .loja-filtro-grid {
@@ -1186,35 +1183,17 @@
             letter-spacing: 1px;
         }
         .embarque-item {
-            border: 1px solid rgba(255, 193, 100, 0.5);
-            border-radius: 14px;
-            background: linear-gradient(180deg, rgba(56, 38, 14, 0.88), rgba(38, 26, 10, 0.96));
-            padding: 16px;
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+            min-width: 0;
+            border: 1px solid #283b56;
+            border-radius: 15px;
+            background: #111d30;
             cursor: pointer;
-            position: relative;
             overflow: hidden;
-            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+            transition: border-color .15s ease;
         }
-        .embarque-item::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 4px;
-            background: linear-gradient(180deg, #ffd080, #e3924a);
-            box-shadow: 0 0 18px rgba(227, 146, 74, 0.55);
-        }
-        .embarque-item:hover {
-            transform: translateY(-3px) scale(1.01);
-            border-color: #ffd080;
-            box-shadow: 0 16px 30px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 193, 100, 0.28);
-        }
-        .embarque-nome {
-            font-weight: 800;
-            color: #ffe8b8;
-            font-size: 1.45rem;
-        }
+        .embarque-item:hover { border-color: #567b9e; }
         .btn-embarque-org {
             border: 1px solid rgba(255, 193, 100, 0.55);
             border-radius: 8px;
@@ -1746,24 +1725,62 @@
         :root { color-scheme: dark; --lista-colunas: minmax(190px, 1.2fr) minmax(170px, 1.08fr) minmax(290px, 1.65fr) minmax(128px, .85fr) 150px 26px; }
         body { background: #0b1321; }
         body::before, .card::before { display: none; }
-        .container { padding: 24px clamp(12px, 2vw, 28px) 28px; }
-        .topbar { grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px 16px; margin-bottom: 22px; }
-        h1 { color: #edf3fc; font-size: clamp(28px, 3.2vw, 39px); font-weight: 700; letter-spacing: -.04em; text-shadow: none; }
-        .importacao-titulo-atalho { display: flex; align-items: end; flex-wrap: wrap; gap: 9px 16px; min-width: 0; }
+        .container { padding: 13px clamp(12px, 2vw, 28px) 28px; }
+        .importacao-capa {
+            position: relative;
+            isolation: isolate;
+            margin-bottom: 16px;
+            padding: 0 17px 12px;
+            border: 1px solid #2c4259;
+            border-radius: 10px;
+            background: #0b192a;
+        }
+        .topbar {
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 12px;
+            min-height: 180px;
+            margin-bottom: 8px;
+            padding: 16px 0;
+        }
+        .importacao-foto-cabecalho {
+            position: absolute;
+            z-index: -2;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center 43%;
+            border-radius: inherit;
+            pointer-events: none;
+        }
+        .importacao-capa::after {
+            content: "";
+            position: absolute;
+            z-index: -1;
+            inset: 0;
+            border-radius: inherit;
+            background:
+                linear-gradient(0deg, #0b192ac4, #0b192a99 34%, transparent 64%),
+                linear-gradient(90deg, #0b192ad9, #0b192aa8 22%, #0b192a24 43%, #0b192a38 100%);
+            pointer-events: none;
+        }
+        h1 { color: #f7faff; font-size: clamp(32px, 4vw, 46px); font-weight: 700; letter-spacing: -.045em; line-height: 1.06; text-shadow: none; }
+        .importacao-titulo-atalho { display: flex; align-items: end; flex-wrap: wrap; gap: 9px 12px; min-width: 0; }
         .importacao-titulo-atalho h1 { margin: 0; }
-        .importacao-titulo-rotulo { display: block; margin-bottom: 6px; color: #9dc0ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-        .importacao-titulo-descricao { margin: 6px 0 0; color: #aabbd3; font-size: 13px; }
+        .importacao-titulo-rotulo { display: flex; align-items: center; gap: 9px; margin-bottom: 5px; color: #a4d4ff; font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+        .importacao-titulo-rotulo::before { content: ""; flex: 0 0 14px; height: 2px; border-radius: 2px; background: #f9c36a; }
+        .importacao-titulo-descricao { margin: 4px 0 0; color: #c7d6ea; font-size: 12px; line-height: 1.4; }
         .importacao-atalho-medias {
             display: inline-flex;
             align-items: center;
             flex-shrink: 0;
             gap: 7px;
-            min-height: 40px;
-            padding: 9px 11px;
-            border: 1px solid #365a7d;
-            border-radius: 9px;
-            background: linear-gradient(120deg, #19334e, #112338);
-            color: #e8f0fb;
+            min-height: 35px;
+            padding: 6px 11px;
+            border: 1px solid #324b69;
+            border-radius: 8px;
+            background: #172c46;
+            color: #e0edff;
             text-decoration: none;
             font-size: 12px;
             line-height: 1.2;
@@ -1773,34 +1790,34 @@
         .importacao-atalho-medias:hover { border-color: #83caff; background: #1c3854; }
         .importacao-atalho-medias:focus-visible { outline: 2px solid #a2d8ff; outline-offset: 4px; }
         .importacao-atalho-medias svg { flex-shrink: 0; color: #8dd1ff; }
-        .importacao-contexto { display: grid; grid-template-columns: minmax(190px, max-content) repeat(2, minmax(135px, max-content)); gap: 7px; }
+        .importacao-contexto { display: grid; grid-template-columns: repeat(3, max-content); gap: 6px; min-width: 0; }
         .fx-box, .clock-box, .clock-box.brasilia {
             display: grid;
             grid-template-columns: auto minmax(0, 1fr);
             align-items: start;
             min-height: 66px;
-            padding: 8px 10px;
-            gap: 8px;
-            border: 1px solid #283b56;
-            background: #16243a;
+            padding: 8px 9px;
+            gap: 7px;
+            border: 1px solid #38516a;
+            background: #13243a;
             box-shadow: none;
-            border-radius: 9px;
+            border-radius: 8px;
         }
-        .fx-box { background: #1d3458; }
+        .fx-box { border-color: #46658a; background: #1b3657; }
         .fx-box::before, .clock-box::before { display: none; }
         .importacao-pais-icon { display: flex; align-items: center; width: auto; height: auto; margin-top: 2px; background: none; border: 0; }
-        .importacao-bandeira { width: 23px; height: 16px; }
-        .cotacao-bandeiras .importacao-bandeira { position: static; width: 23px; height: 16px; }
-        .cotacao-bandeiras .importacao-bandeira:first-child { width: 30px; }
+        .importacao-bandeira { width: 20px; height: 14px; }
+        .cotacao-bandeiras .importacao-bandeira { position: static; }
+        .cotacao-bandeiras .importacao-bandeira:first-child { width: 26px; }
         .cotacao-bandeiras .importacao-bandeira + .importacao-bandeira { margin-inline-start: -6px; }
         .fx-label, .clock-label, .clock-box.brasilia .clock-label { color: #edf3fc; font-size: 11px; margin-bottom: 2px; font-weight: 650; }
         .fx-value-row { gap: 2px 5px; }
-        .fx-value, .clock-value, .clock-box.brasilia .clock-value { color: #edf3fc; font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
-        .fx-value { color: #9dc0ff; }
+        .fx-value, .clock-value, .clock-box.brasilia .clock-value { color: #f5f9ff; font-size: 19px; font-weight: 600; letter-spacing: -.035em; }
+        .fx-value { color: #a9d3ff; }
         .fx-update, .clock-contexto { display: block; margin-top: 3px; color: #aabbd3; font-size: 11px; line-height: 1.3; text-align: left; white-space: normal; }
         .fx-time { color: inherit; font: inherit; font-variant-numeric: tabular-nums; }
         .fx-currency { display: inline; padding: 0; border: 0; color: #aabbd3; font-size: 11px; }
-        .topbar > .back-btn {
+        .topbar .back-btn {
             position: static;
             width: auto;
             min-height: 37px;
@@ -1812,16 +1829,24 @@
             color: #edf3fc;
             font-size: 12px;
         }
-        .topbar > .back-btn:hover { transform: none; filter: none; background: #16243a; }
+        .topbar .back-btn:hover { transform: none; filter: none; background: #16243a; }
         .container > .card { background: none; border: 0; padding: 0; box-shadow: none; overflow: visible; }
         #embarqueDetalheView { padding: 18px 20px; border: 1px solid #283b56; border-radius: 13px; background: #111d30; }
-        .toolbar { gap: 8px; margin-bottom: 17px; }
-        .toolbar .importacao-monitor { order: -1; margin-right: auto; border: 0; background: transparent; padding: 0; color: #b4c5d9; font-size: 12px; font-weight: 400; }
+        .importacao-mensagens {
+            display: flex;
+            flex: 1 1 230px;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 3px 14px;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .importacao-acoes { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+        .toolbar .importacao-monitor { width: auto; justify-content: flex-start; text-align: left; border: 0; background: transparent; padding: 0; color: #b4c5d9; font-size: 12px; font-weight: 400; }
         .toolbar .importacao-monitor::before { width: 6px; height: 6px; background: #e1b977; }
-        .toolbar .importacao-acao { min-height: 35px; padding: 8px 11px; background: #16263b; border-color: #30445f; border-radius: 7px; font-size: 11px; font-weight: 500; box-shadow: none; }
-        .toolbar .importacao-acao--atualizar { order: 2; }
-        .toolbar .importacao-acao--importar { order: 3; background: #2358c7; color: #fff; border-color: #2358c7; font-weight: 650; box-shadow: none; }
-        .loja-filtro-area { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 16px; }
+        .toolbar .importacao-acao { width: auto; min-height: 35px; padding: 8px 11px; background: #16263b; border-color: #30445f; border-radius: 7px; font-size: 11px; font-weight: 500; box-shadow: none; }
+        .toolbar .importacao-acao--importar { background: #2358c7; color: #fff; border-color: #2358c7; font-weight: 650; box-shadow: none; }
+        .loja-filtro-area { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 12px 0 0; }
         .loja-filtro-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
         .loja-filtro-grid { gap: 5px; }
         .loja-filtro-card { min-height: 35px; padding: 8px 10px; border: 1px solid transparent; border-radius: 7px; background: transparent; box-shadow: none; color: #9fb3cb; gap: 8px; }
@@ -1837,62 +1862,143 @@
         .busca-listas input::placeholder { color: #7892af; }
         #status, #cacheImportacoesStatus { font-size: 12px; line-height: 1.4; color: #aabbd3; }
         #status:empty, #cacheImportacoesStatus:empty { display: none; }
-        .importacao-navegacao { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 15px; border-bottom: 1px solid #283b56; }
-        .importacao-navegacao a { padding: 8px 2px; color: #9dc0ff; text-decoration: none; font-size: 13px; font-weight: 650; }
-        .importacao-navegacao a:hover { text-decoration: underline; text-underline-offset: 4px; }
-        .importacao-navegacao a:focus-visible { outline: 2px solid #9dc0ff; outline-offset: 2px; }
-        #pedidosImportacoes, #embarquesImportacoes { scroll-margin-top: 84px; }
-        .embarque-destaque {
+        .importacao-controles {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            align-items: center;
+            gap: 6px 16px;
+            border-bottom: 1px solid #283b56;
+        }
+        .importacao-navegacao { display: flex; flex-wrap: wrap; align-self: end; gap: 6px; }
+        .importacao-navegacao button {
+            min-height: 42px;
+            padding: 8px 15px;
+            border: 0;
+            border-bottom: 2px solid transparent;
+            border-radius: 8px 8px 0 0;
+            background: transparent;
+            color: #aabbd3;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 650;
+            cursor: pointer;
+        }
+        .importacao-navegacao button:hover { background: #16243a; color: #edf3fc; }
+        .importacao-navegacao button[aria-selected="true"] { background: #1d3458; border-bottom-color: #9dc0ff; color: #edf3fc; }
+        .importacao-navegacao button:focus-visible { outline: 2px solid #9dc0ff; outline-offset: -3px; }
+        .card:has(#abaEmbarquesImportacoes[aria-selected="true"]) [data-apenas-pedidos] { display: none; }
+        .embarque-detalhe-capa {
             display: grid;
             grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-            overflow: hidden;
-            border: 1px solid #283b56;
-            border-radius: 15px;
-            background: #111d30;
+            gap: 14px;
+            margin-bottom: 14px;
         }
-        .embarque-destaque[hidden] { display: none; }
-        .embarque-destaque-info {
+        .embarque-card-info {
             display: grid;
             align-content: center;
-            justify-items: start;
             gap: 8px;
             min-width: 0;
-            padding: 19px clamp(14px, 2.5vw, 26px);
+            padding: 14px clamp(14px, 1.6vw, 22px);
             background: radial-gradient(ellipse at top left, #1d3458, transparent 80%);
         }
-        .embarque-destaque-rotulo { color: #9dc0ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-        .embarque-destaque h2 { margin: 0; color: #edf3fc; font-size: clamp(20px, 2.6vw, 28px); line-height: 1.2; overflow-wrap: anywhere; }
-        .embarque-destaque-nome { margin: 0; color: #aabbd3; font-size: 12px; overflow-wrap: anywhere; }
-        .embarque-destaque-dados { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 2px 0; }
-        .embarque-destaque-dados dt { color: #aabbd3; font-size: 11px; }
-        .embarque-destaque-dados dd { margin: 3px 0 0; color: #edf3fc; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
-        .embarque-destaque-dados dd.embarque-destaque-metragem { color: #9dc0ff; font-variant-numeric: tabular-nums; }
-        .embarque-destaque-abrir { min-height: 34px; border: 0; padding: 4px 0; background: none; color: #9dc0ff; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
-        .embarque-destaque-abrir:hover { text-decoration: underline; text-underline-offset: 4px; }
-        .embarque-destaque-foto { position: relative; min-height: 188px; margin: 0; background: #102943; }
-        .embarque-destaque-foto img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: 58% center; }
-        .embarque-destaque-foto figcaption { position: absolute; bottom: 10px; left: 10px; padding: 3px 7px; border-radius: 5px; background: #0b1c34; color: #edf3fc; font-size: 11px; }
-        #vistaMain .embarques-principal { border: 1px solid #283d55; border-radius: 9px; background: #122137; padding: 8px 12px; margin-top: 16px; }
-        #vistaMain .embarques-principal > .secao-header { border: 0; padding: 0; margin: 0; min-height: 31px; gap: 9px; }
-        #vistaMain .embarques-principal .secao-titulo { font-size: 12px; color: #c4d7ea; text-transform: none; letter-spacing: 0; font-weight: 600; }
-        #vistaMain #badgeEmbarques { width: auto; flex: 0 0 auto; font-size: 10px !important; border: 0; padding: 2px 6px !important; color: #85a5c7; background: #20344e; border-radius: 4px; }
-        #vistaMain .embarques-principal .btn-embarque-org { order: 2; margin-left: auto; min-height: 31px; padding: 6px 10px; font: inherit; font-size: 10px; background: #1d3048; border-color: #344d6b; color: #b9d2eb; box-shadow: none; }
-        #embarquesWrap { margin-top: 10px; gap: 9px; }
+        .embarque-card-cabecalho, .embarque-card-identificacao {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+        }
+        .embarque-card-cabecalho { align-items: start; }
+        .embarque-card-identificacao {
+            flex: 1 1 300px;
+            min-width: 0;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .embarque-card-titulo, .embarque-card-resumo { display: grid; min-width: 0; }
+        .embarque-card-titulo { gap: 3px; }
+        .embarque-card-resumo { gap: 6px; }
+        .embarque-card-rotulo { color: #9dc0ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+        .embarque-card-info h3 { margin: 0; color: #edf3fc; font-size: clamp(20px, 2.6vw, 28px); line-height: 1.2; overflow-wrap: anywhere; }
+        .embarque-card-nome { margin: 0; color: #aabbd3; font-size: 12px; overflow-wrap: anywhere; }
+        .embarque-card-dados { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; }
+        .embarque-card-dados dt { color: #aabbd3; font-size: 11px; }
+        .embarque-card-dados dd { margin: 3px 0 0; color: #edf3fc; font-size: 14px; font-weight: 650; overflow-wrap: anywhere; }
+        .embarque-card-dados dd.embarque-card-metragem { color: #9dc0ff; font-variant-numeric: tabular-nums; }
+        .embarque-card-info .meta-resumo { align-items: center; gap: 4px 6px; margin: 0; }
+        .embarque-card-info .meta-pill {
+            min-width: 0;
+            max-width: 100%;
+            flex-wrap: wrap;
+            gap: 4px;
+            padding: 3px 8px;
+            font-size: .83rem;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        .embarque-card-info .lista-loja-sufixo { font-size: .75rem; white-space: normal; }
+        .embarque-card-info .meta-linha-invoice {
+            flex: 1 1 330px;
+            min-width: 0;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            align-items: stretch;
+        }
+        .embarque-card-info .emb-inv-label { grid-column: 1 / -1; }
+        .embarque-card-info .meta-invoice { align-content: center; gap: 1px 4px; border-radius: 8px; }
+        .embarque-card-abrir { border: 0; padding: 4px 0; background: none; color: #9dc0ff; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+        .embarque-card-abrir:hover { text-decoration: underline; text-underline-offset: 4px; }
+        .embarque-card-foto { position: relative; min-height: 188px; margin: 0; background: #102943; }
+        .embarque-detalhe-capa .embarque-card-foto { border-radius: 12px; overflow: hidden; }
+        .embarque-card-foto img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; object-position: 58% center; }
+        .embarque-card-foto .embarque-foto-real { object-fit: contain; object-position: center; }
+        .embarque-card-foto figcaption {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            max-width: calc(100% - 20px);
+            padding: 3px 7px;
+            border-radius: 5px;
+            background: #0b1c34;
+            color: #edf3fc;
+            font-size: 11px;
+            overflow-wrap: anywhere;
+        }
+        .embarque-card-foto figcaption a { color: #b5d3ff; }
+        .embarque-item .embarque-card-foto {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 5px;
+            min-height: 0;
+            padding: 14px 14px 14px 0;
+            background: transparent;
+        }
+        .embarque-item .embarque-card-foto img {
+            position: static;
+            height: auto;
+            max-height: 200px;
+            border-radius: 9px;
+        }
+        .embarque-item .embarque-card-foto img:not(.embarque-foto-real) { aspect-ratio: 2 / 1; }
+        .embarque-item .embarque-foto-real { align-self: center; width: auto; max-width: 100%; }
+        .embarque-item .embarque-card-foto figcaption {
+            position: static;
+            max-width: 100%;
+            padding: 0;
+            background: transparent;
+            color: #aabbd3;
+            line-height: 1.3;
+        }
+        .embarque-card-acoes { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; }
+        .embarque-card-acoes button { min-height: 30px; }
+        .embarque-card-acoes .btn-embarque-rastrear:disabled { cursor: not-allowed; opacity: .58; transform: none; filter: none; }
+        .embarques-principal { border: 1px solid #283d55; border-radius: 9px; background: #122137; padding: 8px 12px; margin-top: 16px; }
+        .embarques-principal > .secao-header { border: 0; padding: 0; margin: 0; min-height: 31px; gap: 9px; }
+        .embarques-principal .secao-titulo { font-size: 12px; color: #c4d7ea; text-transform: none; letter-spacing: 0; font-weight: 600; }
+        #badgeEmbarques { width: auto; flex: 0 0 auto; font-size: 10px !important; border: 0; padding: 2px 6px !important; color: #85a5c7; background: #20344e; border-radius: 4px; }
+        .embarques-principal .btn-embarque-org { order: 2; margin-left: auto; min-height: 31px; padding: 6px 10px; font: inherit; font-size: 10px; background: #1d3048; border-color: #344d6b; color: #b9d2eb; box-shadow: none; }
+        #embarquesWrap { margin-top: 10px; gap: 14px; }
         #embarquesWrap:has(> .empty) { margin: 0; }
         #embarquesWrap > .empty { padding: 4px 0 0; margin: 0; text-align: left; border: 0; background: transparent; color: #819bb7; font-size: 11px; }
-        #embarquesWrap .embarque-item { padding: 12px; border-color: #34475c; background: #162539; box-shadow: none; }
-        #embarquesWrap .embarque-item::before { width: 2px; background: #8da6bf; box-shadow: none; }
-        #embarquesWrap .embarque-item:hover { transform: none; border-color: #567b9e; box-shadow: none; }
-        #embarquesWrap .embarque-nome { color: #edf3fc; font-size: 17px; font-weight: 650; text-shadow: none; }
-        #embarquesWrap .embarque-item .meta { color: #aabbd3; font-size: 12px; }
-        #embarquesWrap .embarque-item .meta-m3 { color: #9dc0ff; background: #1d3458; border-color: #344e73; }
-        .listas-principal-cabecalho { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 23px 0 13px; }
-        .listas-principal-cabecalho h2 { display: flex; align-items: center; gap: 9px; font-size: 20px; letter-spacing: -.3px; font-weight: 650; margin: 0; }
-        #contagemListasImportacoes { padding: 3px 7px; background: #223a54; color: #9ec8ee; border-radius: 5px; font-size: 11px; font-weight: 500; }
-        #resumoListasImportacoes { margin-top: 4px; color: #7d98b6; font-size: 11px; }
-        .listas-principal-ferramentas { display: flex; gap: 10px; align-items: center; }
-        .listas-principal-ajuda { color: #8faac5; font-size: 11px; }
-        #btnDensidadeListas { min-height: 30px; padding: 7px 10px; border: 1px solid #31465f; background: #16273b; color: #a4c1de; font: inherit; font-size: 10px; border-radius: 6px; cursor: pointer; }
         #tabelaListasImportacoes { border: 1px solid #2b3f58; border-radius: 10px; overflow: hidden; background: #101d30; }
         .listas-colunas-cabecalho { display: grid; grid-template-columns: var(--lista-colunas); gap: 14px; padding: 11px 17px; background: #14253a; border-bottom: 1px solid #2b415d; color: #91abc9; font-size: 10px; font-weight: 500; letter-spacing: .3px; }
         #listaWrap { gap: 0; margin: 0; }
@@ -1973,7 +2079,7 @@
         #menuListaImportacoes button { display: block; border: 0; background: transparent; padding: 10px; border-radius: 5px; width: 100%; font: inherit; font-size: 11px; text-align: left; color: #c1d4e9; cursor: pointer; }
         #menuListaImportacoes button:hover, #menuListaImportacoes button:focus-visible { background: #264462; }
         #menuListaImportacoes [data-menu-excluir] { color: #dba2a9; }
-        #vistaMain button:focus-visible, #listaWrap [tabindex]:focus-visible, .busca-listas input:focus-visible { outline: 2px solid #76baff; outline-offset: 3px; }
+        [role="tabpanel"] button:focus-visible, #listaWrap [tabindex]:focus-visible, .busca-listas input:focus-visible { outline: 2px solid #76baff; outline-offset: 3px; }
         @media (min-width: 1430px) {
             :root { --lista-colunas: minmax(230px,1.2fr) minmax(205px,1.08fr) minmax(320px,1.65fr) minmax(145px,.85fr) 162px 26px; }
             #listaWrap .lista-item--compacta, .listas-colunas-cabecalho { padding-left: 24px; padding-right: 24px; gap: 20px; }
@@ -1988,7 +2094,6 @@
             #listaWrap .lista-quantidade-valor { font-size: 16px; }
             #listaWrap .documento-lista-card { font-size: 11px; }
             .busca-listas { flex-basis: 250px; }
-            .listas-principal-ajuda { font-size: 10px; }
         }
         @media (max-width: 1160px) {
             .loja-filtro-area { flex-wrap: wrap; gap: 12px; }
@@ -1997,31 +2102,35 @@
             #listaWrap .lista-item--compacta { grid-template-columns: minmax(290px, 1.4fr) minmax(170px, 1fr) 150px; grid-template-areas: 'pedido parceiros documentos' 'quantidade valores acoes'; gap: 15px 20px; min-height: 0; }
             #tabelaListasImportacoes.is-compacta .lista-item--compacta { min-height: 0; }
             #listaWrap .lista-coluna-acoes { justify-self: end; }
-            .toolbar .importacao-monitor { flex-basis: 100%; margin-bottom: 3px; }
         }
-        @media (max-width: 900px) {
-            .topbar { grid-template-columns: minmax(0, 1fr) auto; }
-            .importacao-contexto { grid-column: 1 / -1; grid-row: 2; grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr)); }
-            .topbar > .back-btn { grid-column: 2; grid-row: 1; justify-self: end; }
+        @media (max-width: 820px) {
+            .topbar { grid-template-columns: minmax(0, 1fr); align-content: center; gap: 14px; }
+            .importacao-foto-cabecalho { object-position: center 48%; }
+            .importacao-capa::after {
+                background:
+                    linear-gradient(0deg, #0b192aca, transparent 65%),
+                    linear-gradient(90deg, #0b192a 0%, #0b192aad 38%, #0b192a20 76%);
+            }
+            .importacao-contexto { grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 570px) {
+            .importacao-capa { padding-inline: 11px; }
+            .topbar { padding-block: 13px; }
+            .importacao-foto-cabecalho { object-position: 68% center; }
+            .fx-value, .clock-value, .clock-box.brasilia .clock-value { font-size: 17px; }
         }
         @media (max-width: 780px) {
-            .container { padding: 17px 12px; }
+            .container { padding: 12px; }
             #embarqueDetalheView { padding: 14px 12px; }
-            .topbar { margin-bottom: 17px; }
-            h1 { font-size: 28px; }
             .importacao-titulo-atalho { gap: 10px; }
             .importacao-atalho-medias { gap: 6px; padding: 8px; font-size: 11px; }
+            .importacao-controles { grid-template-columns: minmax(0, 1fr); }
             .toolbar .importacao-monitor { font-size: 11px; }
             .toolbar .importacao-acao { font-size: 10px; padding: 7px 8px; }
             .loja-filtro-card { padding: 7px 6px; gap: 5px; }
             .loja-filtro-nome { font-size: 11px; }
             .loja-filtro-contagem { font-size: 9px; }
-            #vistaMain .embarques-principal { padding: 8px; }
-            .listas-principal-cabecalho { margin-top: 19px; gap: 9px; }
-            .listas-principal-cabecalho h2 { font-size: 16px; }
-            .listas-principal-ajuda { display: none; }
-            #resumoListasImportacoes { font-size: 10px; }
-            #btnDensidadeListas { font-size: 9px; padding: 7px 8px; }
+            .embarques-principal { padding: 8px; }
             #listaWrap .lista-item--compacta { grid-template-columns: minmax(0, 1fr) 125px; grid-template-areas: 'pedido pedido' 'parceiros documentos' 'quantidade quantidade' 'valores valores'; gap: 13px; padding: 15px; }
             #listaWrap .lista-coluna-pedido { padding-right: 22px; }
             #listaWrap .lista-coluna-acoes { position: absolute; top: 14px; right: 10px; }
@@ -2036,11 +2145,15 @@
             #listaWrap .meta-usd strong { font-size: 15px; }
             #listaWrap .lista-card-atualizacao { flex-basis: 100%; margin-top: 0; }
         }
+        @media (max-width: 700px) {
+            .embarque-item { grid-template-columns: minmax(0, 1fr); }
+            .embarque-item .embarque-card-foto { padding: 0 14px 14px; }
+        }
         @media (max-width: 570px) {
             .importacao-contexto { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             .importacao-contexto .fx-box { grid-column: 1 / -1; }
-            .embarque-destaque { grid-template-columns: minmax(0, 1fr); }
-            .embarque-destaque-foto { min-height: 140px; }
+            .embarque-detalhe-capa { grid-template-columns: minmax(0, 1fr); }
+            .embarque-card-foto { min-height: 140px; }
         }
 
         /* Layout aprovado apenas para a lista principal; os controles mantêm seus editores. */
@@ -2150,108 +2263,116 @@
 </head>
 <body>
     <div class="container">
-        <header class="topbar">
-            <div class="importacao-titulo-atalho">
-                <div>
-                    <span class="importacao-titulo-rotulo">Compras internacionais</span>
-                    <h1>Importações</h1>
-                    <p class="importacao-titulo-descricao">Listas de pedidos, custos por SKU e embarques.</p>
-                </div>
-                <a class="importacao-atalho-medias" href="/medias_compras.html">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V7m5 8v-6"/></svg>
-                    <span>Médias e Pedidos</span>
-                </a>
-            </div>
-            <div class="importacao-contexto" role="group" aria-label="Cotação e horários">
-                <div class="fx-box">
-                    <div class="importacao-pais-icon cotacao-bandeiras">
-                        <svg class="importacao-bandeira" role="img" aria-label="Estados Unidos" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-us"></use></svg>
-                        <svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg>
-                    </div>
-                    <div class="fx-content">
-                        <div class="fx-label">Dólar x Real</div>
-                        <div class="fx-value-row">
-                            <div id="fxValue" class="fx-value">Carregando...</div>
-                            <span class="fx-currency">USD/BRL</span>
-                        </div>
-                        <div class="fx-update">Consulta em Brasília: <span id="fxTime" class="fx-time">--:--:--</span></div>
-                    </div>
-                </div>
-                <div class="clock-box brasilia">
-                    <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg></div>
-                    <div class="clock-content">
-                        <div class="clock-label">Brasília</div>
-                        <div id="clockBrasilia" class="clock-value">--:--:--</div>
-                        <div id="clockBrasiliaContexto" class="clock-contexto"></div>
-                    </div>
-                </div>
-                <div class="clock-box">
-                    <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="China" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-cn"></use></svg></div>
-                    <div class="clock-content">
-                        <div class="clock-label">Pequim</div>
-                        <div id="clockBeijing" class="clock-value">--:--:--</div>
-                        <div id="clockBeijingContexto" class="clock-contexto"></div>
-                    </div>
-                </div>
-            </div>
-            <a class="back-btn" href="/dashboard.html">Voltar</a>
-        </header>
-
         <div class="card">
-            <div class="toolbar">
-                <button class="btn importacao-acao importacao-acao--atualizar" id="btnAtualizar" type="button">Atualizar listas</button>
-                <button class="btn importacao-acao importacao-acao--importar" id="btnImportarPedidoMenu" type="button">Importar pedido por arquivo</button>
-                <span class="badge importacao-monitor">Status monitorado: Analisando orçamento</span>
-            </div>
-            <div id="status" class="muted" role="status">Carregando listas...</div>
-            <div id="cacheImportacoesStatus" class="muted" role="status" aria-live="polite"></div>
-
-            <!-- Vista: detalhe de embarque -->
-            <div id="embarqueDetalheView" style="display:none">
-                <div class="embarque-detalhe-bar">
-                    <button type="button" class="btn-back-embarque" id="btnVoltarEmbarque">← Voltar</button>
-                    <span class="embarque-detalhe-titulo" id="embarqueDetalheTitulo"></span>
+            <header class="importacao-capa">
+                <img class="importacao-foto-cabecalho" src="/assets/importacoes-cabecalho.webp" width="1280" height="853" alt="" decoding="async">
+                <div class="topbar">
+                    <div class="importacao-titulo-atalho">
+                        <div>
+                            <span class="importacao-titulo-rotulo">Compras internacionais</span>
+                            <h1>Importações</h1>
+                            <p class="importacao-titulo-descricao">Listas de pedidos, custos por SKU e embarques.</p>
+                        </div>
+                        <a class="importacao-atalho-medias" href="/medias_compras.html">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 4v16h16M8 15v-4m5 4V7m5 8v-6"/></svg>
+                            <span>Médias e Pedidos</span>
+                        </a>
+                        <a class="back-btn" href="/dashboard.html">Voltar</a>
+                    </div>
+                    <div class="importacao-contexto" role="group" aria-label="Cotação e horários">
+                        <div class="fx-box">
+                            <div class="importacao-pais-icon cotacao-bandeiras">
+                                <svg class="importacao-bandeira" role="img" aria-label="Estados Unidos" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-us"></use></svg>
+                                <svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg>
+                            </div>
+                            <div class="fx-content">
+                                <div class="fx-label">Dólar x Real</div>
+                                <div class="fx-value-row">
+                                    <div id="fxValue" class="fx-value">Carregando...</div>
+                                    <span class="fx-currency">USD/BRL</span>
+                                </div>
+                                <div class="fx-update">Consulta em Brasília: <span id="fxTime" class="fx-time">--:--:--</span></div>
+                            </div>
+                        </div>
+                        <div class="clock-box brasilia">
+                            <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="Brasil" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-br"></use></svg></div>
+                            <div class="clock-content">
+                                <div class="clock-label">Brasília</div>
+                                <div id="clockBrasilia" class="clock-value">--:--:--</div>
+                                <div id="clockBrasiliaContexto" class="clock-contexto"></div>
+                            </div>
+                        </div>
+                        <div class="clock-box">
+                            <div class="importacao-pais-icon"><svg class="importacao-bandeira" role="img" aria-label="China" focusable="false"><use href="/assets/importacoes-bandeiras.svg#importacao-bandeira-cn"></use></svg></div>
+                            <div class="clock-content">
+                                <div class="clock-label">Pequim</div>
+                                <div id="clockBeijing" class="clock-value">--:--:--</div>
+                                <div id="clockBeijingContexto" class="clock-contexto"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div id="embarqueInvoiceLine" class="embarque-invoice-line"></div>
-                <div id="embarqueDetalheMeta" style="display:none;"></div>
-                <div id="embarquePosicaoApi" class="embarque-posicao-api" style="display:none;"></div>
-                <div id="embarqueDetalheCards" class="emb-resumo-topo" style="margin-bottom:14px;"></div>
-                <div id="embarqueDetalheListas" class="lista-wrap"></div>
-            </div>
+                <div class="importacao-controles">
+                    <div class="importacao-navegacao" role="tablist" aria-label="Importações">
+                        <button type="button" role="tab" id="abaPedidosImportacoes" aria-controls="pedidosImportacoes" aria-selected="true">Pedidos</button>
+                        <button type="button" role="tab" id="abaEmbarquesImportacoes" aria-controls="painelEmbarquesImportacoes" aria-selected="false" tabindex="-1">Embarques</button>
+                    </div>
+                    <div class="toolbar">
+                        <div class="importacao-mensagens">
+                            <span class="badge importacao-monitor" data-apenas-pedidos>Status monitorado: Analisando orçamento</span>
+                            <div id="status" class="muted" role="status">Carregando listas...</div>
+                            <div id="cacheImportacoesStatus" class="muted" role="status" aria-live="polite"></div>
+                        </div>
+                        <div class="importacao-acoes">
+                            <button class="btn importacao-acao importacao-acao--atualizar" id="btnAtualizar" type="button">Atualizar listas</button>
+                            <button class="btn importacao-acao importacao-acao--importar" id="btnImportarPedidoMenu" type="button" data-apenas-pedidos>Importar pedido por arquivo</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="loja-filtro-area" role="group" aria-label="Filtrar listas por loja" data-apenas-pedidos>
+                    <div class="loja-filtro-label">Filtrar listas por loja</div>
+                    <div id="lojaFiltroListas" class="loja-filtro-grid"></div>
+                    <label class="busca-listas"><input type="search" id="buscarListasImportacoes" aria-label="Buscar listas por nome, Invoice, loja, fornecedor ou nacionalizador" placeholder="Buscar lista, Invoice ou fornecedor…" autocomplete="off"></label>
+                </div>
+            </header>
 
-            <!-- Vista principal -->
-            <div id="vistaMain">
-                <nav class="importacao-navegacao" aria-label="Seções de Importações">
-                    <a href="#pedidosImportacoes">Pedidos</a>
-                    <a href="#embarquesImportacoes">Embarques</a>
-                </nav>
-                <section id="embarqueDestaque" class="embarque-destaque" aria-labelledby="embarqueDestaqueTitulo" hidden></section>
-                <section id="pedidosImportacoes" aria-labelledby="listasImportacoesTitulo">
-                    <div class="listas-principal-cabecalho">
-                        <div><h2 id="listasImportacoesTitulo">Listas de pedidos <span id="contagemListasImportacoes">0</span></h2><div id="resumoListasImportacoes" aria-live="polite"></div></div>
-                        <div class="listas-principal-ferramentas"><span class="listas-principal-ajuda">Dois cliques para editar os campos</span><button type="button" id="btnDensidadeListas" aria-pressed="true">Visualização confortável</button></div>
+            <section id="pedidosImportacoes" role="tabpanel" aria-labelledby="abaPedidosImportacoes">
+                <div id="tabelaListasImportacoes" class="is-compacta">
+                    <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidade</span><span>Metragem e transporte</span><span>Estimado em BRL</span><span>Documentos</span><span></span></div>
+                    <div id="listaWrap" class="lista-wrap"></div>
+                </div>
+                <div class="listas-rodape">Enter salva · Esc cancela a edição</div>
+            </section>
+
+            <div id="painelEmbarquesImportacoes" role="tabpanel" aria-labelledby="abaEmbarquesImportacoes" hidden>
+                <div id="vistaEmbarques">
+                    <section class="embarques-principal" id="embarquesImportacoes" aria-label="Embarques">
+                        <div class="secao-header">
+                            <span class="secao-titulo">Embarques</span>
+                            <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
+                            <span id="badgeEmbarques" class="badge" style="font-size:0.82rem;padding:4px 10px;">0</span>
+                        </div>
+                        <div id="embarquesWrap" class="lista-wrap">
+                            <div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>
+                        </div>
+                    </section>
+                </div>
+                <div id="embarqueDetalheView" hidden>
+                    <div class="embarque-detalhe-capa">
+                        <div>
+                            <div class="embarque-detalhe-bar">
+                                <button type="button" class="btn-back-embarque" id="btnVoltarEmbarque">← Voltar</button>
+                                <span class="embarque-detalhe-titulo" id="embarqueDetalheTitulo"></span>
+                            </div>
+                            <div id="embarqueInvoiceLine" class="embarque-invoice-line"></div>
+                            <div id="embarqueDetalheMeta" style="display:none;"></div>
+                        </div>
+                        <figure id="embarqueDetalheFoto" class="embarque-card-foto"></figure>
                     </div>
-                    <div class="loja-filtro-area" aria-label="Filtrar listas por loja">
-                        <div class="loja-filtro-label">Filtrar listas por loja</div>
-                        <div id="lojaFiltroListas" class="loja-filtro-grid"></div>
-                        <label class="busca-listas"><input type="search" id="buscarListasImportacoes" aria-label="Buscar listas por nome, Invoice, loja, fornecedor ou nacionalizador" placeholder="Buscar lista, Invoice ou fornecedor…" autocomplete="off"></label>
-                    </div>
-                    <div id="tabelaListasImportacoes" class="is-compacta">
-                        <div class="listas-colunas-cabecalho" aria-hidden="true"><span>Lista de pedido</span><span>Dados comerciais</span><span>Quantidade</span><span>Metragem e transporte</span><span>Estimado em BRL</span><span>Documentos</span><span></span></div>
-                        <div id="listaWrap" class="lista-wrap"></div>
-                    </div>
-                    <div class="listas-rodape">Enter salva · Esc cancela a edição</div>
-                </section>
-                <section class="embarques-principal" id="embarquesImportacoes" aria-label="Embarques">
-                    <div class="secao-header">
-                        <span class="secao-titulo">Embarques</span>
-                        <button class="btn-embarque-org" id="btnOrganizarEmbarque" type="button">&#128230; Organizar Embarque</button>
-                        <span id="badgeEmbarques" class="badge" style="font-size:0.82rem;padding:4px 10px;">0</span>
-                    </div>
-                    <div id="embarquesWrap" class="lista-wrap">
-                        <div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>
-                    </div>
-                </section>
+                    <div id="embarquePosicaoApi" class="embarque-posicao-api" style="display:none;"></div>
+                    <div id="embarqueDetalheCards" class="emb-resumo-topo" style="margin-bottom:14px;"></div>
+                    <div id="embarqueDetalheListas" class="lista-wrap"></div>
+                </div>
             </div>
 
             <!-- Modal Organizar Embarque -->
@@ -2347,6 +2468,11 @@
         let cotacaoDolarAtual = 0;
         let todasListasCache = [];
         let detalheEmbarqueAtivo = null;
+        const fotoIlustrativaEmbarqueHtml = '<img src="/assets/importacoes-embarque.webp" width="1000" height="500" ' +
+            'alt="Navio porta-contêineres no mar" loading="lazy" decoding="async"><figcaption>Imagem ilustrativa</figcaption>';
+        const fotosNaviosPorImo = new Map();
+        const imosIdentificadosPorMmsi = new Map();
+        let filaFotosNavios = Promise.resolve();
         const invoicesSalvando = new Set();
         let lojasImportacoesCache = null;
         let lojasImportacoesPromise = null;
@@ -2558,14 +2684,6 @@
             return String(valor || '').trim().toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
         }
 
-        function atualizarResumoListasImportacoes(total) {
-            const contagem = document.getElementById('contagemListasImportacoes');
-            const resumo = document.getElementById('resumoListasImportacoes');
-            if (contagem) contagem.textContent = numero(total);
-            if (resumo) resumo.textContent = numero(total) + ' lista(s) exibida(s) · ' + numero(todasListasCache.length) + ' no total' +
-                (lojaFiltroImportacoes === '__todas' ? '' : ' · ' + nomeLojaFiltro(lojaFiltroImportacoes));
-        }
-
         function aplicarFiltroListasImportacoes(somenteBusca = false) {
             // Uma busca não desmonta os editores nem as requisições de salvamento em andamento.
             if (somenteBusca && (document.querySelector('#listaWrap input, #listaWrap [aria-busy="true"]') || invoicesSalvando.size)) {
@@ -2583,11 +2701,12 @@
             filtroListasPendente = null;
             const filtradas = listasFiltradasPorLoja();
             renderListas(filtradas);
-            if (!somenteBusca) {
-                renderEmbarques(todasListasCache);
+            if (!somenteBusca) renderEmbarques(todasListasCache);
+            // Uma busca atualiza a contagem quando ela é a mensagem exibida.
+            if (!somenteBusca || document.getElementById('status')?.hasAttribute('data-apenas-pedidos')) {
                 const nomeFiltro = nomeLojaFiltro(lojaFiltroImportacoes);
                 const sufixo = lojaFiltroImportacoes === '__todas' ? '' : ' | Loja: ' + nomeFiltro;
-                setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s)' + sufixo + '.');
+                setStatus('Total exibido: ' + numero(filtradas.length) + ' lista(s)' + sufixo + '.', true);
             }
         }
 
@@ -3211,9 +3330,12 @@
             }
         }
 
-        function setStatus(msg) {
+        function setStatus(msg, apenasPedidos = false) {
             const el = document.getElementById('status');
-            if (el) el.textContent = msg || '';
+            if (el) {
+                el.textContent = msg || '';
+                el.toggleAttribute('data-apenas-pedidos', apenasPedidos);
+            }
         }
 
         function removerChaveMapaLocal(storageKey, listaId) {
@@ -3655,7 +3777,6 @@
             if (!box) return;
             fecharMenuListaImportacoes();
             box.innerHTML = '';
-            atualizarResumoListasImportacoes(listas.length);
 
             if (!listas.length) {
                 const buscando = Boolean(document.getElementById('buscarListasImportacoes')?.value.trim());
@@ -4018,12 +4139,10 @@
             todasListasCache = [];
             renderFiltroLojasImportacoes([]);
             renderListas([]);
-            renderEmbarques([]);
-            document.getElementById('embarquesWrap')?.replaceChildren();
-            renderDestaqueEmbarque();
-            detalheEmbarqueAtivo = null;
-            const detalhe = document.getElementById('embarqueDetalheView');
-            if (detalhe) detalhe.style.display = 'none';
+            limparCartoesEmbarque(document.getElementById('embarquesWrap'));
+            document.getElementById('badgeEmbarques').textContent = '0';
+            imosIdentificadosPorMmsi.clear();
+            fecharDetalheEmbarque();
             statusCacheImportacoes(typeof mensagem === 'string' ? mensagem : 'Acesso expirado ou negado. Entre novamente para consultar as listas.');
         }
         window.addEventListener('jk:cache-persistente-auth-negado', negarAcessoCacheImportacoes);
@@ -4746,8 +4865,12 @@
                 if (!consultaAtiva()) return null;
                 if (!response.ok) {
                     if (response.status === 503 && payload?.detail?.codigo === 'api_nao_configurada') {
-                        var imo = textoRastreamentoEmbarque(embarque.numero_imo);
-                        var mmsi = textoRastreamentoEmbarque(embarque.numero_mmsi);
+                        var imo = identificador.tipo === 'imo'
+                            ? identificador.valor
+                            : imosIdentificadosPorMmsi.get(identificador.valor) || '';
+                        // O mapa e a foto devem usar o mesmo IMO quando ele já é conhecido.
+                        var mmsi = mostrarMapa && imo ? '' : textoRastreamentoEmbarque(embarque.numero_mmsi);
+                        var dicaFoto = imo ? '' : ' Para buscar a foto real, informe o IMO da ficha AIS ao editar o embarque.';
                         var consulta = null;
                         if (typeof window.electronAPI?.openPublicVesselPosition === 'function') {
                             if (painel) painel.textContent = 'Carregando a consulta pública no navegador do JK...';
@@ -4757,14 +4880,15 @@
                         if (!consultaAtiva()) return null;
                         if (!consulta?.success) {
                             var mensagemLink = consulta?.message || 'Consulte a última posição no mapa público.';
-                            var mapaPublicoUrl = mmsi
-                                ? 'https://wingo-marine.com/ship/' + encodeURIComponent(mmsi)
-                                : 'https://www.vesselfinder.com/?imo=' + encodeURIComponent(imo);
+                            var mapaPublicoUrl = imo
+                                ? 'https://www.vesselfinder.com/?imo=' + encodeURIComponent(imo)
+                                : 'https://wingo-marine.com/ship/' + encodeURIComponent(mmsi);
                             if (painel) {
                                 painel.className = 'embarque-posicao-api';
                                 painel.innerHTML = escaparHtml(mensagemLink)
                                     + ' <a class="posicao-api-mapa" href="' + escaparHtml(mapaPublicoUrl)
-                                    + '" target="_blank" rel="noopener noreferrer">Abrir mapa público do navio</a>';
+                                    + '" target="_blank" rel="noopener noreferrer">Abrir mapa público do navio</a>'
+                                    + dicaFoto;
                             }
                             setStatus(mensagemLink);
                             return null;
@@ -4780,7 +4904,7 @@
                         }
                         if (painel) {
                             painel.className = 'embarque-posicao-api';
-                            painel.textContent = mensagemConsulta;
+                            painel.textContent = mensagemConsulta + dicaFoto;
                         }
                         setStatus(mensagemConsulta);
                         return consulta;
@@ -4791,6 +4915,7 @@
                     painel.className = 'embarque-posicao-api';
                     painel.innerHTML = montarPosicaoNavioApiHtml(payload, mostrarMapa);
                 }
+                registrarImoFotoNavio(identificador, payload?.navio);
                 var atualizadaEm = payload && payload.posicao ? formatarDataRastreamentoApi(payload.posicao.atualizada_em_utc) : '-';
                 setStatus('Posição AIS atualizada pela API. Último sinal: ' + atualizadaEm + '.');
                 return payload;
@@ -4808,7 +4933,7 @@
             }
         }
 
-        function montarMetaRastreamentoEmbarqueHtml(embarque, incluirAcoes, mostrarVazio) {
+        function montarMetaRastreamentoEmbarqueHtml(embarque, { detalhe = false } = {}) {
             var emb = embarque || {};
             var pills = [];
             function adicionar(classe, rotulo, valor) {
@@ -4824,16 +4949,18 @@
             adicionar('meta-rota', 'Viagem', emb.numero_viagem);
             adicionar('meta-rota', 'IMO', emb.numero_imo);
             adicionar('meta-rota', 'MMSI', emb.numero_mmsi);
-            var pol = textoRastreamentoEmbarque(emb.porto_origem);
-            var pod = textoRastreamentoEmbarque(emb.porto_destino);
-            if (pol || pod) adicionar('meta-rota', 'Rota', (pol || '?') + ' → ' + (pod || '?'));
-            adicionar('meta-booking', 'ETD', emb.etd);
-            adicionar('meta-booking', 'ETA', emb.eta);
-
-            if (!pills.length && mostrarVazio) {
-                pills.push('<span class="embarque-rastreamento-vazio">Dados de rastreamento ainda não informados.</span>');
+            if (detalhe) {
+                var pol = textoRastreamentoEmbarque(emb.porto_origem);
+                var pod = textoRastreamentoEmbarque(emb.porto_destino);
+                if (pol || pod) adicionar('meta-rota', 'Rota', (pol || '?') + ' → ' + (pod || '?'));
             }
-            if (incluirAcoes) {
+            adicionar('meta-booking', 'ETD', emb.etd);
+
+            if (detalhe) {
+                adicionar('meta-booking', 'ETA', emb.eta);
+                if (!pills.length) {
+                    pills.push('<span class="embarque-rastreamento-vazio">Dados de rastreamento ainda não informados.</span>');
+                }
                 pills.push('<span class="embarque-rastreamento-acoes">' +
                     '<button type="button" class="btn-embarque-rastrear" data-detalhe-acao="rastrear-carga">&#128506; Rastrear carga</button>' +
                     '<button type="button" class="btn-embarque-rastrear" data-detalhe-acao="rastrear-navio">&#128674; Atualizar posição AIS</button>' +
@@ -4854,124 +4981,229 @@
             return formatarM3(totais.totalM3) + (parcial ? ' (parcial)' : '');
         }
 
-        function renderDestaqueEmbarque(embarque, totais, todasListas) {
-            const destaque = document.getElementById('embarqueDestaque');
-            if (!destaque) return;
-            destaque.hidden = !embarque;
-            if (!embarque) {
-                destaque.replaceChildren();
+        function imoValidoParaFoto(valor) {
+            const imo = textoRastreamentoEmbarque(valor);
+            return /^[1-9]\d{6}$/.test(imo) && !erroIdentificadorAisEmbarque({ numero_imo: imo }) ? imo : '';
+        }
+
+        function consultarFotoNavio(imo) {
+            const agora = Date.now();
+            const anterior = fotosNaviosPorImo.get(imo);
+            if (anterior && anterior.expiraEm > agora) return anterior.consulta;
+            if (!anterior && fotosNaviosPorImo.size >= 64) fotosNaviosPorImo.delete(fotosNaviosPorImo.keys().next().value);
+            const consulta = filaFotosNavios.then(async () => {
+                const resposta = await fetch('/api/importacoes/rastreamento/navio/foto?imo=' + encodeURIComponent(imo), {
+                    headers: obterAuthHeaders(),
+                    signal: AbortSignal.timeout(15000),
+                });
+                if (!resposta.ok) return null;
+                const { foto } = await resposta.json();
+                return foto?.imo === imo ? foto : null;
+            }).catch(() => null);
+            filaFotosNavios = consulta;
+            fotosNaviosPorImo.set(imo, { consulta, expiraEm: agora + 300000 });
+            return consulta;
+        }
+
+        function urlPermitidaFotoNavio(valor, hosts, prefixo) {
+            if (typeof valor !== 'string') return '';
+            try {
+                const url = new URL(valor);
+                if (url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+                    hosts.includes(url.hostname) && url.pathname.startsWith(prefixo)) return url.href;
+            } catch (_erro) { /* URLs ausentes ou inválidas não substituem a ilustração. */ }
+            return '';
+        }
+
+        async function mostrarFotoNavio(figura) {
+            const imo = figura.dataset.imoFoto;
+            if (!imo || !figura.isConnected) return;
+            const foto = await consultarFotoNavio(imo);
+            if (!foto || !figura.isConnected || figura.dataset.imoFoto !== imo) return;
+            const imagemUrl = urlPermitidaFotoNavio(foto.imagem_url, ['thumb.wikimedia.org', 'upload.wikimedia.org'], '/wikipedia/commons/');
+            const arquivoUrl = urlPermitidaFotoNavio(foto.arquivo_url, ['commons.wikimedia.org'], '/wiki/File:');
+            const autor = textoRastreamentoEmbarque(foto.autor);
+            const licenca = textoRastreamentoEmbarque(foto.licenca);
+            if (!imagemUrl || !arquivoUrl || !autor || !licenca) return;
+
+            const imagem = new Image();
+            imagem.className = 'embarque-foto-real';
+            imagem.alt = 'Foto do navio IMO ' + imo;
+            imagem.decoding = 'async';
+            imagem.referrerPolicy = 'no-referrer';
+            imagem.src = imagemUrl;
+            try {
+                await imagem.decode();
+            } catch (_erro) {
                 return;
             }
+            if (!figura.isConnected || figura.dataset.imoFoto !== imo) return;
+            const fonte = document.createElement('a');
+            fonte.href = arquivoUrl;
+            fonte.target = '_blank';
+            fonte.rel = 'noopener noreferrer';
+            fonte.textContent = autor;
+            const licencaUrl = urlPermitidaFotoNavio(foto.licenca_url, ['creativecommons.org'], '/');
+            let creditoLicenca = licenca;
+            if (licencaUrl) {
+                creditoLicenca = fonte.cloneNode();
+                creditoLicenca.href = licencaUrl;
+                creditoLicenca.textContent = licenca;
+            }
+            figura.querySelector('img').replaceWith(imagem);
+            figura.querySelector('figcaption').replaceChildren('IMO ' + imo + ' · Foto por ', fonte, ' · ', creditoLicenca);
+        }
 
+        const observadorFotosNavios = typeof IntersectionObserver === 'function'
+            ? new IntersectionObserver(registros => {
+                for (const registro of registros) {
+                    if (!registro.isIntersecting) continue;
+                    observadorFotosNavios.unobserve(registro.target);
+                    void mostrarFotoNavio(registro.target);
+                }
+            })
+            : null;
+
+        function vincularImoFotoNavio(figura, imo) {
+            if (!imo || figura.dataset.imoFoto === imo) return;
+            if (figura.dataset.imoFoto) figura.innerHTML = fotoIlustrativaEmbarqueHtml;
+            figura.dataset.imoFoto = imo;
+            if (observadorFotosNavios) observadorFotosNavios.observe(figura);
+            else void mostrarFotoNavio(figura);
+        }
+
+        function prepararFotoEmbarque(figura, embarque) {
+            if (!figura) return;
+            observadorFotosNavios?.unobserve(figura);
+            delete figura.dataset.imoFoto;
+            delete figura.dataset.mmsiFoto;
+            figura.replaceChildren();
+            if (!embarque) return;
+            figura.innerHTML = fotoIlustrativaEmbarqueHtml;
+            const identificador = obterIdentificadorAisEmbarque(embarque);
+            if (identificador?.tipo === 'imo') {
+                vincularImoFotoNavio(figura, imoValidoParaFoto(identificador.valor));
+                return;
+            }
+            const mmsi = identificador?.valor || '';
+            if (!/^\d{9}$/.test(mmsi)) return;
+            figura.dataset.mmsiFoto = mmsi;
+            vincularImoFotoNavio(figura, imosIdentificadosPorMmsi.get(mmsi));
+        }
+
+        function registrarImoFotoNavio(identificador, navio) {
+            if (identificador.tipo !== 'mmsi' || textoRastreamentoEmbarque(navio?.mmsi) !== identificador.valor) return;
+            const imo = imoValidoParaFoto(navio?.imo);
+            if (!imo) return;
+            imosIdentificadosPorMmsi.set(identificador.valor, imo);
+            for (const figura of document.querySelectorAll('.embarque-card-foto[data-mmsi-foto]')) {
+                if (figura.dataset.mmsiFoto === identificador.valor) vincularImoFotoNavio(figura, imo);
+            }
+        }
+
+        function limparCartoesEmbarque(box) {
+            if (!box) return;
+            for (const figura of box.querySelectorAll('.embarque-card-foto')) observadorFotosNavios?.unobserve(figura);
+            box.replaceChildren();
+        }
+
+        function montarCartaoEmbarqueHtml(embarque, totais) {
             const nome = textoRastreamentoEmbarque(embarque.nome) || 'Embarque sem nome';
             const origem = textoRastreamentoEmbarque(embarque.porto_origem);
             const destino = textoRastreamentoEmbarque(embarque.porto_destino);
-            const rota = origem && destino ? origem + ' → ' + destino : '';
+            const rota = origem || destino ? (origem || '?') + ' → ' + (destino || '?') : '';
             const eta = textoRastreamentoEmbarque(embarque.eta);
             const dataChegada = /^\d{4}-\d{2}-\d{2}$/.test(eta) ? eta.split('-').reverse().join('/') : eta;
-            destaque.innerHTML =
-                '<div class="embarque-destaque-info">' +
-                    '<span class="embarque-destaque-rotulo">Embarque em destaque</span>' +
-                    '<h2 id="embarqueDestaqueTitulo">' + escaparHtml(rota || nome) + '</h2>' +
-                    (rota ? '<p class="embarque-destaque-nome">' + escaparHtml(nome) + '</p>' : '') +
-                    '<dl class="embarque-destaque-dados">' +
-                        '<div><dt>Chegada prevista</dt><dd>' + escaparHtml(dataChegada || 'A confirmar') + '</dd></div>' +
-                        '<div><dt>Metragem da carga</dt><dd class="embarque-destaque-metragem">' + formatarMetragemEmbarque(totais) + '</dd></div>' +
-                    '</dl>' +
-                    '<button type="button" class="embarque-destaque-abrir">Ver embarque <span aria-hidden="true">→</span></button>' +
-                '</div>' +
-                '<figure class="embarque-destaque-foto">' +
-                    '<img src="/assets/importacoes-embarque.webp" width="1000" height="500" alt="Navio porta-contêineres no mar" loading="lazy" decoding="async">' +
-                    '<figcaption>Imagem ilustrativa</figcaption>' +
-                '</figure>';
-            destaque.querySelector('button').addEventListener('click', function() {
-                abrirDetalheEmbarque(embarque, todasListas);
-                document.getElementById('btnVoltarEmbarque')?.focus();
+            const mapaDisponivel = obterIdentificadorAisEmbarque(embarque) && !erroIdentificadorAisEmbarque(embarque);
+            const listaUnica = obterListaUnicaEmbarque(embarque.lista_ids || [], totais.listas);
+            const invoices = totais.listas.map(lista => {
+                const invoice = obterInvoiceLista(lista, String(lista.id || '')).trim();
+                const rotulo = invoice || String(lista.nome_lista || 'Sem nome');
+                return '<span class="meta-pill meta-invoice" data-invoice-summary-id="' + escaparHtml(lista.id) + '">' +
+                    '<strong>' + escaparHtml(rotulo) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(lista)) + '</span></span>';
             });
+            return '<div class="embarque-card-info">' +
+                    '<div class="embarque-card-cabecalho">' +
+                        '<div class="embarque-card-identificacao">' +
+                            '<div class="embarque-card-titulo">' +
+                                '<span class="embarque-card-rotulo">Embarque</span>' +
+                                '<h3>' + escaparHtml(rota || nome) + '</h3>' +
+                                (rota ? '<p class="embarque-card-nome">' + escaparHtml(nome) + '</p>' : '') +
+                            '</div>' +
+                            '<div class="embarque-card-resumo">' +
+                                '<dl class="embarque-card-dados">' +
+                                    '<div><dt>Chegada prevista</dt><dd>' + escaparHtml(dataChegada || 'A confirmar') + '</dd></div>' +
+                                    '<div><dt>Metragem da carga</dt><dd class="embarque-card-metragem">' + formatarMetragemEmbarque(totais) + '</dd></div>' +
+                                    '<div><dt>Listas</dt><dd>' + totais.qtdListas + '</dd></div>' +
+                                    '<div><dt>Qtd. total</dt><dd>' + numero(totais.totalQtd) + '</dd></div>' +
+                                '</dl>' +
+                                '<div class="meta-resumo">' +
+                                    '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
+                                    '<span class="meta-pill meta-brl">Total R$: ' + estimativaBrlHtml(totais.totalUsd, listaUnica) + '</span>' +
+                                '</div>' +
+                            '</div>' +
+                        '</div>' +
+                        (invoices.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + invoices.join('') + '</div>' : '') +
+                    '</div>' +
+                    montarMetaRastreamentoEmbarqueHtml(embarque) +
+                    '<div class="embarque-card-acoes">' +
+                        '<button type="button" class="embarque-card-abrir" data-acao="abrir" aria-label="Ver embarque ' + escaparHtml(nome) + '">' +
+                            'Ver embarque <span aria-hidden="true">→</span></button>' +
+                        '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-carga">&#128506; Rastrear carga</button>' +
+                        '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-navio">&#128674; Atualizar posição AIS</button>' +
+                        '<button type="button" class="btn-embarque-rastrear" data-acao="mapa-navio"' +
+                            (mapaDisponivel ? '' : ' disabled title="Informe um IMO ou MMSI válido ao editar o embarque."') + '>Ver mapa AIS</button>' +
+                        '<button type="button" class="btn-embarque-editar" data-acao="editar">Editar</button>' +
+                        '<button type="button" class="btn-embarque-del" data-acao="excluir">Excluir</button>' +
+                    '</div>' +
+                '</div>' +
+                '<figure class="embarque-card-foto"></figure>';
         }
 
         function renderEmbarques(todasListas) {
-            var box = document.getElementById('embarquesWrap');
-            var badge = document.getElementById('badgeEmbarques');
+            const box = document.getElementById('embarquesWrap');
+            const badge = document.getElementById('badgeEmbarques');
             if (!box) return;
-            var embarques = carregarEmbarques();
+            const embarques = carregarEmbarques();
+            limparCartoesEmbarque(box);
             if (badge) badge.textContent = embarques.length;
             if (!embarques.length) {
-                renderDestaqueEmbarque();
                 box.innerHTML = '<div class="empty">Nenhum embarque criado. Clique em “Organizar Embarque” para criar.</div>';
                 return;
             }
-            box.innerHTML = '';
-            embarques.forEach(function(emb, indice) {
-                var totais = calcularTotaisEmbarque(emb.lista_ids, todasListas);
-                if (indice === embarques.length - 1) renderDestaqueEmbarque(emb, totais, todasListas);
-                const listaUnica = obterListaUnicaEmbarque(emb.lista_ids || [], totais.listas);
-                var el = document.createElement('div');
-                el.className = 'embarque-item';
-                el.setAttribute('role', 'button');
-                el.setAttribute('tabindex', '0');
-                el.innerHTML =
-                    '<div class="linha-topo">' +
-                        '<div class="embarque-nome">' + escaparHtml(emb.nome || 'Embarque sem nome') + '</div>' +
-                        '<div class="acoes-direita">' +
-                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-carga">&#128506; Rastrear carga</button>' +
-                            '<button type="button" class="btn-embarque-rastrear" data-acao="rastrear-navio">&#128674; Atualizar posição AIS</button>' +
-                            '<button type="button" class="btn-embarque-editar" data-acao="editar">Editar</button>' +
-                            '<button type="button" class="btn-embarque-del" data-acao="excluir">Excluir</button>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="meta">' + totais.qtdListas + ' lista(s)&nbsp;&nbsp;|&nbsp;&nbsp;Qtd total: ' + numero(totais.totalQtd) + '</div>' +
-                    (function() {
-                            var pills = totais.listas.map(function(l) {
-                                var inv = obterInvoiceLista(l, String(l.id || '')).trim();
-                                var label = inv || String(l.nome_lista || 'Sem nome');
-                                return '<span class="meta-pill meta-invoice" data-invoice-summary-id="' + escaparHtml(l.id) + '"><strong>' + escaparHtml(label) + '</strong><span class="lista-loja-sufixo">' + escaparHtml(obterLojaLista(l)) + '</span></span>';
-                            });
-                            return pills.length ? '<div class="meta-resumo meta-linha-invoice"><span class="emb-inv-label">N\u00b0 Invoice:</span>' + pills.join('') + '</div>' : '';
-                        })() +
-                    montarMetaRastreamentoEmbarqueHtml(emb, false, false) +
-                    '<div class="meta-resumo">' +
-                        '<span class="meta-pill meta-m3">Metragem total: <strong>' + formatarMetragemEmbarque(totais) + '</strong></span>' +
-                        '<span class="meta-pill meta-usd">Total $: <strong>' + (totais.totalUsd > 0 ? formatarUSD(totais.totalUsd) : '-') + '</strong></span>' +
-                        '<span class="meta-pill meta-brl">Total R$: ' + estimativaBrlHtml(totais.totalUsd, listaUnica) + '</span>' +
-                    '</div>';
-                el.addEventListener('click', function(ev) {
-                    var acao = ev.target.closest('[data-acao]');
-                    if (acao) {
-                        ev.stopPropagation();
-                        var tipo = acao.dataset.acao;
-                        if (tipo === 'rastrear-carga') {
-                            abrirRastreamentoCarga(emb, acao);
-                        } else if (tipo === 'rastrear-navio') {
-                            abrirDetalheEmbarque(emb, todasListas);
-                            var btnApiDetalhe = document.querySelector('[data-detalhe-acao="rastrear-navio"]');
-                            atualizarPosicaoNavioApi(emb, btnApiDetalhe);
-                        } else if (tipo === 'editar') {
-                            abrirModalEmbarque(emb.id, todasListas);
-                        } else if (tipo === 'excluir') {
-                            if (window.confirm('Excluir embarque "' + (emb.nome || 'Embarque') + '"? As listas não serão excluídas.')) {
-                                var novos = carregarEmbarques().filter(function(e) { return e.id !== emb.id; });
-                                salvarEmbarquesStorage(novos);
-                                renderEmbarques(todasListasCache);
-                            }
+            for (const embarque of embarques) {
+                const totais = calcularTotaisEmbarque(embarque.lista_ids, todasListas);
+                const cartao = document.createElement('article');
+                cartao.className = 'embarque-item';
+                cartao.innerHTML = montarCartaoEmbarqueHtml(embarque, totais);
+                cartao.addEventListener('click', evento => {
+                    if (evento.target.closest('a')) return;
+                    const acao = evento.target.closest('[data-acao]');
+                    const tipo = acao?.dataset.acao || 'abrir';
+                    if (tipo === 'rastrear-carga') {
+                        abrirRastreamentoCarga(embarque, acao);
+                    } else if (tipo === 'editar') {
+                        abrirModalEmbarque(embarque.id, todasListas);
+                    } else if (tipo === 'excluir') {
+                        if (!window.confirm('Excluir embarque "' + (embarque.nome || 'Embarque') + '"? As listas não serão excluídas.')) return;
+                        salvarEmbarquesStorage(carregarEmbarques().filter(outro => outro.id !== embarque.id));
+                        renderEmbarques(todasListasCache);
+                    } else {
+                        abrirDetalheEmbarque(embarque, todasListas);
+                        if (tipo === 'rastrear-navio' || tipo === 'mapa-navio') {
+                            const botao = document.querySelector('[data-detalhe-acao="' + tipo + '"]');
+                            atualizarPosicaoNavioApi(embarque, botao, tipo === 'mapa-navio');
                         }
-                        return;
-                    }
-                    abrirDetalheEmbarque(emb, todasListas);
-                });
-                el.addEventListener('keydown', function(ev) {
-                    if ((ev.key === 'Enter' || ev.key === ' ') && !ev.target.closest('button')) {
-                        ev.preventDefault();
-                        abrirDetalheEmbarque(emb, todasListas);
                     }
                 });
-                box.appendChild(el);
-            });
+                box.appendChild(cartao);
+                prepararFotoEmbarque(cartao.querySelector('.embarque-card-foto'), embarque);
+            }
         }
 
         function abrirDetalheEmbarque(embarque, todasListas) {
             var view = document.getElementById('embarqueDetalheView');
-            var main = document.getElementById('vistaMain');
+            var main = document.getElementById('vistaEmbarques');
             var titulo = document.getElementById('embarqueDetalheTitulo');
             var metaDiv = document.getElementById('embarqueDetalheMeta');
             var cardsDiv = document.getElementById('embarqueDetalheCards');
@@ -5004,7 +5236,7 @@
             }
 
             if (metaDiv) {
-                metaDiv.innerHTML = montarMetaRastreamentoEmbarqueHtml(embarque, true, true);
+                metaDiv.innerHTML = montarMetaRastreamentoEmbarqueHtml(embarque, { detalhe: true });
                 metaDiv.style.display = '';
                 var btnRastrearCarga = metaDiv.querySelector('[data-detalhe-acao="rastrear-carga"]');
                 var btnRastrearNavio = metaDiv.querySelector('[data-detalhe-acao="rastrear-navio"]');
@@ -5114,19 +5346,23 @@
                     listasBox.appendChild(elL);
                 });
             }
-            main.style.display = 'none';
-            view.style.display = '';
+            main.hidden = true;
+            view.hidden = false;
+            selecionarAbaImportacoes(abaEmbarquesImportacoes);
+            prepararFotoEmbarque(document.getElementById('embarqueDetalheFoto'), embarque);
+            document.getElementById('btnVoltarEmbarque')?.focus();
         }
 
         function fecharDetalheEmbarque() {
             detalheEmbarqueAtivo = null;
             var view = document.getElementById('embarqueDetalheView');
-            var main = document.getElementById('vistaMain');
+            var main = document.getElementById('vistaEmbarques');
             var invLine = document.getElementById('embarqueInvoiceLine');
             var metaDiv = document.getElementById('embarqueDetalheMeta');
             var painelPosicao = document.getElementById('embarquePosicaoApi');
-            if (view) view.style.display = 'none';
-            if (main) main.style.display = '';
+            if (view) view.hidden = true;
+            if (main) main.hidden = false;
+            prepararFotoEmbarque(document.getElementById('embarqueDetalheFoto'), null);
             if (invLine) invLine.innerHTML = '';
             if (metaDiv) {
                 metaDiv.innerHTML = '';
@@ -5318,12 +5554,6 @@
 
         const buscaListas = document.getElementById('buscarListasImportacoes');
         buscaListas?.addEventListener('input', () => aplicarFiltroListasImportacoes(true));
-        const densidadeListas = document.getElementById('btnDensidadeListas');
-        densidadeListas?.addEventListener('click', () => {
-            const compacta = document.getElementById('tabelaListasImportacoes').classList.toggle('is-compacta');
-            densidadeListas.textContent = compacta ? 'Visualização confortável' : 'Visualização compacta';
-            densidadeListas.setAttribute('aria-pressed', String(compacta));
-        });
         const menuLista = document.getElementById('menuListaImportacoes');
         menuLista.addEventListener('click', ev => {
             const botao = ev.target.closest('button');
@@ -5355,6 +5585,53 @@
         document.addEventListener('scroll', () => fecharMenuListaImportacoes(), true);
 
         // ─── Button wiring ─────────────────────────────────────────────────────────
+
+        const abaPedidosImportacoes = document.getElementById('abaPedidosImportacoes');
+        const abaEmbarquesImportacoes = document.getElementById('abaEmbarquesImportacoes');
+        const abasImportacoes = [abaPedidosImportacoes, abaEmbarquesImportacoes];
+
+        function selecionarAbaImportacoes(selecionada) {
+            for (const aba of abasImportacoes) {
+                const ativa = aba === selecionada;
+                aba.setAttribute('aria-selected', String(ativa));
+                aba.tabIndex = ativa ? 0 : -1;
+                document.getElementById(aba.getAttribute('aria-controls')).hidden = !ativa;
+            }
+            fecharMenuListaImportacoes();
+        }
+
+        for (const aba of abasImportacoes) {
+            aba.addEventListener('click', () => selecionarAbaImportacoes(aba));
+            aba.addEventListener('keydown', evento => {
+                let proxima;
+                switch (evento.key) {
+                    case 'Home':
+                        proxima = abaPedidosImportacoes;
+                        break;
+                    case 'End':
+                        proxima = abaEmbarquesImportacoes;
+                        break;
+                    case 'ArrowLeft':
+                    case 'ArrowRight':
+                        proxima = aba === abaPedidosImportacoes ? abaEmbarquesImportacoes : abaPedidosImportacoes;
+                        break;
+                    default:
+                        return;
+                }
+                evento.preventDefault();
+                selecionarAbaImportacoes(proxima);
+                proxima.focus();
+            });
+        }
+
+        const embarqueInicial = new URLSearchParams(window.location.search).get('embarque_id');
+        function selecionarAbaImportacoesPelaUrl() {
+            const hash = window.location.hash;
+            const abrirEmbarques = hash === '#embarquesImportacoes' || (hash !== '#pedidosImportacoes' && embarqueInicial);
+            selecionarAbaImportacoes(abrirEmbarques ? abaEmbarquesImportacoes : abaPedidosImportacoes);
+        }
+        selecionarAbaImportacoesPelaUrl();
+        window.addEventListener('hashchange', selecionarAbaImportacoesPelaUrl);
 
         const btnAtualizar = document.getElementById('btnAtualizar');
         if (btnAtualizar) {
@@ -5399,7 +5676,10 @@
 
         const btnVoltarEmbarque = document.getElementById('btnVoltarEmbarque');
         if (btnVoltarEmbarque) {
-            btnVoltarEmbarque.addEventListener('click', fecharDetalheEmbarque);
+            btnVoltarEmbarque.addEventListener('click', function() {
+                fecharDetalheEmbarque();
+                abaEmbarquesImportacoes.focus({ preventScroll: true });
+            });
         }
 
         document.addEventListener('keydown', function(ev) {
@@ -5411,12 +5691,9 @@
         atualizarHorariosImportacoes();
         setInterval(atualizarHorariosImportacoes, 1000);
         carregarListasImportacoes().then(function() {
-            var params = new URLSearchParams(window.location.search);
-            var openEmbId = params.get('embarque_id');
-            if (openEmbId) {
-                var emb = carregarEmbarques().find(function(e) { return String(e.id) === String(openEmbId); });
-                if (emb) abrirDetalheEmbarque(emb, todasListasCache);
-            }
+            if (!embarqueInicial || acessoNegadoListasImportacoes || abaEmbarquesImportacoes.getAttribute('aria-selected') !== 'true') return;
+            const embarque = carregarEmbarques().find(e => String(e.id) === embarqueInicial);
+            if (embarque) abrirDetalheEmbarque(embarque, todasListasCache);
         });
         requestAnimationFrame(() => {
             const fonte = document.createElement('link');

@@ -6,6 +6,7 @@ from types import ModuleType
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.services.importacoes_foto_navio import buscar_foto_navio
 from backend.services.importacoes_tracking import (
     ErroRastreamentoNavio,
     rastrear_navio_datalastic,
@@ -27,6 +28,9 @@ def create_importacoes_router(_legacy_module: ModuleType | None = None) -> APIRo
                 detail={"codigo": exc.codigo, "mensagem": exc.mensagem},
             ) from exc
 
+    def api_importacoes_foto_navio(imo: str = ""):
+        return {"foto": buscar_foto_navio(imo)}
+
     dependency = getattr(_legacy_module, "get_tenant_id", None) if _legacy_module else None
     dependencies = [Depends(dependency)] if callable(dependency) else []
     importacoes_router.add_api_route(
@@ -34,6 +38,13 @@ def create_importacoes_router(_legacy_module: ModuleType | None = None) -> APIRo
         api_importacoes_rastrear_navio,
         methods=["GET"],
         name="api_importacoes_rastrear_navio",
+        dependencies=dependencies,
+    )
+    importacoes_router.add_api_route(
+        "/api/importacoes/rastreamento/navio/foto",
+        api_importacoes_foto_navio,
+        methods=["GET"],
+        name="api_importacoes_foto_navio",
         dependencies=dependencies,
     )
     return importacoes_router

@@ -65,7 +65,8 @@ async function start({ hold = false, holdFont = false, revision = 1, fail = fals
         if (url.hostname === 'economia.awesomeapi.com.br') return json(route, { USDBRL: { bid: '5' } });
         assert.equal(url.origin, origin, 'Nenhuma API real pode ser acessada.');
         const p = url.pathname;
-        if (p === '/assets/importacoes-bandeiras.svg' || p === '/assets/importacoes-embarque.webp') {
+        if (p === '/assets/importacoes-bandeiras.svg' || p === '/assets/importacoes-embarque.webp'
+            || p === '/assets/importacoes-cabecalho.webp') {
             return route.fulfill({ path: path.join(root, 'static', p.slice(1)) });
         }
         if (p === '/auth.js') return route.fulfill({ contentType: 'application/javascript',

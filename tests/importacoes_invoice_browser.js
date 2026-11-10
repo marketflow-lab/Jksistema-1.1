@@ -85,7 +85,8 @@ async function installRoutes(page) {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
           body: fs.readFileSync(path.join(root, 'static', 'importacoes.html')) });
       }
-      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp') {
+      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp'
+          || pathname === '/assets/importacoes-cabecalho.webp') {
         return route.fulfill({ path: path.join(root, 'static', pathname.slice(1)) });
       }
       if (pathname === '/cache-persistente.js') {
@@ -232,7 +233,9 @@ async function closedOtherField(page, id, field, value) {
 }
 
 async function openBoarding(page) {
-  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque demonstrativo' }).click();
+  await page.getByRole('tab', { name: 'Embarques', exact: true }).click();
+  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque demonstrativo' })
+    .getByRole('button', { name: /^Ver embarque\b/ }).click();
   await page.locator('#embarqueDetalheView').waitFor({ state: 'visible' });
 }
 
@@ -400,6 +403,7 @@ async function testSlowPUTAndCopies(page) {
   }
   assert.strictEqual(page.url(), currentURL, 'Edição no embarque não deve abrir o detalhe da lista');
   await page.locator('#btnVoltarEmbarque').click();
+  await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
 }
 
 async function testOutOfOrderResponses(page) {

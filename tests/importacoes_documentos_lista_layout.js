@@ -21,13 +21,11 @@ assert(markup.includes('<button type="button" class="documento-lista-card docume
   'Packing List deve oferecer upload ou download com semântica de botão, preservando o cartão.');
 
 for (const id of [
-  'buscarListasImportacoes', 'btnDensidadeListas', 'tabelaListasImportacoes',
-  'contagemListasImportacoes', 'listaWrap', 'menuListaImportacoes',
+  'buscarListasImportacoes', 'tabelaListasImportacoes', 'listaWrap', 'menuListaImportacoes',
 ]) {
   assert.strictEqual(html.split('id="' + id + '"').length - 1, 1, 'ID deve ser único: ' + id);
 }
 assert(html.includes('class="listas-colunas-cabecalho"'), 'A lista deve ter cabeçalhos para comparar os pedidos.');
-assert(html.includes('Dois cliques para editar os campos'), 'A tela deve explicar a edição existente.');
 const menuStart = html.indexOf('<div id="menuListaImportacoes"');
 const menuEnd = html.indexOf('</div>', menuStart);
 const menu = html.slice(menuStart, menuEnd);

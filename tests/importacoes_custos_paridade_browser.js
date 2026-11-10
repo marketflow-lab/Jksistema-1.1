@@ -128,7 +128,8 @@ async function lerValor(page, painel, rotulo, complemento = false) {
 }
 
 async function abrirEmbarque(page) {
-  await page.locator('#embarquesWrap .embarque-item').click();
+  await page.getByRole('tab', { name: 'Embarques', exact: true }).click();
+  await page.locator('#embarquesWrap .embarque-item').getByRole('button', { name: /^Ver embarque\b/ }).click();
   await valor(page, painelEmbarque, 'VMLE').waitFor();
 }
 
@@ -195,6 +196,10 @@ async function comCotacaoSalva(browser, rascunhoM3, valorM3Esperado) {
     await page.locator('#embarqueDetalheListas .lista-item').click();
     await page.waitForURL(origin + '/importacoes_lista.html?lista_id=A&from_embarque=E1');
     await conferirPainel(painelLista);
+    await page.locator('#btnVoltar').click();
+    await page.waitForURL(origin + '/importacoes.html?embarque_id=E1');
+    await valor(page, painelEmbarque, 'VMLE').waitFor();
+    assert.strictEqual(await page.getByRole('tab', { name: 'Embarques', exact: true }).getAttribute('aria-selected'), 'true');
     assert.deepStrictEqual(erros, []);
   } finally {
     await context.close();
@@ -238,6 +243,8 @@ async function comCotacaoAtrasada(browser) {
       ]);
     }
     await indice.locator('#btnVoltarEmbarque').click();
+    await indice.locator('#embarquesWrap .embarque-item').waitFor();
+    await indice.getByRole('tab', { name: 'Pedidos', exact: true }).click();
     assert.strictEqual(textoNormalizado(await listaEmBrl(indice).innerText()), 'R$ 600,00');
     assert.deepStrictEqual(erros, []);
   } finally {

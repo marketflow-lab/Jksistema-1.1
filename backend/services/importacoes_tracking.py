@@ -144,6 +144,12 @@ def _normalizar_resposta_datalastic(
             "A API encontrou o navio, mas ainda nao possui coordenadas AIS validas.",
             404,
         )
+    if _texto(dados.get(identificador_tipo)) != identificador_valor:
+        raise ErroRastreamentoNavio(
+            "identidade_nao_confirmada",
+            "A API AIS nao confirmou o identificador do navio consultado.",
+            502,
+        )
 
     return {
         "status": "ok",

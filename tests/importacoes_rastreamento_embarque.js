@@ -88,6 +88,7 @@ const fakeDocument = {
     },
     addEventListener() {},
     getElementById: () => null,
+    querySelectorAll: () => [],
 };
 const fakeWindow = {
     innerWidth: 1280,
@@ -112,6 +113,7 @@ const makeHelpers = new Function(
     'obterAuthHeaders',
     'numero',
     `let detalheEmbarqueAtivo = {};
+    const imosIdentificadosPorMmsi = new Map();
     ${helpersSource}
     return {
         atualizarPosicaoNavioApi,
@@ -285,7 +287,7 @@ assert(html.includes('estado.url = payload.portalUrl'), 'Portal deve passar a ap
 const meta = helpers.montarMetaRastreamentoEmbarqueHtml({
     ...exemplo,
     numero_booking: '<script>alert(1)</script>',
-}, true, true);
+}, { detalhe: true });
 assert(meta.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 assert(!meta.includes('<script>'));
 for (const label of ['Booking', 'Navio', 'Viagem', 'IMO', 'MMSI', 'Rota', 'ETD', 'ETA', 'Rastrear carga', 'Atualizar posição AIS', 'Ver mapa AIS']) {
@@ -341,7 +343,7 @@ async function verificarConsultaPublicaAis() {
     assert(!botao.disabled);
 
     await helpers.atualizarPosicaoNavioApi(exemplo, botao, true);
-    assert.deepStrictEqual(consultas[1], { imo: '9996678', mmsi: '249369000', mapa: true });
+    assert.deepStrictEqual(consultas[1], { imo: '9996678', mmsi: '', mapa: true });
     assert(painel.textContent.includes('Mapa AIS aberto no navegador do JK'));
 
     responderConsultaAis = async () => ({
@@ -376,9 +378,21 @@ async function verificarConsultaPublicaAis() {
     const electronAPI = fakeWindow.electronAPI;
     delete fakeWindow.electronAPI;
     await helpers.atualizarPosicaoNavioApi(exemplo, botao, true);
-    assert(painel.innerHTML.includes('https://wingo-marine.com/ship/249369000'));
+    assert(painel.innerHTML.includes('https://www.vesselfinder.com/?imo=9996678'));
     assert(painel.innerHTML.includes('rel="noopener noreferrer"'));
     assert(!botao.disabled);
+
+    const apenasMmsi = { numero_mmsi: exemplo.numero_mmsi };
+    await helpers.atualizarPosicaoNavioApi(apenasMmsi, botao, true);
+    assert(painel.innerHTML.includes('https://wingo-marine.com/ship/249369000'));
+    assert(painel.innerHTML.includes('informe o IMO da ficha AIS'));
+
+    responderConsultaAis = async () => ({ ok: true, json: async () => dadosPosicaoAis });
+    await helpers.atualizarPosicaoNavioApi(apenasMmsi, botao, true);
+    responderConsultaAis = async () => chaveAusente;
+    await helpers.atualizarPosicaoNavioApi(apenasMmsi, botao, true);
+    assert(painel.innerHTML.includes('https://www.vesselfinder.com/?imo=9996678'));
+    assert(!painel.innerHTML.includes('informe o IMO da ficha AIS'));
 
     fakeWindow.electronAPI = electronAPI;
     electronAPI.openPublicVesselPosition = async () => { throw new Error('No handler registered'); };

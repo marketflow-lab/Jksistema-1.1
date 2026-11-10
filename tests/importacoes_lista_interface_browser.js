@@ -9,6 +9,15 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const host = 'http://jk.test/importacoes.html';
 const previewDirectory = process.env.JK_LISTA_INTERFACE_PREVIEW_DIR;
+const mmsiFoto = '249369000';
+const fotoNavio = {
+  imo: '9811000',
+  imagem_url: 'https://thumb.wikimedia.org/wikipedia/commons/thumb/a/a1/Navio_sintetico.webp/640px-Navio_sintetico.webp',
+  arquivo_url: 'https://commons.wikimedia.org/wiki/File:Navio_sintetico.webp',
+  autor: 'Autor sintético',
+  licenca: 'CC BY-SA 4.0',
+  licenca_url: 'https://creativecommons.org/licenses/by-sa/4.0/',
+};
 const stores = [
   { nome: 'Loja Águas', store_id: 'store-a' },
   { nome: 'Loja Serra', store_id: 'store-b' },
@@ -44,7 +53,7 @@ function fixture() {
       { ...structuredClone(base), id: 'merged', nome_lista: 'Origem já unida', numero_invoice: 'INV-MERGED',
         unida_em_lista_id: 'alpha', unida_em_lista_nome: 'Pedido Águas' },
     ],
-    updates: [], deletions: [], detailReads: [], unexpected: [], routeErrors: [], putGates: {},
+    updates: [], deletions: [], detailReads: [], fotosConsultadas: [], unexpected: [], routeErrors: [], putGates: {},
   };
 }
 
@@ -65,6 +74,14 @@ async function installRoutes(page, state) {
       if (url.hostname === 'fonts.googleapis.com' && method === 'GET') {
         return route.fulfill({ status: 200, contentType: 'text/css', body: '' });
       }
+      if (url.href === fotoNavio.imagem_url && method === 'GET') {
+        assert.strictEqual(request.headers().referer, undefined);
+        return route.fulfill({ path: path.join(root, 'static/assets/importacoes-embarque.webp') });
+      }
+      if (url.origin === 'https://www.openstreetmap.org' && pathname === '/export/embed.html' && method === 'GET') {
+        assert.strictEqual(url.searchParams.get('marker'), '-23.95,-46.31');
+        return route.fulfill({ contentType: 'text/html', body: '<p>Mapa AIS sintético</p>' });
+      }
       if (url.origin !== 'http://jk.test') {
         state.unexpected.push(method + ' external request');
         return route.abort();
@@ -73,7 +90,8 @@ async function installRoutes(page, state) {
         return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
           body: fs.readFileSync(path.join(root, 'static', 'importacoes.html')) });
       }
-      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp') {
+      if (pathname === '/assets/importacoes-bandeiras.svg' || pathname === '/assets/importacoes-embarque.webp'
+          || pathname === '/assets/importacoes-cabecalho.webp') {
         return route.fulfill({ path: path.join(root, 'static', pathname.slice(1)) });
       }
       if (pathname === '/importacoes_lista.html') {
@@ -100,6 +118,23 @@ async function installRoutes(page, state) {
       if (pathname === '/api/lojas' && method === 'GET') return json(route, stores);
       if (pathname === '/api/cadastro/fornecedores' && method === 'GET') return json(route, suppliers);
       if (pathname === '/api/cadastro/nacionalizadores' && method === 'GET') return json(route, nationalizers);
+      if (pathname === '/api/importacoes/rastreamento/navio/foto') {
+        assert.strictEqual(method, 'GET');
+        const imo = url.searchParams.get('imo');
+        assert(['1234567', fotoNavio.imo].includes(imo));
+        state.fotosConsultadas.push(imo);
+        return json(route, { foto: imo === fotoNavio.imo ? fotoNavio : null });
+      }
+      if (pathname === '/api/importacoes/rastreamento/navio') {
+        assert.strictEqual(method, 'GET');
+        assert.strictEqual(url.searchParams.get('mmsi'), mmsiFoto);
+        assert.strictEqual(url.searchParams.get('imo'), null);
+        return json(route, {
+          provider: { nome: 'AIS sintético' },
+          navio: { nome: 'Navio sintético', mmsi: mmsiFoto, imo: fotoNavio.imo },
+          posicao: { latitude: -23.95, longitude: -46.31 },
+        });
+      }
       if (pathname === '/api/medias-compras/listas-pedidos' && method === 'GET') {
         return json(route, { listas: structuredClone(state.lists) });
       }
@@ -174,9 +209,148 @@ async function closed(page, id, selector, text) {
   }, { id, selector, text });
 }
 
-async function testSearchAndDensity(page, state) {
+async function testTabs(page) {
+  const pedidos = page.getByRole('tab', { name: 'Pedidos', exact: true });
+  const embarques = page.getByRole('tab', { name: 'Embarques', exact: true });
+  const painelPedidos = page.locator('#pedidosImportacoes');
+  const painelEmbarques = page.locator('#painelEmbarquesImportacoes');
+  const cartoes = page.locator('#embarquesWrap .embarque-item');
+  const busca = page.locator('#buscarListasImportacoes');
+  const statusContagem = page.locator('#status', { hasText: 'Total exibido:' });
+  const statusCache = page.locator('#cacheImportacoesStatus', { hasText: 'Dados atualizados.' });
+
+  await waitCount(page, 3);
+  await statusContagem.waitFor();
+  await statusCache.waitFor();
+  assert.strictEqual(await pedidos.getAttribute('aria-selected'), 'true');
+  assert(await painelPedidos.isVisible());
+  assert(await painelEmbarques.isHidden());
+  assert.strictEqual(await page.locator('#embarqueDestaque').count(), 0, 'Cada embarque deve aparecer somente em seu cartão.');
+
+  await busca.fill('inv-gamma');
+  await waitCount(page, 1);
+  const url = page.url();
+  await embarques.click();
+  assert.strictEqual(page.url(), url, 'Trocar de aba não deve navegar para outra seção da página.');
+  assert.strictEqual(await embarques.getAttribute('aria-selected'), 'true');
+  assert(await painelPedidos.isHidden());
+  assert(await painelEmbarques.isVisible());
+  assert(await busca.isHidden());
+  assert(await page.locator('#lojaFiltroListas').isHidden());
+  assert(await page.locator('#btnOrganizarEmbarque').isVisible());
+  assert(await page.locator('#btnAtualizar').isVisible());
+  assert(await page.locator('#btnImportarPedidoMenu').isHidden());
+  assert(await page.locator('.importacao-monitor').isHidden());
+  assert(await statusContagem.isHidden());
+  assert(await statusCache.isVisible());
+  assert.strictEqual(await cartoes.count(), 2);
+  const comRota = cartoes.filter({ has: page.getByRole('heading', { level: 3, name: 'Ningbo → Santos', exact: true }) });
+  const semRota = cartoes.filter({ has: page.getByRole('heading', { level: 3, name: 'Embarque sem rota', exact: true }) });
+  assert(await comRota.isVisible());
+  assert(await semRota.isVisible());
+  assert(await comRota.getByText('Embarque Sintético', { exact: true }).isVisible());
+  assert.match(await comRota.innerText(), /Chegada prevista\s+03\/12\/2026/);
+  assert.match(await semRota.innerText(), /Chegada prevista\s+A confirmar/);
+  assert.strictEqual(await comRota.locator('.embarque-card-metragem').innerText(), '0,20 m³');
+  assert.strictEqual(await semRota.locator('.embarque-card-metragem').innerText(), '0,10 m³');
+
+  await page.locator('#fxValue').filter({ hasText: '5,00' }).waitFor();
+  const resumo = await comRota.innerText();
+  assert.match(resumo, /\b2 listas?\b|Listas\s*:?\s*2\b/i);
+  assert.match(resumo, /\b80\b/);
+  assert.match(resumo, /US\$\s*400,00/);
+  assert.match(resumo, /R\$\s*2\.000,00/);
+  assert(await comRota.getByText('INV-ALPHA', { exact: true }).isVisible());
+  assert(await comRota.getByText('INV-GAMMA', { exact: true }).isVisible());
+  assert(await semRota.getByText('INV-BETA', { exact: true }).isVisible());
+  assert.strictEqual(await semRota.getByText('INV-ALPHA', { exact: true }).count(), 0);
+  for (const cartao of [comRota, semRota]) {
+    for (const acao of ['rastrear-carga', 'rastrear-navio', 'editar', 'excluir']) {
+      assert(await cartao.locator('button[data-acao="' + acao + '"]').isVisible(), 'Ação disponível no cartão: ' + acao);
+    }
+    assert(await cartao.getByRole('button', { name: /^Ver embarque\b/ }).isVisible());
+  }
+  assert(await comRota.locator('button[data-acao="mapa-navio"]').isVisible());
+  assert(await comRota.locator('button[data-acao="mapa-navio"]').isEnabled());
+  const mapaInvalido = semRota.locator('button[data-acao="mapa-navio"]');
+  assert(await mapaInvalido.isVisible());
+  assert(await mapaInvalido.isDisabled(), 'IMO inválido não disponibiliza mapa.');
+
+  const foto = await comRota.locator('figure').boundingBox();
+  const campos = await comRota.locator('.meta-invoice, .embarque-meta-rastreamento, .meta-brl, [data-acao="mapa-navio"]')
+    .evaluateAll(elementos => elementos.map(elemento => elemento.getBoundingClientRect().toJSON()));
+  assert(foto && campos.every(campo => campo.right <= foto.x + 1 && campo.top >= foto.y - 1 &&
+    campo.bottom <= foto.y + foto.height + 1), 'Os dados e as ações do embarque devem ficar ao lado da foto.');
+
+  if (previewDirectory) {
+    await cartoes.locator('.embarque-card-foto img').evaluateAll(images => Promise.all(images.map(img => img.decode())));
+    await page.screenshot({ path: path.join(previewDirectory, 'importacoes-aba-embarques.png'), fullPage: true });
+  }
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ ...viewport, width: 375 });
+  const cartoesCortados = await cartoes.evaluateAll(elementos => elementos.some(elemento =>
+    elemento.scrollWidth > elemento.clientWidth + 1 || elemento.getBoundingClientRect().right > window.innerWidth));
+  assert.strictEqual(cartoesCortados, false, 'Os cartões devem caber na tela estreita.');
+  if (previewDirectory) {
+    await page.screenshot({ path: path.join(previewDirectory, 'importacoes-aba-embarques-375.png'), fullPage: true });
+  }
+  await page.setViewportSize(viewport);
+
+  await semRota.getByRole('button', { name: /^Ver embarque\b/ }).click();
+  assert.strictEqual(await page.locator('#embarqueDetalheTitulo').innerText(), 'Embarque sem rota');
+  await page.locator('#btnVoltarEmbarque').click();
+  assert(await semRota.isVisible());
+  await embarques.focus();
+  await page.keyboard.press('ArrowLeft');
+  assert.strictEqual(await pedidos.getAttribute('aria-selected'), 'true');
+  assert(await pedidos.evaluate(tab => document.activeElement === tab));
+  assert(await painelEmbarques.isHidden());
+  assert.strictEqual(await busca.inputValue(), 'inv-gamma');
+  await waitCount(page, 1);
+
+  await page.keyboard.press('End');
+  assert(await painelEmbarques.isVisible());
+  assert(await embarques.evaluate(tab => document.activeElement === tab));
+  await page.keyboard.press('Home');
+  assert(await painelPedidos.isVisible());
+  assert(await page.locator('#btnImportarPedidoMenu').isVisible());
+  await busca.fill('');
+  await waitCount(page, 3);
+}
+
+async function testFotoEMapaAis(page, state) {
+  const cartoes = page.locator('#embarquesWrap .embarque-item');
+  const embarque = cartoes.filter({ has: page.getByRole('heading', { level: 3, name: 'Embarque sem rota', exact: true }) });
+  await page.getByRole('tab', { name: 'Embarques', exact: true }).click();
+  await embarque.getByRole('button', { name: 'Editar', exact: true }).click();
+  await page.locator('#inputImoEmbarque').fill('');
+  await page.locator('#inputMmsiEmbarque').fill(mmsiFoto);
+  await page.locator('#btnModalConfirmar').click();
+  await page.locator('#modalEmbarque').waitFor({ state: 'hidden' });
+  assert.strictEqual(await embarque.locator('figcaption').innerText(), 'Imagem ilustrativa');
+  await embarque.getByRole('button', { name: 'Ver mapa AIS', exact: true }).click();
+
+  await page.locator('#embarquePosicaoApi iframe').waitFor();
+  assert.match(await page.locator('#embarquePosicaoApi').innerText(), /Navio sintético/);
+  const fotoDetalhe = page.locator('#embarqueDetalheFoto');
+  await fotoDetalhe.locator('img[alt="Foto do navio IMO ' + fotoNavio.imo + '"]').waitFor();
+  assert.strictEqual(await fotoDetalhe.getByRole('link', { name: fotoNavio.autor }).getAttribute('href'), fotoNavio.arquivo_url);
+  assert.strictEqual(await fotoDetalhe.getByRole('link', { name: fotoNavio.licenca }).getAttribute('href'), fotoNavio.licenca_url);
+
+  await page.locator('#btnVoltarEmbarque').click();
+  await embarque.locator('img[alt="Foto do navio IMO ' + fotoNavio.imo + '"]').waitFor();
+  assert.strictEqual(await cartoes.first().locator('figcaption').innerText(), 'Imagem ilustrativa');
+  assert.strictEqual(state.fotosConsultadas.filter(imo => imo === fotoNavio.imo).length, 1,
+    'O cartão e o detalhe compartilham a consulta da foto do IMO confirmado.');
+  await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
+}
+
+async function testSearchAndStoreFilters(page, state) {
   await waitCount(page, 3);
   assert.strictEqual(await card(page, 'merged').count(), 0, 'Originais unidas não aparecem como pedidos ativos.');
+  const statusContagem = page.locator('#status');
+  await storeFilter(page, 'Todas as lojas');
+  assert.strictEqual(await statusContagem.innerText(), 'Total exibido: 3 lista(s).');
   const before = state.updates.length;
   const filters = await page.locator('#lojaFiltroListas').innerText();
   const boarding = await page.locator('#embarquesWrap').innerText();
@@ -184,26 +358,21 @@ async function testSearchAndDensity(page, state) {
   for (const [term, expected] of [['AGUAS', 2], ['inv-beta', 1], ['agata', 2], ['iris', 2], ['impossivel', 0]]) {
     await search.fill(term);
     await waitCount(page, expected);
+    assert.strictEqual(await statusContagem.innerText(), 'Total exibido: ' + expected + ' lista(s).');
     assert.strictEqual(await page.locator('#lojaFiltroListas').innerText(), filters, 'Busca não altera contagens das lojas.');
     assert.strictEqual(await page.locator('#embarquesWrap').innerText(), boarding, 'Busca não altera embarques.');
   }
   await search.fill('inv-gamma');
   await storeFilter(page, stores[0].nome);
   await waitCount(page, 0);
+  assert.strictEqual(await statusContagem.innerText(), 'Total exibido: 0 lista(s) | Loja: ' + stores[0].nome + '.');
   await storeFilter(page, 'Todas as lojas');
   await waitCount(page, 1);
+  assert.strictEqual(await statusContagem.innerText(), 'Total exibido: 1 lista(s).');
   await search.fill('');
   await waitCount(page, 3);
-  const table = page.locator('#tabelaListasImportacoes');
-  const compact = await table.evaluate(element => element.classList.contains('is-compacta'));
-  const firstHeight = await card(page, 'alpha').evaluate(element => element.getBoundingClientRect().height);
-  await page.locator('#btnDensidadeListas').click();
-  const toggled = await table.evaluate(element => element.classList.contains('is-compacta'));
-  assert.notStrictEqual(toggled, compact, 'Densidade deve alternar o modo da lista.');
-  const secondHeight = await card(page, 'alpha').evaluate(element => element.getBoundingClientRect().height);
-  assert.notStrictEqual(secondHeight, firstHeight, 'Alternar densidade deve mudar o espaço das linhas.');
-  await page.locator('#btnDensidadeListas').click();
-  assert.strictEqual(state.updates.length, before, 'Busca, filtros e densidade não salvam dados.');
+  assert.strictEqual(await statusContagem.innerText(), 'Total exibido: 3 lista(s).');
+  assert.strictEqual(state.updates.length, before, 'Busca e filtros não salvam dados.');
   assert.deepStrictEqual(state.deletions, []);
 }
 
@@ -283,6 +452,8 @@ async function testSearchDuringSave(page, state) {
     release();
     await waitCount(page, 1);
     await closed(page, 'alpha', edit.selector, edit.value);
+    assert.match(await page.locator('#status').innerText(), /atualizado com sucesso\./,
+      'A busca pendente deve manter a confirmação da edição de ' + edit.field);
     assert.strictEqual(state.updates.length, before + 1, 'Busca durante PUT deve compartilhar a edição pendente.');
     assert.deepStrictEqual(state.updates.at(-1), { id: 'alpha', payload: { [edit.field]: edit.value } });
     await page.locator('#buscarListasImportacoes').fill('');
@@ -339,7 +510,9 @@ async function testMenuAndNavigation(page, state) {
     await context.addInitScript(() => {
       if (location.origin !== 'http://jk.test') return;
       localStorage.setItem('jk_embarques_importacoes', JSON.stringify([
-        { id: 'synthetic-boarding', nome: 'Embarque Sintético', lista_ids: ['alpha', 'gamma'] },
+        { id: 'synthetic-boarding', nome: 'Embarque Sintético', lista_ids: ['alpha', 'gamma'],
+          porto_origem: 'Ningbo', porto_destino: 'Santos', eta: '2026-12-03', numero_imo: '1234567' },
+        { id: 'synthetic-no-route', nome: 'Embarque sem rota', lista_ids: ['beta'], numero_imo: '1234568' },
       ]));
     });
     const state = fixture();
@@ -362,8 +535,12 @@ async function testMenuAndNavigation(page, state) {
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'Interface deve caber em 375 px.');
       await page.setViewportSize({ width: 1440, height: 900 });
     }
-    await testSearchAndDensity(page, state);
-    console.log('PASS busca: acentos/campos, filtro loja, contagens/embarques, densidade e zero mutações.');
+    await testTabs(page);
+    console.log('PASS abas e embarques: dois cartões, dados e ações, abertura, teclado e filtros preservados.');
+    await testFotoEMapaAis(page, state);
+    console.log('PASS foto e mapa AIS: MMSI exato, IMO confirmado, crédito e foto restrita ao embarque identificado.');
+    await testSearchAndStoreFilters(page, state);
+    console.log('PASS busca: acentos, campos, filtros de loja, contagens e zero mutações.');
     await testSixEditors(page, state);
     console.log('PASS edições: seis duplos cliques, Escape/Enter, payloads isolados, nome no cache e recarga.');
     await testSearchDuringSave(page, state);

@@ -121,6 +121,27 @@ def test_rastreamento_falha_de_forma_clara_sem_credencial():
     assert erro.value.status_code == 503
 
 
+@pytest.mark.parametrize(
+    ("consulta", "identidade"),
+    [
+        ({"imo": "9660011"}, {"imo": "9811000", "mmsi": "636026610"}),
+        ({"mmsi": "636026610"}, {"imo": "9660011", "mmsi": "249369000"}),
+        ({"imo": "9660011"}, {"mmsi": "636026610"}),
+    ],
+)
+def test_rastreamento_recusa_posicao_de_identidade_nao_confirmada(consulta, identidade):
+    with pytest.raises(ErroRastreamentoNavio) as erro:
+        rastrear_navio_datalastic(
+            **consulta,
+            environ={"JK_DATALASTIC_API_KEY": "teste"},
+            http_get=lambda *_args, **_kwargs: FakeResponse(
+                {"data": {**identidade, "lat": -23.95, "lon": -46.31}, "meta": {"success": True}}
+            ),
+        )
+    assert erro.value.codigo == "identidade_nao_confirmada"
+    assert erro.value.status_code == 502
+
+
 def test_rastreamento_trata_timeout_quota_e_posicao_ausente():
     def timeout_get(*_args, **_kwargs):
         raise requests.Timeout("timeout")

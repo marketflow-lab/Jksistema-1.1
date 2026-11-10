@@ -41,7 +41,8 @@ async function installRoutes(page) {
     }
     if (p === '/importacoes.html') return route.fulfill({ status: 200, contentType: 'text/html',
       body: fs.readFileSync(path.join(root, 'static/importacoes.html')) });
-    if (p === '/assets/importacoes-bandeiras.svg' || p === '/assets/importacoes-embarque.webp') {
+    if (p === '/assets/importacoes-bandeiras.svg' || p === '/assets/importacoes-embarque.webp'
+        || p === '/assets/importacoes-cabecalho.webp') {
       return route.fulfill({ path: path.join(root, 'static', p.slice(1)) });
     }
     if (p === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript',
@@ -87,6 +88,8 @@ async function installRoutes(page) {
     await installRoutes(page);
     await page.goto('http://jk.test/importacoes.html');
     await block(page, 'ready').waitFor();
+    const pedidos = page.getByRole('tab', { name: 'Pedidos', exact: true });
+    const embarques = page.getByRole('tab', { name: 'Embarques', exact: true });
     await page.waitForFunction(() => {
       const flags = [...document.querySelectorAll('.importacao-contexto svg use')];
       return flags.length === 4 && flags.every(flag => flag.getBBox().width > 0);
@@ -103,23 +106,26 @@ async function installRoutes(page) {
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-peso]').innerText(), '—');
     assert((await block(page, 'unavailable').innerText()).includes('Dados do Packing List indisponíveis'));
     assert((await block(page, 'unavailable').innerText()).includes('(parcial)'));
-    assert((await page.locator('#embarquesWrap').innerText()).includes('2,6683573334 m³'));
-    const destaque = page.locator('#embarqueDestaque');
-    assert.strictEqual(await destaque.locator('h2').innerText(), 'Ningbo → Santos');
-    assert((await destaque.innerText()).includes('03/12/2026'));
-    assert.strictEqual(await destaque.locator('.embarque-destaque-metragem').innerText(), '2,6683573334 m³');
-    await destaque.locator('img').evaluate(img => img.decode());
     if (preview) {
       fs.mkdirSync(preview, { recursive: true });
-      await page.screenshot({ path: path.join(preview, 'importacoes-implementado.png'), fullPage: true });
       await page.locator('#tabelaListasImportacoes').screenshot({ path: path.join(preview, 'packing-totais-implementado-desktop.png') });
     }
-    await destaque.getByRole('button', { name: 'Ver embarque' }).click();
+    await embarques.click();
+    const embarque = page.locator('#embarquesWrap .embarque-item');
+    await embarque.waitFor();
+    assert.strictEqual(await embarque.locator('h3').innerText(), 'Ningbo → Santos');
+    assert((await embarque.innerText()).includes('03/12/2026'));
+    assert.strictEqual(await embarque.locator('.embarque-card-metragem').innerText(), '2,6683573334 m³');
+    await embarque.locator('.embarque-card-foto img').evaluate(img => img.decode());
+    if (preview) await page.screenshot({ path: path.join(preview, 'importacoes-implementado.png'), fullPage: true });
+    await embarque.getByRole('button', { name: /^Ver embarque\b/ }).click();
     const volumeCard = page.locator('.emb-resumo-card').filter({ has: page.locator('.emb-label', { hasText: /^M³ Total$/ }) });
     await volumeCard.locator('.emb-value').waitFor();
     assert.strictEqual(await volumeCard.locator('.emb-value').innerText(), '2,6683573334 m³',
       'Detalhe e cabeçalho devem usar o Packing mesmo com referência antiga a lista removida');
     await page.locator('#btnVoltarEmbarque').click();
+    await page.locator('#embarquesWrap .embarque-item').waitFor();
+    await pedidos.click();
     const reads = state.reads;
     await packingButton(page, 'upload').click();
     const modal = page.locator('.packing-list-dialog');
@@ -132,11 +138,12 @@ async function installRoutes(page) {
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-caixas]').innerText(), '12');
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-peso]').innerText(), '64,00 kg');
     assert((await block(page, 'upload').innerText()).includes('1,25 m³'));
-    assert((await page.locator('#embarquesWrap').innerText()).includes('3,71 m³'));
-    assert.strictEqual(await destaque.locator('.embarque-destaque-metragem').innerText(), '3,71 m³');
     assert.strictEqual(state.uploads, 1);
     assert.strictEqual(state.reads, reads, 'Resposta do upload deve atualizar os totais sem recarregar a lista');
     assert.strictEqual(state.downloads, 0, 'Upload não deve baixar o documento automaticamente');
+    await embarques.click();
+    assert.strictEqual(await embarque.locator('.embarque-card-metragem').innerText(), '3,71 m³');
+    await pedidos.click();
     await page.locator('#buscarListasImportacoes').fill('sem Packing');
     await page.locator('#buscarListasImportacoes').fill('');
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-peso]').innerText(), '64,00 kg');

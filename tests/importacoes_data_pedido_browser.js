@@ -161,8 +161,10 @@ async function saveDate(page, state, value, expected, { id = 'order', container 
   const before = state.updates.length;
   const input = await openDate(page, id, container);
   await input.fill(value);
-  if (blur) await page.locator('#status').click();
-  else await input.press('Enter');
+  if (blur) {
+    const blurTarget = container === shipmentContainer ? '#embarqueDetalheTitulo' : '#status';
+    await page.locator(blurTarget).click();
+  } else await input.press('Enter');
   await waitClosed(page, id, expected, container);
   assert.strictEqual(state.updates.length, before + 1, 'Uma edição deve produzir exatamente um PUT');
   assert.deepStrictEqual(state.updates.at(-1), { id, payload: { order_date: value } });
@@ -188,7 +190,9 @@ async function changeRegistration(page, field, label, expectedId) {
 }
 
 async function openShipment(page) {
-  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque sintético' }).click();
+  await page.getByRole('tab', { name: 'Embarques', exact: true }).click();
+  await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque sintético' })
+    .getByRole('button', { name: /^Ver embarque\b/ }).click();
   await datePill(page, 'order', shipmentContainer).waitFor({ state: 'visible' });
 }
 
@@ -250,6 +254,7 @@ async function testPendingAndStale(page, state) {
   state.staleDateResponse = false;
   await saveDate(page, state, '2026-10-13', '13/10/2026', { container: shipmentContainer, blur: true });
   await page.locator('#btnVoltarEmbarque').click();
+  await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
   await waitClosed(page, 'order', '13/10/2026');
 }
 
@@ -298,6 +303,7 @@ async function testLayouts(page, state) {
     await assertLayout(page, shipmentContainer);
     await detailInput.press('Escape');
     await page.locator('#btnVoltarEmbarque').click();
+    await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
   }
   assert.strictEqual(state.updates.length, before, 'Verificar layout e fechar o editor não deve salvar');
 }
