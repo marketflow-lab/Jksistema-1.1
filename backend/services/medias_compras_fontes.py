@@ -1,4 +1,4 @@
-"""Cheap filesystem revision fences for Medias. No credentials are read/logged."""
+"""Filesystem/content revision fences for Medias. Source contents are never logged."""
 
 from datetime import datetime
 from collections import Counter
@@ -7,6 +7,7 @@ import os
 import stat
 
 from backend.services.medias_compras_cache import Fontes, digest_json
+from backend.services.source_file_revision import _RevisionBusy, content_stamp
 
 
 def _categoria_diagnostico(path):
@@ -112,8 +113,13 @@ def assinatura_arquivo(path, entry=None):
         if path.name.casefold().endswith(".db-wal") and target.st_size == 0:
             return (os.path.normcase(os.path.abspath(path)), None)
         resolved = os.path.normcase(os.path.realpath(path) if linked else os.path.abspath(path))
+        # Photo publishers replace their files atomically. Keep that inventory
+        # metadata-only; calculation/configuration inputs get content revisions.
+        content = None
+        if stat.S_ISREG(entry.st_mode) and not linked and "cadastro_fotos" not in {part.casefold() for part in path.parts}:
+            content = content_stamp(path, strict=not entry.st_ino)
         return (os.path.normcase(os.path.abspath(path)), entry.st_ctime_ns, entry.st_mtime_ns, entry.st_size,
-                target.st_ctime_ns, target.st_mtime_ns, target.st_size, entry.st_ino, resolved)
+                target.st_ctime_ns, target.st_mtime_ns, target.st_size, entry.st_ino, resolved, content)
     except FileNotFoundError:
         return (os.path.normcase(os.path.abspath(path)), None)
 
@@ -188,7 +194,12 @@ def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None,
         if path.suffix.casefold() == ".db":
             paths.add(Path(str(path) + "-wal"))
             paths.add(Path(str(path) + "-journal"))
-    by_path = {path: assinatura_arquivo(path, cached_stats.get(path)) for path in paths}
+    try:
+        by_path = {path: assinatura_arquivo(path, cached_stats.get(path)) for path in paths}
+    except _RevisionBusy as error:
+        from fastapi import HTTPException
+
+        raise HTTPException(409, {"code": "sources_changing", "message": "Os dados mudaram durante a leitura. Tente novamente."}) from error
     signatures = tuple(sorted(by_path.values()))
     hard = tuple(sorted(by_path[path] for path in authority))
     pending = any(path.exists() for path in journals) or any(path.name.endswith("-journal") and path.exists() for path in paths)

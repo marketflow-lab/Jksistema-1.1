@@ -73,7 +73,7 @@ def _freeze(value: Any) -> Any:
         return repr(value)
 
 
-def vendas_file_signature(path: str | os.PathLike[str] | None) -> tuple:
+def _file_signature(path, *, strict=False) -> tuple:
     if not path:
         return ("", None, None)
     absolute = os.path.abspath(os.fspath(path))
@@ -81,10 +81,16 @@ def vendas_file_signature(path: str | os.PathLike[str] | None) -> tuple:
         stat = os.stat(absolute)
         if absolute.lower().endswith(".db-wal") and stat.st_size == 0:
             return (absolute, None, None)
+        from backend.services.source_file_revision import content_stamp
         return (absolute, int(stat.st_size), int(stat.st_mtime_ns), int(stat.st_ctime_ns),
-                int(stat.st_ino), os.path.normcase(os.path.realpath(absolute)))
+                int(stat.st_ino), os.path.normcase(os.path.realpath(absolute)),
+                content_stamp(absolute, strict=strict or not stat.st_ino))
     except FileNotFoundError:
         return (absolute, None, None)
+
+
+def vendas_file_signature(path: str | os.PathLike[str] | None) -> tuple:
+    return _file_signature(path)
 
 
 def vendas_sources_signature(paths: Iterable[str | os.PathLike[str]]) -> tuple:
@@ -116,7 +122,8 @@ def vendas_snapshot_signature(paths: Iterable[str | os.PathLike[str]]) -> tuple:
             continue
         if not stat.st_ino:
             # An untrustworthy file identity cannot safely outlive a write.
-            signatures.extend(vendas_sources_signature([path]))
+            signatures.extend(_file_signature(source, strict=True)
+                              for source in sorted((path, path + "-wal", path + "-journal")))
             continue
         signatures.append((path, "database", int(stat.st_dev), int(stat.st_ino),
                            getattr(stat, "st_birthtime_ns", None),
@@ -230,7 +237,11 @@ def cache_vendas_response(
             durable = persistent and namespace in persistent_cache.NAMESPACES
             snapshot_read = durable and bool(consistent_snapshot(bound.arguments) if callable(consistent_snapshot)
                                              else consistent_snapshot)
-            snapshot_sources = vendas_snapshot_signature(source_paths) if snapshot_read else None
+            try:
+                snapshot_sources = vendas_snapshot_signature(source_paths) if snapshot_read else None
+            except Exception:
+                mark_vendas_read_incomplete()
+                return func(*args, **kwargs)
             disk_generation = None
             disk_key = None
             day = date.today().isoformat() if durable and namespace == "grafico" else ""

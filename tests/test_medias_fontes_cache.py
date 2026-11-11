@@ -3,7 +3,9 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
+from backend.services import medias_compras_fontes as fontes
 from backend.services.medias_compras_cache import Fontes
 from backend.services.medias_compras_fontes import assinatura_arquivo, capturar_fontes, categorias_alteradas, digest_lista
 
@@ -129,6 +131,20 @@ def test_sync_progress_and_token_refresh_are_not_hard_invalidations(tmp_path):
     after = capturar_fontes(tmp_path)
     assert after.assinatura != before.assinatura
     assert after.autoridade == before.autoridade
+
+
+def test_unstable_content_revision_uses_the_retryable_sources_changing_contract(tmp_path, monkeypatch):
+    (tmp_path / "lojas_config.json").write_text('{}')
+
+    def changing(_path, **_kwargs):
+        raise fontes._RevisionBusy()
+
+    monkeypatch.setattr(fontes, "content_stamp", changing)
+    with pytest.raises(HTTPException) as error:
+        capturar_fontes(tmp_path)
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "sources_changing"
+    assert str(tmp_path) not in str(error.value.detail)
 
 
 def test_photo_replacement_and_symlink_identity_are_fenced(tmp_path):

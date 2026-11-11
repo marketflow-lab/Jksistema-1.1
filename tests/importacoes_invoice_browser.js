@@ -534,6 +534,9 @@ async function testCommercialInvoiceStopsAfterSaveFailure(page) {
 }
 
 async function assertLayout(pill, width, editing) {
+  // evaluate não aguarda a visibilidade ou a estabilidade após trocar o viewport.
+  await pill.waitFor({ state: 'visible' });
+  await pill.scrollIntoViewIfNeeded();
   const layout = await pill.evaluate(element => {
     const card = element.closest('.lista-item');
     const rect = element.getBoundingClientRect();
@@ -559,6 +562,8 @@ async function assertLayout(pill, width, editing) {
 }
 
 async function testResponsiveLayout(page) {
+  await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
+  await page.locator('#lojaFiltroListas button').filter({ hasText: 'Todas as lojas' }).click();
   if (previewDirectory) {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.evaluate(() => {

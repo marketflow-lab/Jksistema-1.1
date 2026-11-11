@@ -344,13 +344,13 @@ def test_account_conflict_cache_observes_wal_commit_with_writer_still_open(mixed
         writer.execute("PRAGMA wal_autocheckpoint=0")
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         assert read() == (set() if reader == "scanner" else 2)
-        main_signature = performance.vendas_file_signature(mixed_source)
+        main_digest = hashlib.sha256(mixed_source.read_bytes()).digest()
         wal_signature = performance.vendas_file_signature(str(mixed_source) + "-wal")
 
         _add_outside_account(writer, "vendas")
         writer.commit()
 
-        assert performance.vendas_file_signature(mixed_source) == main_signature
+        assert hashlib.sha256(mixed_source.read_bytes()).digest() == main_digest
         assert performance.vendas_file_signature(str(mixed_source) + "-wal") != wal_signature
         assert read() == ({"Loja A"} if reader == "scanner" else 3)
         # The writer remains open through the second read, preventing its close
@@ -385,13 +385,13 @@ def test_wal_schema_addition_reveals_account_conflict_after_schema_cache_was_war
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         assert "store_id" not in performance.cached_table_columns(str(second), "notas_entrada", writer)
         assert performance.legacy_store_conflicts(paths, rows) == set()
-        main_signature = performance.vendas_file_signature(second)
+        main_digest = hashlib.sha256(second.read_bytes()).digest()
 
         writer.execute("ALTER TABLE notas_entrada ADD COLUMN store_id TEXT")
         writer.execute("UPDATE notas_entrada SET store_id='store-b'")
         writer.commit()
 
-        assert performance.vendas_file_signature(second) == main_signature
+        assert hashlib.sha256(second.read_bytes()).digest() == main_digest
         assert "store_id" in performance.cached_table_columns(str(second), "notas_entrada", writer)
         assert performance.legacy_store_conflicts(paths, rows) == {"Loja A"}
         quantities = _reader_quantities()

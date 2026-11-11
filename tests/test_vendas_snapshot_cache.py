@@ -99,6 +99,37 @@ def test_soft_collection_invalidation_keeps_saved_payload_but_hard_invalidation_
     assert disk.load(generation, "resumo", key) is None
 
 
+def test_unstable_snapshot_capture_keeps_valid_cache_and_does_not_publish_new_payload(context, monkeypatch):
+    @performance.cache_vendas_response("resumo", lambda _args: [context.source],
+                                      persistent=True, consistent_snapshot=True)
+    def calculate(client_id):
+        with performance.open_vendas_readonly(str(context.source)) as connection:
+            value = connection.execute("SELECT SUM(value) FROM sales").fetchone()[0]
+        connection.close()
+        return {"success": True, "rows": [{"sku": "FIXTURE", "itens": value}],
+                "totals": {"itens": value}, "meta": {}}
+
+    assert calculate("tenant-a")["totals"]["itens"] == 1
+    saved = {path.name: path.read_bytes() for path in (context.tenant / disk.CACHE_DIRECTORY).glob("*.json")}
+    cached_keys = set(performance._RESPONSE_CACHE)
+    assert saved
+    append(context, 2)
+
+    def changing(_paths):
+        raise OSError("source_revision_changed")
+
+    monkeypatch.setattr(performance, "vendas_snapshot_signature", changing)
+    confidence = [True]
+    token = performance._READ_CONFIDENCE.set(confidence)
+    try:
+        assert calculate("tenant-a")["totals"]["itens"] == 3
+    finally:
+        performance._READ_CONFIDENCE.reset(token)
+    assert confidence == [False]
+    assert set(performance._RESPONSE_CACHE) == cached_keys
+    assert saved == {path.name: path.read_bytes() for path in (context.tenant / disk.CACHE_DIRECTORY).glob("*.json")}
+
+
 def test_soft_collection_writes_do_not_rebuild_unchanged_composition_catalog(context):
     calls = []
 

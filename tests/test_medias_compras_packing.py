@@ -6,10 +6,11 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import openpyxl
 import pytest
@@ -375,7 +376,27 @@ def test_upload_filename_nao_controla_destino(tenants):
     assert docs[0].name != "escape.xlsx"
 
 
-def test_uploads_concorrentes_mesma_lista_apenas_um_persiste(tenants):
+@pytest.mark.parametrize("directory_race", [False, True], ids=["normal", "directory-created-during-realpath"])
+def test_uploads_concorrentes_mesma_lista_apenas_um_persiste(tenants, monkeypatch, directory_race):
+    triggered = Event()
+    if directory_race:
+        if os.name != "nt":
+            pytest.skip("Windows realpath prefix race")
+        original = os.path._getfinalpathname
+
+        def directory_created(path):
+            name = os.path.basename(path)
+            if not triggered.is_set() and re.fullmatch(r"[0-9a-f]{32}\.xlsx", name):
+                try:
+                    return original(path)
+                except OSError as error:
+                    if error.winerror == 3:
+                        triggered.set()
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                    raise
+            return original(path)
+
+        monkeypatch.setattr(os.path, "_getfinalpathname", directory_created)
     barrier = Barrier(2)
     contents = [_modelo(), _modelo(fotos=False)]
     def importar(indice):
@@ -393,6 +414,38 @@ def test_uploads_concorrentes_mesma_lista_apenas_um_persiste(tenants):
     assert len(docs) == 1
     assert docs[0].read_bytes() == contents[vencedor]
     assert _salvo(tenants)["packing_list"]["sha256"] == hashlib.sha256(contents[vencedor]).hexdigest()
+    if directory_race:
+        assert triggered.is_set(), "The first upload must exercise the directory-creation race"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows canonical path aliases")
+@pytest.mark.parametrize("tenant,root,target,allowed", [
+    (r"C:\tenant", r"\\?\C:\tenant\packing_lists", r"\\?\C:\tenant\packing_lists\document.xlsx", True),
+    (r"\\server\share\tenant", r"\\?\UNC\server\share\tenant\packing_lists",
+     r"\\?\UNC\server\share\tenant\packing_lists\document.xlsx", True),
+    (r"C:\tenant", r"C:\tenant\packing_lists", r"D:\other\document.xlsx", False),
+    (r"C:\tenant", r"C:\tenant\packing_lists", r"\\?\C:\other\document.xlsx", False),
+    (r"\\server\share\tenant", r"\\server\share\tenant\packing_lists",
+     r"\\?\UNC\other\share\tenant\packing_lists\document.xlsx", False),
+], ids=["dos-alias", "unc-alias", "drive-escape", "sibling-escape", "unc-share-escape"])
+def test_caminho_packing_normaliza_containment_e_preserva_destino_real(monkeypatch, tenant, root, target, allowed):
+    document_id = "a" * 32
+    original = os.path.realpath
+    resolutions = {tenant: tenant, os.path.join(tenant, "packing_lists"): root,
+                   os.path.join(root, document_id + ".xlsx"): target}
+
+    def resolved(path):
+        value = os.fspath(path)
+        return resolutions[value] if value in resolutions else original(path)
+
+    monkeypatch.setattr(common, "_arquivo_listas_pedidos", lambda _client: os.path.join(tenant, "listas_pedidos.json"))
+    monkeypatch.setattr(os.path, "realpath", resolved)
+    if allowed:
+        assert packing._arquivo_packing("client", document_id) == target
+    else:
+        with pytest.raises(HTTPException) as error:
+            packing._arquivo_packing("client", document_id)
+        assert error.value.status_code == 404
 
 
 def test_download_sem_documento_retora_404(tenants):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from threading import Event
 import time
 
 import pytest
@@ -163,21 +164,25 @@ def test_pending_hub_publication_after_worker_initialization_keeps_previous_gene
 
 
 def test_worker_failure_is_unavailable_instead_of_permanent_initializing(root, monkeypatch):
+    failed = Event()
+    mark_unavailable = index.mark_unavailable
+
     def unavailable(*args, **kwargs):
         raise OSError("synthetic failure")
+
+    def marked_unavailable(*args, **kwargs):
+        result = mark_unavailable(*args, **kwargs)
+        failed.set()
+        return result
+
     monkeypatch.setattr(worker, "_rebuild_batch", unavailable)
+    monkeypatch.setattr(index, "mark_unavailable", marked_unavailable)
     worker.request_refresh("tenant-a", SCOPE, info_root=root)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            ficha(root)
-        except index.TrainingIndexUnavailable as error:
-            if error.code == "training_index_unavailable":
-                break
-        time.sleep(0.02)
-    else:
-        pytest.fail("A failed first refresh must expose unavailable")
+    assert failed.wait(5), "A failed first refresh must publish its unavailable state"
     worker.stop_workers()
+    with pytest.raises(index.TrainingIndexUnavailable) as error:
+        ficha(root)
+    assert error.value.code == "training_index_unavailable"
     assert not worker._JOBS
 
 def test_generated_document_edit_invalidates_product_cache_without_database_change(root):

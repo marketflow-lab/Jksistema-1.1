@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const path = require('path');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, screen } = require('electron');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const timeoutAt = Date.now() + 120_000;
@@ -70,18 +70,24 @@ async function run() {
 
   const workers = BrowserWindow.getAllWindows()
     .filter(win => /^Favoritos ML - Trabalhador [1-4]/.test(win.getTitle()))
-    .map(win => ({
-      title: win.getTitle(),
-      bounds: win.getBounds(),
-      url: win.webContents.getURL(),
-      visible: win.isVisible(),
-      destroyed: win.isDestroyed(),
-    }))
+    .map(win => {
+      const bounds = win.getBounds();
+      return {
+        title: win.getTitle(),
+        bounds,
+        displayWorkArea: screen.getDisplayMatching(bounds).workArea,
+        url: win.webContents.getURL(),
+        visible: win.isVisible(),
+        destroyed: win.isDestroyed(),
+      };
+    })
     .sort((left, right) => left.title.localeCompare(right.title));
   assert.strictEqual(workers.length, 4, 'Electron real deve abrir quatro janelas trabalhadoras');
   workers.forEach(worker => {
-    assert.strictEqual(worker.bounds.width, 1280);
-    assert.ok(worker.bounds.height >= 700 && worker.bounds.height <= 900);
+    assert.strictEqual(worker.bounds.width, Math.min(1280, worker.displayWorkArea.width),
+      'a largura nativa deve respeitar o limite do monitor');
+    assert.ok(worker.bounds.height >= Math.min(700, worker.displayWorkArea.height)
+      && worker.bounds.height <= Math.min(900, worker.displayWorkArea.height));
     assert.strictEqual(worker.destroyed, false);
     assert.ok(!worker.url || worker.url === 'about:blank');
   });

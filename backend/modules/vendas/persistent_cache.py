@@ -23,6 +23,8 @@ import time
 from typing import Any, Callable
 import uuid
 
+from backend.services.source_file_revision import _open_read
+
 
 SCHEMA = 1
 CALCULATION_VERSION = "vendas-json-v1"
@@ -31,6 +33,7 @@ MAX_ENTRY_BYTES = 12 * 1024 * 1024
 MAX_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 128
 LOCK_TIMEOUT_SECONDS = 0.25
+REPLACE_TIMEOUT_SECONDS = 0.25
 NAMESPACES = frozenset({"resumo", "grafico"})
 _UUID = re.compile(r"[0-9a-f]{32}\Z")
 _SNAPSHOT = re.compile(r"[0-9a-f]{64}\.json\Z")
@@ -79,10 +82,18 @@ def _atomic_write(path: Path, content: bytes, validate: Callable[[], bool] = lam
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        if not validate():
-            return False
-        os.replace(temporary, path)
-        return True
+        deadline = time.monotonic() + REPLACE_TIMEOUT_SECONDS
+        while True:
+            if not validate():
+                return False
+            try:
+                os.replace(temporary, path)
+                return True
+            except PermissionError as exc:
+                remaining = deadline - time.monotonic()
+                if os.name != "nt" or getattr(exc, "winerror", None) not in (5, 32) or remaining <= 0:
+                    raise
+                time.sleep(min(0.01, remaining))
     finally:
         try:
             os.unlink(temporary)
@@ -101,7 +112,7 @@ def _revision(directory: Path, name: str, *, create: bool) -> str:
     if _linked(path):
         raise CacheUnavailable()
     try:
-        with path.open("rb") as stream:
+        with _open_read(path) as stream:
             value = stream.read(33).decode("ascii")
     except FileNotFoundError:
         value = ""
@@ -175,6 +186,7 @@ def calculation_revision() -> str:
     )]
     paths += [services / name for name in (
         "bling_vendas.py", "estoque_historico.py", "cadastro_compatibilidade.py", "cadastro_lojas_produtos.py",
+        "source_file_revision.py",
     )]
     digest = hashlib.sha256(CALCULATION_VERSION.encode("ascii"))
     for path in paths:
@@ -228,7 +240,7 @@ def load(generation: Generation, namespace: str, key: str) -> dict | None:
         path = _directory(generation.tenant_root) / (key + ".json")
         if _linked(path) or path.stat().st_size > MAX_ENTRY_BYTES:
             return None
-        with path.open("rb") as stream:
+        with _open_read(path) as stream:
             content = stream.read(MAX_ENTRY_BYTES + 1)
         if len(content) > MAX_ENTRY_BYTES:
             return None

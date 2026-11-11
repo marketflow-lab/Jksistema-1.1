@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 import builtins
 import hashlib
+import io
 import json
 import logging
 import os
@@ -103,6 +104,62 @@ def context(tmp_path, monkeypatch):
 
 def snapshots(context):
     return sorted((context.root / disk.CACHE_DIRECTORY).glob("*.json"))
+
+
+def pause_cache_reader(monkeypatch, path):
+    """Pause one read after the cache has opened its real file handle."""
+    identity = path.stat()
+    entered, release = threading.Event(), threading.Event()
+    claimed = threading.Event()
+    original = io.open
+
+    class PausedReader:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def read(self, *args):
+            entered.set()
+            assert release.wait(5), "Cache reader was not released"
+            return self.stream.read(*args)
+
+    def open_reader(*args, **kwargs):
+        stream = original(*args, **kwargs)
+        opened = os.fstat(stream.fileno())
+        if (not claimed.is_set() and stream.readable()
+                and (opened.st_dev, opened.st_ino) == (identity.st_dev, identity.st_ino)):
+            claimed.set()
+            return PausedReader(stream)
+        return stream
+
+    monkeypatch.setattr(io, "open", open_reader)
+    return entered, release
+
+
+def observe_sharing_failures(monkeypatch, path):
+    failed, errors = threading.Event(), []
+    original = os.replace
+
+    def replace(source, target):
+        try:
+            return original(source, target)
+        except PermissionError as exc:
+            if Path(target) == path and getattr(exc, "winerror", None) in (5, 32):
+                errors.append(exc.winerror)
+                failed.set()
+            raise
+
+    monkeypatch.setattr(os, "replace", replace)
+    return failed, errors
 
 
 def run_child(context, mode="calculate", source="source.txt"):
@@ -430,6 +487,107 @@ def test_atomic_replace_failure_preserves_previous_copy_and_live_fallback(contex
     calls = []
     assert calculator(context, calls)("tenant-a")["totals"]["itens"] == 10
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation recovery")
+def test_cache_reader_allows_atomic_snapshot_replacement(context, monkeypatch, corrupt):
+    generation = disk.capture(context.info, context.root)
+    key = "a" * 64
+    assert disk.save(generation, "resumo", key, summary(10), lambda: True)
+    path = context.root / disk.CACHE_DIRECTORY / (key + ".json")
+    if corrupt:
+        path.write_text('{"truncated":', encoding="utf-8")
+    entered, release = pause_cache_reader(monkeypatch, path)
+    failed, _ = observe_sharing_failures(monkeypatch, path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(disk.load, generation, "resumo", key)
+        try:
+            assert entered.wait(5), "The real cache reader did not open the snapshot"
+            writing = pool.submit(disk.save, generation, "resumo", key, summary(99), lambda: True)
+            assert failed.wait(5), "The native replacement did not encounter the open reader"
+        finally:
+            release.set()
+        assert writing.result(timeout=5)
+        assert reading.result(timeout=5) == (None if corrupt else summary(10))
+    assert disk.load(generation, "resumo", key) == summary(99)
+
+
+@pytest.mark.parametrize("global_scope", [False, True])
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation recovery")
+def test_revision_reader_allows_atomic_invalidation(context, monkeypatch, global_scope):
+    generation = disk.capture(context.info, context.root)
+    root = context.info if global_scope else context.root
+    name = "global.revision" if global_scope else "tenant.revision"
+    path = root / disk.CACHE_DIRECTORY / name
+    entered, release = pause_cache_reader(monkeypatch, path)
+    failed, _ = observe_sharing_failures(monkeypatch, path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(disk.capture, context.info, context.root, create=False)
+        try:
+            assert entered.wait(5), "The real cache reader did not open the revision"
+            writing = pool.submit(disk.invalidate, root, global_scope=global_scope)
+            assert failed.wait(5), "The native invalidation did not encounter the open reader"
+        finally:
+            release.set()
+        assert writing.result(timeout=5)
+        assert reading.result(timeout=5) == generation
+    updated = disk.capture(context.info, context.root, create=False)
+    assert updated is not None and updated != generation
+    assert not disk.current(generation) and disk.current(updated)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation recovery")
+def test_retained_cache_reader_times_out_without_replacing_snapshot(context, monkeypatch):
+    generation = disk.capture(context.info, context.root)
+    key = "a" * 64
+    assert disk.save(generation, "resumo", key, summary(10), lambda: True)
+    path = context.root / disk.CACHE_DIRECTORY / (key + ".json")
+    original = path.read_bytes()
+    entered, release = pause_cache_reader(monkeypatch, path)
+    _, errors = observe_sharing_failures(monkeypatch, path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(disk.load, generation, "resumo", key)
+        try:
+            assert entered.wait(5)
+            writing = pool.submit(disk.save, generation, "resumo", key, summary(99), lambda: True)
+            assert not writing.result(timeout=2)
+            assert len(errors) >= 2
+            assert path.read_bytes() == original
+            assert not list(path.parent.glob("*.tmp"))
+        finally:
+            release.set()
+        assert reading.result(timeout=5) == summary(10)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation recovery")
+def test_sharing_retry_rechecks_publication_guard(context, monkeypatch):
+    generation = disk.capture(context.info, context.root)
+    key = "a" * 64
+    assert disk.save(generation, "resumo", key, summary(10), lambda: True)
+    path = context.root / disk.CACHE_DIRECTORY / (key + ".json")
+    original = path.read_bytes()
+    entered, release = pause_cache_reader(monkeypatch, path)
+    failed, _ = observe_sharing_failures(monkeypatch, path)
+    revoked = threading.Event()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(disk.load, generation, "resumo", key)
+        try:
+            assert entered.wait(5)
+            writing = pool.submit(disk.save, generation, "resumo", key, summary(99),
+                                  lambda: not revoked.is_set())
+            assert failed.wait(5)
+            revoked.set()
+        finally:
+            release.set()
+        assert not writing.result(timeout=5)
+        assert reading.result(timeout=5) == summary(10)
+    assert path.read_bytes() == original
+    assert not list(path.parent.glob("*.tmp"))
 
 
 def test_failed_invalidation_receipt_prevents_resurrection_in_new_process(context, monkeypatch):

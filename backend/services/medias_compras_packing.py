@@ -642,15 +642,33 @@ def _gerar_packing_list_bytes(lista, dados, *, client_id=None) -> bytes:
     return _preencher_cache_totais_packing(output.getvalue(), totais)
 
 
+def _packing_path_key(path):
+    value = os.fspath(path)
+    if os.name == "nt":
+        if value[:8].casefold() == "\\\\?\\UNC\\".casefold():
+            value = "\\\\" + value[8:]
+        elif re.match(r"^\\\\\?\\[A-Za-z]:\\", value):
+            value = value[4:]
+    return os.path.normcase(os.path.normpath(value))
+
+
+def _packing_path_contains(root, path):
+    try:
+        key = _packing_path_key(root)
+        return os.path.commonpath([key, _packing_path_key(path)]) == key
+    except ValueError:
+        return False
+
+
 def _arquivo_packing(client_id, documento_id):
     if not re.fullmatch(r"[0-9a-f]{32}", str(documento_id or "")):
         raise HTTPException(404, "Nenhum Packing List adicionado nesta lista.")
     tenant = os.path.realpath(os.path.dirname(common._arquivo_listas_pedidos(client_id)))
     root = os.path.realpath(os.path.join(tenant, "packing_lists"))
-    if os.path.commonpath([tenant, root]) != tenant:
+    if not _packing_path_contains(tenant, root):
         raise HTTPException(404, "Nenhum Packing List adicionado nesta lista.")
     caminho = os.path.realpath(os.path.join(root, f"{documento_id}.xlsx"))
-    if os.path.commonpath([root, caminho]) != root:
+    if not _packing_path_contains(root, caminho):
         raise HTTPException(404, "Nenhum Packing List adicionado nesta lista.")
     return caminho
 
