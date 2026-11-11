@@ -1,6 +1,12 @@
 .medias-page {
+    box-sizing: border-box;
+    min-height: 100vh;
     padding: 18px 20px;
-    background: #0d131c;
+    background-color: #071622;
+    background-image: url("./images/fundo-graficos.png");
+    background-position: center bottom;
+    background-size: max(100%, 1600px) auto;
+    background-repeat: repeat-y;
     color: #e6edf6;
     font-family: "Segoe UI", sans-serif;
 }
@@ -16,55 +22,61 @@
 }
 .medias-page .topbar {
     gap: 20px;
-    min-height: 88px;
-    padding: 6px 20px 6px 8px;
+    min-height: 108px;
+    padding: 6px 18px 6px 8px;
     margin-bottom: 14px;
-    border: 1px solid #263447;
-    border-radius: 16px;
-    background: linear-gradient(110deg, #172b41, #131e2d 48%, #121c29);
+    border: 1px solid #29465c;
+    border-radius: 13px;
+    background-color: #081c2b;
+    background-image:
+        linear-gradient(90deg, rgba(5, 19, 31, .58), rgba(5, 19, 31, .24) 35%, rgba(5, 19, 31, .04) 65%, rgba(5, 19, 31, .15)),
+        url("./images/fundo-estoque-pedidos.png");
+    background-position: center, center 52%;
+    background-size: cover;
+    background-repeat: no-repeat;
 }
 .medias-page .topbar-title {
-    flex: 1 1 460px;
+    flex: 1 1 440px;
     flex-wrap: nowrap;
-    gap: 6px;
+    gap: 16px;
     min-width: 0;
 }
 .page-illustration {
     display: block;
-    width: 140px;
-    height: 88px;
+    width: 174px;
+    height: 104px;
     object-fit: contain;
     flex-shrink: 0;
 }
-.page-heading { min-width: 0; }
+.page-heading { min-width: 0; padding-left: 18px; border-left: 1px solid #7295b366; text-shadow: 0 1px 6px #0008; }
 .page-eyebrow {
     display: block;
     margin-bottom: 6px;
-    color: #7fb7eb;
+    color: #66caff;
     font-size: 10px;
     font-weight: 700;
     letter-spacing: .12em;
     text-transform: uppercase;
 }
-.medias-page .title { font-size: clamp(24px, 2.3vw, 32px); line-height: 1.15; letter-spacing: -.025em; }
-.medias-page .subtitle { margin-top: 7px; color: #a7b7cb; font-size: 13px; line-height: 1.4; }
+.medias-page .title { color: #f4f8ff; font-size: clamp(24px, 2.4vw, 34px); line-height: 1.15; letter-spacing: -.025em; }
+.medias-page .subtitle { margin-top: 7px; color: #c0cede; font-size: 13px; line-height: 1.4; }
 .medias-page .topbar-actions { flex: 0 1 auto; }
 .medias-page .topbar-shortcuts { gap: 8px; flex-wrap: nowrap; }
 .medias-page .topbar-nav-card {
     box-sizing: border-box;
-    min-width: 126px;
-    min-height: 62px;
+    min-width: 156px;
+    min-height: 72px;
     padding: 9px 12px;
     display: flex;
     flex-direction: row;
     align-items: center;
     gap: 10px;
     border-radius: 11px;
-    border: 1px solid #32455b;
-    background: #1a2c41;
+    border: 1px solid #34536d;
+    background: linear-gradient(135deg, rgba(26, 48, 70, .84), rgba(16, 34, 52, .8));
     color: #e5f0ff;
     box-shadow: none;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
     transition: background .15s, border-color .15s;
 }
@@ -81,9 +93,20 @@
     background: #203f60;
     color: #8fc8ff;
 }
-.shortcut-image { object-fit: cover; object-position: 75% center; }
+.medias-page .shortcut-image { width: 52px; height: 52px; border-radius: 0; object-fit: contain; background: transparent; }
+.medias-page .importacao .shortcut-image { width: 58px; }
 .medias-page .home .shortcut-visual { background: #183f43; color: #83d9ce; }
-.medias-page .card { background: #151e2b; border-color: #273346; border-radius: 13px; }
+.medias-page .card { background: rgba(15, 29, 44, .94); border-color: #273346; border-radius: 13px; }
+/* A arte aparece nas areas livres dos paineis, mesmo com a tabela longa. */
+.medias-page .card.menu-compacto,
+.medias-page .card.menu-abas-compacto {
+    background-image:
+        linear-gradient(90deg, rgba(15, 29, 44, .98), rgba(15, 29, 44, .9) 38%, rgba(15, 29, 44, .2)),
+        url("./images/fundo-graficos.png");
+    background-position: left top, right top;
+    background-size: 100% 190px, auto 540px;
+    background-repeat: no-repeat;
+}
 .medias-page .menu-compacto { padding: 14px 16px 10px; margin-bottom: 14px; }
 .medias-page .controls { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; align-items: start; }
 .periodo-filter { align-self: stretch; border-right: 1px solid #2a3648; padding-right: 18px; }
@@ -175,8 +198,10 @@ p.filter-hint { margin: 10px 0 0; }
 .medias-page :is(button, a, input):focus-visible { outline: 2px solid #8ac9ff; outline-offset: 3px; }
 @media (max-width: 1100px) {
     .medias-page .topbar-title { flex-basis: 360px; }
-    .page-illustration { width: 116px; height: 88px; }
-    .medias-page .topbar-nav-card { min-width: 108px; padding: 8px; gap: 7px; }
+    .page-illustration { width: 136px; height: 96px; }
+    .medias-page .topbar-nav-card { min-width: 136px; padding: 8px; gap: 7px; }
+    .medias-page .shortcut-image { width: 44px; height: 46px; }
+    .medias-page .importacao .shortcut-image { width: 48px; }
     .medias-page .controls { grid-template-columns: 190px minmax(0, 1fr); gap: 16px; }
     .periodo-filter { padding-right: 14px; }
 }
@@ -196,10 +221,14 @@ p.filter-hint { margin: 10px 0 0; }
     .medias-page .topbar-title { flex-basis: 100%; }
     .medias-page .topbar-actions { width: 100%; }
     .page-illustration { width: 90px; height: 76px; }
+    .medias-page .topbar-title { gap: 10px; }
+    .page-heading { padding-left: 12px; }
     .page-eyebrow { font-size: 9px; letter-spacing: .07em; }
     .medias-page .title { font-size: 24px; }
     .medias-page .subtitle { font-size: 12px; }
-    .medias-page .topbar-nav-card { min-width: 0; min-height: 56px; gap: 6px; }
+    .medias-page .topbar-nav-card { min-width: 0; min-height: 88px; flex-direction: column; justify-content: center; padding: 8px 5px; gap: 5px; text-align: center; font-size: 12px; }
+    .medias-page .topbar-nav-card .shortcut-image { width: 40px; height: 36px; }
+    .medias-page .topbar-nav-card .shortcut-copy { gap: 3px; }
     .shortcut-visual, .shortcut-image { width: 28px; height: 30px; }
     .medias-page .shortcut-visual .medias-icon { width: 19px; height: 19px; }
     .medias-page .topbar-nav-card small { font-size: 10px; }

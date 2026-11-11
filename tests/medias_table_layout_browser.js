@@ -143,12 +143,21 @@ async function instalarRotas(page, controle) {
       await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
       return;
     }
-    if (url.pathname.startsWith('/medias_compras/')) {
+    if (url.pathname.startsWith('/medias_compras/')
+      || (url.pathname.startsWith('/assets/')
+        && fs.existsSync(path.join(root, 'static', url.pathname.slice(1))))) {
       const relativePath = url.pathname.replace(/^\//, '');
       const body = fs.readFileSync(path.join(root, 'static', relativePath));
+      const contentType = {
+        '.css': 'text/css',
+        '.js': 'application/javascript',
+        '.svg': 'image/svg+xml',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
+      }[path.extname(relativePath).toLowerCase()] || 'application/octet-stream';
       await route.fulfill({
         status: 200,
-        contentType: relativePath.endsWith('.css') ? 'text/css' : 'application/javascript',
+        contentType,
         body,
       });
       return;
