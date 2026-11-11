@@ -8,12 +8,13 @@ const {spawn,execFile}=require('child_process');
 const {performance}=require('perf_hooks');
 const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..');
+const python=process.env.PYTHON||(process.platform==='win32'?'python':'python3');
 
 async function freePort(){const server=net.createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));return port;}
 async function main(){
  const port=await freePort(),origin=`http://127.0.0.1:${port}`;
  const fixtureRoot=fs.mkdtempSync(path.join(os.tmpdir(),'jk-pm-history-e2e-'));
- const child=spawn('py',['-3',path.join(__dirname,'pesquisa_mercado_history_fixture.py'),String(port),fixtureRoot],{
+ const child=spawn(python,[path.join(__dirname,'pesquisa_mercado_history_fixture.py'),String(port),fixtureRoot],{
   cwd:root,windowsHide:true,env:{...process.env,PYTHONPATH:root,PYTHONDONTWRITEBYTECODE:'1',PYTHONUTF8:'1'},stdio:['ignore','pipe','pipe']});
  let output='',browser,spawnError;child.stdout.on('data',s=>output=(output+s).slice(-12000));child.stderr.on('data',s=>output=(output+s).slice(-12000));
  child.on('error',error=>{spawnError=error;});
