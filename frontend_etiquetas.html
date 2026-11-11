@@ -109,7 +109,7 @@
             .excel-wrap { overflow-x: auto; overflow-y: visible; }
         }
     </style>
-    <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261105-status-download">
+    <link rel="stylesheet" href="/etiquetas/styles/main.css?v=20261111-layout-imagens">
     <link rel="stylesheet" href="/etiquetas/styles/layout-editor.css?v=20261102-config-atual-v2">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -125,6 +125,7 @@
                 <p class="page-subtitle">Prepare suas etiquetas e organize a impressão em um só lugar.</p>
             </div>
         </div>
+        <img class="header-illustration" src="/etiquetas/images/header.png" width="360" height="156" alt="" aria-hidden="true" decoding="async">
         <nav class="nav-top-actions" aria-label="Navegação">
             <a href="dashboard.html" class="back-btn"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m3 10 9-7 9 7v10H3zM9 20v-7h6v7"/></svg><span>Home</span></a>
             <a href="dashboard.html" class="back-btn back-secondary">Voltar</a>
@@ -140,32 +141,42 @@
     <div class="tab-panel active" id="panel-processador">
       <div class="shipping-layout">
        <section class="shipping-card" aria-label="Preparar etiquetas de envio">
-        <div class="section-heading"><span class="step-number">1</span><div><h2>Selecione a loja</h2><p class="section-hint">Escolha a origem das etiquetas que deseja processar.</p></div></div>
+        <div class="section-heading"><span class="step-number">1</span><div><h2>Selecione a loja</h2><p class="section-hint">Escolha a origem das etiquetas.</p></div></div>
         <div class="radio-group">
-            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"><span class="store-mark ml" aria-hidden="true">ML</span><span>Mercado Livre</span></label><button type="button" class="store-layout-button" data-layout-store="Mercado Livre" aria-label="Configurar layout de Mercado Livre" title="Configurar layout de Mercado Livre"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"><span class="store-mark shopee" aria-hidden="true">S</span><span>Shopee</span></label><button type="button" class="store-layout-button" data-layout-store="Shopee" aria-label="Configurar layout de Shopee" title="Configurar layout de Shopee"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"><span class="store-mark tiktok" aria-hidden="true">Tk</span><span>TikTok</span></label><button type="button" class="store-layout-button" data-layout-store="TikTok" aria-label="Configurar layout de TikTok" title="Configurar layout de TikTok"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"><span class="store-mark amazon" aria-hidden="true">a</span><span>Amazon</span></label><button type="button" class="store-layout-button" data-layout-store="Amazon" aria-label="Configurar layout de Amazon" title="Configurar layout de Amazon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Mercado Livre" checked onchange="toggleInputs()"><span class="store-mark ml" aria-hidden="true"><img src="/assets/mercado-livre-symbol.svg" width="64" height="64" alt="" decoding="async"></span><span>Mercado Livre</span></label><button type="button" class="store-layout-button" data-layout-store="Mercado Livre" aria-label="Configurar layout de Mercado Livre" title="Configurar layout de Mercado Livre"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Shopee" onchange="toggleInputs()"><span class="store-mark shopee" aria-hidden="true"><img src="/etiquetas/images/shopee.svg" width="64" height="64" alt="" decoding="async"></span><span>Shopee</span></label><button type="button" class="store-layout-button" data-layout-store="Shopee" aria-label="Configurar layout de Shopee" title="Configurar layout de Shopee"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="TikTok" onchange="toggleInputs()"><span class="store-mark tiktok" aria-hidden="true"><img src="/etiquetas/images/tiktok.svg" width="64" height="64" alt="" decoding="async"></span><span>TikTok</span></label><button type="button" class="store-layout-button" data-layout-store="TikTok" aria-label="Configurar layout de TikTok" title="Configurar layout de TikTok"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+            <div class="store-card"><label class="radio-option"><input type="radio" name="loja" value="Amazon" onchange="toggleInputs()"><span class="store-mark amazon" aria-hidden="true"><img src="/etiquetas/images/amazon.svg" width="64" height="64" alt="" decoding="async"></span><span>Amazon</span></label><button type="button" class="store-layout-button" data-layout-store="Amazon" aria-label="Configurar layout de Amazon" title="Configurar layout de Amazon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9.2 3-.5 2.1-1.9 1.1-2.1-.6-2.8 4.8 1.6 1.5v2.2L1.9 15l2.8 4.8 2.1-.6 1.9 1.1.5 2.1h5.6l.5-2.1 1.9-1.1 2.1.6 2.8-4.8-1.6-1.5v-2.2l1.6-1.5-2.8-4.8-2.1.6-1.9-1.1-.5-2.1z" transform="translate(0 -1) scale(1 .96)"/><circle cx="12" cy="12" r="3"/></svg></button></div>
         </div>
 
         <div class="section-heading upload-heading"><span class="step-number">2</span><div><h2>Adicione seus arquivos</h2><p class="section-hint">Selecione os documentos da loja escolhida.</p></div></div>
         <div class="file-area">
             <div class="file-input-group" id="group-file-1">
-                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
-                <label id="label-file-1" for="file-etiquetas">Arquivo de Etiquetas (PDF)</label>
-                <p class="upload-hint">Selecione o PDF de etiquetas ou a lista de envio.</p>
-                <input type="file" id="file-etiquetas" accept=".pdf">
+                <img class="upload-illustration" src="/etiquetas/images/upload.png" width="110" height="74" alt="" aria-hidden="true" decoding="async">
+                <p class="upload-title">Arraste seu PDF para cá</p>
+                <p class="upload-hint" id="hint-file-etiquetas">ou selecione o arquivo no seu computador</p>
+                <div class="upload-picker"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3"/></svg><span>Selecionar arquivo</span><input type="file" class="upload-input" id="file-etiquetas" accept=".pdf" aria-describedby="hint-file-etiquetas"></div>
+                <label class="upload-file-label" id="label-file-1" for="file-etiquetas">Arquivo de etiquetas ou lista de envio em PDF</label>
+                <div class="upload-selection" hidden><span class="upload-filename" aria-live="polite"></span><button type="button" class="upload-remove" aria-label="Remover arquivo de etiquetas">Remover</button></div>
+                <p class="upload-feedback" role="alert" hidden></p>
             </div>
             <div class="file-input-group" id="group-file-2" style="display: none;">
-                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
-                <label for="file-lista">Lista de Picking (Opcional se ja vier junto no PDF)</label>
-                <input type="file" id="file-lista" accept=".pdf">
+                <img class="upload-illustration" src="/etiquetas/images/upload.png" width="110" height="74" alt="" aria-hidden="true" decoding="async">
+                <p class="upload-title">Adicione sua lista de picking</p>
+                <p class="upload-hint" id="hint-file-lista">Arraste o PDF ou selecione no computador.</p>
+                <div class="upload-picker"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3"/></svg><span>Selecionar arquivo</span><input type="file" class="upload-input" id="file-lista" accept=".pdf" aria-describedby="hint-file-lista"></div>
+                <label class="upload-file-label" for="file-lista">Lista de picking opcional se já estiver no PDF de etiquetas</label>
+                <div class="upload-selection" hidden><span class="upload-filename" aria-live="polite"></span><button type="button" class="upload-remove" aria-label="Remover lista de picking">Remover</button></div>
+                <p class="upload-feedback" role="alert" hidden></p>
             </div>
             <div class="file-input-group" id="group-file-nf" style="display: none;">
-                <span class="upload-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6v20h12V6zM14 2v5h5M12 17V10m-3 3 3-3 3 3"/></svg></span>
-                <label for="file-nf">Arquivo de Nota Fiscal (Obrigatório para Amazon)</label>
-                <p class="upload-hint">Selecione a nota fiscal em PDF ou XML.</p>
-                <input type="file" id="file-nf" accept=".pdf,.xml">
+                <img class="upload-illustration" src="/etiquetas/images/upload.png" width="110" height="74" alt="" aria-hidden="true" decoding="async">
+                <p class="upload-title">Arraste sua nota fiscal para cá</p>
+                <p class="upload-hint" id="hint-file-nf">Selecione a nota fiscal em PDF ou XML.</p>
+                <div class="upload-picker"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7h7l2 2h9v11H3zM3 7V4h7l2 3"/></svg><span>Selecionar arquivo</span><input type="file" class="upload-input" id="file-nf" accept=".pdf,.xml" aria-describedby="hint-file-nf"></div>
+                <label class="upload-file-label" for="file-nf">Arquivo de nota fiscal obrigatório para Amazon</label>
+                <div class="upload-selection" hidden><span class="upload-filename" aria-live="polite"></span><button type="button" class="upload-remove" aria-label="Remover nota fiscal">Remover</button></div>
+                <p class="upload-feedback" role="alert" hidden></p>
             </div>
         </div>
 
@@ -176,8 +187,8 @@
 
        </section>
        <aside class="shipping-empty" aria-label="Resultados">
-           <div class="result-heading"><h2>Resultados</h2></div>
-           <div class="empty-result-content"><span class="empty-result-icon"><svg class="ui-icon " viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6zM18 12h.01"/></svg></span><h3>Pronto para começar</h3><p>Escolha a loja e processe seus arquivos. Suas etiquetas e a lista de envio aparecerão aqui.</p></div>
+           <div class="result-heading"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6zM18 12h.01"/></svg><h2>Resultados</h2></div>
+           <div class="empty-result-content"><span class="illustration-badge">Prévia ilustrativa</span><img class="result-illustration" src="/etiquetas/images/results.png" width="300" height="260" alt="" aria-hidden="true" decoding="async"><h3>Tudo pronto para começar</h3><p>Processe um arquivo para visualizar e baixar suas etiquetas.</p><div class="empty-result-tip"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 18h6M9 21h6M8 13a6 6 0 1 1 8 0c-1.4 1.1-1 2.1-1 3H9c0-.9.4-1.9-1-3"/></svg><span>Confira o PDF antes de imprimir.</span></div></div>
        </aside>
         <aside class="result-section shipping-results" id="result-section" aria-label="Resultados do processamento" aria-live="polite">
             <div class="result-heading"><h2>Resultados</h2><span class="result-badge">Concluído</span></div>
@@ -1362,6 +1373,7 @@
     atualizarLayoutQrCode();
 </script>
 <script src="/etiquetas/layout-editor.js?v=20261106-shopee-faixa"></script>
+<script src="/etiquetas/upload.js?v=20261111-layout-imagens"></script>
 <script src="/ia-sidebar.js"></script>
 </body>
 </html>

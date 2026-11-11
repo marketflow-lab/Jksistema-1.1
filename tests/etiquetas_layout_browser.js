@@ -6,6 +6,11 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '..');
+const assetContentType = filename => ({
+  '.css': 'text/css', '.js': 'application/javascript', '.json': 'application/json',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.woff2': 'font/woff2',
+})[path.extname(filename)] || 'application/octet-stream';
 const html = fs.readFileSync(path.join(root, 'frontend_etiquetas.html'));
 assert.deepStrictEqual(html, fs.readFileSync(path.join(root, 'static', 'frontend_etiquetas.html')),
   'As duas páginas devem oferecer o mesmo editor de impressão');
@@ -77,11 +82,11 @@ async function routes(page) {
     const pathname = new URL(request.url()).pathname;
     try {
       if (pathname === '/frontend_etiquetas.html') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
-      if (pathname.startsWith('/etiquetas/')) {
+      if (pathname.startsWith('/etiquetas/') || pathname.startsWith('/assets/')) {
         const asset = path.join(root, 'static', pathname.slice(1));
         assert(fs.existsSync(asset), 'Asset do editor deve existir: ' + pathname);
         if (pathname.endsWith('/layout-defaults.json')) state.defaultsRequests += 1;
-        return route.fulfill({ contentType: pathname.endsWith('.css') ? 'text/css' : pathname.endsWith('.json') ? 'application/json' : 'application/javascript', body: fs.readFileSync(asset) });
+        return route.fulfill({ contentType: assetContentType(pathname), body: fs.readFileSync(asset) });
       }
       if (pathname === '/api/etiquetas/layout/config') {
         assert.strictEqual(request.method(), 'GET', 'Configuração inicial deve usar GET');

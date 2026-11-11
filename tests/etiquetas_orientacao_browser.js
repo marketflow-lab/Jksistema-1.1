@@ -6,6 +6,11 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '..');
+const assetContentType = filename => ({
+  '.css': 'text/css', '.js': 'application/javascript', '.json': 'application/json',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.woff2': 'font/woff2',
+})[path.extname(filename)] || 'application/octet-stream';
 const html = fs.readFileSync(path.join(root, 'frontend_etiquetas.html'));
 assert.deepStrictEqual(html, fs.readFileSync(path.join(root, 'static', 'frontend_etiquetas.html')),
   'As duas páginas de Etiquetas devem oferecer o mesmo fluxo');
@@ -112,6 +117,11 @@ async function cancel(page, mode, key) {
       const request = route.request();
       const pathname = new URL(request.url()).pathname;
       if (pathname === '/frontend_etiquetas.html') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: html });
+      if (pathname.startsWith('/etiquetas/') || pathname.startsWith('/assets/')) {
+        const asset = path.join(root, 'static', pathname.slice(1));
+        assert(fs.existsSync(asset), 'Asset da página deve existir: ' + pathname);
+        return route.fulfill({ contentType: assetContentType(pathname), body: fs.readFileSync(asset) });
+      }
       if (pathname.startsWith('/api/etiquetas/')) {
         assert.strictEqual(request.headers().authorization, 'Bearer synthetic-token');
         if (request.method() === 'POST') {
