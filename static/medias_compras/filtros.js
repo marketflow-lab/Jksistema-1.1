@@ -31,18 +31,19 @@
                 btn.style.setProperty('--loja-accent-rgb', cor.accent);
                 btn.style.setProperty('--loja-soft-rgb', cor.soft);
                 const subtitulo = valor === '__todas' ? 'Visão consolidada do sistema' : 'Filtrar médias e pedidos desta loja';
-                const chip = valor === '__todas' ? '🌐 Geral' : '🏬 Loja';
-                const status = selecionada ? 'Ativa' : 'Selecionar';
+                const icone = valor === '__todas' ? 'lojas' : 'loja';
+                const status = selecionada ? 'Selecionada' : (valor === '__todas' ? 'Visão geral' : 'Ver loja');
                 btn.setAttribute('aria-pressed', selecionada ? 'true' : 'false');
                 btn.setAttribute('aria-label', texto + '. ' + subtitulo);
-                btn.title = subtitulo;
+                btn.title = texto + '. ' + subtitulo;
                 btn.innerHTML =
-                    '<span class="loja-head">' +
-                        '<span class="loja-chip">' + chip + '</span>' +
-                        '<span class="loja-check">' + status + '</span>' +
+                    '<span class="loja-avatar" aria-hidden="true">' +
+                        '<svg class="medias-icon" focusable="false"><use href="/medias_compras/icones.svg#' + icone + '"></use></svg>' +
                     '</span>' +
-                    '<span class="loja-titulo">' + escaparHtml(texto) + '</span>' +
-                    '<span class="loja-arrow">Ver dados →</span>';
+                    '<span class="loja-copy">' +
+                        '<span class="loja-titulo">' + escaparHtml(texto) + '</span>' +
+                        '<span class="loja-check">' + status + '</span>' +
+                    '</span>';
                 btn.onclick = () => {
                     const lojaAnterior = lojaSelecionada;
                     const storeIdAnterior = storeIdSelecionado;

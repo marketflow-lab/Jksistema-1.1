@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Médias e Pedidos - JK Sistema</title>
     <link rel="stylesheet" href="/medias_compras/styles.css?v=20261106-fotos-adiadas">
+    <link rel="stylesheet" href="/medias_compras/layout.css?v=20261111-imagens-v1">
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/auth.js?v=20261016-carregamento-integral-v2"></script>
     <script src="/cache-persistente.js?v=20261106-fotos-adiadas"></script>
@@ -14,75 +15,80 @@
     <link rel="stylesheet" href="/comentarios-sku.css?v=1">
     <script src="/comentarios-sku.js?v=1"></script>
 </head>
-<body>
+<body class="medias-page">
 <div class="container">
-    <div class="topbar">
+    <header class="topbar">
         <div class="topbar-title">
-            <h1 class="title">Médias e Pedidos</h1>
-            <div class="topbar-shortcuts" aria-label="Atalhos de Médias e Pedidos">
-                <a class="topbar-nav-card shortcut vendas" href="/vendas.html">
-                    <span>💰 Vendas</span>
-                    <small>Ver painel</small>
-                </a>
-                <a class="topbar-nav-card shortcut importacao" href="/importacoes.html">
-                    <span>📥 Importação</span>
-                    <small>Abrir central</small>
-                </a>
+            <img class="page-illustration" src="/assets/estoque-stockroom.png" width="160" height="104" alt="" decoding="async">
+            <div class="page-heading">
+                <span class="page-eyebrow">Planejamento de compras</span>
+                <h1 class="title">Médias e Pedidos</h1>
+                <p class="subtitle">Vendas, estoque e reposição em um só lugar.</p>
             </div>
         </div>
         <div class="topbar-actions">
-            <a class="topbar-nav-card home" href="/dashboard.html">
-                <span>🏠 Home</span>
-                <small>Página inicial</small>
-            </a>
-            <a class="back-btn" href="/dashboard.html">Voltar</a>
+            <nav class="topbar-shortcuts" aria-label="Atalhos de Médias e Pedidos">
+                <a class="topbar-nav-card shortcut vendas" href="/vendas.html">
+                    <span class="shortcut-visual"><svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#grafico"></use></svg></span>
+                    <span class="shortcut-copy"><span>Vendas</span><small>Ver painel</small></span>
+                </a>
+                <a class="topbar-nav-card shortcut importacao" href="/importacoes.html">
+                    <img class="shortcut-image" src="/assets/importacoes-cabecalho.webp" width="42" height="42" alt="" decoding="async">
+                    <span class="shortcut-copy"><span>Importação</span><small>Abrir central</small></span>
+                </a>
+                <a class="topbar-nav-card home" href="/dashboard.html">
+                    <span class="shortcut-visual"><svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#casa"></use></svg></span>
+                    <span class="shortcut-copy"><span>Home</span><small>Página inicial</small></span>
+                </a>
+            </nav>
         </div>
-    </div>
+    </header>
 
     <div class="card menu-compacto">
         <div class="controls">
-            <div>
-                <label>Período de análise</label>
+            <div class="periodo-filter" role="group" aria-labelledby="periodoLabel">
+                <p class="filter-label" id="periodoLabel"><svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#calendario"></use></svg>Período de análise</p>
                 <div class="periodo-buttons">
                     <button id="btnPeriodo3" class="btn-periodo" type="button" data-jk-action="periodo" data-periodo="3">3 meses</button>
                     <button id="btnPeriodo6" class="btn-periodo active" type="button" data-jk-action="periodo" data-periodo="6">6 meses</button>
                     <button id="btnPeriodo12" class="btn-periodo" type="button" data-jk-action="periodo" data-periodo="12">12 meses</button>
                 </div>
+                <p class="filter-hint">Base da média mensal de vendas</p>
             </div>
-            <div style="flex:1; min-width:280px;">
-                <label>Lojas</label>
-                <div id="lojaBotoes" class="loja-group" aria-label="Selecionar loja"></div>
+            <div class="lojas-filter">
+                <p class="filter-label" id="lojasLabel"><svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#loja"></use></svg>Lojas <span class="filter-hint">Selecione para filtrar os resultados</span></p>
+                <div id="lojaBotoes" class="loja-group" role="group" aria-labelledby="lojasLabel"></div>
             </div>
         </div>
-        <div id="status" class="status">Carregando dados...</div>
+        <div id="status" class="status" role="status" aria-live="polite">Carregando dados...</div>
     </div>
 
     <div class="card menu-abas-compacto">
         <div class="abas-wrap">
-            <div class="abas">
+            <div class="abas" role="group" aria-label="Visões de produtos e pedidos">
                 <button id="btnAbaLista" class="aba-btn active" type="button" data-jk-action="aba" data-aba="lista">Média mensal</button>
                 <button id="btnAbaOcultados" class="aba-btn" type="button" data-jk-action="aba" data-aba="ocultados">SKU's ocultados (0)</button>
                 <button id="btnAbaListasPedidos" class="aba-btn" type="button" data-jk-action="aba" data-aba="listas_pedidos">Lista de pedidos</button>
             </div>
+        </div>
+        <div class="results-toolbar">
             <div id="skuSearchBox" class="sku-search" role="search">
+                <svg class="medias-icon search-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#busca"></use></svg>
                 <input id="pesquisaSkuInput" class="sku-search-input" type="search" placeholder="Pesquisar SKU" autocomplete="off" spellcheck="false" inputmode="search" aria-label="Pesquisar por SKU">
                 <button id="btnLimparPesquisaSku" class="sku-search-clear hidden" type="button" data-jk-action="limpar-pesquisa" title="Limpar pesquisa por SKU" aria-label="Limpar pesquisa por SKU">&times;</button>
             </div>
             <div class="section-actions">
                 <button class="action-card-btn danger" type="button" data-jk-action="produtos-sem-venda">
-                    <span class="action-card-chip">ALERTA</span>
-                    <span class="action-card-title">Sem venda</span>
-                    <span class="action-card-sub">produtos</span>
+                    <svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#alerta"></use></svg>
+                    <span class="action-card-copy"><span class="action-card-title">Sem venda</span><span class="action-card-sub">Ver produtos</span></span>
                 </button>
                 <button class="action-card-btn" type="button" data-jk-action="abrir-lista-compra">
-                    <span class="action-card-chip">AÇÃO</span>
-                    <span class="action-card-title">Gerar lista</span>
-                    <span class="action-card-sub">de compra</span>
+                    <svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#lista"></use></svg>
+                    <span class="action-card-copy"><span class="action-card-title">Gerar lista</span><span class="action-card-sub">de compra</span></span>
                 </button>
                 <button class="action-card-btn alt" type="button" data-jk-action="baixar-sugestao">
-                    <span class="action-card-chip">AUTO</span>
-                    <span class="action-card-title">Lista sugestão</span>
-                    <span class="action-card-sub">de compra</span>
+                    <svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#download"></use></svg>
+                    <span class="action-card-copy"><span class="action-card-title">Lista sugestão</span><span class="action-card-sub">Baixar Excel</span></span>
                 </button>
             </div>
         </div>
@@ -245,7 +251,7 @@
 <script src="/medias_compras/visao-carregamento.js?v=20261106-fotos-adiadas"></script>
 <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/transito.js?v=20260826-medias-modular-v1"></script>
-<script src="/medias_compras/filtros.js?v=20261016-medias-carregamento-v1"></script>
+<script src="/medias_compras/filtros.js?v=20261111-imagens-v1"></script>
 <script src="/medias_compras/tabela-colunas.js?v=20260901-medias-table-layout-v2"></script>
 <script src="/medias_compras/listas-carregamento.js?v=20261028-listas-cache-v1"></script>
 <script src="/medias_compras/listas.js?v=20261029-uniao-listas-v1"></script>
