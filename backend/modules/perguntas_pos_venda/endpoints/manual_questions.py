@@ -266,6 +266,51 @@ def _motivo_anuncio_inativo_ml(client_id: str, loja: str, cfg: dict, question_id
     return _ML_LISTING_STATUS_MESSAGES.get(status, _ML_ACTIVE_ITEM_REQUIRED)
 
 
+def _registrar_memoria_resposta_manual(
+    client_id: str,
+    loja: str,
+    question_id: str,
+    resposta: str,
+    req: PerguntasEnviarRespostaRequest,
+    resolvidas: list[dict],
+) -> None:
+    try:
+        if resolvidas:
+            for approval in resolvidas:
+                registrado = _perguntas_ia_memoria_registrar_resposta_aprovada(
+                    client_id,
+                    loja,
+                    resposta,
+                    approval=approval,
+                    origem="manual_com_aprovacao",
+                    question_id=question_id,
+                )
+                if not registrado:
+                    _perguntas_ia_memoria_registrar_resposta_aprovada(
+                        client_id,
+                        loja,
+                        resposta,
+                        pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
+                        origem="manual_com_aprovacao",
+                        sku=req.sku,
+                        item_id=req.item_id,
+                        question_id=question_id,
+                    )
+        else:
+            _perguntas_ia_memoria_registrar_resposta_aprovada(
+                client_id,
+                loja,
+                resposta,
+                pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
+                origem="manual",
+                sku=req.sku,
+                item_id=req.item_id,
+                question_id=question_id,
+            )
+    except Exception as exc:
+        logger.warning("[ML PERGUNTAS IA] evento=registrar_memoria_manual status=erro tipo=%s", type(exc).__name__)
+
+
 def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id: str = Depends(get_tenant_id)):
     loja = str(req.loja or "").strip()
     question_id = str(req.question_id or "").strip()
@@ -353,41 +398,7 @@ def ml_perguntas_responder_manual(req: PerguntasEnviarRespostaRequest, client_id
     except Exception:
         warnings.append("local_approvals_pending")
         logger.warning("[ML PERGUNTAS] evento=registrar_aprovacoes_envio status=erro")
-    try:
-        if resolvidas:
-            for approval in resolvidas:
-                registrado = _perguntas_ia_memoria_registrar_resposta_aprovada(
-                    client_id,
-                    loja,
-                    resposta,
-                    approval=approval,
-                    origem="manual_com_aprovacao",
-                    question_id=question_id,
-                )
-                if not registrado:
-                    _perguntas_ia_memoria_registrar_resposta_aprovada(
-                        client_id,
-                        loja,
-                        resposta,
-                        pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
-                        origem="manual_com_aprovacao",
-                        sku=req.sku,
-                        item_id=req.item_id,
-                        question_id=question_id,
-                    )
-        else:
-            _perguntas_ia_memoria_registrar_resposta_aprovada(
-                client_id,
-                loja,
-                resposta,
-                pergunta=req.pergunta if isinstance(req.pergunta, dict) else {},
-                origem="manual",
-                sku=req.sku,
-                item_id=req.item_id,
-                question_id=question_id,
-            )
-    except Exception as exc:
-        logger.warning("[ML PERGUNTAS IA] evento=registrar_memoria_manual status=erro tipo=%s", type(exc).__name__)
+    _registrar_memoria_resposta_manual(client_id, loja, question_id, resposta, req, resolvidas)
     try:
         state = _perguntas_ia_state_carregar(client_id)
         _perguntas_ia_marcar_processada(state, loja, question_id, "sent_manual")

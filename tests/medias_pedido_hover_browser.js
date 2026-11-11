@@ -175,6 +175,7 @@ const listas = [{
         if (el.value !== nome) throw new Error('Lista ainda não carregada: ' + el.value);
       }, nome).catch(async () => page.waitForFunction(nome => document.getElementById('nomeListaPedidoEdit').value === nome, nome));
       await page.locator('#editorListaPedido:not(.hidden)').waitFor();
+      await page.locator('#statusListaPedido', { hasText: 'Lista carregada.' }).waitFor();
     };
     const viewportContem = async locator => {
       const bounds = await locator.boundingBox();

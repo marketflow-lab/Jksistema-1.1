@@ -47,6 +47,7 @@ context.window = context;
 vm.createContext(context);
 
 for (const sourcePath of [
+  'static/cadastro/form/00-fotos.js',
   'static/cadastro/form/00-core.js',
   'static/cadastro/00-runtime.js',
   'static/cadastro/01-core.js',

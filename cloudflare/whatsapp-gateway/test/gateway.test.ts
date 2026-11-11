@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
 import worker from "../src/index";
@@ -863,6 +863,11 @@ function inboundResultIdempotencyEnvironment() {
     outboxByKey,
   };
 }
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-18T12:00:00Z"));
+});
 
 afterEach(() => {
   vi.useRealTimers();

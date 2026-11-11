@@ -142,11 +142,8 @@ def test_rota_get_e_composicao_backend_api_reconhecem_endpoint():
     import backend_api
 
     assert backend_api.ml_perguntas_automacao_status is public_endpoints.ml_perguntas_automacao_status
-    assert any(
-        route.path == "/api/mercadolivre/perguntas/automacao/status"
-        and route.endpoint is public_endpoints.ml_perguntas_automacao_status
-        for route in backend_api.app.routes
-    )
+    path = "/api/mercadolivre/perguntas/automacao/status"
+    assert "get" in backend_api.app.openapi()["paths"][path]
 
 
 def _snapshot(loja: str, question_ids: list[str], completo: bool = True) -> dict:

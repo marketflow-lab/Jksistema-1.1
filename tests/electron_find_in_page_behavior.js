@@ -3,12 +3,12 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
-const electronCli = path.join(repoRoot, 'node_modules', 'electron', 'cli.js');
+const electronPath = require('electron');
 const probePath = path.join(__dirname, 'helpers', 'electron_find_in_page_behavior_probe.js');
 const env = { ...process.env };
 delete env.ELECTRON_RUN_AS_NODE;
 
-const result = spawnSync(process.execPath, [electronCli, probePath], {
+const result = spawnSync(electronPath, [probePath], {
     cwd: repoRoot,
     env,
     encoding: 'utf8',

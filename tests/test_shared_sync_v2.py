@@ -3,6 +3,8 @@ import asyncio
 import hashlib
 import io
 import json
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
@@ -713,16 +715,27 @@ def test_context_hub_e_obsidian_sao_excluidos_permanentemente(tmp_path, monkeypa
 
 
 def test_shared_sync_rejeita_symlink_ou_junction_fora_do_tenant(tmp_path, monkeypatch):
-    tenant = tmp_path / "000002"
+    tenant = tmp_path.resolve() / "000002"
     external = tmp_path / "external"
     tenant.mkdir()
     external.mkdir()
     (external / "001.json").write_text('{"sku":"001"}', encoding="utf-8")
-    linked = tenant / "SKU"
+    linked = tenant / "cadastro_fotos"
+    assert shared_sync_collect_files._shared_sync_scope_match("cadastro", "cadastro_fotos/001.json")
     try:
         linked.symlink_to(external, target_is_directory=True)
     except OSError:
-        pytest.skip("ambiente sem permissao para criar junction/symlink")
+        if os.name != "nt":
+            pytest.skip("ambiente sem permissao para criar junction/symlink")
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(linked), str(external)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            pytest.skip("ambiente sem permissao para criar junction/symlink")
+        assert linked.is_junction()
     monkeypatch.setattr(shared_sync_collect_files, "get_tenant_path", lambda _client_id: str(tenant), raising=False)
 
     entries, warnings = shared_sync_collect_files._shared_sync_coletar_arquivos(
@@ -6450,7 +6463,7 @@ def test_versoes_fonte_e_electron_estao_alinhadas_com_a_release():
     root_package = json.loads(open("package.json", "r", encoding="utf-8").read())
     electron_package = json.loads(open("electron_app/package.json", "r", encoding="utf-8").read())
     backend_source = open("backend_api.py", "r", encoding="utf-8-sig").read()
-    assert root_package["version"] == "1.0.339"
+    assert root_package["version"] == "1.0.340"
     assert electron_package["version"] == root_package["version"]
     # O minimo do backend pode permanecer anterior para nao derrubar clientes
     # durante o rollout em duas ondas.

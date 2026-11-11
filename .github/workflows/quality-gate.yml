@@ -15,7 +15,7 @@ concurrency:
 jobs:
   full-suite:
     name: Full suite
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 45
     env:
       PYTHONUTF8: '1'

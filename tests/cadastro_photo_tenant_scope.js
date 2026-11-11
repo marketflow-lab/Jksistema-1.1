@@ -34,7 +34,7 @@ const context = {
 context.window = context;
 vm.createContext(context);
 
-for (const relative of ['static/cadastro/form/00-core.js', 'static/cadastro/00-runtime.js', 'static/cadastro/01-core.js']) {
+for (const relative of ['static/cadastro/form/00-fotos.js', 'static/cadastro/form/00-core.js', 'static/cadastro/00-runtime.js', 'static/cadastro/01-core.js']) {
   const source = fs.readFileSync(path.join(root, relative), 'utf8');
   vm.runInContext(source, context, { filename: relative });
 }

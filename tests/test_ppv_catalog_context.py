@@ -21,9 +21,10 @@ def extract_sku(item):
 
 
 @pytest.fixture
-def reader(monkeypatch):
-    from backend.services import integracoes
+def reader(monkeypatch, tmp_path):
+    from backend.services import cadastro_lojas_produtos, integracoes
     from backend.modules.context_hub import store_sku_repository
+    monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", lambda tenant: str(tmp_path / tenant))
     monkeypatch.setattr(store_sku_repository, "load_store_sku_knowledge", lambda *args, **kwargs: {})
     monkeypatch.setattr(integracoes, "carregar_lojas_snapshot", lambda tenant: [
         {"store_id": "store-a", "nome": "Loja A", "integracoes": {"mercadolivre": {
@@ -31,6 +32,7 @@ def reader(monkeypatch):
         {"store_id": "store-b", "nome": "Loja B", "integracoes": {"mercadolivre": {
             "user_id": "456", "site_id": "MLB", "access_token": "fixture-b"}}},
     ])
+    monkeypatch.setattr(integracoes, "ler_lojas", integracoes.carregar_lojas_snapshot)
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda *_args: pytest.fail(
         "Catalog evidence must not acquire the canonical store writer lock"))
     module = ModuleType("backend.modules.context_hub.catalog_product_repository")
@@ -211,12 +213,14 @@ def test_empty_catalog_fields_do_not_become_factual_evidence(reader):
 
 def test_real_catalog_snapshot_is_read_without_a_listing_generation(tmp_path, monkeypatch):
     from backend.modules.context_hub.catalog_product_repository import publish_catalog_snapshot
-    from backend.services import integracoes
+    from backend.services import cadastro_lojas_produtos, integracoes
     store_id = "a" * 24
     identity = {**IDENTITY, "store_ref": store_id}
     scope = {**identity, "tenant_scope": "tenant:tenant-a", "store_name": "Loja A"}
     monkeypatch.setattr(integracoes, "carregar_lojas_snapshot",
                         lambda *_args: [{"store_id": store_id, "nome": "Loja A"}])
+    monkeypatch.setattr(integracoes, "ler_lojas", integracoes.carregar_lojas_snapshot)
+    monkeypatch.setattr(cadastro_lojas_produtos, "get_tenant_path", lambda tenant: str(tmp_path / tenant))
     published = publish_catalog_snapshot("tenant-a", scope,
         [{"store_id": store_id, "sku": "001", "nome": "Sensor", "descricao": "Ficha propria", "marca": "Marca A", "custo": 20}],
         info_root=tmp_path)

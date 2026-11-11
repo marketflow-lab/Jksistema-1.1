@@ -61,7 +61,7 @@ class FavoritosHistoricoSqliteTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.tenant = Path(self.tmp.name) / "000002"
+        self.tenant = Path(self.tmp.name).resolve() / "000002"
         self.tenant.mkdir()
         self.patches = [
             patch.object(favoritos_storage, "get_tenant_path", lambda client_id: str(self.tenant), create=True),

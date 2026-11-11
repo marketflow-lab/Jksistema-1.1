@@ -289,7 +289,7 @@ def test_inventory_total_drift_invalidates_coverage_claim(env):
 def test_discovery_routes_keep_legacy_routes_and_bind_tenant(env, monkeypatch):
     app = FastAPI()
     app.include_router(routes.create_mercado_livre_router(routes.MercadoLivreRouterConfig(get_tenant_id=lambda: "tenant-a")))
-    paths = {route.path for route in app.routes}
+    paths = set(app.openapi()["paths"])
     assert {"/api/mercadolivre/promocoes", "/api/mercadolivre/promocoes/contagens"} <= paths
     with TestClient(app) as client:
         first = client.post("/api/mercadolivre/promocoes/descoberta/start", params={"loja": "Loja"})

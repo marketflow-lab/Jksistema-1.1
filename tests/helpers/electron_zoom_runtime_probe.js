@@ -38,12 +38,10 @@ async function main() {
         assert.strictEqual(persisted.zoomPercent, 110, 'o zoom deve ser persistido no arquivo estavel do perfil');
 
         await page.evaluate(() => {
-            document.querySelectorAll('iframe.tab-view').forEach(frame => frame.classList.remove('is-active'));
-            const frame = document.createElement('iframe');
+            const frame = document.querySelector('iframe.tab-view.is-active');
+            if (!frame) throw new Error('a aba ativa do shell deve existir para a fixture de pesquisa');
             frame.id = 'runtime-find-frame';
-            frame.className = 'tab-view is-active';
             frame.srcdoc = '<!doctype html><html><body><button id="runtime-find-focus">foco</button><p>runtime-find-probe</p><p>runtime-find-probe</p></body></html>';
-            document.querySelector('#views').appendChild(frame);
         });
         await page.waitForFunction(() => {
             try {
@@ -55,6 +53,7 @@ async function main() {
         const runtimeFrameHandle = await page.locator('#runtime-find-frame').elementHandle();
         const appFrame = await runtimeFrameHandle.contentFrame();
         assert(appFrame, 'uma aba isolada do sistema deve estar carregada em iframe');
+        await appFrame.waitForLoadState('load');
         const childRejected = await appFrame.evaluate(async () => {
             try {
                 await window.electronAPI.setAppZoom(130);

@@ -280,6 +280,8 @@ def test_audit_keeps_lookup_failures_as_inconclusive_not_absent(monkeypatch):
 
 
 def test_prepared_source_cannot_bypass_the_1102_versus_908_mutation_guard(monkeypatch):
+    lookups = _patch_discovery(monkeypatch, IDS)
+
     def forbidden(*args, **kwargs):
         pytest.fail("No mutation is allowed for a source count that differs from the expected count")
 
@@ -292,6 +294,7 @@ def test_prepared_source_cannot_bypass_the_1102_versus_908_mutation_guard(monkey
             expected_origem_count=908, verificar_destino=False, origem_preparada=prepared,
         )
     assert error.value.status_code == 409
+    assert set(lookups) == set(IDS)
 
 
 def test_unidentified_record_without_type_is_inconclusive_instead_of_absent():

@@ -600,6 +600,70 @@ def _invoke_repair(
         ) from exc
 
 
+def _invoke_validated_turn(
+    *,
+    flow: UnifiedFlow,
+    context: Mapping[str, Any],
+    accumulated_results: list[dict[str, Any]],
+    force_answer: bool,
+    research_rounds_used: int,
+    invoke_turn: InvokeTurn,
+    repair_used: bool,
+) -> tuple[dict[str, Any], bool]:
+    prompt = _turn_prompt(
+        flow=flow,
+        context=context,
+        force_answer=force_answer,
+        research_rounds_used=research_rounds_used,
+    )
+
+    def invoke_repair_turn() -> Mapping[str, Any]:
+        nonlocal repair_used
+        if repair_used:
+            raise _operational_error(
+                "invalid_output",
+                "unified agent returned invalid output after its repair attempt",
+            )
+        repair_used = True
+        return _invoke_repair(
+            flow=flow,
+            context=context,
+            accumulated_results=accumulated_results,
+            force_answer=force_answer,
+            research_rounds_used=research_rounds_used,
+            invoke_turn=invoke_turn,
+        )
+
+    try:
+        raw_turn = invoke_turn(prompt, copy.deepcopy(accumulated_results), force_answer)
+    except UnifiedResponseAgentOperationalError as exc:
+        if exc.code != "invalid_output":
+            raise
+        raw_turn = invoke_repair_turn()
+    except ValueError as exc:
+        if str(exc) != "invalid_structured_ai_payload":
+            raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
+        raw_turn = invoke_repair_turn()
+    except Exception as exc:
+        raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
+    try:
+        turn = _validate_turn(
+            raw_turn,
+            flow=flow,
+            research_budget_available=not force_answer,
+        )
+    except UnifiedResponseAgentOperationalError as exc:
+        if exc.code != "invalid_output" or repair_used:
+            raise
+        repaired_turn = invoke_repair_turn()
+        turn = _validate_turn(
+            repaired_turn,
+            flow=flow,
+            research_budget_available=not force_answer,
+        )
+    return turn, repair_used
+
+
 def run_unified_response_agent(
     *,
     flow: UnifiedFlow,
@@ -633,57 +697,15 @@ def run_unified_response_agent(
     repair_used = False
     while True:
         force_answer = research_rounds_used >= max_research_rounds
-        prompt = _turn_prompt(
+        turn, repair_used = _invoke_validated_turn(
             flow=flow,
             context=context,
+            accumulated_results=accumulated_results,
             force_answer=force_answer,
             research_rounds_used=research_rounds_used,
+            invoke_turn=invoke_turn,
+            repair_used=repair_used,
         )
-
-        def invoke_repair_turn() -> Mapping[str, Any]:
-            nonlocal repair_used
-            if repair_used:
-                raise _operational_error(
-                    "invalid_output",
-                    "unified agent returned invalid output after its repair attempt",
-                )
-            repair_used = True
-            return _invoke_repair(
-                flow=flow,
-                context=context,
-                accumulated_results=accumulated_results,
-                force_answer=force_answer,
-                research_rounds_used=research_rounds_used,
-                invoke_turn=invoke_turn,
-            )
-
-        try:
-            raw_turn = invoke_turn(prompt, copy.deepcopy(accumulated_results), force_answer)
-        except UnifiedResponseAgentOperationalError as exc:
-            if exc.code != "invalid_output":
-                raise
-            raw_turn = invoke_repair_turn()
-        except ValueError as exc:
-            if str(exc) != "invalid_structured_ai_payload":
-                raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
-            raw_turn = invoke_repair_turn()
-        except Exception as exc:
-            raise _operational_error("turn_execution_failed", "unified agent turn failed") from exc
-        try:
-            turn = _validate_turn(
-                raw_turn,
-                flow=flow,
-                research_budget_available=not force_answer,
-            )
-        except UnifiedResponseAgentOperationalError as exc:
-            if exc.code != "invalid_output" or repair_used:
-                raise
-            repaired_turn = invoke_repair_turn()
-            turn = _validate_turn(
-                repaired_turn,
-                flow=flow,
-                research_budget_available=not force_answer,
-            )
         if turn["action"] == "answer":
             return turn
         if force_answer:

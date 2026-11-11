@@ -41,7 +41,8 @@ CONTRACT_HASHES = {
     "aliases": "f149aa04a166eacd3f942889d2495dc5a23be9bb3317160d97e247ae834aa68e",
     "schema": "500b7ccbcedc02d3a254e8114e974355be5635d2f01bd7dc929b212643cb254a",
     "policy": "6e96ffaedf9396672c647b926bbfbc52347c30fc75b386e7248fcce1f35302cb",
-    "prompts": "c4722023e8eaa2d3a33e4540163388513d7383655244bb1346da627cb8cc3330",
+    # Includes the extracted research-stage prompt helper.
+    "prompts": "b59119b0e81566c34c395ecdfbdd1e60f03e7ff80d6b997b81f66c22190341bd",
     "exports": "fbd5bf89bb3a7d13d32c55dda0a0b89996c3c6a4828f94a250c94c5f18b74550",
 }
 LAYERS = {
@@ -132,7 +133,7 @@ def _contract_snapshot() -> dict[str, object]:
             "technical_question_plan_prompt", "technical_resolution_prompt",
         ],
         "factual_critic.py": ["factual_review_prompt", "factual_revision_prompt"],
-        "clients.py": ["_generate_public_compatibility_answer", "_invoke_stage_model"],
+        "clients.py": ["_generate_public_compatibility_answer", "_research_stage_prompt", "_invoke_stage_model"],
         "unified_response_agent.py": ["_turn_prompt"],
         "marketplace_policy.py": ["policy_stage_context", "policy_research_topics"],
         "backend/services/perguntas_pos_venda_state.py": ["_perguntas_ia_classification_prompt"],

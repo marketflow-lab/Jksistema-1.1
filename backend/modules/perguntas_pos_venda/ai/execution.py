@@ -470,28 +470,11 @@ def _perguntas_ia_repassar_falha_unificada(
     raise failure from exc
 
 
-def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
+def _perguntas_ia_identidade_servidor(contexto: dict, question_ctx) -> dict:
     agent_input = contexto["agent_input"]
-    manual_recovery = agent_input.pop("_manual_research_recovery", None) is MANUAL_RESEARCH_RECOVERY
-    settings = contexto["settings"]
-    question_ctx, listing_snapshot, previous_questions, seller_rules = context_from_agent_input(
-        agent_input, auto_publish_enabled=settings.auto_publish_enabled,
-    )
-    client = _PerguntasCodexV3Client(
-        contexto["client_id"], contexto["loja"], contexto["model_req"], agent_input,
-        reasoning_effort=contexto["reasoning"],
-    )
-    started = time.perf_counter()
-    metadata = {
-        "item_id": str(getattr(listing_snapshot, "id", "") or ""),
-        "listing_title": str(getattr(listing_snapshot, "title", "") or ""),
-        "history_count": len(previous_questions),
-        "question_id": str(getattr(question_ctx, "id", "") or ""),
-    }
-    initial_context = client.collect_unified_initial_context(metadata)
     item = agent_input.get("item") if isinstance(agent_input.get("item"), dict) else {}
     input_context = agent_input.get("context") if isinstance(agent_input.get("context"), dict) else {}
-    server_identity = {
+    return {
         "tenant_id": str(contexto["client_id"] or ""),
         "store": str(contexto["loja"] or ""),
         "store_id": str(agent_input.get("store_id") or input_context.get("store_id") or ""),
@@ -512,6 +495,28 @@ def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
         ),
         "order_id": str(agent_input.get("order_id") or input_context.get("order_id") or ""),
     }
+
+
+def _perguntas_ia_execucao_orquestrar(contexto: dict) -> tuple:
+    agent_input = contexto["agent_input"]
+    manual_recovery = agent_input.pop("_manual_research_recovery", None) is MANUAL_RESEARCH_RECOVERY
+    settings = contexto["settings"]
+    question_ctx, listing_snapshot, previous_questions, seller_rules = context_from_agent_input(
+        agent_input, auto_publish_enabled=settings.auto_publish_enabled,
+    )
+    client = _PerguntasCodexV3Client(
+        contexto["client_id"], contexto["loja"], contexto["model_req"], agent_input,
+        reasoning_effort=contexto["reasoning"],
+    )
+    started = time.perf_counter()
+    metadata = {
+        "item_id": str(getattr(listing_snapshot, "id", "") or ""),
+        "listing_title": str(getattr(listing_snapshot, "title", "") or ""),
+        "history_count": len(previous_questions),
+        "question_id": str(getattr(question_ctx, "id", "") or ""),
+    }
+    initial_context = client.collect_unified_initial_context(metadata)
+    server_identity = _perguntas_ia_identidade_servidor(contexto, question_ctx)
     signature = resolve_runtime_adapter(
         "state", "store_signature", _perguntas_ia_assinatura_loja,
     )(contexto["loja"])

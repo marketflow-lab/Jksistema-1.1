@@ -59,7 +59,7 @@ for (const html of [importacoes, detalhe]) {
     for (const source of inlineScripts) new Function(source);
 }
 
-const flowStart = importacoes.indexOf('function carregarInvoiceLocal(listaId)');
+const flowStart = importacoes.indexOf('function carregarResumoEditavelImportacoes(listaId)');
 const flowEnd = importacoes.indexOf('function setFx(valorTexto, horaTexto)', flowStart);
 if (flowStart < 0 || flowEnd < 0) {
     throw new Error('Fluxo do download do Commercial Invoice nao foi encontrado');

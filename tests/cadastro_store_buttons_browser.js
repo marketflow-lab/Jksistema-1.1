@@ -144,6 +144,14 @@ function contentType(filePath) {
         });
         return;
       }
+      const importadorMatch = url.pathname.match(/^\/api\/cadastro\/lojas\/([^/]+)\/importador-loja$/);
+      if (importadorMatch) {
+        const storeId = decodeURIComponent(importadorMatch[1]);
+        assert(lojas.some(loja => loja.store_id === storeId), 'importador deve usar uma loja da fixture');
+        assert.strictEqual(request.method(), 'GET');
+        await json(route, { store_id: storeId, importador: null });
+        return;
+      }
       const produtosMatch = url.pathname.match(/^\/api\/cadastro\/lojas\/([^/]+)\/produtos$/);
       if (produtosMatch) {
         const storeId = decodeURIComponent(produtosMatch[1]);
@@ -224,8 +232,11 @@ function contentType(filePath) {
     assert.match(await page.locator('#tBody').innerText(), /Produto store-rcl/);
     assert.deepStrictEqual(
       requests.slice(markerRcl).filter(item => item.pathname.includes('/api/cadastro/lojas/')),
-      [{ method: 'GET', pathname: '/api/cadastro/lojas/store-rcl/produtos', search: '?view=summary' }],
-      'clicar RCL deve consultar somente o store_id exato',
+      [
+        { method: 'GET', pathname: '/api/cadastro/lojas/store-rcl/importador-loja', search: '' },
+        { method: 'GET', pathname: '/api/cadastro/lojas/store-rcl/produtos', search: '?view=summary' },
+      ],
+      'clicar RCL deve consultar produtos e importador somente do store_id exato',
     );
 
     failNextRcl = true;

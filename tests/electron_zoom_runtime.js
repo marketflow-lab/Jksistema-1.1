@@ -6,7 +6,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '..');
-const electronPath = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'electron.exe');
+const electronPath = require('electron');
 const probePath = path.join(__dirname, 'helpers', 'electron_zoom_runtime_probe.js');
 
 function reservePort() {
@@ -58,14 +58,16 @@ async function main() {
     const cdpUrl = `http://127.0.0.1:${port}`;
     const testProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'jk-zoom-runtime-'));
     const preferencesPath = path.join(testProfile, 'electron-ui-preferences.json');
+    const fixtureUrl = 'http://127.0.0.1:9/zoom-runtime-test-only';
     fs.writeFileSync(
         path.join(testProfile, 'client-config.json'),
-        `${JSON.stringify({ appUrl: 'http://127.0.0.1:8001/dashboard.html' }, null, 2)}\n`,
+        `${JSON.stringify({ appUrl: fixtureUrl }, null, 2)}\n`,
         'utf8'
     );
     const env = {
         ...process.env,
         JK_APP_ROOT_DIR: repoRoot,
+        JK_APP_URL: fixtureUrl,
         JK_ELECTRON_USER_DATA_DIR: testProfile,
         JK_ALLOW_MULTIPLE_INSTANCES_FOR_TESTS: '1',
         JK_CONTEXT_HUB_ELECTRON_TEST_PORT: String(port),

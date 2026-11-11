@@ -48,7 +48,7 @@ const main = fs.readFileSync('static/cadastro/main/04-init.js', 'utf8');
       window.loads = 0;
       window.failReload = false;
       window.JKCadastro = {
-        components: new Set(['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importacoes-catalogos']),
+        components: new Set(['runtime', 'core', 'produtos', 'custos-mlb', 'actions', 'fornecedores', 'importador-loja', 'nacionalizadores', 'importacoes-catalogos']),
         runtime: { elements, state: {} },
         produtosTabela: { vincularNavegacaoLinhas: noop, renderTabela: noop },
         custosMlb: { renderCustos: noop, trocarAba: noop, renderDetalhesMlbPorSku: noop },
@@ -65,7 +65,10 @@ const main = fs.readFileSync('static/cadastro/main/04-init.js', 'utf8');
           },
           sincronizarNcmBackground: noop,
         },
-        fornecedores: { init: noop }, importacoesCatalogos: { init: noop }
+        fornecedores: { init: noop },
+        importadorLoja: { init: noop, carregar: noop },
+        nacionalizadores: { init: noop, carregar: noop, temEdicaoPendente: () => false },
+        importacoesCatalogos: { init: noop }
       };
     });
     await destination.addScriptTag({ content: main });

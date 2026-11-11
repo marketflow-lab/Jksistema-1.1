@@ -244,26 +244,7 @@ class _PerguntasVertexGeminiV2Client:
             expected_store=self.loja,
         )
 
-    def _invoke_stage_model(
-        self,
-        prompt: str,
-        metadata: dict[str, Any],
-        *,
-        stage: str,
-        tool_results: Optional[list[dict[str, Any]]] = None,
-        isolated: bool = False,
-    ) -> tuple[Any, str]:
-        fluxo_pos_venda = self._is_post_sale or str(metadata.get("category") or "").strip() == "post_sale"
-        stage_model = self.model_req
-        stage_reasoning_effort = self.reasoning_effort
-        if not fluxo_pos_venda and not self._is_regulated and stage in _PUBLIC_TECHNICAL_RESEARCH_STAGES:
-            stage_model = _PUBLIC_TECHNICAL_RESEARCH_MODEL
-            stage_reasoning_effort = _PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT
-        # LocalImageInput necessarily carries an absolute, short-lived file
-        # path. Evidence-graph turns are therefore always ephemeral and never
-        # resume or update the job's persistent operational thread.
-        isolated_turn = bool(isolated or stage == "technical_evidence_graph")
-        recovery_turn = isolated and stage == "unified_response_agent"
+    def _research_stage_prompt(self, prompt: str, stage: str) -> tuple[str, int]:
         subquestions = self.agent_input.get("subquestions") if isinstance(self.agent_input.get("subquestions"), list) else []
         final_review_stage = stage in {"factual_critic", "factual_revision"}
         if subquestions and not self.sku_question_context and not final_review_stage:
@@ -293,6 +274,29 @@ class _PerguntasVertexGeminiV2Client:
                 + "\nHISTORICO_COMPACTO_DAS_TENTATIVAS:\n"
                 + _untrusted_compact_block("historico_pesquisa_nao_confiavel", research_history, 0)
             )
+        return prompt, research_attempt
+
+    def _invoke_stage_model(
+        self,
+        prompt: str,
+        metadata: dict[str, Any],
+        *,
+        stage: str,
+        tool_results: Optional[list[dict[str, Any]]] = None,
+        isolated: bool = False,
+    ) -> tuple[Any, str]:
+        fluxo_pos_venda = self._is_post_sale or str(metadata.get("category") or "").strip() == "post_sale"
+        stage_model = self.model_req
+        stage_reasoning_effort = self.reasoning_effort
+        if not fluxo_pos_venda and not self._is_regulated and stage in _PUBLIC_TECHNICAL_RESEARCH_STAGES:
+            stage_model = _PUBLIC_TECHNICAL_RESEARCH_MODEL
+            stage_reasoning_effort = _PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT
+        # LocalImageInput necessarily carries an absolute, short-lived file
+        # path. Evidence-graph turns are therefore always ephemeral and never
+        # resume or update the job's persistent operational thread.
+        isolated_turn = bool(isolated or stage == "technical_evidence_graph")
+        recovery_turn = isolated and stage == "unified_response_agent"
+        prompt, research_attempt = self._research_stage_prompt(prompt, stage)
         effective_tool_results = list(tool_results or [])
         if not recovery_turn:
             prompt, effective_tool_results = policy_stage_context(self, prompt, effective_tool_results)

@@ -14,6 +14,7 @@ const materializer = require(path.join(
   'modules',
   'backend-runtime-materializer.js'
 ));
+const manifestGenerator = require(path.join(repoRoot, 'electron_app', 'scripts', 'local-app-manifest.js'));
 
 function write(candidate, value) {
   fs.mkdirSync(path.dirname(candidate), { recursive: true });
@@ -28,13 +29,33 @@ function readJson(candidate) {
   return JSON.parse(fs.readFileSync(candidate, 'utf8').replace(/^\uFEFF/, ''));
 }
 
-const sourceDir = path.resolve(
+function buildPackageFixture(root) {
+  const source = path.join(root, 'package-fixture');
+  const version = readJson(path.join(repoRoot, 'package.json')).version;
+  for (const relative of ['package.json', 'backend_api.py', 'backend/__init__.py', 'static/importacoes.html']) {
+    write(path.join(source, relative), fs.readFileSync(path.join(repoRoot, relative)));
+  }
+  write(path.join(source, 'runtime-manifest.json'), `${JSON.stringify({ version })}\n`);
+  const modelRoot = path.join(source, 'black_jhon_runtime', 'faster-whisper-small');
+  const modelRelative = 'models--fixture/snapshots/fixture/model.bin';
+  const modelPath = path.join(modelRoot, modelRelative);
+  write(modelPath, 'immutable-packaged-update-test-model');
+  write(path.join(modelRoot, 'model-manifest.json'), `${JSON.stringify({
+    model: 'small',
+    files: [{
+      path: modelRelative,
+      size: fs.statSync(modelPath).size,
+      sha256: sha256(modelPath),
+    }],
+  })}\n`);
+  manifestGenerator.writeLocalAppManifest(source, version);
+  assert.deepStrictEqual(manifestGenerator.validateLocalAppManifestAtRoot(source, version), []);
+  return source;
+}
+
+let sourceDir = path.resolve(
   process.argv[2] || path.join(repoRoot, 'electron_app', 'dist-client-setup', 'win-unpacked', 'resources', 'local_app')
 );
-assert(fs.existsSync(path.join(sourceDir, 'local-app-manifest.json')), 'pacote da release nao construido');
-const sourceManifest = readJson(path.join(sourceDir, 'local-app-manifest.json'));
-const releaseVersion = String(sourceManifest.version || '');
-assert(releaseVersion, 'versao ausente no local-app-manifest');
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'jk-packaged-update-'));
 const targetDir = path.join(tempRoot, 'local_app');
@@ -49,6 +70,15 @@ const canaries = [
 ];
 
 try {
+  // Source-only CI uses a disposable package. An explicit artifact must exist.
+  if (!process.argv[2] && !fs.existsSync(path.join(sourceDir, 'local-app-manifest.json'))) {
+    sourceDir = buildPackageFixture(tempRoot);
+  }
+  assert(fs.existsSync(path.join(sourceDir, 'local-app-manifest.json')), 'pacote da release nao construido');
+  const sourceManifest = readJson(path.join(sourceDir, 'local-app-manifest.json'));
+  const releaseVersion = String(sourceManifest.version || '');
+  assert(releaseVersion, 'versao ausente no local-app-manifest');
+
   write(path.join(targetDir, 'runtime-manifest.json'), '{"version":"1.0.99"}\n');
   write(path.join(targetDir, 'package.json'), '{"name":"jk-sistema-desktop","version":"1.0.88"}\n');
   write(path.join(targetDir, 'backend', 'stale.py'), 'VERSION = "1.0.99"\n');

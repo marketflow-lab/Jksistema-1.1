@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.schemas.medias_compras import ListaCompraRequest
+from backend.services import cadastro_compatibilidade
 from backend.services import medias_compras_common
 from backend.services import medias_compras_listas as listas
 from backend.services import medias_compras_sugestoes as sugestoes
@@ -62,6 +63,14 @@ def test_lista_compra_salva_quantidades_editadas(monkeypatch, tmp_path, via_get,
     estoque_csv.write_text(
         "sku,saldo_loja,loja_sync\n001,5,JK Pecas\n002,5,JK Pecas\n",
         encoding="utf-8",
+    )
+    def cadastro_da_loja(client_id, produtos_legados, store_id):
+        assert client_id == "000002" and store_id == "store-jk"
+        assert produtos_legados == []
+        return {"produtos": [], "store_id": store_id, "scope": "store"}
+
+    monkeypatch.setattr(
+        cadastro_compatibilidade, "mesclar_produtos_legados_com_contexto_loja", cadastro_da_loja,
     )
     listas_salvas = []
     tenant = tmp_path / "000002"

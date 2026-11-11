@@ -33,6 +33,7 @@ def editor_api(monkeypatch, tmp_path):
                                         "orientacoes_pos_venda": "Pos-venda preservado"}
         for row in stores}}), encoding="utf-8")
     monkeypatch.setattr(integracoes, "carregar_lojas", lambda _client: stores)
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda _client: stores)
     monkeypatch.setattr(store_config, "read_store_cards", lambda _client: {
         "lojas": [{"nome": row["nome"], "store_id": row["store_id"],
                    "seller_id": row["integracoes"]["mercadolivre"]["user_id"],

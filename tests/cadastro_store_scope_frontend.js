@@ -22,6 +22,7 @@ const context = {
 };
 context.window = context;
 vm.createContext(context);
+vm.runInContext(read('static/cadastro/form/00-fotos.js'), context, { filename: 'static/cadastro/form/00-fotos.js' });
 vm.runInContext(read('static/cadastro/form/00-core.js'), context, { filename: 'static/cadastro/form/00-core.js' });
 
 const stores = context.JKCadastroStore;

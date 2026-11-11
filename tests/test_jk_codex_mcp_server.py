@@ -13,7 +13,7 @@ from backend.services.codex.console import runtime as console_runtime
 def _start_server(monkeypatch):
     monkeypatch.setattr(
         integracoes,
-        "carregar_lojas",
+        "ler_lojas",
         lambda _client_id: [{
             "nome": "JK Pecas",
             "integracoes": {"mercadolivre": {"user_id": "123", "site_id": "MLB"}},
@@ -124,7 +124,7 @@ def _decode_signed_context(config: dict) -> dict:
 def test_unbounded_whatsapp_mcp_context_has_independent_reissuable_security_ttl(monkeypatch):
     monkeypatch.setattr(
         integracoes,
-        "carregar_lojas",
+        "ler_lojas",
         lambda _client_id: [{
             "nome": "JK Pecas",
             "integracoes": {"mercadolivre": {"user_id": "123", "site_id": "MLB"}},

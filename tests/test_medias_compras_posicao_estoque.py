@@ -229,7 +229,7 @@ def test_rota_get_aditiva_usa_tenant_autenticado_e_valida_sku(ambiente):
     assert client.get("/api/medias-compras/posicao-estoque", params={"store_id": "store-a"}).status_code == 422
     assert client.get("/api/medias-compras/posicao-estoque", params={"sku": " " * 2, "store_id": "store-a"}).status_code == 400
     assert client.get("/api/medias-compras/posicao-estoque", params={"sku": "001"}).status_code == 400
-    caminhos = {rota.path for rota in app.routes}
+    caminhos = set(app.openapi()["paths"])
     assert "/api/medias-compras/visao" in caminhos and "/api/medias-compras/listas-pedidos/{lista_id}" in caminhos
 
 

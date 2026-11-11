@@ -542,11 +542,11 @@ def test_inclusao_manual_em_lista_busca_foto_da_loja_selecionada(
         "_recalcular_frete_internacional_itens_lista",
         lambda _client_id, itens, **_kwargs: itens,
     )
-    monkeypatch.setattr(
-        medias_compras_listas,
-        "_resumo_lista_pedido",
-        lambda lista, *_args: {"id": lista["id"]},
-    )
+    def resumo_lista(lista, *, client_id):
+        assert client_id == "000002"
+        return {"id": lista["id"]}
+
+    monkeypatch.setattr(medias_compras_listas, "_resumo_lista_pedido", resumo_lista)
 
     resultado = asyncio.run(
         medias_compras_listas.api_medias_compras_lista_pedido_adicionar_sku(

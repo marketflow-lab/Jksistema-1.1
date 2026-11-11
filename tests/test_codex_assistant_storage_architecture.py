@@ -18,6 +18,7 @@ FACADE_PATH = ROOT / "backend" / "services" / "codex_assistant_storage.py"
 PACKAGE_PATH = ROOT / "backend" / "services" / "codex" / "storage"
 
 EXPECTED_PUBLIC_EXPORTS = (
+    "codex_assistant_customer_reply_jobs_readonly",
     "codex_assistant_customer_reply_job_has_transient",
     "codex_assistant_customer_reply_jobs_cleanup",
     "codex_assistant_client_dir",
@@ -61,7 +62,7 @@ EXPECTED_PUBLIC_EXPORTS = (
     "codex_assistant_agent_audit_add",
     "codex_assistant_agent_audit_list",
 )
-EXPECTED_SIGNATURES_SHA256 = "4e03ef7e4561129dda589a79ebe9a9efece0aa9451e2f1d8ceff1fdf5a0641de"
+EXPECTED_SIGNATURES_SHA256 = "4b68563cd640c3723370b253987a94cf6742cdcfa5916101942d3463739c489e"
 EXPECTED_STATE_SCHEMA_SHA256 = "e7c414b53abf9879cf02311481f90bec8791cd59e5ceae15ac44a2353829009a"
 
 

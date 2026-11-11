@@ -55,6 +55,7 @@ async function main() {
         await page.addScriptTag({ content: read('static/vendas/visual-novo-bridge.js') });
         await page.evaluate(({rows, totals}) => {
             dados = rows; dadosFiltrados = rows; dadosModoResumo = true; resumoTotaisVendas = totals;
+            window.JKVendasReadState.captureData();
             vendasResumoMeta = { composicao: { incomplete: false } };
             renderResumoTotaisVendas(totals); renderTabelaAgrupada(rows);
             atualizarObservacoesGraficoVendas({ labels: ['2026-10-01'], quantidades_vendas: [59], quantidades_devolucoes: [3], valores_vendas: [590], valores_devolucoes: [10] });
@@ -75,8 +76,10 @@ async function main() {
         assert.deepEqual(analysis.totais_periodo, totals);
         const multiMonth = await page.evaluate(() => {
             window.__fixtureStart = '2026-09-01';
+            window.JKVendasReadState.captureData();
             const result = obterResumoTelaVendas();
             delete window.__fixtureStart;
+            window.JKVendasReadState.captureData();
             return result;
         });
         assert.equal(multiMonth.analise_mensal, null, 'Um resumo de vários meses com componentes não pode virar uma venda/devolução no mês final');

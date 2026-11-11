@@ -417,6 +417,9 @@ def import_archive(info_root: Path, client_id: str, source: BinaryIO, filename: 
                         "SELECT channel_id,id FROM message_ownership WHERE guild_id=?", (guild_id,))}
                     if any((channel.id, message.id) in owned for channel in manifest.channels for message in channel.messages):
                         raise CofreError("A importacao conflita com uma mensagem criada no JK.", 409)
+            # Posting also uses storage, so import its atomic publisher after initialization.
+            from .posting import _place_blob
+
             directory.mkdir(parents=True, exist_ok=True)
             blobs = directory / "assets"
             _assert_safe(blobs)
@@ -425,7 +428,7 @@ def import_archive(info_root: Path, client_id: str, source: BinaryIO, filename: 
                 destination = blobs / digest
                 _assert_safe(destination)
                 if not destination.exists():
-                    os.replace(staged, destination)
+                    _place_blob(staged, destination)
             with closing(_connect(directory, writable=True)) as connection, connection:
                 guild = {**manifest.guild.model_dump(), "exported_at": manifest.exported_at}
                 connection.execute("INSERT INTO guilds VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",

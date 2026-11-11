@@ -36,7 +36,7 @@ async function environment(browser, options = {}) {
         const url = new URL(route.request().url());
         const pathname = url.pathname;
         if (pathname === '/cadastro-unit.html') return route.fulfill({ status: 200, contentType: 'text/html', body:
-            '<!doctype html><meta charset="utf-8"><body><div id="fields"></div><script src="/cadastro/form/00-core.js"></script><script src="/cadastro/editar-item-layout.js"></script></body>' });
+            '<!doctype html><meta charset="utf-8"><body><div id="fields"></div><script src="/cadastro/form/00-fotos.js"></script><script src="/cadastro/form/00-core.js"></script><script src="/cadastro/editar-item-layout.js"></script></body>' });
         if (pathname.endsWith('.html')) return route.fulfill({ status: 200, contentType: 'text/html', body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
         if (pathname === '/auth.js') return route.fulfill({ status: 200, contentType: 'application/javascript', body:
             'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({Authorization:"Bearer synthetic"});' });

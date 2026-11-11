@@ -91,7 +91,7 @@ def test_cutover_forces_agent_mode_and_disables_native_mcp(monkeypatch):
 def test_selector_receives_only_bounded_server_conversation_memory(monkeypatch):
     captured: dict = {}
 
-    monkeypatch.setattr(integracoes, "carregar_lojas", lambda _tenant: [{"nome": "JK Pecas"}])
+    monkeypatch.setattr(integracoes, "ler_lojas", lambda _tenant: [{"nome": "JK Pecas"}])
 
     def plan(**kwargs):
         captured.update(kwargs)

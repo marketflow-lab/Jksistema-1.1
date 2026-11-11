@@ -6,7 +6,7 @@ const vm = require('vm');
 const root = path.resolve(__dirname, '..');
 const context = { window: { JKCadastro: { __runtimeInitialized: true, components: new Set(), runtime: { elements: {}, state: {}, constants: {} } } } };
 vm.createContext(context);
-for (const name of ['static/cadastro/form/00-core.js', 'static/cadastro/01-core.js']) {
+for (const name of ['static/cadastro/form/00-fotos.js', 'static/cadastro/form/00-core.js', 'static/cadastro/01-core.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, name), 'utf8'), context, { filename: name });
 }
 const product = { sku: '001', cubagem_sku: '1', store_id: 'store-A', 'm3 individual': '0.4' };

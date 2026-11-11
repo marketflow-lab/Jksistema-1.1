@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import errno
+import hashlib
 import io
 import json
 import sqlite3
@@ -171,6 +173,82 @@ def test_zip_assets_content_addressed_and_preserved_on_json_reimport(tmp_path):
     import_json(tmp_path, payload)
     assert storage.list_messages(tmp_path, "tenant-a", "guild1", "channel1")["mensagens"][0]["attachments"][0]["local_url"] == attachment["local_url"]
     assert len(list((tmp_path / "tenant-a" / "cofre" / "assets").iterdir())) == 1
+
+
+def simulate_import_cross_volume(monkeypatch, root, *, kind="exdev", fail_local=False):
+    system_temp = root / "separate-system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(storage.tempfile, "tempdir", str(system_temp))
+    original = storage.os.replace
+    attempts = []
+
+    def replace(source, target):
+        source, target = Path(source), Path(target)
+        attempts.append((source, target))
+        assert not target.exists(), "O destino final só pode aparecer após a publicação completa."
+        if source.parent != target.parent:
+            error = OSError(errno.EXDEV if kind == "exdev" else errno.EINVAL, "Fixture cross-volume move")
+            if kind == "winerror17":
+                error.winerror = 17
+            raise error
+        if fail_local:
+            raise PermissionError(errno.EACCES, "Fixture rename denied")
+        return original(source, target)
+
+    monkeypatch.setattr(storage.os, "replace", replace)
+    return attempts, system_temp
+
+
+@pytest.mark.parametrize("kind", ["exdev", "winerror17"])
+def test_zip_import_cross_volume_is_atomic_and_idempotent(tmp_path, monkeypatch, kind):
+    attempts, system_temp = simulate_import_cross_volume(monkeypatch, tmp_path, kind=kind)
+    content = b"Complete archived attachment"
+    payload = attachment_manifest()
+    first = storage.import_archive(tmp_path, "tenant-a", package(payload, {"assets/report.html": content}), "a.zip")
+    digest = hashlib.sha256(content).hexdigest()
+    target = storage.get_asset(tmp_path, "tenant-a", "guild1", digest, "relatorio.html")
+    assert target.read_bytes() == content
+    assert len(attempts) == 2
+    assert attempts[0][0].parent.parent == system_temp
+    assert attempts[1][0].parent == attempts[1][1].parent == target.parent
+    assert list(target.parent.iterdir()) == [target]
+    assert list(system_temp.iterdir()) == []
+    assert first["imported_messages"] == 1
+
+    second = storage.import_archive(tmp_path, "tenant-a", package(payload, {"assets/report.html": content}), "a.zip")
+    assert second["imported_messages"] == 0
+    assert second["total_messages"] == 1
+    assert second["servidor"]["attachment_count"] == 1
+    assert len(attempts) == 2, "Reimportar o mesmo conteúdo reutiliza o blob confirmado."
+    assert list(target.parent.iterdir()) == [target]
+    assert list(system_temp.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", ["copy", "partial-copy", "replace"])
+def test_zip_import_cross_volume_failure_preserves_existing_archive(tmp_path, monkeypatch, failure):
+    from backend.modules.cofre import posting
+
+    import_json(tmp_path, manifest())
+    before = storage.list_messages(tmp_path, "tenant-a", "guild1", "channel1")
+    attempts, system_temp = simulate_import_cross_volume(monkeypatch, tmp_path, fail_local=failure == "replace")
+    if failure in {"copy", "partial-copy"}:
+        def incomplete_copy(source, output, *args, **kwargs):
+            output.write(b"partial")
+            if failure == "copy":
+                raise OSError(errno.ENOSPC, "Fixture destination full")
+        monkeypatch.setattr(posting.shutil, "copyfileobj", incomplete_copy)
+
+    payload = attachment_manifest()
+    payload["channels"][0]["messages"][0]["content"] = "A failed import must not persist this content"
+    with pytest.raises(OSError):
+        storage.import_archive(tmp_path, "tenant-a", package(payload, {"assets/report.html": b"complete"}), "a.zip")
+    assert attempts
+    assert storage.list_messages(tmp_path, "tenant-a", "guild1", "channel1") == before
+    directory = storage._tenant_dir(tmp_path, "tenant-a")
+    with storage._connect(directory) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 0
+    assert list((directory / "assets").iterdir()) == []
+    assert list(system_temp.iterdir()) == []
 
 
 def test_search_order_and_pagination(tmp_path):

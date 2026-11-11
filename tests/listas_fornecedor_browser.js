@@ -236,6 +236,10 @@ async function assertControlKeepsCardClosed(page, listId, field, container = '#l
   assert.strictEqual(state.updates.length, updatesBefore, 'Cancelar uma edição não deve salvar');
 }
 
+async function selectStore(page, name = 'JK Pecas') {
+  await page.locator('#lojaFiltroListas button').filter({ hasText: name }).click();
+}
+
 async function testPendingUpdate(page, order, field, oldName, newName, newId) {
   let releaseUpdate;
   state.updateGate = new Promise(resolve => { releaseUpdate = resolve; });
@@ -248,13 +252,15 @@ async function testPendingUpdate(page, order, field, oldName, newName, newId) {
   await pendingRequest;
   await input.dispatchEvent('keydown', { key: 'Enter', bubbles: true });
   await input.dispatchEvent('blur');
-  await page.locator('#lojaFiltroListas button').filter({ hasText: 'Todas as lojas' }).click();
+  await selectStore(page);
   const main = inlinePill(page, order.id, field);
   await main.waitFor();
   assert((await main.innerText()).includes(oldName), 'Pill recriado deve manter o nome anterior durante o PUT');
   assert.strictEqual(await main.getAttribute('aria-disabled'), 'true', 'O filtro deve respeitar a gravação pendente');
   await main.dispatchEvent('dblclick', { bubbles: true });
   assert.strictEqual(await main.locator('input').count(), 0, 'Pill recriado não pode iniciar outra gravação');
+  await selectStore(page, 'Todas as lojas');
+  await page.getByRole('tab', { name: 'Embarques', exact: true }).click();
   await page.locator('#embarquesWrap .embarque-item').filter({ hasText: 'Embarque de teste' }).click();
   const detail = inlinePill(page, order.id, field, '#embarqueDetalheListas');
   await detail.waitFor();
@@ -266,7 +272,6 @@ async function testPendingUpdate(page, order, field, oldName, newName, newId) {
   state.updateGate = null;
   releaseUpdate();
   await waitForClosedPill(page, order.id, field, newName, '#embarqueDetalheListas');
-  await waitForClosedPill(page, order.id, field, newName);
   assert.deepStrictEqual(state.updates.at(-1), { [field + '_id']: newId });
   await assertControlKeepsCardClosed(page, order.id, field, '#embarqueDetalheListas');
   const detailEditor = await openInlineEditor(page, order.id, field, '#embarqueDetalheListas');
@@ -274,6 +279,8 @@ async function testPendingUpdate(page, order, field, oldName, newName, newId) {
   await detailEditor.press('Enter');
   await waitForClosedPill(page, order.id, field, oldName, '#embarqueDetalheListas');
   await page.locator('#btnVoltarEmbarque').click();
+  await page.getByRole('tab', { name: 'Pedidos', exact: true }).click();
+  await selectStore(page);
   await waitForClosedPill(page, order.id, field, oldName);
 }
 
@@ -331,12 +338,13 @@ async function testConcurrentFields(page, order) {
   releaseSupplier();
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor B');
   state.updateSnapshots = false;
-  await page.locator('#lojaFiltroListas button').filter({ hasText: 'JK Pecas' }).click();
+  await selectStore(page);
   await waitForClosedPill(page, order.id, 'nacionalizador', 'Nacionalizador A');
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor B');
   assert.strictEqual(order.fornecedor_id, 'supplier-b');
   assert.strictEqual(order.nacionalizador_id, 'nationalizer-a');
   await page.reload();
+  await selectStore(page);
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor B');
   await waitForClosedPill(page, order.id, 'nacionalizador', 'Nacionalizador A');
   const supplierReset = await openInlineEditor(page, order.id);
@@ -347,7 +355,7 @@ async function testConcurrentFields(page, order) {
 
 async function testStoreOutOfOrder(page, order) {
   for (const field of ['fornecedor', 'nacionalizador']) {
-    await page.locator('#lojaFiltroListas button').filter({ hasText: 'Todas as lojas' }).click();
+    await selectStore(page, 'Todas as lojas');
     let releaseStore;
     state.updateGates.loja = new Promise(resolve => { releaseStore = resolve; });
     state.updateSnapshots = true;
@@ -376,7 +384,7 @@ async function testStoreOutOfOrder(page, order) {
     state.updateSnapshots = false;
     await waitForClosedPill(page, order.id, field, newName);
     assert.strictEqual(order[field + '_id'], newId, 'Resposta antiga de Loja deve preservar o cadastro salvo depois');
-    await page.locator('#lojaFiltroListas button').filter({ hasText: 'Todas as lojas' }).click();
+    await selectStore(page, 'Todas as lojas');
     await waitForClosedPill(page, order.id, field, newName);
     await storePill.dblclick();
     await storePill.locator('input.meta-loja-input').fill(originalStore);
@@ -430,6 +438,7 @@ async function testInlineSuppliers(page, longSupplier) {
   const supplierReadsBefore = state.supplierReads;
   const nationalizerReadsBefore = state.nationalizerReads;
   await page.goto('http://jk.test/importacoes.html');
+  await selectStore(page);
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor A');
   await waitForClosedPill(page, order.id, 'nacionalizador', 'Nacionalizador A');
   assert.strictEqual(state.supplierReads, supplierReadsBefore, 'Pills fechados não devem carregar fornecedores');
@@ -446,7 +455,7 @@ async function testInlineSuppliers(page, longSupplier) {
   assert.strictEqual(order.supplier, 'Fornecedor B');
   assert.strictEqual(order.loja, 'JK Pecas', 'Trocar fornecedor deve preservar loja e store_id');
   assert.strictEqual(order.store_id, 'store-jk');
-  await page.locator('#lojaFiltroListas button').filter({ hasText: 'JK Pecas' }).click();
+  await selectStore(page);
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor B');
 
   state.updateError = true;
@@ -558,12 +567,14 @@ async function testInlineSuppliers(page, longSupplier) {
   await testDelayedCatalog(page, order, 'fornecedor', 'Fornecedor A');
   await testDelayedCatalog(page, order, 'nacionalizador', 'Nacionalizador');
   await testConcurrentFields(page, order);
-  await testStoreOutOfOrder(page, order);
+  await testStoreOutOfOrder(page, sameName);
+  await selectStore(page);
   input = await openInlineEditor(page, order.id, 'nacionalizador');
   await input.fill('Nacionalizador B');
   await input.press('Enter');
   await waitForClosedPill(page, order.id, 'nacionalizador', 'Nacionalizador B');
   await page.reload();
+  await selectStore(page);
   await waitForClosedPill(page, order.id, 'fornecedor', 'Fornecedor A');
   await waitForClosedPill(page, order.id, 'nacionalizador', 'Nacionalizador B');
 

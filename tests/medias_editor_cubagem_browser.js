@@ -26,6 +26,15 @@ function fixture() {
     };
 }
 
+async function abrirEditor(page) {
+    await page.goto('http://jk.test/medias_compras.html');
+    await page.locator('#lojaBotoes button').filter({ hasText: 'JK Pecas' }).click();
+    await page.locator('#btnAbaListasPedidos').click();
+    await page.locator('.lista-item').first().click();
+    await page.locator('#editorListaPedido:not(.hidden)').waitFor();
+    await page.locator('#statusListaPedido', { hasText: 'Lista carregada.' }).waitFor();
+}
+
 async function setup(browser) {
     const context = await browser.newContext({ viewport: { width: 1500, height: 1050 } });
     const page = await context.newPage();
@@ -64,11 +73,7 @@ async function setup(browser) {
         }
         return route.fulfill({ status: 200, contentType: 'application/javascript', body: '' });
     });
-    await page.goto('http://jk.test/medias_compras.html');
-    await page.locator('#lojaBotoes button').filter({ hasText: 'JK Pecas' }).click();
-    await page.locator('#btnAbaListasPedidos').click();
-    await page.locator('.lista-item').first().click();
-    await page.locator('#editorListaPedido:not(.hidden)').waitFor();
+    await abrirEditor(page);
     return { page, context, state };
 }
 
@@ -120,9 +125,10 @@ async function checkFooter(page, volume, pending) {
         assert.strictEqual(state.lista.itens[6]['Estimed CBM'], '1e-7');
 
         // Reinicia os dados sintéticos para testar exclusão e inclusão em um caso independente.
+        await page.goto('about:blank');
         state.lista = fixture();
         const writesBeforeStructural = state.writes.length;
-        await page.evaluate(() => abrirListaPedidoPorId('lista-1'));
+        await abrirEditor(page);
         await checkFooter(page, initialVolume, 7);
         await page.locator('button[data-kind="excluir-item"][data-idx="0"]').click();
         assert.strictEqual(await page.locator('#tblListaPedidoItens tbody tr[data-lista-pedido-row]').count(), 12);
@@ -143,8 +149,9 @@ async function checkFooter(page, volume, pending) {
         assert.strictEqual(state.writes.length - writesBeforeStructural, 2, 'Exclusão confirmada e inclusão de SKU persistem uma vez cada.');
 
         // Lista completa usa o mesmo total sem o rótulo parcial; quantidade zero dispensa cubagem.
+        await page.goto('about:blank');
         state.lista.itens = [{ SKU: 'A', Quantidade: 1, 'Estimed CBM': '0,0000001' }, { SKU: 'ZERO', Quantidade: 0, 'Estimed CBM': '' }];
-        await page.evaluate(() => abrirListaPedidoPorId('lista-1'));
+        await abrirEditor(page);
         await checkFooter(page, 0.0000001, 0);
         assert.deepStrictEqual(state.errors, []);
         await context.close();
