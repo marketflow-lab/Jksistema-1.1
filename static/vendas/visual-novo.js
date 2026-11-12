@@ -648,26 +648,26 @@
         };
         const options = chart.config.options;
         change(options, 'maintainAspectRatio', false);
-        change(options?.plugins?.legend?.labels, 'color', '#727b96');
+        change(options?.plugins?.legend?.labels, 'color', '#c6ddec');
         const tooltip = options?.plugins?.tooltip;
-        change(tooltip, 'backgroundColor', '#ffffff');
-        change(tooltip, 'titleColor', '#211c33');
-        change(tooltip, 'bodyColor', '#57516b');
-        change(tooltip, 'borderColor', '#e5ddf2');
+        change(tooltip, 'backgroundColor', '#102944');
+        change(tooltip, 'titleColor', '#f0f6ff');
+        change(tooltip, 'bodyColor', '#c6ddec');
+        change(tooltip, 'borderColor', '#3c6588');
         change(tooltip, 'borderWidth', 1);
         Object.values(options?.scales || {}).forEach(scale => {
-            change(scale.ticks, 'color', '#8790a8');
-            change(scale.title, 'color', '#786588');
-            change(scale.grid, 'color', '#eceef6');
-            change(scale.border, 'color', '#e2e6ef');
+            change(scale.ticks, 'color', '#b9cde5');
+            change(scale.title, 'color', '#b9cde5');
+            change(scale.grid, 'color', '#27465f');
+            change(scale.border, 'color', '#345777');
         });
         (chart.config.data.datasets || []).forEach((dataset, index) => {
             const label = normalize(dataset.label);
-            const color = dataset.isForecast || label.includes('previs') ? '#c59a3e' : label.includes('devolu') ? '#e681aa' : label.includes('passado') || label.includes('anterior') ? '#b5a2da' : label.includes('estoque') || label.includes('saldo') ? '#60ae9e' : index === 0 ? '#7945d6' : '#aa8bdf';
+            const color = dataset.isForecast || label.includes('previs') ? '#e1b86a' : label.includes('devolu') ? '#e18e96' : label.includes('passado') || label.includes('anterior') ? '#8cabc4' : label.includes('estoque') || label.includes('saldo') ? '#70c7ba' : index === 0 ? '#59bfff' : '#96dfff';
             change(dataset, 'borderColor', color);
             change(dataset, 'backgroundColor', chart.config.type === 'bar' || dataset.type === 'bar' ? `${color}b8` : `${color}22`);
             change(dataset, 'pointBackgroundColor', color);
-            change(dataset, 'topLabelColor', dataset.isForecast || label.includes('previs') ? '#936d26' : label.includes('devolu') ? '#ad527a' : '#7953ab');
+            change(dataset, 'topLabelColor', dataset.isForecast || label.includes('previs') ? '#ffd17a' : label.includes('devolu') ? '#f4aaaa' : '#9ee4ff');
             if (chart.config.type === 'bar' || dataset.type === 'bar') change(dataset, 'borderRadius', 4);
         });
     }

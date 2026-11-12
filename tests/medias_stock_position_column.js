@@ -8,7 +8,9 @@ const root = path.resolve(__dirname, '..');
 const canonicalHtml = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
 const served = fs.readFileSync(path.join(root, 'static', 'medias_compras.html'), 'utf8');
 const moduleDirectory = path.join(root, 'static', 'medias_compras');
-const extractedSources = fs.readdirSync(moduleDirectory)
+const extractedSources = fs.readdirSync(moduleDirectory, { withFileTypes: true })
+  .filter(entry => entry.isFile() && /\.(?:js|css)$/.test(entry.name))
+  .map(entry => entry.name)
   .sort()
   .map(name => fs.readFileSync(path.join(moduleDirectory, name), 'utf8'));
 const canonical = [canonicalHtml, ...extractedSources].join('\n');

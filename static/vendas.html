@@ -18,6 +18,8 @@
     <script src="/comentarios-sku.js?v=1"></script>
     <link rel="stylesheet" href="/vendas/styles.css?v=20261020-vendas-status-compacto-v2">
     <link rel="stylesheet" href="/vendas/visual-novo.css?v=20261020-vendas-status-compacto-v2">
+    <link rel="stylesheet" href="/vendas/layout-imagens.css?v=20261111-estilo-medias-v4">
+    <link rel="stylesheet" href="/vendas/visual-petroleo.css?v=20261111-estilo-medias-v4">
 </head>
 <body>
 
@@ -26,28 +28,25 @@
 <div class="container">
     <div class="header">
         <div class="header-main">
-            <h1>💰 Vendas</h1>
+            <img class="vendas-page-illustration" src="/medias_compras/images/estante.png" width="174" height="104" alt="" aria-hidden="true" decoding="async">
+            <div class="vendas-title">
+                <span class="vendas-kicker">Gest&atilde;o comercial</span>
+                <h1>Vendas</h1>
+                <p>Pedidos, resultados e devolu&ccedil;&otilde;es em um s&oacute; lugar.</p>
+            </div>
             <div class="header-shortcuts" aria-label="Atalhos de vendas">
                 <button id="btnVersaoNovaVendas" class="vendas-shortcut-card vendas-shortcut-versao-nova" type="button" aria-controls="vendasNova" aria-expanded="false">
-                    <span>Alternar layout</span>
-                    <strong>Versão nova</strong>
+                    <img class="vendas-shortcut-image" src="/medias_compras/images/vendas.png" width="52" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span class="vendas-shortcut-copy"><strong>Vers&atilde;o nova</strong><small>Alternar layout</small></span>
                 </button>
                 <a class="vendas-shortcut-card vendas-shortcut-medias" href="/medias_compras.html">
-                    <span>Abrir</span>
-                    <strong>M&eacute;dias e Pedidos</strong>
+                    <img class="vendas-shortcut-image" src="/medias_compras/images/estante.png" width="52" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span class="vendas-shortcut-copy"><strong>M&eacute;dias e Pedidos</strong><small>Abrir planejamento</small></span>
                 </a>
                 <a class="vendas-shortcut-card vendas-shortcut-importacao" href="/importacoes.html">
-                    <span>Abrir</span>
-                    <strong>Importa&ccedil;&atilde;o</strong>
+                    <img class="vendas-shortcut-image" src="/medias_compras/images/importacao.png" width="58" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span class="vendas-shortcut-copy"><strong>Importa&ccedil;&atilde;o</strong><small>Abrir central</small></span>
                 </a>
-                <button id="btnPareto80" class="vendas-shortcut-card vendas-shortcut-pareto" type="button">
-                    <span>Gerar relat&oacute;rio</span>
-                    <strong>Pareto 80%</strong>
-                </button>
-                <button id="btnRelatorioGeralSkus" class="vendas-shortcut-card vendas-shortcut-geral" type="button">
-                    <span>Vendas, estoque e devolu&ccedil;&otilde;es</span>
-                    <strong>Relat&oacute;rio Geral de SKUs</strong>
-                </button>
             </div>
         </div>
         <div class="nav-actions">
@@ -56,14 +55,9 @@
         </div>
     </div>
 
-    <div class="vendas-sync-bar">
-        <div id="status" class="status-bar"></div>
-        <div id="cacheVendasStatus" class="status-bar empty" role="status" hidden></div>
-        <div id="syncPersistenteStatus" class="status-bar" role="status" aria-live="polite"></div>
-    </div>
-
     <div class="filters">
         <div class="periodo-linha">
+            <span class="vendas-field-label">Per&iacute;odo</span>
             <div class="periodo-range">
                 <select id="mesAno">
                 <option value="">Selecione um mês</option>
@@ -75,10 +69,17 @@
             <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
         </div>
         <div class="menus-linha">
-            <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
+            <div class="vendas-stores-field">
+                <span class="vendas-field-label">Lojas</span>
+                <div class="loja-group" id="lojaBotoes" aria-label="Selecionar loja"></div>
+            </div>
+            <label class="vendas-channel-field">
+                <span class="vendas-field-label">Loja virtual</span>
             <select id="unidadeNegocioSelect" aria-label="Selecionar loja virtual">
                 <option value="__todos">Todas as lojas virtuais</option>
             </select>
+            </label>
+            <div class="vendas-sync-controls">
             <div class="vendas-sync-options" role="group" aria-label="Opções de sincronização">
                 <label class="sync-toggle">
                     <input type="checkbox" id="forcarSync" style="cursor:pointer;">
@@ -93,6 +94,12 @@
                 <button id="btnSync" class="back-btn icon-sync-btn" style="background:#28a745;" title="Atualizar período" aria-label="Atualizar período">&#x1F504;</button>
                 <button id="btnCancel" class="back-btn icon-sync-btn" style="background:#dc3545;" title="Pausar sincronização e atualização automática de todas as lojas" aria-label="Pausar sincronização e atualização automática de todas as lojas" disabled>&#x23F9;</button>
             </div>
+            </div>
+        </div>
+        <div class="vendas-sync-bar">
+            <div id="status" class="status-bar"></div>
+            <div id="cacheVendasStatus" class="status-bar empty" role="status" hidden></div>
+            <div id="syncPersistenteStatus" class="status-bar" role="status" aria-live="polite"></div>
         </div>
     </div>
 
@@ -101,6 +108,19 @@
 
     <!-- Seção de Gráficos -->
     <div class="graficos-container observacoes-fechado">
+        <div class="vendas-section-heading">
+            <h2>Vendas e devolu&ccedil;&otilde;es</h2>
+            <div class="vendas-report-actions" aria-label="Relat&oacute;rios de vendas">
+                <button id="btnPareto80" class="vendas-report-btn" type="button">
+                    <svg class="vendas-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#grafico"></use></svg>
+                    <span><strong>Pareto 80%</strong><small>Gerar relat&oacute;rio</small></span>
+                </button>
+                <button id="btnRelatorioGeralSkus" class="vendas-report-btn vendas-report-btn-alt" type="button">
+                    <svg class="vendas-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#lista"></use></svg>
+                    <span><strong>Relat&oacute;rio Geral de SKUs</strong><small>Vendas, estoque e devolu&ccedil;&otilde;es</small></span>
+                </button>
+            </div>
+        </div>
         <div class="sidebar-bookmarks-vendas" role="tablist" aria-label="Abas do sidebar de vendas">
             <button id="btnSidebarObservacoesVendas" class="sidebar-bookmark-btn-vendas active" type="button" role="tab" aria-selected="true" aria-controls="sidebarPainelObservacoesVendas" title="Observacoes">OBS</button>
             <button id="btnSidebarAssistenteVendas" class="sidebar-bookmark-btn-vendas" type="button" role="tab" aria-selected="false" aria-controls="jk-codex-panel" title="Abrir Black Jhon">BJ</button>
@@ -302,7 +322,7 @@
 
     <script src="/vendas/runtime.js?v=20261027-cache-persistente-v1"></script>
     <script src="/vendas/periodo-cache.js?v=20261109-vendas-conferencia-hoje-v1"></script>
-    <script src="/vendas/sync.js?v=20261109-vendas-conferencia-hoje-v1"></script>
+    <script src="/vendas/sync.js?v=20261111-estilo-medias-v4"></script>
     <script src="/vendas/dados-render.js?v=20261030-resumo-salvo-v1"></script>
   <script src="/vendas/periodos-completos.js?v=20260827-vendas-previsao-mes-atual-v1"></script>
   <script src="/vendas/grafico.js?v=20261028-grafico-filtros-v1"></script>
@@ -312,7 +332,7 @@
     <script src="/vendas/general-sku-report.js?v=20260728-vendas-relatorios-v2"></script>
     <script src="/vendas/visual-novo-bridge.js?v=20261027-cache-persistente-v1"></script>
     <script src="/vendas/visual-novo-fotos.js?v=20261015-vendas-fotos-cadastro-v2"></script>
-    <script src="/vendas/visual-novo.js?v=20261106-comentarios-sku"></script>
+    <script src="/vendas/visual-novo.js?v=20261111-petroleo-v3"></script>
     <script src="/vendas/init.js?v=20261027-cache-servidor-v2"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>

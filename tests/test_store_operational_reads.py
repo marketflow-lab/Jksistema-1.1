@@ -78,10 +78,14 @@ def test_reader_remains_fast_while_other_process_holds_lock_beyond_ten_seconds(s
         assert integracoes.ler_lojas("a")[0]["store_id"] == "exact-a"
         first = time.perf_counter() - start
         assert first < .5
-        # The previous maintenance path consumes the whole acquisition budget.
+        # The maintenance path cannot acquire the lock held by the other process.
         with pytest.raises(HTTPException) as exc:
             integracoes.carregar_lojas("a")
         assert exc.value.detail["code"] == "stores_busy"
+        # A native timeout can return a few milliseconds early; keep the lock
+        # held for ten actual seconds before checking the fast reader again.
+        while (remaining := 10 - (time.perf_counter() - start)) > 0:
+            time.sleep(min(remaining, .01))
         assert time.perf_counter() - start >= 10
         second_start = time.perf_counter()
         assert integracoes.ler_lojas("a")[0]["store_id"] == "exact-a"

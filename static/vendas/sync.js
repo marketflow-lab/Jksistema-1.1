@@ -330,16 +330,36 @@ function renderTabelaAgrupada(lista) {
 
 function renderBotoesLojas(lojas) {
     lojaBotoes.innerHTML = '';
+    const preencherBotao = (btn, nome, selecionada, icone) => {
+        btn.type = 'button';
+        btn.className = 'loja-btn' + (selecionada ? ' active' : '');
+        btn.setAttribute('aria-pressed', selecionada ? 'true' : 'false');
+        const avatar = document.createElement('span');
+        avatar.className = 'vendas-loja-avatar';
+        avatar.setAttribute('aria-hidden', 'true');
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', '20');
+        svg.setAttribute('height', '20');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('focusable', 'false');
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttribute('href', '/medias_compras/icones.svg#' + icone);
+        svg.appendChild(use);
+        avatar.appendChild(svg);
+        const titulo = document.createElement('span');
+        titulo.className = 'vendas-loja-nome';
+        titulo.textContent = nome;
+        btn.appendChild(avatar);
+        btn.appendChild(titulo);
+    };
     const todosBtn = document.createElement('button');
-    todosBtn.textContent = 'Todas as lojas';
-    todosBtn.className = 'loja-btn' + (lojaSelecionada === '__todas' ? ' active' : '');
+    preencherBotao(todosBtn, 'Todas as lojas', lojaSelecionada === '__todas', 'lojas');
     todosBtn.onclick = () => { lojaSelecionada = '__todas'; atualizarSelecao(); };
     lojaBotoes.appendChild(todosBtn);
 
     lojas.forEach(l => {
         const btn = document.createElement('button');
-        btn.textContent = l.nome;
-        btn.className = 'loja-btn' + (lojaSelecionada === l.nome ? ' active' : '');
+        preencherBotao(btn, l.nome, lojaSelecionada === l.nome, 'loja');
         btn.onclick = () => { lojaSelecionada = l.nome; atualizarSelecao(); };
         lojaBotoes.appendChild(btn);
     });
@@ -350,7 +370,9 @@ async function atualizarSelecao() {
     periodoApplyTimer = null;
     unidadeNegocioSelect.value = '__todos';
     Array.from(lojaBotoes.children).forEach(btn => {
-        btn.classList.toggle('active', btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada);
+        const selecionada = btn.textContent === 'Todas as lojas' ? lojaSelecionada === '__todas' : btn.textContent === lojaSelecionada;
+        btn.classList.toggle('active', selecionada);
+        btn.setAttribute('aria-pressed', selecionada ? 'true' : 'false');
     });
     if (typeof renderAutomacaoSyncVendas === 'function') {
         renderAutomacaoSyncVendas(vendasSyncMonitor.getLastPayload());

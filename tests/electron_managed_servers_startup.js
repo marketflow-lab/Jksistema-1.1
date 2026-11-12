@@ -19,6 +19,10 @@ const processStopStart = backendSource.indexOf('function managedServerRuntimeRoo
 const processStopEnd = backendSource.indexOf('function consumeCanonicalLauncherPreparedServers()', processStopStart);
 assert.ok(processStopStart >= 0 && processStopEnd > processStopStart, 'safe process-stop helpers must remain extractable');
 const processStopSource = backendSource.slice(processStopStart, processStopEnd);
+const directoryResolverStart = backendSource.indexOf('function getPackagedLocalBackendSourceDir()');
+const directoryResolverEnd = backendSource.indexOf('function getLocalBackendInfoDir()', directoryResolverStart);
+assert.ok(directoryResolverStart >= 0 && directoryResolverEnd > directoryResolverStart, 'backend directory resolvers must remain extractable');
+const directoryResolverSource = backendSource.slice(directoryResolverStart, directoryResolverEnd);
 
 assert.ok(processStopSource.includes('Get-CimInstance Win32_Process'), 'listener ownership must be inspected before termination');
 assert.ok(processStopSource.includes('function Test-JkManagedProcess'), 'JK server ownership allowlist must be explicit');
@@ -69,46 +73,57 @@ function createSandbox(options = {}) {
   return { sandbox, calls };
 }
 
-async function invokeSafePortStop(payload, options = {}) {
-  const calls = [];
+function createProcessStopSandbox(options = {}) {
+  const fixtureRoot = path.resolve(repoRoot, 'synthetic-managed-servers');
+  const userDataRoot = path.join(fixtureRoot, 'JK Sistema Cliente');
+  const runtimeRoot = path.join(userDataRoot, 'local_app');
+  const resourcesRoot = path.join(fixtureRoot, 'resources');
+  const packagedRoot = path.join(resourcesRoot, 'local_app');
+  const checkoutRoot = path.join(fixtureRoot, 'checkout');
+  const sourceFiles = new Set([packagedRoot, checkoutRoot].map(root => path.join(root, 'backend_api.py')));
   const sandbox = {
     path,
-    process: { platform: 'win32', env: { KEEP_ME: 'yes' } },
+    fs: { existsSync: candidate => sourceFiles.has(path.resolve(candidate)) },
+    app: { isPackaged: options.isPackaged !== false },
+    process: { platform: 'win32', resourcesPath: resourcesRoot, env: { KEEP_ME: 'yes', ...(options.env || {}) } },
+    __dirname: checkoutRoot,
+    JK_LOCAL_BACKEND_DIR_NAME: 'local_app',
+    JK_ELECTRON_USER_DATA_DIR: userDataRoot,
     JK_LOCAL_BACKEND_PORT: 8001,
     JK_PROMO_WORKER_PORT: 8011,
     JK_LEGACY_WHATSAPP_VOICE_PORT: 8012,
-    getLocalBackendRuntimeDir: () => 'C:\\Users\\Test\\AppData\\Roaming\\JK Sistema Cliente\\local_app',
-    getBundledLocalBackendSourceDir: () => 'C:\\Program Files\\JK Sistema Cliente\\resources\\local_app',
-    spawn: (executable, args, spawnOptions) => {
-      calls.push({ executable, args, spawnOptions });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stdout.setEncoding = () => {};
-      queueMicrotask(() => {
-        child.stdout.emit('data', JSON.stringify(payload));
-        child.emit('exit', options.exitCode || 0);
-      });
-      return child;
-    },
+    getAppRootDir: () => checkoutRoot,
+    sameResolvedPath: (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase(),
   };
   vm.createContext(sandbox);
-  vm.runInContext(`${processStopSource}; this.api = { stopProcessListeningOnPort };`, sandbox);
+  vm.runInContext(
+    `${directoryResolverSource}; ${processStopSource}; this.api = { managedServerRuntimeRoots, managedServerStopPowerShell, stopProcessListeningOnPort };`,
+    sandbox
+  );
+  return { sandbox, runtimeRoot, packagedRoot, checkoutRoot };
+}
+
+async function invokeSafePortStop(payload, options = {}) {
+  const calls = [];
+  const fixture = createProcessStopSandbox(options);
+  const { sandbox } = fixture;
+  sandbox.spawn = (executable, args, spawnOptions) => {
+    calls.push({ executable, args, spawnOptions });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stdout.setEncoding = () => {};
+    queueMicrotask(() => {
+      child.stdout.emit('data', JSON.stringify(payload));
+      child.emit('exit', options.exitCode || 0);
+    });
+    return child;
+  };
   const result = await sandbox.api.stopProcessListeningOnPort(options.port || 8011);
-  return { result, calls };
+  return { result, calls, fixture };
 }
 
 function runSyntheticPowerShellOwnership(port, processInfo) {
-  const sandbox = {
-    path,
-    process,
-    JK_LOCAL_BACKEND_PORT: 8001,
-    JK_PROMO_WORKER_PORT: 8011,
-    JK_LEGACY_WHATSAPP_VOICE_PORT: 8012,
-    getLocalBackendRuntimeDir: () => '',
-    getBundledLocalBackendSourceDir: () => '',
-  };
-  vm.createContext(sandbox);
-  vm.runInContext(`${processStopSource}; this.api = { managedServerStopPowerShell };`, sandbox);
+  const { sandbox } = createProcessStopSandbox();
   const psLiteral = (value) => `'${String(value).replace(/'/g, "''")}'`;
   const processObject = `[pscustomobject]@{ Name = ${psLiteral(processInfo.name)}; ExecutablePath = ${psLiteral(processInfo.executablePath)}; CommandLine = ${psLiteral(processInfo.commandLine)} }`;
   const script = sandbox.api.managedServerStopPowerShell(port)
@@ -133,6 +148,19 @@ function runSyntheticPowerShellOwnership(port, processInfo) {
 }
 
 (async () => {
+  const packaged = createProcessStopSandbox();
+  assert.deepStrictEqual(
+    Array.from(packaged.sandbox.api.managedServerRuntimeRoots()),
+    [packaged.runtimeRoot, packaged.packagedRoot],
+    'packaged cleanup must derive runtime and immutable source roots using the actual backend resolvers'
+  );
+  const development = createProcessStopSandbox({ isPackaged: false });
+  assert.deepStrictEqual(
+    Array.from(development.sandbox.api.managedServerRuntimeRoots()),
+    [development.checkoutRoot],
+    'development cleanup must deduplicate the checkout and exclude the installed runtime'
+  );
+
   const trusted = createSandbox({
     env: { JK_LOCAL_SERVERS_PREPARED_BY_LAUNCHER: '1' },
   });
@@ -218,6 +246,22 @@ function runSyntheticPowerShellOwnership(port, processInfo) {
   assert.deepStrictEqual(Array.from(safeForeignStop.calls[0].args.slice(0, 4)), ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command']);
   assert.ok(safeForeignStop.calls[0].spawnOptions.env.JK_MANAGED_SERVER_ROOTS_JSON.includes('JK Sistema Cliente'));
   assert.strictEqual(safeForeignStop.calls[0].spawnOptions.env.KEEP_ME, 'yes');
+
+  const developmentStop = await invokeSafePortStop({
+    ok: true,
+    listenerProcessCount: 1,
+    ownedProcessCount: 1,
+    stopRequestedCount: 1,
+    foreignProcessCount: 0,
+    stopErrorCount: 0,
+  }, { isPackaged: false, port: 8001 });
+  assert.strictEqual(developmentStop.result.ok, true);
+  assert.strictEqual(developmentStop.calls.length, 1, 'direct development startup must reach the guarded classifier');
+  assert.deepStrictEqual(
+    JSON.parse(developmentStop.calls[0].spawnOptions.env.JK_MANAGED_SERVER_ROOTS_JSON),
+    [developmentStop.fixture.checkoutRoot],
+    'the process classifier must receive only the resolved development checkout'
+  );
 
   if (process.platform === 'win32') {
     const runtimeRoot = String.raw`C:\JK Runtime Test`;

@@ -461,7 +461,16 @@ async function verifySyncStatus(context, fixture, width, modern) {
     try {
         const canonical = read('static/vendas.html');
         assert.equal(canonical, read('vendas.html'), 'Sales HTML mirrors must stay identical');
-        const fixture = createFixture('current', canonical, read('static/vendas/visual-novo.css'));
+        const imageBaseUrl = pathToFileURL(path.join(repo, 'static/vendas/images') + path.sep).href;
+        const mediasBaseUrl = pathToFileURL(path.join(repo, 'static/medias_compras') + path.sep).href;
+        const currentCss = [
+            read('static/vendas/visual-novo.css'),
+            read('static/vendas/layout-imagens.css'),
+            read('static/vendas/visual-petroleo.css'),
+        ].join('\n').replaceAll('/vendas/images/', imageBaseUrl)
+            .replaceAll('/medias_compras/', mediasBaseUrl);
+        const currentHtml = canonical.replaceAll('/medias_compras/', mediasBaseUrl);
+        const fixture = createFixture('current', currentHtml, currentCss);
         context = await chromium.launchPersistentContext(path.join(scratch, 'chrome-profile'), {
             channel: process.env.JK_TEST_BROWSER_CHANNEL || 'chrome', headless: true,
             viewport: {width: 1366, height: 900}, args: ['--disable-gpu', '--no-first-run'],

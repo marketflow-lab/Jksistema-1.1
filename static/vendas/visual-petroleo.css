@@ -1,0 +1,249 @@
+/* Optional Vendas view shares the artwork and surfaces of Médias e Pedidos. */
+body.vendas-layout-novo {
+    color: #e6edf6;
+    background-color: #071622;
+    background-image: url('/medias_compras/images/fundo-graficos.png');
+    background-position: center bottom;
+    background-size: max(100%, 1600px) auto;
+    background-repeat: repeat-y;
+}
+
+.vn-root {
+    --vn-accent: #84c2ff;
+    --vn-ink: #f4f8ff;
+    --vn-muted: #c0cede;
+    --vn-border: #34536d;
+    --vn-soft: #22364d;
+    --vn-surface: #0f1d2c;
+    --vn-input: #101925;
+    --vn-danger: #ff9aab;
+    --vn-success: #84e1bb;
+    color-scheme: dark;
+}
+
+.vn-root button:focus-visible,
+.vn-root input:focus-visible,
+.vn-root select:focus-visible,
+.vn-root summary:focus-visible,
+.vn-root a:focus-visible { outline-color: #98e2ff; }
+
+/* The photographic cover is confined to the header, clear of the indicators. */
+.vn-root .vn-topbar {
+    padding: 24px;
+    margin: 20px 0;
+    min-height: 126px;
+    border: 1px solid #29465c;
+    border-radius: 13px;
+    background-color: #081c2b;
+    background-image:
+        linear-gradient(90deg, rgba(5, 19, 31, .85), rgba(5, 19, 31, .68) 45%, rgba(5, 19, 31, .48)),
+        url('/medias_compras/images/fundo-estoque-pedidos.png');
+    background-size: cover;
+    background-position: center, center 52%;
+    background-repeat: no-repeat;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .17);
+}
+.vn-root .vn-brand,
+.vn-root .vn-identity h1 { color: #f5f9ff; }
+.vn-root .vn-brand span { color: var(--vn-accent); }
+.vn-root .vn-divider { background: #7295b366; }
+.vn-root .vn-tabs button,
+.vn-root .vn-shortcut { color: #d3e4f5; }
+.vn-root .vn-tabs button:hover,
+.vn-root .vn-tabs button[aria-selected=true] {
+    background: #22364d;
+    color: #b8edff;
+}
+.vn-root .vn-shortcut:hover,
+.vn-root .vn-text-btn:hover,
+.vn-root .vn-footer a:hover { color: #c8f0ff; }
+
+/* Controls use explicit surfaces, including menus and native form fields. */
+.vn-root .vn-btn {
+    background: #192433;
+    border-color: var(--vn-border);
+    color: #f0f6ff;
+    box-shadow: none;
+}
+.vn-root .vn-btn:hover {
+    background: #233c56;
+    border-color: #6089ad;
+}
+.vn-root .vn-btn-primary {
+    background: #3788da;
+    border-color: #70b5f4;
+    color: #fff;
+    font-weight: 650;
+}
+.vn-root .vn-btn-primary:hover {
+    background: #4599ed;
+    border-color: #9dd0ff;
+    color: #fff;
+}
+.vn-root .vn-btn-pause { color: #d3e4f5; }
+.vn-root .vn-dropdown-menu {
+    background: #192433;
+    border-color: #34536d;
+    box-shadow: 0 14px 42px rgba(0, 0, 0, .4);
+}
+.vn-root .vn-dropdown-menu button {
+    background: transparent;
+    color: #e5effa;
+}
+.vn-root .vn-dropdown-menu button:hover {
+    background: #223247;
+    color: #c8f0ff;
+}
+.vn-root .vn-filter-button,
+.vn-root .vn-select-wrap,
+.vn-root .vn-stock-input input,
+.vn-root .vn-search-wrap input,
+.vn-root .vn-sort-wrap select,
+.vn-root .vn-pagination select,
+.vn-root .vn-date-grid input,
+.vn-root .vn-month-label select {
+    background: var(--vn-input);
+    color: #f0f6ff;
+    border-color: var(--vn-border);
+    box-shadow: none;
+}
+.vn-root .vn-select-wrap select { color: #f0f6ff; }
+.vn-root select option { background: #192433; color: #f0f6ff; }
+.vn-root .vn-filter-button:hover { border-color: #80d6ff; }
+.vn-root .vn-filter-button > .vn-icon:first-child,
+.vn-root .vn-filter-button > .vn-icon:last-child,
+.vn-root .vn-select-wrap > .vn-icon,
+.vn-root .vn-search-wrap > .vn-icon { color: #9edbff; }
+.vn-root .vn-search-wrap input::placeholder,
+.vn-root .vn-stock-input input::placeholder { color: #9eb9d2; opacity: 1; }
+.vn-root .vn-filter-field > span:first-child,
+.vn-root .vn-control-label,
+.vn-root .vn-sync-options label,
+.vn-root .vn-chart-secondary > label,
+.vn-root .vn-products-filterline label,
+.vn-root .vn-date-grid label,
+.vn-root .vn-month-label { color: var(--vn-muted); }
+.vn-root .vn-segmented { background: #101925; border-color: #2b3a4f; }
+.vn-root .vn-segmented button { color: #b9cde5; }
+.vn-root .vn-segmented button:hover { background: #22364d; color: #e5f6ff; }
+.vn-root .vn-segmented button[aria-pressed=true] { background: #3788da; color: #fff; }
+
+/* Status colors retain their meaning on the darker surfaces. */
+.vn-root .vn-status {
+    --sync-muted: #b9cde5;
+    --sync-error: #ff9aab;
+    --sync-error-bg: #382331;
+    --sync-active: #74d9ff;
+    --sync-success: #84e1bb;
+    --sync-border: #34465d;
+    color: #d3e4f5;
+}
+.vn-root .vn-status:has(>div:not(:empty)),
+.vn-root .vn-status:has(.vn-loading:not([hidden])) { background: #111f30; }
+.vn-root .vn-status .vendas-sync-details > summary:hover { color: #c8f0ff; }
+.vn-root .vn-status .vendas-sync-track { background: #284765; }
+.vn-root .vn-status > .status-bar.error { color: var(--vn-danger); }
+.vn-root .vn-status > .status-bar.success { color: var(--vn-success); }
+.vn-root #vnStatus.error:not(:empty),
+.vn-root #vnActionStatus:not(:empty),
+.vn-root #vnReadError:not(:empty) {
+    color: var(--vn-danger);
+    background: #382331;
+    border: 1px solid #805062;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+.vn-root #vnCompositionWarning:not(:empty) { color: #f1d49b; }
+.vn-root .vn-loading { border-color: #2e536f; border-top-color: var(--vn-accent); }
+.vn-root .vn-field-error { color: var(--vn-danger); }
+
+/* Uniform cards keep the financial values and product details easy to scan. */
+.vn-root .vn-kpi,
+.vn-root .vn-panel,
+.vn-root .vn-product-card,
+.vn-root .vn-stock-slot > .grafico-wrapper {
+    background: rgba(15, 29, 44, .96);
+    border-color: #273346;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, .12);
+}
+.vn-root .vn-kpi h2,
+.vn-root .vn-kpi h2 .vn-icon { color: #c4dff3; }
+.vn-root .vn-kpi p { color: var(--vn-muted); }
+.vn-root .vn-kpi-primary {
+    background: #17392f;
+    border-color: #306852;
+    color: #e6fff5;
+}
+.vn-root .vn-kpi-primary h2,
+.vn-root .vn-kpi-primary h2 .vn-icon,
+.vn-root .vn-kpi-primary p { color: #bfe8dc; }
+.vn-root .vn-kpi-returns .vn-kpi-value { color: #ffb2b9; }
+.vn-root .vn-kpi-link > .vn-icon,
+.vn-root .vn-product-card > .vn-icon { color: #91cbed; }
+.vn-root .vn-product-card:hover {
+    background: #192433;
+    border-color: #5c7592;
+    box-shadow: none;
+}
+.vn-root .vn-featured-product { background: transparent; }
+.vn-root .vn-featured-name,
+.vn-root .vn-product-name,
+.vn-root .vn-detail-copy h3,
+.vn-root .vn-detail-metrics dd { color: #e5effa; }
+.vn-root .vn-panel-head p,
+.vn-root .vn-live-label,
+.vn-root .vn-chart-note,
+.vn-root .vn-photo-hint,
+.vn-root .vn-product-sku,
+.vn-root .vn-featured-meta,
+.vn-root .vn-product-meta,
+.vn-root .vn-section-head p,
+.vn-root .vn-products-filterline,
+.vn-root .vn-pagination,
+.vn-root .vn-footer,
+.vn-root .vn-detail-metrics dt { color: var(--vn-muted); }
+.vn-root .vn-footer a { color: #9edbff; }
+.vn-root .vn-composition-note { color: #b9cde5; font-size: 12px; line-height: 1.6; margin-top: 18px; }
+.vn-root .vn-count { background: #1b324d; color: #a4d2ff; }
+.vn-root .vn-chart-controls { border-bottom-color: #2a3648; }
+.vn-root .vn-chart-slot > .grafico-wrapper { background: #111b29; }
+.vn-root .vn-chart-state { color: #b9cde5; }
+.vn-root .vn-stock-slot .grafico-estoque-title strong { color: #e5effa; }
+.vn-root .vn-stock-slot .grafico-estoque-kicker { color: #9edbff; }
+.vn-root .vn-stock-slot .grafico-estoque-resumo { color: #b9cde5; }
+.vn-root .vn-stock-slot .grafico-estoque-estado { color: #b9cde5; border-color: #34465d; background: #111f30; }
+
+/* White remains only behind loaded catalog photos; fallbacks use the theme. */
+.vn-root .vn-photo { background: #192433; }
+.vn-root .vn-photo img,
+.vn-root .vn-photo-ready { background: #fff; }
+.vn-root .vn-photo-fallback { background: #192433; color: #b9cde5; }
+.vn-root .vn-photo-fallback .vn-icon { color: #80b9df; }
+.vn-root .vn-table-wrap { background: #111b29; scrollbar-color: #41526a #111b29; }
+.vn-root .vn-table { background: #111b29; color: #d3e4f5; }
+.vn-root .vn-table th { background: #1a2b3e; color: #c4dff3; }
+.vn-root .vn-table td { color: #d3e4f5; border-bottom-color: #2a3648; }
+.vn-root .vn-table tbody tr { background: #111b29; }
+.vn-root .vn-table tbody tr:hover { background: #223247; }
+.vn-root .vn-table .vn-money { color: #f0f6ff; }
+.vn-root .vn-table .vn-sku { color: #aac8e1; }
+.vn-root .vn-table .vn-returns-num { color: #ffb2b9; }
+.vn-root .vn-row-product { color: #e5effa; }
+.vn-root .vn-empty { background: #111f30; border-color: #34536d; color: #b9cde5; }
+.vn-root .vn-empty > .vn-icon { color: #80b9df; }
+.vn-root .vn-empty h3 { color: #e5effa; }
+
+.vn-root .vn-dialog {
+    background: #0f1d2c;
+    border-color: #34536d;
+    box-shadow: 0 25px 100px rgba(0, 0, 0, .55);
+}
+.vn-root .vn-dialog::backdrop { background: rgba(3, 12, 23, .75); }
+.vn-root .vn-dialog-head,
+.vn-root .vn-dialog-actions { border-color: #2a3648; }
+.vn-root .vn-close { background: #223247; color: #d3e4f5; }
+.vn-root .vn-close:hover { background: #344e68; color: #fff; }
+
+@media (max-width: 760px) {
+    .vn-root .vn-topbar { padding: 18px; }
+}

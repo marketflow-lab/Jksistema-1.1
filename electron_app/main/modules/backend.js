@@ -831,7 +831,7 @@ function waitForLocalBackendCompatibleHealth(firebaseEnv, timeoutMs = 45000, int
 function managedServerRuntimeRoots() {
     const candidates = [
         getLocalBackendRuntimeDir(),
-        getBundledLocalBackendSourceDir()
+        getBundledLocalBackendDir()
     ];
     const seen = new Set();
     return candidates
