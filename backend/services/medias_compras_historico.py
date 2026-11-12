@@ -12,8 +12,10 @@ from pathlib import Path
 from threading import Lock, RLock
 import copy
 import hashlib
+import json
 import os
 import sqlite3
+import zlib
 
 from backend.services.medias_compras_fontes import assinatura_arquivo
 from backend.services.medias_compras_leitura import chave_arquivo, registrar_contagem
@@ -59,11 +61,12 @@ _PROJECOES = _MemoLimitado(96 * 1024 * 1024, 64)
 _CONSOLIDADOS = _MemoLimitado(24 * 1024 * 1024, 24)
 _ASSINATURAS = _MemoLimitado(1024 * 1024, 256)
 _QUANTIDADE_INVALIDA = object()
+_LINHAS_POR_BLOCO = 2048
 
 
 @dataclass(frozen=True)
 class _Projecao:
-    vendas: tuple
+    vendas: tuple[bytes, ...]
     titulos: dict
     ultimas: dict
     assinatura: str
@@ -162,8 +165,24 @@ def _ordem_sqlite(value):
     return (3 if isinstance(value, bytes) else 2, value)
 
 
+def _compactar_vendas(linhas):
+    # Keep every row, its order and exact float representation: deduplication
+    # across databases and period-specific sums still happen in _consolidar.
+    bruto = json.dumps(linhas, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    return zlib.compress(bruto, level=1)
+
+
+def _vendas_da_projecao(projecao):
+    # Decode only one bounded block at a time. No decompressed rows survive
+    # consolidation or become a second, unaccounted copy in the shared cache.
+    for bloco in projecao.vendas:
+        for identificador, original, sku, mes, quantidade in json.loads(zlib.decompress(bloco)):
+            yield identificador, original, sku, mes, _QUANTIDADE_INVALIDA if quantidade is None else quantidade
+
+
 def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, titulo_valido):
     recentes = []
+    blocos = []
     titulos = {}
     ultimas = {}
     ordens_titulos = {}
@@ -217,14 +236,19 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
                     # A shared twelve-month projection must not fail a short
                     # period because a malformed quantity belongs outside it.
                     # Keep neither source text nor an exception/traceback.
-                    qty = _QUANTIDADE_INVALIDA
+                    qty = None
                 recentes.append((identifier, sku_original, sku_norm, mes, qty))
-                weight += 112 + _peso_textos(identifier, sku_original, sku_norm, mes)
+                if len(recentes) >= _LINHAS_POR_BLOCO:
+                    blocos.append(_compactar_vendas(recentes))
+                    recentes.clear()
     finally:
         conn.close()
+    if recentes:
+        blocos.append(_compactar_vendas(recentes))
+    weight += sum(len(bloco) + 64 for bloco in blocos)
     weight += sum(96 + _peso_textos(sku, *value) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
-    return _Projecao(tuple(recentes), titulos, ultimas, digest.hexdigest()), weight + 128
+    return _Projecao(tuple(blocos), titulos, ultimas, digest.hexdigest()), weight + 128
 
 
 def _consolidar(paths, projecoes, ultimo_mes):
@@ -236,7 +260,7 @@ def _consolidar(paths, projecoes, ultimo_mes):
     ultimas = {}
     for path, projecao in zip(paths, projecoes):
         basename = os.path.basename(path)
-        for identificador, sku_original, sku_norm, mes, qty in projecao.vendas:
+        for identificador, sku_original, sku_norm, mes, qty in _vendas_da_projecao(projecao):
             chave = None if qty is _QUANTIDADE_INVALIDA else identificador or f"{basename}::{sku_original}::{mes}::{qty}"
             for periodo, meses in refs.items():
                 if mes not in conjuntos[periodo] or vendas[periodo] is None:

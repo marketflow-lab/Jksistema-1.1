@@ -19,6 +19,7 @@ import traceback
 import unicodedata
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from functools import lru_cache
 from typing import Any, Optional
 
 import pandas as pd
@@ -62,9 +63,13 @@ def _grafico_cache_paths(arguments: dict) -> list[str]:
 
 
 def _calcular_skus_pareto_80(rows: list[tuple]) -> tuple[list[str], dict[str, Any]]:
-    def texto_regra(value: Any) -> str:
-        texto = unicodedata.normalize("NFKD", str(value or ""))
+    @lru_cache(maxsize=4096)
+    def texto_normalizado(texto: str) -> str:
+        texto = unicodedata.normalize("NFKD", texto)
         return "".join(char for char in texto if not unicodedata.combining(char)).strip().upper()
+
+    def texto_regra(value: Any) -> str:
+        return texto_normalizado(str(value or ""))
 
     chaves_faturadas = {
         (
@@ -422,12 +427,10 @@ def grafico_vendas(
                 captured_accounts=captured_accounts if account_evidence_complete else None,
             ),
         )
-        rows_unicos = [
-            tuple(item.get(field) for field in sale_fields) for item in consolidated
-        ]
-
         if mostrar_estoque_geral and not sku:
-            rows_pareto = _filtrar_vendas_lojas_ativas(rows_unicos, client_id, loja)
+            rows_pareto = _filtrar_vendas_lojas_ativas([
+                tuple(item.get(field) for field in sale_fields) for item in consolidated
+            ], client_id, loja)
             pareto_skus, pareto_meta = _calcular_skus_pareto_80(rows_pareto)
         else:
             pareto_skus = []
@@ -441,7 +444,7 @@ def grafico_vendas(
         rows_unicos = [
             tuple(item.get(field) for field in sale_fields)
             for item in catalog.project_rows(
-                [dict(zip(sale_fields, row)) for row in rows_unicos],
+                consolidated,
                 target_sku=sku, store=loja,
             )
         ]

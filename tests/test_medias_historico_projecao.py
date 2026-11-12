@@ -147,6 +147,32 @@ def test_reaproveita_periodos_e_rele_somente_banco_alterado(bancos):
     assert atual[0]["NEW"]["vendas_mensais"]["2026-10"] == 9
 
 
+def test_historico_grande_rele_apenas_banco_alterado_sem_aumentar_limite(tmp_path, monkeypatch):
+    cache = historico._MemoLimitado(512 * 1024, 16)
+    monkeypatch.setattr(historico, "_PROJECOES", cache)
+    paths = [
+        _banco(tmp_path / f"vendas_historico_{banco}.db", [
+            (f"venda-{banco}-{linha}", f"SKU-{linha % 25}",
+             "2026-10-15" if linha % 2 else "2026-04-15", "Título de controle",
+             [.1, .2, 1e16, -1e16, 3][linha % 5], "JK Peças")
+            for linha in range(2500)
+        ])
+        for banco in range(3)
+    ]
+    assert _ler(paths) == _referencia_sql_antigo(paths, 3, "__todas")
+    assert len(cache.entries) == 3
+    assert cache.bytes <= cache.max_bytes
+    with sqlite3.connect(paths[-1]) as conn:
+        conn.execute("INSERT INTO vendas VALUES ('nova-venda', 'NOVO', '2026-10-20', 'Novo título', 2, 'JK Peças')")
+    with leitura_medias() as alterada:
+        atual = _ler(paths)
+    assert alterada.metrics["historico_bancos_lidos"] == 1
+    assert atual == _referencia_sql_antigo(paths, 3, "__todas")
+    assert atual[0]["NOVO"]["vendas_mensais"]["2026-10"] == 2
+    for meses in (6, 12):
+        assert _ler(paths, meses=meses) == _referencia_sql_antigo(paths, meses, "__todas")
+
+
 def test_prioridade_de_bancos_dedup_e_fallback_por_mes(tmp_path):
     paths = [_banco(tmp_path / f"base-{i}.db", [
         ("id", "SKU", "2026-10-10", "Título", qty, "JK Peças"),

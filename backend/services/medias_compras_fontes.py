@@ -3,6 +3,7 @@
 from datetime import datetime
 from collections import Counter
 from pathlib import Path
+import json
 import os
 import stat
 
@@ -70,14 +71,29 @@ def fontes_consistentes(antes, depois):
         return False
     initial = antes.snapshot if isinstance(antes.snapshot, dict) else {}
     final = depois.snapshot if isinstance(depois.snapshot, dict) else {}
-    leitura = initial.get("historico_vendas")
     paths = tuple(initial.get("db_paths") or ())
-    if leitura is None or paths != tuple(final.get("db_paths") or ()):
+    if paths != tuple(final.get("db_paths") or ()):
         return False
     if len(antes.assinatura) != 2 or len(depois.assinatura) != 2 or antes.assinatura[0] != depois.assinatura[0]:
         return False
     old_rows, new_rows = antes.assinatura[1], depois.assinatura[1]
     if any(not isinstance(row, tuple) or not row or not isinstance(row[0], str) for row in (*old_rows, *new_rows)):
+        return False
+    # Successful OAuth refreshes rotate credentials and sync timestamps without
+    # changing the store/catalog inputs. These private digests preserve every
+    # other field, including aliases, connection identity and token availability.
+    original_stores = initial.get("lojas_revisoes_logicas", {})
+    latest_stores = final.get("lojas_revisoes_logicas", {})
+    unchanged_stores = {
+        path for path, revision in original_stores.items()
+        if revision is not None and revision == latest_stores.get(path)
+    }
+    old_rows = tuple(row for row in old_rows if row[0] not in unchanged_stores)
+    new_rows = tuple(row for row in new_rows if row[0] not in unchanged_stores)
+    if old_rows == new_rows:
+        return True
+    leitura = initial.get("historico_vendas")
+    if leitura is None:
         return False
     sales_paths = {
         os.path.normcase(os.path.abspath(str(path) + suffix))
@@ -93,6 +109,56 @@ def fontes_consistentes(antes, depois):
         return False
     from backend.services.medias_compras_historico import conferir_leitura_historico
     return conferir_leitura_historico(leitura, paths, expected, final.get("escopo") or {})
+
+
+def _revisao_logica_lojas(path, revision):
+    """Keep only a digest; never expose or cache credential-bearing documents."""
+    from backend.services.store_public_snapshot import provider_identity
+
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate_field")
+            obj[key] = value
+        return obj
+
+    try:
+        with path.open("rb") as stream:
+            content = stream.read(4 * 1024 * 1024 + 1)
+        if len(content) > 4 * 1024 * 1024 or assinatura_arquivo(path) != revision:
+            return None
+        stores = json.loads(content, object_pairs_hook=unique_object)
+        if not isinstance(stores, list) or any(not isinstance(store, dict) for store in stores):
+            return None
+        for store in stores:
+            for key in ("_sync_version", "_sync_updated_at"):
+                store.pop(key, None)
+            integrations = store.get("integracoes")
+            if not isinstance(integrations, dict):
+                continue
+            for provider in ("bling", "mercadolivre"):
+                cfg = integrations.get(provider)
+                if not isinstance(cfg, dict):
+                    continue
+                if any(key in cfg and not isinstance(cfg[key], str)
+                       for key in ("access_token", "refresh_token")):
+                    return None
+                for key in ("_sync_version", "_sync_updated_at"):
+                    cfg.pop(key, None)
+                # An immutable account/authorization identity is mandatory.
+                # Legacy configurations retain the strict physical fence.
+                if not provider_identity(store, provider) or not all(
+                    isinstance(cfg.get(key), str) and cfg[key].strip()
+                    for key in ("access_token", "refresh_token")
+                ):
+                    continue
+                cfg["access_token"] = True
+                cfg["refresh_token"] = True
+                cfg.pop("updated_at", None)
+        return digest_json(stores)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return None
 
 
 def assinatura_arquivo(path, entry=None):
@@ -200,6 +266,11 @@ def capturar_fontes(tenant, *, detalhe=False, extras=(), alvo="", snapshot=None,
         from fastapi import HTTPException
 
         raise HTTPException(409, {"code": "sources_changing", "message": "Os dados mudaram durante a leitura. Tente novamente."}) from error
+    if not detalhe and isinstance(snapshot, dict) and "db_paths" in snapshot:
+        snapshot["lojas_revisoes_logicas"] = {
+            by_path[path][0]: _revisao_logica_lojas(path, by_path[path])
+            for path in (root / "lojas_config.json", root / "lojas_config.json.bak")
+        }
     signatures = tuple(sorted(by_path.values()))
     hard = tuple(sorted(by_path[path] for path in authority))
     pending = any(path.exists() for path in journals) or any(path.name.endswith("-journal") and path.exists() for path in paths)

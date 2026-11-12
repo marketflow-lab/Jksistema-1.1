@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sys
 import unicodedata
 import time
 from datetime import datetime
+from threading import RLock
 from typing import Literal, NamedTuple
 
 import pandas as pd
@@ -30,6 +32,11 @@ _RUNTIME_NAMES = (
     "LISTA_PEDIDO_XLSX_CACHE",
     "LISTA_PEDIDO_XLSX_CACHE_MAX_ITENS",
 )
+
+_FOTOS_VISAO_LOCK = RLock()
+_FOTOS_VISAO_EM_ANDAMENTO = {}
+_FOTOS_VISAO_LIMITE_GLOBAL = 32
+_FOTOS_VISAO_LIMITE_TENANT = 2
 
 
 def _sync_common_names() -> None:
@@ -122,9 +129,70 @@ async def api_medias_compras_visao(
 async def api_medias_compras_visao_fotos(
     req: MediasVisaoFotosRequest, client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    from backend.services.blocking_workers import run_heavy
+    from backend.services.blocking_workers import run_blocking, run_heavy
 
-    return await run_heavy(_carregar_fotos_visao_sync, client_id, req)
+    raiz, fontes = await run_blocking(_fontes_fotos_visao, client_id, req)
+    chave = (asyncio.get_running_loop(), str(client_id), raiz, req.loja, req.store_id, tuple(req.skus), fontes)
+    with _FOTOS_VISAO_LOCK:
+        tarefa = _FOTOS_VISAO_EM_ANDAMENTO.get(chave)
+        if tarefa is None:
+            tarefas_tenant = sum(key[1] == str(client_id) for key in _FOTOS_VISAO_EM_ANDAMENTO)
+            if (len(_FOTOS_VISAO_EM_ANDAMENTO) >= _FOTOS_VISAO_LIMITE_GLOBAL
+                    or tarefas_tenant >= _FOTOS_VISAO_LIMITE_TENANT):
+                raise HTTPException(503, "Há consultas de fotos em andamento. Tente novamente em instantes.", headers={"Retry-After": "2"})
+            tarefa = asyncio.create_task(run_heavy(
+                _carregar_fotos_visao_vigente, client_id, req.model_copy(deep=True), raiz,
+            ))
+            _FOTOS_VISAO_EM_ANDAMENTO[chave] = tarefa
+            tarefa.add_done_callback(lambda concluida: _concluir_fotos_visao(chave, concluida))
+    # A retry joins the still-admitted worker after a browser timeout. Neither
+    # caller cancellation nor a disconnected tab releases that worker early.
+    resultado = await asyncio.shield(tarefa)
+    return {**resultado, "fotos": dict(resultado["fotos"])}
+
+
+def _raiz_fotos_visao(client_id):
+    from backend.services.medias_compras_leitura import chave_arquivo
+
+    return chave_arquivo(get_tenant_path(client_id))
+
+
+def _fontes_fotos_visao(client_id, req):
+    from backend.services.medias_compras_cache import _compactar_fontes
+    from backend.services.medias_compras_fontes import capturar_fontes, extras_runtime
+    from backend.services.medias_compras_leitura import chave_arquivo
+
+    tenant = get_tenant_path(client_id)
+    raiz = chave_arquivo(tenant)
+    scope = _resolver_escopo_loja_medias(client_id, req.loja, req.store_id)
+    fontes = capturar_fontes(
+        tenant, detalhe=True, extras=extras_runtime(sys.modules[__name__]),
+        escopo=(scope["store_id"], scope["loja"]), inventariar_fotos=False,
+    )
+    if fontes.pendente:
+        raise HTTPException(409, "Aguarde a atualização dos dados para consultar as fotos.")
+    if _raiz_fotos_visao(client_id) != raiz:
+        raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
+    return raiz, _compactar_fontes(fontes)
+
+
+def _carregar_fotos_visao_vigente(client_id, req, raiz):
+    if _raiz_fotos_visao(client_id) != raiz:
+        raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
+    resultado = _carregar_fotos_visao_sync(client_id, req)
+    if _raiz_fotos_visao(client_id) != raiz:
+        raise HTTPException(409, "A origem dos dados mudou durante a consulta.")
+    return resultado
+
+
+def _concluir_fotos_visao(chave, tarefa):
+    with _FOTOS_VISAO_LOCK:
+        if _FOTOS_VISAO_EM_ANDAMENTO.get(chave) is tarefa:
+            del _FOTOS_VISAO_EM_ANDAMENTO[chave]
+    # Retrieve failures even when every HTTP caller disconnected. The registry
+    # retains only active tasks; completed photo responses are never cached.
+    if not tarefa.cancelled():
+        tarefa.exception()
 
 
 @consulta_medias

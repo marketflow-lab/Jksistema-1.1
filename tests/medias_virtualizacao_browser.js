@@ -16,18 +16,19 @@ async function settle(page, frames = 6) {
   }), frames);
 }
 
-async function fixture(browser, count, { adiarFotos = false } = {}) {
+async function fixture(browser, count, { adiarFotos = false, respeitarCancelamento = false, relogio = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   const errors = [], exports = [], savedHidden = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(adiarFotos => {
+  if (relogio) await page.clock.install();
+  await page.addInitScript(({ adiarFotos, respeitarCancelamento }) => {
     localStorage.setItem('access_token', 'synthetic-token');
     localStorage.setItem('user_data', JSON.stringify({ client_id: 'tenant-virtual', username: 'synthetic-user' }));
     if (!adiarFotos) return;
     const nativo = fetch.bind(window);
-    const chamadas = [], respostas = new Map(), invalidacoes = [];
+    const chamadas = [], respostas = new Map(), falhas = new Map(), invalidacoes = [];
     addEventListener('jk:cache-persistente-invalidado', event => invalidacoes.push(event.detail));
     window.fetch = (input, init = {}) => {
       if (new URL(input, location.href).pathname !== '/api/medias-compras/visao/fotos') return nativo(input, init);
@@ -37,9 +38,19 @@ async function fixture(browser, count, { adiarFotos = false } = {}) {
         montados: [...document.querySelectorAll('#tblResultado [data-jk-virtual-row]')].map(row => row.dataset.virtualKey),
       };
       chamadas.push(chamada);
-      init.signal.addEventListener('abort', () => { chamada.cancelada = true; });
+      init.signal.addEventListener('abort', () => {
+        chamada.cancelada = true;
+        if (respeitarCancelamento && falhas.has(chamada.id)) {
+          falhas.get(chamada.id)(new DOMException('Synthetic abort', 'AbortError'));
+          respostas.delete(chamada.id);
+          falhas.delete(chamada.id);
+        }
+      });
       // O transporte de teste ainda pode entregar a resposta após o cancelamento.
-      return new Promise(resolve => respostas.set(chamada.id, resolve));
+      return new Promise((resolve, reject) => {
+        respostas.set(chamada.id, resolve);
+        falhas.set(chamada.id, reject);
+      });
     };
     window.__fotos = {
       chamadas, invalidacoes,
@@ -47,9 +58,10 @@ async function fixture(browser, count, { adiarFotos = false } = {}) {
       responder(id, body, status = 200) {
         respostas.get(id)({ ok: status === 200, status, json: async () => body });
         respostas.delete(id);
+        falhas.delete(id);
       },
     };
-  }, adiarFotos);
+  }, { adiarFotos, respeitarCancelamento });
   await page.route('**/*', async route => {
     const url = new URL(route.request().url());
     const json = body => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
@@ -334,10 +346,77 @@ async function testFotosAdiadas(browser) {
   } finally { await f.context.close(); }
 }
 
+async function testFotosRecuperamSemRemontarLinhas(browser) {
+  const f = await fixture(browser, 50, { adiarFotos: true, respeitarCancelamento: true, relogio: true });
+  const { page } = f;
+  const chamadas = () => page.evaluate(() => __fotos.chamadas);
+  const responder = (id, status) => page.evaluate(([id, status]) => __fotos.responder(id, {
+    fotos: { 'SKU-00001': 'http://jk.test/foto.gif' }, politica_fotos: 'politica-1',
+  }, status), [id, status]);
+  try {
+    await page.waitForFunction(() => __fotos.chamadas.length === 1);
+    await page.evaluate(() => { window.__linhaFotoOriginal = document.querySelector('[data-jk-medias-foto="SKU-00001"]').closest('tr'); });
+    await responder(0, 503);
+    await settle(page);
+    assert.strictEqual((await chamadas()).length, 1, 'falha transitória não cria repetição imediata');
+    await page.clock.fastForward(2200);
+    await page.waitForFunction(() => __fotos.chamadas.length === 2);
+    assert.strictEqual(await page.evaluate(() => __fotos.chamadas.filter(c => !c.cancelada && __fotos.pendentes().includes(c.id)).length), 1);
+    await page.clock.fastForward(16000);
+    assert.strictEqual((await chamadas())[1].cancelada, false, 'o lote tolera mais de 15 segundos de fila');
+    await page.clock.fastForward(45000);
+    await page.waitForFunction(() => __fotos.chamadas[1].cancelada);
+    await page.clock.fastForward(5200);
+    await page.waitForFunction(() => __fotos.chamadas.length === 3);
+    await responder(2, 200);
+    await page.waitForFunction(() => document.querySelector('[data-jk-medias-foto="SKU-00001"] img')?.naturalWidth > 0);
+    assert(await page.evaluate(() => __linhaFotoOriginal === document.querySelector('[data-jk-medias-foto="SKU-00001"]').closest('tr')),
+      'a foto volta na mesma linha, sem rolar, trocar filtros ou reabrir a tela');
+    assert.deepStrictEqual(f.errors, []);
+    console.log('PASS fotos recuperam de 503 e timeout na mesma linha, com uma requisição por vez');
+  } finally { await f.context.close(); }
+}
+
+async function testFotosLimitamRetentativasECancelamEspera(browser) {
+  const f = await fixture(browser, 50, { adiarFotos: true, respeitarCancelamento: true, relogio: true });
+  const { page } = f;
+  const falhar = id => page.evaluate(id => __fotos.responder(id, {}, 503), id);
+  try {
+    await page.waitForFunction(() => __fotos.chamadas.length === 1);
+    const intervalos = [2200, 5200, 10200];
+    for (let tentativa = 0; tentativa < intervalos.length; tentativa++) {
+      await falhar(tentativa);
+      await settle(page);
+      await page.clock.fastForward(intervalos[tentativa]);
+      await page.waitForFunction(total => __fotos.chamadas.length === total, tentativa + 2);
+    }
+    await falhar(3);
+    await settle(page);
+    await page.clock.fastForward(600000);
+    await settle(page);
+    assert.strictEqual(await page.evaluate(() => __fotos.chamadas.length), 4, 'falha persistente encerra as retentativas');
+    await page.evaluate(() => window.dispatchEvent(new Event('jk:cadastro-operation-finished')));
+    await page.waitForFunction(() => __fotos.chamadas.length === 5);
+    await falhar(4);
+    await settle(page);
+    await page.evaluate(() => {
+      localStorage.setItem('access_token', 'another-synthetic-session');
+      window.dispatchEvent(new Event('jk-auth-changed'));
+    });
+    await page.clock.fastForward(60000);
+    await settle(page);
+    assert.strictEqual(await page.evaluate(() => __fotos.chamadas.length), 5, 'troca de sessão cancela também o reenvio agendado');
+    assert.deepStrictEqual(f.errors, []);
+    console.log('PASS fotos limitam reenvios e cancelam retentativa ao mudar sessão');
+  } finally { await f.context.close(); }
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
     await testFotosAdiadas(browser);
+    await testFotosRecuperamSemRemontarLinhas(browser);
+    await testFotosLimitamRetentativasECancelamEspera(browser);
     await testLargeTable(browser, 50);
     await testLargeTable(browser, 432);
     await testLargeTable(browser, 2000);

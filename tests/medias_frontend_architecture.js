@@ -31,6 +31,7 @@ const moduleFiles = [
   'atualizacao-arquivo.js',
   'importacao.js',
   'tabela-virtual.js',
+  'tabela-fotos.js',
   'tabela.js',
   'listas-uniao.js',
   'init.js',

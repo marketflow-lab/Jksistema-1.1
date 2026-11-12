@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException, InvalidOperation, localcontext
+from functools import lru_cache
 import hashlib
 import json
 import math
@@ -443,10 +444,13 @@ class CompositionCatalog:
     ) -> list[dict[str, Any]]:
         """Project already deduplicated/eligible rows without mutating input."""
         target = _key(target_sku)
+        # Sales repeat the same few SKUs across many documents. Keep this memo
+        # bounded and local to the projection, without sharing tenant inputs.
+        normalize_sku = lru_cache(maxsize=4096)(_key)
         output: list[dict[str, Any]] = []
         for source in rows:
             row = dict(source)
-            sku_key = _key(row.get("sku"))
+            sku_key = normalize_sku(str(row.get("sku") or ""))
             # Projected rows are already a physical view; keep them once.
             if row.get("__composicao") or row.get("__tipo_composicao") == "kit":
                 if not target or sku_key == target:

@@ -13,12 +13,20 @@ def _text(value: object) -> str:
 
 def is_short_legacy_sale(item: dict) -> bool:
     """Accept only the exact historical ``account_number_sku`` identity."""
-    if any(_text(item.get(field)).strip() for field in ("origem_tipo", "origem_id", "item_id")):
+    # Opaque document identities cannot be short legacy copies. Reject those
+    # before interpreting legacy fields on every row of a large read.
+    account = _text(item.get("loja_conta"))
+    identity = _text(item.get("id_unico"))
+    if not identity.startswith(account + "_"):
         return False
-    account, number, sku = (_text(item.get(field)) for field in ("loja_conta", "numero", "sku"))
-    if not all(value.strip() for value in (account, number, sku)):
+    number = _text(item.get("numero"))
+    sku = _text(item.get("sku"))
+    if identity != f"{account}_{number}_{sku}":
         return False
-    return _text(item.get("id_unico")) == f"{account}_{number}_{sku}"
+    return bool(account.strip() and number.strip() and sku.strip()
+                and not _text(item.get("origem_tipo")).strip()
+                and not _text(item.get("origem_id")).strip()
+                and not _text(item.get("item_id")).strip())
 
 
 def _finite_number(value: object) -> Decimal | None:
