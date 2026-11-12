@@ -2538,7 +2538,7 @@
         function formatarM3(v) {
             const n = Number(v || 0);
             if (!Number.isFinite(n)) return 'Cubagem pendente';
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 10 }) + ' m³';
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' m³';
         }
 
         function cubagemResumoPendente(lista) {

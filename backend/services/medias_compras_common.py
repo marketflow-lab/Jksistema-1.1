@@ -215,24 +215,41 @@ def _arquivo_preferencias_colunas_importacoes(client_id: str) -> str:
     return os.path.join(get_tenant_path(client_id), "importacoes_lista_colunas_prefs.json")
 
 
+def _normalizar_colunas_ocultas_importacoes(colunas: Any) -> list[str]:
+    if not isinstance(colunas, list):
+        return []
+    vistas = set()
+    resultado = []
+    for coluna in colunas:
+        chave = str(coluna or "").strip()
+        if not chave or chave in vistas:
+            continue
+        vistas.add(chave)
+        resultado.append(chave)
+        if len(resultado) >= 5000:
+            break
+    return resultado
+
+
 def _carregar_preferencias_colunas_importacoes(client_id: str) -> dict:
     caminho = _arquivo_preferencias_colunas_importacoes(client_id)
     if not os.path.exists(caminho):
-        return {"ordem_colunas": [], "larguras_colunas": {}}
+        return {"ordem_colunas": [], "larguras_colunas": {}, "colunas_ocultas": []}
     try:
         with open(caminho, "r", encoding="utf-8") as f:
             dados = json.load(f)
         if not isinstance(dados, dict):
-            return {"ordem_colunas": [], "larguras_colunas": {}}
+            return {"ordem_colunas": [], "larguras_colunas": {}, "colunas_ocultas": []}
 
         ordem = dados.get("ordem_colunas")
         larguras = dados.get("larguras_colunas")
         return {
             "ordem_colunas": ordem if isinstance(ordem, list) else [],
             "larguras_colunas": larguras if isinstance(larguras, dict) else {},
+            "colunas_ocultas": _normalizar_colunas_ocultas_importacoes(dados.get("colunas_ocultas")),
         }
     except Exception:
-        return {"ordem_colunas": [], "larguras_colunas": {}}
+        return {"ordem_colunas": [], "larguras_colunas": {}, "colunas_ocultas": []}
 
 
 def _salvar_preferencias_colunas_importacoes(client_id: str, preferencias: dict) -> dict:
@@ -243,6 +260,10 @@ def _salvar_preferencias_colunas_importacoes(client_id: str, preferencias: dict)
 
     ordem_raw = (preferencias or {}).get("ordem_colunas")
     larguras_raw = (preferencias or {}).get("larguras_colunas")
+    ocultas_raw = (preferencias or {}).get("colunas_ocultas")
+    if ocultas_raw is None:
+        # Clientes anteriores salvam ordem/largura sem conhecer a visibilidade.
+        ocultas_raw = _carregar_preferencias_colunas_importacoes(client_id).get("colunas_ocultas")
 
     ordem: list[str] = []
     if isinstance(ordem_raw, list):
@@ -263,6 +284,7 @@ def _salvar_preferencias_colunas_importacoes(client_id: str, preferencias: dict)
     payload = {
         "ordem_colunas": ordem,
         "larguras_colunas": larguras,
+        "colunas_ocultas": _normalizar_colunas_ocultas_importacoes(ocultas_raw),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
 

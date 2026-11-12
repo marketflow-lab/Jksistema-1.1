@@ -121,6 +121,7 @@ class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
 class ListaPedidoPreferenciasColunasRequest(BaseModel):
     ordem_colunas: list[str] | None = None
     larguras_colunas: dict[str, int] | None = None
+    colunas_ocultas: list[str] | None = None
 
 
 class MediasComprasSkusOcultosRequest(BaseModel):

@@ -89,12 +89,12 @@ async function environment(browser, options = {}) {
         await lista.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
         await lista.page.locator('tr[data-sku="001"]').waitFor();
         await lista.page.waitForFunction(() => !mapaM3IndividualCarregando);
-        assert.strictEqual(await lista.page.locator('tr[data-sku="001"] [data-col-key="m3"]').textContent(), '0,0000625');
+        assert.strictEqual(await lista.page.locator('tr[data-sku="001"] [data-col-key="m3"]').textContent(), '0,0001');
         assert.strictEqual(await lista.page.locator('tr[data-sku="1"] [data-col-key="m3"]').textContent(), 'Cubagem pendente');
         assert.strictEqual(await lista.page.locator('tr[data-sku="H"] [data-col-key="m3"]').textContent(), '0,3000');
         assert.strictEqual(await lista.page.locator('tr[data-sku="ZERO"] [data-col-key="m3"]').textContent(), '0,0000');
         assert.strictEqual(await lista.page.locator('tr[data-sku="ZERO"] [data-col-key="m3"]').evaluate(el => el.classList.contains('m3-alerta')), false);
-        assert.match(await lista.page.locator('.totais-row [data-col-key="m3"]').textContent(), /0,3000625.*parcial/);
+        assert.match(await lista.page.locator('.totais-row [data-col-key="m3"]').textContent(), /0,3001.*parcial/);
         assert.match(await lista.page.locator('#resumoTopo').textContent(), /M³ Total parcial/);
         assert.match(await lista.page.locator('#statusM3Complementar').textContent(), /Cubagem pendente.*total de m³ é parcial/);
         assert.strictEqual(lista.state.catalog, 0, 'Resposta autoritativa não recebe valores de outro cadastro');

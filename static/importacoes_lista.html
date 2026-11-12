@@ -347,14 +347,14 @@
             text-align: center;
             white-space: nowrap;
         }
-        .competitor-margins {
+        .competitor-margins, .own-margins {
             display: grid;
             grid-template-columns: repeat(2, minmax(64px, 1fr));
             gap: 4px;
             min-width: 145px;
             white-space: normal;
         }
-        .competitor-margin {
+        .competitor-margin, .own-margin {
             display: inline-flex;
             justify-content: center;
             gap: 4px;
@@ -367,11 +367,11 @@
             line-height: 1.1;
             white-space: nowrap;
         }
-        .competitor-margin.positive {
+        .competitor-margin.positive, .own-margin.positive {
             border-color: #287b55;
             color: #8ff0b7;
         }
-        .competitor-margin.negative {
+        .competitor-margin.negative, .own-margin.negative {
             border-color: #8e4148;
             color: #ff9da5;
         }
@@ -406,6 +406,22 @@
         .own-ad-row small { color: #91a8c2; grid-column: 1 / -1; }
         .own-ad-row .positive { color: #8ff0b7; }
         .own-ad-row .negative { color: #ff9da5; }
+        [data-col-key][hidden] { display: none !important; }
+        .seletor-colunas { margin: 12px 0; color: #cfe6ff; }
+        .seletor-colunas summary {
+            cursor: pointer; width: fit-content; padding: 8px 14px;
+            border: 1px solid #31506f; border-radius: 7px; background: #1b2a3f;
+            font-weight: 700;
+        }
+        .seletor-colunas summary:focus-visible { outline: 2px solid #67b4ff; outline-offset: 2px; }
+        .opcoes-colunas {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+            gap: 8px 16px; padding: 12px; margin-top: 6px;
+            border: 1px solid #31506f; border-radius: 7px; background: #121b2a;
+        }
+        .opcoes-colunas label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: .85rem; }
+        .opcoes-colunas input { accent-color: #67b4ff; width: 16px; height: 16px; }
+        .seletor-colunas button { margin-top: 8px; }
         .totais-row td {
             background: #17273e;
             border-top: 1px solid #3b5578;
@@ -760,6 +776,11 @@
         <div class="card">
             <div id="meta" class="meta"></div>
             <div id="resumoTopo" class="resumo-topo"></div>
+            <details id="seletorColunas" class="seletor-colunas">
+                <summary>Colunas</summary>
+                <div id="opcoesColunas" class="opcoes-colunas" role="group" aria-label="Colunas visíveis"></div>
+                <button id="btnMostrarTodasColunas" type="button" class="btn-add-sku">Mostrar todas</button>
+            </details>
             <div class="table-wrap">
                 <table>
                     <colgroup id="tCols"></colgroup>
@@ -957,7 +978,7 @@
         }
 
         function formatarM3(v) {
-            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 10 });
+            return Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
         }
 
         function formatarUSD(v) {
@@ -1526,6 +1547,59 @@
             return analiseAnunciosLojaConfere(analise) && Number.isFinite(idade) && idade >= -5000 && idade < 60000;
         }
 
+        function obterMargemAnuncioLoja(item, anuncio, indice) {
+            const analise = item?.analise_simulacao_importacao_sku;
+            const chave = anuncio.chave || 'concorrente_' + (indice + 1);
+            const dados = analise?.margens_anuncios_loja?.[chave];
+            const preco = valorNumerico(anuncio.preco);
+            const margem = dados?.margem_percentual == null || dados.margem_percentual === ''
+                ? NaN : Number(dados.margem_percentual);
+            const contaConfere = String(dados?.store_id || '') === String(ultimaListaCarregada?.store_id || '')
+                && (!anuncio.seller_id || String(dados?.seller_id || '') === String(anuncio.seller_id))
+                && (!anuncio.site_id || String(dados?.site_id || '') === String(anuncio.site_id));
+            const valido = analiseSimuladaListaCompativel(item) && preco > 0 && dados?.financeiro_exato === true
+                && dados.fonte_custo === 'simulacao_importacao_sku'
+                && dados.custo_unitario !== null && dados.custo_unitario !== undefined && dados.custo_unitario !== ''
+                && Math.abs(Number(dados.custo_unitario) - Number(analise?.custo_unitario)) <= 0.005
+                && contaConfere
+                && dados.item_id_loja === extrairCodigoMlbMargensAutomaticas(anuncio.item_id)
+                && String(dados.variation_id ?? '') === String(anuncio.variation_id ?? '')
+                && Math.abs(Number(dados.preco_venda) - preco) <= 0.02 && Number.isFinite(margem);
+            return { dados, margem, valido };
+        }
+
+        function formatarMargensLoja(item) {
+            const sku = obterSkuItemMargensAutomaticas(item);
+            const estado = estadosAnaliseMargensAutomaticas.get(sku);
+            const analise = item?.analise_simulacao_importacao_sku;
+            const anuncios = estado?.anuncios || (analiseAnunciosLojaConfere(analise) ? analise.anuncios_loja : null);
+            const disponiveis = [];
+            (anuncios || []).forEach((anuncio, indice) => {
+                const { dados, margem, valido } = obterMargemAnuncioLoja(item, anuncio, indice);
+                if (!valido) return;
+                const titulo = [extrairCodigoMlbMargensAutomaticas(anuncio.item_id),
+                    anuncio.variation_id == null ? '' : 'Variação ' + anuncio.variation_id,
+                    'Preço: ' + formatarBRL(Number(dados.preco_venda)),
+                    'Custo da importação: ' + formatarBRL(Number(dados.custo_unitario)),
+                    'Imposto: ' + formatarBRL(Number(dados.imposto_valor)),
+                    'Tarifa ML: ' + formatarBRL(Number(dados.tarifa_ml)),
+                    'Frete ML: ' + formatarBRL(Number(dados.frete_ml)),
+                    'Líquido: ' + formatarBRL(Number(dados.valor_liquido))].filter(Boolean).join(' · ');
+                disponiveis.push('<span class="own-margin ' + (margem < 0 ? 'negative' : 'positive')
+                    + '" title="' + escaparHtml(titulo) + '"><span>A' + (indice + 1) + '</span><span>'
+                    + formatarPct(margem) + '</span></span>');
+            });
+            if (disponiveis.length) {
+                const pendente = estado && ['fila', 'analisando', 'erro'].includes(estado.status);
+                return '<div class="own-margins">' + disponiveis.join('')
+                    + (pendente ? '<span class="competitor-margins-empty">Atualização pendente</span>' : '') + '</div>';
+            }
+            const texto = estado?.status === 'fila' ? 'Na fila' : estado?.status === 'analisando' ? 'Analisando...'
+                : estado?.status === 'erro' ? 'Falha na análise' : Array.isArray(anuncios) && !anuncios.length
+                    ? 'Sem anúncios deste SKU' : 'Margem pendente';
+            return '<span class="competitor-margins-empty" title="' + escaparHtml(estado?.mensagem || '') + '">' + texto + '</span>';
+        }
+
         function formatarAnunciosLoja(item) {
             const sku = obterSkuItemMargensAutomaticas(item);
             const estado = estadosAnaliseMargensAutomaticas.get(sku);
@@ -1538,23 +1612,11 @@
                     + '">' + texto + '</span>';
             }
             if (!anuncios.length) return '<span class="competitor-margins-empty">Sem anúncios deste SKU</span>';
-            const margens = analise?.margens_anuncios_loja || {};
             return '<div class="own-ads-list">' + anuncios.map((anuncio, indice) => {
-                const chave = anuncio.chave || 'concorrente_' + (indice + 1);
                 const itemId = extrairCodigoMlbMargensAutomaticas(anuncio.item_id);
                 const variacao = anuncio.variation_id == null ? '' : String(anuncio.variation_id);
-                const dados = margens[chave];
                 const preco = valorNumerico(anuncio.preco);
-                const margem = dados?.margem_percentual == null ? NaN : Number(dados.margem_percentual);
-                const contaConfere = String(dados?.store_id || '') === String(ultimaListaCarregada?.store_id || '')
-                    && (!anuncio.seller_id || String(dados?.seller_id || '') === String(anuncio.seller_id))
-                    && (!anuncio.site_id || String(dados?.site_id || '') === String(anuncio.site_id));
-                const margemConfere = analiseSimuladaListaCompativel(item) && preco > 0 && dados?.financeiro_exato === true
-                    && dados.fonte_custo === 'simulacao_importacao_sku'
-                    && Math.abs(Number(dados.custo_unitario) - Number(analise?.custo_unitario)) <= 0.005
-                    && contaConfere
-                    && dados.item_id_loja === itemId && String(dados.variation_id ?? '') === variacao
-                    && Math.abs(Number(dados.preco_venda) - preco) <= 0.02;
+                const { dados, margem, valido: margemConfere } = obterMargemAnuncioLoja(item, anuncio, indice);
                 let url = '';
                 try {
                     const candidato = new URL(anuncio.url);
@@ -1587,6 +1649,8 @@
                 if (normalizarSkuComparacao(linha.dataset.sku) !== sku) continue;
                 const celula = linha.querySelector('[data-coluna="margens_concorrentes"]');
                 if (celula) celula.innerHTML = formatarMargensConcorrentes(item);
+                const propria = linha.querySelector('[data-coluna="margens_loja"]');
+                if (propria) propria.innerHTML = formatarMargensLoja(item);
                 const anuncios = linha.querySelector('[data-coluna="anuncios_loja"]');
                 if (anuncios) anuncios.innerHTML = formatarAnunciosLoja(item);
                 break;
@@ -2816,12 +2880,14 @@
         const tCols = document.getElementById('tCols');
         const LS_LARGURAS_KEY = 'importacoes_lista_larguras_colunas';
         const LS_ORDEM_COLUNAS_KEY = 'importacoes_lista_ordem_colunas_v1';
+        const colunasOcultas = new Set();
         const largurasColunas = JSON.parse(localStorage.getItem(LS_LARGURAS_KEY) || '{}');
         let preferenciasColunasCarregadas = false;
         let revisaoColunasLocal = 0;
         let requisicaoPreferencias = 0;
         let colunaRedimensionando = false;
         let preferenciasColunasPendentes = null;
+        let gravacaoPreferenciasColunas = Promise.resolve();
         const colunasTabela = [
             { key: 'sku', label: 'SKU', width: 110 },
             { key: 'foto', label: 'Foto', width: 90 },
@@ -2834,10 +2900,81 @@
             { key: 'ultimo_custo_cadastrado', label: 'Último custo cadastrado', width: 190 },
             { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
             { key: 'anuncios_loja', label: 'Anúncios da loja', width: 290 },
+            { key: 'margens_loja', label: 'Nossa margem', width: 185 },
             { key: 'margens_concorrentes', label: 'Margem concorrentes', width: 185 },
             { key: 'acao', label: 'Ação', width: 130 }
         ];
         let colunaArrastadaKey = '';
+
+        function chaveColunasOcultas() {
+            try {
+                const cliente = JSON.parse(localStorage.getItem('user_data') || '{}').client_id;
+                return cliente ? 'importacoes_lista_colunas_ocultas_v1:' + encodeURIComponent(cliente) : '';
+            } catch (_e) { return ''; }
+        }
+
+        function aplicarColunasOcultas(ocultas) {
+            if (!Array.isArray(ocultas)) return;
+            colunasOcultas.clear();
+            const permitidas = new Set(colunasTabela.map(col => col.key));
+            ocultas.forEach(key => { if (permitidas.has(key)) colunasOcultas.add(key); });
+            if (colunasOcultas.size === colunasTabela.length) colunasOcultas.delete('sku');
+        }
+
+        function salvarColunasOcultasLocal() {
+            try {
+                const chave = chaveColunasOcultas();
+                if (chave) localStorage.setItem(chave, JSON.stringify([...colunasOcultas]));
+            } catch (_e) {}
+        }
+
+        function atualizarSeletorColunas() {
+            const opcoes = document.getElementById('opcoesColunas');
+            if (!opcoes) return;
+            colunasTabela.forEach(coluna => {
+                let input = opcoes.querySelector('input[data-coluna-opcao="' + coluna.key + '"]');
+                if (!input) {
+                    const label = document.createElement('label');
+                    input = document.createElement('input');
+                    input.type = 'checkbox';
+                    input.dataset.colunaOpcao = coluna.key;
+                    input.addEventListener('change', () => {
+                        if (input.checked) colunasOcultas.delete(coluna.key);
+                        else colunasOcultas.add(coluna.key);
+                        ++revisaoColunasLocal;
+                        salvarColunasOcultasLocal();
+                        sincronizarColunasVisiveis();
+                        salvarPreferenciasColunasServidor();
+                    });
+                    label.append(input, document.createTextNode(coluna.label));
+                    opcoes.appendChild(label);
+                }
+                input.checked = !colunasOcultas.has(coluna.key);
+                input.disabled = input.checked && colunasTabela.length - colunasOcultas.size <= 1;
+                opcoes.appendChild(input.parentElement);
+            });
+        }
+
+        function aplicarVisibilidadeColunas() {
+            document.querySelectorAll('#tCols [data-col-key], #tHead [data-col-key], #tbodyLista [data-col-key]').forEach(celula => {
+                celula.hidden = colunasOcultas.has(celula.dataset.colKey);
+            });
+            document.querySelectorAll('#tbodyLista td.empty').forEach(celula => {
+                celula.colSpan = Math.max(1, colunasTabela.length - colunasOcultas.size);
+            });
+            atualizarSeletorColunas();
+        }
+
+        try {
+            aplicarColunasOcultas(JSON.parse(localStorage.getItem(chaveColunasOcultas()) || '[]'));
+        } catch (_e) {}
+        document.getElementById('btnMostrarTodasColunas').addEventListener('click', () => {
+            colunasOcultas.clear();
+            ++revisaoColunasLocal;
+            salvarColunasOcultasLocal();
+            sincronizarColunasVisiveis();
+            salvarPreferenciasColunasServidor();
+        });
 
         function adicionarColunasNovasNaOrdem(ordenadas, mapa) {
             mapa.forEach((coluna) => {
@@ -2855,7 +2992,11 @@
                         return;
                     }
                 }
-                if (coluna.key === 'margens_concorrentes' || coluna.key === 'anuncios_loja') {
+                if (coluna.key === 'margens_loja') {
+                    const indiceConcorrentes = ordenadas.findIndex(item => item.key === 'margens_concorrentes');
+                    if (indiceConcorrentes >= 0) { ordenadas.splice(indiceConcorrentes, 0, coluna); return; }
+                }
+                if (coluna.key === 'margens_concorrentes' || coluna.key === 'anuncios_loja' || coluna.key === 'margens_loja') {
                     const indiceAcao = ordenadas.findIndex((item) => item.key === 'acao');
                     if (indiceAcao >= 0) {
                         ordenadas.splice(indiceAcao, 0, coluna);
@@ -2922,7 +3063,11 @@
             salvarPreferenciasColunasServidor();
         }
 
-        function _aplicarPreferenciasColunasNoEstado(ordemColunas, largurasColunasSrv) {
+        function _aplicarPreferenciasColunasNoEstado(ordemColunas, largurasColunasSrv, ocultas) {
+            if (Array.isArray(ocultas)) {
+                aplicarColunasOcultas(ocultas);
+                salvarColunasOcultasLocal();
+            }
             const ordem = Array.isArray(ordemColunas)
                 ? ordemColunas.map((v) => String(v || '').trim()).filter(Boolean)
                 : [];
@@ -2981,7 +3126,7 @@
                 || document.activeElement?.matches('.proporcao-sku-input')) return;
             preferenciasColunasPendentes = null;
             if (!carregamentoVigente(pendente.contexto) || pendente.revisao !== revisaoColunasLocal) return;
-            _aplicarPreferenciasColunasNoEstado(pendente.data && pendente.data.ordem_colunas, pendente.data && pendente.data.larguras_colunas);
+            _aplicarPreferenciasColunasNoEstado(pendente.data?.ordem_colunas, pendente.data?.larguras_colunas, pendente.data?.colunas_ocultas);
             sincronizarColunasVisiveis();
         }
 
@@ -2993,22 +3138,23 @@
                 colunasTabela.forEach(col => { if (celulas.has(col.key)) linha.appendChild(celulas.get(col.key)); });
             });
             colunasTabela.forEach((col, indice) => aplicarLarguraColuna(indice, col, obterLarguraColuna(col)));
+            aplicarVisibilidadeColunas();
             if (foco && foco.isConnected && document.activeElement !== foco) foco.focus({ preventScroll: true });
         }
 
         async function salvarPreferenciasColunasServidor() {
-            try {
+            const headers = { 'Content-Type': 'application/json', ...obterAuthHeaders() };
+            const body = JSON.stringify({
+                ordem_colunas: colunasTabela.map(c => c.key), larguras_colunas: largurasColunas,
+                colunas_ocultas: [...colunasOcultas],
+            });
+            gravacaoPreferenciasColunas = gravacaoPreferenciasColunas.catch(() => {}).then(async () => {
                 await fetch('/api/medias-compras/listas-pedidos/preferencias-colunas', {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
-                    body: JSON.stringify({
-                        ordem_colunas: colunasTabela.map((c) => c.key),
-                        larguras_colunas: largurasColunas,
-                    })
+                    headers, body,
                 });
-            } catch (_e) {
-                // Mantém localStorage como fallback.
-            }
+            }).catch(() => {});
+            return gravacaoPreferenciasColunas;
         }
 
         function obterLarguraColuna(coluna) {
@@ -3074,6 +3220,7 @@
                 const largura = obterLarguraColuna(coluna);
 
                 const colEl = document.createElement('col');
+                colEl.dataset.colKey = coluna.key;
                 colEl.style.width = `${largura}px`;
                 tCols.appendChild(colEl);
 
@@ -3148,6 +3295,7 @@
             });
 
             tHead.appendChild(tr);
+            aplicarVisibilidadeColunas();
         }
 
         function setErro(msg) {
@@ -3605,6 +3753,7 @@
                 tbody.innerHTML = '<tr><td colspan="' + colunasTabela.length + '" class="empty">Esta lista não possui itens.</td></tr>';
                 colunasTabela.forEach((coluna, idx) => aplicarLarguraColuna(idx, coluna, obterLarguraColuna(coluna)));
                 if (totalGeralEl) totalGeralEl.textContent = 'Total geral: ' + formatarUSD(0);
+                aplicarVisibilidadeColunas();
                 return;
             }
 
@@ -3684,6 +3833,7 @@
                     ultimo_custo_cadastrado: textoUltimoCustoCadastrado(item),
                     valor_total_usd: formatarUSD(valorTotal),
                     anuncios_loja: formatarAnunciosLoja(item),
+                    margens_loja: formatarMargensLoja(item),
                     margens_concorrentes: formatarMargensConcorrentes(item),
                     acao: sku
                         ? '<div class="sku-actions">' +
@@ -3708,6 +3858,7 @@
                     ultimo_custo_cadastrado: 'num',
                     valor_total_usd: 'num',
                     anuncios_loja: 'num-center',
+                    margens_loja: 'num-center',
                     margens_concorrentes: 'num-center',
                     acao: 'num-center',
                 };
@@ -3718,6 +3869,7 @@
                     const dataColuna = col.key === 'margens_concorrentes'
                         ? ' data-coluna="margens_concorrentes"'
                         : col.key === 'anuncios_loja' ? ' data-coluna="anuncios_loja"'
+                        : col.key === 'margens_loja' ? ' data-coluna="margens_loja"'
                         : '';
                     const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
                     return '<td data-col-key="' + escaparHtml(col.key) + '"' + klass + title + dataColuna + '>' + conteudo + '</td>';
@@ -3829,6 +3981,7 @@
             colunasTabela.forEach((coluna, idx) => aplicarLarguraColuna(idx, coluna, obterLarguraColuna(coluna)));
 
             if (totalGeralEl) totalGeralEl.textContent = 'Total geral: ' + formatarUSD(totalGeral);
+            aplicarVisibilidadeColunas();
             atualizarCustosUnitariosVisiveis();
         }
 

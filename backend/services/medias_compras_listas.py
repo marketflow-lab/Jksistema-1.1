@@ -767,6 +767,7 @@ def _api_medias_compras_preferencias_colunas_get_sync(client_id: str = Depends(m
         "success": True,
         "ordem_colunas": prefs.get("ordem_colunas") or [],
         "larguras_colunas": prefs.get("larguras_colunas") or {},
+        "colunas_ocultas": prefs.get("colunas_ocultas") or [],
     }
 
 
@@ -786,11 +787,13 @@ def _api_medias_compras_preferencias_colunas_put_sync(
     payload = _salvar_preferencias_colunas_importacoes(client_id, {
         "ordem_colunas": req.ordem_colunas or [],
         "larguras_colunas": req.larguras_colunas or {},
+        "colunas_ocultas": req.colunas_ocultas,
     })
     return {
         "success": True,
         "ordem_colunas": payload.get("ordem_colunas") or [],
         "larguras_colunas": payload.get("larguras_colunas") or {},
+        "colunas_ocultas": payload.get("colunas_ocultas") or [],
         "updated_at": payload.get("updated_at"),
     }
 

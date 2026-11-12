@@ -2168,7 +2168,7 @@
         function fmtM3(val) {
             const n = getNumber(val);
             if (n === null) return String(val || '-');
-            return n.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 10 });
+            return n.toLocaleString('pt-BR', { minimumFractionDigits: 4, maximumFractionDigits: 4 });
         }
 
         function fmtPct(val) {

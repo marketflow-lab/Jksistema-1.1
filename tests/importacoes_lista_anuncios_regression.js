@@ -16,7 +16,8 @@ function source(name) {
 const names = ['escaparHtml', 'normTxt', 'formatarPct', 'formatarBRL', 'obterCampo',
     'normalizarSkuComparacao', 'chaveSkuCustoCadastro', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
     'obterSkuItemMargensAutomaticas', 'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes',
-    'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'formatarAnunciosLoja', 'montarPayloadMargensAutomaticas',
+    'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'obterMargemAnuncioLoja',
+    'formatarMargensLoja', 'formatarAnunciosLoja', 'montarPayloadMargensAutomaticas',
     'consultarAnaliseLista', 'carregarFontesMargensAutomaticas', 'carregarAnunciosMargensAutomaticas',
     'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
     'opcoesCacheMargensLista', 'restaurarMargensCompartilhadasLista', 'priorizarPendentesMargens'];
@@ -146,9 +147,21 @@ async function run() {
     assert.match(rendered, /Margem 21,00%/);
     assert(!rendered.includes('88,00%'), 'Margem de outra variação não pode aparecer.');
     assert(!rendered.includes('99,00%'), 'Margem de outra loja não pode aparecer.');
+    const propria = context.formatarMargensLoja(item);
+    assert.equal((propria.match(/class="own-margin /g) || []).length, 5);
+    assert.match(propria, /A8/);
+    assert(!propria.includes('88,00%'));
+    assert(!propria.includes('99,00%'));
+    analysis.margens_anuncios_loja.concorrente_1.margem_percentual = -5;
+    assert.match(context.formatarMargensLoja(item), /own-margin negative[^]*-5,00%/);
+    analysis.margens_anuncios_loja.concorrente_1.margem_percentual = 0;
+    assert.match(context.formatarMargensLoja(item), /A1<\/span><span>0,00%/);
+    analysis.margens_anuncios_loja.concorrente_1.margem_percentual = '';
+    assert(!context.formatarMargensLoja(item).includes('A1</span>'), 'Ausência não é margem zero.');
     analysis.anuncios_loja_store_id = 'store-anterior';
     context.estadosAnaliseMargensAutomaticas.clear();
     assert(!context.formatarAnunciosLoja(item).includes('MLB1000000000'), 'Snapshot de outra loja não aparece na lista.');
+    assert(!context.formatarMargensLoja(item).includes('own-margin '));
     item.analise_simulacao_importacao_sku = validAnalysis;
     validAnalysis.anuncios_consultado_em_ms = Date.now() - 61000;
     await context.analisarMargensConcorrentesAutomaticamente('C59', [item]);
