@@ -223,7 +223,8 @@ def _candidatos_donos_anuncios(
 def _consultar_anuncio_na_conta(client_id: str, item_id: str, conta: dict, deps: dict) -> tuple[dict | None, str]:
     try:
         resposta, cfg = deps["ml_api_request"](
-            client_id, conta["nome"], conta["cfg"], "GET", f"https://api.mercadolibre.com/items/{item_id}", timeout=12,
+            client_id, conta["nome"], conta["cfg"], "GET", f"https://api.mercadolibre.com/items/{item_id}",
+            params={"include_attributes": "all"}, timeout=12,
         )
         if not _cfg_confere_dono_anuncio(cfg, conta):
             conta["indisponivel"] = True
@@ -405,6 +406,36 @@ def _consultar_tarifa_frete_margem(
     return (tarifa, tarifa_fonte, frete, frete_fonte), ""
 
 
+def _item_da_variacao_anuncio(item: dict, variacao: dict) -> dict:
+    """Keep item identity and use only the selected variation's product fields."""
+    atributos = {str(attr.get("id")): dict(attr) for attr in item.get("attributes") or []
+                 if isinstance(attr, dict) and attr.get("id")}
+    embalagem_propria = False
+    for campo in ("attributes", "attribute_combinations"):
+        for atributo in variacao.get(campo) or []:
+            if isinstance(atributo, dict) and atributo.get("id"):
+                atributos[str(atributo["id"])] = dict(atributo)
+                embalagem_propria |= str(atributo["id"]).startswith("SELLER_PACKAGE_")
+    projetado = {**item, "attributes": list(atributos.values()),
+                 "variations": [dict(variacao)], "variation_id": str(variacao["id"])}
+    for campo in ("price", "available_quantity", "sold_quantity", "seller_custom_field"):
+        if campo in variacao:
+            projetado[campo] = variacao[campo]
+    shipping_variacao = variacao.get("shipping") if isinstance(variacao.get("shipping"), dict) else {}
+    if shipping_variacao:
+        projetado["shipping"] = {**(item.get("shipping") or {}), **shipping_variacao}
+    if embalagem_propria and not shipping_variacao.get("dimensions"):
+        from backend.services.mercadolivre_legacy_pricing import _ml_extrair_dimensoes_embalagem_item
+
+        # The shipping helper prioritizes shipping.dimensions. Replace the
+        # parent's packed dimensions when the selected variation supplies its own.
+        dimensoes = _ml_extrair_dimensoes_embalagem_item(projetado)
+        projetado["shipping"] = {**(projetado.get("shipping") or {}), "dimensions": dimensoes}
+        if not dimensoes:
+            projetado["_variacao_embalagem_indisponivel"] = True
+    return projetado
+
+
 def _calcular_margens_concorrentes_promocoes(
     client_id: str,
     loja_lista: str,
@@ -416,6 +447,8 @@ def _calcular_margens_concorrentes_promocoes(
     custo_unitario_simulado: float | None = None,
     store_id_alvo: str | None = None,
     anuncios_proprios: bool = False,
+    variacoes_anuncios_loja: dict[str, str | None] | None = None,
+    store_id_anuncios_loja: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     simulacao = custo_unitario_simulado is not None or store_id_alvo is not None
     custo_simulado = _numero_finito_margem(custo_unitario_simulado)
@@ -431,7 +464,7 @@ def _calcular_margens_concorrentes_promocoes(
     # Both price series belong to one request. Never reuse an item's financial
     # context across a tenant, store or SKU, even if the MLB happens to match.
     cache_consulta = {} if contexto_consulta is None else contexto_consulta
-    escopo = (client_id, loja_lista, sku)
+    escopo = (client_id, loja_lista, sku, store_id_anuncios_loja)
     if simulacao:
         escopo = (*escopo, "simulacao_importacao_sku", store_id_alvo, custo_simulado)
     cache_escopo = cache_consulta.setdefault(escopo, {})
@@ -443,6 +476,7 @@ def _calcular_margens_concorrentes_promocoes(
     for chave in sorted(precos_concorrentes):
         preco_venda = float(precos_concorrentes[chave])
         item_id = _normalizar_item_id_mlb(anuncios_loja.get(chave))
+        variation_id = (variacoes_anuncios_loja or {}).get(chave)
         if not item_id:
             margens[chave] = _margem_concorrente_indisponivel(
                 preco_venda,
@@ -451,7 +485,7 @@ def _calcular_margens_concorrentes_promocoes(
             )
             continue
 
-        cotacao_chave = (item_id, preco_venda, anuncios_proprios)
+        cotacao_chave = (item_id, variation_id, preco_venda, anuncios_proprios)
         cotacao_salva = cache_cotacoes.get(cotacao_chave)
         if cotacao_salva is not None:
             margens[chave] = dict(cotacao_salva)
@@ -463,7 +497,8 @@ def _calcular_margens_concorrentes_promocoes(
             item_id,
             deps,
             cache_contextos,
-            **({"store_id_alvo": store_id_alvo} if simulacao else {}),
+            **({"store_id_alvo": store_id_alvo} if simulacao else
+               {"store_id_alvo": store_id_anuncios_loja} if store_id_anuncios_loja else {}),
         )
         if not contexto:
             margens[chave] = _margem_concorrente_indisponivel(preco_venda, item_id, motivo)
@@ -472,12 +507,32 @@ def _calcular_margens_concorrentes_promocoes(
         loja = str(contexto.get("loja") or "").strip()
         store_id = str(contexto.get("store_id") or "").strip()
         item = dict(contexto.get("item") or {})
-        if simulacao:
-            from backend.services.importacoes_sku_anuncios import anuncio_corresponde_sku_exato
+        if simulacao or variacoes_anuncios_loja is not None:
+            from backend.services.importacoes_sku_anuncios import anuncio_corresponde_sku_exato, resolver_variacao_sku
 
             if not anuncio_corresponde_sku_exato(item, sku):
                 margens[chave] = _margem_concorrente_indisponivel(
                     preco_venda, item_id, "O anúncio da loja da lista não confirmou o SKU solicitado.", loja=loja,
+                )
+                continue
+            if item.get("variations"):
+                variacao = resolver_variacao_sku(item, sku, variation_id)
+                # New clients must identify the same variation they display.
+                if not variacao or (variacoes_anuncios_loja is not None and not variation_id):
+                    margens[chave] = _margem_concorrente_indisponivel(
+                        preco_venda, item_id, "A variação do anúncio não confirmou o SKU solicitado.", loja=loja,
+                    )
+                    continue
+                variation_id = str(variacao["id"])
+                item = _item_da_variacao_anuncio(item, variacao)
+                if item.get("_variacao_embalagem_indisponivel"):
+                    margens[chave] = _margem_concorrente_indisponivel(
+                        preco_venda, item_id, "As dimensões da embalagem desta variação não foram confirmadas.", loja=loja,
+                    )
+                    continue
+            elif variation_id:
+                margens[chave] = _margem_concorrente_indisponivel(
+                    preco_venda, item_id, "A variação solicitada não pertence a este anúncio.", loja=loja,
                 )
                 continue
         cadastro_key = (store_id, sku)
@@ -512,10 +567,12 @@ def _calcular_margens_concorrentes_promocoes(
 
         # Próprio e concorrente usam a mesma tarifa/frete quando o anúncio,
         # a conta e o preço são iguais. O subsídio segue exclusivo do próprio.
-        chave_tarifa_frete = (item_id, preco_venda)
+        chave_tarifa_frete = (item_id, variation_id, preco_venda)
         insumos = cache_tarifa_frete.get(chave_tarifa_frete)
         if insumos is None:
-            insumos, motivo = _consultar_tarifa_frete_margem(client_id, contexto, item_id, preco_venda, deps)
+            contexto_financeiro = {**contexto, "item": item}
+            insumos, motivo = _consultar_tarifa_frete_margem(client_id, contexto_financeiro, item_id, preco_venda, deps)
+            contexto["cfg"] = contexto_financeiro["cfg"]
             if insumos is None:
                 margens[chave] = _margem_concorrente_indisponivel(preco_venda, item_id, motivo, loja=loja)
                 continue
@@ -571,6 +628,8 @@ def _calcular_margens_concorrentes_promocoes(
         }
         if simulacao:
             margens[chave]["fonte_custo"] = "simulacao_importacao_sku"
+        if variacoes_anuncios_loja is not None or variation_id:
+            margens[chave]["variation_id"] = variation_id
         if anuncios_proprios:
             margens[chave].update(subsidio_ml=subsidio, tarifa_ml_efetiva=round(tarifa_efetiva, 2))
         cache_cotacoes[cotacao_chave] = dict(margens[chave])
@@ -820,11 +879,15 @@ def _aplicar_anuncios_proprios(payload: dict, anuncios: dict, consultado_planilh
     payload["concorrentes_mlb"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
     payload["concorrentes_preco"] = {f"concorrente_{numero}": "" for numero in range(1, 6)}
     payload["anuncios_loja_status"] = {}
-    for numero, anuncio in enumerate((anuncios.get("anuncios") or [])[:5], start=1):
+    payload["anuncios_loja_variacoes"] = {}
+    payload["anuncios_loja"] = []
+    for numero, anuncio in enumerate(anuncios.get("anuncios") or [], start=1):
         chave = f"concorrente_{numero}"
         payload["concorrentes_mlb"][chave] = anuncio["url"]
         payload["anuncios_loja_status"][chave] = anuncio.get("status")
+        payload["anuncios_loja_variacoes"][chave] = anuncio.get("variation_id")
         payload["concorrentes_preco"][chave] = anuncio["preco"] if anuncio.get("preco") is not None else ""
+        payload["anuncios_loja"].append({**copy.deepcopy(anuncio), "chave": chave})
     payload.update({
         "anuncios_loja_store_id": anuncios["store_id"],
         "anuncios_loja_nome": anuncios["loja"],
@@ -834,7 +897,8 @@ def _aplicar_anuncios_proprios(payload: dict, anuncios: dict, consultado_planilh
         "anuncios_loja_fonte": "loja_lista_sku",
         "anuncios_loja_total": anuncios.get("total_encontrado", len(anuncios.get("anuncios") or [])),
         "anuncios_loja_truncado": bool(anuncios.get("truncado")),
-        "anuncios_loja_limite": anuncios.get("limite", 5),
+        "anuncios_loja_limite": anuncios.get("limite"),
+        "anuncios_versao": anuncios.get("anuncios_versao", 2),
     })
     return payload
 
@@ -1633,7 +1697,9 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         if not math.isfinite(custo_unitario_informado) or custo_unitario_informado < 0:
             raise HTTPException(status_code=400, detail="Custo unitario invalido para analise de concorrentes")
     simulacao = req.fonte_custo == "simulacao_importacao_sku"
+    analise_variacoes = req.variacoes_anuncios_loja is not None
     store_id_alvo = None
+    store_id_anuncios_loja = None
     campo_analise = "analise_simulacao_importacao_sku" if simulacao else "analise_concorrentes"
     if simulacao:
         if custo_unitario_informado is None:
@@ -1646,13 +1712,27 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             store_id_alvo = str(escopo.get("store_id") or "").strip()
         if not store_id_alvo:
             raise HTTPException(status_code=409, detail="Defina uma loja específica nesta lista para analisar a simulação do SKU.")
+    anuncios_verificados = None
+    if analise_variacoes:
+        from backend.services.importacoes_sku_anuncios import buscar_anuncios_sku_da_lista
+        from backend.services.medias_compras_leitura import chave_arquivo
+
+        store_id_anuncios_loja = store_id_alvo or str(lista.get("store_id") or "").strip()
+        if not store_id_anuncios_loja:
+            escopo = medias_common._resolver_escopo_loja_medias(
+                client_id, lista.get("loja"), exigir_especifica=True,
+            )
+            store_id_anuncios_loja = str(escopo.get("store_id") or "").strip()
 
     precos_recebidos = dict(req.precos_concorrentes or {})
     precos_loja_recebidos = dict(req.precos_anuncios_loja or {})
     anuncios_recebidos = dict(req.anuncios_loja or {})
-    chaves_invalidas = sorted(
-        (set(precos_recebidos) | set(precos_loja_recebidos) | set(anuncios_recebidos)) - _CHAVES_CONCORRENTES
-    )
+    variacoes_recebidas = dict(req.variacoes_anuncios_loja or {})
+    chaves_invalidas = sorted(set(precos_recebidos) - _CHAVES_CONCORRENTES)
+    chaves_proprias = set(precos_loja_recebidos) | set(anuncios_recebidos) | set(variacoes_recebidas)
+    chaves_invalidas.extend(chave for chave in chaves_proprias
+                            if not re.fullmatch(r"concorrente_[1-9]\d*", chave)
+                            or (not analise_variacoes and chave not in _CHAVES_CONCORRENTES))
     if chaves_invalidas:
         raise HTTPException(status_code=400, detail="Concorrente invalido para analise")
 
@@ -1679,6 +1759,39 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         if not item_id:
             raise HTTPException(status_code=400, detail="Anuncio da loja invalido para analise")
         anuncios_normalizados[chave] = item_id
+    variacoes_normalizadas: dict[str, str | None] = {}
+    if analise_variacoes:
+        for chave, valor in variacoes_recebidas.items():
+            if valor is not None and not re.fullmatch(r"[1-9]\d*", str(valor)):
+                raise HTTPException(status_code=400, detail="Variação do anúncio da loja inválida para análise")
+            variacoes_normalizadas[chave] = str(valor) if valor is not None else None
+        if any(chave not in anuncios_normalizados for chave in variacoes_normalizadas):
+            raise HTTPException(status_code=400, detail="Informe o anúncio correspondente à variação para análise")
+        if any(chave not in anuncios_normalizados for chave in precos_loja_normalizados):
+            raise HTTPException(status_code=400, detail="Informe o anúncio da loja para analisar seu preço")
+        anuncios_verificados = buscar_anuncios_sku_da_lista(
+            client_id, {**lista, "store_id": store_id_anuncios_loja},
+            str(item.get("SKU") or sku), cache_scope=chave_arquivo(get_tenant_path(client_id)),
+        )
+        pares_verificados = {(anuncio["item_id"], anuncio.get("variation_id"))
+                             for anuncio in anuncios_verificados.get("anuncios") or []}
+        if any(chave not in variacoes_normalizadas
+               or (item_id, variacoes_normalizadas[chave]) not in pares_verificados
+               for chave, item_id in anuncios_normalizados.items()):
+            raise HTTPException(status_code=409, detail="Os anúncios ou suas variações mudaram. Atualize o SKU para analisar novamente.")
+        por_chave = {f"concorrente_{numero}": anuncio
+                     for numero, anuncio in enumerate(anuncios_verificados.get("anuncios") or [], start=1)}
+        for chave in list(precos_loja_normalizados):
+            anuncio = por_chave.get(chave) or {}
+            if (anuncio.get("item_id"), anuncio.get("variation_id")) != (
+                    anuncios_normalizados[chave], variacoes_normalizadas[chave]):
+                raise HTTPException(status_code=409, detail="A ordem dos anúncios mudou. Atualize o SKU para analisar novamente.")
+            preco_confirmado = _numero_finito_margem(anuncio.get("preco"))
+            if preco_confirmado is None or preco_confirmado <= 0:
+                # An ad remains visible even when ML cannot prove its variant price.
+                precos_loja_normalizados.pop(chave)
+            else:
+                precos_loja_normalizados[chave] = preco_confirmado
 
     contexto_consulta = {} if req.precos_anuncios_loja is not None or simulacao else None
     opcoes_simulacao = ({"custo_unitario_simulado": custo_unitario_informado, "store_id_alvo": store_id_alvo}
@@ -1696,7 +1809,9 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
                 anuncios_normalizados,
                 **({"contexto_consulta": contexto_consulta} if contexto_consulta is not None else {}),
                 **opcoes_simulacao,
-                **({"anuncios_proprios": True} if simulacao and anuncios_proprios else {}),
+                **({"anuncios_proprios": True} if (simulacao or analise_variacoes) and anuncios_proprios else {}),
+                **({"variacoes_anuncios_loja": variacoes_normalizadas,
+                    "store_id_anuncios_loja": store_id_anuncios_loja} if analise_variacoes else {}),
             )
         except Exception:
             logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
@@ -1734,6 +1849,17 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     if simulacao:
         analise_concorrentes["custo_unitario"] = round(custo_unitario_informado, 2)
         analise_concorrentes["store_id"] = store_id_alvo
+    if analise_variacoes:
+        analise_concorrentes["anuncios_versao"] = 2
+        analise_concorrentes["store_id"] = store_id_anuncios_loja
+        analise_concorrentes["anuncios_loja_store_id"] = anuncios_verificados["store_id"]
+        analise_concorrentes["anuncios_loja_seller_id"] = anuncios_verificados["seller_id"]
+        analise_concorrentes["anuncios_loja_site_id"] = anuncios_verificados["site_id"]
+        analise_concorrentes["anuncios_consultado_em_ms"] = anuncios_verificados.get("consultado_em_ms")
+        analise_concorrentes["anuncios_loja"] = [
+            {**copy.deepcopy(anuncio), "chave": f"concorrente_{numero}"}
+            for numero, anuncio in enumerate(anuncios_verificados.get("anuncios") or [], start=1)
+        ]
 
     # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
     # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
@@ -1779,18 +1905,23 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     else:
         analise_atual = item_atual.get(campo_analise)
         if isinstance(analise_atual, dict) and "margens_anuncios_loja" in analise_atual:
-            if not simulacao:
+            if not simulacao and not analise_variacoes:
                 analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
             elif (analise_atual.get("fonte_custo") == req.fonte_custo
-                  and _numero_finito_margem(analise_atual.get("custo_unitario")) == custo_unitario_informado
-                  and analise_atual.get("store_id") == store_id_alvo):
+                  and _numero_finito_margem(analise_atual.get("custo_unitario"))
+                  == (custo_unitario_informado if simulacao else custo_unitario_cadastro)
+                  and analise_atual.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)):
                 analise_concorrentes["margens_anuncios_loja"] = {
                     chave: copy.deepcopy(dados)
                     for chave, dados in (analise_atual["margens_anuncios_loja"] or {}).items()
-                    if isinstance(dados, dict) and dados.get("store_id") == store_id_alvo
+                    if isinstance(dados, dict)
+                    and dados.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)
                     and dados.get("item_id_loja") == anuncios_normalizados.get(chave)
+                    and (not analise_variacoes or dados.get("variation_id") == variacoes_normalizadas.get(chave))
+                    and (not analise_variacoes or _numero_finito_margem(dados.get("preco_venda"))
+                         == _numero_finito_margem((por_chave.get(chave) or {}).get("preco")))
                 }
-        if simulacao:
+        if simulacao or analise_variacoes:
             analise_concorrentes.setdefault("margens_anuncios_loja", {})
     item_atual[campo_analise] = analise_concorrentes
     itens_atuais[idx_item_atual] = item_atual

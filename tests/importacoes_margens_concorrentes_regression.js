@@ -100,6 +100,7 @@ const payloadPausado = vm.runInNewContext(skuHtml.slice(inicioColeta, fimColeta)
     document: {getElementById: id => valores[id] == null ? null : {textContent: valores[id]}},
     getNumber: valor => typeof valor === 'number' ? valor : null,
     ultimosAnunciosLojaConcorrentes: {concorrente_1: referencia},
+    ultimasVariacoesAnunciosLoja: {concorrente_1: null},
     ultimoAnuncioPausadoReferencia: referencia,
     ultimoValorUnitarioProduto: 280.86,
     ultimaVersaoFontesConcorrentes: 1,

@@ -32,6 +32,10 @@ function deferred() {
     return { promise, resolve };
 }
 
+function ownRevision() {
+    return { anuncios_versao: 2, anuncios_loja: [], anuncios_consultado_em_ms: Date.now() };
+}
+
 function sourceRow(version = 2) {
     const row = { fontes_versao: version, concorrentes: {}, concorrentes_valores: {},
         concorrentes_mlb: {}, concorrentes_preco: {} };
@@ -46,7 +50,7 @@ function sourceRow(version = 2) {
 }
 
 function listHarness(loja = 'JK Peças') {
-    const state = { generation: 1, listaId: 'JK61', gets: [], patches: [], statuses: [],
+    const state = { generation: 1, listaId: 'JK61', gets: [], ownGets: [], patches: [], statuses: [],
         sources: {}, fail: false, beforeGet: null, beforePatch: null };
     const bindings = {
         AUXILIAR_TIMEOUT_MS: 20000,
@@ -64,8 +68,13 @@ function listHarness(loja = 'JK Peças') {
         carregamentoVigente: context => context.listaId === state.listaId && context.generation === state.generation,
         confirmarMutacaoLista: () => {},
         definirEstadoMargensAutomaticas: (item, status, message) => state.statuses.push([item.SKU, status, message]),
+        atualizarCelulaMargensAutomaticas: () => {},
         fetch: async (url, options) => {
             if (options.method === 'GET') {
+                if (url.startsWith('/api/medias-compras/concorrentes-links?')) {
+                    state.ownGets.push(url);
+                    return response({ anuncios_loja_fonte: 'loja_lista_sku', anuncios_loja: [] });
+                }
                 state.gets.push(url);
                 if (state.beforeGet) await state.beforeGet();
                 return state.fail ? response({ detail: 'Planilha indisponível' }, 503)
@@ -75,13 +84,15 @@ function listHarness(loja = 'JK Peças') {
             const body = JSON.parse(options.body);
             state.patches.push({ url, body });
             if (state.beforePatch) await state.beforePatch();
-            return response({ analise_concorrentes: { fontes_versao: body.fontes_versao, margens: {} } });
+            return response({ analise_concorrentes: { fontes_versao: body.fontes_versao,
+                ...ownRevision(), margens: {} } });
         },
     };
     const context = loadFunctions(listHtml, [
         'normTxt', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
         'montarPayloadMargensAutomaticas', 'consultarAnaliseLista', 'carregarFontesMargensAutomaticas',
-        'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
+        'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes',
+        'salvarMargensAutomaticasSku', 'carregarAnunciosMargensAutomaticas', 'analisarMargensConcorrentesAutomaticamente',
     ], bindings);
     return { state, context };
 }
@@ -97,6 +108,7 @@ async function verifySkuContextAndVersion() {
     const bindings = {
         ultimaVersaoFontesConcorrentes: null,
         ultimosAnunciosLojaConcorrentes: {},
+        ultimasVariacoesAnunciosLoja: {},
         ultimoAnuncioPausadoReferencia: '',
         contextoDetalheSku: current,
         analiseComplementosPronta: true,
@@ -105,7 +117,7 @@ async function verifySkuContextAndVersion() {
         detalheSkuVigente: context => context === bindings.contextoDetalheSku,
         dadosSkuVigentes: context => context === bindings.contextoDetalheSku && validity.data,
         obterAuthHeaders: () => ({}),
-        document: { getElementById: id => cells.get(id) || null },
+        document: { getElementById: id => cells.get(id) || null, querySelector: () => null },
         getNumber: contextoCusto.window.JKImportacoesCustoSimulado.numero,
         setLinkConcorrente: () => {},
         atualizarTodasMargensConcorrentes: () => {},
@@ -129,6 +141,7 @@ async function verifySkuContextAndVersion() {
     const context = loadFunctions(skuHtml, [
         'normSku', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
         'fontesAnunciosDaLista', 'custoSimuladoDisponivel',
+        'numerosComparacoesAnalise', 'prepararCartoesAnalise',
         'aplicarLinksCacheSku', 'coletarAnaliseConcorrentes', 'salvarAnaliseConcorrentes',
     ], bindings);
     const sources = await context.buscarLinksConcorrentes('D104-32', current);
@@ -170,8 +183,8 @@ async function verifyRefreshAndReuse() {
     const { state, context } = listHarness();
     const empty = { SKU: 'D104-32', analise_concorrentes: { margens: {}, atualizado_em: 'anterior' } };
     const noMatch = { SKU: 'SEM-FONTE', analise_concorrentes: { margens: {} } };
-    const populated = { SKU: '167', analise_concorrentes: { margens: { concorrente_1: { margem_percentual: 17.65 } } } };
-    const alreadyRead = { SKU: 'ATUAL', analise_concorrentes: { fontes_versao: 2, margens: {} } };
+    const populated = { SKU: '167', analise_concorrentes: { ...ownRevision(), margens: { concorrente_1: { margem_percentual: 17.65 } } } };
+    const alreadyRead = { SKU: 'ATUAL', analise_concorrentes: { ...ownRevision(), fontes_versao: 2, margens: {} } };
     const missing = { SKU: 'NOVO' };
     state.sources = { 'D104-32': sourceRow(), 'SEM-FONTE': { fontes_versao: 2 },
         NOVO: sourceRow() };
@@ -180,6 +193,7 @@ async function verifyRefreshAndReuse() {
     await context.analisarMargensConcorrentesAutomaticamente('JK61', items);
     assert.strictEqual(state.gets.length, 1);
     assert.strictEqual(state.patches.length, 3);
+    assert.strictEqual(state.ownGets.length, 3, 'Cada SKU pendente consulta os anúncios da própria loja.');
     assert.deepStrictEqual(state.patches.map(call => decodeURIComponent(call.url.split('/skus/')[1].split('/')[0])),
         ['D104-32', 'SEM-FONTE', 'NOVO']);
     assert.strictEqual(empty.analise_concorrentes.fontes_versao, 2);
@@ -196,7 +210,7 @@ async function verifyRefreshAndReuse() {
 async function verifyOtherStoresAndFailure() {
     const other = listHarness('Outra loja');
     await other.context.analisarMargensConcorrentesAutomaticamente('JK61',
-        [{ SKU: 'D104-32', analise_concorrentes: { margens: {} } }]);
+        [{ SKU: 'D104-32', analise_concorrentes: { ...ownRevision(), margens: {} } }]);
     assert.strictEqual(other.state.gets.length, 0, 'A migração da fonte JK não renova análises de outra loja.');
 
     const { state, context } = listHarness();
@@ -223,7 +237,7 @@ async function verifyCanonicalStoreRevision() {
         const { state, context } = listHarness(testCase.loja);
         context.ultimaListaCarregada.analise_concorrentes_fontes_versao = testCase.revision;
         state.sources = { 'D104-32': sourceRow() };
-        const saved = { margens: {} };
+        const saved = { ...ownRevision(), margens: {} };
         const item = { SKU: 'D104-32', analise_concorrentes: saved };
         await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
         assert.strictEqual(state.gets.length, testCase.expectedReads,

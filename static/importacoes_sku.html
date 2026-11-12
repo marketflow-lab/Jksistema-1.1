@@ -243,6 +243,21 @@
             color: #dff5ff;
         }
 
+        .analysis-variation {
+            color: #c0d8f1;
+            font-size: 0.58rem;
+            margin-top: 3px;
+            overflow-wrap: anywhere;
+        }
+
+        .analysis-offers.is-own-only {
+            grid-template-columns: minmax(0, 1fr);
+        }
+
+        .analysis-offer[hidden] {
+            display: none !important;
+        }
+
         .analysis-price-stack {
             display: flex;
             flex-direction: column;
@@ -964,6 +979,7 @@
         let ultimoValorUnitarioProduto = null;
         let ultimaAnaliseConcorrentes = null;
         let ultimosAnunciosLojaConcorrentes = {};
+        let ultimasVariacoesAnunciosLoja = {};
         let ultimoAnuncioPausadoReferencia = '';
         let ultimaVersaoFontesConcorrentes = null;
         let cacheImpostosProdutos = null;
@@ -1825,6 +1841,9 @@
             const contexto = contextoDetalheSku;
             const chave = 'concorrente_' + numero;
             const itemIdAtual = ultimosAnunciosLojaConcorrentes[chave] || (propria ? '' : ultimoAnuncioPausadoReferencia);
+            const chaveReferencia = !propria && !ultimosAnunciosLojaConcorrentes[chave]
+                ? Object.keys(ultimosAnunciosLojaConcorrentes).find(key => ultimosAnunciosLojaConcorrentes[key] === itemIdAtual) : chave;
+            const variacaoAtual = ultimasVariacoesAnunciosLoja[chaveReferencia] || null;
             const ofertas = contexto?.ofertasCompactas;
             const proprias = contexto?.ofertasProprias || ofertas;
             const anteriorPorCartao = contexto?.dadosCompactos
@@ -1836,6 +1855,7 @@
                 const margens = propria ? analise?.margens_anuncios_loja : analise?.margens;
                 const dados = margens?.[chave];
                 const itemIdConfere = !!itemIdAtual && extrairCodigoMlbOferta(dados?.item_id_loja) === itemIdAtual;
+                const variacaoConfere = String(dados?.variation_id || '') === String(variacaoAtual || '');
                 const contaCorreta = !!contexto?.storeId && String(dados?.store_id || '') === contexto.storeId
                     && (!proprias?.sellerId || String(dados?.seller_id || '') === proprias.sellerId)
                     && (!proprias?.siteId || String(dados?.site_id || '') === proprias.siteId);
@@ -1846,7 +1866,7 @@
                 const margem = getNumber(dados?.margem_percentual);
                 const dadosValidos = precoVenda !== null && precoVenda > 0
                     && precoAnalisado !== null && Math.abs(precoVenda - precoAnalisado) <= (contexto?.dadosCompactos ? 0.005 : 0.02)
-                    && itemIdConfere && contaCorreta && fontesConferem && analiseUsaCustoSimuladoAtual(analise)
+                    && itemIdConfere && variacaoConfere && contaCorreta && fontesConferem && analiseUsaCustoSimuladoAtual(analise)
                     && analiseUsaCustoSimuladoAtual(dados) && margem !== null && dados?.financeiro_exato === true;
                 return { dados, margem, dadosValidos, lojaAnuncio: contaCorreta && itemIdConfere ? String(dados?.loja || '').trim() : '' };
             }
@@ -1906,7 +1926,7 @@
         }
 
         function atualizarTodasMargensConcorrentes() {
-            [1, 2, 3, 4, 5].forEach(numero => {
+            numerosComparacoesAnalise().forEach(numero => {
                 atualizarMargemConcorrente(numero);
                 atualizarMargemOferta(numero, true);
             });
@@ -1924,6 +1944,7 @@
             const precosConcorrentes = {};
             const precosAnunciosLoja = {};
             const anunciosLoja = { ...ultimosAnunciosLojaConcorrentes };
+            const variacoesAnunciosLoja = { ...ultimasVariacoesAnunciosLoja };
 
             [1, 2, 3, 4, 5].forEach((numero) => {
                 const cardValor = document.getElementById('vConcorrente' + numero);
@@ -1933,11 +1954,17 @@
                     const chave = 'concorrente_' + numero;
                     if (!anunciosLoja[chave] && ultimoAnuncioPausadoReferencia) {
                         anunciosLoja[chave] = ultimoAnuncioPausadoReferencia;
+                        const referencia = Object.keys(ultimosAnunciosLojaConcorrentes)
+                            .find(key => ultimosAnunciosLojaConcorrentes[key] === ultimoAnuncioPausadoReferencia);
+                        variacoesAnunciosLoja[chave] = ultimasVariacoesAnunciosLoja[referencia] || null;
                     }
                 }
+            });
+            Object.keys(ultimosAnunciosLojaConcorrentes).forEach(chave => {
+                const numero = Number(chave.replace('concorrente_', ''));
                 const precoProprio = getNumber(document.getElementById('vMlb' + numero)?.textContent);
                 if (precoProprio !== null && precoProprio > 0) {
-                    precosAnunciosLoja['concorrente_' + numero] = precoProprio;
+                    precosAnunciosLoja[chave] = precoProprio;
                 }
             });
 
@@ -1947,6 +1974,7 @@
                 precos_concorrentes: precosConcorrentes,
                 precos_anuncios_loja: precosAnunciosLoja,
                 anuncios_loja: anunciosLoja,
+                variacoes_anuncios_loja: variacoesAnunciosLoja,
                 fontes_versao: ultimaVersaoFontesConcorrentes,
             };
         }
@@ -2253,7 +2281,7 @@
                 && (!consulta || (contexto.consultaOfertasCompactas === consulta
                     && contexto.ofertasCompactas === comparacoes)));
             const tarefas = [];
-            [1, 2, 3, 4, 5].forEach((numero) => {
+            numerosComparacoesAnalise(comparacoes).forEach((numero) => {
                 const chave = 'concorrente_' + numero;
                 const linkMlb = comparacoes.mlb[chave] || '';
                 const linkConcorrente = comparacoes.links[chave] || '';
@@ -2262,7 +2290,8 @@
                 const itemMlb = extrairCodigoMlbOferta(linkMlb);
                 const itemConcorrente = extrairCodigoMlbOferta(linkConcorrente);
 
-                if (itemMlb && comparacoes.statusAnuncios?.[chave] !== 'paused') {
+                if (itemMlb && getNumber(precoMlb) > 0 && comparacoes.statusAnuncios?.[chave] !== 'paused'
+                    && !comparacoes.variacoes?.[chave]) {
                     tarefas.push(async () => {
                         if (!vigente()) return;
                         const detalhe = await buscarDetalhePrecoOferta(itemMlb, linkMlb, precoMlb);
@@ -2834,8 +2863,11 @@
                     consultadoEm: Number(data.consultado_em_ms) || Date.now(),
                     lojaNome: String(data.anuncios_loja_nome || ''),
                     fonte: data.anuncios_loja_fonte || '',
+                    anunciosVersao: data.anuncios_versao || null,
+                    anuncios: Array.isArray(data.anuncios_loja) ? data.anuncios_loja : [],
                     fontes_versao: data.fontes_versao || null,
                     statusAnuncios: data.anuncios_loja_status || {},
+                    variacoes: data.anuncios_loja_variacoes || {},
                     links: {
                         concorrente_1: String(c.concorrente_1 || '').trim(),
                         concorrente_2: String(c.concorrente_2 || '').trim(),
@@ -2850,20 +2882,10 @@
                         concorrente_4: String(v.concorrente_4 || '').trim(),
                         concorrente_5: String(v.concorrente_5 || '').trim(),
                     },
-                    mlb: {
-                        concorrente_1: String(m.concorrente_1 || '').trim(),
-                        concorrente_2: String(m.concorrente_2 || '').trim(),
-                        concorrente_3: String(m.concorrente_3 || '').trim(),
-                        concorrente_4: String(m.concorrente_4 || '').trim(),
-                        concorrente_5: String(m.concorrente_5 || '').trim(),
-                    },
-                    preco: {
-                        concorrente_1: String(p.concorrente_1 || '').trim(),
-                        concorrente_2: String(p.concorrente_2 || '').trim(),
-                        concorrente_3: String(p.concorrente_3 || '').trim(),
-                        concorrente_4: String(p.concorrente_4 || '').trim(),
-                        concorrente_5: String(p.concorrente_5 || '').trim(),
-                    }
+                    mlb: Object.fromEntries(Object.entries(m).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
+                        .map(([chave, valor]) => [chave, String(valor || '').trim()])),
+                    preco: Object.fromEntries(Object.entries(p).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
+                        .map(([chave, valor]) => [chave, valor ?? ''])),
                 };
             } catch (erro) {
                 const mensagem = String(erro && erro.message || '').trim();
@@ -2883,6 +2905,43 @@
                 && links.storeId === contexto.storeId;
         }
 
+        function numerosComparacoesAnalise(fontes = null) {
+            const chaves = Object.keys(fontes?.mlb || ultimosAnunciosLojaConcorrentes);
+            const numeros = chaves.filter(chave => /^concorrente_[1-9]\d*$/.test(chave))
+                .map(chave => Number(chave.replace('concorrente_', '')));
+            return Array.from({ length: Math.max(5, ...numeros) }, (_, indice) => indice + 1);
+        }
+
+        function prepararCartoesAnalise(fontes) {
+            const numeros = numerosComparacoesAnalise(fontes);
+            const container = document.querySelector('.analysis-grid');
+            if (!container) return numeros;
+            const modelo = container.querySelector('[data-card-id="analise_comparacao_1"]');
+            if (!modelo) return numeros;
+            container.querySelectorAll('.analysis-comparison-card').forEach(card => {
+                const numero = Number(card.dataset.cardId.replace('analise_comparacao_', ''));
+                if (numero > numeros.length) card.remove();
+            });
+            numeros.filter(numero => numero > 5).forEach(numero => {
+                if (container.querySelector('[data-card-id="analise_comparacao_' + numero + '"]')) return;
+                const card = modelo.cloneNode(true);
+                card.dataset.cardId = 'analise_comparacao_' + numero;
+                card.classList.remove('arrastavel-card', 'dragging', 'drag-over-left', 'drag-over-right');
+                card.removeAttribute('draggable');
+                card.style.display = '';
+                card.querySelector('.analysis-comparison-title').textContent = 'Comparação ' + numero;
+                card.querySelectorAll('[id]').forEach(el => { el.id = el.id.replace(/\d+$/, String(numero)); });
+                card.querySelectorAll('.analysis-variation').forEach(el => el.remove());
+                card.querySelector('.analysis-offers').classList.add('is-own-only');
+                card.querySelector('.analysis-offer.competitor').hidden = true;
+                container.appendChild(card);
+            });
+            Object.keys(ultimosPrecosOfertas).forEach(chave => {
+                if (Number(chave.split(':')[1]) > numeros.length) delete ultimosPrecosOfertas[chave];
+            });
+            return numeros;
+        }
+
         function limparOfertasSku(contexto) {
             if (contexto) {
                 contexto.ofertasProprias = null;
@@ -2892,11 +2951,12 @@
                 contexto.estadoMargens = null;
             }
             ultimosAnunciosLojaConcorrentes = {};
+            ultimasVariacoesAnunciosLoja = {};
             ultimoAnuncioPausadoReferencia = '';
             ultimosPrecosOfertas = {};
             ultimaVersaoFontesConcorrentes = null;
             ultimaAnaliseConcorrentes = null;
-            [1, 2, 3, 4, 5].forEach(n => {
+            prepararCartoesAnalise({ mlb: {} }).forEach(n => {
                 setLinkConcorrente('lblMlb' + n, 'Anúncio da loja', '');
                 setLinkConcorrente('lblConcorrente' + n, 'Concorrente ' + n, '');
                 aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta('', {}));
@@ -2908,19 +2968,34 @@
             if (!fontesAnunciosDaLista(linksConc)) return false;
             ultimaVersaoFontesConcorrentes = linksConc.fontes_versao || null;
             ultimosAnunciosLojaConcorrentes = {};
+            ultimasVariacoesAnunciosLoja = {};
             ultimoAnuncioPausadoReferencia = '';
-            [1, 2, 3, 4, 5].forEach(function(n) {
+            prepararCartoesAnalise(linksConc).forEach(function(n) {
                 const chave = 'concorrente_' + n;
                 const linkMlb = linksConc.mlb[chave] || '';
                 const linkConcorrente = linksConc.links[chave] || '';
                 const codigoMlb = extrairCodigoMlbOferta(linkMlb);
                 const codigoConcorrente = extrairCodigoMlbOferta(linkConcorrente);
                 const pausado = linksConc.statusAnuncios?.[chave] === 'paused';
+                const anuncio = linksConc.anuncios?.find(item => item.chave === chave);
+                const variacao = linksConc.variacoes?.[chave] || anuncio?.variation_id || null;
                 if (codigoMlb) {
                     ultimosAnunciosLojaConcorrentes[chave] = codigoMlb;
+                    ultimasVariacoesAnunciosLoja[chave] = variacao === null ? null : String(variacao);
                     if (pausado && !ultimoAnuncioPausadoReferencia) ultimoAnuncioPausadoReferencia = codigoMlb;
                 }
                 setLinkConcorrente('lblMlb' + n, pausado && codigoMlb ? codigoMlb + ' · Pausado' : (codigoMlb || 'Anúncio da loja'), linkMlb);
+                const card = document.getElementById('lblMlb' + n)?.closest('.analysis-offer');
+                if (card) {
+                    card.querySelector('.analysis-variation')?.remove();
+                    if (variacao) {
+                        const descricao = document.createElement('div');
+                        descricao.className = 'analysis-variation';
+                        descricao.textContent = 'SKU ' + (anuncio?.sku || contextoDetalheSku?.sku || '') + ' · Variação ' + variacao;
+                        card.querySelector('.analysis-offer-link').after(descricao);
+                    }
+                    card.title = anuncio?.motivo_preco_indisponivel || '';
+                }
                 aplicarDetalhePrecoOferta('mlb', n, normalizarDetalhePrecoOferta(linksConc.preco[chave], {}));
                 if (!somenteProprios) {
                     setLinkConcorrente('lblConcorrente' + n, codigoConcorrente || ('Concorrente ' + n), linkConcorrente);
@@ -2968,11 +3043,13 @@
                 new Map(completo ? dados.mapaM3 : []), { somenteDadosLista: !completo });
             if (!detalheSkuVigente(contexto)) return false;
             configurarAprovacaoCompra(lista, item);
-            if (completo && dados.versao === 3 && dados.anunciosDaLista && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
+            if (completo && dados.versao === 3 && dados.anunciosDaLista && dados.concorrentes?.anunciosVersao === 2
+                && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
                 aplicarLinksCacheSku(dados.concorrentes);
                 Object.entries(dados.precosOfertas || {}).forEach(([chave, detalhe]) => {
                     const [tipo, numero] = chave.split(':');
-                    if (['mlb', 'concorrente'].includes(tipo) && /^[1-5]$/.test(numero)) aplicarDetalhePrecoOferta(tipo, Number(numero), detalhe);
+                    if (['mlb', 'concorrente'].includes(tipo) && /^[1-9]\d*$/.test(numero)
+                        && (tipo === 'mlb' || Number(numero) <= 5)) aplicarDetalhePrecoOferta(tipo, Number(numero), detalhe);
                 });
             }
             aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
@@ -3218,7 +3295,7 @@
         function restaurarAnaliseCompacta(contexto, anterior, identidade) {
             const fontes = anterior?.links;
             const mesmaIdentidade = identidadeAnunciosConfere(identidade, fontes);
-            if (!fontesAnunciosDaLista(fontes, contexto) || (identidade && !mesmaIdentidade)) return false;
+            if (fontes?.anunciosVersao !== 2 || !fontesAnunciosDaLista(fontes, contexto) || (identidade && !mesmaIdentidade)) return false;
 
             contexto.cacheAnaliseCompacta = anterior;
             contexto.ofertasCompactas = fontes;
@@ -3262,15 +3339,15 @@
             contexto.ofertasProprias = links;
             aplicarLinksCacheSku(links, true);
             const {
-                fonte_custo, custo_unitario, precos_anuncios_loja, anuncios_loja, fontes_versao,
+                fonte_custo, custo_unitario, precos_anuncios_loja, anuncios_loja, variacoes_anuncios_loja, fontes_versao,
             } = coletarAnaliseConcorrentes();
             if (!Object.keys(precos_anuncios_loja).length) return;
-            const chaveProprias = fonte => JSON.stringify([fonte?.mlb, fonte?.preco, fonte?.statusAnuncios]);
+            const chaveProprias = fonte => JSON.stringify([fonte?.mlb, fonte?.preco, fonte?.statusAnuncios, fonte?.variacoes]);
             const resposta = await consultarJsonDetalheSku(rotaDetalheSku(contexto) + '/analise-concorrentes/previa', contexto, {
                 method: 'POST', somenteLeitura: true, salvarCache: false, timeoutMs: 120000,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ fonte_custo, custo_unitario, precos_concorrentes: {},
-                    precos_anuncios_loja, anuncios_loja, fontes_versao }),
+                    precos_anuncios_loja, anuncios_loja, variacoes_anuncios_loja, fontes_versao }),
             }).catch(() => null);
             if (!vigente() || consulta.financeiroCompleto || !idadeAnaliseValida(links.consultadoEm)
                 || !analiseUsaCustoSimuladoAtual(resposta?.analise_concorrentes)

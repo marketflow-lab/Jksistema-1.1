@@ -113,6 +113,7 @@ class ListaPedidoSkuAnaliseConcorrentesRequest(BaseModel):
     precos_concorrentes: dict[str, float] = Field(default_factory=dict)
     precos_anuncios_loja: dict[str, float] | None = None
     anuncios_loja: dict[str, str] = Field(default_factory=dict)
+    variacoes_anuncios_loja: dict[str, str | None] | None = None
 
 
 class ListaPedidoPreferenciasColunasRequest(BaseModel):

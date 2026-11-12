@@ -41,6 +41,12 @@ async function environment(browser, options = {}) {
     updates: [], patches: [], errors: [] };
   if (options.needMargins) delete state.lists.A.itens[0].analise_concorrentes;
   if (options.queuedDetail) state.lists.A.itens[0].Quantidade = 4;
+  const ownAds = sku => Array.from({ length: options.ownAdsCount || 0 }, (_, index) => ({
+    chave: 'concorrente_' + (index + 1), item_id: 'MLB100000000' + index,
+    url: 'https://produto.mercadolivre.com.br/MLB-100000000' + index + '-produto-_JM?variation=' + (100 + index),
+    sku, variation_id: String(100 + index), preco: index === 6 ? null : 100 + index,
+    status: index === 7 ? 'paused' : 'active',
+  }));
   page.on('pageerror', error => state.errors.push(error.message));
   if (options.fastTimeout) await page.addInitScript(() => {
     const timeout = window.setTimeout.bind(window);
@@ -144,15 +150,25 @@ async function environment(browser, options = {}) {
       return json(route, { analysis: { order_id: pathname.split('/').at(-2), tax_band_pct: requestOrder === 1 ? 55 : 23 } });
     }
     if (pathname === '/api/vendas/grafico') return json(route, { valores_vendas: [10], valores_devolucoes: [] });
+    if (pathname === '/api/medias-compras/concorrentes-links') {
+      return json(route, { anuncios_loja_fonte: 'loja_lista_sku',
+        anuncios_loja_store_id: 'store-' + url.searchParams.get('lista_id'),
+        anuncios_loja: ownAds(url.searchParams.get('sku')) });
+    }
     if (pathname.endsWith('/concorrentes-links')) {
       ++state.calls.margins;
       if (options.holdMargins) await state.margins.promise;
+      if (options.failSheet) return json(route, { detail: 'Planilha indisponível' }, 503);
       return json(route, { resultados: { '001': { concorrentes_valores: { concorrente_1: 10 } } } });
     }
     if (pathname.endsWith('/analise-concorrentes') && method === 'PATCH') {
       state.patches.push(route.request().postDataJSON());
       if (options.holdMarginPatch) await state.marginPatch.promise;
-      return json(route, { analise_concorrentes: { margens: { concorrente_1: 25 } } });
+      return json(route, { analise_concorrentes: { anuncios_versao: 2,
+        anuncios_loja_store_id: 'store-' + pathname.split('/listas-pedidos/')[1].split('/')[0],
+        anuncios_consultado_em_ms: Date.now(),
+        anuncios_loja: ownAds(decodeURIComponent(pathname.split('/skus/')[1].split('/')[0])),
+        margens: { concorrente_1: 25 }, margens_anuncios_loja: {} } });
     }
     const match = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)$/);
     if (match) {
@@ -538,6 +554,42 @@ async function waitUntil(predicate) {
     assert.strictEqual(stale.state.calls.catalog, 0);
     assert.deepStrictEqual(stale.state.errors, []);
     await stale.context.close();
+
+    const allAds = await environment(browser, { ownAdsCount: 8, complete: true });
+    allAds.state.prefs.resolve();
+    await allAds.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
+    const ownCell = allAds.page.locator('tr[data-sku="001"] [data-col-key="anuncios_loja"]');
+    await ownCell.locator('.own-ad-row').nth(7).waitFor();
+    assert.strictEqual(await ownCell.locator('.own-ad-row').count(), 8);
+    assert.match(await ownCell.textContent(), /Pausado/);
+    assert.match(await ownCell.textContent(), /Preço a confirmar/);
+    await waitUntil(() => allAds.state.patches.length >= 1);
+    assert.strictEqual(Object.keys(allAds.state.patches[0].anuncios_loja).length, 8);
+    assert.strictEqual(allAds.state.patches[0].variacoes_anuncios_loja.concorrente_8, '107');
+    const sourceUrl = allAds.page.url();
+    const popupPromise = allAds.context.waitForEvent('page');
+    await ownCell.locator('a').nth(7).click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState();
+    assert.match(popup.url(), /variation=107/);
+    assert.strictEqual(allAds.page.url(), sourceUrl, 'Abrir o anúncio não deve navegar a linha do SKU.');
+    await popup.close();
+    assert.deepStrictEqual(allAds.state.errors, []);
+    await allAds.context.close();
+
+    const failedSheet = await environment(browser, { ownAdsCount: 8, failSheet: true, complete: true });
+    failedSheet.state.prefs.resolve();
+    await failedSheet.page.goto('http://jk.test/importacoes_lista.html?lista_id=A');
+    const failedSheetCell = failedSheet.page.locator('tr[data-sku="001"] [data-col-key="anuncios_loja"]');
+    await failedSheetCell.locator('.own-ad-row').nth(7).waitFor();
+    assert.strictEqual(await failedSheetCell.locator('.own-ad-row').count(), 8);
+    assert.strictEqual(failedSheet.state.patches.length, 0);
+    assert.deepStrictEqual(await failedSheet.page.evaluate(() => ultimaListaCarregada.itens[0].analise_concorrentes), { margens: {} });
+    assert.match(await failedSheetCell.textContent(), /Margem pendente/);
+    assert.strictEqual(await failedSheet.page.locator('tr[data-sku="001"] [data-col-key="margens_concorrentes"] .is-error').getAttribute('title'),
+      'Planilha indisponível');
+    assert.deepStrictEqual(failedSheet.state.errors, []);
+    await failedSheet.context.close();
 
     const timeout = await environment(browser, { fastTimeout: true });
     timeout.state.prefs.resolve();

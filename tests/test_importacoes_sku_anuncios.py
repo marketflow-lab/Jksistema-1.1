@@ -30,7 +30,7 @@ def product(item_id="MLB1000000001", **overrides):
 def env(monkeypatch):
     state = {"client": "tenant-a", "store": "store-a", "seller": "seller-a", "name": "Carlos José",
              "ids": ["MLB1000000001"], "paused_ids": [], "items": {}, "calls": [], "cfg_calls": [],
-             "request": None, "revoke_at": None, "cfg_change_at": None}
+             "request": None, "revoke_at": None, "cfg_change_at": None, "sku": "35"}
 
     def rows(client):
         assert client == state["client"]
@@ -58,7 +58,7 @@ def env(monkeypatch):
                 return custom, cfg
         if path.endswith("/items/search"):
             assert path == "/users/" + state["seller"] + "/items/search"
-            assert params["seller_sku"] == "35" and params["status"] in {"active", "paused"}
+            assert params["seller_sku"] == state["sku"] and params["status"] in {"active", "paused"}
             assert "q" not in params
             ids = state["ids"] if params["status"] == "active" else state["paused_ids"]
             offset, limit = params["offset"], params["limit"]
@@ -81,7 +81,7 @@ def env(monkeypatch):
 
 def lookup(state, **list_overrides):
     return service.buscar_anuncios_sku_da_lista(state["client"],
-        {"store_id": state["store"], "loja": "nome antigo", "itens": [{"SKU": "35"}], **list_overrides}, "35")
+        {"store_id": state["store"], "loja": "nome antigo", "itens": [{"SKU": state["sku"]}], **list_overrides}, state["sku"])
 
 
 def error_code(call, status, code):
@@ -95,9 +95,11 @@ def test_selected_store_and_current_exact_sku_supply_own_ad(env):
     result = lookup(env)
     assert result["store_id"] == "store-a" and result["loja"] == "Carlos José"
     assert result["anuncios"] == [{"item_id": "MLB1000000001", "preco": 50,
-        "url": product()["permalink"], "status": "active", "seller_id": "seller-a", "site_id": "MLB", "sku": "35"}]
+        "preco_cadastrado": 50, "url": product()["permalink"], "status": "active",
+        "seller_id": "seller-a", "site_id": "MLB", "sku": "35", "variation_id": None, "variation_ids": []}]
     assert result["total_encontrado"] == 1 and result["truncado"] is False
-    assert len(env["cfg_calls"]) == 4
+    assert result["limite"] is None and result["anuncios_versao"] == 2
+    assert len(env["cfg_calls"]) == 5
 
 
 def test_paused_ad_supplies_its_configured_price_without_active_sale_price(env):
@@ -121,8 +123,8 @@ def test_literal_sku_never_matches_alias_title_prefix_or_compound(sku):
     ([{"seller_sku": "35"}, {"seller_sku": "35"}], None, True),
     ([{"seller_sku": "350"}], "35", False),
     ([{}], "35", False),
-    ([{"seller_sku": "35"}, {}], "35", False),
-    ([{"seller_sku": "35"}], "350", False),
+    ([{"seller_sku": "35"}, {}], "35", True),
+    ([{"seller_sku": "35"}], "350", True),
     ({}, "35", False),
 ])
 def test_variations_require_unambiguous_explicit_sku(variations, parent, expected):
@@ -154,7 +156,9 @@ def test_wrong_account_site_or_returned_id_cannot_supply_an_own_ad(env, field, v
 @pytest.mark.parametrize("price", [None, 0, -1, float("nan"), float("inf"), True, "missing"])
 def test_absent_or_invalid_price_is_not_invented(env, price):
     env["items"][env["ids"][0]] = product(price=price)
-    assert lookup(env)["anuncios"] == []
+    ads = lookup(env)["anuncios"]
+    assert len(ads) == 1 and ads[0]["preco"] is None
+    assert ads[0]["motivo_preco_indisponivel"]
 
 
 @pytest.mark.parametrize("url", [None, "https://foreign.test/MLB1000000001", "https://produto.mercadolivre.com.br/MLB-9999999999-produto-_JM"])
@@ -168,20 +172,23 @@ def test_active_sku_mismatch_is_excluded_without_title_fallback(env):
     assert lookup(env)["anuncios"] == []
 
 
-def test_exact_variations_with_conflicting_prices_are_unavailable(env):
-    env["items"][env["ids"][0]] = product(variations=[{"seller_sku": "35", "price": 55}])
-    assert lookup(env)["anuncios"] == []
+def test_exact_variations_with_conflicting_prices_keep_ad_without_an_invented_sale_price(env):
+    env["items"][env["ids"][0]] = product(variations=[{"id": 10, "seller_sku": "35", "price": 55}])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["variation_id"] == "10" and ad["variation_ids"] == ["10"]
+    assert ad["preco"] is None and ad["preco_cadastrado"] == 55
+    assert not any(path.endswith("/sale_price") for _, _, path, _ in env["calls"])
 
 
 def test_pagination_and_more_than_five_results_are_explicit(env, monkeypatch):
     monkeypatch.setattr(service, "TAMANHO_PAGINA", 2)
     env["ids"] = ["MLB100000000" + str(number) for number in (6, 4, 2, 5, 3, 1)]
     result = lookup(env)
-    assert [ad["item_id"] for ad in result["anuncios"]] == sorted(env["ids"])[:5]
+    assert [ad["item_id"] for ad in result["anuncios"]] == sorted(env["ids"])
     assert result["total_encontrado"] == result["total_candidatos"] == 6
-    assert result["truncado"] is True and result["limite"] == 5
+    assert result["truncado"] is False and result["limite"] is None
     searches = [call for call in env["calls"] if call[2].endswith("/search")]
-    assert [call[3]["offset"] for call in searches] == [0, 2, 4]
+    assert [call[3]["offset"] for call in searches] == [0, 2, 4, 0]
 
 
 @pytest.mark.parametrize("paging,results,status,code", [
@@ -293,3 +300,115 @@ def test_ad_cache_reuses_prices_until_expiry_and_checks_access(env, monkeypatch)
     env["items"][item_id] = product(item_id, price=70)
     assert cached()["anuncios"][0]["preco"] == 70
     assert len(env["calls"]) > calls
+
+
+def test_mixed_sku_ad_uses_the_exact_385_4_variation_and_its_link(env):
+    env["sku"] = "385-4"
+    env["items"][env["ids"][0]] = product(attributes=[], variations=[
+        {"id": 10, "seller_sku": "385-2", "price": 50},
+        {"id": 20, "attributes": [{"id": "SELLER_SKU", "value_name": "385-4"}], "price": 50},
+    ])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["sku"] == "385-4" and ad["preco"] == 50
+    assert ad["variation_id"] == "20" and ad["variation_ids"] == ["20"]
+    assert ad["url"] == product()["permalink"] + "?variation=20"
+    assert service.resolver_variacao_sku(env["items"][env["ids"][0]], "385-4", "10") is None
+
+
+def test_active_and_paused_ads_of_the_same_sku_are_both_returned(env):
+    env["paused_ids"] = ["MLB1000000002"]
+    env["items"][env["paused_ids"][0]] = product(env["paused_ids"][0], status="paused", price=70)
+    ads = lookup(env)["anuncios"]
+    assert [(ad["item_id"], ad["status"], ad["preco"]) for ad in ads] == [
+        (env["ids"][0], "active", 50), (env["paused_ids"][0], "paused", 70),
+    ]
+    assert [path for _, _, path, _ in env["calls"] if path.endswith("/sale_price")] == [
+        "/items/" + env["ids"][0] + "/sale_price",
+    ]
+
+
+def test_paused_variant_uses_only_its_own_price_when_other_sku_has_a_different_price(env):
+    item_id = env["ids"].pop()
+    env["paused_ids"] = [item_id]
+    env["items"][item_id] = product(status="paused", attributes=[], price=999, variations=[
+        {"id": 10, "seller_sku": "350", "price": 999},
+        {"id": 20, "seller_sku": "35", "price": 55},
+    ])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["preco"] == ad["preco_cadastrado"] == 55 and ad["variation_id"] == "20"
+
+
+def test_active_variant_never_uses_an_item_sale_price_from_another_sku(env):
+    env["items"][env["ids"][0]] = product(attributes=[], price=999, variations=[
+        {"id": 10, "seller_sku": "350", "price": 999},
+        {"id": 20, "seller_sku": "35", "price": 55},
+    ])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["preco"] is None and ad["preco_cadastrado"] == 55
+    assert ad["variation_id"] == "20" and ad["motivo_preco_indisponivel"]
+    assert not any(path.endswith("/sale_price") for _, _, path, _ in env["calls"])
+
+
+def test_multiple_same_sku_variations_have_stable_identity_without_duplicate_ads(env):
+    item = product(attributes=[], variations=[
+        {"id": 20, "seller_sku": "35", "price": 50},
+        {"id": 3, "seller_sku": "35", "price": 50},
+    ])
+    env["items"][env["ids"][0]] = item
+    ads = lookup(env)["anuncios"]
+    assert len(ads) == 1 and ads[0]["variation_id"] == "3" and ads[0]["variation_ids"] == ["3", "20"]
+    assert service.resolver_variacao_sku(item, "35")["id"] == 3
+    assert service.resolver_variacao_sku(item, "35", "20")["id"] == 20
+    assert service.resolver_variacao_sku(item, "35", "999") is None
+
+
+def test_multiple_same_sku_variations_with_different_prices_keep_ad_without_a_price(env):
+    env["items"][env["ids"][0]] = product(attributes=[], variations=[
+        {"id": 10, "seller_sku": "35", "price": 50},
+        {"id": 20, "seller_sku": "35", "price": 70},
+    ])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["variation_ids"] == ["10", "20"]
+    assert ad["preco"] is None and ad["preco_cadastrado"] is None
+
+
+@pytest.mark.parametrize("invalid_id", [None, "", 0, -1, True, "20.0", "unknown"])
+def test_missing_or_invalid_variation_id_cannot_authorize_a_variant_price(env, invalid_id):
+    env["items"][env["ids"][0]] = product(variations=[{"id": invalid_id, "seller_sku": "35", "price": 50}])
+    ad = lookup(env)["anuncios"][0]
+    assert ad["variation_id"] is None and ad["preco"] is None
+    assert ad["motivo_preco_indisponivel"]
+
+
+def test_duplicate_variation_id_for_two_skus_is_not_resolved(env):
+    item = product(variations=[{"id": 10, "seller_sku": "35", "price": 50},
+                               {"id": 10, "seller_sku": "350", "price": 50}])
+    env["items"][env["ids"][0]] = item
+    assert service.resolver_variacao_sku(item, "35", 10) is None
+    assert lookup(env)["anuncios"][0]["preco"] is None
+
+
+@pytest.mark.parametrize("failure", [Response({}, 404), Response({}, 429), Response({}, 500),
+                                    Response(ValueError("private-token")), requests.Timeout("private-token")])
+def test_sale_price_failure_keeps_verified_ad_visible_without_quoting_a_price(env, failure):
+    def request(path, *_args):
+        if not path.endswith("/sale_price"):
+            return None
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+    env["request"] = request
+    ad = lookup(env)["anuncios"][0]
+    assert ad["preco"] is None and ad["preco_cadastrado"] == 50
+    assert "private-token" not in ad["motivo_preco_indisponivel"]
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_sale_price_authorization_failure_still_denies_all_ads(env, status):
+    env["request"] = lambda path, *_args: Response({}, status) if path.endswith("/sale_price") else None
+    error_code(lambda: lookup(env), status, "sku_ads_access_denied")
+
+
+def test_duplicate_candidate_in_active_and_paused_is_an_explicit_catalog_change(env):
+    env["paused_ids"] = list(env["ids"])
+    error_code(lambda: lookup(env), 409, "sku_ads_catalog_changed")
