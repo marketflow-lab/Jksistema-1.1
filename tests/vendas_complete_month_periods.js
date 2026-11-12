@@ -261,7 +261,7 @@ assert.strictEqual(dadosCompactados.series[0].at(-1), 319, 'séries devem preser
 
 assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
 assert.match(htmlStatic, /periodo-cache\.js\?v=20261109-vendas-conferencia-hoje-v1/);
-assert.match(htmlStatic, /sync\.js\?v=20261109-vendas-conferencia-hoje-v1/);
+assert.match(htmlStatic, /sync\.js\?v=20261111-estilo-medias-v4/);
 assert.match(htmlStatic, /dados-render\.js\?v=20261030-resumo-salvo-v1/);
 assert.match(htmlStatic, /grafico\.js\?v=20261028-grafico-filtros-v1/);
 assert.match(htmlStatic, /init\.js\?v=20261027-cache-servidor-v2/);
