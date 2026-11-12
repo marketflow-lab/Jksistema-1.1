@@ -32,22 +32,30 @@ function deferred() {
     return { promise, resolve };
 }
 
+function ownRevision() {
+    return { anuncios_versao: 2, anuncios_loja: [], anuncios_consultado_em_ms: Date.now() };
+}
+
 function sourceRow(version = 2) {
     const row = { fontes_versao: version, anuncios_loja_fonte: 'loja_lista_sku', anuncios_loja_store_id: 'store-lista',
         anuncios_loja_seller_id: 'seller-lista', anuncios_loja_site_id: 'MLB', concorrentes: {}, concorrentes_valores: {},
-        concorrentes_mlb: {}, concorrentes_preco: {} };
+        concorrentes_mlb: {}, concorrentes_preco: {}, anuncios_versao: 2,
+        anuncios_loja: [], anuncios_loja_variacoes: {} };
     for (let n = 1; n <= 5; n++) {
         const key = 'concorrente_' + n;
         row.concorrentes[key] = 'https://produto.mercadolivre.com.br/MLB-' + (2000000000 + n);
         row.concorrentes_valores[key] = 'R$ ' + (80 + n) + ',50';
         row.concorrentes_mlb[key] = 'https://www.mercadolivre.com.br/p/MLB99999999?wid=MLB' + (1000000000 + n);
         row.concorrentes_preco[key] = 'R$ ' + (90 + n) + ',00';
+        row.anuncios_loja_variacoes[key] = String(100 + n);
+        row.anuncios_loja.push({ chave: key, item_id: 'MLB' + (1000000000 + n),
+            preco: 90 + n, variation_id: String(100 + n), status: 'active', sku: 'D104-32' });
     }
     return row;
 }
 
 function listHarness(loja = 'JK Peças') {
-    const state = { generation: 1, listaId: 'JK61', gets: [], patches: [], statuses: [],
+    const state = { generation: 1, listaId: 'JK61', gets: [], ownGets: [], patches: [], statuses: [],
         sources: {}, fail: false, beforeGet: null, beforePatch: null };
     const bindings = {
         AUXILIAR_TIMEOUT_MS: 20000,
@@ -70,8 +78,15 @@ function listHarness(loja = 'JK Peças') {
         carregamentoVigente: context => context.listaId === state.listaId && context.generation === state.generation,
         confirmarMutacaoLista: () => {},
         definirEstadoMargensAutomaticas: (item, status, message) => state.statuses.push([item.SKU, status, message]),
+        atualizarCelulaMargensAutomaticas: () => {},
         fetch: async (url, options) => {
             if (options.method === 'GET') {
+                const query = new URL(url, 'http://fixture').searchParams;
+                if (query.get('somente_proprios') === 'true') {
+                    state.ownGets.push(url);
+                    return response({ ...(state.sources[query.get('sku')] || {}), anuncios_loja_fonte: 'loja_lista_sku',
+                        anuncios_loja_store_id: 'store-lista', anuncios_loja: state.sources[query.get('sku')]?.anuncios_loja || [] });
+                }
                 state.gets.push(url);
                 if (state.beforeGet) await state.beforeGet();
                 return state.fail ? response({ detail: 'Planilha indisponível' }, 503)
@@ -86,17 +101,21 @@ function listHarness(loja = 'JK Peças') {
             if (state.beforePatch) await state.beforePatch();
             const sku = decodeURIComponent(url.split('/skus/')[1].split('/')[0]);
             const fonte = state.sources[sku] || {};
-            return response({ analise_concorrentes: { ...body, store_id: 'store-lista', margens:
-                Object.fromEntries(Object.entries(body.precos_concorrentes).map(([key, preco]) => [key, {
+            const margens = precos => Object.fromEntries(Object.entries(precos || {}).map(([key, preco]) => [key, {
                     preco_venda: preco, margem_percentual: 25, item_id_loja: body.anuncios_loja[key], store_id: 'store-lista',
                     fonte_custo: body.fonte_custo, custo_unitario: body.custo_unitario, financeiro_exato: true,
+                    variation_id: body.variacoes_anuncios_loja?.[key] ?? null,
                     seller_id: fonte.anuncios_loja_seller_id || '', site_id: fonte.anuncios_loja_site_id || '',
-                }])) } });
+                }]));
+            return response({ analise_concorrentes: { ...body, ...ownRevision(), store_id: 'store-lista',
+                anuncios_loja_store_id: 'store-lista', anuncios_loja: fonte.anuncios_loja || [],
+                margens: margens(body.precos_concorrentes), margens_anuncios_loja: margens(body.precos_anuncios_loja) } });
         },
     };
     const context = loadFunctions(listHtml, [
         'normTxt', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
         'montarPayloadMargensAutomaticas', 'consultarAnaliseLista', 'carregarFontesMargensAutomaticas',
+        'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes', 'carregarAnunciosMargensAutomaticas',
         'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
     ], bindings);
     const analisar = context.analisarMargensConcorrentesAutomaticamente;
@@ -120,6 +139,7 @@ async function verifySkuContextAndVersion() {
     const bindings = {
         ultimaVersaoFontesConcorrentes: null,
         ultimosAnunciosLojaConcorrentes: {},
+        ultimasVariacoesAnunciosLoja: {},
         ultimoAnuncioPausadoReferencia: '',
         contextoDetalheSku: current,
         analiseComplementosPronta: true,
@@ -128,7 +148,7 @@ async function verifySkuContextAndVersion() {
         detalheSkuVigente: context => context === bindings.contextoDetalheSku,
         dadosSkuVigentes: context => context === bindings.contextoDetalheSku && validity.data,
         obterAuthHeaders: () => ({}),
-        document: { getElementById: id => cells.get(id) || null },
+        document: { getElementById: id => cells.get(id) || null, querySelector: () => null },
         getNumber: contextoCusto.window.JKImportacoesCustoSimulado.numero,
         window: { JKImportacoesCacheCustos: { comTravaAnalise: async (options, executar) => {
             assert.strictEqual(options.listaId, current.listaId);
@@ -157,6 +177,7 @@ async function verifySkuContextAndVersion() {
     const context = loadFunctions(skuHtml, [
         'normSku', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
         'fontesAnunciosDaLista', 'custoSimuladoDisponivel',
+        'numerosComparacoesAnalise', 'prepararCartoesAnalise',
         'aplicarLinksCacheSku', 'coletarAnaliseConcorrentes', 'salvarAnaliseConcorrentes',
     ], bindings);
     const sources = await context.buscarLinksConcorrentes('D104-32', current);
@@ -176,6 +197,7 @@ async function verifySkuContextAndVersion() {
         assert.strictEqual(patch.anuncios_loja['concorrente_' + n], 'MLB' + (1000000000 + n));
         assert.strictEqual(patch.precos_concorrentes['concorrente_' + n], 80.5 + n);
         assert.strictEqual(patch.precos_anuncios_loja['concorrente_' + n], 90 + n);
+        assert.strictEqual(patch.variacoes_anuncios_loja['concorrente_' + n], String(100 + n));
     }
     await assert.rejects(context.salvarAnaliseConcorrentes('outra-lista', current.sku), /custo unitário simulado/);
     validity.data = false;
@@ -198,8 +220,8 @@ async function verifyRefreshAndReuse() {
     const { state, context } = listHarness();
     const empty = { SKU: 'D104-32', analise_concorrentes: { margens: {}, atualizado_em: 'anterior' } };
     const noMatch = { SKU: 'SEM-FONTE', analise_concorrentes: { margens: {} } };
-    const populated = { SKU: '167', analise_concorrentes: { margens: { concorrente_1: { margem_percentual: 17.65 } } } };
-    const alreadyRead = { SKU: 'ATUAL', analise_concorrentes: { fontes_versao: 2, margens: {} } };
+    const populated = { SKU: '167', analise_concorrentes: { ...ownRevision(), margens: { concorrente_1: { margem_percentual: 17.65 } } } };
+    const alreadyRead = { SKU: 'ATUAL', analise_concorrentes: { ...ownRevision(), fontes_versao: 2, margens: {} } };
     const missing = { SKU: 'NOVO' };
     state.sources = { 'D104-32': sourceRow(), 'SEM-FONTE': { ...sourceRow(), concorrentes_valores: {} },
         NOVO: sourceRow(), '167': sourceRow(), ATUAL: sourceRow() };
@@ -215,6 +237,9 @@ async function verifyRefreshAndReuse() {
     assert.strictEqual(state.patches[0].body.fonte_custo, 'simulacao_importacao_sku');
     assert.strictEqual(state.patches[0].body.custo_unitario, 23.75);
     assert.strictEqual(state.patches[0].body.revisao_fontes_custo, 'a'.repeat(64));
+    assert.strictEqual(state.patches[0].body.variacoes_anuncios_loja.concorrente_5, '105');
+    assert.strictEqual(state.patches[0].body.precos_anuncios_loja.concorrente_5, 95);
+    assert.strictEqual(state.ownGets.length, 0, 'A consulta por SKU fornece fontes e anúncios juntos quando disponível.');
     assert.deepStrictEqual(state.patches[1].body.precos_concorrentes, {},
         'Sem preço na fonte continua sem preço; não cria zero.');
     assert.strictEqual(populated.analise_concorrentes, oldPopulated,
@@ -236,6 +261,7 @@ async function verifyOtherStoresAndFailure() {
     state.fail = true;
     await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
     assert.strictEqual(state.patches.length, 0, 'Falha da fonte não pode persistir uma análise vazia.');
+    assert.strictEqual(state.ownGets.length, 2, 'Retentativas da planilha preservam a leitura independente dos anúncios próprios.');
     assert.strictEqual(item.analise_simulacao_importacao_sku, saved);
     assert(state.statuses.some(row => row[1] === 'erro' && row[2] === 'Planilha indisponível'));
     state.fail = false;
@@ -255,10 +281,13 @@ async function verifyCanonicalStoreRevision() {
     state.sources['D104-32'].concorrentes_valores.concorrente_1 = '99,90';
     await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
     assert.strictEqual(state.patches.length, 3, 'Preço alterado na mesma planilha invalida a análise.');
+    state.sources['D104-32'].anuncios_loja[0].variation_id = 'nova-variacao';
+    await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
+    assert.strictEqual(state.patches.length, 4, 'Variação diferente do mesmo anúncio invalida a análise.');
     const salvo = item.analise_simulacao_importacao_sku;
     state.sources['D104-32'].anuncios_loja_store_id = 'outra-loja';
     await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
-    assert.strictEqual(state.patches.length, 3, 'Uma fonte de outra loja não gera PATCH.');
+    assert.strictEqual(state.patches.length, 4, 'Uma fonte de outra loja não gera PATCH.');
     assert.strictEqual(item.analise_simulacao_importacao_sku, salvo);
 }
 

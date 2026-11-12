@@ -386,6 +386,25 @@
         .competitor-margins-empty.is-error {
             color: #ff9da5;
         }
+        .own-ads-list {
+            display: grid;
+            gap: 5px;
+            min-width: 210px;
+            white-space: normal;
+            text-align: left;
+        }
+        .own-ad-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            gap: 2px 8px;
+            border-bottom: 1px solid #263e59;
+            padding-bottom: 5px;
+            font-size: 0.72rem;
+        }
+        .own-ad-row a { color: #9bd1ff; overflow-wrap: anywhere; }
+        .own-ad-row small { color: #91a8c2; grid-column: 1 / -1; }
+        .own-ad-row .positive { color: #8ff0b7; }
+        .own-ad-row .negative { color: #ff9da5; }
         .totais-row td {
             background: #17273e;
             border-top: 1px solid #3b5578;
@@ -1495,6 +1514,66 @@
             return '';
         }
 
+        function analiseAnunciosLojaConfere(analise) {
+            const storeId = String(ultimaListaCarregada?.store_id || '');
+            return analise?.anuncios_versao === 2 && Array.isArray(analise.anuncios_loja)
+                && (!storeId || String(analise.anuncios_loja_store_id || analise.store_id || '') === storeId);
+        }
+
+        function anunciosLojaAnaliseRecentes(analise) {
+            const idade = Date.now() - Number(analise?.anuncios_consultado_em_ms);
+            return analiseAnunciosLojaConfere(analise) && Number.isFinite(idade) && idade >= -5000 && idade < 60000;
+        }
+
+        function formatarAnunciosLoja(item) {
+            const sku = obterSkuItemMargensAutomaticas(item);
+            const estado = estadosAnaliseMargensAutomaticas.get(sku);
+            const analise = item?.analise_simulacao_importacao_sku;
+            const anuncios = estado?.anuncios || (analiseAnunciosLojaConfere(analise) ? analise.anuncios_loja : null);
+            if (!Array.isArray(anuncios)) {
+                const texto = estado?.status === 'erro' ? 'Anúncios indisponíveis'
+                    : estado?.status === 'analisando' ? 'Consultando anúncios...' : 'Aguardando anúncios';
+                return '<span class="competitor-margins-empty" title="' + escaparHtml(estado?.mensagem || '')
+                    + '">' + texto + '</span>';
+            }
+            if (!anuncios.length) return '<span class="competitor-margins-empty">Sem anúncios deste SKU</span>';
+            const margens = analise?.margens_anuncios_loja || {};
+            return '<div class="own-ads-list">' + anuncios.map((anuncio, indice) => {
+                const chave = anuncio.chave || 'concorrente_' + (indice + 1);
+                const itemId = extrairCodigoMlbMargensAutomaticas(anuncio.item_id);
+                const variacao = anuncio.variation_id == null ? '' : String(anuncio.variation_id);
+                const dados = margens[chave];
+                const preco = valorNumerico(anuncio.preco);
+                const margem = dados?.margem_percentual == null ? NaN : Number(dados.margem_percentual);
+                const contaConfere = String(dados?.store_id || '') === String(ultimaListaCarregada?.store_id || '')
+                    && (!anuncio.seller_id || String(dados?.seller_id || '') === String(anuncio.seller_id))
+                    && (!anuncio.site_id || String(dados?.site_id || '') === String(anuncio.site_id));
+                const margemConfere = analiseSimuladaListaCompativel(item) && preco > 0 && dados?.financeiro_exato === true
+                    && dados.fonte_custo === 'simulacao_importacao_sku'
+                    && Math.abs(Number(dados.custo_unitario) - Number(analise?.custo_unitario)) <= 0.005
+                    && contaConfere
+                    && dados.item_id_loja === itemId && String(dados.variation_id ?? '') === variacao
+                    && Math.abs(Number(dados.preco_venda) - preco) <= 0.02;
+                let url = '';
+                try {
+                    const candidato = new URL(anuncio.url);
+                    if (candidato.protocol === 'https:' && ['mercadolivre.com.br', 'www.mercadolivre.com.br', 'produto.mercadolivre.com.br'].includes(candidato.hostname)
+                        && !candidato.username && !candidato.password && extrairCodigoMlbMargensAutomaticas(candidato.href) === itemId) url = candidato.href;
+                } catch (_erro) {}
+                const link = url ? '<a href="' + escaparHtml(url) + '" target="_blank" rel="noopener noreferrer">'
+                    + escaparHtml(itemId) + '</a>' : '<span>' + escaparHtml(itemId || 'Anúncio da loja') + '</span>';
+                const motivo = String(anuncio.motivo_preco_indisponivel || dados?.motivo_indisponivel || estado?.mensagem || '').trim();
+                const status = anuncio.status === 'paused' ? 'Pausado' : 'Ativo';
+                return '<div class="own-ad-row" data-own-ad="' + escaparHtml(itemId) + '" title="' + escaparHtml(motivo) + '">'
+                    + link + '<span>' + (preco > 0 ? formatarBRL(preco) : 'Preço a confirmar') + '</span>'
+                    + '<small>' + status + ' · SKU ' + escaparHtml(anuncio.sku || sku)
+                    + (variacao ? ' · Variação ' + escaparHtml(variacao) : '')
+                    + ' · <span class="' + (margemConfere && Number.isFinite(margem) ? (margem < 0 ? 'negative' : 'positive') : '') + '">'
+                    + (margemConfere && Number.isFinite(margem) ? 'Margem ' + formatarPct(margem) : 'Margem pendente')
+                    + '</span></small></div>';
+            }).join('') + '</div>';
+        }
+
         function obterSkuItemMargensAutomaticas(item) {
             return normalizarSkuComparacao(obterCampo(item || {}, ['SKU', 'Sku', 'sku'], ''));
         }
@@ -1507,6 +1586,8 @@
                 if (normalizarSkuComparacao(linha.dataset.sku) !== sku) continue;
                 const celula = linha.querySelector('[data-coluna="margens_concorrentes"]');
                 if (celula) celula.innerHTML = formatarMargensConcorrentes(item);
+                const anuncios = linha.querySelector('[data-coluna="anuncios_loja"]');
+                if (anuncios) anuncios.innerHTML = formatarAnunciosLoja(item);
                 break;
             }
         }
@@ -1514,41 +1595,52 @@
         function definirEstadoMargensAutomaticas(item, status, mensagem = '') {
             const sku = obterSkuItemMargensAutomaticas(item);
             if (!sku) return;
-            if (status) estadosAnaliseMargensAutomaticas.set(sku, { status, mensagem });
+            if (status) estadosAnaliseMargensAutomaticas.set(sku, { ...estadosAnaliseMargensAutomaticas.get(sku), status, mensagem });
             else estadosAnaliseMargensAutomaticas.delete(sku);
             atualizarCelulaMargensAutomaticas(item);
         }
 
         function montarPayloadMargensAutomaticas(fonte, item) {
-            const valores = fonte && fonte.concorrentes_valores && typeof fonte.concorrentes_valores === 'object'
-                ? fonte.concorrentes_valores
-                : {};
-            const anuncios = fonte && fonte.concorrentes_mlb && typeof fonte.concorrentes_mlb === 'object'
-                ? fonte.concorrentes_mlb
-                : {};
+            const valores = fonte?.concorrentes_valores || {};
+            const anuncios = fonte?.concorrentes_mlb || {};
             const precosConcorrentes = {};
             const anunciosLoja = {};
-            const referenciaPausada = Object.entries(fonte?.anuncios_loja_status || {})
-                .find(([, status]) => String(status).toLowerCase() === 'paused');
-            const anuncioPausado = referenciaPausada ? extrairCodigoMlbMargensAutomaticas(anuncios[referenciaPausada[0]]) : '';
+            const precosAnunciosLoja = {};
+            const variacoesAnunciosLoja = {};
+            const versaoVariacoes = fonte?.anuncios_versao === 2 || Array.isArray(fonte?.anuncios_loja);
             const registro = calculosUnitariosLista[chaveSkuCustoCadastro(item?.SKU)];
-
-            [1, 2, 3, 4, 5].forEach((numero) => {
+            const proprios = Array.isArray(fonte?.anuncios_loja) ? fonte.anuncios_loja
+                : Object.entries(anuncios).map(([chave, item_id]) => ({ chave, item_id,
+                    preco: fonte?.concorrentes_preco?.[chave], variation_id: fonte?.anuncios_loja_variacoes?.[chave],
+                    status: fonte?.anuncios_loja_status?.[chave] }));
+            proprios.forEach((anuncio, indice) => {
+                const chave = anuncio.chave || 'concorrente_' + (indice + 1);
+                const itemId = extrairCodigoMlbMargensAutomaticas(anuncio.item_id);
+                if (!/^concorrente_[1-9]\d*$/.test(chave) || !itemId) return;
+                anunciosLoja[chave] = itemId;
+                variacoesAnunciosLoja[chave] = anuncio.variation_id == null ? null : String(anuncio.variation_id);
+                const preco = valorNumerico(anuncio.preco);
+                if (preco > 0) precosAnunciosLoja[chave] = preco;
+            });
+            const pausado = proprios.find(anuncio => anuncio.status === 'paused');
+            [1, 2, 3, 4, 5].forEach(numero => {
                 const chave = 'concorrente_' + numero;
                 const preco = valorNumerico(valores[chave]);
-                const itemIdLoja = extrairCodigoMlbMargensAutomaticas(anuncios[chave]) || anuncioPausado;
-                if (preco > 0) precosConcorrentes[chave] = preco;
-                if (itemIdLoja) anunciosLoja[chave] = itemIdLoja;
+                if (preco > 0) {
+                    precosConcorrentes[chave] = preco;
+                    if (!anunciosLoja[chave] && pausado) {
+                        anunciosLoja[chave] = extrairCodigoMlbMargensAutomaticas(pausado.item_id);
+                        variacoesAnunciosLoja[chave] = pausado.variation_id == null ? null : String(pausado.variation_id);
+                    }
+                }
             });
-
             return {
-                fonte_custo: 'simulacao_importacao_sku',
-                custo_unitario: registro?.calculo?.custoUnitario,
-                revisao_fontes_custo: registro?.revisao,
-                assinatura_calculo: registro?.assinatura,
-                precos_concorrentes: precosConcorrentes,
-                anuncios_loja: anunciosLoja,
-                fontes_versao: fonte && fonte.fontes_versao || null,
+                fonte_custo: 'simulacao_importacao_sku', custo_unitario: registro?.calculo?.custoUnitario,
+                revisao_fontes_custo: registro?.revisao, assinatura_calculo: registro?.assinatura,
+                precos_concorrentes: precosConcorrentes, anuncios_loja: anunciosLoja,
+                precos_anuncios_loja: precosAnunciosLoja,
+                ...(versaoVariacoes ? { variacoes_anuncios_loja: variacoesAnunciosLoja } : {}),
+                fontes_versao: fonte?.fontes_versao || null,
             };
         }
 
@@ -1605,34 +1697,49 @@
             return dados;
         }
 
+        async function carregarAnunciosMargensAutomaticas(listaId, sku, contexto) {
+            const { dados } = await consultarAnaliseLista('/api/medias-compras/concorrentes-links?sku='
+                + encodeURIComponent(sku) + '&lista_id=' + encodeURIComponent(listaId)
+                + '&anuncios_da_lista=true&somente_proprios=true', { method: 'GET', headers: obterAuthHeaders() }, contexto);
+            if (dados?.anuncios_loja_fonte !== 'loja_lista_sku' || !Array.isArray(dados.anuncios_loja)
+                || dados.anuncios_loja_store_id !== ultimaListaCarregada?.store_id) throw new Error('Anúncios de outra loja.');
+            return dados;
+        }
+
         function analiseConfereFontesLista(item, fonte, payload) {
             if (!analiseSimuladaListaCompativel(item)) return false;
             const analise = item.analise_simulacao_importacao_sku;
             if (analise.revisao_fontes_custo !== payload.revisao_fontes_custo
                 || analise.assinatura_calculo !== payload.assinatura_calculo
                 || analise.fontes_versao !== payload.fontes_versao) return false;
-            const margens = analise.margens || {};
-            if (Object.keys(margens).length !== Object.keys(payload.precos_concorrentes).length) return false;
-            return Object.entries(payload.precos_concorrentes).every(([chave, preco]) => {
+            if (fonte.anuncios_versao === 2 && Array.isArray(fonte.anuncios_loja)) {
+                const identificar = anuncios => JSON.stringify((anuncios || []).map(row => [row.chave,
+                    row.item_id, row.variation_id ?? null, row.status, row.preco ?? null,
+                    row.seller_id, row.site_id, row.sku]));
+                if (!analiseAnunciosLojaConfere(analise)
+                    || identificar(analise.anuncios_loja) !== identificar(fonte.anuncios_loja)) return false;
+            }
+            const series = [[analise.margens || {}, payload.precos_concorrentes],
+                [analise.margens_anuncios_loja || {}, payload.precos_anuncios_loja || {}]];
+            return series.every(([margens, precos]) => Object.keys(margens).length === Object.keys(precos).length
+                && Object.entries(precos).every(([chave, preco]) => {
                 const dado = margens[chave];
                 return dado && Number(dado.preco_venda) === preco
                     && dado.fonte_custo === payload.fonte_custo && dado.financeiro_exato === true
                     && Math.abs(Number(dado.custo_unitario) - payload.custo_unitario) <= 0.005
                     && dado.item_id_loja === payload.anuncios_loja[chave]
+                    && String(dado.variation_id || '') === String(payload.variacoes_anuncios_loja?.[chave] || '')
                     && dado.store_id === fonte.anuncios_loja_store_id
                     && String(dado.seller_id || '') === String(fonte.anuncios_loja_seller_id || '')
                     && String(dado.site_id || '') === String(fonte.anuncios_loja_site_id || '');
-            });
+            }));
         }
 
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
             const cicloAtual = ++cicloAnaliseMargensAutomaticas;
             const contexto = contextoCarregamentoAtual(listaId);
             const vigente = () => cicloAtual === cicloAnaliseMargensAutomaticas && carregamentoVigente(contexto);
-            const pendentes = (Array.isArray(itens) ? itens : []).filter(item => {
-                const registro = calculosUnitariosLista[chaveSkuCustoCadastro(item.SKU)];
-                return registro?.revisao && Number.isFinite(registro.calculo?.custoUnitario);
-            });
+            const pendentes = (Array.isArray(itens) ? itens : []).filter(item => chaveSkuCustoCadastro(item.SKU));
             const visiveis = new Set(Array.from(document.querySelectorAll('#tbodyLista tr[data-sku]'))
                 .filter(row => { const rect = row.getBoundingClientRect(); return rect.bottom >= 0 && rect.top < innerHeight; })
                 .map(row => chaveSkuCustoCadastro(row.dataset.sku)));
@@ -1644,14 +1751,26 @@
                 for (let tentativa = 0; tentativa < 2; tentativa++) {
                     if (!vigente()) return;
                     definirEstadoMargensAutomaticas(item, 'analisando');
+                    let fonteLida = false;
                     try {
                         // Mesma seleção de anúncios e preços utilizada no detalhe do SKU.
                         const { dados: fonte } = await consultarAnaliseLista('/api/medias-compras/concorrentes-links?sku='
                             + encodeURIComponent(sku) + '&lista_id=' + encodeURIComponent(listaId) + '&anuncios_da_lista=true',
                             { method: 'GET', headers: obterAuthHeaders() }, contexto);
                         if (!vigente()) return;
+                        fonteLida = true;
                         if (fonte.anuncios_loja_fonte !== 'loja_lista_sku'
                             || fonte.anuncios_loja_store_id !== ultimaListaCarregada.store_id) throw new Error('Anúncios de outra loja.');
+                        if (Array.isArray(fonte.anuncios_loja)) {
+                            const estado = estadosAnaliseMargensAutomaticas.get(obterSkuItemMargensAutomaticas(item)) || {};
+                            estadosAnaliseMargensAutomaticas.set(obterSkuItemMargensAutomaticas(item), { ...estado, anuncios: fonte.anuncios_loja });
+                            atualizarCelulaMargensAutomaticas(item);
+                        }
+                        const registro = calculosUnitariosLista[sku];
+                        if (!registro?.revisao || !Number.isFinite(registro.calculo?.custoUnitario)) {
+                            definirEstadoMargensAutomaticas(item, 'pendente', 'Aguardando custo completo para calcular as margens.');
+                            break;
+                        }
                         const payload = montarPayloadMargensAutomaticas(fonte, item);
                         if (analiseConfereFontesLista(item, fonte, payload)) {
                             definirEstadoMargensAutomaticas(item, '');
@@ -1676,6 +1795,16 @@
                         break;
                     } catch (erro) {
                         if (!vigente()) return;
+                        if (!fonteLida && ![401, 403].includes(erro.status)) {
+                            try {
+                                const proprios = await carregarAnunciosMargensAutomaticas(listaId, sku, contexto);
+                                if (!vigente()) return;
+                                const chave = obterSkuItemMargensAutomaticas(item);
+                                estadosAnaliseMargensAutomaticas.set(chave, {
+                                    ...estadosAnaliseMargensAutomaticas.get(chave), anuncios: proprios.anuncios_loja,
+                                });
+                            } catch (_falhaAnuncios) { /* A linha conserva o último resultado autorizado. */ }
+                        }
                         definirEstadoMargensAutomaticas(item, 'erro', erro.message || 'Atualização da margem pendente.');
                         if ([401, 403].includes(erro.status)) return;
                         if (tentativa === 0) await new Promise(resolve => setTimeout(resolve, 1000));
@@ -2605,6 +2734,7 @@
             { key: 'valor_unit_brl', label: 'Valor Unitário R$', width: 155 },
             { key: 'ultimo_custo_cadastrado', label: 'Último custo cadastrado', width: 190 },
             { key: 'valor_total_usd', label: 'Total em Dólar', width: 170 },
+            { key: 'anuncios_loja', label: 'Anúncios da loja', width: 290 },
             { key: 'margens_concorrentes', label: 'Margem concorrentes', width: 185 },
             { key: 'acao', label: 'Ação', width: 130 }
         ];
@@ -2626,7 +2756,7 @@
                         return;
                     }
                 }
-                if (coluna.key === 'margens_concorrentes') {
+                if (coluna.key === 'margens_concorrentes' || coluna.key === 'anuncios_loja') {
                     const indiceAcao = ordenadas.findIndex((item) => item.key === 'acao');
                     if (indiceAcao >= 0) {
                         ordenadas.splice(indiceAcao, 0, coluna);
@@ -3449,6 +3579,7 @@
                     valor_unit_brl: 'Carregando...',
                     ultimo_custo_cadastrado: textoUltimoCustoCadastrado(item),
                     valor_total_usd: formatarUSD(valorTotal),
+                    anuncios_loja: formatarAnunciosLoja(item),
                     margens_concorrentes: formatarMargensConcorrentes(item),
                     acao: sku
                         ? '<div class="sku-actions">' +
@@ -3472,6 +3603,7 @@
                     valor_unit_brl: 'num',
                     ultimo_custo_cadastrado: 'num',
                     valor_total_usd: 'num',
+                    anuncios_loja: 'num-center',
                     margens_concorrentes: 'num-center',
                     acao: 'num-center',
                 };
@@ -3481,6 +3613,7 @@
                     const title = col.key === 'm3' ? ' title="' + escaparHtml(m3SemMetragem ? 'Cubagem pendente no cadastro desta loja.' : descricaoCubagemItem(item)) + '"' : '';
                     const dataColuna = col.key === 'margens_concorrentes'
                         ? ' data-coluna="margens_concorrentes"'
+                        : col.key === 'anuncios_loja' ? ' data-coluna="anuncios_loja"'
                         : '';
                     const conteudo = Object.prototype.hasOwnProperty.call(celulas, col.key) ? celulas[col.key] : '';
                     return '<td data-col-key="' + escaparHtml(col.key) + '"' + klass + title + dataColuna + '>' + conteudo + '</td>';
@@ -3829,6 +3962,7 @@
         });
         function negarAcessoCacheLista(mensagem) {
             geracaoCarregamentoLista++;
+            estadosAnaliseMargensAutomaticas.clear();
             ultimaListaCarregada = null;
             ultimosItensCarregados = [];
             fiscalCustoSkuLista = null;

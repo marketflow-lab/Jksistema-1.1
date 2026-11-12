@@ -54,6 +54,7 @@ function aguardando() {
 
 function fontesFinanceiras(id = 'A') {
     return {
+        anuncios_versao: 2,
         anuncios_loja_store_id: 'store-' + id, anuncios_loja_nome: 'Loja ' + id,
         anuncios_loja_fonte: 'loja_lista_sku',
         concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
@@ -379,6 +380,82 @@ async function run(browser, name, options, check) {
             env.state.pending.forEach(pending => pending.resolve());
             await env.page.waitForFunction(() => custoSimuladoDisponivel() && ultimoValorUnitarioProduto !== 12.34);
         });
+        await run(browser, 'todos os anúncios usam sua variação no detalhe e no pedido de margem', opcoesFinanceiras({
+            proprios: true,
+            compact: ({ id, saved }) => detalheCompacto(id, saved),
+            complement: ({ pathname, url, state }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                const fonte = { ...fontesFinanceiras(url.searchParams.get('lista_id')), fontes_versao: 7,
+                    anuncios_loja_seller_id: 'seller-store-A', anuncios_loja_site_id: 'MLB', consultado_em_ms: Date.now(),
+                    anuncios_loja: [], anuncios_loja_variacoes: {}, anuncios_loja_status: {} };
+                for (let numero = 1; numero <= (state.phase === 'fewer' ? 2 : 8); numero++) {
+                    const chave = 'concorrente_' + numero;
+                    const itemId = 'MLB' + (9000000000 + numero);
+                    const variationId = numero === 7 ? null : String(8000000000 + numero);
+                    const preco = numero === 7 ? null : 200 + numero;
+                    const status = numero === 8 ? 'paused' : 'active';
+                    const url = 'https://produto.mercadolivre.com.br/' + itemId + (variationId ? '?variation=' + variationId : '');
+                    fonte.concorrentes_mlb[chave] = url;
+                    fonte.concorrentes_preco[chave] = preco;
+                    fonte.anuncios_loja_variacoes[chave] = variationId;
+                    fonte.anuncios_loja_status[chave] = status;
+                    fonte.anuncios_loja.push({ chave, item_id: itemId, variation_id: variationId, sku: '001',
+                        url, preco, status, motivo_preco_indisponivel: preco === null ? 'Preço pendente da variação.' : null });
+                }
+                return fonte;
+            },
+            patch: ({ payload }) => {
+                const resposta = respostaFinanceira(payload);
+                resposta.analise_concorrentes.margens_anuncios_loja = Object.fromEntries(
+                    Object.entries(payload.precos_anuncios_loja).map(([chave, preco]) => [chave, {
+                        ...resposta.analise_concorrentes.margens_anuncios_loja.concorrente_1,
+                        preco_venda: preco, margem_percentual: 25, item_id_loja: payload.anuncios_loja[chave],
+                        variation_id: payload.variacoes_anuncios_loja[chave],
+                    }]),
+                );
+                return resposta;
+            },
+        }), async env => {
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb8')?.textContent.includes('%'));
+            assert.strictEqual(await env.page.locator('.analysis-offer.own a').count(), 8);
+            assert.strictEqual(await env.page.locator('.analysis-variation').count(), 7);
+            assert.strictEqual(await env.page.locator('#lblMlb8 a').getAttribute('href'),
+                'https://produto.mercadolivre.com.br/MLB9000000008?variation=8000000008');
+            assert.match(await env.page.locator('#lblMlb8').textContent(), /Pausado/);
+            assert.strictEqual(await env.page.locator('#vMlb7').textContent(), '-');
+            assert.strictEqual(await env.page.locator('#vMargemMlb7').textContent(), 'Margem: -');
+            const payload = env.state.patches[0].payload;
+            assert.strictEqual(Object.keys(payload.anuncios_loja).length, 8);
+            assert.strictEqual(Object.keys(payload.precos_anuncios_loja).length, 7);
+            assert.strictEqual(payload.variacoes_anuncios_loja.concorrente_8, '8000000008');
+            assert.strictEqual(payload.precos_anuncios_loja.concorrente_8, 208);
+            assert.strictEqual(payload.revisao_fontes_custo, 'a'.repeat(64));
+            assert.match(payload.assinatura_calculo, /^[a-f0-9]{64}$/,
+                'A identidade da variação acompanha a revisão e a assinatura do custo compartilhado.');
+            assert.strictEqual(await env.page.evaluate(() => window.fixturePrices.some(item => item.itemId.startsWith('MLB900'))), false,
+                'O enriquecimento público não deve trocar a promoção pela de outra variação.');
+            if (process.env.JK_SKU_ADS_SCREENSHOT) {
+                await env.page.setViewportSize({ width: 1680, height: 1050 });
+                await env.page.screenshot({ path: process.env.JK_SKU_ADS_SCREENSHOT, fullPage: true });
+            }
+            await env.page.evaluate(() => {
+                contextoDetalheSku.ultimasMargensConfirmadas = {};
+                const alterada = JSON.parse(JSON.stringify(ultimaAnaliseConcorrentes));
+                alterada.margens_anuncios_loja.concorrente_8.variation_id = '9999999999';
+                aplicarAnaliseConcorrentes(alterada, contextoDetalheSku.ofertasCompactas);
+            });
+            assert.strictEqual(await env.page.locator('#vMargemMlb8').textContent(), 'Margem: -');
+            env.state.phase = 'fewer';
+            await env.page.evaluate(async () => {
+                const links = await buscarLinksConcorrentes('001', contextoDetalheSku, true);
+                aplicarLinksCacheSku(links);
+            });
+            assert.strictEqual(await env.page.locator('.analysis-offer.own a').count(), 2);
+            assert.strictEqual(await env.page.locator('#lblMlb8').count(), 0,
+                'Uma nova consulta com menos anúncios deve remover os cartões anteriores.');
+        });
+
         await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
             await open(env);
             await aguardarMargens(env);

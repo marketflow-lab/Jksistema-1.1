@@ -6,7 +6,7 @@ import math
 from copy import deepcopy
 import re
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import requests
 from fastapi import HTTPException
@@ -18,7 +18,7 @@ from backend.services.perguntas_loading_transport import read_budget
 from backend.services.perguntas_store_config import obter_cfg_ml_snapshot
 
 
-LIMITE_ANUNCIOS = 5
+LIMITE_ANUNCIOS = None  # Compatibility export: there is no display truncation.
 TAMANHO_PAGINA = 50
 LIMITE_CANDIDATOS = 100
 LIMITE_PAGINAS = 3
@@ -80,11 +80,11 @@ def _skus_declarados(item: dict) -> set[str]:
 
 
 def anuncio_corresponde_sku_exato(item: dict, sku: str) -> bool:
-    """Require literal SKU evidence; every variation must agree explicitly.
+    """Require literal SKU evidence in the item or a specific variation.
 
     Current SKU attributes take precedence over a legacy custom field.
-    Titles, partial matches, compound SKUs and a parent's SKU alone cannot
-    authorize a variation whose own SKU is absent or different.
+    A parent's SKU cannot authorize a variation whose own SKU is absent.
+    Other variations may belong to other SKUs without hiding this item.
     """
     target = _sku_texto(sku)
     if not isinstance(item, dict) or not target:
@@ -96,11 +96,48 @@ def anuncio_corresponde_sku_exato(item: dict, sku: str) -> bool:
     if not isinstance(variations, list):
         return False
     if variations:
-        return (not parent or parent == {target}) and all(
+        return any(
             isinstance(variation, dict) and _skus_declarados(variation) == {target}
             for variation in variations
         )
     return parent == {target}
+
+
+def _variation_id(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    text = _sku_texto(value)
+    return text if re.fullmatch(r"[1-9]\d*", text) else None
+
+
+def _variacoes_sku(item: dict, sku: str) -> list[dict]:
+    variations = item.get("variations")
+    if not isinstance(variations, list):
+        return []
+    return [variation for variation in variations
+            if isinstance(variation, dict) and _skus_declarados(variation) == {sku}]
+
+
+def resolver_variacao_sku(item: dict, sku: str, variation_id: Any = None) -> dict | None:
+    """Select only an explicitly matching variation, ordered by its valid ID.
+
+    Multiple variations of the same SKU are represented once per advertisement.
+    The response also carries every matching ID; a caller may explicitly select
+    another matching ID, but an absent or foreign ID never falls back silently.
+    """
+    if not isinstance(item, dict) or not _sku_texto(sku):
+        return None
+    variations = [variation for variation in _variacoes_sku(item, _sku_texto(sku))
+                  if _variation_id(variation.get("id")) is not None]
+    variations = [variation for variation in variations if sum(
+        isinstance(candidate, dict) and _variation_id(candidate.get("id")) == _variation_id(variation["id"])
+        for candidate in item.get("variations") or []
+    ) == 1]
+    if variation_id is not None:
+        exact = _variation_id(variation_id)
+        return next((variation for variation in variations
+                     if exact and _variation_id(variation.get("id")) == exact), None)
+    return min(variations, key=lambda variation: int(variation["id"]), default=None)
 
 
 def _preco(item: dict) -> float | None:
@@ -113,18 +150,41 @@ def _preco(item: dict) -> float | None:
         return None
     if not math.isfinite(price) or price <= 0 or item.get("currency_id") != "BRL":
         return None
-    for variation in item.get("variations") or []:
-        if variation.get("price") is None:
-            continue
-        if isinstance(variation["price"], bool):
-            return None
-        try:
-            variation_price = float(variation["price"])
-        except (ValueError, TypeError):
-            return None
-        if not math.isfinite(variation_price) or abs(variation_price - price) > .005:
-            return None
     return price
+
+
+def _preco_variacoes(item: dict, variations: list[dict]) -> float | None:
+    prices = [_preco({"price": variation.get("price"), "currency_id": item.get("currency_id")})
+              for variation in variations]
+    if not prices or any(price is None for price in prices):
+        return None
+    return prices[0] if all(abs(price - prices[0]) <= .005 for price in prices) else None
+
+
+def _preco_compartilhado(item: dict) -> bool:
+    """sale_price is item-scoped; never reuse it across differing variants.
+
+    The official classic-variation contract requires the same price across all
+    variations. There is no documented variation_id filter for sale_price.
+    """
+    variations = item.get("variations") or []
+    if not variations:
+        return True
+    if any(not isinstance(variation, dict) for variation in variations):
+        return False
+    shared = _preco_variacoes(item, variations)
+    parent = _preco(item)
+    return shared is not None and (parent is None or abs(shared - parent) <= .005)
+
+
+def _url_variacao(url: str, variation_id: str | None) -> str:
+    if variation_id is None:
+        return url
+    parsed = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+             if key not in {"variation", "variation_id"}]
+    query.append(("variation", variation_id))
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def _url(item: dict, item_id: str) -> str | None:
@@ -250,7 +310,7 @@ def confirmar_escopo_anuncios_sku(client_id: str, resultado: dict) -> None:
 
 
 def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str, *, cache_scope: str = "") -> dict:
-    """Read the selected account only; publish at most five verified own ads."""
+    """Read every verified active and paused ad in the selected account."""
     target = _sku_texto(sku)
     store_id = str((lista or {}).get("store_id") or "").strip()
     if not store_id:
@@ -272,11 +332,16 @@ def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
     try:
         with read_budget(TEMPO_TOTAL_SEGUNDOS):
             ads = []
+            sale_price_items = set()
+            seen = set()
             total_candidatos = 0
             for status in ("active", "paused"):
                 candidates = _buscar_ids(client_id, scope, target, status)
                 total_candidatos += len(candidates)
                 for item_id in candidates:
+                    if item_id in seen:
+                        _erro(409, "sku_ads_catalog_changed", "O status dos anúncios mudou durante a consulta. Tente novamente.")
+                    seen.add(item_id)
                     response = _get(client_id, scope, "items/" + item_id, params={"include_attributes": "all"})
                     if getattr(response, "status_code", None) == 404:
                         continue
@@ -287,30 +352,61 @@ def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
                         _erro(409, "sku_ads_item_identity_mismatch", "O Mercado Livre não confirmou o anúncio desta conta e site.")
                     if item.get("status") != status or not anuncio_corresponde_sku_exato(item, target):
                         continue
-                    price = _preco(item)
                     url = _url(item, item_id)
-                    if price is None or url is None:
+                    if url is None:
                         continue
-                    ads.append({"item_id": item_id, "preco": price, "url": url, "status": status,
-                                "seller_id": scope["seller_id"], "site_id": "MLB", "sku": target})
-                if ads:
-                    break
-            for ad in ads[:LIMITE_ANUNCIOS]:
+                    variations = _variacoes_sku(item, target)
+                    selected = resolver_variacao_sku(item, target)
+                    variation_id = _variation_id(selected.get("id")) if selected else None
+                    variation_ids = sorted({_variation_id(variation.get("id")) for variation in variations
+                                            if _variation_id(variation.get("id"))}, key=int)
+                    price = _preco_variacoes(item, variations) if variations else _preco(item)
+                    ad = {"item_id": item_id, "preco": price, "preco_cadastrado": price,
+                          "url": _url_variacao(url, variation_id), "status": status,
+                          "seller_id": scope["seller_id"], "site_id": "MLB", "sku": target,
+                          "variation_id": variation_id, "variation_ids": variation_ids}
+                    if variations and (selected is None or len(variation_ids) != len(variations)):
+                        ad["preco"] = None
+                        ad["motivo_preco_indisponivel"] = "O Mercado Livre não identificou todas as variações deste SKU."
+                    elif price is None:
+                        ad["motivo_preco_indisponivel"] = "O preço das variações deste SKU não foi confirmado."
+                    if status == "active":
+                        ad["preco"] = None
+                        if (_preco_compartilhado(item) and
+                                (not variations or (variation_id is not None and len(variation_ids) == len(variations)))):
+                            sale_price_items.add(item_id)
+                        else:
+                            ad["motivo_preco_indisponivel"] = "O preço de venda não foi confirmado para a variação deste SKU."
+                    ads.append(ad)
+            for ad in ads:
                 if ad["status"] == "paused":
                     continue  # Preço cadastrado para simulação, sem oferta vigente.
-                response = _get(client_id, scope, f"items/{ad['item_id']}/sale_price",
-                                params={"context": "channel_marketplace"})
-                _exigir_resposta(response)
-                sale = _json(response)
-                if not isinstance(sale, dict):
-                    _erro(502, "sku_ads_invalid_response", "O Mercado Livre retornou um preço de venda inválido.")
+                if ad["item_id"] not in sale_price_items:
+                    continue
+                try:
+                    response = _get(client_id, scope, f"items/{ad['item_id']}/sale_price",
+                                    params={"context": "channel_marketplace"})
+                    if getattr(response, "status_code", None) in (401, 403):
+                        _exigir_resposta(response)
+                    sale = _json(response) if getattr(response, "status_code", None) == 200 else None
+                except requests.RequestException:
+                    sale = None
+                except HTTPException as erro:
+                    if erro.status_code != 502:
+                        raise
+                    sale = None
                 # The item price is only a listing check. A missing sale price cannot quote a margin.
-                ad["preco"] = _preco({"price": sale.get("amount"), "currency_id": sale.get("currency_id")})
+                ad["preco"] = (_preco({"price": sale.get("amount"), "currency_id": sale.get("currency_id")})
+                               if isinstance(sale, dict) else None)
+                if ad["preco"] is None:
+                    ad["motivo_preco_indisponivel"] = "O preço de venda atual não foi confirmado pelo Mercado Livre."
+                else:
+                    ad.pop("motivo_preco_indisponivel", None)
             _cfg_atual(client_id, scope)  # Recheck authorization after the last network response.
             return {"store_id": scope["store_id"], "loja": scope["loja"], "seller_id": scope["seller_id"],
-                    "site_id": "MLB", "anuncios": ads[:LIMITE_ANUNCIOS],
+                    "site_id": "MLB", "anuncios": ads, "anuncios_versao": 2,
                     "total_encontrado": len(ads), "total_candidatos": total_candidatos,
-                    "limite": LIMITE_ANUNCIOS, "truncado": len(ads) > LIMITE_ANUNCIOS}
+                    "limite": LIMITE_ANUNCIOS, "truncado": False}
     except requests.Timeout:
         _erro(504, "sku_ads_timeout", "Tempo limite ao consultar os anúncios próprios deste SKU.")
     except requests.RequestException:
