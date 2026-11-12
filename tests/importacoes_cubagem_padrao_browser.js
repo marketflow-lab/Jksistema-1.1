@@ -118,7 +118,7 @@ async function environment(browser, options = {}) {
         await historico.page.goto('http://jk.test/importacoes_sku.html?lista_id=A&sku=H');
         await historico.page.waitForFunction(() => document.getElementById('vSku').textContent === 'H');
         assert.strictEqual(await historico.page.locator('#vM3').textContent(), '0,3000');
-        assert.strictEqual(await historico.page.locator('[data-card-id="kv_m3"]').innerText(), 'Metragem do lote (m³)\n0,3000');
+        assert.strictEqual(await historico.page.locator('[data-card-id="kv_m3"]').innerText(), 'M3\n0,3000');
         historico.state.detailGate.resolve();
         await historico.page.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro atual');
         assert.strictEqual(await historico.page.locator('#vM3').textContent(), '0,3000', 'Cadastro async divergente preserva o snapshot histórico');
