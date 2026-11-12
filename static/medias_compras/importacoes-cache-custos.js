@@ -216,7 +216,8 @@
         const options = opcoes(raw);
         const scope = options.contexto && await cache()?.chaveEscopo?.(options.contexto);
         if (!vigente(options)) throw new Error('Análise substituída.');
-        const key = 'jk:importacoes:analise:' + (scope || 'sem-cache') + ':' + options.listaId;
+        const key = 'jk:importacoes:analise:' + (scope || 'sem-cache') + ':'
+            + JSON.stringify([options.storeId, options.listaId, skuExato(raw.sku)]);
         const rodar = () => {
             if (!vigente(options)) throw new Error('Análise substituída.');
             return executar();

@@ -22,7 +22,8 @@ const obrigatorios = [
     "'/concorrentes-links'",
     "definirEstadoMargensAutomaticas(item, 'fila')",
     "definirEstadoMargensAutomaticas(item, 'analisando')",
-    'for (const item of pendentes)',
+    'while (pendentes.length)',
+    'priorizarPendentesMargens(pendentes)',
     'await window.JKImportacoesCacheCustos.comTravaAnalise(',
     "item.analise_simulacao_importacao_sku = resultado.analise_concorrentes",
     'data-coluna="margens_concorrentes"',
@@ -48,7 +49,7 @@ if (!(renderInicial >= 0 && disparoAutomatico > renderInicial)) {
 }
 
 const inicioFila = html.indexOf('async function analisarMargensConcorrentesAutomaticamente');
-const inicioLoop = html.indexOf('for (const item of pendentes)', inicioFila);
+const inicioLoop = html.indexOf('while (pendentes.length)', inicioFila);
 const esperaSku = html.indexOf('await window.JKImportacoesCacheCustos.comTravaAnalise(', inicioLoop);
 if (!(inicioFila >= 0 && inicioLoop > inicioFila && esperaSku > inicioLoop)) {
     throw new Error('Os SKUs devem ser processados sequencialmente para preservar a persistência da lista.');

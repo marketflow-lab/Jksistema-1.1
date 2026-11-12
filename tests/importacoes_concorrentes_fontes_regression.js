@@ -11,9 +11,9 @@ const skuHtml = fs.readFileSync(path.join(root, 'static/importacoes_sku.html'), 
 function sourceFunction(html, name) {
     const match = new RegExp('^        (?:async )?function ' + name + '\\(', 'm').exec(html);
     assert(match, 'Função real ausente: ' + name);
-    const end = html.indexOf('\n        }', match.index);
-    assert(end > match.index, 'Fim da função ausente: ' + name);
-    return html.slice(match.index, end + '\n        }'.length);
+    const closing = /^        }[ \t]*\r?$/m.exec(html.slice(match.index));
+    assert(closing, 'Fim da função ausente: ' + name);
+    return html.slice(match.index, match.index + closing.index + closing[0].length);
 }
 
 function loadFunctions(html, names, bindings) {
@@ -34,6 +34,16 @@ function deferred() {
 
 function ownRevision() {
     return { anuncios_versao: 2, anuncios_loja: [], anuncios_consultado_em_ms: Date.now() };
+}
+
+function installMarginCache(window) {
+    const entries = new Map(), session = {};
+    Object.assign(window, { setTimeout, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
+        dispatchEvent: () => {}, addEventListener: () => {}, localStorage: { setItem: () => {} },
+        JKCachePersistente: { contexto: () => session, vigente: () => true, podeManterDados: () => true,
+            chaveEscopo: async () => 'fixture', ler: async key => entries.has(key) ? { dados: structuredClone(entries.get(key)) } : null,
+            atualizar: async (key, update) => { entries.set(key, structuredClone(update(entries.get(key)))); return true; } } });
+    vm.runInNewContext(fs.readFileSync(path.join(root, 'static/medias_compras/importacoes-cache-margens.js'), 'utf8'), { window });
 }
 
 function sourceRow(version = 2) {
@@ -66,6 +76,8 @@ function listHarness(loja = 'JK Peças') {
         controladoresAuxiliares: new Set(),
         estadosAnaliseMargensAutomaticas: new Map(),
         cicloAnaliseMargensAutomaticas: 0,
+        cacheMargensLista: {}, filaMargensLista: null, ultimosItensCarregados: [],
+        agendarAtualizacaoMargensLista: () => {},
         ultimaListaCarregada: { loja, store_id: 'store-lista' },
         calculosUnitariosLista: {},
         chaveSkuCustoCadastro: sku => String(sku || '').trim().toUpperCase(),
@@ -107,19 +119,22 @@ function listHarness(loja = 'JK Peças') {
                     variation_id: body.variacoes_anuncios_loja?.[key] ?? null,
                     seller_id: fonte.anuncios_loja_seller_id || '', site_id: fonte.anuncios_loja_site_id || '',
                 }]));
-            return response({ analise_concorrentes: { ...body, ...ownRevision(), store_id: 'store-lista',
+            return response({ analise_concorrentes: { ...body, ...ownRevision(), store_id: 'store-lista', atualizado_em: new Date().toISOString(),
                 anuncios_loja_store_id: 'store-lista', anuncios_loja: fonte.anuncios_loja || [],
                 margens: margens(body.precos_concorrentes), margens_anuncios_loja: margens(body.precos_anuncios_loja) } });
         },
     };
+    installMarginCache(bindings.window);
     const context = loadFunctions(listHtml, [
         'normTxt', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
         'montarPayloadMargensAutomaticas', 'consultarAnaliseLista', 'carregarFontesMargensAutomaticas',
         'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes', 'carregarAnunciosMargensAutomaticas',
         'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
+        'opcoesCacheMargensLista', 'restaurarMargensCompartilhadasLista', 'priorizarPendentesMargens',
     ], bindings);
     const analisar = context.analisarMargensConcorrentesAutomaticamente;
     context.analisarMargensConcorrentesAutomaticamente = (id, itens) => {
+        context.ultimosItensCarregados = itens;
         for (const item of itens) context.calculosUnitariosLista[item.SKU] ||= {
             calculo: { custoUnitario: 23.75 }, revisao: 'a'.repeat(64), assinatura: 'b'.repeat(64),
         };
@@ -175,10 +190,11 @@ async function verifySkuContextAndVersion() {
         },
     };
     const context = loadFunctions(skuHtml, [
-        'normSku', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes',
+        'normSku', 'extrairCodigoMlbOferta', 'buscarLinksConcorrentes', 'fontesDadosParaLinksSku',
         'fontesAnunciosDaLista', 'custoSimuladoDisponivel',
         'numerosComparacoesAnalise', 'prepararCartoesAnalise',
         'aplicarLinksCacheSku', 'coletarAnaliseConcorrentes', 'salvarAnaliseConcorrentes',
+        'opcoesCacheMargensSku', 'identidadeFontesSku',
     ], bindings);
     const sources = await context.buscarLinksConcorrentes('D104-32', current);
     const requested = new URL(calls[0].url, 'http://fixture');
@@ -288,7 +304,8 @@ async function verifyCanonicalStoreRevision() {
     state.sources['D104-32'].anuncios_loja_store_id = 'outra-loja';
     await context.analisarMargensConcorrentesAutomaticamente('JK61', [item]);
     assert.strictEqual(state.patches.length, 4, 'Uma fonte de outra loja não gera PATCH.');
-    assert.strictEqual(item.analise_simulacao_importacao_sku, salvo);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(item.analise_simulacao_importacao_sku)), JSON.parse(JSON.stringify(salvo)),
+        'Fonte de outra loja conserva o conteúdo da última análise autorizada, inclusive após restaurar sua cópia.');
 }
 
 async function verifyLateResponses() {

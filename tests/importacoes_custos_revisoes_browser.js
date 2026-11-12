@@ -15,7 +15,8 @@ const gate = () => { let resolve; const promise = new Promise(done => { resolve 
 async function environment(browser, segundaLinha = false) {
     const context = await browser.newContext();
     const state = { errors: [], requests: [], costsVersion: 'c1', cost: 80, baseVersion: rev('a'),
-        baseDownloads: 0, costDownloads: 0, patches: [], hold: null, clockOffset: 0 };
+        baseDownloads: 0, costDownloads: 0, patches: [], hold: null, clockOffset: 0,
+        sourceReads: 0, holdFontes: null, failFinance: false, marketPrice: 85.89, marketMargin: 30.97 };
     const item = { SKU: '47', Quantidade: 150, 'Valor unidade': 3, 'Valor total': 450,
         M3: .0491693877, 'M3 individual': .0491693877 / 150, 'Cubagem status': 'historico',
         II: 18, IPI: 0, PIS: 3.12, COFINS: 14.37, 'ST Minas': 'Não', 'ST Paraíba': 'Não',
@@ -32,11 +33,14 @@ async function environment(browser, segundaLinha = false) {
         itens: lista.itens.map(row => ({ ...row, fiscal: row.SKU === '47' ? fiscal : {
             convenio_mg_st_minas: 'Sim', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '71,78%' }, fiscal_pronto: true })),
         rateio: { total_usd: 450, total_m3: item.M3, m3_completo: true, valor_por_m3: 300 } });
-    const fontes = () => ({ success: true, fontes_versao: 3, consultado_em_ms: Date.now(),
+    const fontes = (sku = '47') => ({ success: true, fontes_versao: 3, consultado_em_ms: Date.now() + state.clockOffset,
         anuncios_loja_fonte: 'loja_lista_sku', anuncios_loja_store_id: 'store-A',
-        anuncios_loja_seller_id: 'seller-A', anuncios_loja_site_id: 'MLB',
+        anuncios_loja_seller_id: 'seller-A', anuncios_loja_site_id: 'MLB', anuncios_versao: 2,
+        anuncios_loja: [{ chave: 'concorrente_1', item_id: 'MLB9876543210', variation_id: null,
+            url: 'https://produto.mercadolivre.com.br/MLB-9876543210', preco: null, status: 'paused',
+            sku, seller_id: 'seller-A', site_id: 'MLB' }], anuncios_loja_variacoes: { concorrente_1: null },
         concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
-        concorrentes_valores: { concorrente_1: 85.89 },
+        concorrentes_valores: { concorrente_1: state.marketPrice },
         concorrentes_mlb: { concorrente_1: 'MLB9876543210' }, concorrentes_preco: {},
         anuncios_loja_status: { concorrente_1: 'paused' } });
     await context.addInitScript(() => {
@@ -80,10 +84,15 @@ async function environment(browser, segundaLinha = false) {
                 rateio: base().rateio, revisao: state.baseVersion, revisao_fontes_custo: state.baseVersion,
                 anuncios_identidade: { seller_id: 'seller-A', site_id: 'MLB', fontes_versao: 3 } });
         }
-        if (p === '/api/medias-compras/concorrentes-links') return json(route, fontes());
+        if (p === '/api/medias-compras/concorrentes-links') {
+            state.sourceReads++;
+            if (state.holdFontes) await state.holdFontes.promise;
+            return json(route, fontes(url.searchParams.get('sku') || '47'));
+        }
         const analise = p.match(/\/skus\/([^/]+)\/analise-concorrentes$/);
         if (analise) {
             const payload = req.postDataJSON(); state.patches.push(payload);
+            if (state.failFinance) return json(route, { detail: 'Consulta financeira temporariamente indisponível.' }, {}, 503);
             if (segundaLinha && state.patches.length === 1) {
                 // The following SKU still runs after the former global 120-second deadline.
                 await context.pages()[0].evaluate(() => { Date.now = ((now) => () => now() + 121000)(Date.now); });
@@ -92,10 +101,13 @@ async function environment(browser, segundaLinha = false) {
             assert.equal(payload.revisao_fontes_custo, state.baseVersion);
             assert.match(payload.assinatura_calculo, /^[a-f0-9]{64}$/);
             const row = lista.itens.find(row => row.SKU === analise[1]);
-            const dados = { preco_venda: 85.89, custo_unitario: payload.custo_unitario, fonte_custo: payload.fonte_custo,
-                margem_percentual: row.SKU === '47' ? 30.97 : 41.04,
+            const dados = { preco_venda: state.marketPrice, custo_unitario: payload.custo_unitario, fonte_custo: payload.fonte_custo,
+                margem_percentual: row.SKU === '47' ? state.marketMargin : 41.04,
                 item_id_loja: 'MLB9876543210', store_id: 'store-A', seller_id: 'seller-A', site_id: 'MLB', financeiro_exato: true };
-            row.analise_simulacao_importacao_sku = { ...payload, store_id: 'store-A',
+            row.analise_simulacao_importacao_sku = { ...payload, store_id: 'store-A', anuncios_versao: 2,
+                anuncios_loja_store_id: 'store-A', anuncios_loja_seller_id: 'seller-A', anuncios_loja_site_id: 'MLB',
+                anuncios_consultado_em_ms: Date.now() + state.clockOffset, anuncios_loja: fontes(row.SKU).anuncios_loja,
+                atualizado_em: new Date(Date.now() + state.clockOffset).toISOString(),
                 margens: { concorrente_1: dados }, margens_anuncios_loja: {} };
             return json(route, { analise_concorrentes: row.analise_simulacao_importacao_sku });
         }
@@ -118,7 +130,7 @@ async function waitText(locator, expected) {
     await locator.evaluate(el => delete el.dataset.check);
 }
 
-(async () => {
+async function executar() {
     const browser = await chromium.launch({ headless: true });
     try {
         const env = await environment(browser), { context, state } = env;
@@ -188,4 +200,6 @@ async function waitText(locator, expected) {
         await c59.context.close();
         console.log('Importações: cache por revisão, C59 isolada SKUs47/385-4 com custo e margem iguais na lista/detalhe: OK');
     } finally { await browser.close(); }
-})().catch(error => { console.error(error); process.exitCode = 1; });
+}
+module.exports = { environment, origin, api, unit, cost, waitText, gate, rev, norm };
+if (require.main === module) executar().catch(error => { console.error(error); process.exitCode = 1; });

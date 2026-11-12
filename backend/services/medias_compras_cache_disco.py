@@ -77,6 +77,7 @@ def calculation_revision():
     paths = set(services.glob("medias_compras*.py")) | set(services.glob("cadastro*.py"))
     paths.update((services / "bling_vendas.py", root / "medias_compras.py",
                   services / "importacoes_base_custos.py", services / "importacoes_sku_detalhe.py",
+                  services / "importacoes_financeiro.py",
                   services / "impostos_regras.py", services / "impostos_ncm.py"))
     digest = hashlib.sha256(CALCULATION_VERSION.encode("ascii"))
     for path in sorted(paths):

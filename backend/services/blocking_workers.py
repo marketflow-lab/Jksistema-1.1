@@ -14,6 +14,7 @@ _Result = TypeVar("_Result")
 _HEAVY_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_heavy_worker_limiter")
 _FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_financial_worker_limiter")
 _IMPORT_OFFER_LIMITERS: RunVar[dict[str, anyio.CapacityLimiter]] = RunVar("jk_import_offer_limiters")
+_IMPORT_FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_import_financial_limiter")
 _PENDING_WORKERS: RunVar[set[asyncio.Task]] = RunVar("jk_pending_blocking_workers")
 HEAVY_WORKER_LIMIT = 2
 FINANCIAL_WORKER_LIMIT = 1
@@ -63,6 +64,16 @@ async def run_financial(function: Callable[..., _Result], *args, **kwargs) -> _R
 async def run_blocking(function: Callable[..., _Result], *args, **kwargs) -> _Result:
     """Use normal worker admission for short operational reads such as stores."""
     return await _run_worker(partial(function, *args, **kwargs), None)
+
+
+async def run_import_financial(function: Callable[..., _Result], *args, **kwargs) -> _Result:
+    """One serial list plus an interactive SKU, without occupying local-read slots."""
+    try:
+        limiter = _IMPORT_FINANCIAL_LIMITER.get()
+    except LookupError:
+        limiter = anyio.CapacityLimiter(2)
+        _IMPORT_FINANCIAL_LIMITER.set(limiter)
+    return await _run_worker(partial(function, *args, **kwargs), limiter)
 
 
 async def run_import_offer_source(

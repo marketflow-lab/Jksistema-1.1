@@ -56,6 +56,8 @@ function fontesFinanceiras(id = 'A') {
     return {
         anuncios_versao: 2,
         anuncios_loja_store_id: 'store-' + id, anuncios_loja_nome: 'Loja ' + id,
+        anuncios_loja_seller_id: 'seller-store-' + id, anuncios_loja_site_id: 'MLB', fontes_versao: 7,
+        consultado_em_ms: Date.now(),
         anuncios_loja_fonte: 'loja_lista_sku',
         concorrentes: { concorrente_1: 'https://produto.mercadolivre.com.br/MLB-1234567890' },
         concorrentes_valores: { concorrente_1: id === 'A' ? 'R$ 200,00' : 'R$ 250,00' },
@@ -73,6 +75,7 @@ function margemSimulada(custo, preco) {
 function respostaFinanceira(payload, margemPropria = null, storeId = 'store-A') {
     const dados = preco => ({
         preco_venda: preco, item_id_loja: payload.anuncios_loja.concorrente_1, financeiro_exato: true,
+        variation_id: payload.variacoes_anuncios_loja?.concorrente_1 || null,
         loja: 'Loja ' + storeId.slice(-1), store_id: storeId, seller_id: 'seller-' + storeId, site_id: 'MLB',
         fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario,
         imposto_valor: preco * .1, tarifa_ml: preco * .15, frete_ml: 8,
@@ -81,6 +84,7 @@ function respostaFinanceira(payload, margemPropria = null, storeId = 'store-A') 
     });
     return { analise_concorrentes: {
         fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario, store_id: storeId,
+        fontes_versao: payload.fontes_versao,
         revisao_fontes_custo: payload.revisao_fontes_custo, assinatura_calculo: payload.assinatura_calculo,
         margens: { concorrente_1: dados(payload.precos_concorrentes.concorrente_1) },
         margens_anuncios_loja: { concorrente_1: { ...dados(payload.precos_anuncios_loja.concorrente_1),
@@ -108,6 +112,13 @@ async function aguardarMargens(env) {
             && document.getElementById('vMargemMlb1').textContent === 'Margem: ' + fmtPct(margem(propria))
             && document.getElementById('vMargemConcorrente1').textContent === 'Margem: ' + fmtPct(margem(mercado));
     });
+}
+
+async function aguardarMargensCompactas(env) {
+    await env.page.waitForFunction(() => contextoDetalheSku?.compactoConfirmado
+        && contextoDetalheSku?.consultaOfertasCompactas?.financeiroCompleto
+        && /^Margem: .+%/.test(document.getElementById('vMargemMlb1').textContent)
+        && /^Margem: .+%/.test(document.getElementById('vMargemConcorrente1').textContent));
 }
 
 async function waitUntil(predicate, message) {
@@ -1152,6 +1163,192 @@ async function run(browser, name, options, check) {
         });
 
         const instante = new Date('2026-11-04T12:00:00Z').getTime();
+        await run(browser, 'cache financeiro reaproveita em 61s e renova tarifas após 15 minutos', opcoesFinanceiras({
+            compact: ({ id, saved, state }) => detalheCompacto(id, saved, { revisao: 'detalhe-' + state.phase }),
+            complement: ({ pathname, state }) => pathname === '/api/medias-compras/concorrentes-links'
+                ? { ...fontesFinanceiras(), consultado_em_ms: instante + (state.phase === '61s' ? 61000
+                    : state.phase === '901s' ? 901000 : 0) } : undefined,
+        }), async env => {
+            await env.page.clock.setFixedTime(new Date(instante));
+            await open(env);
+            await aguardarMargensCompactas(env);
+            await waitUntil(() => env.page.evaluate(async () => Boolean((await JKImportacoesCacheMargens.ler({
+                listaId: 'A', storeId: 'store-A', sku: '001' }))?.analise)));
+            const inicial = await env.page.evaluate(() => JKImportacoesCacheMargens.ler({ listaId: 'A', storeId: 'store-A', sku: '001' }));
+            env.state.phase = '61s';
+            await env.page.clock.setFixedTime(new Date(instante + 61000));
+            await open(env);
+            await aguardarMargensCompactas(env);
+            assert.strictEqual(env.state.patches.length, 1, 'Mesmos insumos após 61s não repetem o financeiro.');
+            assert.strictEqual(env.state.previas.length, 0);
+            const renovada = await env.page.evaluate(() => JKImportacoesCacheMargens.ler({ listaId: 'A', storeId: 'store-A', sku: '001' }));
+            assert.strictEqual(renovada.calculadoEm, inicial.calculadoEm, 'Conferir preço não rejuvenesce a tarifa.');
+            assert.strictEqual(env.state.complements.filter(path => path.endsWith('/concorrentes-links')).length, 2);
+            env.state.phase = '901s';
+            await env.page.clock.setFixedTime(new Date(instante + 901000));
+            await open(env);
+            await aguardarMargensCompactas(env);
+            assert.strictEqual(env.state.patches.length, 2, 'Tarifa e frete externos têm renovação própria.');
+        });
+
+        await run(browser, 'cache financeiro compartilhado da lista e análise do servidor dispensam PATCH no SKU',
+            opcoesFinanceiras({ compact: true }), async env => {
+            await open(env);
+            await aguardarMargensCompactas(env);
+            await waitUntil(() => env.page.evaluate(async () => Boolean((await JKImportacoesCacheMargens.ler({
+                listaId: 'A', storeId: 'store-A', sku: '001' }))?.analise)));
+            const registro = await env.page.evaluate(() => JKImportacoesCacheMargens.ler({ listaId: 'A', storeId: 'store-A', sku: '001' }));
+            registro.analise.atualizado_em = new Date(registro.calculadoEm).toISOString();
+            for (const origemRegistro of ['lista', 'servidor']) {
+                const second = await environment(browser, opcoesFinanceiras({ compact: ({ id, saved }) => {
+                    const dados = detalheCompacto(id, saved);
+                    if (origemRegistro === 'servidor') dados.item.analise_simulacao_importacao_sku = registro.analise;
+                    return dados;
+                } }));
+                try {
+                    await second.page.goto(origin + '/seed.html');
+                    await second.page.addScriptTag({ url: origin + '/medias_compras/importacoes-cache-margens.js' });
+                    if (origemRegistro === 'lista') await second.page.evaluate(async registro => {
+                        await JKImportacoesCacheMargens.salvar({ listaId: 'A', storeId: 'store-A', sku: '001', ...registro });
+                        if (await JKCachePersistente.ler('importacoes:SKU:A:001:analise:store-A'))
+                            throw new Error('A fixture da lista não pode criar cache privado do SKU.');
+                    }, registro);
+                    await open(second);
+                    await aguardarMargensCompactas(second);
+                    assert.strictEqual(second.state.patches.length, 0, origemRegistro + ': resultado compatível já existe.');
+                    assert.strictEqual(second.state.previas.length, 0);
+                    if (origemRegistro === 'lista') assert.strictEqual(second.state.complements
+                        .filter(path => path.endsWith('/concorrentes-links')).length, 0, 'Fontes recentes também são compartilhadas.');
+                    verifyCalls(second);
+                } finally { await second.close(); }
+            }
+        });
+
+        await run(browser, 'cache financeiro invalida revisão fiscal e variação mesmo com custo igual', opcoesFinanceiras({
+            compact: ({ id, saved, state }) => detalheCompacto(id, saved, {
+                revisao_fontes_custo: (state.phase === 'waiting' ? 'a' : 'b').repeat(64),
+                anuncios_identidade: { seller_id: 'seller-store-A', site_id: 'MLB',
+                    fontes_versao: state.phase === 'variacao' ? 8 : 7 },
+            }),
+            complement: ({ pathname, state }) => pathname === '/api/medias-compras/concorrentes-links'
+                ? { ...fontesFinanceiras(), fontes_versao: state.phase === 'variacao' ? 8 : 7,
+                    anuncios_loja_variacoes: state.phase === 'variacao' ? { concorrente_1: '12345' } : {} }
+                : undefined,
+        }), async env => {
+            await open(env);
+            await aguardarMargensCompactas(env);
+            const anterior = env.state.patches[0].payload;
+            env.state.phase = 'imposto';
+            await open(env);
+            await aguardarMargensCompactas(env);
+            assert.strictEqual(env.state.patches.length, 2);
+            assert.strictEqual(env.state.patches[1].payload.custo_unitario, anterior.custo_unitario);
+            assert.strictEqual(env.state.patches[1].payload.assinatura_calculo, anterior.assinatura_calculo);
+            assert.notStrictEqual(env.state.patches[1].payload.revisao_fontes_custo, anterior.revisao_fontes_custo);
+            env.state.phase = 'variacao';
+            await open(env);
+            await aguardarMargensCompactas(env);
+            assert.strictEqual(env.state.patches.length, 3);
+            assert.strictEqual(env.state.patches[2].payload.variacoes_anuncios_loja.concorrente_1, '12345');
+        });
+
+        await run(browser, 'cache financeiro indisponível permite calcular sem armazenar',
+            opcoesFinanceiras({ compact: true }), async env => {
+            await env.context.addInitScript(() => { indexedDB.open = () => { throw new Error('Cache indisponível na fixture'); }; });
+            await open(env);
+            await aguardarMargensCompactas(env);
+            assert.strictEqual(env.state.patches.length, 1);
+        });
+
+        await run(browser, 'cache financeiro autorizado não permanece visível após 403', opcoesFinanceiras({
+            compact: ({ id, saved, state }) => state.phase === 'denied'
+                ? { status: 403, body: { detail: 'Acesso revogado' } } : detalheCompacto(id, saved),
+        }), async env => {
+            await open(env);
+            await aguardarMargensCompactas(env);
+            await waitUntil(() => env.page.evaluate(async () => Boolean((await JKImportacoesCacheMargens.ler({
+                listaId: 'A', storeId: 'store-A', sku: '001' }))?.analise)));
+            env.state.phase = 'denied';
+            await open(env);
+            await env.page.waitForFunction(() => document.querySelector('.layout').children.length === 0);
+            assert.strictEqual(env.state.patches.length, 1);
+            assert.match(await env.page.locator('#cacheSkuStatus').textContent(), /negad|revogad|expirad/i);
+        });
+
+        await run(browser, 'cache financeiro sincroniza somente o SKU afetado sem recarregar detalhes',
+            opcoesFinanceiras({ compact: true }), async env => {
+            await open(env);
+            await aguardarMargensCompactas(env);
+            await env.page.waitForFunction(() => !contextoDetalheSku.atualizacaoMargensCompacta);
+            const chamadas = env.state.calls.length;
+            const fontes = env.state.complements.length;
+            const patches = env.state.patches.length;
+            const margemOriginal = await env.page.locator('#vMargemMlb1').textContent();
+            await env.page.evaluate(async () => {
+                const opcoes = { listaId: 'A', storeId: 'store-A', sku: '001' };
+                const salvo = await JKImportacoesCacheMargens.ler(opcoes);
+                window.fixtureRegistroMargem = salvo;
+                window.dispatchEvent(new CustomEvent('jk:cache-persistente-invalidado', {
+                    detail: { tags: ['analises_importacao'], origem: 'storage', revogado: false },
+                }));
+                await JKImportacoesCacheMargens.salvar({ ...opcoes, ...salvo, sku: '002' });
+            });
+            await env.page.waitForTimeout(300);
+            assert.strictEqual(env.state.calls.length, chamadas, 'Outro SKU não relê o detalhe compacto.');
+            assert.strictEqual(env.state.complements.length, fontes, 'Outro SKU não consulta fontes.');
+            assert.strictEqual(env.state.patches.length, patches);
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), margemOriginal);
+            assert.strictEqual(await env.page.evaluate(() => analiseComplementosPronta), true);
+
+            await env.page.evaluate(async () => {
+                const salvo = structuredClone(window.fixtureRegistroMargem);
+                salvo.analise.margens_anuncios_loja.concorrente_1.margem_percentual = 42;
+                await JKImportacoesCacheMargens.salvar({ listaId: 'A', storeId: 'store-A', sku: '001', ...salvo });
+            });
+            await env.page.waitForFunction(() => document.getElementById('vMargemMlb1').textContent === 'Margem: 42,00%');
+            assert.strictEqual(env.state.calls.length, chamadas);
+            assert.strictEqual(env.state.patches.length, patches, 'A análise compatível da outra aba já está pronta.');
+
+            await env.page.evaluate(async () => {
+                const salvo = structuredClone(window.fixtureRegistroMargem);
+                salvo.calculadoEm = Date.now() - 901000;
+                await JKImportacoesCacheMargens.salvar({ listaId: 'A', storeId: 'store-A', sku: '001', ...salvo });
+            });
+            await env.page.waitForFunction(() => /^Última margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            await env.page.evaluate(() => window.dispatchEvent(new CustomEvent('jk:cache-persistente-invalidado', {
+                detail: { tags: ['analises_importacao'], origem: 'storage', revogado: true },
+            })));
+            assert.strictEqual(await env.page.locator('#vMargemMlb1').textContent(), 'Margem: -',
+                'Revogação mantém a limpeza imediata das ofertas.');
+        });
+
+        await run(browser, 'cache financeiro aplica resposta que cruzou 61s e confere preços em segundo plano', opcoesFinanceiras({
+            compact: true,
+            complement: async ({ pathname, state }) => {
+                if (pathname !== '/api/medias-compras/concorrentes-links') return undefined;
+                if (state.patches.length) {
+                    const pendente = gate(); state.pending.push(pendente); await pendente.promise;
+                }
+                return { ...fontesFinanceiras(), consultado_em_ms: instante };
+            },
+            patch: async ({ payload, state }) => {
+                const pendente = gate(); state.pending.push(pendente); await pendente.promise;
+                return respostaFinanceira(payload);
+            },
+        }), async env => {
+            await env.page.clock.setFixedTime(new Date(instante));
+            await open(env);
+            await waitUntil(() => env.state.patches.length === 1 && env.state.pending.length === 1);
+            await env.page.clock.setFixedTime(new Date(instante + 61000));
+            env.state.pending[0].resolve();
+            await env.page.waitForFunction(() => /^Última margem: .+%/.test(document.getElementById('vMargemMlb1').textContent));
+            await waitUntil(() => env.state.pending.length === 2);
+            assert.strictEqual(env.state.patches.length, 1);
+            const salvo = await env.page.evaluate(() => JKImportacoesCacheMargens.ler({ listaId: 'A', storeId: 'store-A', sku: '001' }));
+            assert(salvo?.analise, 'O resultado válido permanece salvo enquanto a conferência está pendente.');
+            assert.strictEqual(salvo.calculadoEm, instante + 61000);
+        });
+
         await run(browser, 'consulta compacta reaproveita análise válida e expira margem sem perder preço', opcoesFinanceiras({
             compact: ({ id, saved, state }) => {
                 const dados = detalheCompacto(id, saved);

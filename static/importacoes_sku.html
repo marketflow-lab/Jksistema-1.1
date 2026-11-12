@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261112-custos-v1"></script>
+    <script src="/cache-persistente.js?v=20261112-margens-v1"></script>
     <script src="/medias_compras/importacoes-custo-simulado.js"></script>
-    <script src="/medias_compras/importacoes-cache-custos.js"></script>
+    <script src="/medias_compras/importacoes-cache-custos.js?v=20261112-margens-v1"></script>
+    <script src="/medias_compras/importacoes-cache-margens.js?v=20261112-margens-v1"></script>
     <style>
         :root {
             --bg: #0b0f1a;
@@ -1999,14 +2000,23 @@
             const assinatura = JSON.stringify(payload);
             if (contexto.analise?.assinatura === assinatura) return contexto.analise.promessa;
             const analise = { assinatura };
-            const executar = () => {
+            const executar = async () => {
                 if (JSON.stringify(coletarAnaliseConcorrentes()) !== assinatura) throw new Error('O custo mudou antes da análise.');
                 if (!dadosSkuVigentes(contexto) && contexto.revisaoFontesCusto
                     && window.JKCachePersistente?.podeManterDados?.(contexto.persistencia, ['importacoes', 'vendas'])) {
                     // The backend compares the economic revision before accepting the queued PATCH.
                     contexto.persistencia = window.JKCachePersistente.contexto();
                 }
-                return consultarJsonDetalheSku(
+                const fontes = contexto.ofertasCompactas || contexto.complementos?.fontes;
+                const cacheMargens = window.JKImportacoesCacheMargens;
+                const opcoesCache = opcoesCacheMargensSku(contexto);
+                const salvo = await cacheMargens?.ler({ ...opcoesCache, reler: true }).catch(() => null);
+                if (!dadosSkuVigentes(contexto) || JSON.stringify(coletarAnaliseConcorrentes()) !== assinatura)
+                    throw new Error('A análise mudou enquanto aguardava a consulta.');
+                if (cacheMargens?.mesmosInsumos(salvo, payload, identidadeFontesSku(fontes))
+                    && cacheMargens.financeiroRecente(salvo))
+                    return { analise_concorrentes: salvo.analise, calculadoEm: salvo.calculadoEm, reaproveitada: true };
+                const resposta = await consultarJsonDetalheSku(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
                     + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes', contexto,
                 {
@@ -2016,9 +2026,14 @@
                     body: JSON.stringify(payload),
                 }
                 );
+                if (dadosSkuVigentes(contexto) && JSON.stringify(coletarAnaliseConcorrentes()) === assinatura) {
+                    await cacheMargens?.salvar({ ...opcoesCacheMargensSku(contexto), payload, fontes,
+                        analise: resposta?.analise_concorrentes, calculadoEm: Date.now() }).catch(() => null);
+                }
+                return resposta;
             };
             const trava = window.JKImportacoesCacheCustos?.comTravaAnalise;
-            const promessa = (trava ? trava({ listaId, storeId: contexto.storeId, contexto: contexto.persistencia,
+            const promessa = (trava ? trava({ listaId, sku, storeId: contexto.storeId, contexto: contexto.persistencia,
                 vigente: () => detalheSkuVigente(contexto) }, executar) : executar()).catch(erro => {
                 if (Number.isInteger(erro.status) && contexto.analise === analise) contexto.analise = null;
                 throw erro;
@@ -2891,6 +2906,44 @@
             return cad;
         }
 
+        function fontesDadosParaLinksSku(data) {
+            const c = data && data.concorrentes ? data.concorrentes : {};
+            const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
+            const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
+            const p = data && data.concorrentes_preco ? data.concorrentes_preco : {};
+            return {
+                storeId: String(data.anuncios_loja_store_id || ''),
+                sellerId: String(data.anuncios_loja_seller_id || ''),
+                siteId: String(data.anuncios_loja_site_id || ''),
+                consultadoEm: Number(data.consultado_em_ms) || 0,
+                lojaNome: String(data.anuncios_loja_nome || ''),
+                fonte: data.anuncios_loja_fonte || '',
+                anunciosVersao: data.anuncios_versao || null,
+                anuncios: Array.isArray(data.anuncios_loja) ? data.anuncios_loja : [],
+                fontes_versao: data.fontes_versao || null,
+                statusAnuncios: data.anuncios_loja_status || {},
+                variacoes: data.anuncios_loja_variacoes || {},
+                links: {
+                    concorrente_1: String(c.concorrente_1 || '').trim(),
+                    concorrente_2: String(c.concorrente_2 || '').trim(),
+                    concorrente_3: String(c.concorrente_3 || '').trim(),
+                    concorrente_4: String(c.concorrente_4 || '').trim(),
+                    concorrente_5: String(c.concorrente_5 || '').trim(),
+                },
+                valores: {
+                    concorrente_1: String(v.concorrente_1 || '').trim(),
+                    concorrente_2: String(v.concorrente_2 || '').trim(),
+                    concorrente_3: String(v.concorrente_3 || '').trim(),
+                    concorrente_4: String(v.concorrente_4 || '').trim(),
+                    concorrente_5: String(v.concorrente_5 || '').trim(),
+                },
+                mlb: Object.fromEntries(Object.entries(m).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
+                    .map(([chave, valor]) => [chave, String(valor || '').trim()])),
+                preco: Object.fromEntries(Object.entries(p).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
+                    .map(([chave, valor]) => [chave, valor ?? ''])),
+            };
+        }
+
         async function buscarLinksConcorrentes(sku, contexto, somenteProprios = false) {
             const skuNorm = normSku(sku);
             const vazio = {
@@ -2931,41 +2984,7 @@
                     || data.anuncios_loja_fonte !== 'loja_lista_sku')) {
                     throw new Error('Os anúncios retornados não pertencem à loja desta lista.');
                 }
-                const c = data && data.concorrentes ? data.concorrentes : {};
-                const v = data && data.concorrentes_valores ? data.concorrentes_valores : {};
-                const m = data && data.concorrentes_mlb ? data.concorrentes_mlb : {};
-                const p = data && data.concorrentes_preco ? data.concorrentes_preco : {};
-                return {
-                    storeId: String(data.anuncios_loja_store_id || ''),
-                    sellerId: String(data.anuncios_loja_seller_id || ''),
-                    siteId: String(data.anuncios_loja_site_id || ''),
-                    consultadoEm: Number(data.consultado_em_ms) || Date.now(),
-                    lojaNome: String(data.anuncios_loja_nome || ''),
-                    fonte: data.anuncios_loja_fonte || '',
-                    anunciosVersao: data.anuncios_versao || null,
-                    anuncios: Array.isArray(data.anuncios_loja) ? data.anuncios_loja : [],
-                    fontes_versao: data.fontes_versao || null,
-                    statusAnuncios: data.anuncios_loja_status || {},
-                    variacoes: data.anuncios_loja_variacoes || {},
-                    links: {
-                        concorrente_1: String(c.concorrente_1 || '').trim(),
-                        concorrente_2: String(c.concorrente_2 || '').trim(),
-                        concorrente_3: String(c.concorrente_3 || '').trim(),
-                        concorrente_4: String(c.concorrente_4 || '').trim(),
-                        concorrente_5: String(c.concorrente_5 || '').trim(),
-                    },
-                    valores: {
-                        concorrente_1: String(v.concorrente_1 || '').trim(),
-                        concorrente_2: String(v.concorrente_2 || '').trim(),
-                        concorrente_3: String(v.concorrente_3 || '').trim(),
-                        concorrente_4: String(v.concorrente_4 || '').trim(),
-                        concorrente_5: String(v.concorrente_5 || '').trim(),
-                    },
-                    mlb: Object.fromEntries(Object.entries(m).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
-                        .map(([chave, valor]) => [chave, String(valor || '').trim()])),
-                    preco: Object.fromEntries(Object.entries(p).filter(([chave]) => /^concorrente_[1-9]\d*$/.test(chave))
-                        .map(([chave, valor]) => [chave, valor ?? ''])),
-                };
+                return fontesDadosParaLinksSku(data);
             } catch (erro) {
                 const mensagem = String(erro && erro.message || '').trim();
                 throw new Error(
@@ -3272,9 +3291,58 @@
         function assinaturaAnaliseCompacta(contexto, links) {
             const payload = coletarAnaliseConcorrentes();
             return JSON.stringify([
-                contexto.dadosCompactos.revisao, links.storeId, links.sellerId, links.siteId,
+                links.storeId, links.sellerId, links.siteId,
                 Object.entries(links.statusAnuncios || {}).sort(), links.links, payload,
-            ]);
+            ], (_chave, valor) => valor && typeof valor === 'object' && !Array.isArray(valor)
+                ? Object.fromEntries(Object.keys(valor).sort().map(chave => [chave, valor[chave]])) : valor);
+        }
+
+        function opcoesCacheMargensSku(contexto) {
+            return { listaId: contexto.listaId, storeId: contexto.storeId, sku: contexto.sku,
+                contexto: contexto.persistencia, vigente: () => dadosSkuVigentes(contexto) && contexto.podeSalvar !== false };
+        }
+
+        function identidadeFontesSku(fontes) {
+            return { storeId: fontes?.storeId, sellerId: fontes?.sellerId, siteId: fontes?.siteId };
+        }
+
+        function analiseFinanceiraRecente(registro) {
+            return window.JKImportacoesCacheMargens?.financeiroRecente({
+                ...registro, calculadoEm: registro?.calculadoEm ?? registro?.consultadoEm,
+            }) ?? false;
+        }
+
+        function copiaAnaliseCompartilhada(registro) {
+            if (!registro?.fontes || !registro?.analise) return null;
+            return { ...registro, links: fontesDadosParaLinksSku(registro.fontes),
+                consultadoEm: registro.calculadoEm };
+        }
+
+        function analiseCompactaCompativel(registro, contexto, fontes) {
+            if (!analiseUsaCustoSimuladoAtual(registro?.analise)) return false;
+            const helper = window.JKImportacoesCacheMargens;
+            return registro.payload && helper
+                ? helper.mesmosInsumos({ ...registro, fontes: helper.normalizarFontes(registro.links) },
+                    coletarAnaliseConcorrentes(), identidadeFontesSku(fontes))
+                : registro.assinatura === assinaturaAnaliseCompacta(contexto, fontes);
+        }
+
+        async function aproveitarAnaliseSalvaSku(contexto, links) {
+            const helper = window.JKImportacoesCacheMargens;
+            if (!helper || !dadosSkuVigentes(contexto)) return null;
+            const payload = coletarAnaliseConcorrentes();
+            const identidade = identidadeFontesSku(links);
+            const salvo = await helper.ler(opcoesCacheMargensSku(contexto)).catch(() => null);
+            if (!dadosSkuVigentes(contexto)) return null;
+            const copiaSalva = helper.mesmosInsumos(salvo, payload, identidade) ? copiaAnaliseCompartilhada(salvo) : null;
+            const analise = contexto.dadosCompactos?.item?.analise_simulacao_importacao_sku;
+            if (!helper.analiseCompativel(analise, payload, identidade)) return copiaSalva;
+            const calculadoEm = Date.parse(analise.atualizado_em) || 0;
+            if (copiaSalva && copiaSalva.calculadoEm >= calculadoEm) return copiaSalva;
+            const registro = await helper.salvar({ ...opcoesCacheMargensSku(contexto), analise,
+                payload, fontes: links, calculadoEm, confirmadoEm: Date.now() }).catch(() => null);
+            return registro ? copiaAnaliseCompartilhada(registro)
+                : { analise, payload, links, consultadoEm: calculadoEm, calculadoEm };
         }
 
         function idadeAnaliseValida(consultadoEm) {
@@ -3299,9 +3367,15 @@
 
         function salvarAnaliseCompacta(contexto, links, registro = {}) {
             const { contextoCarregamento, ...fontes } = links;
-            const copia = { ...registro, links: fontes };
+            const copia = { ...registro, links: fontes,
+                ...(registro.analise ? { payload: registro.payload || coletarAnaliseConcorrentes(),
+                    calculadoEm: registro.calculadoEm ?? registro.consultadoEm } : {}) };
             contexto.cacheAnaliseCompacta = copia;
             salvarDadosCompactos(contexto, chaveAnaliseCompacta(contexto), copia, ['importacoes', 'vendas', 'analises_importacao']);
+            if (copia.analise) void window.JKImportacoesCacheMargens?.salvar({
+                ...opcoesCacheMargensSku(contexto), analise: copia.analise, payload: copia.payload,
+                fontes, calculadoEm: copia.calculadoEm, confirmadoEm: links.consultadoEm,
+            }).catch(() => null);
         }
 
         async function atualizarMargensCompactas(contexto) {
@@ -3310,17 +3384,16 @@
             const links = contexto.ofertasCompactas;
             if (!fontesAnunciosDaLista(links, contexto) || !idadeAnaliseValida(links.consultadoEm)) return;
             const assinatura = assinaturaAnaliseCompacta(contexto, links);
-            const anterior = contexto.cacheAnaliseCompacta;
-            if (anterior?.assinatura === assinatura && idadeAnaliseValida(anterior.consultadoEm)
-                && idadeAnaliseValida(links.consultadoEm) && analiseUsaCustoSimuladoAtual(anterior.analise)) {
+            let anterior = contexto.cacheAnaliseCompacta;
+            if (!analiseCompactaCompativel(anterior, contexto, links) || !analiseFinanceiraRecente(anterior))
+                anterior = await aproveitarAnaliseSalvaSku(contexto, links) || anterior;
+            if (!dadosSkuVigentes(contexto) || assinatura !== assinaturaAnaliseCompacta(contexto, contexto.ofertasCompactas)) return;
+            if (analiseCompactaCompativel(anterior, contexto, links) && analiseFinanceiraRecente(anterior)) {
                 contexto.consultaOfertasCompactas.financeiroCompleto = true;
                 contexto.analisePropriaPrevia = null;
                 aplicarAnaliseConcorrentes(anterior.analise, links);
                 marcarMargensCompactas(contexto, false);
-                if (anterior.links.consultadoEm !== links.consultadoEm) {
-                    const { assinatura, analise, consultadoEm } = anterior;
-                    salvarAnaliseCompacta(contexto, links, { assinatura, analise, consultadoEm });
-                }
+                salvarAnaliseCompacta(contexto, links, { ...anterior, assinatura });
                 marcarHorarioAnalise(links.consultadoEm);
                 return;
             }
@@ -3347,8 +3420,7 @@
                     const resposta = await salvarAnaliseConcorrentes(contexto.listaId, contexto.sku);
                     if (!dadosSkuVigentes(contexto) || contexto.podeSalvar === false) return;
                     salvarCustoCompacto(contexto);
-                    if (assinatura !== assinaturaAnaliseCompacta(contexto, links)
-                        || !idadeAnaliseValida(links.consultadoEm)) return;
+                    if (assinatura !== assinaturaAnaliseCompacta(contexto, contexto.ofertasCompactas)) return;
                     const analise = resposta?.analise_concorrentes;
                     if (!analiseUsaCustoSimuladoAtual(analise)) {
                         contexto.ofertasAtualizadas = false;
@@ -3358,9 +3430,14 @@
                     contexto.consultaOfertasCompactas.financeiroCompleto = true;
                     contexto.analisePropriaPrevia = null;
                     aplicarAnaliseConcorrentes(analise, links);
-                    marcarMargensCompactas(contexto, false);
-                    salvarAnaliseCompacta(contexto, links, { assinatura, analise, consultadoEm: Date.now() });
-                    marcarHorarioAnalise(links.consultadoEm);
+                    const fontesRecentes = idadeAnaliseValida(links.consultadoEm);
+                    contexto.ofertasAtualizadas = fontesRecentes;
+                    marcarMargensCompactas(contexto, !fontesRecentes);
+                    salvarAnaliseCompacta(contexto, links, { assinatura, analise,
+                        consultadoEm: resposta.calculadoEm ?? Date.now() });
+                    if (fontesRecentes) marcarHorarioAnalise(links.consultadoEm);
+                    else statusAnaliseSku('Última margem salva · Conferindo os preços de '
+                        + new Date(links.consultadoEm).toLocaleTimeString('pt-BR'));
                 } catch (_erro) {
                     // Permite tentar de novo após timeout sem reaproveitar uma promessa rejeitada.
                     contexto.analise = null;
@@ -3381,15 +3458,30 @@
             const storeId = contexto.storeId;
             marcarMargensCompactas(contexto, true);
             statusAnaliseSku('Consultando anúncios...');
-            const cache = contexto.persistencia
+            const privado = contexto.persistencia
                 ? window.JKCachePersistente?.ler(chaveAnaliseCompacta(contexto), {
                     contexto: contexto.persistencia, permitirDesatualizado: true,
                 }) : null;
+            const compartilhado = window.JKImportacoesCacheMargens?.ler(opcoesCacheMargensSku(contexto));
+            const cache = Promise.all([Promise.resolve(privado).catch(() => null),
+                Promise.resolve(compartilhado).catch(() => null)]).then(([copia, registro]) => {
+                const comum = copiaAnaliseCompartilhada(registro);
+                if (!comum) return copia;
+                const propria = copia?.dados;
+                return (propria?.calculadoEm || propria?.consultadoEm || 0) > (comum.calculadoEm || 0)
+                    ? copia : { dados: comum };
+            });
             const consulta = {
                 storeId, renovar,
                 cache: Promise.resolve(cache).catch(() => null),
-                resultado: buscarLinksConcorrentes(contexto.sku, contexto).catch(() => null),
             };
+            consulta.resultado = consulta.cache.then(copia => {
+                const fontes = copia?.dados?.links;
+                const identidade = contexto.dadosCompactos?.anuncios_identidade;
+                if (!renovar && fontesAnunciosDaLista(fontes, contexto) && idadeAnaliseValida(fontes.consultadoEm)
+                    && (!identidade || identidadeAnunciosConfere(identidade, fontes))) return fontes;
+                return buscarLinksConcorrentes(contexto.sku, contexto);
+            }).then(fontes => { consulta.fontesDisponiveis = fontes; return fontes; }).catch(() => null);
             contexto.consultaOfertasCompactas = consulta;
             return consulta;
         }
@@ -3403,14 +3495,13 @@
             contexto.ofertasCompactas = fontes;
             contexto.ofertasProprias = fontes;
             aplicarLinksCacheSku(fontes);
-            if (mesmaIdentidade && anterior.assinatura === assinaturaAnaliseCompacta(contexto, fontes)
-                && analiseUsaCustoSimuladoAtual(anterior.analise)) {
+            if (mesmaIdentidade && analiseCompactaCompativel(anterior, contexto, fontes)) {
                 marcarMargensCompactas(contexto, true);
                 aplicarAnaliseConcorrentes(anterior.analise, fontes);
                 if (Number.isFinite(anterior.consultadoEm)) {
                     statusAnaliseSku('Atualizando · Última análise às ' + new Date(anterior.consultadoEm).toLocaleTimeString('pt-BR'));
                 }
-                return idadeAnaliseValida(anterior.consultadoEm) && idadeAnaliseValida(fontes.consultadoEm);
+                return analiseFinanceiraRecente(anterior);
             }
             return false;
         }
@@ -3425,16 +3516,19 @@
                 if (!dadosSkuVigentes(contexto) || contexto.listaAtualizada
                     || contexto.dadosCompactos !== salvo || contexto.consultaOfertasCompactas !== consulta
                     || validacao.revisao_fontes_margem !== salvo.revisao_fontes_margem
-                    || !identidadeAnunciosConfere(validacao.anuncios_identidade, copia?.dados?.links)
-                    || !idadeAnaliseValida(copia?.dados?.consultadoEm)
-                    || !idadeAnaliseValida(copia?.dados?.links?.consultadoEm)) return;
+                    || !identidadeAnunciosConfere(validacao.anuncios_identidade, copia?.dados?.links)) return;
                 restaurarAnaliseCompacta(contexto, copia.dados, validacao.anuncios_identidade);
             }).catch(() => {});
         }
 
         async function mostrarMargensPropriasPrimeiro(contexto, consulta, vigente, identidade) {
             if (!identidade || !custoSimuladoDisponivel()) return;
-            const links = await buscarLinksConcorrentes(contexto.sku, contexto, true).catch(() => null);
+            // Dê à fonte completa já em voo a oportunidade de fornecer também os anúncios próprios.
+            await Promise.race([consulta.resultado, new Promise(resolve => setTimeout(resolve, 150))]);
+            if (!vigente() || consulta.linksCompletos || consulta.fontesDisponiveis) return;
+            const fontesSalvas = contexto.ofertasProprias || contexto.cacheAnaliseCompacta?.links;
+            const links = fontesAnunciosDaLista(fontesSalvas, contexto) && idadeAnaliseValida(fontesSalvas.consultadoEm)
+                ? fontesSalvas : await buscarLinksConcorrentes(contexto.sku, contexto, true).catch(() => null);
             if (!vigente() || consulta.linksCompletos || !fontesAnunciosDaLista(links, contexto)
                 || !identidadeAnunciosConfere(identidade, links) || !idadeAnaliseValida(links.consultadoEm)) return;
 
@@ -3454,16 +3548,16 @@
                     revisao_fontes_custo, assinatura_calculo }),
             });
             const trava = window.JKImportacoesCacheCustos?.comTravaAnalise;
-            const resposta = await (trava ? trava({ listaId: contexto.listaId, storeId: contexto.storeId,
+            const resposta = await (trava ? trava({ listaId: contexto.listaId, sku: contexto.sku, storeId: contexto.storeId,
                 contexto: contexto.persistencia, vigente: () => detalheSkuVigente(contexto) }, executarPrevia)
                 : executarPrevia()).catch(() => null);
-            if (!vigente() || consulta.financeiroCompleto || !idadeAnaliseValida(links.consultadoEm)
+            if (!vigente() || consulta.financeiroCompleto
                 || !analiseUsaCustoSimuladoAtual(resposta?.analise_concorrentes)
                 || !identidadeAnunciosConfere(identidade, contexto.ofertasProprias)
                 || chaveProprias(links) !== chaveProprias(contexto.ofertasProprias)) return;
             // O renderizador rejeita individualmente cartões cujo anúncio ou preço mudou enquanto a prévia rodava.
             contexto.analisePropriaPrevia = { analise: resposta.analise_concorrentes, links };
-            marcarMargensCompactas(contexto, false, true);
+            marcarMargensCompactas(contexto, !idadeAnaliseValida(links.consultadoEm), true);
         }
 
         async function carregarAnaliseCompacta(contexto, consulta) {
@@ -3501,6 +3595,7 @@
                 await previa;
                 if (!vigente()) return;
                 contexto.ofertasAtualizadas = false;
+                consulta.resultadoIndisponivel = true;
                 const consultadoEm = contexto.ofertasCompactas?.consultadoEm;
                 const horarioSalvo = Number.isFinite(consultadoEm)
                     ? ' Preços de ' + new Date(consultadoEm).toLocaleTimeString('pt-BR') + '.' : '';
@@ -3516,6 +3611,7 @@
             analiseComplementosPronta = true;
             contexto.ofertasAtualizadas = idadeAnaliseValida(links.consultadoEm);
             if (!contexto.ofertasAtualizadas) {
+                consulta.resultadoIndisponivel = true;
                 statusAnaliseSku('Os preços aguardam confirmação. Exibindo os últimos resultados compatíveis.');
                 return;
             }
@@ -3538,15 +3634,18 @@
         function reagendarAnaliseSku(contexto) {
             if (!dadosSkuVigentes(contexto)) return;
             cancelarTemporizadorAnaliseSku();
-            if (document.hidden || !contexto.ofertasAtualizadas
+            if (document.hidden || !contexto.ofertasCompactas
                 || !contexto.consultaOfertasCompactas?.finalizada) return;
-            const financeiroEm = ultimaAnaliseConcorrentes
-                && ultimaAnaliseConcorrentes === contexto.cacheAnaliseCompacta?.analise
-                ? contexto.cacheAnaliseCompacta.consultadoEm : Infinity;
-            const consultadoEm = Math.min(contexto.ofertasCompactas.consultadoEm, financeiroEm);
+            const consultadoEm = contexto.ofertasCompactas.consultadoEm;
             const espera = consultadoEm + ANALISE_SKU_VALIDADE_MS - Date.now();
             if (espera > 0) {
                 temporizadorAnaliseSku = setTimeout(() => reagendarAnaliseSku(contexto), espera);
+                return;
+            }
+            if (contexto.consultaOfertasCompactas.resultadoIndisponivel) {
+                temporizadorAnaliseSku = setTimeout(() => {
+                    if (dadosSkuVigentes(contexto)) atualizarOfertasCompactas(contexto, true);
+                }, ANALISE_SKU_VALIDADE_MS);
                 return;
             }
             contexto.ofertasAtualizadas = false;
@@ -3563,6 +3662,7 @@
             if (consulta.aplicacao) return;
             consulta.aplicacao = carregarAnaliseCompacta(contexto, consulta).catch(() => {
                 contexto.ofertasAtualizadas = false;
+                consulta.resultadoIndisponivel = true;
                 if (detalheSkuVigente(contexto)) statusAnaliseSku('Não foi possível atualizar os anúncios agora.');
             }).finally(() => {
                 consulta.finalizada = true;
@@ -3792,6 +3892,7 @@
             consultas.analise = Promise.all([consultas.cadastro, consultas.concorrentes, consultas.previa]).then(async ([cad, resultado]) => {
                 if (!vigente() || !storeId || resultado.status !== 'fulfilled') return null;
                 const links = resultado.value;
+                consultas.fontes = links;
                 links.contextoCarregamento = contexto;
                 aplicarLinksCacheSku(links);
                 aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
@@ -4080,10 +4181,30 @@
         });
         window.addEventListener('pagehide', cancelarTemporizadorAnaliseSku);
         window.addEventListener('pageshow', () => reagendarAnaliseSku(contextoDetalheSku));
+        window.addEventListener('jk:importacoes-margens-atualizadas', evento => {
+            const contexto = contextoDetalheSku;
+            if (!contexto?.compactoConfirmado || contexto.atualizacaoMargensCompacta
+                || !dadosSkuVigentes(contexto) || contexto.listaId !== String(evento.detail?.listaId)
+                || contexto.storeId !== String(evento.detail?.storeId)
+                || (evento.detail?.sku && contexto.sku !== normSku(evento.detail.sku))) return;
+            void window.JKImportacoesCacheMargens?.ler({ ...opcoesCacheMargensSku(contexto), reler: true }).then(registro => {
+                if (!dadosSkuVigentes(contexto) || !contexto.ofertasCompactas
+                    || !window.JKImportacoesCacheMargens.mesmosInsumos(registro, coletarAnaliseConcorrentes(),
+                        identidadeFontesSku(contexto.ofertasCompactas))) return;
+                const copia = copiaAnaliseCompartilhada(registro);
+                contexto.cacheAnaliseCompacta = copia;
+                aplicarAnaliseConcorrentes(copia.analise, contexto.ofertasCompactas);
+                marcarMargensCompactas(contexto, !idadeAnaliseValida(contexto.ofertasCompactas.consultadoEm)
+                    || !window.JKImportacoesCacheMargens.financeiroRecente(registro));
+            }).catch(() => {});
+        });
         window.addEventListener('jk:cache-persistente-invalidado', evento => {
             const contexto = contextoDetalheSku;
             const origem = evento.detail?.origem;
-            const analiseAlterada = evento.detail?.tags?.includes('analises_importacao');
+            const tags = evento.detail?.tags || [];
+            const analiseAlterada = tags.includes('analises_importacao');
+            if (window.JKImportacoesCacheMargens && !evento.detail?.revogado
+                && analiseAlterada && tags.every(tag => tag === 'analises_importacao')) return;
             if (!contexto?.dadosCompactos || !['storage', 'sync'].includes(origem)
                 || (dadosSkuVigentes(contexto) && !analiseAlterada)) return;
             cancelarTemporizadorAnaliseSku();

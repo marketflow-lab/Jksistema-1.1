@@ -320,18 +320,23 @@ def buscar_anuncios_sku_da_lista(client_id: str, lista: dict, sku: str, *, cache
         _erro(404, "sku_ads_sku_not_in_list", "O SKU não pertence a esta lista de importação.")
     scope = resolver_escopo_anuncios_sku(client_id, store_id)
     if not cache_scope:
-        return _consultar_anuncios_sku(client_id, scope, target)
+        resultado = _consultar_anuncios_sku(client_id, scope, target)
+    else:
+        chave = (client_id, cache_scope, store_id, scope["loja"], scope["seller_id"], "MLB", target)
+        consulta = _CACHE_ANUNCIOS.consultar(chave, lambda: _consultar_anuncios_sku(client_id, scope, target))
+        _cfg_atual(client_id, scope)  # Cached data still requires current account access.
+        resultado = {**deepcopy(consulta.valor), "consultado_em_ms": consulta.consultado_em_ms}
+    from backend.services.importacoes_financeiro import usar_itens_verificados
 
-    chave = (client_id, cache_scope, store_id, scope["loja"], scope["seller_id"], "MLB", target)
-    consulta = _CACHE_ANUNCIOS.consultar(chave, lambda: _consultar_anuncios_sku(client_id, scope, target))
-    _cfg_atual(client_id, scope)  # Cached data still requires current account access.
-    return {**deepcopy(consulta.valor), "consultado_em_ms": consulta.consultado_em_ms}
+    usar_itens_verificados(client_id, scope, resultado.pop("_itens_financeiros", {}), cache_scope=cache_scope)
+    return resultado
 
 
 def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
     try:
         with read_budget(TEMPO_TOTAL_SEGUNDOS):
             ads = []
+            itens_financeiros = {}
             sale_price_items = set()
             seen = set()
             total_candidatos = 0
@@ -378,6 +383,7 @@ def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
                         else:
                             ad["motivo_preco_indisponivel"] = "O preço de venda não foi confirmado para a variação deste SKU."
                     ads.append(ad)
+                    itens_financeiros[item_id] = deepcopy(item)
             for ad in ads:
                 if ad["status"] == "paused":
                     continue  # Preço cadastrado para simulação, sem oferta vigente.
@@ -406,7 +412,7 @@ def _consultar_anuncios_sku(client_id: str, scope: dict, target: str) -> dict:
             return {"store_id": scope["store_id"], "loja": scope["loja"], "seller_id": scope["seller_id"],
                     "site_id": "MLB", "anuncios": ads, "anuncios_versao": 2,
                     "total_encontrado": len(ads), "total_candidatos": total_candidatos,
-                    "limite": LIMITE_ANUNCIOS, "truncado": False}
+                    "limite": LIMITE_ANUNCIOS, "truncado": False, "_itens_financeiros": itens_financeiros}
     except requests.Timeout:
         _erro(504, "sku_ads_timeout", "Tempo limite ao consultar os anúncios próprios deste SKU.")
     except requests.RequestException:

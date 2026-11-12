@@ -287,7 +287,9 @@
                             const anterior = entry?.scope === scope && entry.schema === SCHEMA
                                 && revisionMap(entry.revisions) && revisionMap(entry.revocations || {})
                                 && sameRevisions(entry.revocations || {}, revisions(REVOCATION_KEY), tags)
-                                && sameRevisions(entry.revisions, revisions(), tags) ? entry.dados : null;
+                                && (sameRevisions(entry.revisions, revisions(), tags)
+                                    || (options.permitirDesatualizado === true && entry.revocations
+                                        && dataOnlyChanges(entry.revisions, revisions(), tags))) ? entry.dados : null;
                             publicar(dados(anterior));
                         } catch (_error) { tx.abort(); }
                     };

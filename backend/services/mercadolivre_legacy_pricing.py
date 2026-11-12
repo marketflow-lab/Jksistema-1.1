@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from __future__ import annotations
+from backend.services.importacoes_financeiro import (
+    escopo_financeiro, propagar_falha_financeira, verificar_resposta_financeira,
+)
+
 import base64
 import copy
 import csv
@@ -249,6 +253,7 @@ def _ml_contexto_frete_item(item: dict, item_price: Any = None) -> dict:
     contexto = {
         "item_price": item_price if item_price not in (None, "") else item.get("price"),
         "listing_type_id": item.get("listing_type_id") or "",
+        "variation_id": item.get("variation_id"),
         "condition": item.get("condition") or "new",
         "category_id": item.get("category_id") or "",
         "mode": shipping.get("mode") or "",
@@ -299,7 +304,7 @@ def _ml_obter_frete_detalhado(
         return bool(default)
 
     def _deve_reconsultar_zero(payload: dict) -> bool:
-        if not reconsultar_zero:
+        if not reconsultar_zero or (escopo_financeiro() and payload.get("shipping_exact_for_price") is True):
             return False
         valor = _shipping_to_money((payload or {}).get("shipping_cost"))
         if valor is None or valor > 0:
@@ -334,6 +339,8 @@ def _ml_obter_frete_detalhado(
 
     conta = _escopo_cache_cotacao(cfg)
     cache_key = f"v8:{client_id}:{loja}:{conta!r}:{item_id}{contexto_cache}"
+    if escopo_financeiro():
+        cache_key += f":import:{escopo_financeiro()!r}:{contexto_frete.get('category_id')}:{contexto_frete.get('condition')}:{contexto_frete.get('variation_id')}"
     cached = _cache_get(ML_ITEM_SHIPPING_CACHE, cache_key, ML_ITEM_SHIPPING_CACHE_TTL)
     exige_frete_exato = bool(contexto_preco is not None and contexto_preco > 0 and cfg.get("user_id"))
     cache_utilizavel = bool(
@@ -546,6 +553,7 @@ def _ml_obter_frete_detalhado(
                 params=_params_frete_gratis_contexto(),
                 timeout=12,
             )
+            verificar_resposta_financeira(resp)
             if resp.status_code == 200 and _aplicar_frete_payload(
                 resp.json() or {},
                 fonte_contextual,
@@ -555,6 +563,7 @@ def _ml_obter_frete_detalhado(
                     _cache_set(ML_ITEM_SHIPPING_CACHE, cache_key, info)
                 return info, cfg
         except Exception as e:
+            propagar_falha_financeira(e)
             logger.warning(f"[ML API] Falha ao consultar frete contextual do item {item_id}: {e}")
 
     try:
@@ -572,6 +581,7 @@ def _ml_obter_frete_detalhado(
             params=params,
             timeout=12,
         )
+        verificar_resposta_financeira(resp)
         if resp.status_code == 200:
             data = resp.json() or {}
             options = data.get("options", []) or []
@@ -631,6 +641,7 @@ def _ml_obter_frete_detalhado(
                 elif buyer_cost is not None and buyer_cost <= 0:
                     info["shipping_breakdown"] = "Cliente: GrÃƒÆ’Ã‚Â¡tis | Custo ML: A calcular"
     except Exception as e:
+        propagar_falha_financeira(e)
         logger.warning(f"[ML API] Falha ao consultar frete do item {item_id}: {e}")
 
     if (info["shipping_cost"] is None or _deve_reconsultar_zero(info)) and cfg.get("user_id"):
@@ -662,6 +673,7 @@ def _ml_obter_frete_detalhado(
                     params=params_retry,
                     timeout=12,
                 )
+                verificar_resposta_financeira(resp)
                 if resp.status_code != 200:
                     continue
                 data = resp.json() or {}
@@ -672,6 +684,7 @@ def _ml_obter_frete_detalhado(
                 ):
                     break
         except Exception as e:
+            propagar_falha_financeira(e)
             logger.warning(f"[ML API] Falha ao consultar frete grÃ¡tis do item {item_id}: {e}")
 
     if conta == _escopo_cache_cotacao(cfg):
@@ -790,6 +803,8 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
 
     conta = _escopo_cache_cotacao(cfg)
     cache_key = f"v7:{client_id}:{loja}:{conta!r}:{category_id}:{listing_type_id}:{price}:{logistic_type}:{shipping_mode}"
+    if escopo_financeiro():
+        cache_key += f":import:{escopo_financeiro()!r}"
     cached = _cache_get(ML_LISTING_FEE_CACHE, cache_key, ML_LISTING_FEE_CACHE_TTL)
     if cached:
         return cached, cfg
@@ -820,6 +835,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             },
             timeout=12,
         )
+        verificar_resposta_financeira(resp)
         if resp.status_code == 200:
             data = resp.json() or {}
             sale_fee_amount = _to_float(data.get("sale_fee_amount"))
@@ -876,6 +892,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
                 partes.append(f"Taxa fixa: R$ {fixed_fee_amount:.2f}")
             info["fee_breakdown"] = " | ".join(partes)
     except Exception as e:
+        propagar_falha_financeira(e)
         logger.warning(f"[ML API] Falha ao consultar taxas do anuncio {item.get('id')}: {e}")
 
     if info["fixed_fee_amount"] is None:
@@ -894,7 +911,7 @@ def _ml_obter_taxas_anuncio(client_id: str, loja: str, cfg: dict, item: dict, re
             else:
                 info["fee_breakdown"] = f"Taxa fixa (estimada): R$ {estimada:.2f}"
 
-    if conta == _escopo_cache_cotacao(cfg):
+    if conta == _escopo_cache_cotacao(cfg) and (not escopo_financeiro() or info.get("ad_cost_exact_for_price") is True):
         _cache_set(ML_LISTING_FEE_CACHE, cache_key, info)
     return info, cfg
 

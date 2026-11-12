@@ -18,7 +18,8 @@ const names = ['escaparHtml', 'normTxt', 'formatarPct', 'formatarBRL', 'obterCam
     'obterSkuItemMargensAutomaticas', 'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes',
     'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'formatarAnunciosLoja', 'montarPayloadMargensAutomaticas',
     'consultarAnaliseLista', 'carregarFontesMargensAutomaticas', 'carregarAnunciosMargensAutomaticas',
-    'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente'];
+    'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
+    'opcoesCacheMargensLista', 'restaurarMargensCompartilhadasLista', 'priorizarPendentesMargens'];
 
 function ads() {
     return Array.from({ length: 8 }, (_, index) => ({
@@ -37,6 +38,8 @@ function harness() {
         AUXILIAR_TIMEOUT_MS: 20000, ATUALIZACAO_LISTA_LIMITE_MS: 120000,
         controladoresAuxiliares: new Set(), estadosAnaliseMargensAutomaticas: new Map(),
         cicloAnaliseMargensAutomaticas: 0,
+        cacheMargensLista: {}, filaMargensLista: null, ultimosItensCarregados: [],
+        agendarAtualizacaoMargensLista: () => {},
         calculosUnitariosLista: { '385-4': { revisao: 'a'.repeat(64), assinatura: 'b'.repeat(64), calculo: { custoUnitario: 36.15 } } },
         document: { querySelectorAll: () => [] }, innerHeight: 900,
         window: { JKImportacoesCacheCustos: { comTravaAnalise: async (options, executar) => {
@@ -83,14 +86,26 @@ function harness() {
                 fonte_custo: body.fonte_custo, custo_unitario: body.custo_unitario,
             }]));
             return { ok: true, status: 200, json: async () => ({ analise_concorrentes: {
-                ...body, store_id: 'store-A',
+                ...body, store_id: 'store-A', atualizado_em: new Date().toISOString(),
                 anuncios_versao: 2, anuncios_loja_store_id: 'store-A', anuncios_consultado_em_ms: Date.now(),
                 anuncios_loja: structuredClone(state.ownAds), fontes_versao: 7,
                 margens: margins(body.precos_concorrentes), margens_anuncios_loja: margins(body.precos_anuncios_loja),
             } }) };
         },
     });
+    const entries = new Map(), session = {};
+    Object.assign(context.window, { setTimeout, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
+        dispatchEvent: () => {}, addEventListener: () => {}, localStorage: { setItem: () => {} },
+        JKCachePersistente: { contexto: () => session, vigente: () => true, podeManterDados: () => true,
+            chaveEscopo: async () => 'fixture', ler: async key => entries.has(key) ? { dados: structuredClone(entries.get(key)) } : null,
+            atualizar: async (key, update) => { entries.set(key, structuredClone(update(entries.get(key)))); return true; } } });
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../static/medias_compras/importacoes-cache-margens.js'), 'utf8'), { window: context.window });
     vm.runInContext(names.map(source).join('\n'), context);
+    const analisar = context.analisarMargensConcorrentesAutomaticamente;
+    context.analisarMargensConcorrentesAutomaticamente = (id, itens) => {
+        context.ultimosItensCarregados = itens;
+        return analisar(id, itens);
+    };
     return { state, context };
 }
 

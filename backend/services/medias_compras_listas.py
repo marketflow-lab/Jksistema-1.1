@@ -6,6 +6,7 @@ from backend.services.medias_compras_leitura import consulta_medias, fotos_da_co
 
 import asyncio
 import copy
+from contextlib import nullcontext
 from hashlib import sha256
 import io
 import json
@@ -32,6 +33,10 @@ from backend.schemas import (
 )
 from backend.services import medias_compras_common as medias_common
 from backend.services.importacoes_consultas_cache import CacheConsultas
+from backend.services.importacoes_financeiro import (
+    contexto_financeiro, dependencias_com_cache, propagar_falha_financeira,
+)
+from backend.services.path_coordination import path_lock_for
 from backend.services.medias_compras_common import *
 from backend.services.medias_compras_excel import *
 from backend.services.medias_compras_fiscal import *
@@ -238,13 +243,17 @@ def _consultar_anuncio_na_conta(client_id: str, item_id: str, conta: dict, deps:
                 or str(payload.get("site_id") or "").strip() != "MLB"):
             return None, "O Mercado Livre não confirmou a identidade e o site do anúncio solicitado."
         return payload, ""
-    except requests.Timeout:
+    except requests.Timeout as erro:
+        propagar_falha_financeira(erro)
         return None, "Tempo limite ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
-    except requests.RequestException:
+    except requests.RequestException as erro:
+        propagar_falha_financeira(erro)
         return None, "Falha de conexão ao consultar o anúncio da loja no Mercado Livre. Tente novamente."
     except HTTPException as erro:
+        propagar_falha_financeira(erro)
         return None, _motivo_consulta_anuncio(erro.status_code)
-    except Exception:
+    except Exception as erro:
+        propagar_falha_financeira(erro)
         return None, _motivo_consulta_anuncio(None)
 
 
@@ -358,7 +367,8 @@ def _consultar_subsidio_promocao_ativa(
             tarifa_fonte="sites/MLB/listing_prices", frete_fonte=frete_fonte,
         ))
         return round(desconto, 2) if desconto is not None and 0 <= desconto <= tarifa else None
-    except Exception:
+    except Exception as erro:
+        propagar_falha_financeira(erro)
         return None
 
 
@@ -374,7 +384,8 @@ def _consultar_tarifa_frete_margem(
             client_id, loja, cfg, {**item, "price": preco},
         )
         tarifa_dados = dict(tarifa_dados or {})
-    except Exception:
+    except Exception as erro:
+        propagar_falha_financeira(erro)
         tarifa_dados = {}
     if not _cfg_confere_dono_anuncio(cfg, contexto):
         return None, motivo_conta
@@ -390,7 +401,8 @@ def _consultar_tarifa_frete_margem(
             reconsultar_zero=True, contexto_frete=deps["ml_contexto_frete_item"](item, preco),
         )
         frete_dados = dict(frete_dados or {})
-    except Exception:
+    except Exception as erro:
+        propagar_falha_financeira(erro)
         frete_dados = {}
     contexto["cfg"] = cfg
     if not _cfg_confere_dono_anuncio(cfg, contexto):
@@ -459,7 +471,7 @@ def _calcular_margens_concorrentes_promocoes(
                 "O custo simulado e a loja da lista precisam estar disponíveis para analisar este SKU.",
             ) for chave, preco in precos_concorrentes.items()
         }
-    deps = _dependencias_margens_concorrentes()
+    deps = dependencias_com_cache(_dependencias_margens_concorrentes())
     margens: dict[str, dict[str, Any]] = {}
     # Both price series belong to one request. Never reuse an item's financial
     # context across a tenant, store or SKU, even if the MLB happens to match.
@@ -1644,9 +1656,10 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    from backend.services.blocking_workers import run_financial
+    from backend.services.blocking_workers import run_financial, run_import_financial
 
-    return await run_financial(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
+    executar = run_import_financial if req.revisao_fontes_custo is not None else run_financial
+    return await executar(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
 
 
 async def api_medias_compras_lista_pedido_previa_analise_concorrentes_sku(
@@ -1655,19 +1668,30 @@ async def api_medias_compras_lista_pedido_previa_analise_concorrentes_sku(
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
 ):
-    from backend.services.blocking_workers import run_financial
+    from backend.services.blocking_workers import run_financial, run_import_financial
 
     if (req.fonte_custo != "simulacao_importacao_sku"
             or req.precos_concorrentes or not req.precos_anuncios_loja):
         raise HTTPException(400, "A prévia exige apenas os preços dos anúncios próprios do SKU.")
-    return await run_financial(
+    executar = run_import_financial if req.revisao_fontes_custo is not None else run_financial
+    return await executar(
         _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync,
         lista_id=lista_id, sku=sku, req=req, client_id=client_id, somente_previa=True,
     )
 
 
-@_retry_listas_pedidos
 def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
+    lista_id: str, sku: str, req: ListaPedidoSkuAnaliseConcorrentesRequest,
+    client_id: str = Depends(medias_common.get_tenant_id), *, somente_previa: bool = False,
+):
+    contexto = (contexto_financeiro(client_id, medias_common.get_tenant_path(client_id))
+                if req.revisao_fontes_custo is not None else nullcontext())
+    with contexto:
+        return _calcular_analise_concorrentes_sku_sync(lista_id, sku, req, client_id, somente_previa=somente_previa)
+
+
+@_retry_listas_pedidos
+def _calcular_analise_concorrentes_sku_sync(
     lista_id: str,
     sku: str,
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
@@ -1879,80 +1903,95 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             for numero, anuncio in enumerate(anuncios_verificados.get("anuncios") or [], start=1)
         ]
 
-    # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
-    # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
-    # que tenha ocorrido enquanto a margem era calculada.
-    listas_atuais = _carregar_listas_pedidos(client_id)
-    _exigir_lista_pedido_snapshot_atual(listas, listas_atuais, lista_id)
-    idx_lista_atual = next(
-        (i for i, atual in enumerate(listas_atuais) if str(atual.get("id", "")) == str(lista_id)),
-        -1,
-    )
-    if idx_lista_atual < 0:
-        raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
-
-    lista_atual = listas_atuais[idx_lista_atual]
-    medias_common._exigir_lista_pedido_editavel(lista_atual)
-    if any(
-        str(lista_atual.get(campo) or "").strip() != str(lista.get(campo) or "").strip()
-        for campo in ("loja", "store_id")
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail="A loja da lista mudou durante a análise. Recarregue para calcular novamente.",
+    # Only the revisioned SKU commit is serialized; provider waits happen above.
+    # Legacy callers retain their whole-list optimistic concurrency contract.
+    mutex = (path_lock_for(medias_common._arquivo_listas_pedidos(client_id))
+             if req.revisao_fontes_custo is not None else nullcontext())
+    with mutex:
+        # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
+        # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
+        # que tenha ocorrido enquanto a margem era calculada.
+        listas_atuais = _carregar_listas_pedidos(client_id)
+        if req.revisao_fontes_custo is None:
+            _exigir_lista_pedido_snapshot_atual(listas, listas_atuais, lista_id)
+        idx_lista_atual = next(
+            (i for i, atual in enumerate(listas_atuais) if str(atual.get("id", "")) == str(lista_id)),
+            -1,
         )
+        if idx_lista_atual < 0:
+            raise HTTPException(status_code=404, detail="Lista de pedidos nao encontrada")
 
-    itens_atuais = [dict(atual) for atual in (lista_atual.get("itens") or []) if isinstance(atual, dict)]
-    idx_item_atual = next(
-        (i for i, atual in enumerate(itens_atuais) if _sku_item_lista_pedido(atual) == sku_ref),
-        -1,
-    )
-    if idx_item_atual < 0:
-        raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+        lista_atual = listas_atuais[idx_lista_atual]
+        medias_common._exigir_lista_pedido_editavel(lista_atual)
+        if any(
+            str(lista_atual.get(campo) or "").strip() != str(lista.get(campo) or "").strip()
+            for campo in ("loja", "store_id")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="A loja da lista mudou durante a análise. Recarregue para calcular novamente.",
+            )
 
-    item_atual = itens_atuais[idx_item_atual]
-    if req.revisao_fontes_custo is not None:
-        exigir_revisao_custo(client_id, lista_id, sku, req.revisao_fontes_custo, lista=lista_atual)
-    if somente_previa:
-        analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
-        return {
-            "success": True,
-            "sku": str(item_atual.get("SKU") or sku),
-            "analise_concorrentes": analise_concorrentes,
-        }
-    if req.precos_anuncios_loja is not None:
-        analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
-    else:
-        analise_atual = item_atual.get(campo_analise)
-        if isinstance(analise_atual, dict) and "margens_anuncios_loja" in analise_atual:
-            if not simulacao and not analise_variacoes:
-                analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
-            elif (analise_atual.get("fonte_custo") == req.fonte_custo
-                  and _numero_finito_margem(analise_atual.get("custo_unitario"))
-                  == (custo_unitario_informado if simulacao else custo_unitario_cadastro)
-                  and analise_atual.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)
-                  and (req.revisao_fontes_custo is None or (
-                      analise_atual.get("revisao_fontes_custo") == req.revisao_fontes_custo
-                      and analise_atual.get("assinatura_calculo") == req.assinatura_calculo
-                  ))):
-                analise_concorrentes["margens_anuncios_loja"] = {
-                    chave: copy.deepcopy(dados)
-                    for chave, dados in (analise_atual["margens_anuncios_loja"] or {}).items()
-                    if isinstance(dados, dict)
-                    and dados.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)
-                    and dados.get("item_id_loja") == anuncios_normalizados.get(chave)
-                    and (not analise_variacoes or dados.get("variation_id") == variacoes_normalizadas.get(chave))
-                    and (not analise_variacoes or _numero_finito_margem(dados.get("preco_venda"))
-                         == _numero_finito_margem((por_chave.get(chave) or {}).get("preco")))
-                }
-        if simulacao or analise_variacoes:
-            analise_concorrentes.setdefault("margens_anuncios_loja", {})
-    item_atual[campo_analise] = analise_concorrentes
-    itens_atuais[idx_item_atual] = item_atual
-    lista_atual["itens"] = itens_atuais
-    lista_atual["updated_at"] = atualizado_em
-    listas_atuais[idx_lista_atual] = lista_atual
-    _salvar_listas_pedidos(client_id, listas_atuais)
+        itens_atuais = [dict(atual) for atual in (lista_atual.get("itens") or []) if isinstance(atual, dict)]
+        idx_item_atual = next(
+            (i for i, atual in enumerate(itens_atuais) if _sku_item_lista_pedido(atual) == sku_ref),
+            -1,
+        )
+        if idx_item_atual < 0:
+            raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
+
+        item_atual = itens_atuais[idx_item_atual]
+        if req.revisao_fontes_custo is not None:
+            from backend.services.importacoes_financeiro import escopo_financeiro
+            from backend.services.path_coordination import canonical_path_key
+
+            if escopo_financeiro() != (str(client_id), canonical_path_key(medias_common.get_tenant_path(client_id))):
+                raise HTTPException(409, "A origem dos dados mudou durante a análise.")
+            exigir_revisao_custo(client_id, lista_id, sku, req.revisao_fontes_custo, lista=lista_atual)
+            if item_atual.get(campo_analise) != item.get(campo_analise):
+                # Another SKU may commit freely. The same SKU cannot overwrite a
+                # newer analysis computed from a different local cost or quote.
+                raise HTTPException(409, "A análise deste SKU mudou. Atualize antes de salvar novamente.")
+        if somente_previa:
+            analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
+            return {
+                "success": True,
+                "sku": str(item_atual.get("SKU") or sku),
+                "analise_concorrentes": analise_concorrentes,
+            }
+        if req.precos_anuncios_loja is not None:
+            analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
+        else:
+            analise_atual = item_atual.get(campo_analise)
+            if isinstance(analise_atual, dict) and "margens_anuncios_loja" in analise_atual:
+                if not simulacao and not analise_variacoes:
+                    analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
+                elif (analise_atual.get("fonte_custo") == req.fonte_custo
+                      and _numero_finito_margem(analise_atual.get("custo_unitario"))
+                      == (custo_unitario_informado if simulacao else custo_unitario_cadastro)
+                      and analise_atual.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)
+                      and (req.revisao_fontes_custo is None or (
+                          analise_atual.get("revisao_fontes_custo") == req.revisao_fontes_custo
+                          and analise_atual.get("assinatura_calculo") == req.assinatura_calculo
+                      ))):
+                    analise_concorrentes["margens_anuncios_loja"] = {
+                        chave: copy.deepcopy(dados)
+                        for chave, dados in (analise_atual["margens_anuncios_loja"] or {}).items()
+                        if isinstance(dados, dict)
+                        and dados.get("store_id") == (store_id_alvo if simulacao else store_id_anuncios_loja)
+                        and dados.get("item_id_loja") == anuncios_normalizados.get(chave)
+                        and (not analise_variacoes or dados.get("variation_id") == variacoes_normalizadas.get(chave))
+                        and (not analise_variacoes or _numero_finito_margem(dados.get("preco_venda"))
+                             == _numero_finito_margem((por_chave.get(chave) or {}).get("preco")))
+                    }
+            if simulacao or analise_variacoes:
+                analise_concorrentes.setdefault("margens_anuncios_loja", {})
+        item_atual[campo_analise] = analise_concorrentes
+        itens_atuais[idx_item_atual] = item_atual
+        lista_atual["itens"] = itens_atuais
+        lista_atual["updated_at"] = atualizado_em
+        listas_atuais[idx_lista_atual] = lista_atual
+        _salvar_listas_pedidos(client_id, listas_atuais)
     _limpar_cache_lista_pedido(
         client_id,
         str(lista_atual.get("id", "") or ""),
