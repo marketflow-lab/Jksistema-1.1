@@ -11,5 +11,68 @@
     "ListaPedidoPreferenciasColunasRequest": "caf03eb999a34b35d74798d6ecb1c9186adbdf12f726da7350eacae3dd216003",
     "MediasComprasSkusOcultosRequest": "1d37fa5557b090f21376a4eaf2d8b46ee987df79cc512572783ce3eed133b2b2"
   },
-  "routes_sha256": "cf1aee33b4df3491d3199eb8e2d92c55d3a4981b11f020bba2e802e6f508c7b9"
+  "routes_sha256": "cf1aee33b4df3491d3199eb8e2d92c55d3a4981b11f020bba2e802e6f508c7b9",
+  "additive_fields": {
+    "ListaPedidoSkuAnaliseConcorrentesRequest": {
+      "revisao_fontes_custo": {
+        "anyOf": [
+          {
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Revisao Fontes Custo"
+      },
+      "assinatura_calculo": {
+        "anyOf": [
+          {
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Assinatura Calculo"
+      },
+      "variacoes_anuncios_loja": {
+        "anyOf": [
+          {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Variacoes Anuncios Loja"
+      }
+    }
+  },
+  "additive_routes": [
+    [
+      "/api/medias-compras/listas-pedidos/{lista_id}/base-custos",
+      [
+        "GET"
+      ],
+      "api_importacoes_base_custos"
+    ]
+  ]
 }

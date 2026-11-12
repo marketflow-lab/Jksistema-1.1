@@ -31,7 +31,7 @@ async function environment(browser, options = {}) {
     const page = await context.newPage();
     const state = { catalog: 0, global: 0, errors: [], detailGate: gate(), detailRequested: false };
     page.on('pageerror', error => state.errors.push(error.message));
-    const json = (route, value, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) }).catch(() => {});
+    const json = (route, value, status = 200, headers = {}) => route.fulfill({ status, headers, contentType: 'application/json', body: JSON.stringify(value) }).catch(() => {});
     await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         const pathname = url.pathname;
@@ -46,6 +46,12 @@ async function environment(browser, options = {}) {
         if (pathname === '/api/cadastro/lojas/store-A/produtos') {
             // A consulta de custo não deve interferir nas contagens nem no mapa de cubagem.
             if (url.searchParams.get('view') === 'summary') return json(route, []);
+            if (url.searchParams.get('view') === 'costs') {
+                if (url.searchParams.get('somente_revisao') === 'true') {
+                    return json(route, { store_id: 'store-A', revisao: 'costs-cubagem-fixture' });
+                }
+                return json(route, [], 200, { 'X-JK-Custos-Revisao': 'costs-cubagem-fixture' });
+            }
             state.catalog++;
             return json(route, [
                 { store_id: 'store-X', sku: '001', 'm3 individual': 999 },

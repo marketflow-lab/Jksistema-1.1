@@ -306,12 +306,21 @@ def test_previous_schemas_and_routes_preserved():
     from backend.routers.medias_compras import create_medias_compras_router
     baseline = json.loads((Path(__file__).parent / "fixtures/medias_uniao_baseline_contract.json").read_text())
     for name, expected in baseline["models"].items():
-        actual = hashlib.sha256(json.dumps(getattr(schemas, name).model_json_schema(), sort_keys=True).encode()).hexdigest()
+        model = getattr(schemas, name).model_json_schema()
+        # Approved additive inputs remain optional; every older schema member
+        # must still produce the original frozen contract hash.
+        for field, definition in baseline.get("additive_fields", {}).get(name, {}).items():
+            assert field not in model.get("required", []), (name, field)
+            assert model["properties"].pop(field) == definition, (name, field)
+        actual = hashlib.sha256(json.dumps(model, sort_keys=True).encode()).hexdigest()
         assert actual == expected, name
     router = create_medias_compras_router()
     old = [(route.path, sorted(route.methods), route.name) for route in router.routes if "/uniao" not in route.path]
+    for path, methods, name in baseline.get("additive_routes", []):
+        assert old.count((path, methods, name)) == 1
+        old.remove((path, methods, name))
     assert hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest() == baseline["routes_sha256"]
-    assert len(router.routes) == len(old) + 2
+    assert len(router.routes) == len(old) + 2 + len(baseline.get("additive_routes", []))
 
 
 def test_http_preview_and_confirmation_use_tenant_dependency(store):

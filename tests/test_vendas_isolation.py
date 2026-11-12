@@ -107,9 +107,11 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout.strip().splitlines()[-1])
     assert result == {
-        # The ship photo lookup in Importacoes adds one GET to the 1.0.336 API.
-        "routes": 543,
-        "pairs": 541,
+        # Base f51ac1b7 has 537 routes / 535 method-path pairs.
+        # Deferred Medias photos add one POST, and SKU comments add GET and PUT.
+        # Importacoes base-custos adds one GET to the previous 543/541 contract.
+        "routes": 544,
+        "pairs": 542,
         "duplicates": [],
         "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }
