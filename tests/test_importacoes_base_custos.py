@@ -163,6 +163,32 @@ def test_rateio_pendente_e_historico_nao_inventa_cubagem(ambiente):
     assert resultado["rateio"]["valor_por_m3"] is None
 
 
+def test_frete_salvo_sem_cubagem_e_projetado_e_invalida_revisao(ambiente):
+    estado, chamadas, _ = ambiente
+    estado["status"] = "Recebido"
+    estado["itens"][0].update({"Cubagem status": "pendente", "Frete Internacional": "12,50"})
+
+    async def conferir():
+        primeiro = await service.api_importacoes_base_custos("lista-a", "tenant-a")
+        assert primeiro["itens"][0]["Frete Internacional"] == 12.5
+        assert primeiro["itens"][0]["Cubagem status"] == "pendente"
+        assert primeiro["itens"][0]["M3"] == ""
+        assert primeiro["itens"][1]["Frete Internacional"] == 0
+        assert primeiro["rateio"]["valor_por_m3"] is None
+        assert not primeiro["rateio"]["m3_completo"]
+
+        estado["itens"][0]["Frete Internacional"] = 20
+        meta = await service.api_importacoes_base_custos("lista-a", "tenant-a", somente_revisao=True)
+        assert meta["revisao"] != primeiro["revisao"]
+        assert meta["revisoes_sku"]["001"] != primeiro["revisoes_sku"]["001"]
+        segundo = await service.api_importacoes_base_custos("lista-a", "tenant-a")
+        assert segundo["itens"][0]["Frete Internacional"] == 20
+        assert segundo["revisao"] == meta["revisao"]
+        assert chamadas["fiscal"] == 2
+
+    asyncio.run(conferir())
+
+
 def test_margem_rejeita_revisao_obsoleta_e_preserva_metadados(ambiente, monkeypatch):
     estado, _, raiz = ambiente
     monkeypatch.setattr(listas, "_carregar_listas_pedidos", lambda _: [deepcopy(estado)])

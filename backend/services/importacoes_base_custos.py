@@ -36,6 +36,7 @@ def _nome_campo(value):
 
 _CAMPOS_CUSTO = frozenset(_nome_campo(name) for name in (
     "SKU", "Quantidade", "Valor unidade", "Valor total", "Valor em dólar", "Valor total em dólar",
+    "Frete Internacional",
     "M3", "M3 individual", "CBM", common.CBM_LISTA_PEDIDO_KEY,
     "Cubagem status", "Cubagem fonte", "Cubagem unidade", "Cubagem loja", "Cubagem data",
     "NCM", "CEST", "II", "IPI", "PIS", "COFINS", "ICMS", "ST Minas", "ST MG", "ST Paraíba", "ST PB",

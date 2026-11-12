@@ -72,17 +72,35 @@ def test_history_preserves_snapshot_instead_of_today_catalog(ambiente):
     empty = fiscal._enriquecer_itens_lista_pedido_com_impostos('tenant-a', [{'SKU':'001','Quantidade':10}], incluir_impostos=False, loja='loja-a', preservar_cubagem=True)[0]
     assert empty['Cubagem status'] == 'pendente'
 
-def test_recalculate_preserves_small_volume_and_marks_partial_cost(ambiente):
+def test_recalculate_preserves_small_volume_and_saved_freight_without_complete_volume(ambiente):
     valid = fiscal._recalcular_frete_internacional_itens_lista('tenant-a', [{'SKU':'001','Quantidade':80,'Valor unidade':2}], loja='loja-a')[0]
     assert valid['M3 individual'] == 0.00003125
     assert valid['M3'] == 0.0025
+    assert valid['Frete Internacional'] == 160
     partial = fiscal._recalcular_frete_internacional_itens_lista('tenant-a', [
         {'SKU':'001','Quantidade':80,'Valor unidade':2},
         {'SKU':'X','Quantidade':2,'Valor unidade':7,'Frete Internacional':44},
     ], loja='loja-a')
     assert partial[1]['M3'] == ''
-    assert partial[1]['Frete Internacional'] == ''
+    assert partial[1]['Frete Internacional'] == 44
     assert partial[0]['Frete Internacional'] == ''
+
+
+@pytest.mark.parametrize('frete,esperado', [(44, 44), ('44,50', 44.5), (0, ''), ('', ''), (None, '')])
+def test_missing_volume_preserves_only_available_freight(ambiente, frete, esperado):
+    item = {'SKU': 'X', 'Quantidade': 2, 'Valor unidade': 7, 'Frete Internacional': frete}
+    result = fiscal._recalcular_frete_internacional_itens_lista('tenant-a', [item], loja='loja-a')[0]
+    assert result['Cubagem status'] == 'pendente'
+    assert result['M3'] == ''
+    assert result['Frete Internacional'] == esperado
+    assert item['Frete Internacional'] == frete
+
+
+def test_available_volume_recalculates_previously_saved_freight(ambiente):
+    result = fiscal._recalcular_frete_internacional_itens_lista('tenant-a', [
+        {'SKU': '001', 'Quantidade': 80, 'Valor unidade': 2, 'Frete Internacional': 44},
+    ], loja='loja-a')[0]
+    assert result['Frete Internacional'] == 160
 
 def test_map_is_exact_store_bound_and_does_not_scan_backups(ambiente, monkeypatch):
     monkeypatch.setattr(fiscal, '_caminhos_cadastros_meta', lambda _: pytest.fail('operational m3 scanned backups'))

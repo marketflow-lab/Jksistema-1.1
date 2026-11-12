@@ -228,6 +228,15 @@
         };
     }
 
+    function calcularFreteUsd({ valorPorM3, m3, freteInformado }) {
+        if (Number.isFinite(valorPorM3) && valorPorM3 > 0 && Number.isFinite(m3) && m3 >= 0) {
+            const frete = valorPorM3 * m3;
+            return Number.isFinite(frete) ? frete : null;
+        }
+        const informado = numero(freteInformado);
+        return informado > 0 ? informado : 0;
+    }
+
     function calcular({
         totalUsd, freteUsd, cotacao, quantidade, iiPct, ipiPct, pisPct, cofinsPct,
         proporcaoPct, stMg, stPb, mvaMgPct, baseIcmsFallback = null,
@@ -283,7 +292,7 @@
     }
 
     window.JKImportacoesCustoSimulado = Object.freeze({
-        calcular, numero, possuiRespostaSim, extrairPrimeiroNumero,
+        calcular, calcularFreteUsd, numero, possuiRespostaSim, extrairPrimeiroNumero,
         calcularResumo, cotacaoResumo, converterUsdParaBrl,
     });
 })();

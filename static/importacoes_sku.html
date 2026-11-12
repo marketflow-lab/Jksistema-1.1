@@ -6,7 +6,7 @@
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/cache-persistente.js?v=20261112-margens-v1"></script>
-    <script src="/medias_compras/importacoes-custo-simulado.js"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js?v=20261112-sem-cubagem-v1"></script>
     <script src="/medias_compras/importacoes-cache-custos.js?v=20261112-margens-v1"></script>
     <script src="/medias_compras/importacoes-cache-margens.js?v=20261112-margens-v1"></script>
     <style>
@@ -2593,7 +2593,7 @@
             const pis = getField(item, ['Pis', 'PIS']);
             const cofins = getField(item, ['Cofins', 'COFINS']);
             const freteImp = getField(item, ['Frete + imposto', 'Frete+imposto', 'Frete e imposto', 'Frete/imposto']);
-            const freteInternacionalBruto = getFieldItemOuLista(item, lista, ['Frete Internacional', 'Frete internacional', 'International freight'], '');
+            const freteInternacionalBruto = getField(item, ['Frete Internacional', 'Frete internacional', 'International freight'], '');
             const seguroInternacionalBruto = getFieldItemOuLista(item, lista, ['Seguro Internacional 0,28%', 'Seguro Internacional']);
             const icms = getField(item, ['ICMS']);
             const afrm = getField(item, ['AFRM', 'Afrm']);
@@ -2639,10 +2639,10 @@
             const dolarCompra = getNumber(lista && (lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar));
             const dolarBase = (dolarCompra !== null && dolarCompra > 0) ? dolarCompra : cotacaoDolarHoje;
             ultimaCotacaoBase = (dolarBase !== null && dolarBase > 0) ? dolarBase : 0;
-            // Frete Internacional = Valor por M³ (USD) × Dólar da Compra × M³ do SKU
-            const freteInternacionalUsdCalc = (valorPorM3Usd !== null && m3Num !== null)
-                ? (valorPorM3Usd * m3Num)
-                : null;
+            // Usa o rateio por cubagem quando disponível e o frete salvo nos demais casos.
+            const freteInternacionalUsdCalc = window.JKImportacoesCustoSimulado.calcularFreteUsd({
+                valorPorM3: valorPorM3Usd, m3: m3Num, freteInformado: freteInternacionalBruto,
+            });
             const freteInternacionalBrlCalc = (freteInternacionalUsdCalc !== null && dolarBase !== null && dolarBase > 0)
                 ? (freteInternacionalUsdCalc * dolarBase)
                 : null;
@@ -2653,9 +2653,9 @@
             const freteInternacionalUsdExibicao = freteInternacionalUsd !== null
                 ? fmtUsd(freteInternacionalUsd)
                 : '';
-            const formulaFreteInternacional = freteInternacionalBrlCalc !== null
+            const formulaFreteInternacional = freteInternacionalBrlCalc !== null && valorPorM3Usd > 0 && m3Num !== null
                 ? (fmtUsd(valorPorM3Usd) + ' × ' + fmtBRL(dolarBase) + ' × ' + fmtM3(m3Num) + ' m³')
-                : '';
+                : (freteInternacionalUsdCalc > 0 ? fmtUsd(freteInternacionalUsdCalc) + ' × ' + fmtBRL(dolarBase) : '');
 
             setText('vSku', sku);
             if (document.querySelector('.kv.prop')?.dataset.editando !== '1') {
@@ -3797,9 +3797,8 @@
         }
 
         function custoSkuPendente(lista, item, mapaM3, fiscalPronto, rateio) {
-            const frete = obterValorPorM3Usd(lista, item, lista.itens, mapaM3, rateio);
             const aliquotas = ['II', 'IPI', 'PIS', 'COFINS'].map(chave => getNumber(getField(item, [chave], '')));
-            return !(fiscalPronto && obterM3TotalItemCadastro(item, mapaM3) !== null && frete !== null
+            return !(fiscalPronto
                 && aliquotas.every(valor => valor !== null) && getNumber(item.Quantidade) > 0
                 && ((getNumber(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 || cotacaoDolarHoje > 0));
         }

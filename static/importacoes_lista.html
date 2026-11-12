@@ -9,7 +9,7 @@
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
-    <script src="/medias_compras/importacoes-custo-simulado.js?v=20261109-resumo-v1"></script>
+    <script src="/medias_compras/importacoes-custo-simulado.js?v=20261112-sem-cubagem-v1"></script>
     <script src="/medias_compras/importacoes-cache-custos.js?v=20261112-margens-v2"></script>
     <script src="/medias_compras/importacoes-cache-margens.js?v=20261112-v1"></script>
     <script src="/medias_compras/importacoes-lista-carregamento.js?v=20261112-custos-20261110-v1"></script>
@@ -3557,7 +3557,10 @@
                 const fiscal = fiscalCustoSkuLista.get(sku) || fiscalCustoSkuLista.get(normalizarSkuComparacao(sku));
                 const entradas = {
                     totalUsd: total ?? (unit !== null && qtd !== null ? unit * qtd : null),
-                    freteUsd: rateio > 0 && Number.isFinite(obterM3TotalItem(item)) ? rateio * obterM3TotalItem(item) : null,
+                    freteUsd: motor.calcularFreteUsd({
+                        valorPorM3: rateio, m3: obterM3TotalItem(item),
+                        freteInformado: campo(['Frete Internacional']),
+                    }),
                     cotacao: cotacaoBase,
                     quantidade: qtd,
                     iiPct: numero(campo(['II'])),
@@ -3582,6 +3585,8 @@
                 calculosUnitariosLista[sku] = registro;
                 const custo = registro.calculo.custoUnitario;
                 celula.textContent = Number.isFinite(custo) ? formatarBRL(custo) : 'Dados insuficientes';
+                const celulaFrete = linha.querySelector('[data-col-key="frete_internacional"]');
+                if (celulaFrete) celulaFrete.textContent = formatarBRL((entradas.freteUsd || 0) * (cotacaoBase || 0));
                 atualizarCelulaMargensAutomaticas(itemLista);
             }));
         }

@@ -430,7 +430,9 @@ def _recalcular_frete_internacional_itens_lista(
         if valor_por_m3 > 0 and m3_item > 0:
             item["Frete Internacional"] = round(valor_por_m3 * m3_item, 2)
         elif not cubagem_completa and not preservar_cubagem:
-            item["Frete Internacional"] = ""
+            # A ausência de cubagem não apaga um frete que a lista já possui.
+            frete_salvo = max(0.0, _to_float(item.get("Frete Internacional", 0), 0.0))
+            item["Frete Internacional"] = frete_salvo if frete_salvo > 0 else ""
         else:
             item["Frete Internacional"] = max(0.0, _to_float(item.get("Frete Internacional", 0), 0.0))
 
