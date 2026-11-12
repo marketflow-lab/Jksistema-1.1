@@ -231,23 +231,100 @@ def test_completed_results_refresh_after_24_hours(database, status):
         assert refreshed["attempts"] == 1
 
 
-def test_transient_backoff_retry_after_and_reconnection_are_bounded(database):
+def test_transient_backoff_before_attempt_limit(database):
     with sqlite3.connect(database) as conn:
         add(conn)
         now = 100
-        for delay in (30, 60, 120, 240, 480, 900, 900):
+        for attempt, delay in enumerate((30, 60, 120, 240), start=1):
             job = queue.claim(conn, "store-a", now=now)
             assert queue.finish(conn, job, {"result_status": "unavailable", "retryable": True}, now=now)
-            assert record(conn)["next_attempt_at"] == now + delay
+            result = record(conn)
+            assert result["status"] == "retry" and result["attempts"] == attempt
+            assert result["next_attempt_at"] == now + delay
+            assert queue.claim(conn, "store-a", now=now + delay - 1) is None
             now += delay
-        job = queue.claim(conn, "store-a", now=now)
+
+
+def test_retry_after_and_reconnection_delays_are_bounded(database):
+    with sqlite3.connect(database) as conn:
+        add(conn)
+        job = queue.claim(conn, "store-a", now=100)
         queue.finish(conn, job, {"result_status": "unavailable", "retryable": True,
-                                 "retry_after_seconds": 10**9}, now=now)
-        assert record(conn)["next_attempt_at"] == now + 900
-        job = queue.claim(conn, "store-a", now=now + 900)
+                                 "retry_after_seconds": 10**9}, now=100)
+        assert record(conn)["next_attempt_at"] == 1000
+        job = queue.claim(conn, "store-a", now=1000)
         queue.finish(conn, job, {"result_status": "reconnect_required", "error_code": "oauth_invalid",
-                                 "access_token": "DO-NOT-STORE"}, now=now + 900)
-        assert record(conn)["next_attempt_at"] == now + 1800
+                                 "access_token": "DO-NOT-STORE"}, now=1000)
+        assert record(conn)["next_attempt_at"] == 1900
+
+
+def test_five_persistent_transient_failures_end_cycle_and_refresh_can_recover(database):
+    with sqlite3.connect(database) as conn:
+        add(conn)
+        now = 100
+        for attempt in range(1, 6):
+            job = queue.claim(conn, "store-a", now=now)
+            assert job and job["attempts"] == attempt
+            assert queue.finish(conn, job, {"result_status": "unavailable", "retryable": True,
+                                           "error_code": "partial_response"}, now=now)
+            result = record(conn)
+            if attempt < 5:
+                assert result["status"] == "retry"
+                now = result["next_attempt_at"]
+        assert result["status"] == "done" and result["attempts"] == 0
+        assert result["result_status"] == "unavailable" and result["error_code"] == "partial_response"
+        assert result["next_attempt_at"] == now + queue.REFRESH_SECONDS
+        assert queue.claim(conn, "store-a", now=result["next_attempt_at"] - 1) is None
+        refreshed = queue.claim(conn, "store-a", now=result["next_attempt_at"])
+        assert refreshed and refreshed["attempts"] == 1
+        assert queue.finish(conn, refreshed, identified(), now=result["next_attempt_at"])
+        assert record(conn)["reason_id"] == "damaged"
+
+
+def test_existing_long_running_retry_finishes_on_next_due_failure(database):
+    with sqlite3.connect(database) as conn:
+        add(conn)
+        conn.execute("""UPDATE devolucao_motivos SET status='retry',attempts=369,
+            next_attempt_at=1000,result_status='unavailable',error_code='partial_response'""")
+        assert queue.claim(conn, "store-a", now=999) is None
+        job = queue.claim(conn, "store-a", now=1000)
+        assert job and job["attempts"] == 370
+        assert queue.finish(conn, job, {"result_status": "unavailable", "retryable": True,
+                                       "error_code": "partial_response"}, now=1001)
+        result = record(conn)
+        assert result["status"] == "done" and result["attempts"] == 0
+        assert result["result_status"] == "unavailable" and result["error_code"] == "partial_response"
+        assert result["next_attempt_at"] == 1001 + queue.REFRESH_SECONDS
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("completed_cycle", [False, True])
+def test_explicit_new_request_restarts_attempt_budget_but_same_request_preserves_retry(tmp_path, legacy, completed_cycle):
+    path = tmp_path / "saved.db"
+    owner = lambda row: "store-a" if row.get("loja_conta") == "Loja A" else None
+    options = {"owner_resolver": owner} if legacy else {}
+    prepare = queue.prepare_legacy_saved_item if legacy else queue.prepare_saved_item
+    with sqlite3.connect(path) as conn:
+        conn.execute("""CREATE TABLE notas_entrada_itens
+            (id_unico TEXT,id_nota TEXT,store_id TEXT,sku TEXT,devolucao INTEGER,loja_conta TEXT)""")
+        conn.execute("INSERT INTO notas_entrada_itens VALUES ('item-a','101',?,'200',1,'Loja A')",
+                     (None if legacy else "store-a",))
+        assert prepare(conn, "store-a", "Loja A", "item-a", "101", "200", requested_at=100, now=100, **options)
+        job = queue.claim(conn, "store-a", now=100, legacy_owner=owner)
+        if completed_cycle:
+            conn.execute("UPDATE devolucao_motivos SET attempts=5")
+        assert queue.finish(conn, job, {"result_status": "unavailable", "retryable": True}, now=101, legacy_owner=owner)
+        before = record(conn)
+        assert before["status"] == ("done" if completed_cycle else "retry")
+        assert prepare(conn, "store-a", "Loja A", "item-a", "101", "200", requested_at=100, now=110, **options)
+        assert record(conn) == before
+        assert prepare(conn, "store-a", "Loja A", "item-a", "101", "200", requested_at=120, now=120, **options)
+        result = record(conn)
+        assert result["status"] == "pending" and result["attempts"] == 0 and result["next_attempt_at"] == 120
+        retried = queue.claim(conn, "store-a", now=120, legacy_owner=owner)
+        assert retried and retried["attempts"] == 1
+        assert queue.finish(conn, retried, {"result_status": "unavailable", "retryable": True}, now=121, legacy_owner=owner)
+        assert record(conn)["status"] == "retry" and record(conn)["next_attempt_at"] == 151
 
 
 def test_failed_refresh_preserves_identified_reason(database):
@@ -263,6 +340,24 @@ def test_failed_refresh_preserves_identified_reason(database):
         assert result["result_status"] == "identified"
         assert result["reason_id"] == "damaged"
         assert result["completed_at"] == 101
+
+
+def test_exhausted_refresh_attempts_preserve_identified_reason(database):
+    with sqlite3.connect(database) as conn:
+        add(conn)
+        job = queue.claim(conn, "store-a", now=100)
+        assert queue.finish(conn, job, identified(), now=101)
+        now = 101 + queue.REFRESH_SECONDS
+        for _ in range(5):
+            job = queue.claim(conn, "store-a", now=now)
+            assert job
+            assert queue.finish(conn, job, {"result_status": "unavailable", "retryable": True,
+                                           "error_code": "partial_response"}, now=now)
+            result = record(conn)
+            now = result["next_attempt_at"]
+        assert result["status"] == "done" and result["attempts"] == 0
+        assert result["result_status"] == "identified" and result["reason_id"] == "damaged"
+        assert result["completed_at"] == 101 and result["error_code"] == "partial_response"
 
 
 def test_dispatcher_releases_transaction_before_resolver_and_touches_no_commercial_data(database):

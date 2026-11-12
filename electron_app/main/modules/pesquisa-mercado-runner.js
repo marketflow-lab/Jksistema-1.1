@@ -3,6 +3,7 @@
 // A page only observes this coordinator. Its lifetime belongs to Electron main.
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
+const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -397,6 +398,8 @@ class PesquisaMercadoRunner {
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
         this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 30000);
         this.detailNavigationTimeoutMs = Math.max(1, options.detailNavigationTimeoutMs || 35000);
+        this.detailRetryDelaysMs = (Array.isArray(options.detailRetryDelaysMs) ? options.detailRetryDelaysMs : DETAIL_RETRY_DELAYS_MS)
+            .slice(0, 2).map(ms => Math.max(0, Math.min(60000, Number(ms) || 0)));
     }
 
     snapshot() {
@@ -1335,148 +1338,169 @@ class PesquisaMercadoRunner {
                 ...(discoverySeed ? { categoryKey: this.checkpoint.currentCategory.key,
                     seedKey: String(discoverySeed.id || canonicalUrl(discoverySeed.url)), seed: clone(discoverySeed) } : {}) };
         if (!Array.isArray(collection.result.anuncios)) return result;
+        if (!Number.isSafeInteger(collection.detailRound) || collection.detailRound < 0
+            || collection.detailRound > this.detailRetryDelaysMs.length) collection.detailRound = 0;
         this.checkpoint.sellerCollection = collection;
         await this.save();
         const items = collection.result.anuncios;
         let navigated = false;
-        for (let index = collection.index; index < items.length; index += 1) {
+        while (true) {
             this.check();
-            const item = items[index];
-            if (this.collector.isComplete(item) || !allowedUrl(item.url)) { collection.index = index + 1; continue; }
-            this.setProgress('collecting', `Consultando vendas e media do anuncio ${index + 1} de ${items.length} de ${seller.nome || seller.id || 'vendedor'}...`);
-            const controller = new AbortController();
-            const abort = () => controller.abort();
-            this.controller.signal.addEventListener('abort', abort, { once: true });
-            let timer, latestPartial = null, collectionTimedOut = false, active = true;
-            const armTimeout = (milliseconds, phase) => {
-                if (!active || controller.signal.aborted) return;
-                clearTimeout(timer);
-                timer = setTimeout(() => {
-                    collectionTimedOut = phase !== 'navigation';
-                    controller.abort();
-                    if (typeof this.browser.stop === 'function') this.browser.stop();
-                }, milliseconds);
-            };
-            // Legacy collectors retain a bounded call. Current collectors give
-            // navigation and the loaded Avant panel separate time budgets.
-            armTimeout(this.detailTimeoutMs, 'collection');
-            try {
-                navigated = true;
-                let detail;
-                try {
-                    detail = await this.attempt(async () => {
-                        let attemptActive = true;
-                        latestPartial = null;
-                        const alive = () => attemptActive && active && !controller.signal.aborted;
-                        const capture = partial => {
-                            if (!alive()) return false;
-                            const invalid = !partial || partial.authRequired || partial.avantAuthRequired
-                                || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
-                            latestPartial = invalid ? null : clone(partial);
-                            return !invalid;
-                        };
-                        try {
-                            const observed = await this.collector.collectDetail({
-                                browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
-                                expectedItem: { id: item.id || '', url: item.url },
-                                seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
-                                timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
-                                onNavigationStart: () => {
-                                    if (!alive()) return;
-                                    latestPartial = null;
-                                    armTimeout(this.detailNavigationTimeoutMs, 'navigation');
-                                },
-                                onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
-                                onPartial: capture
-                            });
-                            // Authentication or a changed document also vetoes
-                            // metrics observed before the terminal result.
-                            const valid = capture(observed);
-                            return valid ? observed : { ...observed, anuncios: [] };
-                        } finally { attemptActive = false; }
-                    }, controller.signal);
-                } catch (error) {
-                    this.check();
-                    if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
-                    detail = latestPartial;
-                }
+            if (collection.retryDelayMs !== undefined) {
+                const pending = items.filter(item => !this.collector.isComplete(item) && allowedUrl(item.url)).length;
+                this.setProgress('collecting', `Aguardando para consultar novamente ${pending} anuncio(s) sem dados de ${seller.nome || seller.id || 'vendedor'}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                await this.nameStep(() => this.wait(this.detailRetryDelaysMs[collection.detailRound - 1] || 0), this.controller.signal);
                 this.check();
-                const found = (detail.anuncios || []).find(candidate => item.id
-                    ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
-                    : canonicalUrl(candidate.url) === canonicalUrl(item.url));
-                if (found && found.seller_confirmed === true && sameSeller(seller, found)
-                    && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
-                        id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
-                    }))) {
-                    const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
-                        || String(value || '').toLowerCase().startsWith('avantpro');
-                    const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-                    const previousProof = item.seller_confirmed !== false
-                        && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
-                        && !/identidade|vendedor|escopo|catalogo/.test(previousError) && sameSeller(seller, item)
-                        && (!(item.avant_seller_id || item.avant_seller_perfil_url) || sameSeller(seller, {
-                            id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
-                        })) && (!item.catalogo || item.seller_confirmed === true && /anuncio|item/i.test(String(item.vendas_rotulo || '')) && sameSeller(seller, {
-                            id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
-                        }));
-                    const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
-                    const freshComplete = this.collector.isComplete(found);
-                    let reusedUnconfirmed = false;
-                    // A detail panel may expose only the metric missing from the card.
-                    // Keep existing values visible, but only reuse proven provenance
-                    // to construct a complete rank from separate observations.
-                    for (const [value, sources] of [
-                        ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
-                        ['media_mensal', ['media_mensal_fonte']],
-                        ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
-                        ['data_criacao', ['dataCriacaoFonte']]
-                    ]) {
-                        if (freshComplete) {
-                            merged[value] = found[value] ?? (value === 'data_criacao' ? '' : null);
-                            for (const source of sources) merged[source] = found[source] || '';
-                            continue;
-                        }
-                        if (value === 'media_vendas_mensal' && (found[value] === null || found[value] === undefined)
-                            && Number.isFinite(found.media_mensal)) {
-                            merged[value] = found.media_mensal;
-                            merged.media_vendas_mensal_fonte = found.media_mensal_fonte;
-                            continue;
-                        }
-                        if (found[value] === null || found[value] === undefined || found[value] === '') {
-                            if (item[value] !== undefined) {
-                                merged[value] = item[value];
-                                for (const source of sources) if (item[source] !== undefined) merged[source] = item[source];
-                                const monthlySource = item.media_mensal_fonte || item.media_vendas_mensal_fonte;
-                                const provenance = value === 'vendas' ? avantSource(item.vendasFonte || item.vendas_fonte)
-                                    : value === 'data_criacao' ? avantSource(item.dataCriacaoFonte)
-                                        || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte)
-                                    : avantSource(monthlySource) || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte);
-                                if (item[value] !== null && item[value] !== '' && (!previousProof || !provenance)) reusedUnconfirmed = true;
+                delete collection.retryDelayMs;
+                await this.save();
+            }
+            for (let index = collection.index; index < items.length; index += 1) {
+                this.check();
+                const item = items[index];
+                if (this.collector.isComplete(item) || !allowedUrl(item.url)) { collection.index = index + 1; continue; }
+                this.setProgress('collecting', `Consultando vendas e media do anuncio ${index + 1} de ${items.length} de ${seller.nome || seller.id || 'vendedor'}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                const controller = new AbortController();
+                const abort = () => controller.abort();
+                this.controller.signal.addEventListener('abort', abort, { once: true });
+                let timer, latestPartial = null, collectionTimedOut = false, active = true;
+                const armTimeout = (milliseconds, phase) => {
+                    if (!active || controller.signal.aborted) return;
+                    clearTimeout(timer);
+                    timer = setTimeout(() => {
+                        collectionTimedOut = phase !== 'navigation';
+                        controller.abort();
+                        if (typeof this.browser.stop === 'function') this.browser.stop();
+                    }, milliseconds);
+                };
+                // Legacy collectors retain a bounded call. Current collectors give
+                // navigation and the loaded Avant panel separate time budgets.
+                armTimeout(this.detailTimeoutMs, 'collection');
+                try {
+                    navigated = true;
+                    let detail;
+                    try {
+                        detail = await this.attempt(async () => {
+                            let attemptActive = true;
+                            latestPartial = null;
+                            const alive = () => attemptActive && active && !controller.signal.aborted;
+                            const capture = partial => {
+                                if (!alive()) return false;
+                                const invalid = !partial || partial.authRequired || partial.avantAuthRequired
+                                    || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
+                                latestPartial = invalid ? null : clone(partial);
+                                return !invalid;
+                            };
+                            try {
+                                const observed = await this.collector.collectDetail({
+                                    browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
+                                    expectedItem: { id: item.id || '', url: item.url },
+                                    seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
+                                    timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
+                                    onNavigationStart: () => {
+                                        if (!alive()) return;
+                                        latestPartial = null;
+                                        armTimeout(this.detailNavigationTimeoutMs, 'navigation');
+                                    },
+                                    onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
+                                    onPartial: capture
+                                });
+                                // Authentication or a changed document also vetoes
+                                // metrics observed before the terminal result.
+                                const valid = capture(observed);
+                                return valid ? observed : { ...observed, anuncios: [] };
+                            } finally { attemptActive = false; }
+                        }, controller.signal);
+                    } catch (error) {
+                        this.check();
+                        if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
+                        detail = latestPartial;
+                    }
+                    this.check();
+                    const found = (detail.anuncios || []).find(candidate => item.id
+                        ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
+                        : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+                    if (found && found.seller_confirmed === true && sameSeller(seller, found)
+                        && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
+                            id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
+                        }))) {
+                        const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
+                            || String(value || '').toLowerCase().startsWith('avantpro');
+                        const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                        const previousProof = item.seller_confirmed !== false
+                            && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
+                            && !/identidade|vendedor|escopo|catalogo/.test(previousError) && sameSeller(seller, item)
+                            && (!(item.avant_seller_id || item.avant_seller_perfil_url) || sameSeller(seller, {
+                                id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                            })) && (!item.catalogo || item.seller_confirmed === true && /anuncio|item/i.test(String(item.vendas_rotulo || '')) && sameSeller(seller, {
+                                id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                            }));
+                        const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
+                        const freshComplete = this.collector.isComplete(found);
+                        let reusedUnconfirmed = false;
+                        // A detail panel may expose only the metric missing from the card.
+                        // Keep existing values visible, but only reuse proven provenance
+                        // to construct a complete rank from separate observations.
+                        for (const [value, sources] of [
+                            ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
+                            ['media_mensal', ['media_mensal_fonte']],
+                            ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
+                            ['data_criacao', ['dataCriacaoFonte']]
+                        ]) {
+                            if (freshComplete) {
+                                merged[value] = found[value] ?? (value === 'data_criacao' ? '' : null);
+                                for (const source of sources) merged[source] = found[source] || '';
+                                continue;
+                            }
+                            if (value === 'media_vendas_mensal' && (found[value] === null || found[value] === undefined)
+                                && Number.isFinite(found.media_mensal)) {
+                                merged[value] = found.media_mensal;
+                                merged.media_vendas_mensal_fonte = found.media_mensal_fonte;
+                                continue;
+                            }
+                            if (found[value] === null || found[value] === undefined || found[value] === '') {
+                                if (item[value] !== undefined) {
+                                    merged[value] = item[value];
+                                    for (const source of sources) if (item[source] !== undefined) merged[source] = item[source];
+                                    const monthlySource = item.media_mensal_fonte || item.media_vendas_mensal_fonte;
+                                    const provenance = value === 'vendas' ? avantSource(item.vendasFonte || item.vendas_fonte)
+                                        : value === 'data_criacao' ? avantSource(item.dataCriacaoFonte)
+                                            || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte)
+                                        : avantSource(monthlySource) || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte);
+                                    if (item[value] !== null && item[value] !== '' && (!previousProof || !provenance)) reusedUnconfirmed = true;
+                                }
                             }
                         }
+                        const catalogueProof = !merged.catalogo || /anuncio|item/i.test(String(merged.vendas_rotulo || '')) && sameSeller(seller, {
+                            id: merged.avant_seller_id, perfilUrl: merged.avant_seller_perfil_url
+                        });
+                        merged.rankable = (found.rankable === true || ['sem_dados_avant', 'sem_quantidade_avant'].includes(found.status)) && catalogueProof;
+                        merged.rankable = !reusedUnconfirmed && this.collector.isComplete(merged);
+                        if (merged.rankable) { merged.status = 'analisado'; merged.erro = ''; }
+                        else if (reusedUnconfirmed) {
+                            merged.status = 'vendedor_nao_confirmado';
+                            merged.erro = 'A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
+                        }
+                        items[index] = merged;
                     }
-                    const catalogueProof = !merged.catalogo || /anuncio|item/i.test(String(merged.vendas_rotulo || '')) && sameSeller(seller, {
-                        id: merged.avant_seller_id, perfilUrl: merged.avant_seller_perfil_url
-                    });
-                    merged.rankable = (found.rankable === true || ['sem_dados_avant', 'sem_quantidade_avant'].includes(found.status)) && catalogueProof;
-                    merged.rankable = !reusedUnconfirmed && this.collector.isComplete(merged);
-                    if (merged.rankable) { merged.status = 'analisado'; merged.erro = ''; }
-                    else if (reusedUnconfirmed) {
-                        merged.status = 'vendedor_nao_confirmado';
-                        merged.erro = 'A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
-                    }
-                    items[index] = merged;
+                } catch (error) {
+                    this.check();
+                    if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+                    // A bounded unavailable detail keeps the original card's evidence.
+                } finally {
+                    active = false;
+                    clearTimeout(timer);
+                    this.controller.signal.removeEventListener('abort', abort);
                 }
-            } catch (error) {
-                this.check();
-                if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
-                // A bounded unavailable detail keeps the original card's evidence.
-            } finally {
-                active = false;
-                clearTimeout(timer);
-                this.controller.signal.removeEventListener('abort', abort);
+                collection.index = index + 1;
+                await this.save();
             }
-            collection.index = index + 1;
+            if (collection.detailRound >= this.detailRetryDelaysMs.length
+                || !items.some(item => !this.collector.isComplete(item) && allowedUrl(item.url))) break;
+            // An empty successful response also needs a fresh consultation. Save
+            // the next round before waiting so pause/login keeps its exact cursor.
+            collection.retryDelayMs = this.detailRetryDelaysMs[collection.detailRound];
+            collection.detailRound += 1;
+            collection.index = 0;
             await this.save();
         }
         this.check();

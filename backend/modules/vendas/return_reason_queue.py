@@ -23,6 +23,7 @@ from backend.services.sqlite_coordination import sqlite_lock_for_path
 REFRESH_SECONDS = 24 * 60 * 60
 RECONNECT_SECONDS = 15 * 60
 MAX_RETRY_SECONDS = 15 * 60
+MAX_TRANSIENT_ATTEMPTS = 5
 RULE_VERSION = 2
 RESULT_STATUSES = frozenset({
     "identified", "not_linked", "not_informed", "ambiguous", "unavailable",
@@ -349,10 +350,13 @@ def finish(conn, claim, result, now=None, *, legacy_owner=None):
     sanitized = _result(result)
     result_status = sanitized["result_status"]
     transient = result_status == "unavailable" and sanitized.get("retryable", False)
-    retry = transient or result_status == "reconnect_required"
+    # Persistent provider failures end this cycle; the daily refresh or a new
+    # explicit request can try again without leaving a history search running.
+    retry_transient = transient and old["attempts"] < MAX_TRANSIENT_ATTEMPTS
+    retry = retry_transient or result_status == "reconnect_required"
     if result_status == "reconnect_required":
         delay = RECONNECT_SECONDS
-    elif transient:
+    elif retry_transient:
         delay = min(MAX_RETRY_SECONDS, 30 * (2 ** min(5, max(0, old["attempts"] - 1))))
         delay = max(delay, sanitized.get("retry_after_seconds", 0))
     else:
@@ -439,7 +443,7 @@ def prepare_saved_item(conn, store_id, loja, item_id, nota_id, sku, *, requested
     cutoff = stamp if requested_at is None else _time(requested_at)
     # Explicit reprocessing changes only availability; never steals a live lease
     # or overwrites existing documentary links/evidence.
-    conn.execute("""UPDATE devolucao_motivos SET status='pending',next_attempt_at=?,updated_at=?,
+    conn.execute("""UPDATE devolucao_motivos SET status='pending',attempts=0,next_attempt_at=?,updated_at=?,
         lease_token=NULL,lease_until=NULL WHERE store_id=? AND item_id_unico=?
         AND nota_id=? AND sku=? AND coalesce(result_status,'')!='identified'
         AND (status='obsolete' OR (status IN ('done','retry')
@@ -485,7 +489,7 @@ def prepare_legacy_saved_item(conn, store_id, loja, item_id, nota_id, sku, owner
     row = conn.execute("SELECT source_kind FROM devolucao_motivos WHERE store_id=? AND item_id_unico=?", (store_id, item_id)).fetchone()
     if row[0] != "legacy":
         return False
-    conn.execute("""UPDATE devolucao_motivos SET status='pending',next_attempt_at=?,updated_at=?,lease_token=NULL,lease_until=NULL
+    conn.execute("""UPDATE devolucao_motivos SET status='pending',attempts=0,next_attempt_at=?,updated_at=?,lease_token=NULL,lease_until=NULL
         WHERE store_id=? AND item_id_unico=? AND source_kind='legacy'
             AND coalesce(result_status,'')!='identified' AND status IN ('done','retry')
             AND (completed_at IS NULL OR completed_at<?)""", (stamp, stamp, store_id, item_id, cutoff))

@@ -5,7 +5,7 @@ const { AvantSession } = require('../electron_app/main/modules/pesquisa-mercado-
 const copy = value => JSON.parse(JSON.stringify(value));
 const base = 'https://www.mercadolivre.com.br';
 
-function harness(pages, collect) {
+function harness(pages, collect, options = {}) {
     let saved = { id: 'run-1', status: 'running', revision: 0, checkpoint: {}, counters: { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0 } };
     const vendors = new Map();
     const discovery = new Map();
@@ -82,7 +82,9 @@ function harness(pages, collect) {
             stop: () => { stopped += 1; }, async finish() {}
         }, pageScripts: { discoveryScript: () => 'discovery', nextCategoryPageScript: url => `next:${url}` },
         collector: { collectFirstPage: collect || (async ({ seller }) => ({ anuncios: [{ id: 'MLB1000000001', rankable: true, seller_id: seller.id, vendas: 40, vendasFonte: 'avantpro', media_vendas_mensal: 10 }] })) },
-        emit: event => events.push(copy(event))
+        emit: event => events.push(copy(event)),
+        // Existing cases isolate one collection round; retry cases use production defaults explicitly.
+        detailRetryDelaysMs: [], ...options
     });
     return { runner, vendors, visited, events, calls, discovery, saved: () => copy(saved), stopped: () => stopped,
         restoreCheckpoint(job) { saved = copy(job); discovery.clear(); } };
@@ -1058,6 +1060,157 @@ function withDetailCollector(h, detail) {
         isComplete: shared.isComplete, finalizeListings: shared.finalizeListings };
 }
 
+async function automaticMissingDetailsRetryUntilComplete() {
+    const ids = ['MLB1000000201', 'MLB1000000202', 'MLB1000000203'];
+    const listing = [salesListing(ids[0], { vendas: 0, media_mensal: 0, rankable: true }),
+        salesListing(ids[1]), salesListing(ids[2])];
+    const delays = [], calls = [], attempts = new Map();
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true,
+        reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
+        wait: async milliseconds => { if (milliseconds >= 5000) delays.push(milliseconds); } });
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id, attempt = (attempts.get(id) || 0) + 1;
+        calls.push(id); attempts.set(id, attempt);
+        await options.browser.navigate(options.url);
+        const available = attempt >= (id === ids[1] ? 2 : 3);
+        return { anuncios: available ? [salesListing(id, { vendas: 100, media_mensal: 10, rankable: true })] : [] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(calls, [ids[1], ids[2], ids[1], ids[2], ids[2]],
+        'only unresolved details are revisited; complete zero metrics and newly resolved details are skipped');
+    assert.deepEqual(delays, [5000, 15000], 'production retry intervals increase between the three collection rounds');
+    assert.equal(h.saved().status, 'completed', 'new research resolves transient missing data without a manual resume');
+    const ads = h.vendors.get('id:111').anuncios;
+    assert.equal(ads.length, listing.length, 'automatic retries preserve every discovered advertisement');
+    assert(ads.every(item => item.rankable));
+    assert.equal(ads.find(item => item.id === ids[0]).media_vendas_mensal, 0);
+    assert.equal(h.runner.browser.getURL(), `${base}/anuncios/111`, 'seller navigation is restored after the retry rounds');
+}
+
+async function automaticMissingDetailsKeepEvidenceAndStopAtLimit() {
+    const zeroId = 'MLB1000000211', unavailableId = 'MLB1000000212';
+    const listing = [salesListing(zeroId), salesListing(unavailableId, { vendas: 50, titulo: 'Saved card', preco: 12 })];
+    const calls = [], delays = [], attempts = new Map();
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true,
+        reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
+        wait: async milliseconds => { if (milliseconds >= 5000) delays.push(milliseconds); } });
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id, attempt = (attempts.get(id) || 0) + 1;
+        calls.push(id); attempts.set(id, attempt);
+        await options.browser.navigate(options.url);
+        if (id === unavailableId) return { anuncios: [] };
+        return { anuncios: [salesListing(id, attempt === 1 ? { vendas: 0 }
+            : { media_mensal: 0, status: 'sem_quantidade_avant' })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(calls, [zeroId, unavailableId, zeroId, unavailableId, unavailableId],
+        'permanently unavailable data receives three bounded consultations while completed details leave the queue');
+    assert.deepEqual(delays, [5000, 15000]);
+    assert.equal(h.saved().status, 'completed_partial', 'missing external data ends with a recoverable partial result');
+    const ads = h.vendors.get('id:111').anuncios, zero = ads.find(item => item.id === zeroId);
+    assert.equal(zero.vendas, 0, 'confirmed zero sales survive a later response containing monthly data only');
+    assert.equal(zero.media_vendas_mensal, 0);
+    assert.equal(zero.rankable, true, 'separate confirmed observations can complete a zero-sales advertisement');
+    const unavailable = ads.find(item => item.id === unavailableId);
+    assert.equal(unavailable.vendas, 50, 'empty retry responses cannot erase previously confirmed sales');
+    assert.equal(unavailable.titulo, 'Saved card');
+    assert.equal(unavailable.preco, 12);
+    assert.equal(unavailable.rankable, false);
+}
+
+async function automaticMissingDetailsPauseDuringBackoff() {
+    const ids = ['MLB1000000221', 'MLB1000000222'];
+    let entered, release, firstPageCalls = 0, blocked = false;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const calls = [], delays = [];
+    const h = harness(avantFlowPages(), async () => {
+        firstPageCalls += 1;
+        return { anuncios: ids.map(id => salesListing(id)), incomplete: true, reason: 'avant_data_incomplete' };
+    }, { detailRetryDelaysMs: undefined, wait: async milliseconds => {
+        if (milliseconds < 5000) return;
+        delays.push(milliseconds);
+        if (!blocked) { blocked = true; entered(); await new Promise(resolve => { release = resolve; }); }
+    } });
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        calls.push(id);
+        await options.browser.navigate(options.url);
+        return { anuncios: id === ids[0] || calls.filter(value => value === id).length > 1
+            ? [salesListing(id, { vendas: 10, media_mensal: 2, rankable: true })] : [] };
+    });
+    await h.runner.start(); await waiting;
+    await h.runner.stop('paused'); await h.runner.task;
+    const saved = h.saved();
+    assert.equal(saved.status, 'paused', 'pause interrupts a pending retry interval immediately');
+    assert.equal(saved.checkpoint.sellerCollection.retryDelayMs, 5000, 'interrupted backoff remains pending in the saved collection');
+    assert.equal(h.vendors.size, 0);
+    release();
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, [ids[0], ids[1], ids[1]], 'resume retries only the unresolved advertisement');
+    assert.deepEqual(delays, [5000, 5000], 'resume observes the interrupted interval before another consultation');
+    assert.equal(firstPageCalls, 1, 'backoff recovery reuses the saved first-page evidence');
+    assert.equal(h.saved().status, 'completed');
+}
+
+async function automaticMissingDetailsPauseDuringLaterRound() {
+    const ids = ['MLB1000000231', 'MLB1000000232'];
+    let entered, firstPageCalls = 0;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const calls = [], delays = [], attempts = new Map();
+    const h = harness(avantFlowPages(), async () => {
+        firstPageCalls += 1;
+        return { anuncios: ids.map(id => salesListing(id)), incomplete: true, reason: 'avant_data_incomplete' };
+    }, { detailRetryDelaysMs: undefined,
+        wait: async milliseconds => { if (milliseconds >= 5000) delays.push(milliseconds); } });
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id, attempt = (attempts.get(id) || 0) + 1;
+        calls.push(id); attempts.set(id, attempt);
+        await options.browser.navigate(options.url);
+        if (id === ids[1] && attempt === 2) { entered(); await waitForDetailAbort(options.signal); }
+        return { anuncios: attempt > 1 ? [salesListing(id, { vendas: 10, media_mensal: 2, rankable: true })] : [] };
+    });
+    await h.runner.start(); await waiting;
+    await h.runner.stop('paused'); await h.runner.task;
+    const collection = h.saved().checkpoint.sellerCollection;
+    assert.equal(collection.detailRound, 1, 'pause preserves the second automatic round');
+    assert.equal(collection.index, 1, 'cursor remains on the interrupted detail rather than restarting its round');
+    assert.equal(collection.result.anuncios[0].rankable, true, 'already resolved retry evidence persists before the pause');
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.deepEqual(calls, [ids[0], ids[1], ids[0], ids[1], ids[1]],
+        'resume continues the interrupted detail without repeating failed or completed earlier consultations');
+    assert.deepEqual(delays, [5000], 'resuming an active detail does not start a later retry round');
+    assert.equal(firstPageCalls, 1);
+    assert.equal(h.saved().status, 'completed');
+}
+
+async function automaticMissingDetailsLoginPreservesRetryRound() {
+    const id = 'MLB1000000241';
+    let attempts = 0, blocked = true;
+    const delays = [];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id, { vendas: 10 })],
+        incomplete: true, reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
+        wait: async milliseconds => { if (milliseconds >= 5000) delays.push(milliseconds); } });
+    withDetailCollector(h, async options => {
+        attempts += 1;
+        await options.browser.navigate(options.url);
+        if (attempts === 1) return { anuncios: [] };
+        if (blocked) return { authRequired: true, reason: 'avant_login_required', anuncios: [] };
+        return { anuncios: [salesListing(id, { vendas: 10, media_mensal: 2, rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    const saved = h.saved();
+    assert.equal(saved.status, 'waiting_login', 'an authentication challenge requires the user instead of automatic repeated visits');
+    assert.equal(attempts, 2, 'login is not retried as missing metrics');
+    assert.equal(saved.checkpoint.sellerCollection.detailRound, 1);
+    assert.equal(saved.checkpoint.sellerCollection.index, 0, 'login keeps the current advertisement pending');
+    assert.equal(saved.checkpoint.sellerCollection.result.anuncios[0].vendas, 10);
+    blocked = false;
+    await h.runner.resume('run-1'); await h.runner.task;
+    assert.equal(attempts, 3);
+    assert.deepEqual(delays, [5000], 'authentication recovery continues the same round without consuming another retry interval');
+    assert.equal(h.saved().status, 'completed');
+}
+
 async function completeSalesAndMonthlyDetails() {
     const listing = [
         salesListing('MLB1000000001', { vendas: 100 }),
@@ -1936,6 +2089,11 @@ async function legacyIncompleteCategoryIdentity() {
     await mlChallengesNeverTriggerAvantLogin();
     await automaticAvantAbortAndOwnership();
     await automaticAvantLoginForSellerNames();
+    await automaticMissingDetailsRetryUntilComplete();
+    await automaticMissingDetailsKeepEvidenceAndStopAtLimit();
+    await automaticMissingDetailsPauseDuringBackoff();
+    await automaticMissingDetailsPauseDuringLaterRound();
+    await automaticMissingDetailsLoginPreservesRetryRound();
     await completeSalesAndMonthlyDetails();
     await detailTimeoutPreservesPartialAndContinues();
     await detailNavigationDoesNotConsumeCollectionBudget();

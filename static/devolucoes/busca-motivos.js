@@ -87,6 +87,9 @@
             }
             if (reconnect) text += ' ' + number(reconnect) + ' dependem de reconectar a integração da loja.';
             if (count(data.retry)) text += ' ' + number(data.retry) + ' aguardam uma nova tentativa automática.';
+            if (!data.running && count(data.unavailable)) {
+                text += ' ' + number(data.unavailable) + ' consultas ficaram indisponíveis na integração. Você pode buscar novamente mais tarde.';
+            }
             if (count(data.skipped)) text += ' ' + number(data.skipped) + ' registros antigos não puderam ser consultados por falta de identificação confirmada.';
             status.textContent = text;
             const changed = previous ? (processed !== count(previous.processed)

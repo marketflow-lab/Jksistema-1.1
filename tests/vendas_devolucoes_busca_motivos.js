@@ -122,6 +122,29 @@ async function tenantRace(browser) {
     } finally {await t.close();}
 }
 
+async function persistentFailureFinishesAndCanRetry(browser) {
+    const t=await setup(browser);const {f,state}=t;
+    try {
+        state.data={...active(),total:17997,processed:17977,identified:8972,pending:20,retry:20,reconnect_required:1029};
+        await t.open();
+        await f.page.waitForFunction(()=>document.getElementById('buscaMotivosStatus').textContent.includes('20 aguardam'));
+        assert.equal(await f.page.locator('#buscarMotivos').isDisabled(),true);
+        state.data={...state.data,phase:'blocked',running:false,processed:17997,pending:0,retry:0,unavailable:20};
+        await t.poll();
+        await f.page.waitForFunction(()=>document.getElementById('buscaMotivosStatus').textContent.includes('20 consultas ficaram indisponíveis'));
+        assert.match(await f.page.locator('#buscaMotivosStatus').textContent(),/1.029 dependem de reconectar/);
+        assert.doesNotMatch(await f.page.locator('#buscaMotivosStatus').textContent(),/aguardam uma nova tentativa/);
+        assert.equal(await f.page.locator('#buscaMotivosProgresso').isHidden(),true);
+        assert.equal(await f.page.locator('#buscarMotivos').isEnabled(),true);
+        const folder=process.env.JK_DEVOLUCOES_ARTIFACTS_DIR;
+        if(folder)await f.page.screenshot({path:path.join(folder,'devolucoes-pendencias-concluidas.png'),fullPage:true});
+        await f.page.locator('#buscarMotivos').click();
+        await until(()=>state.posts.length===1,'A new manual lookup did not start after persistent failures');
+        await f.page.waitForFunction(()=>document.getElementById('buscaMotivosStatus').textContent.includes('Busca em andamento'));
+        assert.deepEqual(f.errors,[]);
+    } finally {await t.close();}
+}
+
 async function completionWhileReportIsLoading(browser) {
     const t=await setup(browser);const {f,state,items}=t;
     try {
@@ -165,8 +188,8 @@ async function completedOnFirstStatus(browser) {
 
 async function main(){
     const browser=await chromium.launch({headless:true});
-    try{await bulkAndRefresh(browser);await reloadAndUncertainPost(browser);await tenantRace(browser);await completionWhileReportIsLoading(browser);await completedOnFirstStatus(browser);
-        console.log('vendas_devolucoes_busca_motivos: OK (bulk action, durable progress reload, report refresh, uncertain POST, tenant race, mobile)');
+    try{await bulkAndRefresh(browser);await reloadAndUncertainPost(browser);await tenantRace(browser);await persistentFailureFinishesAndCanRetry(browser);await completionWhileReportIsLoading(browser);await completedOnFirstStatus(browser);
+        console.log('vendas_devolucoes_busca_motivos: OK (bulk action, durable progress reload, report refresh, uncertain POST, tenant race, persistent failures, mobile)');
     }finally{await browser.close();}
 }
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});

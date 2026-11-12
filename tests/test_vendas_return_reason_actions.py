@@ -230,6 +230,41 @@ def test_reconnect_is_a_separate_blocked_state_and_explicit_retry_can_resume(env
     assert state.run()["identified"] == 1
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_persistent_partial_response_finishes_with_reconnection_pending_and_manual_retry_recovers(environment, legacy):
+    state = environment
+    path = state.database([returned(store=None if legacy else "store-a"), returned("reconnect", note="102")])
+    before = commercial_rows(path)
+    calls = []
+
+    def partial(job):
+        if job["item_id_unico"] == "reconnect":
+            return {"result_status": "reconnect_required", "error_code": "oauth_invalid"}
+        calls.append(job)
+        return {"result_status": "unavailable", "retryable": True, "error_code": "partial_response"}
+
+    actions.start_search("tenant-a")
+    for _ in range(20):
+        result = state.step(partial)
+        if not result["running"]:
+            break
+        with sqlite3.connect(path) as conn:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='devolucao_motivos'").fetchone()
+            retry = conn.execute("SELECT next_attempt_at FROM devolucao_motivos WHERE item_id_unico='item-a'").fetchone() if exists else None
+        if retry:
+            state.clock = max(state.clock, retry[0])
+    assert not result["running"], "Persistent partial responses must not keep the historical search active forever"
+    assert len(calls) == 5
+    assert (result["phase"], result["total"], result["processed"], result["pending"], result["retry"]) == ("blocked", 2, 2, 0, 0)
+    assert result["unavailable"] == result["reconnect_required"] == 1
+    assert commercial_rows(path) == before
+    state.clock += 1
+    actions.start_search("tenant-a")
+    result = state.run()
+    assert result["phase"] == "completed" and result["identified"] == 2
+    assert commercial_rows(path) == before
+
+
 def test_live_item_lease_is_not_reset_and_expiration_resumes(environment):
     state = environment
     path = state.database([returned()])
