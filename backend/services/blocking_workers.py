@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from functools import partial
 from typing import Callable, Literal, TypeVar
 
@@ -15,6 +16,7 @@ _HEAVY_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_heavy_worker_limiter"
 _FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_financial_worker_limiter")
 _IMPORT_OFFER_LIMITERS: RunVar[dict[str, anyio.CapacityLimiter]] = RunVar("jk_import_offer_limiters")
 _IMPORT_FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_import_financial_limiter")
+_IMPORT_LIST_FINANCIAL_LIMITER: RunVar[anyio.CapacityLimiter] = RunVar("jk_import_list_financial_limiter")
 _PENDING_WORKERS: RunVar[set[asyncio.Task]] = RunVar("jk_pending_blocking_workers")
 HEAVY_WORKER_LIMIT = 2
 FINANCIAL_WORKER_LIMIT = 1
@@ -67,13 +69,29 @@ async def run_blocking(function: Callable[..., _Result], *args, **kwargs) -> _Re
 
 
 async def run_import_financial(function: Callable[..., _Result], *args, **kwargs) -> _Result:
-    """One serial list plus an interactive SKU, without occupying local-read slots."""
+    """Preserve two interactive/legacy slots, independent of list background work."""
     try:
         limiter = _IMPORT_FINANCIAL_LIMITER.get()
     except LookupError:
         limiter = anyio.CapacityLimiter(2)
         _IMPORT_FINANCIAL_LIMITER.set(limiter)
     return await _run_worker(partial(function, *args, **kwargs), limiter)
+
+
+def import_list_financial_limiter() -> anyio.CapacityLimiter:
+    """Use one stable list limit per server loop, shared with its public config."""
+    try:
+        return _IMPORT_LIST_FINANCIAL_LIMITER.get()
+    except LookupError:
+        configured = os.getenv("JK_IMPORTACOES_MARGENS_CONCORRENCIA", "4").strip()
+        limiter = anyio.CapacityLimiter(2 if configured == "2" else 4)
+        _IMPORT_LIST_FINANCIAL_LIMITER.set(limiter)
+        return limiter
+
+
+async def run_import_list_financial(function: Callable[..., _Result], *args, **kwargs) -> _Result:
+    """Bound list analyses without borrowing the interactive or local-read slots."""
+    return await _run_worker(partial(function, *args, **kwargs), import_list_financial_limiter())
 
 
 async def run_import_offer_source(

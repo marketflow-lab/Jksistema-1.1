@@ -92,6 +92,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_preferencias_colunas_get",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/configuracao-margens",
+        medias_compras.api_medias_compras_configuracao_margens,
+        methods=["GET"],
+        name="api_medias_compras_configuracao_margens",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/preferencias-colunas",
         medias_compras.api_medias_compras_preferencias_colunas_put,
         methods=["PUT"],

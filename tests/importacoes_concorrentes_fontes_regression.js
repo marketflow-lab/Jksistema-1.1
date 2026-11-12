@@ -92,6 +92,7 @@ function listHarness(loja = 'JK Peças') {
         definirEstadoMargensAutomaticas: (item, status, message) => state.statuses.push([item.SKU, status, message]),
         atualizarCelulaMargensAutomaticas: () => {},
         fetch: async (url, options) => {
+            if (url.endsWith('/configuracao-margens')) return response({ concorrencia_lista: 2 });
             if (options.method === 'GET') {
                 const query = new URL(url, 'http://fixture').searchParams;
                 if (query.get('somente_proprios') === 'true') {
@@ -129,7 +130,8 @@ function listHarness(loja = 'JK Peças') {
         'normTxt', 'valorNumerico', 'extrairCodigoMlbMargensAutomaticas',
         'montarPayloadMargensAutomaticas', 'consultarAnaliseLista', 'carregarFontesMargensAutomaticas',
         'analiseAnunciosLojaConfere', 'anunciosLojaAnaliseRecentes', 'carregarAnunciosMargensAutomaticas',
-        'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
+        'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'salvarMargensAutomaticasSku',
+        'obterConcorrenciaMargensLista', 'analisarMargensConcorrentesAutomaticamente',
         'opcoesCacheMargensLista', 'restaurarMargensCompartilhadasLista', 'priorizarPendentesMargens',
     ], bindings);
     const analisar = context.analisarMargensConcorrentesAutomaticamente;

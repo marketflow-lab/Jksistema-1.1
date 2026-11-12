@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Detalhe da Lista - Importações</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261112-margens-v2"></script>
+    <script src="/cache-persistente.js?v=20261112-margens-paralelas-v1"></script>
     <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/medias_compras/atualizacao-arquivo.js?v=20261029-v1"></script>
@@ -1019,9 +1019,11 @@
                 || window.JKCachePersistente.dadosVigentes(contexto.persistencia, ['importacoes', 'vendas']));
         }
 
-        function confirmarMutacaoLista(contexto, resposta) {
+        function confirmarMutacaoLista(contexto, resposta, analiseImportacao = false) {
             if (!contexto.persistencia) return true;
-            const novo = window.JKCachePersistente?.confirmarMutacao?.(contexto.persistencia, resposta);
+            const cache = window.JKCachePersistente;
+            const confirmar = (analiseImportacao && cache?.confirmarAnaliseImportacao) || cache?.confirmarMutacao;
+            const novo = confirmar?.(contexto.persistencia, resposta);
             if (!novo) { contexto.podeSalvar = false; return false; }
             contexto.persistencia = novo;
             contextoPersistenteLista = novo;
@@ -1711,13 +1713,14 @@
 
         async function consultarAnaliseLista(url, opcoes, contexto) {
             if (!carregamentoVigente(contexto)) throw new Error('Carregamento substituído.');
-            const restante = 120000;
+            const { timeoutMs = 120000, ...parametros } = opcoes;
+            const restante = Math.min(120000, Math.max(1, timeoutMs));
             if (restante <= 0) throw new Error('Análise complementar pendente. Tente novamente.');
             const controller = new AbortController();
             controladoresAuxiliares.add(controller);
             const timeout = setTimeout(() => controller.abort(), restante);
             try {
-                const resposta = await fetch(url, { ...opcoes, signal: controller.signal });
+                const resposta = await fetch(url, { ...parametros, signal: controller.signal });
                 if (!resposta.ok) {
                     const erro = await resposta.json().catch(() => ({}));
                     throw Object.assign(new Error(erro.detail?.message || erro.detail || 'Não foi possível carregar a análise de concorrentes.'), { status: resposta.status });
@@ -1753,12 +1756,12 @@
                     + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes',
                 {
                     method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders() },
+                    headers: { 'Content-Type': 'application/json', ...obterAuthHeaders(), 'X-JK-Importacoes-Origem': 'lista' },
                     body: JSON.stringify(payload),
                 },
                 contexto
             );
-            confirmarMutacaoLista(contexto, resposta);
+            confirmarMutacaoLista(contexto, resposta, true);
             return dados;
         }
 
@@ -1843,6 +1846,17 @@
             itens.sort((a, b) => Number(visiveis.has(chaveSkuCustoCadastro(b.SKU))) - Number(visiveis.has(chaveSkuCustoCadastro(a.SKU))));
         }
 
+        async function obterConcorrenciaMargensLista(contexto) {
+            try {
+                const { dados } = await consultarAnaliseLista('/api/medias-compras/listas-pedidos/configuracao-margens',
+                    { method: 'GET', headers: obterAuthHeaders(), timeoutMs: 2000, cache: 'no-store' }, contexto);
+                return dados?.concorrencia_lista === 4 ? 4 : 2;
+            } catch (erro) {
+                if ([401, 403].includes(erro.status)) throw erro;
+                return 2;
+            }
+        }
+
         async function analisarMargensConcorrentesAutomaticamente(listaId, itens) {
             const contexto = contextoCarregamentoAtual(listaId);
             const assinaturaFila = JSON.stringify([contexto.geracao, listaId, ultimaListaCarregada?.store_id,
@@ -1850,122 +1864,151 @@
                     return [sku, custo?.assinatura, custo?.revisao]; })]);
             if (filaMargensLista?.assinatura === assinaturaFila) return filaMargensLista.promessa;
             const cicloAtual = ++cicloAnaliseMargensAutomaticas;
-            const vigente = () => cicloAtual === cicloAnaliseMargensAutomaticas && carregamentoVigente(contexto);
             const helper = window.JKImportacoesCacheMargens;
-            const estadoFila = { assinatura: assinaturaFila };
+            const estadoFila = { assinatura: assinaturaFila, interrompida: false };
+            const vigente = () => !estadoFila.interrompida && cicloAtual === cicloAnaliseMargensAutomaticas && carregamentoVigente(contexto);
+            const interromperAcesso = async () => {
+                estadoFila.interrompida = true;
+                cacheMargensLista = {};
+                for (const linha of ultimosItensCarregados) {
+                    delete linha.analise_simulacao_importacao_sku;
+                    atualizarCelulaMargensAutomaticas(linha);
+                }
+                await window.JKCachePersistente?.invalidar?.(['analises_importacao']);
+            };
             filaMargensLista = estadoFila;
             estadoFila.promessa = (async () => {
+                let concorrencia;
+                try { concorrencia = await obterConcorrenciaMargensLista(contexto); }
+                catch (_erro) {
+                    if (vigente()) await interromperAcesso();
+                    return;
+                }
+                if (!vigente()) return;
                 await restaurarMargensCompartilhadasLista(contexto);
                 if (!vigente()) return;
-                const pendentes = (Array.isArray(itens) ? itens : []).filter(item => chaveSkuCustoCadastro(item.SKU));
-                pendentes.forEach(item => definirEstadoMargensAutomaticas(item, 'fila'));
-                while (pendentes.length) {
-                    if (!vigente() || document.hidden) return;
-                    priorizarPendentesMargens(pendentes);
-                    const item = pendentes.shift();
+                const unicos = new Map();
+                (Array.isArray(itens) ? itens : []).forEach(item => {
                     const sku = chaveSkuCustoCadastro(item.SKU);
-                    for (let tentativa = 0; tentativa < 2; tentativa++) {
+                    if (sku && !unicos.has(sku)) unicos.set(sku, item);
+                });
+                const pendentes = Array.from(unicos.values());
+                pendentes.forEach(item => definirEstadoMargensAutomaticas(item, 'fila'));
+                const processar = async () => {
+                    while (pendentes.length) {
                         if (!vigente() || document.hidden) return;
-                        definirEstadoMargensAutomaticas(item, 'analisando');
-                        let fonteLida = false;
-                        try {
-                            const anterior = cacheMargensLista[sku];
-                            const custoAtual = calculosUnitariosLista[sku];
-                            // Fresh source data is shared between the list and SKU, independently of the result age.
-                            const podeUsarFonte = anterior?.analise?.revisao_fontes_custo === custoAtual?.revisao
-                                && helper?.fontesRecentes(anterior?.fontes);
-                            const fonte = podeUsarFonte ? anterior.fontes : (await consultarAnaliseLista(
-                                '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(sku)
-                                + '&lista_id=' + encodeURIComponent(listaId) + '&anuncios_da_lista=true',
-                                { method: 'GET', headers: obterAuthHeaders() }, contexto)).dados;
-                            if (!vigente()) return;
-                            fonteLida = true;
-                            if (fonte.anuncios_loja_fonte !== 'loja_lista_sku'
-                                || fonte.anuncios_loja_store_id !== ultimaListaCarregada.store_id) throw new Error('Anúncios de outra loja.');
-                            if (Array.isArray(fonte.anuncios_loja)) {
-                                const chave = obterSkuItemMargensAutomaticas(item);
-                                estadosAnaliseMargensAutomaticas.set(chave, { ...estadosAnaliseMargensAutomaticas.get(chave), anuncios: fonte.anuncios_loja });
-                                atualizarCelulaMargensAutomaticas(item);
-                            }
-                            const registro = calculosUnitariosLista[sku];
-                            if (!registro?.revisao || !Number.isFinite(registro.calculo?.custoUnitario)) {
-                                definirEstadoMargensAutomaticas(item, 'pendente', 'Aguardando custo completo para calcular as margens.');
-                                break;
-                            }
-                            const payload = montarPayloadMargensAutomaticas(fonte, item);
-                            const opcoes = { ...opcoesCacheMargensLista(contexto, sku), vigente };
-                            const identidade = helper?.identidadeFontes(fonte);
-                            let record = anterior;
-                            if (helper && !helper.mesmosInsumos(record, payload, identidade)
-                                && helper.analiseCompativel(item.analise_simulacao_importacao_sku, payload, identidade)) {
-                                record = await helper.salvar({ ...opcoes, payload, fontes: fonte,
-                                    analise: item.analise_simulacao_importacao_sku,
-                                    calculadoEm: Date.parse(item.analise_simulacao_importacao_sku.atualizado_em) || 0 });
-                            }
-                            if (helper?.mesmosInsumos(record, payload, identidade) && helper.financeiroRecente(record)) {
-                                const confirmado = await helper.salvar({ ...opcoes, payload, fontes: fonte,
-                                    analise: record.analise, calculadoEm: record.calculadoEm });
-                                record = confirmado || record;
-                                item.analise_simulacao_importacao_sku = record.analise;
-                                cacheMargensLista[sku] = record;
-                                definirEstadoMargensAutomaticas(item, helper.fontesRecentes(fonte) ? '' : 'fila');
-                                break;
-                            }
-                            const executar = async () => {
-                                if (!vigente()) return null;
-                                const recente = await helper?.ler({ ...opcoes, reler: true });
-                                if (helper?.mesmosInsumos(recente, payload, identidade) && helper.financeiroRecente(recente)) {
-                                    return { analise_concorrentes: recente.analise, compartilhada: recente };
-                                }
-                                const resposta = await salvarMargensAutomaticasSku(listaId, sku, payload, contexto);
-                                if (!vigente()) return null;
-                                const atual = calculosUnitariosLista[sku];
-                                if (atual?.assinatura !== payload.assinatura_calculo || atual?.revisao !== payload.revisao_fontes_custo) return null;
-                                const compartilhada = await helper?.salvar({ ...opcoes, contexto: contexto.persistencia,
-                                    payload, fontes: fonte, analise: resposta?.analise_concorrentes, calculadoEm: Date.now() });
-                                return { ...resposta, compartilhada };
-                            };
-                            const resultado = await window.JKImportacoesCacheCustos.comTravaAnalise({ listaId, sku,
-                                storeId: String(ultimaListaCarregada.store_id || ''),
-                                contexto: contexto.persistencia, vigente }, executar);
-                            if (!vigente()) return;
-                            const atual = calculosUnitariosLista[sku];
-                            if (!resultado?.analise_concorrentes || atual?.assinatura !== payload.assinatura_calculo
-                                || atual?.revisao !== payload.revisao_fontes_custo) {
-                                definirEstadoMargensAutomaticas(item, 'fila', 'Custo alterado durante a análise.');
-                                continue;
-                            }
-                            item.analise_simulacao_importacao_sku = resultado.analise_concorrentes;
-                            if (resultado.compartilhada) cacheMargensLista[sku] = resultado.compartilhada;
-                            definirEstadoMargensAutomaticas(item, !helper || helper.fontesRecentes(fonte) ? '' : 'fila');
-                            await salvarSnapshotLista(contexto);
-                            break;
-                        } catch (erro) {
-                            if (!vigente()) return;
-                            if ([401, 403].includes(erro.status)) {
-                                cacheMargensLista = {};
-                                for (const linha of ultimosItensCarregados) {
-                                    delete linha.analise_simulacao_importacao_sku;
-                                    atualizarCelulaMargensAutomaticas(linha);
-                                }
-                                await window.JKCachePersistente?.invalidar?.(['analises_importacao']);
-                                definirEstadoMargensAutomaticas(item, 'erro', 'Acesso à análise indisponível.');
-                                return;
-                            }
-                            if (!fonteLida) {
-                                try {
-                                    const proprios = await carregarAnunciosMargensAutomaticas(listaId, sku, contexto);
-                                    if (!vigente()) return;
+                        priorizarPendentesMargens(pendentes);
+                        const item = pendentes.shift();
+                        const sku = chaveSkuCustoCadastro(item.SKU);
+                        for (let tentativa = 0; tentativa < 2; tentativa++) {
+                            if (!vigente() || document.hidden) return;
+                            definirEstadoMargensAutomaticas(item, 'analisando');
+                            let fonteLida = false;
+                            try {
+                                const anterior = cacheMargensLista[sku];
+                                const custoAtual = calculosUnitariosLista[sku];
+                                // Fresh source data is shared between the list and SKU, independently of the result age.
+                                const podeUsarFonte = anterior?.analise?.revisao_fontes_custo === custoAtual?.revisao
+                                    && helper?.fontesRecentes(anterior?.fontes);
+                                const fonte = podeUsarFonte ? anterior.fontes : (await consultarAnaliseLista(
+                                    '/api/medias-compras/concorrentes-links?sku=' + encodeURIComponent(sku)
+                                    + '&lista_id=' + encodeURIComponent(listaId) + '&anuncios_da_lista=true',
+                                    { method: 'GET', headers: obterAuthHeaders() }, contexto)).dados;
+                                if (!vigente()) return;
+                                fonteLida = true;
+                                if (fonte.anuncios_loja_fonte !== 'loja_lista_sku'
+                                    || fonte.anuncios_loja_store_id !== ultimaListaCarregada.store_id) throw new Error('Anúncios de outra loja.');
+                                if (Array.isArray(fonte.anuncios_loja)) {
                                     const chave = obterSkuItemMargensAutomaticas(item);
-                                    estadosAnaliseMargensAutomaticas.set(chave, {
-                                        ...estadosAnaliseMargensAutomaticas.get(chave), anuncios: proprios.anuncios_loja });
-                                } catch (_falhaAnuncios) { /* The last compatible analysis remains visible. */ }
+                                    estadosAnaliseMargensAutomaticas.set(chave, { ...estadosAnaliseMargensAutomaticas.get(chave), anuncios: fonte.anuncios_loja });
+                                    atualizarCelulaMargensAutomaticas(item);
+                                }
+                                const registro = calculosUnitariosLista[sku];
+                                if (!registro?.revisao || !Number.isFinite(registro.calculo?.custoUnitario)) {
+                                    definirEstadoMargensAutomaticas(item, 'pendente', 'Aguardando custo completo para calcular as margens.');
+                                    break;
+                                }
+                                const payload = montarPayloadMargensAutomaticas(fonte, item);
+                                const opcoes = { ...opcoesCacheMargensLista(contexto, sku), vigente };
+                                const identidade = helper?.identidadeFontes(fonte);
+                                let record = anterior;
+                                if (helper && !helper.mesmosInsumos(record, payload, identidade)
+                                    && helper.analiseCompativel(item.analise_simulacao_importacao_sku, payload, identidade)) {
+                                    record = await helper.salvar({ ...opcoes, payload, fontes: fonte,
+                                        analise: item.analise_simulacao_importacao_sku,
+                                        calculadoEm: Date.parse(item.analise_simulacao_importacao_sku.atualizado_em) || 0 });
+                                    if (!vigente()) return;
+                                }
+                                if (helper?.mesmosInsumos(record, payload, identidade) && helper.financeiroRecente(record)) {
+                                    const confirmado = await helper.salvar({ ...opcoes, payload, fontes: fonte,
+                                        analise: record.analise, calculadoEm: record.calculadoEm });
+                                    if (!vigente()) return;
+                                    record = confirmado || record;
+                                    item.analise_simulacao_importacao_sku = record.analise;
+                                    cacheMargensLista[sku] = record;
+                                    definirEstadoMargensAutomaticas(item, helper.fontesRecentes(fonte) ? '' : 'fila');
+                                    break;
+                                }
+                                const executar = async () => {
+                                    if (!vigente()) return null;
+                                    const recente = await helper?.ler({ ...opcoes, reler: true });
+                                    if (!vigente()) return null;
+                                    if (helper?.mesmosInsumos(recente, payload, identidade) && helper.financeiroRecente(recente)) {
+                                        return { analise_concorrentes: recente.analise, compartilhada: recente };
+                                    }
+                                    const resposta = await salvarMargensAutomaticasSku(listaId, sku, payload, contexto);
+                                    if (!vigente()) return null;
+                                    const atual = calculosUnitariosLista[sku];
+                                    if (atual?.assinatura !== payload.assinatura_calculo || atual?.revisao !== payload.revisao_fontes_custo) return null;
+                                    const compartilhada = await helper?.salvar({ ...opcoes, contexto: contexto.persistencia,
+                                        payload, fontes: fonte, analise: resposta?.analise_concorrentes, calculadoEm: Date.now() });
+                                    return { ...resposta, compartilhada };
+                                };
+                                const resultado = await window.JKImportacoesCacheCustos.comTravaAnalise({ listaId, sku,
+                                    storeId: String(ultimaListaCarregada.store_id || ''),
+                                    contexto: contexto.persistencia, vigente }, executar);
+                                if (!vigente()) return;
+                                const atual = calculosUnitariosLista[sku];
+                                if (!resultado?.analise_concorrentes || atual?.assinatura !== payload.assinatura_calculo
+                                    || atual?.revisao !== payload.revisao_fontes_custo) {
+                                    definirEstadoMargensAutomaticas(item, 'fila', 'Custo alterado durante a análise.');
+                                    continue;
+                                }
+                                item.analise_simulacao_importacao_sku = resultado.analise_concorrentes;
+                                if (resultado.compartilhada) cacheMargensLista[sku] = resultado.compartilhada;
+                                definirEstadoMargensAutomaticas(item, !helper || helper.fontesRecentes(fonte) ? '' : 'fila');
+                                await salvarSnapshotLista(contexto);
+                                break;
+                            } catch (erro) {
+                                if (!vigente()) return;
+                                if ([401, 403].includes(erro.status)) {
+                                    await interromperAcesso();
+                                    definirEstadoMargensAutomaticas(item, 'erro', 'Acesso à análise indisponível.');
+                                    return;
+                                }
+                                if (!fonteLida) {
+                                    try {
+                                        const proprios = await carregarAnunciosMargensAutomaticas(listaId, sku, contexto);
+                                        if (!vigente()) return;
+                                        const chave = obterSkuItemMargensAutomaticas(item);
+                                        estadosAnaliseMargensAutomaticas.set(chave, {
+                                            ...estadosAnaliseMargensAutomaticas.get(chave), anuncios: proprios.anuncios_loja });
+                                    } catch (falhaAnuncios) {
+                                        if (!vigente()) return;
+                                        if ([401, 403].includes(falhaAnuncios.status)) {
+                                            await interromperAcesso();
+                                            definirEstadoMargensAutomaticas(item, 'erro', 'Acesso à análise indisponível.');
+                                            return;
+                                        }
+                                    }
+                                }
+                                definirEstadoMargensAutomaticas(item, 'erro', erro.message || 'Atualização da margem pendente.');
+                                if (tentativa === 0) await new Promise(resolve => setTimeout(resolve, 1000));
                             }
-                            definirEstadoMargensAutomaticas(item, 'erro', erro.message || 'Atualização da margem pendente.');
-                            if (tentativa === 0) await new Promise(resolve => setTimeout(resolve, 1000));
                         }
                     }
-                }
+                };
+                await Promise.all(Array.from({ length: Math.min(concorrencia, pendentes.length) }, processar));
                 return contexto;
             })();
             try { return await estadoFila.promessa; }

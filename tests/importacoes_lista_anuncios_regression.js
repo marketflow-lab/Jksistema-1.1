@@ -19,7 +19,7 @@ const names = ['escaparHtml', 'normTxt', 'formatarPct', 'formatarBRL', 'obterCam
     'analiseSimuladaListaCompativel', 'analiseConfereFontesLista', 'obterMargemAnuncioLoja',
     'formatarMargensLoja', 'formatarAnunciosLoja', 'montarPayloadMargensAutomaticas',
     'consultarAnaliseLista', 'carregarFontesMargensAutomaticas', 'carregarAnunciosMargensAutomaticas',
-    'salvarMargensAutomaticasSku', 'analisarMargensConcorrentesAutomaticamente',
+    'salvarMargensAutomaticasSku', 'obterConcorrenciaMargensLista', 'analisarMargensConcorrentesAutomaticamente',
     'opcoesCacheMargensLista', 'restaurarMargensCompartilhadasLista', 'priorizarPendentesMargens'];
 
 function ads() {
@@ -62,6 +62,7 @@ function harness() {
             else context.estadosAnaliseMargensAutomaticas.delete(item.SKU);
         },
         fetch: async (url, options) => {
+            if (url.endsWith('/configuracao-margens')) return { ok: true, status: 200, json: async () => ({ concorrencia_lista: 2 }) };
             if (options.method === 'GET') {
                 state.gets.push(url);
                 if (url.startsWith('/api/medias-compras/concorrentes-links?')) {

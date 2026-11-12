@@ -52,7 +52,7 @@ const inicioFila = html.indexOf('async function analisarMargensConcorrentesAutom
 const inicioLoop = html.indexOf('while (pendentes.length)', inicioFila);
 const esperaSku = html.indexOf('await window.JKImportacoesCacheCustos.comTravaAnalise(', inicioLoop);
 if (!(inicioFila >= 0 && inicioLoop > inicioFila && esperaSku > inicioLoop)) {
-    throw new Error('Os SKUs devem ser processados sequencialmente para preservar a persistência da lista.');
+    throw new Error('Cada trabalhador da fila deve aguardar a análise e a gravação do seu SKU.');
 }
 
 console.log('OK: margens não analisadas são calculadas automaticamente e atualizadas linha a linha.');

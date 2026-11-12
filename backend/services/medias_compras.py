@@ -83,6 +83,7 @@ __all__ = [
     "api_medias_compras_skus_ocultos_get",
     "api_medias_compras_skus_ocultos_put",
     "api_medias_compras_preferencias_colunas_get",
+    "api_medias_compras_configuracao_margens",
     "api_medias_compras_preferencias_colunas_put",
     "api_medias_compras_concorrentes_links",
     "api_medias_compras_lista_pedido_concorrentes_links_lote",

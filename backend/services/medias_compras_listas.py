@@ -16,10 +16,10 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import requests
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from backend.schemas import (
@@ -759,6 +759,12 @@ async def api_medias_compras_preferencias_colunas_get(client_id: str = Depends(m
     from backend.services.blocking_workers import run_heavy
 
     return await run_heavy(_api_medias_compras_preferencias_colunas_get_sync, client_id=client_id)
+
+
+async def api_medias_compras_configuracao_margens(client_id: str = Depends(medias_common.get_tenant_id)):
+    from backend.services.blocking_workers import import_list_financial_limiter
+
+    return {"concorrencia_lista": import_list_financial_limiter().total_tokens}
 
 
 def _api_medias_compras_preferencias_colunas_get_sync(client_id: str = Depends(medias_common.get_tenant_id)):
@@ -1658,10 +1664,13 @@ async def api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku(
     sku: str,
     req: ListaPedidoSkuAnaliseConcorrentesRequest,
     client_id: str = Depends(medias_common.get_tenant_id),
+    origem_calculo: Annotated[Literal["lista", "sku"], Header(alias="X-JK-Importacoes-Origem")] = "sku",
 ):
-    from backend.services.blocking_workers import run_financial, run_import_financial
+    from backend.services.blocking_workers import run_financial, run_import_financial, run_import_list_financial
 
     executar = run_import_financial if req.revisao_fontes_custo is not None else run_financial
+    if req.revisao_fontes_custo is not None and origem_calculo == "lista":
+        executar = run_import_list_financial
     return await executar(_api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync, lista_id=lista_id, sku=sku, req=req, client_id=client_id)
 
 
@@ -2574,6 +2583,7 @@ __all__ = [
     "api_medias_compras_skus_ocultos_get",
     "api_medias_compras_skus_ocultos_put",
     "api_medias_compras_preferencias_colunas_get",
+    "api_medias_compras_configuracao_margens",
     "api_medias_compras_preferencias_colunas_put",
     "api_medias_compras_concorrentes_links",
     "api_medias_compras_lista_pedido_concorrentes_links_lote",

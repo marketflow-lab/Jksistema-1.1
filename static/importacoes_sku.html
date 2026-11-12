@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261112-margens-v1"></script>
+    <script src="/cache-persistente.js?v=20261112-margens-paralelas-v1"></script>
     <script src="/medias_compras/importacoes-custo-simulado.js?v=20261112-sem-cubagem-v1"></script>
     <script src="/medias_compras/importacoes-cache-custos.js?v=20261112-margens-v1"></script>
     <script src="/medias_compras/importacoes-cache-margens.js?v=20261112-margens-v1"></script>
@@ -1055,7 +1055,11 @@
                     throw new Error('Os dados foram alterados durante o carregamento.');
                 }
                 if (contexto.persistencia && !leitura) {
-                    const novo = window.JKCachePersistente?.confirmarMutacao?.(contexto.persistencia, resp);
+                    const cache = window.JKCachePersistente;
+                    const analiseImportacao = caminho === rotaDetalheSku(contexto) + '/analise-concorrentes'
+                        && /^[a-f0-9]{64}$/.test(contexto.revisaoFontesCusto || '');
+                    const confirmar = (analiseImportacao && cache?.confirmarAnaliseImportacao) || cache?.confirmarMutacao;
+                    const novo = confirmar?.(contexto.persistencia, resp);
                     if (novo) contexto.persistencia = novo;
                     else contexto.podeSalvar = false;
                 }

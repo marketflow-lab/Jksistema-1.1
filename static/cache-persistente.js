@@ -132,6 +132,30 @@
         return contexto();
     }
 
+    function confirmarAnaliseImportacao(previous, response) {
+        const receipt = mutationReceipts.get(response);
+        const captured = contexts.get(previous);
+        const requested = contexts.get(receipt?.requestContext);
+        const tag = 'analises_importacao';
+        if (!receipt || receipt.tags?.length !== 1 || receipt.tags[0] !== tag
+            || storageUnavailable || !requested || !vigente(previous) || !vigente(receipt.requestContext)
+            || captured.session !== receipt.session || requested.session !== receipt.session) return null;
+        const snapshots = [captured.revisions, requested.revisions, receipt.before, receipt.after, revisions()];
+        const fences = [captured.revocations, requested.revocations,
+            receipt.revocationsBefore, receipt.revocationsAfter, revisions(REVOCATION_KEY)];
+        const strictTags = TAGS.filter(value => value !== tag);
+        if (!snapshots.every(revisionMap) || !fences.every(revisionMap)
+            || !snapshots.every(value => sameRevisions(captured.revisions, value, strictTags))
+            || !fences.every(value => sameRevisions(captured.revocations, value, TAGS))) return null;
+        // Different SKUs may publish data revisions while this request is pending.
+        // Only their analysis family may advance; erased or legacy fences are not data updates.
+        const [beforeContext, beforeRequest, beforeReceipt, afterReceipt, current] = snapshots.map(value => value[tag] || '');
+        const dataRevision = value => value.startsWith(DATA_REVISION_PREFIX) && value.length > DATA_REVISION_PREFIX.length;
+        if ([beforeContext, beforeRequest, beforeReceipt].some(value => value && !dataRevision(value))
+            || (beforeRequest && !beforeReceipt) || !dataRevision(afterReceipt) || !dataRevision(current)) return null;
+        return contexto();
+    }
+
     function emit(name, detail) {
         try { global.dispatchEvent(new global.CustomEvent(name, { detail })); } catch (_error) {}
     }
@@ -409,7 +433,7 @@
                 }
             } else if (tags.length && response.ok && !leituraComPost && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
                 const captured = contexts.get(context);
-                const receipt = { before: captured.revisions, session: captured.session };
+                const receipt = { before: captured.revisions, session: captured.session, requestContext: context };
                 if (await invalidate(tags, 'mutation', receipt)) mutationReceipts.set(response, receipt);
             }
             return response;
@@ -434,7 +458,8 @@
             void invalidate(['vendas', 'importacoes'], 'sync');
         }
     });
-    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, podeManterDados, confirmarMutacao, ler, salvar, atualizar,
+    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, podeManterDados,
+        confirmarMutacao, confirmarAnaliseImportacao, ler, salvar, atualizar,
         chaveEscopo: scopeKey,
         invalidar: tags => invalidate(tags) });
 })(window);

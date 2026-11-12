@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
+const { expect } = require('@playwright/test');
 const root = path.resolve(__dirname, '..', 'static');
 const origin = 'http://127.0.0.1:8391';
 const api = '/api/medias-compras/listas-pedidos/A';
@@ -124,10 +125,7 @@ async function environment(browser, segundaLinha = false) {
 const unit = page => page.locator('tr[data-sku="47"] [data-col-key="valor_unit_brl"]');
 const cost = page => page.locator('tr[data-sku="47"] [data-col-key="ultimo_custo_cadastrado"]');
 async function waitText(locator, expected) {
-    await locator.page().waitForFunction(({ selector, expected }) =>
-        document.querySelector(selector)?.textContent.replace(/\s+/g, ' ').trim() === expected,
-    { selector: await locator.evaluate(el => { el.dataset.check = 'target'; return '[data-check="target"]'; }), expected });
-    await locator.evaluate(el => delete el.dataset.check);
+    await expect(locator).toHaveText(expected, { timeout: 10000 });
 }
 
 async function executar() {
