@@ -3,33 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Perguntas e pós venda - JK Sistema</title>
+    <title>Perguntas e pós-venda - JK Sistema</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <link rel="stylesheet" href="/perguntas_pos_venda/styles.css?v=20261109-moderacao-v1">
+    <link rel="stylesheet" href="/perguntas_pos_venda/layout.css?v=20261112-atendimento-v1">
 </head>
-<body>
+<body class="ppv-page">
     <div class="container">
         <header class="topbar">
             <div class="title-block">
-                <h1>Perguntas e pós venda</h1>
+                <img class="ppv-page-illustration" src="/perguntas_pos_venda/images/atendimento.png" width="174" height="116" alt="" aria-hidden="true" decoding="async">
+                <div class="ppv-page-heading">
+                    <span class="ppv-eyebrow">Atendimento ao cliente</span>
+                    <h1>Perguntas e p&oacute;s-venda</h1>
+                    <p>Perguntas, solicita&ccedil;&otilde;es e atendimento em um s&oacute; lugar.</p>
+                </div>
             </div>
-            <nav class="top-actions" aria-label="Navegação">
-                <a class="nav-btn secondary" href="dashboard.html">Home</a>
-                <a class="nav-btn" href="dashboard.html">Voltar</a>
+            <nav class="ppv-shortcuts" aria-label="Atalhos de atendimento">
+                <a class="ppv-shortcut" href="/vendas.html">
+                    <img src="/medias_compras/images/vendas.png" width="52" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span><strong>Vendas</strong><small>Abrir m&oacute;dulo</small></span>
+                </a>
+                <a class="ppv-shortcut" href="/medias_compras.html">
+                    <img src="/medias_compras/images/estante.png" width="52" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span><strong>M&eacute;dias e Pedidos</strong><small>Abrir planejamento</small></span>
+                </a>
+                <a class="ppv-shortcut" href="/dashboard.html">
+                    <img src="/medias_compras/images/home.png" width="52" height="52" alt="" aria-hidden="true" decoding="async">
+                    <span><strong>Home</strong><small>Voltar ao in&iacute;cio</small></span>
+                </a>
             </nav>
         </header>
 
-        <main class="panel">
-            <div class="module-store-header">
+            <section class="module-store-header ppv-account-panel" aria-labelledby="ppv-accounts-title">
+                <div class="ppv-accounts-heading">
+                    <h2 id="ppv-accounts-title">Contas</h2>
+                    <p>Selecione para filtrar os atendimentos</p>
+                </div>
+                <div class="ppv-accounts-content">
                 <span id="lojas-status" class="status-line hidden">Carregando lojas...</span>
                 <div id="lojas-grid" class="store-grid"></div>
-            </div>
+                </div>
+            </section>
 
+        <main class="panel">
             <div class="tab-control-row">
             <div class="tabs" role="tablist" aria-label="Perguntas e pós venda">
                 <button id="tab-perguntas" class="tab-button active" type="button" role="tab" aria-selected="true" aria-controls="aba-perguntas" data-tab="perguntas">Perguntas <span id="tab-perguntas-notificacao" class="notification-pill tab-notification hidden" title="Perguntas não respondidas">0</span></button>
                 <button id="tab-solicitacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-solicitacao" data-tab="solicitacao">Solicitação</button>
-                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">Pós venda</button>
+                <button id="tab-pos-venda" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-pos-venda" data-tab="pos-venda">P&oacute;s-venda</button>
                 <button id="tab-mediacao" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-mediacao" data-tab="mediacao">Mediação</button>
                 <button id="tab-treinar-ai" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="aba-treinar-ai" data-tab="treinar-ai">Treinar IA</button>
             </div>
@@ -331,7 +353,7 @@
     </div>
 
     <script src="/perguntas_pos_venda/runtime.js?v=20260908-solicitacoes-v1"></script>
-    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20260917-card-count-v1"></script>
+    <script src="/perguntas_pos_venda/lojas-automacao.js?v=20261112-atendimento-v1"></script>
     <script src="/perguntas_pos_venda/perguntas.js?v=20261109-moderacao-v1"></script>
     <script src="/perguntas_pos_venda/solicitacoes.js?v=20260908-solicitacoes-v1"></script>
     <script src="/perguntas_pos_venda/pos-venda.js?v=20260908-loading-v1"></script>

@@ -551,7 +551,11 @@ function renderizarLojas() {
     const todasHtml = lojasConectadas.length ? `
         <div class="store-card all-stores-card ${todasActive ? 'active' : ''}" data-loja="${TODAS_LOJAS_VALUE}" tabindex="0" aria-disabled="false">
             <span class="store-card-heading">
-                <span class="store-name">Todas as contas</span>
+                <span class="ppv-store-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="/medias_compras/icones.svg#lojas"></use></svg></span>
+                <span class="ppv-store-copy">
+                    <span class="store-name">Todas as contas</span>
+                    <span class="ppv-store-hint">${todasActive ? 'Selecionada' : 'Ver conta'}</span>
+                </span>
                 <span class="store-notifications" data-store-notifications="${TODAS_LOJAS_VALUE}">${htmlNotificacoesLoja(TODAS_LOJAS_VALUE)}</span>
             </span>
         </div>
@@ -572,7 +576,11 @@ function renderizarLojas() {
         return `
             <div class="store-card ${active ? 'active' : ''} ${conectado ? '' : 'disabled'}" data-loja="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}" tabindex="${conectado ? '0' : '-1'}" aria-disabled="${conectado ? 'false' : 'true'}">
                 <span class="store-card-heading">
-                    <span class="store-name">${escapeHtml(nome)}</span>
+                    <span class="ppv-store-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><use href="/medias_compras/icones.svg#loja"></use></svg></span>
+                    <span class="ppv-store-copy">
+                        <span class="store-name">${escapeHtml(nome)}</span>
+                        <span class="ppv-store-hint">${active ? 'Selecionada' : 'Ver conta'}</span>
+                    </span>
                     <span class="store-card-status">
                         <span class="store-connection-dot ${dotClasse}" title="${escapeHtml(dotTitulo)}" aria-label="${escapeHtml(dotTitulo)}"></span>
                         <span class="store-notifications" data-store-notifications="${escapeHtml(nome)}" data-store-id="${escapeHtml(loja.store_id || '')}">${htmlNotificacoesLoja(nome, loja.store_id)}</span>
