@@ -532,6 +532,7 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     contexto_cadastro: _ContextoCadastroLista | None = None,
     preservar_cubagem: bool = False,
     filtrar_cadastro_fiscal: bool = False,
+    incluir_fotos: bool = True,
 ) -> list[dict]:
     lista_itens = itens if isinstance(itens, list) else []
     if not lista_itens:
@@ -615,6 +616,8 @@ def _enriquecer_itens_lista_pedido_com_impostos(
     mapas_fotos: dict[tuple[str, str], dict[str, str]] = {}
 
     def _resolver_foto(client_id_foto, sku, foto_ref="", store_id=None):
+        if not incluir_fotos:
+            return ""
         # A referencia e o SKU exatos fazem parte da chave: aliases e fotos
         # explicitas diferentes devem continuar passando pelo resolvedor.
         chave = (client_id_foto, store_id, sku, foto_ref)

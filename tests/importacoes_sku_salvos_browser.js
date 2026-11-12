@@ -41,6 +41,7 @@ function detalheCompacto(id = 'A', somenteSalvos = false, overrides = {}) {
         cadastro: somenteSalvos ? null : { store_id: order.store_id, sku: '001', nome: 'Cadastro ' + id,
             ncm: '00000001', 'M3 individual': .1, custo: '11.25' },
         fiscal: null, fiscal_pronto: !somenteSalvos, revisao: 'custos-' + id,
+        revisao_fontes_custo: id.toLowerCase().repeat(64),
         anuncios_identidade: { seller_id: 'seller-store-' + id, site_id: 'MLB', fontes_versao: 7 }, ...overrides,
     };
 }
@@ -79,6 +80,7 @@ function respostaFinanceira(payload, margemPropria = null, storeId = 'store-A') 
     });
     return { analise_concorrentes: {
         fonte_custo: payload.fonte_custo, custo_unitario: payload.custo_unitario, store_id: storeId,
+        revisao_fontes_custo: payload.revisao_fontes_custo, assinatura_calculo: payload.assinatura_calculo,
         margens: { concorrente_1: dados(payload.precos_concorrentes.concorrente_1) },
         margens_anuncios_loja: { concorrente_1: { ...dados(payload.precos_anuncios_loja.concorrente_1),
             ...(margemPropria === null ? {} : { margem_percentual: margemPropria }) } },
@@ -171,7 +173,7 @@ async function environment(browser, options = {}) {
             if (pathname === '/seed.html') return route.fulfill({
                 contentType: 'text/html', body: '<!doctype html><script src="/cache-persistente.js"></script>',
             });
-            if (pathname === '/medias_compras/importacoes-custo-simulado.js') return route.fulfill({
+            if (pathname.startsWith('/medias_compras/')) return route.fulfill({
                 status: 200, contentType: 'application/javascript',
                 body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
             if (pathname === '/importacoes_sku.html' || pathname === '/cache-persistente.js') return route.fulfill({
@@ -212,6 +214,10 @@ async function environment(browser, options = {}) {
                     : kind === 'saved' ? { lista: lista(id) } : completo(id);
                 return json(route, result);
             }
+            const base = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])\/base-custos$/);
+            if (base && !options.versionedCosts) return json(route, { status: 404, body: { detail: 'Legacy fixture' } });
+            if (base) return json(route, { lista: { id: base[1], store_id: 'store-' + base[1] },
+                revisao: base[1].toLowerCase().repeat(64), revisoes_sku: { '001': base[1].toLowerCase().repeat(64) } });
             if (pathname.endsWith('/analise-concorrentes/previa')) {
                 assert.strictEqual(route.request().method(), 'POST');
                 const payload = route.request().postDataJSON();
@@ -231,11 +237,20 @@ async function environment(browser, options = {}) {
                 if (options.patch) return json(route, await options.patch({ ...call, state }));
                 return json(route, { analise_concorrentes: {
                     fonte_custo: call.payload.fonte_custo, custo_unitario: call.payload.custo_unitario,
+                    revisao_fontes_custo: call.payload.revisao_fontes_custo, assinatura_calculo: call.payload.assinatura_calculo,
                     store_id: pathname.includes('/B/') ? 'store-B' : 'store-A',
                     margens: {}, margens_anuncios_loja: {},
                 } });
             }
             if (pathname.startsWith('/api/')) {
+                const costs = pathname.match(/^\/api\/cadastro\/lojas\/(store-[AB])\/produtos$/);
+                if (costs && url.searchParams.get('view') === 'costs') {
+                    if (url.searchParams.get('somente_revisao') === 'true') return json(route,
+                        { store_id: costs[1], revisao: 'cadastro-' + costs[1] });
+                    return route.fulfill({ status: 200, contentType: 'application/json',
+                        headers: { 'X-JK-Custos-Revisao': 'cadastro-' + costs[1] },
+                        body: JSON.stringify([{ store_id: costs[1], sku: '001', custo: options.compact ? '11.25' : '999' }]) });
+                }
                 if (url.searchParams.get('somente_proprios') === 'true' && !options.proprios) {
                     return json(route, { status: 404, body: { detail: 'Not Found' } });
                 }
@@ -332,6 +347,38 @@ async function run(browser, name, options, check) {
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
             ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
     try {
+        await run(browser, 'custo calculado na lista aparece no SKU antes da rede e permanece salvo durante a validação', {
+            compact: async ({ id, saved, state }) => {
+                if (!saved) {
+                    const pending = gate();
+                    state.pending.push(pending);
+                    await pending.promise;
+                }
+                return detalheCompacto(id, saved);
+            },
+        }, async env => {
+            await seed(env);
+            await env.page.addScriptTag({ content: fs.readFileSync(path.join(root, 'static/medias_compras/importacoes-cache-custos.js'), 'utf8') });
+            await env.page.evaluate(async () => {
+                const contexto = JKCachePersistente.contexto();
+                const revisao = 'a'.repeat(64);
+                await JKCachePersistente.salvar('importacoes:calculados:v1:base:store-A:A', {
+                    versao: 1, lista: { id: 'A', store_id: 'store-A' }, revisao,
+                    itens: [{ SKU: '001' }], rateio: {}, revisoes_sku: { '001': revisao },
+                }, { contexto, tags: ['custos_importacao'] });
+                await JKImportacoesCacheCustos.calcular({ listaId: 'A', storeId: 'store-A', sku: '001', contexto,
+                    entradas: { quantidade: 2, totalUsd: 20, cotacao: 5 }, revisao,
+                    calcular: () => ({ custoUnitario: 12.34, custoTotal: 24.68, despesasNacionais: 1 }),
+                });
+            });
+            await open(env);
+            await env.page.waitForFunction(() => document.getElementById('vValorUnitarioProduto').textContent.includes('12,34'));
+            assert.strictEqual(await env.page.evaluate(() => custoComplementosPendente), true,
+                'A cópia é exibida imediatamente, mas não autoriza publicar margem sem validar as fontes.');
+            await waitUntil(() => env.state.pending.length > 0);
+            env.state.pending.forEach(pending => pending.resolve());
+            await env.page.waitForFunction(() => custoSimuladoDisponivel() && ultimoValorUnitarioProduto !== 12.34);
+        });
         await run(browser, 'margens próprias e Mercado ficam prontas antes das promoções opcionais', opcoesFinanceiras(), async env => {
             await open(env);
             await aguardarMargens(env);

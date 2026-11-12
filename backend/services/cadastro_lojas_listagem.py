@@ -370,8 +370,11 @@ def listar_produtos_loja_snapshot_sync(
     *,
     include_deleted: bool = False,
     include_legacy_snapshot_hash: bool = False,
-    view: Literal["full", "summary"] = "full",
+    view: Literal["full", "summary", "costs"] = "full",
 ) -> list[dict[str, Any]]:
+    if view == "costs":
+        from backend.services.cadastro_custos_cache import custos_loja_snapshot
+        return custos_loja_snapshot(client_id, store_id, include_deleted=include_deleted)[0]
     produtos = _store._listar_produtos_loja_sync(
         client_id,
         store_id,

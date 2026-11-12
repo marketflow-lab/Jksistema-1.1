@@ -146,6 +146,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_lista_pedido_editar",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/listas-pedidos/{lista_id}/base-custos",
+        medias_compras.api_importacoes_base_custos,
+        methods=["GET"],
+        name="api_importacoes_base_custos",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/listas-pedidos/{lista_id}/skus/{sku}",
         medias_compras.api_importacoes_sku_detalhe,
         methods=["GET"],

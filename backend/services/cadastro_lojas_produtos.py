@@ -1799,9 +1799,22 @@ def _listar_produtos_loja_sync(
 async def listar_produtos_loja(
     store_id: str,
     include_deleted: bool = False,
-    view: Literal["full", "summary"] = "full",
+    view: Literal["full", "summary", "costs"] = "full",
     client_id: str = Depends(get_tenant_id),
+    somente_revisao: bool = False,
 ):
+    if somente_revisao and view != "costs":
+        raise HTTPException(status_code=400, detail="somente_revisao requer view=costs.")
+    if view == "costs":
+        from fastapi.responses import JSONResponse
+        from backend.services.cadastro_custos_cache import custos_loja_snapshot
+        produtos, revisao = await run_in_threadpool(
+            custos_loja_snapshot, client_id, store_id, include_deleted=include_deleted,
+        )
+        return JSONResponse(
+            {"store_id": store_id, "revisao": revisao} if somente_revisao else produtos,
+            headers={"X-JK-Custos-Revisao": revisao},
+        )
     from backend.services.cadastro_lojas_listagem import (
         listar_produtos_loja_snapshot_sync,
     )

@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Importações - Detalhe SKU</title>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
-    <script src="/cache-persistente.js?v=20261027-importacoes-v1"></script>
+    <script src="/cache-persistente.js?v=20261112-custos-v1"></script>
     <script src="/medias_compras/importacoes-custo-simulado.js"></script>
+    <script src="/medias_compras/importacoes-cache-custos.js"></script>
     <style>
         :root {
             --bg: #0b0f1a;
@@ -1045,7 +1046,8 @@
                 const resultadoCompleto = resp.status !== 202 && dados?.dados !== null
                     && (!metaCache || (metaCache.estado === 'ready' && metaCache.completo !== false && !metaCache.stale && !metaCache.atualizando));
                 if (salvarCache && resultadoCompleto && contexto.persistencia && leitura) {
-                    await window.JKCachePersistente?.salvar('importacoes:GET:' + (consultaLista ? urlLista : url), dados,
+                    if (consultaLista && Array.isArray(dados?.lista?.itens)) await salvarListaCacheSku(dados, contexto);
+                    else if (!consultaLista) await window.JKCachePersistente?.salvar('importacoes:GET:' + url, dados,
                         { contexto: contexto.persistencia, tags: ['importacoes'] });
                 }
                 return dados;
@@ -1127,7 +1129,7 @@
                     input.replaceWith(elValor);
                 };
 
-                const salvar = () => {
+                const salvar = async () => {
                     const txt = String(input.value || '').trim();
                     const n = Number(txt);
                     const valFinal = (Number.isFinite(n) && n > 0 && n <= 100) ? n : 100;
@@ -1135,7 +1137,7 @@
                     salvarProporcaoLocal(listaId, sku, String(valFinal));
                     ultimaProporcao = valFinal;
                     encerrar();
-                    atualizarCardsIiIpiComValor(
+                    await atualizarCardsIiIpiComValor(
                         ultimoValorTotalDolarIi,
                         ultimoFreteInternacionalUsdIi,
                         ultimoPercentualIi,
@@ -1808,10 +1810,14 @@
                 && ultimoValorUnitarioProduto >= 0;
         }
 
-        function analiseUsaCustoSimuladoAtual(analise) {
+        function analiseUsaCustoSimuladoAtual(analise, conferirRevisao = true) {
             const custo = getNumber(analise?.custo_unitario);
+            const atual = contextoDetalheSku?.calculoCompartilhado;
+            const revisao = contextoDetalheSku?.revisaoFontesCusto;
             return custoSimuladoDisponivel() && analise?.fonte_custo === 'simulacao_importacao_sku'
                 && !!contextoDetalheSku?.storeId && analise.store_id === contextoDetalheSku.storeId
+                && (!conferirRevisao || !revisao || (analise.revisao_fontes_custo === revisao
+                    && atual?.assinatura && analise.assinatura_calculo === atual.assinatura))
                 && custo !== null && Math.abs(custo - ultimoValorUnitarioProduto) <= 0.005;
         }
 
@@ -1847,7 +1853,7 @@
                 const dadosValidos = precoVenda !== null && precoVenda > 0
                     && precoAnalisado !== null && Math.abs(precoVenda - precoAnalisado) <= (contexto?.dadosCompactos ? 0.005 : 0.02)
                     && itemIdConfere && contaCorreta && fontesConferem && analiseUsaCustoSimuladoAtual(analise)
-                    && analiseUsaCustoSimuladoAtual(dados) && margem !== null && dados?.financeiro_exato === true;
+                    && analiseUsaCustoSimuladoAtual(dados, false) && margem !== null && dados?.financeiro_exato === true;
                 return { dados, margem, dadosValidos, lojaAnuncio: contaCorreta && itemIdConfere ? String(dados?.loja || '').trim() : '' };
             }
 
@@ -1948,6 +1954,10 @@
                 precos_anuncios_loja: precosAnunciosLoja,
                 anuncios_loja: anunciosLoja,
                 fontes_versao: ultimaVersaoFontesConcorrentes,
+                ...(contextoDetalheSku?.revisaoFontesCusto && contextoDetalheSku?.calculoCompartilhado?.assinatura ? {
+                    revisao_fontes_custo: contextoDetalheSku.revisaoFontesCusto,
+                    assinatura_calculo: contextoDetalheSku.calculoCompartilhado.assinatura,
+                } : {}),
             };
         }
 
@@ -1961,7 +1971,14 @@
             const assinatura = JSON.stringify(payload);
             if (contexto.analise?.assinatura === assinatura) return contexto.analise.promessa;
             const analise = { assinatura };
-            const promessa = consultarJsonDetalheSku(
+            const executar = () => {
+                if (JSON.stringify(coletarAnaliseConcorrentes()) !== assinatura) throw new Error('O custo mudou antes da análise.');
+                if (!dadosSkuVigentes(contexto) && contexto.revisaoFontesCusto
+                    && window.JKCachePersistente?.podeManterDados?.(contexto.persistencia, ['importacoes', 'vendas'])) {
+                    // The backend compares the economic revision before accepting the queued PATCH.
+                    contexto.persistencia = window.JKCachePersistente.contexto();
+                }
+                return consultarJsonDetalheSku(
                 '/api/medias-compras/listas-pedidos/' + encodeURIComponent(listaId)
                     + '/skus/' + encodeURIComponent(sku) + '/analise-concorrentes', contexto,
                 {
@@ -1970,7 +1987,11 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 }
-            ).catch(erro => {
+                );
+            };
+            const trava = window.JKImportacoesCacheCustos?.comTravaAnalise;
+            const promessa = (trava ? trava({ listaId, storeId: contexto.storeId, contexto: contexto.persistencia,
+                vigente: () => detalheSkuVigente(contexto) }, executar) : executar()).catch(erro => {
                 if (Number.isInteger(erro.status) && contexto.analise === analise) contexto.analise = null;
                 throw erro;
             });
@@ -1985,7 +2006,20 @@
 
         function atualizarCustoTotalProduto(calculo) {
             const disponivel = !custoComplementosPendente && calculo.custoUnitario !== null;
+            const anterior = contextoDetalheSku?.ultimoCalculoVisivel;
+            if (!disponivel && anterior) {
+                // Keep the authorized value visible while its changed inputs are rebuilt.
+                ultimoValorUnitarioProduto = null;
+                setText('vValorUnitarioProduto', fmtBRL(anterior.custoUnitario));
+                setText('vCustoTotalProduto', fmtBRL(anterior.custoTotal));
+                setText('vDespesasNacionais', fmtBRL(anterior.despesasNacionais));
+                document.getElementById('vValorUnitarioProduto').title = 'Último valor salvo; atualização pendente.';
+                atualizarTodasMargensConcorrentes();
+                return;
+            }
             ultimoValorUnitarioProduto = disponivel ? calculo.custoUnitario : null;
+            if (disponivel && contextoDetalheSku) contextoDetalheSku.ultimoCalculoVisivel = calculo;
+            document.getElementById('vValorUnitarioProduto').title = disponivel ? '' : 'Cálculo pendente.';
             setText('vCustoTotalProduto', disponivel ? fmtBRL(calculo.custoTotal) : '-');
             setText('vValorUnitarioProduto', disponivel ? fmtBRL(calculo.custoUnitario) : '-');
             setText('vDespesasNacionais', disponivel ? fmtBRL(calculo.despesasNacionais) : '-');
@@ -2007,7 +2041,7 @@
                 cotacaoDolarHoje = bid > 0 ? Number(bid.toFixed(2)) : 0;
                 const hora = usd && usd.create_date ? String(usd.create_date).slice(11, 19) : '';
                 atualizarFxTopo(bid > 0 ? fmtBRL(bid) : '-', hora);
-                atualizarCardsIiIpiComValor(
+                await atualizarCardsIiIpiComValor(
                     ultimoValorTotalDolarIi,
                     ultimoFreteInternacionalUsdIi,
                     ultimoPercentualIi,
@@ -2020,7 +2054,7 @@
             } catch (_e) {
                 cotacaoDolarHoje = 0;
                 atualizarFxTopo('-');
-                atualizarCardsIiIpiComValor(
+                await atualizarCardsIiIpiComValor(
                     ultimoValorTotalDolarIi,
                     ultimoFreteInternacionalUsdIi,
                     ultimoPercentualIi,
@@ -2035,15 +2069,17 @@
             }
         }
 
-        function atualizarCardsIiIpiComValor(valorTotalDolar, freteInternacionalDolar, iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual, proporcaoPct, qtdNum) {
+        async function atualizarCardsIiIpiComValor(valorTotalDolar, freteInternacionalDolar, iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual, proporcaoPct, qtdNum) {
             const fiscal = ultimoFiscalSimulacaoSku;
             if (!fiscal) return;
+            const contexto = contextoDetalheSku;
+            const ordem = contexto ? (contexto.ordemCalculo = (contexto.ordemCalculo || 0) + 1) : 0;
             const [iiPct, ipiPct, pisPct, cofinsPct] = [iiPercentual, ipiPercentual, pisPercentual, cofinsPercentual].map(getNumber);
             [['lblIi', 'II', iiPct], ['lblIpi', 'IPI', ipiPct], ['lblPis', 'PIS', pisPct], ['lblCofins', 'COFINS', cofinsPct]]
                 .forEach(([id, nome, aliquota]) => {
                     setText(id, aliquota === null ? nome : nome + ' ' + fmtPct(aliquota));
                 });
-            const calculo = window.JKImportacoesCustoSimulado.calcular({
+            const entradas = {
                 totalUsd: getNumber(valorTotalDolar), freteUsd: getNumber(freteInternacionalDolar),
                 cotacao: ultimaCotacaoBase > 0 ? ultimaCotacaoBase : cotacaoDolarHoje, quantidade: qtdNum,
                 iiPct, ipiPct, pisPct, cofinsPct, proporcaoPct,
@@ -2051,7 +2087,20 @@
                 mvaMgPct: extrairPrimeiroNumero(fiscal.mvaMinas),
                 baseIcmsFallback: getNumber(fiscal.baseIcms), baseCstMgFallback: getNumber(fiscal.baseCstMg),
                 baseCstPbFallback: getNumber(fiscal.baseCstPb), icmsFallback: getNumber(fiscal.icms),
-            });
+            };
+            let registro;
+            const helper = window.JKImportacoesCacheCustos;
+            if (helper && contexto?.storeId && contexto.revisaoFontesCusto && !custoComplementosPendente) {
+                registro = await helper.calcular({
+                    listaId: contexto.listaId, storeId: contexto.storeId, sku: contexto.sku,
+                    contexto: contexto.persistencia, entradas, revisao: contexto.revisaoFontesCusto,
+                    vigente: () => detalheSkuVigente(contexto) && contexto.ordemCalculo === ordem,
+                    calcular: window.JKImportacoesCustoSimulado.calcular,
+                }).catch(() => null);
+            }
+            if (contexto && (!detalheSkuVigente(contexto) || contexto.ordemCalculo !== ordem)) return;
+            const calculo = registro?.calculo || window.JKImportacoesCustoSimulado.calcular(entradas);
+            if (contexto) contexto.calculoCompartilhado = registro || null;
             Object.entries({
                 vIi: calculo.iiBrl, vIpi: calculo.ipiBrl, vIpiPbMg: calculo.ipiPbMgBrl,
                 vPis: calculo.pisBrl, vCofins: calculo.cofinsBrl,
@@ -2637,7 +2686,7 @@
             ultimoPercentualIpi = ipi;
             ultimoPercentualPis = pis;
             ultimoPercentualCofins = cofins;
-            atualizarCardsIiIpiComValor(valorTotalDolarCalc, freteInternacionalUsd, ii, ipi, pis, cofins, propLocal, qtdNum || 1);
+            const promessaCalculo = atualizarCardsIiIpiComValor(valorTotalDolarCalc, freteInternacionalUsd, ii, ipi, pis, cofins, propLocal, qtdNum || 1);
             setFreteInternacional(freteInternacionalExibicao, freteInternacionalUsdExibicao, formulaFreteInternacional);
             setTextComSub(
                 'vSeguroInternacional',
@@ -2664,7 +2713,7 @@
             renderFoto(obterUrlFoto(foto), sku);
             const promessaDadosImposto = aplicarDadosImpostoNosCards(sku, ultimoFiscalSimulacaoSku);
             inicializarEdicaoProporcao(listaIdParam, sku);
-            return promessaDadosImposto;
+            return Promise.all([promessaCalculo, promessaDadosImposto]);
         }
 
         function formatarValorMvaConvMg(valor) {
@@ -2712,7 +2761,7 @@
             fiscal.stMinas = dados.convenio_mg_st_minas || fiscal.stMinas;
             fiscal.stParaiba = dados.convenio_mg_st_paraiba || fiscal.stParaiba;
             fiscal.mvaMinas = dados.convenio_mg_mva || fiscal.mvaMinas;
-            atualizarCardsIiIpiComValor(
+            await atualizarCardsIiIpiComValor(
                 ultimoValorTotalDolarIi, ultimoFreteInternacionalUsdIi, ultimoPercentualIi, ultimoPercentualIpi,
                 ultimoPercentualPis, ultimoPercentualCofins, ultimaProporcao, ultimoQtdSku
             );
@@ -2749,9 +2798,39 @@
         }
 
         function atualizarCustoCadastroSku(cad) {
+            if (contextoDetalheSku?.custoCadastroAtual) cad = contextoDetalheSku.custoCadastroAtual;
             if (!cad || !Object.prototype.hasOwnProperty.call(cad, 'custo')) return;
             const custo = getNumber(cad.custo);
             setText('vUltimoCustoCadastrado', custo !== null && custo >= 0 ? fmtBRL(custo) : 'Não cadastrado');
+        }
+
+        function iniciarCustoCadastroCompartilhado(contexto) {
+            const helper = window.JKImportacoesCacheCustos;
+            const storeId = contexto.storeId;
+            if (!helper || !storeId) return Promise.resolve();
+            if (contexto.consultaCustoCadastro?.storeId === storeId) return contexto.consultaCustoCadastro.promessa;
+            const consulta = { storeId };
+            contexto.consultaCustoCadastro = consulta;
+            const vigente = () => detalheSkuVigente(contexto) && contexto.storeId === storeId
+                && contexto.consultaCustoCadastro === consulta;
+            const aplicar = dados => {
+                if (!vigente() || !dados || dados.store_id !== storeId) return;
+                const produto = dados.produtos.find(row => String(row.store_id || '') === storeId
+                    && normSku(row.sku) === contexto.sku);
+                contexto.custoCadastroAtual = { custo: produto ? montarDadosCadastroSku(produto).custo : null };
+                atualizarCustoCadastroSku(contexto.custoCadastroAtual);
+                document.getElementById('vUltimoCustoCadastrado').title = dados.desatualizado
+                    ? 'Último custo salvo; atualização pendente.' : '';
+            };
+            consulta.promessa = helper.consultarCadastro({ storeId, contexto: contexto.persistencia,
+                vigente, aoRestaurar: aplicar, headers: obterAuthHeaders() }).then(aplicar).catch(erro => {
+                if (!vigente()) return;
+                if ([401, 403].includes(erro.status)) {
+                    contexto.custoCadastroAtual = null;
+                    setText('vUltimoCustoCadastrado', 'Indisponível');
+                }
+            });
+            return consulta.promessa;
         }
 
         function mesclarDadosCadastroSku(principal, fallback) {
@@ -2935,6 +3014,26 @@
             return 'importacoes:SKU:' + encodeURIComponent(contexto.listaId) + ':' + encodeURIComponent(contexto.sku);
         }
 
+        async function restaurarCustoCompartilhado(contexto) {
+            const helper = window.JKImportacoesCacheCustos;
+            if (!helper || !contexto.storeId) return;
+            const options = { listaId: contexto.listaId, storeId: contexto.storeId, contexto: contexto.persistencia };
+            const [base, resultados] = await Promise.all([helper.lerBase(options), helper.restaurarCalculos(options)]);
+            const salvo = resultados[contexto.sku];
+            if (!detalheSkuVigente(contexto) || contexto.listaAtualizada || contexto.compactoConfirmado
+                || !salvo || base?.revisoes_sku?.[contexto.sku] !== salvo.revisao) return;
+            contexto.calculoCompartilhado = salvo;
+            contexto.revisaoFontesCusto = salvo.revisao;
+            contexto.ultimoCalculoVisivel = salvo.calculo;
+            // This is a display copy; current source validation still gates margin publication.
+            custoComplementosPendente = true;
+            ultimoValorUnitarioProduto = salvo.calculo.custoUnitario;
+            setText('vValorUnitarioProduto', fmtBRL(salvo.calculo.custoUnitario));
+            setText('vCustoTotalProduto', fmtBRL(salvo.calculo.custoTotal));
+            setText('vDespesasNacionais', fmtBRL(salvo.calculo.despesasNacionais));
+            document.getElementById('vValorUnitarioProduto').title = 'Valor salvo; conferindo alterações.';
+        }
+
         async function restaurarCacheSku(contexto) {
             const persistencia = window.JKCachePersistente;
             if (!persistencia || !contexto.persistencia) return false;
@@ -2958,6 +3057,7 @@
             contexto.snapshot = completo ? dados : null;
             contexto.storeId = String(lista.store_id || '').trim();
             contexto.lojaNome = String(lista.loja || '').trim();
+            void iniciarCustoCadastroCompartilhado(contexto);
             if (completo) {
                 cacheImpostosProdutos = new Map(dados.impostos);
                 if (!(cotacaoDolarHoje > 0)) cotacaoDolarHoje = Number(dados.cotacao || 0);
@@ -2966,6 +3066,7 @@
             montarMeta(String(lista.nome_lista || '-'), contexto.sku);
             await preencherCampos(item, lista, completo ? dados.cadastro : null, lista.itens,
                 new Map(completo ? dados.mapaM3 : []), { somenteDadosLista: !completo });
+            if (!completo) await restaurarCustoCompartilhado(contexto);
             if (!detalheSkuVigente(contexto)) return false;
             configurarAprovacaoCompra(lista, item);
             if (completo && dados.versao === 3 && dados.anunciosDaLista && fontesAnunciosDaLista(dados.concorrentes, contexto)) {
@@ -2989,8 +3090,7 @@
             const contextoAtual = contexto.persistencia;
             await window.JKCachePersistente.salvar(chaveSnapshotSku(contexto), dados,
                 { contexto: contextoAtual, tags: ['importacoes', 'vendas'] });
-            await window.JKCachePersistente.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId),
-                { lista }, { contexto: contextoAtual, tags: ['importacoes'] });
+            await salvarListaCacheSku({ lista }, contexto);
         }
 
         function rotaDetalheSku(contexto) {
@@ -3058,6 +3158,8 @@
             }
             contexto.storeId = storeId;
             contexto.lojaNome = String(lista.loja || '').trim();
+            contexto.revisaoFontesCusto = dados.revisao_fontes_custo || '';
+            void iniciarCustoCadastroCompartilhado(contexto);
             contexto.temDados = true;
             contexto.dadosCompactos = dados;
             atualizarFxCompraTopo(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
@@ -3122,7 +3224,7 @@
             const { contextoCarregamento, ...fontes } = links;
             const copia = { ...registro, links: fontes };
             contexto.cacheAnaliseCompacta = copia;
-            salvarDadosCompactos(contexto, chaveAnaliseCompacta(contexto), copia, ['importacoes', 'vendas']);
+            salvarDadosCompactos(contexto, chaveAnaliseCompacta(contexto), copia, ['importacoes', 'vendas', 'analises_importacao']);
         }
 
         async function atualizarMargensCompactas(contexto) {
@@ -3263,15 +3365,20 @@
             aplicarLinksCacheSku(links, true);
             const {
                 fonte_custo, custo_unitario, precos_anuncios_loja, anuncios_loja, fontes_versao,
+                revisao_fontes_custo, assinatura_calculo,
             } = coletarAnaliseConcorrentes();
             if (!Object.keys(precos_anuncios_loja).length) return;
             const chaveProprias = fonte => JSON.stringify([fonte?.mlb, fonte?.preco, fonte?.statusAnuncios]);
-            const resposta = await consultarJsonDetalheSku(rotaDetalheSku(contexto) + '/analise-concorrentes/previa', contexto, {
+            const executarPrevia = () => consultarJsonDetalheSku(rotaDetalheSku(contexto) + '/analise-concorrentes/previa', contexto, {
                 method: 'POST', somenteLeitura: true, salvarCache: false, timeoutMs: 120000,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ fonte_custo, custo_unitario, precos_concorrentes: {},
-                    precos_anuncios_loja, anuncios_loja, fontes_versao }),
-            }).catch(() => null);
+                    precos_anuncios_loja, anuncios_loja, fontes_versao, revisao_fontes_custo, assinatura_calculo }),
+            });
+            const trava = window.JKImportacoesCacheCustos?.comTravaAnalise;
+            const resposta = await (trava ? trava({ listaId: contexto.listaId, storeId: contexto.storeId,
+                contexto: contexto.persistencia, vigente: () => detalheSkuVigente(contexto) }, executarPrevia)
+                : executarPrevia()).catch(() => null);
             if (!vigente() || consulta.financeiroCompleto || !idadeAnaliseValida(links.consultadoEm)
                 || !analiseUsaCustoSimuladoAtual(resposta?.analise_concorrentes)
                 || !identidadeAnunciosConfere(identidade, contexto.ofertasProprias)
@@ -3466,17 +3573,31 @@
 
         async function salvarListaCacheSku(data, contexto) {
             if (!dadosSkuVigentes(contexto) || !contexto.persistencia || contexto.podeSalvar === false) return;
-            await window.JKCachePersistente?.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/'
-                + encodeURIComponent(contexto.listaId), data, { contexto: contexto.persistencia, tags: ['importacoes'] });
+            const chave = 'importacoes:GET:/api/medias-compras/listas-pedidos/' + encodeURIComponent(contexto.listaId);
+            const persistencia = contexto.persistencia;
+            const anterior = await window.JKCachePersistente?.ler(chave, { contexto: persistencia, permitirDesatualizado: true });
+            if (!dadosSkuVigentes(contexto) || contexto.persistencia !== persistencia) return;
+            const mesclar = anteriorDados => {
+                const mesmaLista = String(anteriorDados?.lista?.id || '') === contexto.listaId
+                    && String(anteriorDados?.lista?.store_id || '') === String(data.lista?.store_id || '');
+                return mesmaLista && anteriorDados.complementosLista && !data.complementosLista
+                    ? { ...data, complementosLista: anteriorDados.complementosLista } : data;
+            };
+            const options = { contexto: persistencia, tags: ['importacoes'] };
+            if (window.JKCachePersistente?.atualizar) await window.JKCachePersistente.atualizar(chave,
+                atual => mesclar(atual || anterior?.dados), options);
+            else await window.JKCachePersistente?.salvar(chave, mesclar(anterior?.dados), options);
         }
 
         async function exibirListaSalvaSku(data, contexto) {
             if (!dadosSkuVigentes(contexto)) return;
             const { lista, item } = validarListaSku(data, contexto);
             if (!contexto.temDados) {
+                contexto.storeId = String(lista.store_id || '').trim();
                 atualizarFxCompraTopo(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar);
                 montarMeta(String(lista.nome_lista || '-'), contexto.sku);
                 await preencherCampos(item, lista, null, lista.itens, new Map(), { somenteDadosLista: true });
+                await restaurarCustoCompartilhado(contexto);
                 if (!dadosSkuVigentes(contexto)) return;
                 configurarAprovacaoCompra(lista, item);
                 aplicarAnaliseConcorrentes(item.analise_simulacao_importacao_sku);
@@ -3512,11 +3633,11 @@
             const base = contexto.listaPronta || lista;
             const atualizada = JSON.parse(JSON.stringify(base));
             const item = atualizada.itens.find(row => normSku(row.SKU) === contexto.sku);
-            if (item && resposta?.analise_concorrentes) item.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
+            if (item && resposta?.analise_concorrentes) {
+                item.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
+            }
             // O recibo confirma só a alteração da análise; a cópia mantém o estado salvo.
-            await window.JKCachePersistente?.salvar('importacoes:GET:/api/medias-compras/listas-pedidos/'
-                + encodeURIComponent(contexto.listaId), { lista: atualizada },
-                { contexto: persistencia, tags: ['importacoes'] });
+            await salvarListaCacheSku({ lista: atualizada }, contexto);
             const snapshot = contexto.snapshot;
             if (!snapshot || !dadosSkuVigentes(contexto) || contexto.persistencia !== persistencia) return;
             const assinatura = value => JSON.stringify(value, (key, row) => {
@@ -3528,7 +3649,9 @@
             const { contextoCarregamento, ...fontes } = links;
             const listaSnapshot = JSON.parse(JSON.stringify(snapshot.lista));
             const itemSnapshot = listaSnapshot.itens.find(row => normSku(row.SKU) === contexto.sku);
-            if (itemSnapshot && resposta?.analise_concorrentes) itemSnapshot.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
+            if (itemSnapshot && resposta?.analise_concorrentes) {
+                itemSnapshot.analise_simulacao_importacao_sku = resposta.analise_concorrentes;
+            }
             const copia = { ...snapshot, versao: 3, anunciosDaLista: true, lista: listaSnapshot, concorrentes: fontes, precosOfertas: { ...ultimosPrecosOfertas } };
             await window.JKCachePersistente?.salvar(chaveSnapshotSku(contexto), copia,
                 { contexto: persistencia, tags: ['importacoes', 'vendas'] });
@@ -3540,6 +3663,7 @@
             if (contexto.storeId && contexto.storeId !== storeId) limparOfertasSku(contexto);
             contexto.storeId = storeId;
             contexto.lojaNome = String(lista.loja || '').trim();
+            void iniciarCustoCadastroCompartilhado(contexto);
             const itens = lista.itens;
             const item = itens.find(row => normSku(row.SKU) === contexto.sku);
             const consultas = { storeId };
@@ -3547,6 +3671,13 @@
             analiseComplementosPronta = false;
             const vigente = () => dadosSkuVigentes(contexto) && contexto.complementos === consultas;
             consultas.cadastro = buscarDadosNoCadastro(contexto.sku, storeId, contexto);
+            contexto.revisaoFontesCusto = '';
+            consultas.revisao = consultarJsonDetalheSku('/api/medias-compras/listas-pedidos/'
+                + encodeURIComponent(contexto.listaId) + '/base-custos?somente_revisao=true', contexto, { salvarCache: false })
+                .then(base => {
+                    if (vigente() && String(base?.lista?.store_id || '') === storeId)
+                        contexto.revisaoFontesCusto = base.revisoes_sku?.[contexto.sku] || '';
+                }).catch(() => {});
             consultas.concorrentes = buscarLinksConcorrentes(contexto.sku, contexto).then(
                 value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason })
             );
@@ -3555,6 +3686,7 @@
                 carregarMapaM3Cadastro(storeId, itens, contexto),
                 consultarMapaProdutosImpostos(contexto),
                 (getNumber(lista.exchange_rate || lista.dolar_hoje || lista.cotacao_dolar || lista.dolar) || 0) > 0 ? Promise.resolve() : promessaCotacaoTopo,
+                consultas.revisao,
             ]);
             // O título não depende da fila de recálculo nem da simulação fiscal.
             void consultas.cadastro.then(cad => {
@@ -3686,6 +3818,7 @@
                 persistencia: window.JKCachePersistente?.vigente(candidato) ? candidato : null,
                 restaurado: !!(preservar && anterior.restaurado), temDados: !!(preservar && anterior.temDados),
                 snapshot: preservar ? anterior.snapshot : null,
+                ultimoCalculoVisivel: preservar ? anterior.ultimoCalculoVisivel : null,
                 dadosCompactos: preservar ? anterior.dadosCompactos : null,
                 ofertasCompactas: preservar ? anterior.ofertasCompactas : null,
                 ofertasProprias: preservar ? anterior.ofertasProprias : null,
@@ -3872,8 +4005,9 @@
         window.addEventListener('jk:cache-persistente-invalidado', evento => {
             const contexto = contextoDetalheSku;
             const origem = evento.detail?.origem;
+            const analiseAlterada = evento.detail?.tags?.includes('analises_importacao');
             if (!contexto?.dadosCompactos || !['storage', 'sync'].includes(origem)
-                || dadosSkuVigentes(contexto)) return;
+                || (dadosSkuVigentes(contexto) && !analiseAlterada)) return;
             cancelarTemporizadorAnaliseSku();
             clearTimeout(temporizadorRevisaoAnaliseSku);
             analiseComplementosPronta = false;

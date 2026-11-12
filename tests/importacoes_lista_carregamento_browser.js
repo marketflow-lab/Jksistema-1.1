@@ -39,12 +39,15 @@ async function environment(browser, options = {}) {
     ready: false, deniedStatus: options.denyDetail ? 403 : null,
     transientRemaining: options.transient ? [503, 409] : [],
     updates: [], patches: [], errors: [] };
-  if (options.needMargins) delete state.lists.A.itens[0].analise_concorrentes;
+  if (options.needMargins) {
+    prepararDadosCusto(state.lists.A);
+    delete state.lists.A.itens[0].analise_concorrentes;
+  }
   if (options.queuedDetail) state.lists.A.itens[0].Quantidade = 4;
   page.on('pageerror', error => state.errors.push(error.message));
   if (options.fastTimeout) await page.addInitScript(() => {
     const timeout = window.setTimeout.bind(window);
-    window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000].includes(delay) ? 150 : delay, ...args);
+    window.setTimeout = (callback, delay, ...args) => timeout(callback, [5000, 20000, 120000].includes(delay) ? 150 : delay, ...args);
   });
   if (options.scaledCatalogBudget) await page.addInitScript(() => {
     const timeout = window.setTimeout.bind(window);
@@ -80,7 +83,7 @@ async function environment(browser, options = {}) {
         return new Promise(resolve => { window.releaseOldPolling = () => resolve(new Response(JSON.stringify({ detail: 'Acesso antigo negado.' }),
           { status: 403, headers: { 'Content-Type': 'application/json' } })); });
       }
-      if (url === '/api/impostos/produtos' && !window.releaseOldFiscal) {
+      if (String(url).includes('/listas-pedidos/A/base-custos') && !window.releaseOldFiscal) {
         return new Promise(resolve => { window.releaseOldFiscal = () => resolve(new Response(JSON.stringify({ produtos: [] }),
           { headers: { 'Content-Type': 'application/json' } })); });
       }
@@ -101,6 +104,19 @@ async function environment(browser, options = {}) {
         body: fs.readFileSync(path.join(root, 'static', pathname.slice(1))) });
     }
     const fiscalSku = { sku: '001', convenio_mg_st_paraiba: 'Sim', convenio_mg_mva: '40%' };
+    const baseMatch = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)\/base-custos$/);
+    if (baseMatch) {
+      const id = baseMatch[1];
+      const lista = options.queuedDetail && !state.ready && state.savedLists[id] ? state.savedLists[id] : state.lists[id];
+      const revision = require('crypto').createHash('sha256').update(JSON.stringify(lista)).digest('hex');
+      const { itens: _itens, ...cabecalho } = lista;
+      const meta = { success: true, versao: 1, lista: { ...cabecalho, exchange_rate: lista.exchange_rate || lista.dolar_hoje },
+        revisao: revision, revisoes_sku: Object.fromEntries(lista.itens.map(item => [item.SKU, revision])) };
+      if (url.searchParams.get('somente_revisao') === 'true') return json(route, meta);
+      ++state.calls.fiscal;
+      return json(route, { ...meta, itens: lista.itens.map(item => ({ ...item, fiscal_pronto: true, fiscal: item.SKU === '001' ? fiscalSku : {} })),
+        rateio: { total_usd: 35, total_m3: 0.8, m3_completo: true, valor_por_m3: 50 } });
+    }
     if (pathname === '/api/impostos/produtos') {
       ++state.calls.fiscal;
       return json(route, { produtos: [fiscalSku] });
@@ -119,7 +135,8 @@ async function environment(browser, options = {}) {
     ]);
     if (pathname === '/api/cadastro/produtos') { ++state.calls.globalCatalog; return json(route, [{ sku: '002', m3: 999 }]); }
     // O custo consulta a projeção resumida; o contador abaixo mede somente a cubagem.
-    if (pathname.startsWith('/api/cadastro/lojas/') && url.searchParams.get('view') === 'summary') return json(route, []);
+    if (pathname.startsWith('/api/cadastro/lojas/') && url.searchParams.get('view') === 'costs') return route.fulfill({
+      status: 200, headers: { 'X-Cadastro-Custos-Revision': 'cadastro-synthetic' }, contentType: 'application/json', body: '[]' });
     if (pathname === '/api/cadastro/lojas/store-A/produtos/001') return json(route, {});
     if (pathname.startsWith('/api/cadastro/lojas/')) {
       ++state.calls.catalog;
@@ -147,12 +164,14 @@ async function environment(browser, options = {}) {
     if (pathname.endsWith('/concorrentes-links')) {
       ++state.calls.margins;
       if (options.holdMargins) await state.margins.promise;
-      return json(route, { resultados: { '001': { concorrentes_valores: { concorrente_1: 10 } } } });
+      return json(route, { fontes_versao: 3, anuncios_loja_fonte: 'loja_lista_sku', anuncios_loja_store_id: 'store-A',
+        concorrentes_valores: { concorrente_1: 10 }, concorrentes_mlb: { concorrente_1: 'MLB1111111111' } });
     }
     if (pathname.endsWith('/analise-concorrentes') && method === 'PATCH') {
       state.patches.push(route.request().postDataJSON());
       if (options.holdMarginPatch) await state.marginPatch.promise;
-      return json(route, { analise_concorrentes: { margens: { concorrente_1: 25 } } });
+      const payload = route.request().postDataJSON();
+      return json(route, { analise_concorrentes: { ...payload, store_id: 'store-A', margens: { concorrente_1: { margem_percentual: 25 } } } });
     }
     const match = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([^/]+)$/);
     if (match) {
@@ -228,9 +247,9 @@ async function waitUntil(predicate) {
     }
     const custo001 = page.locator('tr[data-sku="001"] [data-col-key="valor_unit_brl"]');
     const custo002 = page.locator('tr[data-sku="002"] [data-col-key="valor_unit_brl"]');
-    await page.waitForFunction(() => document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent !== '—');
+    await page.waitForFunction(() => /R\$/.test(document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent));
     assert.match(await custo001.textContent(), /123,29/);
-    assert.strictEqual(await custo002.textContent(), '—');
+    assert.strictEqual(await custo002.textContent(), 'Dados insuficientes');
     const frete001 = page.locator('tr[data-sku="001"] [data-col-key="frete_internacional"]');
     assert.match(await frete001.textContent(), /50,00/);
     await waitUntil(() => state.calls.cost === 1);
@@ -401,8 +420,9 @@ async function waitUntil(predicate) {
     await queued.page.waitForFunction(() => /^(Dados|Itens) atualizados/.test(document.getElementById('cacheListaStatus').textContent)
       && !/Atualizando/.test(document.getElementById('cacheListaStatus').textContent));
     assert.strictEqual(await queued.page.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '4');
+    await queued.page.waitForFunction(() => /157,60/.test(document.querySelector('tr[data-sku="001"] [data-col-key="valor_unit_brl"]')?.textContent));
     assert.match(await queued.page.locator('tr[data-sku="001"] [data-col-key="valor_unit_brl"]').textContent(), /157,60/);
-    assert.strictEqual(queued.state.calls.fiscal, 1, 'A versão pronta recalcula com a cotação atual e reutiliza o fiscal');
+    assert.strictEqual(queued.state.calls.fiscal, 2, 'A versão pronta obtém a nova base após mudar quantidade e cotação');
     assert.strictEqual(await queued.page.evaluate(() => cacheWrites.some(entry => entry.data?._cache?.estado === 'waiting')), false,
       'Resposta 202 não substitui o snapshot válido');
     assert.deepStrictEqual(queued.state.errors, []);
@@ -515,7 +535,7 @@ async function waitUntil(predicate) {
         && !/Atualizando/.test(document.getElementById('cacheListaStatus').textContent));
       await pendingMargins.page.waitForFunction(() => estadosAnaliseMargensAutomaticas.get('001')?.status === 'erro');
       assert.strictEqual(await pendingMargins.page.locator('#tbodyLista tr[data-sku]').count(), 3);
-      assert.strictEqual(await pendingMargins.page.evaluate(() => ultimaListaCarregada.itens[0].analise_concorrentes), undefined,
+      assert.strictEqual(await pendingMargins.page.evaluate(() => ultimaListaCarregada.itens[0].analise_simulacao_importacao_sku), undefined,
         'Dependência de margens expirada não publica análise parcial');
       assert.strictEqual(pendingMargins.state.patches.length, dependency === 'holdMargins' ? 0 : 1);
       assert.deepStrictEqual(pendingMargins.state.errors, []);

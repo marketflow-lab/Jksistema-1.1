@@ -310,3 +310,143 @@ def test_individual_snapshot_supports_summary_projection_and_explicit_tombstones
     assert [item["sku_normalizado"] for item in full_with_deleted] == ["001", "002"]
     assert full_with_deleted[0]["campo_interno"] == "somente-full"
     assert full_with_deleted[1]["deleted_at_utc"] == "2026-09-09T10:00:00Z"
+
+
+def test_costs_survive_restart_without_rebuilding_catalog_or_photos(monkeypatch, tmp_path):
+    from backend.services import cadastro_custos_cache as cache
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": [{"store_id": "store-a", "nome": "Loja A"}]})
+    _write_csv(root / "tenant-a" / "cadastro_produtos_lojas.csv", [
+        {"store_id": "store-a", "sku": "001", "custo": "12.50", "foto": "ignored", "nome": "Produto"},
+        {"store_id": "store-a", "sku": "ZERO", "custo": "0"},
+    ])
+    monkeypatch.setattr(cadastro_lojas_produtos, "_cadastro_mapa_fotos_locais",
+                        lambda *_a, **_k: pytest.fail("Costs must not load photos"))
+    rows, revision = cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert rows == [{"store_id": "store-a", "sku": "001", "custo": "12.50"},
+                    {"store_id": "store-a", "sku": "ZERO", "custo": "0"}]
+    cache._MEMORY.clear()
+    monkeypatch.setattr(cache, "_capture", lambda *_a: pytest.fail("Unchanged sources must use durable cache"))
+    assert cache.custos_loja_snapshot("tenant-a", "store-a") == (rows, revision)
+    assert listagem.listar_produtos_loja_snapshot_sync("tenant-a", "store-a", view="costs") == rows
+
+
+def test_costs_follow_overrides_and_do_not_rebuild_for_sales_or_photo_changes(monkeypatch, tmp_path):
+    from backend.services import cadastro_custos_cache as cache
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": [{"store_id": "store-a", "nome": "Loja A"}]})
+    tenant = root / "tenant-a"
+    _write_csv(tenant / "cadastro_produtos_lojas.csv", [{"store_id": "store-a", "sku": "001", "custo": "10"}])
+    compiled = {"store_id": "store-a", "sku": "001", "custo": "9", "saldo": "1", "foto": "one"}
+    _write_csv(tenant / "produtos_compilado.csv", [compiled])
+    original = cadastro_lojas_produtos._listar_produtos_loja_sync
+    calls = []
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(cadastro_lojas_produtos, "_listar_produtos_loja_sync", counted)
+    first = cache.custos_loja_snapshot("tenant-a", "store-a")
+    _write_csv(tenant / "produtos_compilado.csv", [{**compiled, "saldo": "999", "foto": "two"}])
+    (tenant / "vendas.json").write_text("[]", encoding="utf-8")
+    assert cache.custos_loja_snapshot("tenant-a", "store-a") == first
+    assert len(calls) == 1
+    _write_csv(tenant / "cadastro_custos_lojas.csv", [{"store_id": "store-a", "sku": "001", "custo": "25"}])
+    second = cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert second[0][0]["custo"] == "25"
+    assert second[1] != first[1]
+    # A cleared cost is authoritative and must not restore an older fallback.
+    _write_csv(tenant / "cadastro_custos_lojas.csv", [{"store_id": "store-a", "sku": "001", "custo": ""}])
+    third = cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert third[0][0]["custo"] == ""
+    assert third[1] != second[1]
+    assert len(calls) == 3
+
+
+def test_costs_isolate_tenant_store_and_revalidate_removed_store(monkeypatch, tmp_path):
+    from backend.services import cadastro_custos_cache as cache
+    stores = [{"store_id": "store-a", "nome": "Loja A"}, {"store_id": "store-b", "nome": "Loja B"}]
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": stores, "tenant-b": stores})
+    for client_id, cost in (("tenant-a", "10"), ("tenant-b", "20")):
+        _write_csv(root / client_id / "cadastro_produtos_lojas.csv", [
+            {"store_id": "store-a", "sku": "001", "custo": cost},
+            {"store_id": "store-b", "sku": "001", "custo": "30"},
+        ])
+    assert cache.custos_loja_snapshot("tenant-a", "store-a")[0][0]["custo"] == "10"
+    assert cache.custos_loja_snapshot("tenant-b", "store-a")[0][0]["custo"] == "20"
+    assert cache.custos_loja_snapshot("tenant-a", "store-b")[0][0]["custo"] == "30"
+    monkeypatch.setattr(cadastro_lojas_produtos, "_lojas_atuais", lambda _client_id: stores[1:])
+    with pytest.raises(HTTPException) as error:
+        cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert error.value.status_code == 404
+
+
+def test_costs_retry_changed_sources_and_never_publish_mixed_revision(monkeypatch, tmp_path):
+    from backend.services import cadastro_custos_cache as cache
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": [{"store_id": "store-a", "nome": "Loja A"}]})
+    path = root / "tenant-a" / "cadastro_produtos_lojas.csv"
+    _write_csv(path, [{"store_id": "store-a", "sku": "001", "custo": "10"}])
+    original = cadastro_lojas_produtos._listar_produtos_loja_sync
+    calls = []
+    def change_during_projection(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            _write_csv(path, [{"store_id": "store-a", "sku": "001", "custo": "20"}])
+        return result
+    monkeypatch.setattr(cadastro_lojas_produtos, "_listar_produtos_loja_sync", change_during_projection)
+    rows, revision = cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert len(calls) == 2
+    assert rows[0]["custo"] == "20"
+    assert revision == cache._digest(rows)
+    cache._MEMORY.clear()
+    assert cache.custos_loja_snapshot("tenant-a", "store-a") == (rows, revision)
+
+
+def test_costs_detect_legacy_store_rename_and_product_tombstones(monkeypatch, tmp_path):
+    from backend.services import cadastro_custos_cache as cache
+    stores = [{"store_id": "store-a", "nome": "Loja A"}]
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": stores})
+    tenant = root / "tenant-a"
+    _write_csv(tenant / "cadastro_produtos.csv", [{"loja_sync": "Loja A", "sku": "001", "custo": "10"}])
+    assert cache.custos_loja_snapshot("tenant-a", "store-a")[0][0]["custo"] == "10"
+    monkeypatch.setattr(cadastro_lojas_produtos, "_lojas_atuais",
+                        lambda _client_id: [{"store_id": "store-a", "nome": "Loja Nova"}])
+    assert cache.custos_loja_snapshot("tenant-a", "store-a")[0] == []
+    _write_csv(tenant / "cadastro_produtos_lojas.csv", [
+        {"store_id": "store-a", "sku": "001", "custo": "25", "deleted_at_utc": "2026-11-12"}])
+    assert cache.custos_loja_snapshot("tenant-a", "store-a")[0] == []
+    assert cache.custos_loja_snapshot("tenant-a", "store-a", include_deleted=True)[0][0]["custo"] == "25"
+
+
+def test_costs_http_array_revision_header_and_light_metadata(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": [{"store_id": "store-a", "nome": "Loja A"}]})
+    _write_csv(root / "tenant-a" / "cadastro_produtos_lojas.csv", [{"store_id": "store-a", "sku": "001", "custo": "0"}])
+    app = FastAPI()
+    app.dependency_overrides[cadastro_lojas_produtos.get_tenant_id] = lambda: "tenant-a"
+    app.add_api_route("/lojas/{store_id}/produtos", cadastro_lojas_produtos.listar_produtos_loja)
+    client = TestClient(app)
+    response = client.get("/lojas/store-a/produtos?view=costs")
+    assert response.status_code == 200
+    assert response.json() == [{"store_id": "store-a", "sku": "001", "custo": "0"}]
+    revision = response.headers["x-jk-custos-revisao"]
+    metadata = client.get("/lojas/store-a/produtos?view=costs&somente_revisao=true")
+    assert metadata.json() == {"store_id": "store-a", "revisao": revision}
+    assert metadata.headers["x-jk-custos-revisao"] == revision
+    assert client.get("/lojas/store-a/produtos?view=summary&somente_revisao=true").status_code == 400
+    assert client.get("/lojas/store-a/produtos?view=summary").json()[0]["sku"] == "001"
+
+
+def test_costs_detect_same_size_same_mtime_rewrite(monkeypatch, tmp_path):
+    import os
+    from backend.services import cadastro_custos_cache as cache
+    root = _configure(monkeypatch, tmp_path, {"tenant-a": [{"store_id": "store-a", "nome": "Loja A"}]})
+    path = root / "tenant-a" / "cadastro_produtos_lojas.csv"
+    _write_csv(path, [{"store_id": "store-a", "sku": "001", "custo": "10"}])
+    before = path.stat()
+    first = cache.custos_loja_snapshot("tenant-a", "store-a")
+    _write_csv(path, [{"store_id": "store-a", "sku": "001", "custo": "20"}])
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert path.stat().st_size == before.st_size
+    second = cache.custos_loja_snapshot("tenant-a", "store-a")
+    assert second[0][0]["custo"] == "20"
+    assert second[1] != first[1]

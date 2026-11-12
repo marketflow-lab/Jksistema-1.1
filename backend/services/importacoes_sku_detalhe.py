@@ -99,7 +99,7 @@ def _numero(valor):
     return numero if math.isfinite(numero) else None
 
 
-def _calcular_rateio(client_id, lista, revisao):
+def _calcular_rateio(client_id, lista, revisao, *, contexto_cadastro=None):
     itens = [common._normalizar_item_lista_pedido(item) for item in lista.get("itens") or []
              if isinstance(item, dict)]
     historica = common._cubagem_lista_historica(lista)
@@ -108,7 +108,7 @@ def _calcular_rateio(client_id, lista, revisao):
     store_id = str(lista.get("store_id") or "").strip()
     loja_resolvida = ""
     if not historica and skus:
-        contexto = _contexto_cadastro(client_id, lista, skus)
+        contexto = contexto_cadastro if contexto_cadastro is not None else _contexto_cadastro(client_id, lista, skus)
         if contexto.get("scope") == "store":
             store_id = str(contexto["store_id"])
             loja_resolvida = store_id
@@ -201,6 +201,7 @@ def _capturar_fontes_sku(raiz, lista, *, inventariar_fotos=False):
         extras=(
             *fontes_runtime,
             raiz / "impostos_regras.json",
+            raiz / "impostos_aliquotas_importacao.db",
             raiz / "impostos_convenio_mg.db",
             *raiz.glob("cadastro_produtos.backup_classificacao*.csv"),
         ),
@@ -255,6 +256,12 @@ def _projetar_sku(client_id, lista_id, sku, somente_salvos, *, lista=None):
     if somente_salvos:
         return projecao, digest_json((resumo, _sem_analises(item))), ""
     selo = _selo_atual(client_id, lista)
+    from backend.services.importacoes_base_custos import capturar_base_custos, metadados_base_custos
+
+    try:
+        fontes_custo = capturar_base_custos(client_id, lista_id, lista=lista)
+    except (HTTPException, OSError, RuntimeError, ValueError):
+        fontes_custo = None
     referencia = _referencia_loja(lista)
     contexto = _contexto_cadastro(client_id, lista, [sku])
     loja_resolvida = str(contexto["store_id"])
@@ -278,6 +285,10 @@ def _projetar_sku(client_id, lista_id, sku, somente_salvos, *, lista=None):
         pass
     if selo and projecao["fiscal_pronto"] and projecao["anuncios_identidade"] and selo == _selo_atual(client_id, lista):
         projecao["_selo_fontes"] = selo
+    if fontes_custo is not None and not fontes_custo.pendente and projecao["fiscal_pronto"]:
+        if fontes_custo != capturar_base_custos(client_id, lista_id, lista=lista):
+            raise HTTPException(409, "As fontes do custo mudaram durante a consulta. Tente novamente.")
+        projecao["revisao_fontes_custo"] = metadados_base_custos(fontes_custo)["revisoes_sku"].get(sku)
     return projecao, _revisao_rateio(lista), loja_resolvida
 
 

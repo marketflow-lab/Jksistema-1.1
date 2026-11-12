@@ -4,12 +4,16 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { chromium } = require('playwright');
 const root = path.resolve(process.env.JK_SKU_TEST_SOURCE_ROOT || path.join(__dirname, '..'));
 const temporaryRoot = path.resolve(process.env.JK_TEST_TMP || os.tmpdir());
 const profile = fs.mkdtempSync(path.join(temporaryRoot, 'jk-importacoes-cache-'));
 const origin = 'http://127.0.0.1:8128';
 let context;
+const analiseCadastro = { fonte_custo: 'cadastro', custo_unitario: 99,
+    margens: { concorrente_1: { margem_percentual: 7 } } };
+const margensProprias = { concorrente_1: { margem_percentual: 12, origem: 'fixture-propria' } };
 
 function gate() {
     let resolve;
@@ -25,14 +29,14 @@ function lista(revisao = 1) {
         itens: [{ SKU: '001', Quantidade: revisao === 1 ? 2 : 9, 'M3 individual': 0.1,
             'Valor unidade': 10, 'Valor total': 20, Produto: 'Produto da lista', NCM: '00000001',
             II: 10, IPI: 5, PIS: 2, COFINS: 3, 'ST Minas': 'Não', 'ST Paraíba': 'Não',
-            analise_concorrentes: { margens: {} }, analise_simulacao_importacao_sku: { margens: {} } }] };
+            analise_concorrentes: analiseCadastro, analise_simulacao_importacao_sku: { margens: {} } }] };
 }
 
 async function launch(mode = 'live') {
     context = await chromium.launchPersistentContext(profile, { headless: true,
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
             ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : { channel: 'chrome' }) });
-    const state = { mode, revisao: 1, pending: gate(), complementsForbidden: false, costFailure: false, logistics: {},
+    const state = { mode, revisao: 1, pending: gate(), complementsForbidden: false, costFailure: false, logistics: {}, analise: null,
         calls: { detail: 0, index: 0, cost: 0, patches: 0 }, analyses: [], errors: [] };
     await context.addInitScript(() => {
         if (location.origin !== 'http://127.0.0.1:8128') return;
@@ -43,8 +47,25 @@ async function launch(mode = 'live') {
         }
     });
     context.on('page', page => page.on('pageerror', error => state.errors.push(error.message)));
-    const json = (route, body, status = 200) => route.fulfill({ status,
+    const json = (route, body, status = 200, headers = {}) => route.fulfill({ status, headers,
         contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
+    const listaAtual = () => {
+        const current = { ...lista(state.revisao), ...state.logistics };
+        if (state.analise) current.itens[0].analise_simulacao_importacao_sku = state.analise;
+        return current;
+    };
+    const baseCustos = () => {
+        const current = listaAtual();
+        const revisao = crypto.createHash('sha256').update(JSON.stringify([state.revisao,
+            current.exchange_rate || current.dolar_hoje])).digest('hex');
+        const itens = current.itens.map(item => ({ ...item, M3: item.Quantidade * item['M3 individual'],
+            'Cubagem status': 'cadastro', fiscal: {}, fiscal_pronto: true }));
+        const totalM3 = itens.reduce((total, item) => total + item.M3, 0);
+        return { success: true, tipo: 'importacoes_base_custos', versao: 1, revisao,
+            lista: { id: 'A', store_id: 'store-A', loja: 'Loja A', exchange_rate: current.exchange_rate || current.dolar_hoje },
+            itens, rateio: { total_usd: 20, total_m3: totalM3, m3_completo: true, valor_por_m3: 20 / totalM3 },
+            revisoes_sku: { '001': revisao } };
+    };
     await context.route('**/*', async route => {
         const url = new URL(route.request().url());
         const pathname = url.pathname;
@@ -63,17 +84,20 @@ async function launch(mode = 'live') {
             state.analyses.push(payload);
             assert.strictEqual(payload.fonte_custo, 'simulacao_importacao_sku');
             assert(Number.isFinite(payload.custo_unitario) && payload.custo_unitario > 0);
-            return json(route, { analise_concorrentes: { fonte_custo: payload.fonte_custo,
-                custo_unitario: payload.custo_unitario, store_id: 'store-A', margens: {}, margens_anuncios_loja: {} } });
+            state.analise = { fonte_custo: payload.fonte_custo,
+                custo_unitario: payload.custo_unitario, store_id: 'store-A', fontes_versao: payload.fontes_versao,
+                revisao_fontes_custo: payload.revisao_fontes_custo, assinatura_calculo: payload.assinatura_calculo,
+                margens: {}, margens_anuncios_loja: state.analise?.margens_anuncios_loja || margensProprias };
+            return json(route, { analise_concorrentes: state.analise });
         }
         const primary = pathname === '/api/medias-compras/listas-pedidos' || pathname === '/api/medias-compras/listas-pedidos/A';
         if (primary) {
             state.calls[pathname.endsWith('/A') ? 'detail' : 'index']++;
             if (route.request().method() === 'PUT') {
                 Object.assign(state.logistics, route.request().postDataJSON());
-                return json(route, { lista: { ...lista(state.revisao), ...state.logistics } });
+                return json(route, { lista: listaAtual() });
             }
-            const current = { ...lista(state.revisao), ...state.logistics };
+            const current = listaAtual();
             if (state.mode === 'hold') await state.pending.promise;
             if (state.mode === 'fail') return json(route, { detail: 'Falha sintética' }, 500);
             if (state.mode === 'deny') return json(route, { detail: 'Sem acesso' }, 403);
@@ -91,11 +115,23 @@ async function launch(mode = 'live') {
             if (pathname.endsWith('/landed-cost') && state.costPending) await state.costPending.promise;
             if (pathname.endsWith('/landed-cost') && state.costFailure) return json(route, { detail: 'Custo indisponível' }, 500);
             if (state.complementsForbidden) return json(route, { detail: 'Permissão de complemento ausente' }, 403);
+            if (pathname.endsWith('/base-custos')) {
+                const base = baseCustos();
+                if (url.searchParams.get('somente_revisao')) { delete base.itens; delete base.rateio; }
+                return json(route, base);
+            }
             if (pathname.endsWith('/landed-cost')) return json(route, { analysis: { order_id: 'A', tax_band_pct: 12 } });
             if (pathname === '/api/vendas/grafico') return json(route, { valores_vendas: [100], valores_devolucoes: [] });
             if (pathname === '/api/cadastro/lojas/store-A/produtos/001') return json(route, {
                 produto: { store_id: 'store-A', sku: '001', nome: 'Cadastro confirmado', ncm: '00000002', 'M3 individual': 0.1 } });
-            if (pathname === '/api/cadastro/lojas/store-A/produtos') return json(route, []);
+            if (pathname === '/api/cadastro/lojas/store-A/produtos') {
+                if (url.searchParams.get('view') === 'costs') {
+                    if (url.searchParams.get('somente_revisao')) return json(route, { store_id: 'store-A', revisao: 'cadastro-1' });
+                    return json(route, [{ store_id: 'store-A', sku: '001', custo: 42 }], 200,
+                        { 'X-JK-Custos-Revisao': 'cadastro-1' });
+                }
+                return json(route, []);
+            }
             if (pathname === '/api/impostos/produtos') return json(route, { produtos: [] });
             if (pathname === '/api/medias-compras/concorrentes-links') {
                 assert.strictEqual(url.searchParams.get('anuncios_da_lista'), 'true');
@@ -135,13 +171,26 @@ async function saved(page, key, predicate) {
         assert.strictEqual(snapshot.lista.itens[0].analise_simulacao_importacao_sku.fonte_custo, 'simulacao_importacao_sku');
         assert.strictEqual(snapshot.lista.itens[0].analise_simulacao_importacao_sku.custo_unitario,
             await sku.evaluate(() => ultimoValorUnitarioProduto));
-        assert.deepStrictEqual(snapshot.lista.itens[0].analise_concorrentes, { margens: {} },
-            'O cache da simulação não modifica a análise legada usada pela lista.');
+        assert.deepStrictEqual(snapshot.lista.itens[0].analise_concorrentes, analiseCadastro,
+            'O cache compartilhado da simulação preserva a análise legada do Cadastro.');
         let detalhe = await context.newPage();
         await detalhe.goto(origin + '/importacoes_lista.html?lista_id=A');
         await saved(detalhe, 'importacoes:GET:/api/medias-compras/listas-pedidos/A', 'complementosLista');
         await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent === 'Dados atualizados.');
         const chamadasCusto = state.calls.cost;
+        const complementosAntes = await detalhe.evaluate(async () =>
+            (await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A'))?.dados.complementosLista);
+        const revisaoAntes = await sku.evaluate(() => localStorage.getItem('jk.ui.cache.revisao.v1:importacoes'));
+        await sku.evaluate(() => carregarDetalheSku());
+        const listaAposSku = await sku.evaluate(async () =>
+            (await JKCachePersistente.ler('importacoes:GET:/api/medias-compras/listas-pedidos/A'))?.dados);
+        assert.deepStrictEqual(listaAposSku.complementosLista, complementosAntes,
+            'Salvar novamente a análise do SKU preserva complementos de custo e faturamento da lista.');
+        assert.deepStrictEqual(listaAposSku.lista.itens[0].analise_concorrentes, analiseCadastro);
+        assert.deepStrictEqual(listaAposSku.lista.itens[0].analise_simulacao_importacao_sku.margens_anuncios_loja, margensProprias,
+            'O snapshot compartilhado conserva as margens próprias da simulação.');
+        assert.strictEqual(await sku.evaluate(() => localStorage.getItem('jk.ui.cache.revisao.v1:importacoes')), revisaoAntes,
+            'Persistir análise altera somente sua família de cache.');
         await detalhe.reload();
         await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent === 'Dados atualizados.');
         assert.strictEqual(state.calls.cost, chamadasCusto, 'Reabrir a mesma revisão reaproveita o custo recente.');
@@ -159,18 +208,19 @@ async function saved(page, key, predicate) {
         detalhe = await context.newPage();
         await detalhe.goto(origin + '/importacoes_lista.html?lista_id=A');
         await detalhe.locator('#tbodyLista tr[data-sku="001"]').waitFor({ timeout: 10000 });
-        await detalhe.waitForFunction(() => document.getElementById('cacheListaStatus').textContent.includes('Cópia salva'));
+        await detalhe.waitForFunction(() => ultimaListaCarregada?.id === 'A');
         assert.strictEqual(state.calls.cost, 0, 'Restaurar cópia não repete custo antes do detalhe atualizado.');
         assert.strictEqual(await detalhe.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '2');
         sku = await context.newPage();
         await sku.goto(origin + '/importacoes_sku.html?lista_id=A&sku=001');
-        await sku.waitForFunction(() => document.getElementById('cacheSkuStatus').textContent.includes('Cópia salva'));
+        await sku.waitForFunction(() => document.getElementById('vTituloPt').textContent === 'Cadastro confirmado'
+            && document.getElementById('vCustoTotalProduto').textContent !== '-');
         assert.strictEqual(await sku.locator('#vTituloPt').textContent(), 'Cadastro confirmado');
         assert.strictEqual(await sku.locator('#vCustoTotalProduto').textContent(), custo);
         assert.strictEqual(state.calls.patches, 0, 'Restaurar SKU não salva análise nem inicia consulta de preços.');
         indice = await context.newPage();
         await indice.goto(origin + '/importacoes.html');
-        await indice.waitForFunction(() => document.getElementById('cacheImportacoesStatus').textContent.includes('Cópia salva'));
+        await indice.locator('#listaWrap .lista-item').waitFor();
         assert.strictEqual(await indice.locator('#listaWrap .lista-item').count(), 1);
 
         state.mode = 'fail';
@@ -191,7 +241,7 @@ async function saved(page, key, predicate) {
         state.mode = 'hold';
         state.pending = gate();
         await reabertura.goto(origin + '/importacoes_lista.html?lista_id=A');
-        await reabertura.waitForFunction(() => document.getElementById('cacheListaStatus').textContent.includes('Cópia salva'));
+        await reabertura.locator('#tbodyLista tr[data-sku="001"]').waitFor();
         assert.strictEqual(await reabertura.locator('tr[data-sku="001"] [data-col-key="quantidade"]').textContent(), '9');
         assert.strictEqual(await reabertura.evaluate(() => faturamentoVendas12m), 100,
             'A lista nova preserva o faturamento da loja mesmo com o custo ainda em consulta.');

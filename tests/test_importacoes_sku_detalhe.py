@@ -149,13 +149,16 @@ def test_validacao_leve_da_margem_confere_fontes_sem_reprocessar_cadastro(ambien
     estado, chamadas, _catalogo, tmp_path = ambiente
     identidade = {"seller_id": "seller-a", "site_id": "MLB", "fontes_versao": "planilha-a"}
     monkeypatch.setattr(service, "_identidade_anuncios", lambda *_: dict(identidade))
-    monkeypatch.setattr(service.common, "_resolver_escopo_loja_medias", lambda *_: {
+    monkeypatch.setattr(service.common, "_resolver_escopo_loja_medias", lambda *_, **__: {
         "scope": "store", "store_id": "loja-a", "loja": "Loja A",
     })
 
     async def conferir():
         completo = await service.api_importacoes_sku_detalhe("lista-a", "001", "tenant-a")
         selo = completo["revisao_fontes_margem"]
+        from backend.services import importacoes_base_custos
+        base = await importacoes_base_custos.api_importacoes_base_custos("lista-a", "tenant-a", somente_revisao=True)
+        assert completo["revisao_fontes_custo"] == base["revisoes_sku"]["001"]
         chamadas.clear()
         estado["itens"][0]["analise_simulacao_importacao_sku"] = {"custo_unitario": 18}
         validado = await service.api_importacoes_sku_detalhe("lista-a", "001", "tenant-a", validar_margem=True)

@@ -75,7 +75,9 @@ def calculation_revision():
     services = Path(__file__).parent
     root = services.parents[1]
     paths = set(services.glob("medias_compras*.py")) | set(services.glob("cadastro*.py"))
-    paths.update((services / "bling_vendas.py", root / "medias_compras.py"))
+    paths.update((services / "bling_vendas.py", root / "medias_compras.py",
+                  services / "importacoes_base_custos.py", services / "importacoes_sku_detalhe.py",
+                  services / "impostos_regras.py", services / "impostos_ncm.py"))
     digest = hashlib.sha256(CALCULATION_VERSION.encode("ascii"))
     for path in sorted(paths):
         digest.update(path.name.encode("utf-8"))
@@ -108,6 +110,23 @@ def _valid(record):
     if not -300 <= age <= MAX_AGE_SECONDS:
         return False
     payload = record["payload"]
+    if isinstance(payload, dict) and payload.get("tipo") == "importacoes_base_custos":
+        return (
+            payload.get("success") is True and payload.get("versao") == 1
+            and isinstance(payload.get("lista"), dict)
+            and isinstance(payload["lista"].get("id"), str)
+            and bool(payload["lista"].get("store_id"))
+            and isinstance(payload.get("itens"), list)
+            and all(isinstance(item, dict) and isinstance(item.get("SKU"), str)
+                    and item.get("fiscal_pronto") is True and isinstance(item.get("fiscal"), dict)
+                    for item in payload["itens"])
+            and isinstance(payload.get("rateio"), dict)
+            and isinstance(payload.get("revisao"), str) and bool(_HASH.fullmatch(payload["revisao"]))
+            and isinstance(payload.get("revisoes_sku"), dict)
+            and all(isinstance(key, str) and isinstance(value, str) and _HASH.fullmatch(value)
+                    for key, value in payload["revisoes_sku"].items())
+            and "_cache" not in payload
+        )
     return (isinstance(payload, dict) and payload.get("success") is True
             and payload.get("periodo_meses") in (3, 6, 12)
             and isinstance(payload.get("itens"), list)

@@ -53,7 +53,7 @@
             if (!listaId) throw new Error('Lista não informada.');
             try {
                 const copia = !copiaVisivel && contextoPersistente
-                    ? await persistencia.ler(chave, { contexto: contextoPersistente }) : null;
+                    ? await persistencia.ler(chave, { contexto: contextoPersistente, permitirDesatualizado: true }) : null;
                 if (!vigente()) return;
                 if (copia && await aplicar(copia.dados)) {
                     copiaVisivel = true;

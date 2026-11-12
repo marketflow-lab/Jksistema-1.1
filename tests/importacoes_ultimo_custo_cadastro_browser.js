@@ -49,8 +49,8 @@ async function environment(browser, options = {}) {
             produto_cards: ['kv_sku', 'kv_prop', 'kv_titulo_pt', 'kv_valor_unitario_produto', 'kv_custo_total_produto'],
         } }));
     });
-    const json = (route, body, status = 200) => route.fulfill({
-        status, contentType: 'application/json', body: JSON.stringify(body),
+    const json = (route, body, status = 200, headers = {}) => route.fulfill({
+        status, contentType: 'application/json', body: JSON.stringify(body), headers,
     }).catch(() => {});
     await page.route('**/*', async route => {
         const url = new URL(route.request().url());
@@ -69,9 +69,13 @@ async function environment(browser, options = {}) {
         if (storeProducts) {
             const storeId = storeProducts[1];
             const sku = storeProducts[2] && decodeURIComponent(storeProducts[2]);
-            state.requests.push({ storeId, sku, summary: url.searchParams.get('view') === 'summary' });
+            const costs = url.searchParams.get('view') === 'costs';
+            const revisionOnly = url.searchParams.get('somente_revisao') === 'true';
+            state.requests.push({ storeId, sku, costs, revisionOnly });
             if (options.holdCostA && storeId === 'store-A') await state.costA.promise;
             if (options.failCost) return json(route, { detail: 'Cadastro indisponível.' }, 503);
+            if (costs && revisionOnly) return json(route, { store_id: options.wrongStore ? 'store-X' : storeId,
+                revisao: 'custos-' + storeId });
             const rows = products.map(product => ({ ...product, store_id: storeId, nome: 'Cadastro atual',
                 'm3 individual': 0.1, ...(storeId === 'store-B' ? { custo: 25 } : {}) }));
             if (sku) {
@@ -82,8 +86,9 @@ async function environment(browser, options = {}) {
             }
             return json(route, [
                 { store_id: 'store-X', sku: '001', custo: 9000 },
-                { store_id: 'store-X', sku: 'OUTRA-LOJA', custo: 9000 }, ...rows,
-            ]);
+                { store_id: 'store-X', sku: 'OUTRA-LOJA', custo: 9000 },
+                ...rows.filter(row => !options.cubagemAlias || row.sku !== '1'),
+            ], 200, costs ? { 'X-JK-Custos-Revisao': 'custos-' + storeId } : {});
         }
         const order = pathname.match(/^\/api\/medias-compras\/listas-pedidos\/([AB])$/);
         if (order) return json(route, { lista: list(order[1]) });
@@ -130,8 +135,8 @@ async function expectText(locator, expected) {
         ]) await expectText(table.page.locator('tr[data-sku="' + sku + '"] [data-col-key="ultimo_custo_cadastrado"]'), expected);
         assert.strictEqual(await table.page.locator('thead [data-col-key="valor_unit_brl"]').evaluate(element =>
             element.nextElementSibling.dataset.colKey), 'ultimo_custo_cadastrado', 'Nova coluna migra junto ao valor unitário em ordens antigas.');
-        assert.strictEqual(table.state.requests.filter(row => row.summary).length, 1,
-            'Custo é consultado mesmo quando todos os itens já têm cubagem.');
+        assert.strictEqual(table.state.requests.filter(row => row.costs && !row.revisionOnly).length, 1,
+            'Custos são consultados sem fotos mesmo quando todos os itens já têm cubagem.');
         assert.strictEqual(table.state.global, 0);
         assert.deepStrictEqual(table.state.errors, []);
         if (previewDir) await table.page.locator('.table-wrap').screenshot({ path: path.join(previewDir, 'ultimo-custo-lista.png') });

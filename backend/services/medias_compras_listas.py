@@ -1633,6 +1633,14 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         if not math.isfinite(custo_unitario_informado) or custo_unitario_informado < 0:
             raise HTTPException(status_code=400, detail="Custo unitario invalido para analise de concorrentes")
     simulacao = req.fonte_custo == "simulacao_importacao_sku"
+    if (req.revisao_fontes_custo is None) != (req.assinatura_calculo is None):
+        raise HTTPException(400, "Informe a revisão das fontes e a assinatura do cálculo juntas.")
+    if req.revisao_fontes_custo is not None:
+        if not simulacao:
+            raise HTTPException(400, "A revisão do custo pertence à simulação da importação.")
+        from backend.services.importacoes_base_custos import exigir_revisao_custo
+
+        exigir_revisao_custo(client_id, lista_id, sku, req.revisao_fontes_custo, lista=lista)
     store_id_alvo = None
     campo_analise = "analise_simulacao_importacao_sku" if simulacao else "analise_concorrentes"
     if simulacao:
@@ -1700,6 +1708,13 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
             )
         except Exception:
             logger.warning("[IMPORTACOES] Calculo financeiro exato das margens concorrentes indisponivel")
+            if req.revisao_fontes_custo is not None:
+                # A transient failure is not a new financial analysis. Let the
+                # revision-aware caller retry without overwriting saved margins.
+                raise HTTPException(
+                    status_code=503,
+                    detail="A atualização das margens está temporariamente indisponível. Tente novamente.",
+                ) from None
             return {
                 chave: _margem_concorrente_indisponivel(
                     preco_venda,
@@ -1734,6 +1749,9 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
     if simulacao:
         analise_concorrentes["custo_unitario"] = round(custo_unitario_informado, 2)
         analise_concorrentes["store_id"] = store_id_alvo
+        if req.revisao_fontes_custo is not None:
+            analise_concorrentes["revisao_fontes_custo"] = req.revisao_fontes_custo
+            analise_concorrentes["assinatura_calculo"] = req.assinatura_calculo
 
     # O cálculo consulta serviços externos e pode levar alguns segundos. Recarregue
     # a lista antes de persistir para não desfazer uma aprovação, exclusão ou edição
@@ -1767,6 +1785,8 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
         raise HTTPException(status_code=404, detail="SKU nao encontrado na lista de pedidos")
 
     item_atual = itens_atuais[idx_item_atual]
+    if req.revisao_fontes_custo is not None:
+        exigir_revisao_custo(client_id, lista_id, sku, req.revisao_fontes_custo, lista=lista_atual)
     if somente_previa:
         analise_concorrentes["margens_anuncios_loja"] = margens_anuncios_loja
         return {
@@ -1783,7 +1803,11 @@ def _api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku_sync(
                 analise_concorrentes["margens_anuncios_loja"] = copy.deepcopy(analise_atual["margens_anuncios_loja"])
             elif (analise_atual.get("fonte_custo") == req.fonte_custo
                   and _numero_finito_margem(analise_atual.get("custo_unitario")) == custo_unitario_informado
-                  and analise_atual.get("store_id") == store_id_alvo):
+                  and analise_atual.get("store_id") == store_id_alvo
+                  and (req.revisao_fontes_custo is None or (
+                      analise_atual.get("revisao_fontes_custo") == req.revisao_fontes_custo
+                      and analise_atual.get("assinatura_calculo") == req.assinatura_calculo
+                  ))):
                 analise_concorrentes["margens_anuncios_loja"] = {
                     chave: copy.deepcopy(dados)
                     for chave, dados in (analise_atual["margens_anuncios_loja"] or {}).items()

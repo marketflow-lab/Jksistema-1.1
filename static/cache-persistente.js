@@ -8,6 +8,7 @@
     const DATA_REVISION_PREFIX = 'data:';
     const LEGACY_REVOCATION_PREFIX = 'legacy:';
     const SCHEMA = 1;
+    const TAGS = Object.freeze(['vendas', 'importacoes', 'custos_importacao', 'cadastro_custos', 'analises_importacao']);
     const MAX_ENTRY_BYTES = 12 * 1024 * 1024;
     const MAX_BYTES = 128 * 1024 * 1024;
     const MAX_ENTRIES = 240;
@@ -62,7 +63,7 @@
 
     function revisions(prefix = REVISION_KEY) {
         try {
-            return Object.fromEntries(['*', 'vendas', 'importacoes'].map(tag =>
+            return Object.fromEntries(['*', ...TAGS].map(tag =>
                 [tag, global.localStorage.getItem(prefix + tag) || '']));
         } catch (_error) { return null; }
     }
@@ -84,7 +85,7 @@
 
     function revisionMap(value) {
         return Boolean(value && Object.getPrototypeOf(value) === Object.prototype
-            && Object.entries(value).every(([tag, revision]) => ['*', 'vendas', 'importacoes'].includes(tag)
+            && Object.entries(value).every(([tag, revision]) => ['*', ...TAGS].includes(tag)
                 && typeof revision === 'string'));
     }
 
@@ -122,7 +123,7 @@
     function confirmarMutacao(previous, response) {
         const receipt = mutationReceipts.get(response);
         const captured = contexts.get(previous);
-        const tags = ['vendas', 'importacoes'];
+        const tags = [...new Set(['vendas', 'importacoes', ...(receipt?.tags || [])])];
         if (!receipt || storageUnavailable || !vigente(previous) || captured.session !== receipt.session
             || !sameRevisions(captured.revisions, receipt.before, tags)
             || !sameRevisions(receipt.after, revisions(), tags)
@@ -219,7 +220,7 @@
         }, null);
         if (!entry || entry.schema !== SCHEMA || entry.scope !== scope
             || !Array.isArray(entry.tags) || !entry.tags.length
-            || entry.tags.some(tag => !['vendas', 'importacoes'].includes(tag))
+            || entry.tags.some(tag => !TAGS.includes(tag))
             || !revisionMap(entry.revisions)
             || (entry.revocations !== undefined && !revisionMap(entry.revocations))
             || !Number.isFinite(entry.salvoEm) || entry.salvoEm > Date.now() + 60000
@@ -232,60 +233,85 @@
         return { dados: entry.dados, salvoEm: entry.salvoEm, desatualizado };
     }
 
-    async function salvar(chave, dados, options = {}) {
+    async function gravar(chave, dados, options = {}, atualizar = false) {
         if (storageUnavailable) return false;
         const context = options.contexto || contexto();
-        const tags = [...new Set((options.tags || []).filter(tag => ['vendas', 'importacoes'].includes(tag)))];
+        const tags = [...new Set((options.tags || []).filter(tag => TAGS.includes(tag)))];
         const scope = await scopeKey(context);
         if (!scope || !tags.length || typeof chave !== 'string' || !chave || chave.length > 4096) return false;
         try {
-            const serialized = JSON.stringify(dados);
-            if (serialized === undefined) return false;
-            const bytes = new global.TextEncoder().encode(serialized).byteLength;
-            if (bytes > MAX_ENTRY_BYTES) return false;
             const database = await openDatabase();
             const captured = contexts.get(context);
             if (!dadosVigentes(context, tags)) return false;
-            const entry = { id: scope + ':' + chave, scope, schema: SCHEMA, tags,
-                revisions: captured.revisions, revocations: captured.revocations,
-                salvoEm: Date.now(), bytes, dados: JSON.parse(serialized) };
             const saved = await transaction(database, 'readwrite', (tx, done) => {
-                if (!dadosVigentes(context, tags)) return;
-                tx.objectStore('snapshots').put(entry);
-                const index = tx.objectStore('indices');
-                const { dados: _data, ...metadata } = entry;
-                index.put(metadata);
-                // Retention scans only small metadata records, never every cached payload.
-                const request = index.getAll();
-                request.onsuccess = () => {
-                    const rows = request.result.sort((a, b) => a.salvoEm - b.salvoEm);
-                    let count = rows.length;
-                    let total = rows.reduce((sum, row) => sum + row.bytes, 0);
-                    let scoped = rows.filter(row => row.scope === scope).length;
-                    let scopedBytes = rows.reduce((sum, row) => sum + (row.scope === scope ? row.bytes : 0), 0);
-                    for (const row of rows) {
-                        if (count <= MAX_ENTRIES && total <= MAX_BYTES
-                            && (row.scope !== scope || (scoped <= MAX_SCOPE_ENTRIES && scopedBytes <= MAX_SCOPE_BYTES))) continue;
-                        tx.objectStore('snapshots').delete(row.id);
-                        index.delete(row.id);
-                        count--; total -= row.bytes;
-                        if (row.scope === scope) { scoped--; scopedBytes -= row.bytes; }
-                    }
-                    done(true);
+                const snapshots = tx.objectStore('snapshots');
+                const publicar = value => {
+                    if (!dadosVigentes(context, tags)) return;
+                    const serialized = JSON.stringify(value);
+                    if (serialized === undefined) return;
+                    const bytes = new global.TextEncoder().encode(serialized).byteLength;
+                    if (bytes > MAX_ENTRY_BYTES) return;
+                    const entry = { id: scope + ':' + chave, scope, schema: SCHEMA, tags,
+                        revisions: captured.revisions, revocations: captured.revocations,
+                        salvoEm: Date.now(), bytes, dados: JSON.parse(serialized) };
+                    snapshots.put(entry);
+                    const index = tx.objectStore('indices');
+                    const { dados: _data, ...metadata } = entry;
+                    index.put(metadata);
+                    // Retention scans only small metadata records, never every cached payload.
+                    const request = index.getAll();
+                    request.onsuccess = () => {
+                        const rows = request.result.sort((a, b) => a.salvoEm - b.salvoEm);
+                        let count = rows.length;
+                        let total = rows.reduce((sum, row) => sum + row.bytes, 0);
+                        let scoped = rows.filter(row => row.scope === scope).length;
+                        let scopedBytes = rows.reduce((sum, row) => sum + (row.scope === scope ? row.bytes : 0), 0);
+                        for (const row of rows) {
+                            if (count <= MAX_ENTRIES && total <= MAX_BYTES
+                                && (row.scope !== scope || (scoped <= MAX_SCOPE_ENTRIES && scopedBytes <= MAX_SCOPE_BYTES))) continue;
+                            snapshots.delete(row.id);
+                            index.delete(row.id);
+                            count--; total -= row.bytes;
+                            if (row.scope === scope) { scoped--; scopedBytes -= row.bytes; }
+                        }
+                        done(true);
+                    };
                 };
+                if (!atualizar) publicar(dados);
+                else {
+                    // Read and merge in one transaction, including writes from other tabs.
+                    const request = snapshots.get(scope + ':' + chave);
+                    request.onsuccess = () => {
+                        try {
+                            const entry = request.result;
+                            const anterior = entry?.scope === scope && entry.schema === SCHEMA
+                                && revisionMap(entry.revisions) && revisionMap(entry.revocations || {})
+                                && sameRevisions(entry.revocations || {}, revisions(REVOCATION_KEY), tags)
+                                && sameRevisions(entry.revisions, revisions(), tags) ? entry.dados : null;
+                            publicar(dados(anterior));
+                        } catch (_error) { tx.abort(); }
+                    };
+                }
             }, false);
             return saved && dadosVigentes(context, tags);
         } catch (_error) { return false; }
     }
 
+    function salvar(chave, dados, options = {}) { return gravar(chave, dados, options); }
+
+    function atualizar(chave, alterar, options = {}) {
+        return typeof alterar === 'function' ? gravar(chave, alterar, options, true) : Promise.resolve(false);
+    }
+
     async function invalidate(tags, origin = 'manual', receipt = null) {
-        const selected = Array.isArray(tags) ? tags.filter(tag => ['vendas', 'importacoes'].includes(tag)) : ['*'];
+        const selected = Array.isArray(tags) ? tags.filter(tag => TAGS.includes(tag)) : ['*'];
         if (!selected.length) return true;
         const revoked = !['sync', 'mutation'].includes(origin);
         const nonce = (revoked ? '' : DATA_REVISION_PREFIX)
             + (global.crypto?.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36));
         const before = revisions(), revocations = revisions(REVOCATION_KEY);
         if (receipt) {
+            receipt.tags = selected;
             receipt.before = before;
             receipt.revocationsBefore = revocations;
             receipt.after = { ...before, ...Object.fromEntries(selected.map(tag => [tag, nonce])) };
@@ -341,6 +367,7 @@
     }
 
     function families(pathname, method) {
+        if (/^\/api\/medias-compras\/listas-pedidos\/[^/]+\/skus\/[^/]+\/analise-concorrentes(?:\/|$)/.test(pathname)) return ['analises_importacao'];
         if (/^\/api\/medias-compras(?:\/|$)/.test(pathname)) return ['importacoes'];
         if (/^\/api\/(?:vendas|notas-entrada|unidades-negocios)(?:\/|$)/.test(pathname)) return ['vendas', 'importacoes'];
         if (/^\/api\/cadastro\/foto(?:\/|$)/.test(pathname) && ['GET', 'HEAD'].includes(method)) return [];
@@ -375,7 +402,7 @@
                 if (captured?.scope && ((!current && global.__jkSessionRedirecting) || current?.session === captured.session)) {
                     deniedSession = captured.session;
                     generation++;
-                    await invalidate(['vendas', 'importacoes'], 'auth');
+                    await invalidate(TAGS, 'auth');
                     emit('jk:cache-persistente-auth-negado', { status: response.status });
                 }
             } else if (tags.length && response.ok && !leituraComPost && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
@@ -390,7 +417,8 @@
     global.addEventListener?.('storage', event => {
         if (!event.key || ['access_token', 'user_data', 'permissions'].includes(event.key)) { generation++; deniedSession = ''; }
         if (event.key?.startsWith(REVISION_KEY) || event.key?.startsWith(REVOCATION_KEY)) {
-            emit('jk:cache-persistente-invalidado', { tags: ['vendas', 'importacoes'], origem: 'storage',
+            const tag = event.key.slice((event.key.startsWith(REVOCATION_KEY) ? REVOCATION_KEY : REVISION_KEY).length);
+            emit('jk:cache-persistente-invalidado', { tags: tag === '*' ? [...TAGS] : [tag], origem: 'storage',
                 revogado: event.key.startsWith(REVOCATION_KEY) || !event.newValue?.startsWith(DATA_REVISION_PREFIX) });
         }
     });
@@ -404,6 +432,7 @@
             void invalidate(['vendas', 'importacoes'], 'sync');
         }
     });
-    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, podeManterDados, confirmarMutacao, ler, salvar,
+    global.JKCachePersistente = Object.freeze({ contexto, vigente, dadosVigentes, podeManterDados, confirmarMutacao, ler, salvar, atualizar,
+        chaveEscopo: scopeKey,
         invalidar: tags => invalidate(tags) });
 })(window);

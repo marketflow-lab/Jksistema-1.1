@@ -30,6 +30,7 @@ from backend.services.medias_compras_uniao import *
 from backend.services.medias_compras_packing import *
 from backend.services.medias_compras_listas import configure_medias_compras_listas_runtime
 from backend.services.importacoes_sku_detalhe import api_importacoes_sku_detalhe
+from backend.services.importacoes_base_custos import api_importacoes_base_custos
 from backend.services.medias_compras_importacao import *
 from backend.services.medias_compras_importacao import configure_medias_compras_importacao_runtime
 
@@ -87,6 +88,7 @@ __all__ = [
     "api_medias_compras_lista_pedido_concorrentes_links_lote",
     "api_medias_compras_lista_pedido_detalhe",
     "api_importacoes_sku_detalhe",
+    "api_importacoes_base_custos",
     "api_medias_compras_lista_pedido_custo_posto",
     "api_medias_compras_lista_pedido_editar",
     "api_medias_compras_lista_pedido_atualizar_analise_concorrentes_sku",

@@ -30,13 +30,13 @@ validarScriptsInline(skuHtml, 'importacoes_sku.html');
 const trechosLista = [
     "{ key: 'margens_concorrentes', label: 'Margem concorrentes'",
     'function formatarMargensConcorrentes(item)',
-    'item.analise_concorrentes',
+    'item.analise_simulacao_importacao_sku',
     "'concorrente_' + numero",
     'dados.margem_percentual',
     'dados.motivo_indisponivel',
     'dados.tarifa_ml',
     'dados.frete_ml',
-    'Custo do cadastro:',
+    'Custo da importação:',
     "margens_concorrentes: formatarMargensConcorrentes(item)",
     "margens_concorrentes: 'num-center'",
     'class="competitor-margin ',
@@ -103,6 +103,7 @@ const payloadPausado = vm.runInNewContext(skuHtml.slice(inicioColeta, fimColeta)
     ultimoAnuncioPausadoReferencia: referencia,
     ultimoValorUnitarioProduto: 280.86,
     ultimaVersaoFontesConcorrentes: 1,
+    contextoDetalheSku: null,
 });
 assert.equal(Object.keys(payloadPausado.precos_anuncios_loja).length, 1);
 assert.equal(Object.keys(payloadPausado.precos_concorrentes).length, 4);

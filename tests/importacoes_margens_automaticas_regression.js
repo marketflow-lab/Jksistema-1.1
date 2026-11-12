@@ -23,11 +23,11 @@ const obrigatorios = [
     "definirEstadoMargensAutomaticas(item, 'fila')",
     "definirEstadoMargensAutomaticas(item, 'analisando')",
     'for (const item of pendentes)',
-    'await salvarMargensAutomaticasSku(',
-    "item.analise_concorrentes = resultado && resultado.analise_concorrentes",
+    'await window.JKImportacoesCacheCustos.comTravaAnalise(',
+    "item.analise_simulacao_importacao_sku = resultado.analise_concorrentes",
     'data-coluna="margens_concorrentes"',
-    'await analisarMargensConcorrentesAutomaticamente(listaId, itens);',
-    "(!item.analise_concorrentes || typeof item.analise_concorrentes !== 'object')",
+    'await analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);',
+    "fonte_custo: 'simulacao_importacao_sku'",
     'Falha na análise',
     'Analisando...',
 ];
@@ -40,7 +40,7 @@ for (const trecho of obrigatorios) {
 
 const renderInicial = html.indexOf('renderItens(itens, lista);');
 const disparoAutomatico = html.indexOf(
-    'await analisarMargensConcorrentesAutomaticamente(listaId, itens);',
+    'await analisarMargensConcorrentesAutomaticamente(listaId, ultimosItensCarregados);',
     renderInicial
 );
 if (!(renderInicial >= 0 && disparoAutomatico > renderInicial)) {
@@ -49,7 +49,7 @@ if (!(renderInicial >= 0 && disparoAutomatico > renderInicial)) {
 
 const inicioFila = html.indexOf('async function analisarMargensConcorrentesAutomaticamente');
 const inicioLoop = html.indexOf('for (const item of pendentes)', inicioFila);
-const esperaSku = html.indexOf('await salvarMargensAutomaticasSku(', inicioLoop);
+const esperaSku = html.indexOf('await window.JKImportacoesCacheCustos.comTravaAnalise(', inicioLoop);
 if (!(inicioFila >= 0 && inicioLoop > inicioFila && esperaSku > inicioLoop)) {
     throw new Error('Os SKUs devem ser processados sequencialmente para preservar a persistência da lista.');
 }
