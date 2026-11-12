@@ -26,7 +26,6 @@ tBody.addEventListener('click', (event) => {
     if (!tr) return;
     const sku = tr.getAttribute('data-sku') || '';
     if (!sku) return;
-    mostrarCarregamentoSku();
     const qs = new URLSearchParams();
     qs.append('sku', sku);
     const iniIso = getDataIniISO();
@@ -37,8 +36,11 @@ tBody.addEventListener('click', (event) => {
     if (unidadeNegocioSelect.value && unidadeNegocioSelect.value !== '__todos') {
         qs.append('unidade_negocio', unidadeNegocioSelect.value);
     }
+    const targetUrl = `/vendas_sku.html?${qs.toString()}`;
+    if (window.JKTabNavigation?.openIfRequested(targetUrl)) return;
+    mostrarCarregamentoSku();
     requestAnimationFrame(() => {
-        window.location.href = `/vendas_sku.html?${qs.toString()}`;
+        window.location.href = targetUrl;
     });
 });
 
@@ -169,8 +171,8 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
         return { loja, estado: estadoSyncLojaVendas(loja), horaConferencia };
     });
     const lojaSelecionadaResumo = automacao ? resumoLojaSelecionadaSyncVendas(estados, automacao.data_referencia) : '';
-    if (!lojas.length && !verificandoConexoes) {
-        substituirConteudoSyncVendas(painel, lojaSelecionadaResumo);
+    if (!lojas.length && !verificandoConexoes && !lojaSelecionadaResumo) {
+        substituirConteudoSyncVendas(painel, '');
         return;
     }
     const pendentes = Math.max(0, Number(automacao?.pendentes || 0));
@@ -233,10 +235,9 @@ function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncP
     const resumo = ['Todas as lojas', verificandoConexoes && !coletando
         ? mensagemVerificacaoConexoesVendas : contagens].filter(Boolean).join(' · ');
     painel.className = 'status-bar vendas-sync-status';
-    substituirConteudoSyncVendas(painel, lojaSelecionadaResumo
-        + '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
+    substituirConteudoSyncVendas(painel, '<details class="vendas-sync-details vendas-sync-disclosure" data-sync-details="sync">'
         + `<summary><span class="vendas-sync-counts">${escaparHtmlVendas(resumo)}</span>${indicadorAlertas}<span class="vendas-sync-toggle">Detalhes</span></summary>`
-        + `<div class="vendas-sync-content">${alertas}${linhas}`
+        + `<div class="vendas-sync-content">${lojaSelecionadaResumo}${alertas}${linhas}`
         + '<strong class="vendas-sync-technical-title">Detalhes técnicos</strong>'
         + `<div class="vendas-sync-muted">${pendentes} ${pendentes === 1 ? 'tarefa pendente' : 'tarefas pendentes'} · Atualização automática em ${habilitadas} ${habilitadas === 1 ? 'loja' : 'lojas'}.</div>`
         + etapa + detalhesLojas + (logs ? `<div class="vendas-sync-logs"><strong>Registros recentes</strong>${logs}</div>` : '')
@@ -273,10 +274,11 @@ function renderProgresso(p, logs, painel = statusEl, lojas = []) {
     const detalhes = !listaLojas.length && (registros || p.mensagem)
         ? `<details class="vendas-sync-details" data-sync-details="logs"><summary>Ver detalhes técnicos</summary><div>${escaparHtmlVendas(p.mensagem || '')}</div><div class="vendas-sync-logs">${registros}</div></details>` : '';
     const cobertura = Number.isFinite(diasAproveitados) && Number.isFinite(diasPendentes)
-        ? `<div class="vendas-sync-muted">${Math.max(0, diasAproveitados)} dia(s) já concluído(s) · ${Math.max(0, diasPendentes)} dia(s) pendente(s)</div>` : '';
+        ? `${Math.max(0, diasAproveitados)} dia(s) já concluído(s) · ${Math.max(0, diasPendentes)} dia(s) pendente(s)` : '';
+    const descricaoProgresso = escaparHtmlVendas([`${percent}%`, cobertura].filter(Boolean).join(' · '));
     painel.className = 'status-bar loading';
-    substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress">${spinnerHtml}<strong>${aguardando ? 'Aguardando início' : 'Sincronizando'} · ${percent}%</strong>`
-        + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${cobertura}${erro}${detalhes}`);
+    substituirConteudoSyncVendas(painel, `<div class="vendas-sync-progress" title="${descricaoProgresso}">${spinnerHtml}<strong>${aguardando ? 'Aguardando início' : 'Sincronizando'} · ${percent}%</strong>`
+        + `<div class="vendas-sync-track" role="progressbar" aria-label="Progresso da sincronização" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-valuetext="${descricaoProgresso}"><div class="vendas-sync-fill" style="width:${percent}%"></div></div></div>${erro}${detalhes}`);
 }
 
 let progressMonitorSubscribed = false;

@@ -3073,7 +3073,15 @@
 
             if (data.channel === 'jk-open-module-tab') {
                 const payload = data.payload || {};
-                if (payload.url) createTab(payload.url, payload.title || 'Modulo', { reuseExisting: true });
+                const found = findTabBySource(event.source);
+                if (!found) return;
+                try {
+                    const target = new URL(payload.url, appUrl);
+                    if (event.origin !== new URL(appUrl).origin || target.origin !== event.origin
+                        || !/^https?:$/.test(target.protocol) || target.username || target.password
+                        || !(/\.html?$/i.test(target.pathname) || target.pathname === '/')) return;
+                    createTab(target.href, payload.title || 'Modulo', { reuseExisting: payload.reuseExisting !== false });
+                } catch (_err) {}
                 return;
             }
 

@@ -102,16 +102,18 @@ async function main() {
             vendasResumoMeta.composicao.incomplete = true;
             renderResumoTotaisVendas(resumoTotaisVendas);
         });
-        await page.waitForFunction(() => document.getElementById('vnCompositionWarning').textContent.includes('inválidas'));
-        assert.equal(await page.locator('#composicaoAviso').getAttribute('hidden'), null);
+        assert.equal(await page.locator('#composicaoAviso').count(), 0);
+        assert.equal(await page.locator('#vnCompositionWarning').textContent(), '');
+        assert.equal(await page.evaluate(() => vendasResumoMeta.composicao.incomplete), true);
         for (const code of ['legacy_composition_unverified', 'legacy_component_identity_unverified', 'legacy_catalog_unverified']) {
             await page.evaluate(code => {
                 vendasResumoMeta.composicao.warnings = [{code,store_id:'internal-secret-store',sku:'internal-secret-sku'}];
                 renderResumoTotaisVendas(resumoTotaisVendas);
             }, code);
-            await page.waitForFunction(() => document.getElementById('vnCompositionWarning').textContent.includes('cadastro legado'));
-            assert.match(await page.locator('#composicaoAviso').textContent(), /atualize o Cadastro da loja/);
-            assert.doesNotMatch(await page.locator('#vnCompositionWarning').textContent(), /internal-secret/);
+            assert.equal(await page.locator('#composicaoAviso').count(), 0);
+            assert.equal(await page.locator('#vnCompositionWarning').textContent(), '');
+            assert.equal(await page.evaluate(() => JKVendasLegacyBridge.getSnapshot().compositionWarning), '');
+            assert.deepEqual(await page.evaluate(() => vendasResumoMeta.composicao.warnings), [{code,store_id:'internal-secret-store',sku:'internal-secret-sku'}]);
         }
         await page.evaluate(() => {
             const fraction = {sku:'FRAC',produto:'Componente fracionário',__resumo:true,data:'2026-10-01',pedidos:0,itens:0.125,quantidade:0.125,itensDiretos:0,itensComposicao:0.125,itensComponentes:0.125,valor:0,devolucoes:0,itensDevolucao:0.00000001,itensDevolucaoDiretos:0,itensDevolucaoComposicao:0.00000001,itensDevolucaoComponentes:0.00000001};

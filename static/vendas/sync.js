@@ -94,16 +94,6 @@ function abrirDevolucoesVendas() {
 }
 
 function renderResumoTotaisVendas(totais, exibirDevolucoes = true) {
-    const avisoComposicao = document.getElementById('composicaoAviso');
-    if (avisoComposicao) {
-        const composicao = typeof vendasResumoMeta !== 'undefined' ? vendasResumoMeta?.composicao : null;
-        const incompleta = Boolean(composicao?.incomplete);
-        const legadoSemConfirmacao = Array.isArray(composicao?.warnings) && composicao.warnings.some(aviso => ['legacy_composition_unverified', 'legacy_component_identity_unverified', 'legacy_catalog_unverified'].includes(aviso?.code));
-        avisoComposicao.hidden = !incompleta;
-        avisoComposicao.textContent = incompleta
-            ? `${legadoSemConfirmacao ? 'Há dados do cadastro legado que precisam de confirmação por loja.' : 'Há composições indisponíveis ou inválidas no cadastro.'} As quantidades desses SKUs foram mantidas como vendidas; atualize o Cadastro da loja para conferir as composições.`
-            : '';
-    }
     const totalPedidos = Number(totais?.pedidos || 0);
     const totalItens = Number(totais?.itens || 0);
     const totalValor = Number(totais?.valor || 0);

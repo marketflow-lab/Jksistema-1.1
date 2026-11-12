@@ -28,8 +28,8 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const [asset, expectedCacheKey] of Object.entries({
   'styles.css': '20261020-vendas-status-compacto-v2',
   'runtime.js': '20261027-cache-persistente-v1',
-  'periodo-cache.js': '20261109-vendas-conferencia-hoje-v1',
-  'sync.js': '20261111-estilo-medias-v4',
+  'periodo-cache.js': '20261112-status-resumido-v1',
+  'sync.js': '20261112-sync-status-linha-v1',
   'dados-render.js': '20261030-resumo-salvo-v1',
 })) {
   assert.ok(

@@ -38,12 +38,16 @@
         const painel = document.getElementById('cacheVendasStatus');
         if (!painel) return;
         painel.hidden = estados.size === 0;
-        painel.textContent = [...estados].map(([nome, valor]) => {
+        painel.title = [...estados].map(([nome, valor]) => {
             const data = new Date(valor.salvoEm);
             const momento = Number.isNaN(data.getTime()) ? '' : ' em ' + data.toLocaleString('pt-BR');
             return nome + ': dados salvos' + momento + '. '
                 + (valor.situacao === 'erro' ? 'Atualização indisponível; última versão mantida.' : 'Conferindo atualização...');
         }).join(' ');
+        painel.textContent = !estados.size ? ''
+            : [...estados.values()].some(valor => valor.situacao === 'erro')
+                ? 'Atualização indisponível · dados salvos mantidos'
+                : 'Dados salvos · atualizando...';
         window.dispatchEvent(new CustomEvent('jk:vendas-cache-state'));
     }
     function limpar() {

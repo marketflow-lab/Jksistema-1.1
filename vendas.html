@@ -11,14 +11,14 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/rangePlugin.js"></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/cache-persistente.js?v=20261027-v1"></script>
-    <script src="/vendas/cache-dados.js?v=20261027-v1"></script>
+    <script src="/vendas/cache-dados.js?v=20261112-status-resumido-v1"></script>
     <script src="/ncm-sync.js"></script>
     <script src="/global-status.js"></script>
     <link rel="stylesheet" href="/comentarios-sku.css?v=1">
     <script src="/comentarios-sku.js?v=1"></script>
     <link rel="stylesheet" href="/vendas/styles.css?v=20261020-vendas-status-compacto-v2">
     <link rel="stylesheet" href="/vendas/visual-novo.css?v=20261020-vendas-status-compacto-v2">
-    <link rel="stylesheet" href="/vendas/layout-imagens.css?v=20261111-estilo-medias-v4">
+    <link rel="stylesheet" href="/vendas/layout-imagens.css?v=20261112-sync-status-linha-v1">
     <link rel="stylesheet" href="/vendas/visual-petroleo.css?v=20261111-estilo-medias-v4">
 </head>
 <body>
@@ -56,18 +56,6 @@
     </div>
 
     <div class="filters">
-        <div class="periodo-linha">
-            <span class="vendas-field-label">Per&iacute;odo</span>
-            <div class="periodo-range">
-                <select id="mesAno">
-                <option value="">Selecione um mês</option>
-                </select>
-                <span class="periodo-separador">ou</span>
-                <input type="text" id="dataIni" placeholder="DD/MM/AAAA" aria-label="Data inicial" readonly>
-                <input type="text" id="dataFim" placeholder="DD/MM/AAAA" aria-label="Data final" readonly>
-            </div>
-            <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
-        </div>
         <div class="menus-linha">
             <div class="vendas-stores-field">
                 <span class="vendas-field-label">Lojas</span>
@@ -79,6 +67,13 @@
                 <option value="__todos">Todas as lojas virtuais</option>
             </select>
             </label>
+        </div>
+        <div class="vendas-sync-row">
+            <div class="vendas-sync-bar">
+                <div id="status" class="status-bar"></div>
+                <div id="cacheVendasStatus" class="status-bar empty" role="status" hidden></div>
+                <div id="syncPersistenteStatus" class="status-bar" role="status" aria-live="polite"></div>
+            </div>
             <div class="vendas-sync-controls">
             <div class="vendas-sync-options" role="group" aria-label="Opções de sincronização">
                 <label class="sync-toggle">
@@ -96,15 +91,9 @@
             </div>
             </div>
         </div>
-        <div class="vendas-sync-bar">
-            <div id="status" class="status-bar"></div>
-            <div id="cacheVendasStatus" class="status-bar empty" role="status" hidden></div>
-            <div id="syncPersistenteStatus" class="status-bar" role="status" aria-live="polite"></div>
-        </div>
     </div>
 
     <div class="summary" id="resumo"></div>
-    <p id="composicaoAviso" class="status-bar" role="status" hidden></p>
 
     <!-- Seção de Gráficos -->
     <div class="graficos-container observacoes-fechado">
@@ -126,6 +115,17 @@
             <button id="btnSidebarAssistenteVendas" class="sidebar-bookmark-btn-vendas" type="button" role="tab" aria-selected="false" aria-controls="jk-codex-panel" title="Abrir Black Jhon">BJ</button>
         </div>
         <div class="grafico-controles">
+            <div class="grafico-grupo gc-periodo periodo-linha" role="group" aria-label="Período das vendas">
+                <span class="grafico-label">Per&iacute;odo:</span>
+                <div class="periodo-range">
+                    <select id="mesAno" aria-label="Selecionar mês">
+                        <option value="">Selecione um mês</option>
+                    </select>
+                    <input type="text" id="dataIni" placeholder="DD/MM/AAAA" aria-label="Data inicial" readonly>
+                    <input type="text" id="dataFim" placeholder="DD/MM/AAAA" aria-label="Data final" readonly>
+                </div>
+                <div id="periodoTexto" class="periodo-texto">Período: não selecionado</div>
+            </div>
             <div class="grafico-grupo gc-visualizacao">
                 <span class="grafico-label">Vis&atilde;o:</span>
                 <div class="grafico-opcoes">
@@ -321,11 +321,11 @@
 </div>
 
     <script src="/vendas/runtime.js?v=20261027-cache-persistente-v1"></script>
-    <script src="/vendas/periodo-cache.js?v=20261109-vendas-conferencia-hoje-v1"></script>
-    <script src="/vendas/sync.js?v=20261111-estilo-medias-v4"></script>
+    <script src="/vendas/periodo-cache.js?v=20261112-status-resumido-v1"></script>
+    <script src="/vendas/sync.js?v=20261112-sync-status-linha-v1"></script>
     <script src="/vendas/dados-render.js?v=20261030-resumo-salvo-v1"></script>
   <script src="/vendas/periodos-completos.js?v=20260827-vendas-previsao-mes-atual-v1"></script>
-  <script src="/vendas/grafico.js?v=20261028-grafico-filtros-v1"></script>
+  <script src="/vendas/grafico.js?v=20261112-periodo-grafico-v1"></script>
     <script src="/vendas/assistente.js?v=20261020-vendas-composicao-v1"></script>
     <script src="/vendas/sidebar-ranking.js?v=20260625-vendas-lite-v1"></script>
     <script src="/vendas/pareto-report.js?v=20260728-vendas-relatorios-v2"></script>

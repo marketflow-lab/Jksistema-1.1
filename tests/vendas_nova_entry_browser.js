@@ -313,6 +313,8 @@ async function verifySyncStatus(context, fixture, width, modern) {
     const progress = frame.locator(modern ? '#vnStatus' : '#status');
     try {
         await frame.evaluate(() => {
+            lojaSelecionada = 'RCL';
+            lojasDisponiveis = [{ nome: 'RCL', store_id: 'RCL' }];
             const store = (loja, status, extra = {}) => ({
                 loja, store_id: loja, status, habilitado: status !== 'paused',
                 data_inicio: '2026-10-14', data_fim: '2026-10-20',
@@ -321,7 +323,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
                 ...extra,
             });
             window.__entrySyncPayload = {
-                active: true, progress: { percentual: 43, etapa: 'Coleta', mensagem: 'Etapa técnica exclusiva do fixture.' },
+                active: true, progress: { percentual: 43, etapa: 'Coleta', dias_aproveitados: 15, dias_pendentes: 2, mensagem: 'Etapa técnica exclusiva do fixture.' },
                 logs: ['LOG_TECNICO_RECOLHIDO <coleta>'],
                 automacao: {
                     pendentes: 9, habilitadas: 5, data_referencia: '2026-10-20',
@@ -369,6 +371,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
         ].every(label => visible.includes(label)), details);
         check('job count is not presented as store count', !visible.includes('9 lojas'), details);
         check('technical content and full alerts start collapsed', !/DOC-123|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva|9 tarefas|FALLBACK_TEXTO_NAO_EXIBIR|Sessão expirada|Falha na tentativa anterior/.test(visible), details);
+        check('selected store conference stays inside collapsed details', !/Loja selecionada:|conferência registrada hoje|20\/10\/2026/.test(visible), details);
         check('one disclosure starts closed and reveals all details', await panel.locator('details').evaluateAll(nodes => nodes.length === 1 && !nodes[0].open), details);
         check('alert badge stays visible and counts running stores with an earlier error', await attention.isVisible()
             && /\b2 alertas$/.test((await attention.innerText()).trim()), details);
@@ -376,6 +379,9 @@ async function verifySyncStatus(context, fixture, width, modern) {
         check('the overall panel stays neutral', await panel.evaluate(element => !element.classList.contains('error')), details);
         check('progress stays concise while store names remain in the disclosure', /Sincronizando · 43%/.test(await progress.innerText())
             && !/RCL|JK Peças|em andamento|LOG_TECNICO_RECOLHIDO|Etapa técnica exclusiva/.test(await progress.innerText()), details);
+        check('day counts are absent from the main line and remain accessible', !/dia\(s\)/.test(await progress.innerText())
+            && /15 dia\(s\) já concluído\(s\) · 2 dia\(s\) pendente\(s\)/.test(await progress.locator('.vendas-sync-progress').getAttribute('title'))
+            && /15 dia\(s\) já concluído\(s\)/.test(await progress.locator('[role="progressbar"]').getAttribute('aria-valuetext')), details);
         check('progress retains its accessible percentage', await progress.locator('[role="progressbar"]').evaluate(element =>
             element.getAttribute('aria-valuenow') === '43' && element.getAttribute('aria-valuemin') === '0'
             && element.getAttribute('aria-valuemax') === '100' && Boolean(element.getAttribute('aria-label'))), details);
@@ -399,6 +405,8 @@ async function verifySyncStatus(context, fixture, width, modern) {
         }), details);
 
         await summary.click();
+        check('selected store conference becomes visible in details', /Loja selecionada: RCL/.test(await disclosure.innerText())
+            && /Sem conferência registrada hoje/.test(await disclosure.innerText()), details);
         check('one click reveals every store once', await disclosure.locator('.vendas-sync-store').count() === 6
             && await disclosure.locator('.vendas-sync-store').first().isVisible(), details);
         check('the same disclosure reveals checkpoint, stage and escaped log', /Pedido #DOC-123/.test(await disclosure.innerText())

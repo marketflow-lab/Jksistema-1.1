@@ -388,6 +388,7 @@ function exportarCoberturaFull() {
 }
 
 function abrirModuloFullAcao(url, title) {
+    if (window.JKTabNavigation?.openIfRequested(url)) return;
     try {
         if (window.parent && window.parent !== window) {
             window.parent.postMessage({

@@ -1041,17 +1041,7 @@ function renderizarGrafico(data, dataComparativo = null) {
         type: tipo,
         plugins: graficoPesado ? [] : [unidadesNoTopoPlugin],
         data: {
-            labels: labelsRender.map(label => {
-                const labelFormatado = formatarLabelDataGrafico(label);
-                if (
-                    previsaoMesAtual
-                    && intervaloGrafico === 'mes'
-                    && obterChaveMesLabelGrafico(label) === previsaoMesAtual.mes
-                ) {
-                    return `${labelFormatado} · realizado até ${formatarDataIsoCurta(previsaoMesAtual.dataReferencia)}`;
-                }
-                return labelFormatado;
-            }),
+            labels: labelsRender.map(formatarLabelDataGrafico),
             datasets
         },
         options: {

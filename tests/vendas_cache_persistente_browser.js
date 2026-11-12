@@ -172,7 +172,7 @@ async function main() {
         page = await open(context, mainUrl);
         await page.locator('#tBody tr[data-sku="001"]').waitFor();
         assert.equal(await page.locator('#filtroTexto').inputValue(), '001');
-        assert.match(await page.locator('#cacheVendasStatus').textContent(), /dados salvos/);
+        assert.equal(await page.locator('#cacheVendasStatus').textContent(), 'Dados salvos · atualizando...');
         assert.equal(state.calls.filter(call => call.path === '/api/vendas/resumo').length, 0,
             'The saved list must appear even while the store request is still pending');
         await page.waitForFunction(() => JKVendasLegacyBridge.getSnapshot().graph.data?.labels?.length === 1);
@@ -244,7 +244,7 @@ async function main() {
         state.mode = 'hold';
         const reopenedSku = await open(context, skuUrl);
         await reopenedSku.waitForFunction(() => document.querySelector('#tBody')?.textContent.includes('pedido-ficticio'));
-        assert.match(await reopenedSku.locator('#cacheVendasStatus').textContent(), /dados salvos/);
+        assert.equal(await reopenedSku.locator('#cacheVendasStatus').textContent(), 'Dados salvos · atualizando...');
         state.mode = 'error'; await release(503);
         await reopenedSku.waitForFunction(() => document.getElementById('cacheVendasStatus').textContent.includes('Atualização indisponível'));
         assert.match(await reopenedSku.locator('#tBody').textContent(), /pedido-ficticio/);

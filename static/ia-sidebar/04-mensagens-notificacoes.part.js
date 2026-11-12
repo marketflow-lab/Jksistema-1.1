@@ -159,6 +159,7 @@
         _msgSetStatus('Link Daily da chamada indisponivel.', true);
         return;
       }
+      if (window.JKTabNavigation?.openIfRequested(target)) return;
       let sentToShell = false;
       try {
         if (window.top && window.top !== window && typeof window.top.postMessage === 'function') {

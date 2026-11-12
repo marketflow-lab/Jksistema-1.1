@@ -272,14 +272,20 @@ function freezeState(value) {
         'só a loja com conferência registrada para hoje deve contar como atualizada');
     assert.match(calendarPanel.innerHTML, /Loja selecionada: Loja A<\/strong> · Conferida hoje às 22:05 \(2026-11-09\)/,
         'a seleção usa a identidade estável e mostra o horário de São Paulo, mesmo sem documentos no checkpoint');
+    assert.doesNotMatch(calendarPanel.innerHTML.split('</summary>')[0], /Loja selecionada:|Conferida hoje às/,
+        'a conferência da seleção fica recolhida nos detalhes');
+    assert.match(calendarPanel.innerHTML, /<div class="vendas-sync-content"><div[^>]*><strong>Loja selecionada:/);
     assert.match(calendarPanel.innerHTML, /Loja manual.*>Período conferido</);
     calendar.context.lojaSelecionada = 'Loja B';
     await calendar.context.atualizarSelecao();
     assert.match(calendarPanel.innerHTML, /Loja selecionada: Loja B<\/strong> · Aguardando conferência de hoje \(2026-11-09\)/);
-    assert.doesNotMatch(calendarPanel.innerHTML.split('<details')[0], /Loja selecionada: Loja A|Conferida hoje às 22:05/,
+    assert.doesNotMatch(calendarPanel.innerHTML, /Loja selecionada: Loja A/,
         'trocar a loja não reaproveita a conferência da seleção anterior');
     assert.match(calendarPanel.innerHTML, /Nome anterior da Loja A<\/strong><span[^>]*>Conferida hoje às 22:05<\/span>/,
         'os detalhes das lojas mantêm suas respectivas conferências');
+    calendar.context.renderAutomacaoSyncVendas({ automacao: { data_referencia: '2026-11-09', lojas: [] } });
+    assert.match(calendarPanel.innerHTML, /<div class="vendas-sync-content"><div[^>]*><strong>Loja selecionada: Loja B/,
+        'a seleção sem histórico também deve ficar dentro de detalhes acessíveis');
     calendar.context.lojaSelecionada = '__todas';
     await calendar.context.atualizarSelecao();
     assert.doesNotMatch(calendarPanel.innerHTML, /Loja selecionada:/);
@@ -427,8 +433,12 @@ function freezeState(value) {
     assert.doesNotMatch(reopened.elements.status.innerHTML, /registro técnico|Coletando página|Loja [A-F]|em andamento/);
     assert.match(reopened.elements.status.innerHTML, /role="progressbar"[^>]*aria-valuenow="43"/);
     reopened.context.renderProgresso({ etapa: 'Dia', percentual: 75, dias_aproveitados: 15, dias_pendentes: 2 }, []);
-    assert.match(reopened.elements.status.innerHTML, /15 dia\(s\) já concluído\(s\).*2 dia\(s\) pendente\(s\)/,
-        'dias aproveitados devem aparecer separados do trabalho pendente');
+    assert.match(reopened.elements.status.innerHTML, /title="75% · 15 dia\(s\) já concluído\(s\) · 2 dia\(s\) pendente\(s\)"/,
+        'dias aproveitados e pendentes permanecem disponíveis ao apontar para o progresso');
+    assert.match(reopened.elements.status.innerHTML, /aria-valuetext="75% · 15 dia\(s\) já concluído\(s\) · 2 dia\(s\) pendente\(s\)"/,
+        'a cobertura também deve permanecer acessível à leitura assistiva');
+    assert.doesNotMatch(reopened.elements.status.innerHTML.replace(/<[^>]*>/g, ''), /dia\(s\)/,
+        'as contagens globais de dias não ocupam a linha principal');
     reopened.context.renderProgresso({ etapa: 'Fila', percentual: 0 }, [], reopened.elements.status, [{ status: 'queued' }]);
     assert.match(reopened.elements.status.innerHTML, /Aguardando início/);
     assert.doesNotMatch(reopened.elements.status.innerHTML, />Sincronizando/, 'a fila ativa não comprova coleta em andamento');

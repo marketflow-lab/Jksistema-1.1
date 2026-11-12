@@ -1,6 +1,68 @@
 const JK_TRANSITION_KEY = 'jk-page-transition';
 const JK_TRANSITION_MS = 280;
 
+(function initCtrlClickTabs() {
+    if (window.JKTabNavigation || window.parent === window || window.parent !== window.top) return;
+    let gesture = null;
+    let clearTimer = null;
+
+    function clearGesture() {
+        gesture = null;
+        clearTimeout(clearTimer);
+    }
+
+    function internalUrl(value) {
+        const raw = String(value || '').trim();
+        if (!raw || raw.startsWith('#')) return null;
+        try {
+            const target = new URL(raw, window.location.href);
+            return /^https?:$/.test(target.protocol) && target.origin === window.location.origin
+                && !target.username && !target.password
+                && (/\.html?$/i.test(target.pathname) || target.pathname === '/') ? target : null;
+        } catch (_) { return null; }
+    }
+
+    function openIfRequested(value) {
+        if (!gesture) return false;
+        const target = internalUrl(value);
+        if (!target) return false;
+        const title = String(gesture.target?.closest?.('a,button,[role="link"]')?.textContent || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 80);
+        clearGesture();
+        window.top.postMessage({
+            channel: 'jk-open-module-tab',
+            payload: { url: target.href, title: title || 'Modulo', reuseExisting: false }
+        }, '*');
+        return true;
+    }
+
+    window.JKTabNavigation = Object.freeze({ openIfRequested });
+    document.addEventListener('click', event => {
+        clearGesture();
+        if (!event.isTrusted || event.defaultPrevented || event.button !== 0
+            || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+        const link = event.target?.closest?.('a[href]');
+        if (link?.hasAttribute('download')) return;
+        gesture = event;
+        // Keep only this click's synchronous navigation; a later save/login
+        // response must retain its ordinary redirect behavior.
+        clearTimer = setTimeout(clearGesture, 0);
+        if (link && openIfRequested(link.getAttribute('href'))) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }
+    }, true);
+
+    // Buttons, cards and rows also navigate through location.href/assign.
+    window.navigation?.addEventListener('navigate', event => {
+        if (event.cancelable && !event.defaultPrevented && !event.hashChange
+            && !event.downloadRequest && openIfRequested(event.destination.url)) {
+            event.preventDefault();
+        }
+    });
+    window.addEventListener('pagehide', clearGesture);
+})();
+
 function _isHtmlInterna(url) {
     try {
         const target = new URL(url, window.location.href);
@@ -13,6 +75,7 @@ function _isHtmlInterna(url) {
 }
 
 function navegarComTransicao(url) {
+    if (window.JKTabNavigation?.openIfRequested(url)) return;
     window.JKAuthenticatedMedia?.invalidarCache();
     if (!_isHtmlInterna(url)) {
         window.location.href = url;

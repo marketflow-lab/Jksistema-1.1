@@ -63,7 +63,8 @@ async function visible(page, value = 70) {
 }
 async function assertSavedVisible(page, value = 70) {
     await visible(page,value);
-    assert.equal(await page.locator('#composicaoAviso').isHidden(), false, 'Saved composition warnings remain visible');
+    assert.equal(await page.locator('#composicaoAviso').count(), 0, 'The composition banner is not displayed');
+    assert.equal(await page.evaluate(() => JKVendasLegacyBridge.getSnapshot().compositionWarning), '');
     assert.deepEqual(await page.evaluate(() => vendasResumoMeta.composicao.warnings), warnings);
     assert.equal(await page.evaluate(() => JKVendasLegacyBridge.getSnapshot().totals?.valor), value);
 }
@@ -116,8 +117,8 @@ async function main() {
             await prepare(page); await assertSavedVisible(page);
             const background = await waitHeld(state);
             assert.equal(state.calls[0].query.get('somente_salvos'),'true');
-            assert.match(await page.locator('#cacheVendasStatus').textContent(),/dados salvos/i);
-            assert.match(await page.locator('#cacheVendasStatus').textContent(),/2026/, 'Unix-second timestamps must display the saved year');
+            assert.equal(await page.locator('#cacheVendasStatus').textContent(),'Dados salvos · atualizando...');
+            assert.match(await page.locator('#cacheVendasStatus').getAttribute('title'),/2026/, 'Unix-second timestamps must retain the saved year in the details');
             await respond(background.route,payload(100,'atualizado')); await settled(page);
             await assertSavedVisible(page,100);
         });

@@ -98,7 +98,8 @@ async function expectGraph(page, filter, name, cached = false, verifyUpdating = 
     const actual = await page.evaluate(() => JKVendasLegacyBridge.getSnapshot().graph.data);
     assert.deepEqual(actual.valores_vendas, graphFor(filter).valores_vendas, name);
     if (cached) {
-        assert.match(await page.locator('#cacheVendasStatus').textContent(), /Gráfico: dados salvos/, name);
+        assert.equal(await page.locator('#cacheVendasStatus').textContent(), 'Dados salvos · atualizando...', name);
+        assert.match(await page.locator('#cacheVendasStatus').getAttribute('title'), /Gráfico: dados salvos/, name);
         if (verifyUpdating) {
             await page.waitForFunction(() => JKVendasLegacyBridge.getSnapshot().graphUpdating === true, null, {timeout:2500});
             const snapshot = await page.evaluate(() => JKVendasLegacyBridge.getSnapshot());
