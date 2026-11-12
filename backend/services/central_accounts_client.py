@@ -102,6 +102,12 @@ class CentralClient:
         self.permissions = dict(permissions)
         self._stores = copy.deepcopy(extension["stores"])
         validate_public_stores(self._stores)
+        self.sync_mode = extension.get("sync_mode", "manual")
+        self.provider_scoped = self.sync_mode == "provider"
+        self.providers = ("bling",) if self.provider_scoped else ("mercadolivre", "bling")
+        if self.provider_scoped and extension.get("providers") != ["bling"]:
+            raise ValueError("invalid_central_provider_scope")
+        self._validate_scope(self._stores)
         self._transport = transport
         self.bling_account_quota = False
         self._ref = secrets.token_hex(16)
@@ -143,6 +149,10 @@ class CentralClient:
                     "central_store_denied": "Você não tem mais acesso a esta loja. Atualize a lista de lojas.",
                     "central_store_read_only": "Seu acesso a esta loja permite somente consultas.",
                     "central_owner_required": "Somente o responsável pela loja pode alterar seu acesso.",
+                    "central_provider_scope_conflict": "Esta loja também possui outra integração central. Use a sessão do responsável por todas as integrações para alterar os acessos ou excluir a loja.",
+                    "central_existing_connection_recovery_required": "Esta conta já possui uma conexão central. Use a conexão existente ou peça acesso ao responsável.",
+                    "central_alias_credentials_conflict": "As lojas selecionadas possuem autorizações Bling diferentes para a mesma conta. Reconecte a autorização correta antes de centralizar as lojas.",
+                    "central_account_already_owned": "Esta conta já pertence a outra empresa na Central. Peça acesso ao responsável pela conexão.",
                 }
                 if code == "central_result_uncertain":
                     raise HTTPException(409, messages[code])
@@ -164,13 +174,23 @@ class CentralClient:
         from backend.services.central_accounts_store_index import materialize_store_index
         result = self.call("GET", "/bootstrap")
         validate_public_stores(result.get("stores"))
-        materialize_store_index(self.tenant, result["stores"])
+        self._validate_scope(result["stores"])
+        materialize_store_index(self.tenant, result["stores"],
+                                providers=self.providers if self.provider_scoped else None)
         self._stores = copy.deepcopy(result["stores"])
         self.refreshed_at = int(time.time())
         return self.public_stores()
 
     def public_stores(self):
         return copy.deepcopy(self._stores)
+
+    def _validate_scope(self, stores):
+        if any(set(row["integracoes"]) - set(self.providers) for row in stores):
+            raise ValueError("invalid_central_provider_scope")
+
+    def owns_connection(self, store_id, provider):
+        return provider in self.providers and any(
+            row["store_id"] == str(store_id or "") for row in self._stores)
 
     def stores(self):
         rows = self.public_stores()
@@ -231,6 +251,7 @@ class MigrationClient:
                     "central_migration_conflict": "Esta operação já existe com outro conteúdo.",
                     "central_migration_revoked": "Esta máquina ou usuário não está mais autorizado a migrar.",
                     "central_existing_connection_recovery_required": "Já existe uma conexão central diferente ou pendente de recuperação. Recupere essa conexão na Central antes de concluir a migração.",
+                    "central_alias_credentials_conflict": "As lojas selecionadas possuem autorizações Bling diferentes para a mesma conta. Reconecte a autorização correta antes de centralizar as lojas.",
                 }
                 detail = {"code": code, "message": messages.get(
                     code, "A central não conseguiu concluir a migração.")}
@@ -288,7 +309,7 @@ def bind_request(local_token, payload):
         migration = (_migration_sessions.get(session_key(local_token))
                      if payload.get("jk_central_migration") == 1 else None)
     if payload.get("jk_central") == 1:
-        if (client is None or client.expires_at <= time.time()
+        if (client is None or (client.expires_at <= time.time() and not getattr(client, "provider_scoped", False))
                 or client.tenant != payload.get("client_id") or client.username != payload.get("sub")
                 or client.machine != payload.get("machine_id")):
             raise session_expired()
@@ -302,10 +323,25 @@ def bind_request(local_token, payload):
     return client
 
 
-def current(client_id=None):
+def session_client(client_id=None):
     client = _current.get()
     if client is not None and client_id is not None and client.tenant != client_id:
         raise HTTPException(403, "A sessão não autoriza outra empresa.")
+    return client
+
+
+def current(client_id=None):
+    """The original whole-account mode; scoped Bling keeps legacy workflows."""
+    client = session_client(client_id)
+    return client if client is not None and not getattr(client, "provider_scoped", False) else None
+
+
+def current_for_provider(client_id, provider, store_id=None):
+    client = session_client(client_id)
+    if client is None or provider not in getattr(client, "providers", ("mercadolivre", "bling")):
+        return None
+    if store_id is not None and getattr(client, "provider_scoped", False) and not client.owns_connection(store_id, provider):
+        return None
     return client
 
 
@@ -327,8 +363,8 @@ def bling_account_for_marker(marker, *, require_quota=False):
     if reference is None:
         return ""
     client, store_id, provider = reference
-    active = current()
-    if active is not None and active is not client:
+    active = session_client()
+    if (active is not None or getattr(client, "provider_scoped", False)) and active is not client:
         raise HTTPException(403, "A conexão pertence a outra sessão.")
     if provider != "bling" or client.expires_at <= time.time():
         return ""
@@ -346,8 +382,8 @@ def provider_request(marker, method, url, *, headers=None, params=None, json=Non
     if reference is None:
         raise session_expired()
     client, store_id, provider = reference
-    active = current()
-    if active is not None and active is not client:
+    active = session_client()
+    if (active is not None or getattr(client, "provider_scoped", False)) and active is not client:
         raise HTTPException(403, "A conexão pertence a outra sessão.")
     parts = urlsplit(url)
     allowed = {"mercadolivre": {"api.mercadolibre.com"}, "bling": {"api.bling.com.br", "www.bling.com.br"}}

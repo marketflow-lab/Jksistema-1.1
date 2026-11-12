@@ -581,9 +581,32 @@ def _shared_sync_ml_legacy_identidade_compativel(
     )
 
 
+def _shared_sync_bling_central_public(servico_key: str, dados: Any) -> Optional[dict]:
+    """A migrated connection is an authority reference, never recoverable OAuth."""
+    if (_shared_sync_servico_key(servico_key) != "bling" or not isinstance(dados, dict)
+            or not (dados.get("central") is True or dados.get("central_migrated") is True)):
+        return None
+    secrets = {"id", "app_id", "client_id", "app_secret", "client_secret", "secret",
+               "secret_key", "access_token", "refresh_token", "token", "api_key", "apikey",
+               "oauth_draft", "oauth_pending_state"}
+    return {key: _shared_sync_json_clone(value) for key, value in dados.items() if key not in secrets}
+
+
+def _shared_sync_strip_central_bling_secrets(lojas: list[dict]) -> list[dict]:
+    for loja in lojas:
+        for servico, dados in (loja.get("integracoes") or {}).items():
+            public = _shared_sync_bling_central_public(servico, dados)
+            if public is not None:
+                loja["integracoes"][servico] = public
+    return lojas
+
+
 def _shared_sync_normalizar_integracao_conectada(servico_key: str, dados: Any) -> Any:
     if not isinstance(dados, dict):
         return dados
+    public = _shared_sync_bling_central_public(servico_key, dados)
+    if public is not None:
+        return public
     servico_key = _shared_sync_servico_key(servico_key)
     saida = dict(dados)
     if saida.get("oauth_invalid"):
@@ -619,7 +642,9 @@ def _shared_sync_preserve_connection_blocks(local_bytes: bytes, merged_bytes: by
             for alias in list(target_integrations):
                 if _shared_sync_servico_key(alias) == canonical:
                     target_integrations.pop(alias)
-            target_integrations[service] = _shared_sync_json_clone(config)
+            public = _shared_sync_bling_central_public(service, config)
+            target_integrations[service] = public if public is not None else _shared_sync_json_clone(config)
+    _shared_sync_strip_central_bling_secrets(merged)
     return json.dumps(merged, ensure_ascii=False).encode("utf-8")
 
 
@@ -656,6 +681,11 @@ def _shared_sync_merge_integracao_loja(
     strict_oauth_conflicts: bool = False,
     preserve_local_connections: bool = False,
 ) -> Any:
+    # A snapshot cannot take renewal authority back from the central service,
+    # even if the old local credentials have a newer timestamp or higher rank.
+    public = _shared_sync_bling_central_public(servico_key, atual)
+    if public is not None:
+        return public
     # Synchronization is not an OAuth authority. Preserve the complete local
     # block, including pending consent and explicit disconnects, without even
     # normalizing its status. No provider call or token rotation occurs here.
@@ -1059,6 +1089,10 @@ def _shared_sync_merge_integracoes_legacy_bytes(
                     bloco_remoto
                 )
                 continue
+            public = _shared_sync_bling_central_public(servico_key, bloco_atual)
+            if public is not None:
+                loja_merged[chave_atual] = public
+                continue
             downgrade_oauth = (
                 servico_key in {"mercadolivre", "bling", "mercadoturbo"}
                 and isinstance(bloco_atual, dict)
@@ -1185,6 +1219,13 @@ def _shared_sync_merge_integracoes_legacy_bytes(
                 else _shared_sync_json_clone(escolhido)
             )
         merged[chave_loja_atual] = loja_merged
+    for integrations in merged.values():
+        if not isinstance(integrations, dict):
+            continue
+        for service, config in integrations.items():
+            public = _shared_sync_bling_central_public(service, config)
+            if public is not None:
+                integrations[service] = public
     return json.dumps(merged, ensure_ascii=False, indent=4).encode("utf-8")
 
 
@@ -1509,6 +1550,7 @@ def _shared_sync_merge_loja_integracoes(
         if chave_local is not None and chave_local != servico_key:
             integracoes.pop(chave_local, None)
         integracoes[servico_key] = merged_integracao
+    _shared_sync_strip_central_bling_secrets([merged])
     return merged
 
 def _shared_sync_merge_loja_integracoes_authoritative(atual: dict, remoto: dict) -> dict:
@@ -1552,6 +1594,12 @@ def _shared_sync_merge_loja_integracoes_authoritative(atual: dict, remoto: dict)
             dados_atuais = atuais_integracoes.get(servico)
         if not isinstance(dados_remotos, dict):
             continue
+        public = _shared_sync_bling_central_public(servico_key, dados_atuais)
+        if public is not None:
+            integracoes[servico_key] = public
+            if servico_key != servico:
+                integracoes.pop(servico, None)
+            continue
         remoto_integracao_tem_clock = any(
             chave in dados_remotos
             for chave in ("_sync_version", "_sync_updated_at")
@@ -1577,6 +1625,7 @@ def _shared_sync_merge_loja_integracoes_authoritative(atual: dict, remoto: dict)
         if servico_key != servico:
             integracoes.pop(servico, None)
     merged["integracoes"] = integracoes
+    _shared_sync_strip_central_bling_secrets([merged])
     return merged
 
 def _shared_sync_resumo_lojas_integracoes(lojas: list[dict]) -> dict:
@@ -1639,6 +1688,8 @@ def _shared_sync_integracao_remota_presente(
     )
     if not isinstance(local_dados, dict):
         return False
+    if _shared_sync_bling_central_public(servico_key, local_dados) is not None:
+        return True
     if servico_key == "mercadolivre":
         local_user_id = str(local_dados.get("user_id") or "").strip()
         remoto_user_id = str((remoto or {}).get("user_id") or "").strip()
@@ -1910,6 +1961,8 @@ def _shared_sync_integracoes_legacy_preserva_oauth_completo(
                 loja_local,
                 servico,
             )
+            if _shared_sync_bling_central_public(servico_key, bloco_local) is not None:
+                continue
             if servico_key == "mercadolivre":
                 if not _shared_sync_ml_legacy_identidade_compativel(
                     bloco_local,
@@ -2765,6 +2818,7 @@ def _shared_sync_merge_lojas_integracoes_bytes(
             if merged_store_id:
                 indice_store_id.setdefault(merged_store_id, idx)
 
+    _shared_sync_strip_central_bling_secrets(merged)
     _shared_sync_validar_identidades_lojas(
         merged,
         origem="Resultado mesclado",
@@ -2941,6 +2995,7 @@ def _shared_sync_recuperar_backup_lojas_integracoes_bytes(
             integracoes_atuais[servico_key] = _shared_sync_json_clone(dados)
             servicos_presentes.add(servico_key)
 
+    _shared_sync_strip_central_bling_secrets(merged)
     _shared_sync_validar_identidades_lojas(
         merged,
         origem="Recuperacao do backup local",

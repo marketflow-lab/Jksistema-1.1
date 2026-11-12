@@ -34,6 +34,7 @@ class Principal:
     machine: str
     permissions: dict = field(repr=False)
     password_epoch: str = field(default="", repr=False)
+    providers: tuple[str, ...] = ("mercadolivre", "bling")
 
     @property
     def key(self):
@@ -51,10 +52,17 @@ class CentralAccounts:
         self.provider.bling_quota = self.bling_quota
 
     def enabled_for(self, user):
-        return not self.enrollment_required or user.get("central_accounts_enabled") is True
+        return bool(self.providers_for(user))
+
+    def providers_for(self, user):
+        if user.get("central_accounts_enabled") is True:
+            return ("mercadolivre", "bling")
+        if user.get("central_accounts_providers") == ["bling"]:
+            return ("bling",)
+        return () if self.enrollment_required else ("mercadolivre", "bling")
 
     def migration_session(self, user, username, machine):
-        if self.enabled_for(user):
+        if self.providers_for(user) == ("mercadolivre", "bling"):
             raise CentralError("central_already_enabled", 409)
         tenant = user_client_id(user)
         principal = Principal(username, tenant, machine,
@@ -72,13 +80,18 @@ class CentralAccounts:
             raise CentralError("central_access_revoked", 403)
         tenant = user_client_id(user)
         principal = Principal(username, tenant, machine,
-                              normalize_permissions(user.get("permissions") or user.get("permissoes")))
+                              normalize_permissions(user.get("permissions") or user.get("permissoes")),
+                              providers=self.providers_for(user))
         expires = int(self.clock()) + 8 * 3600
         session = self.vault.seal("desktop-session-v1", {
             "username": username, "tenant": tenant, "machine": machine, "expires": expires,
-            "password_epoch": key_for(password_value(user)), "nonce": secrets.token_hex(16)})
-        return {"protocol": 1, "sync_mode": "manual", "session": session,
-                "expires_at": expires, "stores": self.list_stores(principal)}
+            "password_epoch": key_for(password_value(user)), "nonce": secrets.token_hex(16),
+            "providers": list(principal.providers)})
+        extension = {"protocol": 1, "sync_mode": "manual", "session": session,
+                     "expires_at": expires, "stores": self.list_stores(principal)}
+        if principal.providers == ("bling",):
+            extension.update(sync_mode="provider", providers=["bling"])
+        return extension
 
     def authenticate(self, token, machine):
         try:
@@ -92,8 +105,12 @@ class CentralAccounts:
             assert_registered_machine(user, machine)
             if not secrets.compare_digest(data["password_epoch"], key_for(password_value(user))):
                 raise ValueError()
+            scope = tuple(data.get("providers", ("mercadolivre", "bling")))
+            if scope != self.providers_for(user):
+                raise ValueError()
             return Principal(data["username"], data["tenant"], machine,
-                             normalize_permissions(user.get("permissions") or user.get("permissoes")))
+                             normalize_permissions(user.get("permissions") or user.get("permissoes")),
+                             data["password_epoch"], scope)
         except AuthRejected:
             raise CentralError("central_access_revoked", 403) from None
         except (KeyError, ValueError):
@@ -151,14 +168,22 @@ class CentralAccounts:
         return self._migration_public(row)
 
     def adopt_legacy(self, principal, payload):
-        providers_expected = {"mercadolivre", "bling"}
+        scoped = payload.providers == ["bling"]
+        if not scoped and payload.providers != ["mercadolivre", "bling"]:
+            raise CentralError("central_migration_connections_incomplete", 400)
+        if scoped and not payload.legacy_copies_stopped:
+            raise CentralError("central_legacy_copies_active", 409)
+        if principal.providers == ("bling",) and not scoped:
+            raise CentralError("central_provider_denied", 403)
+        self._can_manage(principal)
+        providers_expected = set(payload.providers)
         store_ids = [store.store_id for store in payload.stores]
         if len(set(store_ids)) != len(store_ids):
             raise CentralError("central_migration_duplicate_store", 400)
         normalized = []
         for store in payload.stores:
             providers = [connection.provider for connection in store.connections]
-            if set(providers) != providers_expected or len(set(providers)) != 2:
+            if set(providers) != providers_expected or len(providers) != len(providers_expected):
                 raise CentralError("central_migration_connections_incomplete", 400,
                                    {"store_id": store.store_id})
             normalized.append({
@@ -170,7 +195,7 @@ class CentralAccounts:
                     "expected_site_id": connection.expected_site_id,
                 } for connection in store.connections],
             })
-        fingerprint = key_for(normalized)
+        fingerprint = key_for(payload.providers, normalized) if scoped else key_for(normalized)
         operation_key = key_for("legacy-adoption", principal.key, payload.operation_id)
 
         def start(old):
@@ -237,10 +262,32 @@ class CentralAccounts:
                     }
                 verified.append({**store, "connections": verified_connections})
 
+            canonical_connections = {}
+            if scoped:
+                # Validate the complete batch before creating any connection.
+                # Two local labels can refer to the same Bling authorization;
+                # differing refresh credentials require an explicit recovery.
+                for store in verified:
+                    for connection in store["connections"].values():
+                        connection_id = connection["id"]
+                        previous = canonical_connections.get(connection_id)
+                        if previous is not None:
+                            if any(not secrets.compare_digest(
+                                    str(previous["credentials"][key]), str(connection["credentials"][key]))
+                                   for key in ("app_secret", "refresh_token")):
+                                raise CentralError("central_alias_credentials_conflict", 409,
+                                                   {"store_id": store["store_id"], "provider": "bling"})
+                            if previous["credentials"]["expires_at"] >= connection["credentials"]["expires_at"]:
+                                continue
+                        canonical_connections[connection_id] = connection
+
+            saved_connections = set()
             for store in verified:
                 for connection in store["connections"].values():
                     connection_id = connection["id"]
-                    credentials = connection["credentials"]
+                    if scoped and connection_id in saved_connections:
+                        continue
+                    credentials = (canonical_connections[connection_id] if scoped else connection)["credentials"]
 
                     def save_connection(old, *, connection_id=connection_id, credentials=credentials,
                                         store_id=store["store_id"]):
@@ -255,7 +302,7 @@ class CentralAccounts:
                                     "provider", "app_id", "app_secret", "access_token", "refresh_token",
                                     "seller_id", "site_id"))
                                 ready = (old.get("status") == "ready" and equivalent
-                                         and stored.get("expires_at", 0) > self.clock() + 60
+                                         and (scoped or stored.get("expires_at", 0) > self.clock() + 60)
                                          and old.get("retry_after", 0) <= self.clock())
                             except Exception:
                                 ready = False
@@ -269,6 +316,7 @@ class CentralAccounts:
                                 "status": "ready", "lease_until": 0}
 
                     self.documents.change("connections", connection_id, save_connection)
+                    saved_connections.add(connection_id)
 
             for store in verified:
                 public_connections = {provider: {key: value[key] for key in ("id", "seller_id", "site_id")}
@@ -278,16 +326,22 @@ class CentralAccounts:
                     if old and (old.get("tenant") != principal.tenant or old.get("owner") != principal.key
                                 or old.get("deleted")):
                         raise CentralError("central_store_identity_conflict", 409)
-                    return {"store_id": store["store_id"], "tenant": principal.tenant,
+                    return {**(old or {}), "store_id": store["store_id"], "tenant": principal.tenant,
                             "owner": principal.key, "name": store["name"],
-                            "connections": public_connections,
+                            "connections": {**((old or {}).get("connections", {}) if scoped else {}),
+                                            **public_connections},
                             "grants": (old or {}).get("grants", {principal.key: "owner"}),
                             "access_keys": (old or {}).get("access_keys", [principal.key])}
 
                 self.documents.change("stores", key_for("store", store["store_id"]), save_store)
 
-            self.users.enable_central_accounts(
-                principal.username, principal.tenant, principal.machine, principal.password_epoch)
+            if scoped:
+                self.users.enable_central_accounts_providers(
+                    principal.username, principal.tenant, principal.machine, principal.password_epoch,
+                    ["bling"])
+            else:
+                self.users.enable_central_accounts(
+                    principal.username, principal.tenant, principal.machine, principal.password_epoch)
             completed_at = int(self.clock())
             operation = self.documents.change("operations", operation_key, lambda old: {
                 **old, "status": "completed", "completed_at": completed_at, "failure": None})
@@ -333,7 +387,8 @@ class CentralAccounts:
                 "integracoes": {name: {"connected": True, "central": True,
                                         "user_id": connection.get("seller_id", ""),
                                         "site_id": connection.get("site_id", "")}
-                                for name, connection in row.get("connections", {}).items()}}
+                                for name, connection in row.get("connections", {}).items()
+                                if name in principal.providers}}
 
     def list_stores(self, principal):
         if not any(principal.permissions.values()):
@@ -366,7 +421,9 @@ class CentralAccounts:
         return self.public_store(row, principal)
 
     def grant(self, principal, store_id, payload):
-        self.store(principal, store_id, manage=True)
+        store = self.store(principal, store_id, manage=True)
+        if set(store.get("connections", {})) - set(principal.providers):
+            raise CentralError("central_provider_scope_conflict", 409)
         username = payload.username.lower()
         user = self.users.get_user(username)
         if not user:
@@ -376,6 +433,8 @@ class CentralAccounts:
         def change(row):
             if not row or row.get("deleted") or row["owner"] != principal.key or target == row["owner"]:
                 raise CentralError("central_grant_invalid", 403)
+            if set(row.get("connections", {})) - set(principal.providers):
+                raise CentralError("central_provider_scope_conflict", 409)
             if payload.access == "revoke":
                 row["grants"].pop(target, None)
             else:
@@ -386,12 +445,20 @@ class CentralAccounts:
             return row
 
         self.documents.change("stores", key_for("store", store_id), change)
+        if principal.providers == ("bling",) and payload.access != "revoke":
+            # Granting a shared Bling connection enrolls only that provider. It
+            # does not migrate the recipient's other integrations or stores.
+            self.users.enable_central_provider_access(username, user_client_id(user))
         return {"success": True}
 
     def delete_store(self, principal, store_id):
-        self.store(principal, store_id, manage=True)
+        store = self.store(principal, store_id, manage=True)
+        if set(store.get("connections", {})) - set(principal.providers):
+            raise CentralError("central_provider_scope_conflict", 409)
 
         def remove(row):
+            if set(row.get("connections", {})) - set(principal.providers):
+                raise CentralError("central_provider_scope_conflict", 409)
             row.update(deleted=True, connections={}, grants={}, access_keys=[])
             return row
 
@@ -399,6 +466,8 @@ class CentralAccounts:
         return {"success": True, "store_id": store_id}
 
     def disconnect(self, principal, store_id, provider):
+        if provider not in principal.providers:
+            raise CentralError("central_provider_denied", 403)
         self.store(principal, store_id, manage=True)
 
         def change(row):
@@ -409,6 +478,8 @@ class CentralAccounts:
         return {"success": True}
 
     def connect(self, principal, store_id, payload):
+        if payload.provider not in principal.providers:
+            raise CentralError("central_provider_denied", 403)
         row = self.store(principal, store_id, manage=True)
         state = secrets.token_urlsafe(32)
         callback = self.public_origin + "/api/central/v1/oauth/callback"
@@ -443,7 +514,10 @@ class CentralAccounts:
         assert_access_allowed(current)
         assert_registered_machine(current, draft["machine"])
         principal = Principal(draft["username"], draft["tenant"], draft["machine"],
-                              normalize_permissions(current.get("permissions") or current.get("permissoes")))
+                              normalize_permissions(current.get("permissions") or current.get("permissoes")),
+                              providers=self.providers_for(current))
+        if draft["provider"] not in principal.providers:
+            raise CentralError("central_provider_denied", 403)
         self.store(principal, draft["store_id"], manage=True)
         credentials = self.provider.exchange(draft, code)
         # One refresh authority per provider/app/account, including duplicated store labels.
@@ -551,6 +625,8 @@ class CentralAccounts:
             return response
 
     def request(self, principal, store_id, payload):
+        if payload.provider not in principal.providers:
+            raise CentralError("central_provider_denied", 403)
         writing = payload.method != "GET"
         store = self.store(principal, store_id, write=writing)
         connection = store["connections"].get(payload.provider)

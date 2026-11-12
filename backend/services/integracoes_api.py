@@ -343,7 +343,8 @@ def _get_lojas_sync(client_id: str):
     if central:
         from backend.services.integracoes import mesclar_turbo_local
         return mesclar_turbo_local(client_id, central.public_stores(), incluir_token=False)
-    return carregar_lojas(client_id)
+    from backend.services.central_provider_overlay import overlay_stores
+    return overlay_stores(client_id, carregar_lojas(client_id), transport=False)
 
 
 def _store_id_mutacao_exato(store_id: object) -> str:
@@ -391,7 +392,8 @@ def _get_loja_sync(
     loja = buscar_loja_snapshot(client_id, nome_loja, store_id=store_id)
     if not loja:
         raise HTTPException(status_code=404, detail="Loja nao encontrada")
-    return loja
+    from backend.services.central_provider_overlay import overlay_stores
+    return overlay_stores(client_id, [loja], transport=False)[0]
 
 
 async def create_loja(store_request: StoreRequest, client_id: str = Depends(get_tenant_id)):
@@ -445,6 +447,10 @@ async def rename_loja(
             )
         loja = atualizadas[0]
     else:
+        from backend.services.central_accounts_client import current_for_provider
+        scoped = current_for_provider(client_id, "bling", store_id_exato)
+        if scoped:
+            scoped.call("PATCH", f"/stores/{store_id_exato}", {"name": store_request.nome})
         loja = renomear_loja_identidade(
             client_id,
             nome_loja,
@@ -466,6 +472,11 @@ async def delete_loja(
         result = central.call("DELETE", f"/stores/{store_id_exato}")
         central.refresh_stores()
         return result
+    from backend.services.central_accounts_client import current_for_provider
+    scoped = current_for_provider(client_id, "bling", store_id_exato)
+    if scoped:
+        scoped.call("DELETE", f"/stores/{store_id_exato}")
+        scoped.refresh_stores()
     removida = excluir_loja(
         client_id,
         nome_loja,
@@ -514,10 +525,10 @@ async def disconnect_integracao(
     store_id: Optional[str] = None,
     client_id: str = Depends(get_tenant_id),
 ):
-    from backend.services.central_accounts_client import current
-    central = current(client_id)
+    from backend.services.central_accounts_client import current, current_for_provider
+    provider = "mercadolivre" if servico_nome == "ml" else servico_nome
+    central = current(client_id) or current_for_provider(client_id, provider, store_id)
     if central:
-        provider = "mercadolivre" if servico_nome == "ml" else servico_nome
         if provider in ("turbo", "mercadoturbo"):
             from backend.services.integracoes import salvar_turbo_local_central
             store_id_exato = _store_id_mutacao_exato(store_id)
@@ -562,13 +573,15 @@ async def save_temp_auth_endpoint(temp_data: dict, client_id: str = Depends(get_
             status_code=400,
             detail="Store_id exato e obrigatorio para OAuth.",
         )
+    from backend.services.central_provider_overlay import assert_local_provider_allowed
+    assert_local_provider_allowed(client_id, store_id, str(registro.get("servico") or ""))
     fluxo = criar_temp_auth_loja(client_id, store_id, registro)
     return {"success": True, "state": fluxo["state"], "store_id": fluxo["store_id"]}
 
 
 async def start_bling_auth(auth_req: AuthRequest, request: Request, client_id: str = Depends(get_tenant_id)):
-    from backend.services.central_accounts_client import current
-    central = current(client_id)
+    from backend.services.central_accounts_client import current_for_provider
+    central = current_for_provider(client_id, "bling", auth_req.store_id)
     if central:
         return central.call("POST", f"/stores/{_store_id_mutacao_exato(auth_req.store_id)}/connect", {
             "provider": "bling", "app_id": auth_req.client_id, "app_secret": auth_req.client_secret})

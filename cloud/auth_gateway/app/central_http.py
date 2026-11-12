@@ -61,8 +61,17 @@ def install_central_routes(app, resolve_central):
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer ") or len(authorization) > 8192:
             raise CentralError("central_migration_session_required", 401)
-        return service().authenticate_migration(
-            authorization[7:], request.headers.get("x-jk-machine", ""))
+        token, machine = authorization[7:], request.headers.get("x-jk-machine", "")
+        try:
+            return service().authenticate_migration(token, machine)
+        except (CentralError, GatewayUnavailable) as exc:
+            if isinstance(exc, GatewayUnavailable) and str(exc) != "central_vault_invalid":
+                raise
+            actor = service().authenticate(token, machine)
+            if actor.providers != ("bling",):
+                raise CentralError("central_migration_session_required", 401)
+            service()._can_manage(actor)
+            return actor
 
     @app.exception_handler(CentralError)
     async def central_error(_request, exc):
@@ -77,7 +86,10 @@ def install_central_routes(app, resolve_central):
 
     @router.get("/bootstrap")
     def bootstrap(actor=Depends(principal)):
-        return {"protocol": 1, "sync_mode": "manual", "stores": service().list_stores(actor)}
+        result = {"protocol": 1, "sync_mode": "manual", "stores": service().list_stores(actor)}
+        if actor.providers == ("bling",):
+            result.update(sync_mode="provider", providers=["bling"])
+        return result
 
     @router.post("/stores")
     def create(payload: StoreCreate, actor=Depends(principal)):

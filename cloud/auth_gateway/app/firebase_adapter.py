@@ -152,6 +152,8 @@ class FirestoreUserRepository:
         expected_client_id: str,
         machine_id: str,
         expected_password_epoch: str,
+        *,
+        providers: list[str] | None = None,
     ) -> dict[str, Any]:
         document_ref = self._collection.document(self._document_id(username))
         transaction = self._client.transaction(max_attempts=3)
@@ -172,12 +174,47 @@ class FirestoreUserRepository:
             if current.get("central_accounts_enabled") is True:
                 return current
             updates = {
-                "central_accounts_enabled": True,
                 "central_accounts_enabled_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
+            if providers == ["bling"]:
+                updates["central_accounts_providers"] = ["bling"]
+            elif providers is None:
+                updates["central_accounts_enabled"] = True
+            else:
+                raise AuthRejected("invalid_request", 400)
             current_transaction.update(document_ref, updates)
             current.update(updates)
+            return current
+
+        try:
+            return enable(transaction)
+        except AuthRejected:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable("firestore_central_enable_failed") from exc
+
+    def enable_central_accounts_providers(self, username, expected_client_id, machine_id,
+                                         expected_password_epoch, providers):
+        return self.enable_central_accounts(username, expected_client_id, machine_id,
+                                            expected_password_epoch, providers=providers)
+
+    def enable_central_provider_access(self, username, expected_client_id):
+        """Called only after an authorized owner has granted a central Bling store."""
+        document_ref = self._collection.document(self._document_id(username))
+        transaction = self._client.transaction(max_attempts=3)
+
+        @firestore.transactional
+        def enable(current_transaction):
+            from .policy import user_client_id
+            snapshot = document_ref.get(transaction=current_transaction)
+            current = (snapshot.to_dict() or {}) if snapshot.exists else {}
+            if not current or user_client_id(current) != expected_client_id:
+                raise AuthRejected("invalid_credentials", 401)
+            assert_access_allowed(current)
+            if current.get("central_accounts_enabled") is not True:
+                current_transaction.update(document_ref, {"central_accounts_providers": ["bling"]})
+                current["central_accounts_providers"] = ["bling"]
             return current
 
         try:

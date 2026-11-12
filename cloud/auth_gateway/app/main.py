@@ -46,6 +46,11 @@ def _cofre_protocol(request: Request) -> int:
     return 1 if request.headers.get("x-jk-cofre-protocol") == "1" else 0
 
 
+def _bling_protocol_options(request):
+    # Do not change the calls made to older injected authentication services.
+    return {"bling_protocol": True} if request.headers.get("x-jk-bling-central-protocol") == "1" else {}
+
+
 def create_app(
     *,
     service: AuthenticationService | None = None,
@@ -164,12 +169,14 @@ def create_app(
             if _cofre_protocol(request):
                 return resolve_service().authenticate(payload, cofre_protocol=_cofre_protocol(request),
                     firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
-                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1",
+                    **_bling_protocol_options(request))
             if request.headers.get("x-jk-firebase-protocol") == "1":
                 return resolve_service().authenticate(payload, firebase_protocol=True,
-                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1",
+                    **_bling_protocol_options(request))
             if request.headers.get("x-jk-central-protocol") == "1":
-                return resolve_service().authenticate(payload, central_protocol=True)
+                return resolve_service().authenticate(payload, central_protocol=True, **_bling_protocol_options(request))
             return resolve_service().authenticate(payload)
         except AuthRejected as exc:
             return JSONResponse(
@@ -210,12 +217,14 @@ def create_app(
             if _cofre_protocol(request):
                 return resolve_service().change_password(payload, cofre_protocol=_cofre_protocol(request),
                     firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
-                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1",
+                    **_bling_protocol_options(request))
             if request.headers.get("x-jk-firebase-protocol") == "1":
                 return resolve_service().change_password(payload, firebase_protocol=True,
-                    central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+                    central_protocol=request.headers.get("x-jk-central-protocol") == "1",
+                    **_bling_protocol_options(request))
             if request.headers.get("x-jk-central-protocol") == "1":
-                return resolve_service().change_password(payload, central_protocol=True)
+                return resolve_service().change_password(payload, central_protocol=True, **_bling_protocol_options(request))
             return resolve_service().change_password(payload)
         except AuthRejected as exc:
             return JSONResponse(
@@ -278,7 +287,8 @@ def create_app(
             return resolve_service().authenticate_google(payload, claims,
                 cofre_protocol=_cofre_protocol(request),
                 firebase_protocol=request.headers.get("x-jk-firebase-protocol") == "1",
-                central_protocol=request.headers.get("x-jk-central-protocol") == "1")
+                central_protocol=request.headers.get("x-jk-central-protocol") == "1",
+                **_bling_protocol_options(request))
         except AuthRejected as exc:
             return JSONResponse(status_code=exc.status_code,
                 content={"success": False, "code": exc.code,

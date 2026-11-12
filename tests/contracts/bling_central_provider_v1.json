@@ -1,0 +1,12 @@
+{
+  "base_commit": "54cb1821e5e4471abfb66ed10b27adc4ea6069d4",
+  "bling_central_protocol": 1,
+  "unchanged_contracts": {
+    "cloud/auth_gateway/app/contracts.py": "658b959f398cbc4a8fbb530078331b2f5411045f9c11dfd472f452e3486a927a",
+    "backend/schemas/auth.py": "1fb63c4e039131c74e38475a7d4eceef2f936d8091038ab4a3e24e654f4097a2",
+    "backend/routers/integracoes.py": "7c7d5bb5d26905b5a883323c9d516367e4beb83cf208f2e83dae1312236b5e43",
+    "backend/routers/shared_sync.py": "cfa772f6ce876f5bb69bcaeaf202fa4e978a9e1627d005494736b0035859e4e1",
+    "backend/schemas/shared_sync.py": "77cd15f9a5a712feecb20b85ac87c7a7f5c4f2f8d579f6f96b8f88dab1e93b82"
+  },
+  "compatibility": "Legacy login, full Central bootstrap and integration routes remain valid. Provider bootstrap and migration options are additive, closed, signed and limited to Bling."
+}

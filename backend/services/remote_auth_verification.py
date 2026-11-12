@@ -124,15 +124,22 @@ def validate_success_payload(
         extension["firebase_access"] = dict(access)
     if "central" in payload:
         central = payload["central"]
+        provider_mode = (isinstance(central, dict) and central.get("sync_mode") == "provider"
+                         and central.get("providers") == ["bling"])
+        expected_keys = {"protocol", "sync_mode", "session", "expires_at", "stores"}
+        if provider_mode:
+            expected_keys.add("providers")
         if (not isinstance(central, dict)
-                or set(central) != {"protocol", "sync_mode", "session", "expires_at", "stores"}
-                or central["protocol"] != 1 or central["sync_mode"] != "manual"
+                or set(central) != expected_keys
+                or central["protocol"] != 1 or (central["sync_mode"] != "manual" and not provider_mode)
                 or not isinstance(central["session"], str) or not 100 <= len(central["session"]) <= 8192
                 or not isinstance(central["expires_at"], int) or isinstance(central["expires_at"], bool)
                 or not isinstance(central["stores"], list) or len(central["stores"]) > 100):
             raise ValueError("invalid_central_bootstrap")
         from backend.services.central_accounts_client import validate_public_stores
         validate_public_stores(central["stores"])
+        if provider_mode and any(set(row["integracoes"]) - {"bling"} for row in central["stores"]):
+            raise ValueError("invalid_central_provider_scope")
         extension["central"] = central
     if "central_migration" in payload:
         migration = payload["central_migration"]

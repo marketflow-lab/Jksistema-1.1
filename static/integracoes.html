@@ -179,6 +179,12 @@
 
                 <div id="tab-bling" class="tab-content active">
                     <h3>Configuração Bling <span id="bling-status" class="status"></span></h3>
+                    <section id="bling-central-migration" hidden>
+                        <p>Centralize esta conexão Bling para que os computadores autorizados usem a mesma renovação.</p>
+                        <p>O responsável pela conta faz a migração e concede acesso aos demais usuários pela Central.</p>
+                        <button id="bling-central-migrate" type="button">Centralizar Bling desta loja</button>
+                        <p id="bling-central-feedback" role="status" aria-live="polite"></p>
+                    </section>
                     <form id="form-bling">
                         <label for="bling-client-id">Client ID</label>
                         <input type="text" id="bling-client-id" name="client_id">
@@ -468,6 +474,9 @@
 
             function podeRenomearLoja(store) {
                 if (!store || !store.store_id) return false;
+                if (centralProviderMode() && store.integracoes?.bling?.central) {
+                    return store.access === 'owner' || store.access === 'write';
+                }
                 if (!window.jkCentralManualMode?.()) return true;
                 return store.access === 'owner' || store.access === 'write';
             }
@@ -614,6 +623,12 @@
                 const conectado = !!dados.connected && temOAuth;
                 updateStatus(elementId, conectado);
                 const el = document.getElementById(elementId);
+                if (el) el.title = '';
+                if (el && !conectado && dados.central && dados.status === 'central_indisponivel') {
+                    el.textContent = 'Central indisponível';
+                    el.title = 'Entre novamente no JK ou atualize as lojas para conferir o acesso à conexão.';
+                    return;
+                }
                 if (el && !conectado && (dados.shared_without_oauth_tokens || dados.status === 'reautenticacao_necessaria')) {
                     el.textContent = 'Autenticar aqui';
                     el.title = dados.motivo || 'Esta loja foi compartilhada sem tokens OAuth. Autentique nesta instalação.';
@@ -638,6 +653,8 @@
                     selectedStore = null;
                     atualizarCabecalhoLoja();
                     integrationsPanel.classList.add('hidden');
+                    document.getElementById('central-grant-form').hidden = true;
+                    updateBlingCentralControls();
                     renderStores();
                     return;
                 }
@@ -647,8 +664,9 @@
                 try {
                     const storeData = await api.getStore(store);
                     selectedStore = storeData;
-                    if (window.jkCentralManualMode?.()) {
-                        document.getElementById('central-grant-form').hidden = selectedStore.access !== 'owner';
+                    if (window.jkCentralManualMode?.() || centralProviderMode()) {
+                        document.getElementById('central-grant-form').hidden = selectedStore.access !== 'owner'
+                            || (centralProviderMode() && !selectedStore.integracoes?.bling?.central);
                     }
                     atualizarCabecalhoLoja();
                     integrationsPanel.classList.remove('hidden');
@@ -660,6 +678,7 @@
 
                     const integracoes = selectedStore.integracoes || {};
                     const blingCfg = integracoes.bling || {};
+                    updateBlingCentralControls();
                     const mlCfg = integracoes.mercadolivre || {};
                     const mlDraft = mlCfg.oauth_draft && typeof mlCfg.oauth_draft === 'object'
                         ? mlCfg.oauth_draft
@@ -917,11 +936,92 @@
                 if (tabParam === 'compartilhar') activateMainTab('compartilhar');
             }
 
-            if (window.jkCentralManualMode?.()) {
+            function centralProviderMode() {
+                try { return JSON.parse(localStorage.getItem('user_data') || '{}')?.central?.sync_mode === 'provider'; }
+                catch { return false; }
+            }
+
+            function updateBlingCentralControls() {
+                const panel = document.getElementById('bling-central-migration');
+                const cfg = selectedStore?.integracoes?.bling || {};
+                panel.hidden = !selectedStore || !!cfg.central || !!cfg.central_migrated
+                    || !(window.jkCentralMigrationMode?.() || centralProviderMode());
+            }
+
+            function initializeBlingCentralMigration() {
+                const button = document.getElementById('bling-central-migrate');
+                const feedback = document.getElementById('bling-central-feedback');
+                let busy = false;
+                async function call(path, body) {
+                    const response = await fetch(path, {
+                        method: body ? 'POST' : 'GET', cache: 'no-store',
+                        headers: obterAuthHeaders(body ? {'Content-Type': 'application/json'} : {}),
+                        body: body ? JSON.stringify(body) : undefined
+                    });
+                    const value = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        const detail = value.detail;
+                        throw new Error(typeof detail === 'string' ? detail : detail?.message || 'Não foi possível concluir a centralização do Bling.');
+                    }
+                    return value;
+                }
+                button.addEventListener('click', async () => {
+                    if (busy || !selectedStore?.store_id) return;
+                    const storeId = selectedStore.store_id;
+                    const storeName = selectedStore.nome;
+                    busy = true;
+                    button.disabled = true;
+                    feedback.textContent = 'Conferindo a conexão Bling e a migração anterior…';
+                    try {
+                        const state = await call('/api/central/migration/status');
+                        if (state.remote_error) throw new Error(state.remote_error.message || 'A Central não confirmou a migração anterior. Atualize o status antes de retomar.');
+                        const pending = state.backup_status === 'frozen' && state.status !== 'completed';
+                        if (pending && (JSON.stringify(state.providers) !== '["bling"]'
+                                || !state.store_ids?.includes(storeId))) {
+                            throw new Error('Conclua a migração anterior na loja selecionada originalmente antes de centralizar outra conexão.');
+                        }
+                        if (pending && state.remote && !['failed', 'completed'].includes(state.remote.status)) {
+                            throw new Error('A migração ainda está em andamento na Central. Consulte novamente antes de retomar.');
+                        }
+                        const preview = pending ? state : await call('/api/central/migration/preview?provider=bling&store_id=' + encodeURIComponent(storeId));
+                        if (!/^[a-f0-9]{64}$/.test(preview.preview_fingerprint || '')) throw new Error('A prévia não confirmou a identidade da operação.');
+                        const storeIds = preview.store_ids;
+                        if (!Array.isArray(storeIds) || !storeIds.includes(storeId) || storeIds.length > 100) throw new Error('A prévia não confirmou as lojas desta conexão.');
+                        const copies = storeIds.length > 1 ? ` Esta conta também é usada em outras ${storeIds.length - 1} loja(s), que serão centralizadas juntas.` : '';
+                        const accepted = confirm(`Centralizar somente a conexão Bling da loja ${storeName}?${copies}\n\nAntes de continuar, atualize o JK em todos os computadores que usam esta conta e feche as sessões antigas. Confirme que isso já foi feito.\n\nA Central passará a renovar esta conexão. Será necessário entrar novamente no JK após concluir.`);
+                        if (!accepted) { feedback.textContent = 'Centralização não iniciada.'; return; }
+                        if (selectedStore?.store_id !== storeId) throw new Error('A loja selecionada mudou. Confira a loja antes de continuar.');
+                        const operationId = pending ? state.operation_id : Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+                        if (!/^[a-f0-9]{32}$/.test(operationId || '')) throw new Error('A operação anterior não pôde ser identificada.');
+                        const result = await call('/api/central/migration/execute', {
+                            operation_id: operationId, preview_fingerprint: preview.preview_fingerprint,
+                            confirmed: true, providers: ['bling'], store_ids: storeIds, legacy_copies_stopped: true
+                        });
+                        if (result.success !== true || result.status !== 'completed' || result.logout_required !== true) {
+                            throw new Error('A conclusão nesta máquina ainda não foi confirmada. Consulte novamente antes de retomar.');
+                        }
+                        feedback.textContent = 'Bling centralizado. Faça um novo login no JK Sistema.';
+                        localStorage.removeItem('access_token');
+                        localStorage.removeItem('user_data');
+                        localStorage.removeItem('permissions');
+                        setTimeout(() => navegarComTransicao('/frontend_index.html'), 500);
+                    } catch (error) { feedback.textContent = error.message; }
+                    finally { busy = false; button.disabled = false; }
+                });
+            }
+            initializeBlingCentralMigration();
+
+            if (window.jkCentralManualMode?.() || centralProviderMode()) {
                 document.getElementById('central-account-controls').hidden = false;
-                document.querySelector('[data-main-tab="compartilhar"]').hidden = true;
-                const iframe = document.querySelector('#main-tab-compartilhar iframe');
-                if (iframe) iframe.remove();
+                document.getElementById('central-grant-form').hidden = true;
+                if (centralProviderMode()) {
+                    document.querySelector('#central-account-controls p').textContent = 'A Central renova as conexões Bling centralizadas. O responsável pode conceder acesso à mesma conexão aos demais usuários. Clique em Atualizar lojas para consultar mudanças de acesso.';
+                }
+                if (window.jkCentralManualMode?.()) {
+                    document.querySelector('[data-main-tab="compartilhar"]').hidden = true;
+                    const iframe = document.querySelector('#main-tab-compartilhar iframe');
+                    if (iframe) iframe.remove();
+                }
                 const feedback = document.getElementById('central-feedback');
                 async function centralAction(path, method, body) {
                     const response = await fetch(path, { method, headers: obterAuthHeaders({'Content-Type': 'application/json'}),
@@ -981,6 +1081,9 @@
                     });
                     const value = await response.json().catch(() => ({}));
                     if (!response.ok) throw new Error(migrationError(value, 'Não foi possível consultar a migração.'));
+                    if (value.providers?.length === 1 && value.providers[0] === 'bling' && value.status !== 'completed') {
+                        throw new Error('Retome a centralização pela aba Bling da loja selecionada originalmente.');
+                    }
                     // O backend é a fonte da operação congelada após fechar/reabrir
                     // a tela. Sua impressão original não muda com tokens renovados.
                     if (value.backup_status === 'frozen' && value.status !== 'completed') {

@@ -61,6 +61,13 @@ class UserRepository(Protocol):
         expected_password_epoch: str,
     ) -> dict[str, Any]: ...
 
+    def enable_central_accounts_providers(self, username: str, expected_client_id: str,
+                                         machine_id: str, expected_password_epoch: str,
+                                         providers: list[str]) -> dict[str, Any]: ...
+
+    def enable_central_provider_access(self, username: str,
+                                      expected_client_id: str) -> dict[str, Any]: ...
+
 
 class IdentityTokenIssuer(Protocol):
     def issue(self, uid: str, claims: dict[str, Any]) -> tuple[str, int]: ...
@@ -83,6 +90,14 @@ class AuthenticationService:
         self._firebase_sessions = firebase_sessions
         self._cofre_capabilities = cofre_capabilities
 
+    def _assert_bling_protocol(self, user, central_protocol, bling_protocol):
+        scoped = (user.get("central_accounts_enabled") is not True
+                  and user.get("central_accounts_providers") == ["bling"])
+        if scoped and (not central_protocol or not bling_protocol):
+            raise AuthRejected("update_required", 426)
+        if scoped and self._central is None:
+            raise GatewayUnavailable("central_unavailable")
+
     def _signed_response(
         self,
         current: dict[str, Any],
@@ -92,11 +107,13 @@ class AuthenticationService:
         *,
         code: str,
         central_protocol: bool = False,
+        bling_protocol: bool = False,
         app_version: str = "",
         firebase_protocol: bool = False,
         cofre_protocol: bool | int = False,
         google_email: str = "",
     ) -> dict[str, Any]:
+        self._assert_bling_protocol(current, central_protocol, bling_protocol)
         expiry = assert_access_allowed(current)
         raw_permissions = current.get("permissions") or current.get("permissoes")
         permissions = (normalize_permissions(raw_permissions) if cofre_protocol else
@@ -176,7 +193,7 @@ class AuthenticationService:
             "registered_machines": len(machine_ids),
         }
 
-    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
+    def authenticate(self, request: GatewayLoginRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False, bling_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         supplied_password = request.password.get_secret_value()
@@ -189,6 +206,7 @@ class AuthenticationService:
         if not user or not stored_password or not password_is_valid:
             raise AuthRejected("invalid_credentials", 401)
         assert_access_allowed(user)
+        self._assert_bling_protocol(user, central_protocol, bling_protocol)
         current = self._repository.claim_machine(username, stored_password, request.machine_id)
         return self._signed_response(
             current,
@@ -196,13 +214,13 @@ class AuthenticationService:
             request.machine_id,
             request.request_nonce,
             code="authenticated",
-            central_protocol=central_protocol,
+            central_protocol=central_protocol, bling_protocol=bling_protocol,
             firebase_protocol=firebase_protocol,
             cofre_protocol=cofre_protocol,
             app_version=request.app_version,
         )
 
-    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
+    def change_password(self, request: GatewayChangePasswordRequest, *, central_protocol=False, firebase_protocol=False, cofre_protocol=False, bling_protocol=False) -> dict[str, Any]:
         assert_supported_version(request.app_version, self._minimum_app_version)
         username = request.username
         current_password = request.current_password.get_secret_value()
@@ -215,6 +233,7 @@ class AuthenticationService:
         if not user or not stored_password or not password_is_valid:
             raise AuthRejected("invalid_credentials", 401)
         assert_access_allowed(user)
+        self._assert_bling_protocol(user, central_protocol, bling_protocol)
 
         new_password = request.new_password.get_secret_value()
         if len(new_password.encode("utf-8")) > 72:
@@ -234,14 +253,14 @@ class AuthenticationService:
             request.machine_id,
             request.request_nonce,
             code="password_changed",
-            central_protocol=central_protocol,
+            central_protocol=central_protocol, bling_protocol=bling_protocol,
             firebase_protocol=firebase_protocol,
             cofre_protocol=cofre_protocol,
             app_version=request.app_version,
         )
 
     def authenticate_google(self, request: GatewayGoogleLoginRequest, google_claims: dict, *,
-                            central_protocol=False, firebase_protocol=False, cofre_protocol=False) -> dict[str, Any]:
+                            central_protocol=False, firebase_protocol=False, cofre_protocol=False, bling_protocol=False) -> dict[str, Any]:
         """HTTP supplies verified Google claims; identity is loaded only by the repository."""
         assert_supported_version(request.app_version, self._minimum_app_version)
         email = google_claims.get("email")
@@ -257,13 +276,14 @@ class AuthenticationService:
         username, user = found
         username = GatewayLoginRequest.normalize_username(username)
         assert_access_allowed(user)
+        self._assert_bling_protocol(user, central_protocol, bling_protocol)
         current = self._repository.claim_machine(username, password_value(user), request.machine_id)
         linked_emails = {username, *(str(current.get(key) or "").strip().lower()
                                     for key in ("email", "google_email"))}
         if email not in linked_emails:
             raise AuthRejected("invalid_credentials", 401)
         return self._signed_response(current, username, request.machine_id, request.request_nonce,
-            code="authenticated", app_version=request.app_version, central_protocol=central_protocol,
+            code="authenticated", app_version=request.app_version, central_protocol=central_protocol, bling_protocol=bling_protocol,
             firebase_protocol=firebase_protocol, cofre_protocol=cofre_protocol, google_email=email)
 
 

@@ -56,6 +56,12 @@ def read_stores(client_id):
             cfg = providers.get(provider) or {}
             if not cfg:
                 continue
+            from .central_provider_overlay import is_central
+            if provider == "bling" and is_central(cfg):
+                # Authorization comes from the Central session, not a legacy
+                # OAuth epoch in the local public projection. Keep the guard
+                # for overlay_stores to deny access without that session.
+                continue
             if identities is not None:
                 fingerprint = provider_identity(original, provider)
                 matches = bool(fingerprint) and fingerprint == identities.get(provider)
@@ -75,7 +81,8 @@ def read_stores(client_id):
                 providers.pop(provider, None)
                 row.setdefault("_unavailable_providers", []).append(provider)
         result.append(row)
-    return result
+    from .central_provider_overlay import overlay_stores
+    return overlay_stores(client_id, result)
 
 
 def find_store(client_id, nome_loja, store_id=None):

@@ -483,6 +483,9 @@ def _integracoes_credenciais_backup_compativeis(
 ) -> bool:
     """Impede que um backup rico de outra conta seja associado por engano."""
 
+    if servico_key == "bling" and (atual.get("central") or atual.get("central_migrated")):
+        return False
+
     grupos_identidade: tuple[tuple[str, ...], ...] = ()
     if servico_key == "mercadolivre":
         grupos_identidade = (
@@ -2261,7 +2264,8 @@ def carregar_lojas(client_id: str):
             and not os.path.exists(marker_path)
         ):
             _integracoes_marcar_legacy_migration_concluida(client_id)
-        return lojas
+        from .central_provider_overlay import overlay_stores
+        return overlay_stores(client_id, lojas)
 
 
 def ler_lojas(client_id: str):
@@ -2292,10 +2296,8 @@ def salvar_lojas(
     _exclusao_local_store_id: str | None = None,
 ):
     """Salva as lojas do cliente no arquivo JSON."""
-    from backend.services.central_accounts_client import current, is_marker
-    if current(client_id) or any(is_marker((cfg or {}).get("access_token"))
-                                  for row in lojas for cfg in (row.get("integracoes") or {}).values()
-                                  if isinstance(cfg, dict)):
+    from backend.services.central_accounts_client import current
+    if current(client_id):
         raise HTTPException(409, "Conexões centrais devem ser alteradas pela central.")
     tenant_path = _tenant_path(client_id)
     arquivo_lojas = os.path.join(tenant_path, "lojas_config.json")
@@ -2318,6 +2320,8 @@ def salvar_lojas(
                     atuais = _integracoes_ler_lojas_config_arquivo(arquivo_lojas)
                 except Exception:
                     atuais = []
+            from .central_provider_overlay import prepare_local_write
+            lojas = prepare_local_write(lojas, atuais)
             # One-time migration bridge: carregar_lojas has already assigned
             # opaque ids to the same ordered snapshot, while the file on disk
             # still lacks them.  Reuse those ids instead of minting a second set.
@@ -2989,6 +2993,8 @@ def atualizar_api_loja(
     # O lock cobre todo o read-modify-write. Antes, carregar e salvar eram
     # protegidos isoladamente, permitindo que duas lojas perdessem updates.
     with _integracoes_bloquear_rmw_lojas(client_id):
+        from .central_provider_overlay import assert_local_provider_allowed
+        assert_local_provider_allowed(client_id, store_id_exato, api_nome)
         lojas = carregar_lojas(client_id)
         loja = _integracoes_encontrar_loja_identidade(
             lojas,
@@ -3234,11 +3240,12 @@ def renovar_token_bling_loja(
     hint = cfg or {}
     expected_refresh = str(hint.get("refresh_token") or "").strip()
     expected_access = str(hint.get("access_token") or "").strip()
-    expected_updated_at = str(hint.get("updated_at") or "").strip()
     from .store_oauth_refresh import oauth_gate
     with oauth_gate(
         _tenant_path(client_id), store_id_exato, "bling"
     ):
+        from .central_provider_overlay import assert_local_provider_allowed
+        assert_local_provider_allowed(client_id, store_id_exato, "bling")
         atual = _bling_config_atual(client_id, nome_loja, store_id_exato)
         if requires_bling_reauthorization(atual):
             raise BlingAuthenticationError(
@@ -3254,7 +3261,6 @@ def renovar_token_bling_loja(
             return resultado(atual, "reused_concurrent")
         if expected_refresh and refresh_atual == expected_refresh and (
             (expected_access and access_atual and access_atual != expected_access)
-            or (expected_updated_at and updated_at_atual and updated_at_atual != expected_updated_at)
         ):
             return resultado(atual, "reused_concurrent")
 
@@ -3398,6 +3404,8 @@ def desconectar_api_loja(
         client_id,
         tenant_path,
     ):
+        from .central_provider_overlay import assert_local_provider_allowed
+        assert_local_provider_allowed(client_id, store_id_exato, api_nome)
         lojas = carregar_lojas(client_id)
         loja = _integracoes_encontrar_loja_identidade(
             lojas,

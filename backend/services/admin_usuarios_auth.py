@@ -66,6 +66,13 @@ def _conectar_firebase_apos_login(response, remote_attempt):
     return response
 
 
+def _central_public_status(client):
+    result = {"protocol": 1, "sync_mode": "manual", "expires_at": client.expires_at}
+    if client.provider_scoped:
+        result.update(enabled=True, sync_mode="provider", providers=["bling"])
+    return result
+
+
 def trocar_minha_senha(payload: UserChangePasswordRequest, authorization: Optional[str] = Header(default=None)):
     sessao = _payload_sessao_por_authorization(authorization)
     usuario = _obter_usuario_sql(sessao["username"])
@@ -131,7 +138,7 @@ def minha_sessao_auth(
     firebase_session = current(sessao["client_id"])
     if firebase_session is not None:
         profile = firebase_session.profile()
-        return LoginResponse(
+        response = LoginResponse(
             success=True, message="Sessão atualizada.",
             user_data={"username": profile["username"], "client_id": profile["client_id"],
                        "name": profile.get("name") or profile["username"], "email": profile.get("email") or "",
@@ -139,6 +146,11 @@ def minha_sessao_auth(
             permissions=profile["permissions"],
             access_token=str(authorization)[len("Bearer "):].strip(),
         )
+        from backend.services.central_accounts_client import session_client
+        central = session_client(sessao["client_id"])
+        if central is not None:
+            response.user_data["central"] = _central_public_status(central)
+        return response
     usuario = _obter_usuario_sql(sessao["username"])
     client_usuario = str(usuario.get("client_id") or sessao["client_id"] or "default").strip() or "default"
     if client_usuario != sessao["client_id"]:
@@ -171,6 +183,10 @@ def minha_sessao_auth(
     # The JWT carries the already validated identity, not permissions or expiry.
     # Keep its service bindings and markers when refreshing the profile.
     response.access_token = str(authorization)[len("Bearer "):].strip()
+    from backend.services.central_accounts_client import session_client
+    central = session_client(sessao["client_id"])
+    if central is not None:
+        response.user_data["central"] = _central_public_status(central)
     return response
 
 def google_auth_config(request: Request):
@@ -413,7 +429,8 @@ def _complete_remote_login(remote_attempt, request: Request, app_version_ok: str
 
     usuario_remoto["firebase_user"] = bool(remote_attempt.firebase_access)
 
-    if remote_attempt.central:
+    scoped_central = remote_attempt.central.get("sync_mode") == "provider"
+    if remote_attempt.central and not scoped_central:
         from backend.services.central_accounts_client import register_login
         usuario_remoto["central"] = True
         response = _montar_resposta_login_sucesso(username, usuario_remoto, remote_attempt.permissions,
@@ -434,6 +451,20 @@ def _complete_remote_login(remote_attempt, request: Request, app_version_ok: str
         return _conectar_firebase_apos_login(response, remote_attempt)
 
     migration_response = None
+    if scoped_central:
+        from backend.services.central_accounts_client import register_login
+        usuario_remoto["central"] = True
+        migration_response = _montar_resposta_login_sucesso(
+            username, usuario_remoto, remote_attempt.permissions, client_id, machine_final)
+        try:
+            central_client = register_login(migration_response.access_token, remote_attempt)
+            from backend.services.central_accounts_migration import finalize_after_central_login
+            finalize_after_central_login(client_id, central_client.public_stores(), providers=["bling"])
+            from backend.services.central_accounts_store_index import materialize_store_index
+            materialize_store_index(client_id, central_client.public_stores(), providers=["bling"])
+        except Exception:
+            return LoginResponse(success=False, message="Não foi possível preparar a conexão central do Bling.")
+        migration_response.user_data["central"] = _central_public_status(central_client)
     if remote_attempt.central_migration:
         from backend.services.central_accounts_client import register_migration_login
         usuario_remoto["central_migration"] = True

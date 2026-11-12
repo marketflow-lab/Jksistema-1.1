@@ -340,3 +340,226 @@ def test_turbo_is_local_to_exact_machine_and_store(local_config, tmp_path, monke
     integracoes.salvar_turbo_local_central("tenant-a", central, central[0]["store_id"], "new-local-token")
     added = integracoes.mesclar_turbo_local("tenant-a", central, incluir_token=True)
     assert added[0]["integracoes"]["mercadoturbo"]["token"] == "new-local-token"
+
+
+def scoped_request(store_id, fingerprint, operation_id="c" * 32):
+    return {"operation_id": operation_id, "preview_fingerprint": fingerprint,
+            "confirmed": True, "providers": ["bling"], "store_ids": [store_id],
+            "legacy_copies_stopped": True}
+
+
+def test_bling_pilot_preserves_other_integrations_and_other_stores(local_config):
+    tenant, secure = local_config
+    path = tenant / "lojas_config.json"
+    before = json.loads(path.read_text())
+    store_id = before[0]["store_id"]
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    assert preview["stores_total"] == preview["connections_total"] == 1
+    assert preview["providers"] == ["bling"]
+    assert "refresh_token" not in json.dumps(preview)
+    client = Central()
+    migration.execute("tenant-a", client, **scoped_request(store_id, preview["preview_fingerprint"]))
+    after = json.loads(path.read_text())
+    assert after[1:] == before[1:]
+    assert after[0]["integracoes"]["mercadolivre"] == before[0]["integracoes"]["mercadolivre"]
+    assert after[0]["integracoes"]["mercadoturbo"] == before[0]["integracoes"]["mercadoturbo"]
+    assert after[0]["integracoes"]["bling"]["central_scope"] == "provider"
+    assert "refresh_token" not in after[0]["integracoes"]["bling"]
+    assert len(secure) == 4
+    body = client.calls[0][2]
+    assert body["providers"] == ["bling"] and body["legacy_copies_stopped"]
+    assert [connection["provider"] for connection in body["stores"][0]["connections"]] == ["bling"]
+
+
+def test_bling_preview_does_not_require_mercadolivre_credentials(local_config):
+    tenant, _ = local_config
+    path = tenant / "lojas_config.json"
+    stores = json.loads(path.read_text())
+    stores[0]["integracoes"].pop("mercadolivre")
+    path.write_text(json.dumps(stores))
+    result = migration.preview("tenant-a", ["bling"], [stores[0]["store_id"]])
+    assert result["connections_total"] == 1
+
+
+def test_scoped_migration_requires_stopping_old_copies_before_any_write(local_config, monkeypatch):
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    request = scoped_request(store_id, preview["preview_fingerprint"])
+    request["legacy_copies_stopped"] = False
+    monkeypatch.setattr(migration, "_prepare_connections", lambda *args: pytest.fail("must not refresh"))
+    client = Central()
+    with pytest.raises(HTTPException) as error:
+        migration.execute("tenant-a", client, **request)
+    assert error.value.status_code == 400 and not client.calls
+
+
+def test_scoped_retry_freezes_scope_and_does_not_refresh_after_uncertain_upload(local_config, monkeypatch):
+    tenant, _ = local_config
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    request = scoped_request(store_id, preview["preview_fingerprint"])
+    client = Central(failures=1)
+    with pytest.raises(HTTPException):
+        migration.execute("tenant-a", client, **request)
+    state = migration.status("tenant-a")
+    assert state["providers"] == ["bling"] and state["store_ids"] == [store_id]
+    monkeypatch.setattr(migration, "_prepare_connections", lambda *args: pytest.fail("must not refresh"))
+
+    def completed(method, path, body=None):
+        assert method == "GET"
+        return {"success": True, "status": "completed", "operation_id": request["operation_id"]}
+
+    client.call = completed
+    assert migration.execute("tenant-a", client, **request)["success"]
+    saved = json.loads((tenant / "lojas_config.json").read_text())
+    assert saved[0]["integracoes"]["mercadolivre"]["refresh_token"] == "ml-refresh-0"
+
+
+def test_scoped_operation_cannot_be_replayed_as_full_migration(local_config):
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    request = scoped_request(store_id, preview["preview_fingerprint"])
+    with pytest.raises(HTTPException):
+        migration.execute("tenant-a", Central(failures=1), **request)
+    client = Central()
+    with pytest.raises(HTTPException) as error:
+        migration.execute("tenant-a", client, operation_id=request["operation_id"],
+                          preview_fingerprint=request["preview_fingerprint"], confirmed=True)
+    assert error.value.status_code == 409 and not client.calls
+
+
+def test_second_bling_pilot_retains_cleanup_for_first_backup(local_config):
+    tenant, secure = local_config
+    for index in (1, 2):
+        store_id = str(index).zfill(24)
+        preview = migration.preview("tenant-a", ["bling"], [store_id])
+        migration.execute("tenant-a", Central(), **scoped_request(
+            store_id, preview["preview_fingerprint"], str(index) * 32))
+    assert len(secure) == 8
+    assert (tenant / "central_migration_backups" / ("1" * 32 + ".json")).exists()
+    result = migration.status("tenant-a")
+    migration.cleanup_expired_backup("tenant-a", now=result["backup_expires_at"] + 1)
+    assert not secure
+
+
+@pytest.mark.parametrize("providers,store_ids", [(["mercadolivre"], None), (["bling", "bling"], None),
+                                               (["bling"], []), (["bling"], ["f" * 24]),
+                                               (["bling"], ["1".zfill(24), "1".zfill(24)])])
+def test_scoped_preview_rejects_invalid_scope_and_store_identity(local_config, providers, store_ids):
+    with pytest.raises(HTTPException):
+        migration.preview("tenant-a", providers, store_ids)
+
+
+def test_login_finalization_scoped_never_scrubs_mercadolivre(local_config):
+    tenant, _ = local_config
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    with pytest.raises(HTTPException):
+        migration.execute("tenant-a", Central(failures=1), **scoped_request(store_id, preview["preview_fingerprint"]))
+    public = [{"store_id": store_id, "integracoes": {"bling": {"central": True}}}]
+    assert migration.finalize_after_central_login("tenant-a", public, providers=["bling"])
+    saved = json.loads((tenant / "lojas_config.json").read_text())
+    assert saved[0]["integracoes"]["mercadolivre"]["refresh_token"] == "ml-refresh-0"
+
+
+def test_recovery_after_bling_migration_cannot_restore_local_refresh_authority(local_config, monkeypatch):
+    from backend.services import central_accounts_client
+
+    tenant, _ = local_config
+    store_id = "1".zfill(24)
+    (tenant / "lojas_config.json.bak").write_text((tenant / "lojas_config.json").read_text())
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    migration.execute("tenant-a", Central(), **scoped_request(store_id, preview["preview_fingerprint"]))
+    monkeypatch.setattr(central_accounts_client, "session_client", lambda _client=None: None)
+    (tenant / "lojas_config.json").write_text("{corrupted")
+    recovered = integracoes.carregar_lojas("tenant-a")
+    cfg = recovered[0]["integracoes"]
+    assert cfg["bling"]["central"] is True
+    assert not cfg["bling"].get("access_token") and not cfg["bling"].get("refresh_token")
+    assert cfg["mercadolivre"]["refresh_token"] == "ml-refresh-0"
+    assert cfg["mercadoturbo"]["token"] == "turbo-private"
+
+
+@pytest.mark.parametrize("expires_at", [0, 1])
+def test_bling_pilot_does_not_refresh_before_central_claims_ownership(local_config, monkeypatch, expires_at):
+    tenant, _ = local_config
+    path = tenant / "lojas_config.json"
+    stores = json.loads(path.read_text())
+    stores[0]["integracoes"]["bling"]["expires_at"] = expires_at
+    path.write_text(json.dumps(stores))
+    store_id = stores[0]["store_id"]
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    monkeypatch.setattr(migration, "_refresh", lambda *args: pytest.fail("must not consume a copied refresh token"))
+    monkeypatch.setattr(migration, "_persist_refresh", lambda *args: pytest.fail("must not mutate provider tokens"))
+    client = Central()
+    migration.execute("tenant-a", client, **scoped_request(store_id, preview["preview_fingerprint"]))
+    connection = client.calls[0][2]["stores"][0]["connections"][0]
+    assert connection["expires_at"] == 1
+    assert connection["refresh_token"] == "bling-refresh-0"
+
+
+def test_bling_expired_access_requires_authorization_without_local_refresh(local_config, monkeypatch):
+    tenant, secure = local_config
+    path = tenant / "lojas_config.json"
+    before = path.read_bytes()
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    monkeypatch.setattr(migration, "_identity", lambda *args: (_ for _ in ()).throw(HTTPException(401, "expired")))
+    monkeypatch.setattr(migration, "_refresh", lambda *args: pytest.fail("must not refresh before ownership"))
+    client = Central()
+    with pytest.raises(HTTPException) as error:
+        migration.execute("tenant-a", client, **scoped_request(store_id, preview["preview_fingerprint"]))
+    assert error.value.detail["code"] == "legacy_reauthorization_required"
+    assert not client.calls and not secure
+    assert path.read_bytes() == before
+
+
+def test_central_rejecting_already_owned_bling_leaves_all_local_tokens_unchanged(local_config, monkeypatch):
+    tenant, _ = local_config
+    path = tenant / "lojas_config.json"
+    before = path.read_bytes()
+    store_id = "1".zfill(24)
+    preview = migration.preview("tenant-a", ["bling"], [store_id])
+    monkeypatch.setattr(migration, "_refresh", lambda *args: pytest.fail("must not rotate a central credential"))
+    monkeypatch.setattr(migration, "_persist_refresh", lambda *args: pytest.fail("must not mutate a central credential"))
+
+    class OtherOwner:
+        def call(self, method, _path, _body=None):
+            if method == "GET":
+                raise HTTPException(404, {"code": "central_migration_not_found"})
+            raise HTTPException(409, {"code": "central_account_already_owned"})
+
+    with pytest.raises(HTTPException) as error:
+        migration.execute("tenant-a", OtherOwner(), **scoped_request(store_id, preview["preview_fingerprint"]))
+    assert error.value.status_code == 409
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("alias_by", ["refresh", "company"])
+def test_bling_pilot_moves_all_local_aliases_together(local_config, alias_by):
+    tenant, secure = local_config
+    path = tenant / "lojas_config.json"
+    stores = json.loads(path.read_text())
+    stores[1]["integracoes"]["bling"] = dict(stores[0]["integracoes"]["bling"])
+    if alias_by == "refresh":
+        stores[1]["integracoes"]["bling"].pop("empresa_id")
+    else:
+        stores[1]["integracoes"]["bling"]["refresh_token"] = "bling-other-refresh"
+    path.write_text(json.dumps(stores))
+    before = json.loads(path.read_text())
+    preview = migration.preview("tenant-a", ["bling"], [stores[0]["store_id"]])
+    expected_ids = [stores[0]["store_id"], stores[1]["store_id"]]
+    assert preview["store_ids"] == expected_ids
+    assert preview["stores_total"] == preview["connections_total"] == 2
+    request = scoped_request(stores[0]["store_id"], preview["preview_fingerprint"])
+    request["store_ids"] = preview["store_ids"]
+    client = Central()
+    migration.execute("tenant-a", client, **request)
+    assert [row["store_id"] for row in client.calls[0][2]["stores"]] == expected_ids
+    saved = json.loads(path.read_text())
+    for index in (0, 1):
+        assert saved[index]["integracoes"]["bling"]["central"]
+        assert not saved[index]["integracoes"]["bling"].get("refresh_token")
+        assert saved[index]["integracoes"]["mercadolivre"] == before[index]["integracoes"]["mercadolivre"]
+    assert saved[2:] == before[2:]
+    assert len(secure) == 8

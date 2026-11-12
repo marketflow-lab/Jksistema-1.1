@@ -55,9 +55,12 @@ class LegacyConnection(ClosedModel):
 class LegacyStore(ClosedModel):
     store_id: str = Field(pattern=r"^(?:[a-f0-9]{24}|[a-f0-9]{32})$")
     name: str = Field(min_length=1, max_length=100)
-    connections: list[LegacyConnection] = Field(min_length=2, max_length=2)
+    connections: list[LegacyConnection] = Field(min_length=1, max_length=2)
 
 
 class LegacyAdoptionRequest(ClosedModel):
     operation_id: str = Field(pattern=r"^[a-f0-9]{32}$")
     stores: list[LegacyStore] = Field(min_length=1, max_length=100)
+    providers: list[Literal["mercadolivre", "bling"]] = Field(
+        default_factory=lambda: ["mercadolivre", "bling"], min_length=1, max_length=2)
+    legacy_copies_stopped: bool = False

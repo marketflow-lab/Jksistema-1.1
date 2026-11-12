@@ -113,7 +113,59 @@ def _expected_identity(config: dict, provider: str) -> tuple[str, str]:
     return account, site
 
 
-def _validate_stores(stores: list[dict]) -> list[dict]:
+def _providers(providers=None) -> tuple[str, ...]:
+    selected = tuple(PROVIDERS if providers is None else providers)
+    if selected not in (PROVIDERS, ("bling",)):
+        raise HTTPException(400, "Selecione Bling ou a migração completa das integrações.")
+    return selected
+
+
+def _selected_stores(stores, store_ids=None):
+    if store_ids is None:
+        return stores
+    selected = list(store_ids)
+    if (not selected or len(selected) > 100 or len(set(selected)) != len(selected)
+            or any(not STORE_ID_RE.fullmatch(str(value)) for value in selected)):
+        raise HTTPException(400, "Selecione identidades de lojas válidas para migrar.")
+    matches = [row for row in stores if row.get("store_id") in selected]
+    if len(matches) != len(selected):
+        raise HTTPException(409, "Uma das lojas selecionadas não existe nesta empresa.")
+    return matches
+
+
+def _bling_aliases(stores, selected):
+    """Every local copy of one Bling authorization must move together."""
+    selected_ids = {row.get("store_id") for row in selected}
+    while True:
+        refreshes = set()
+        accounts = set()
+        for row in stores:
+            if row.get("store_id") not in selected_ids:
+                continue
+            config = _provider_config(row, "bling")
+            values = _connection_values(config)
+            if values["refresh_token"]:
+                refreshes.add(values["refresh_token"])
+            account, _ = _expected_identity(config, "bling")
+            if account and values["app_id"]:
+                accounts.add((values["app_id"], account))
+        expanded = set(selected_ids)
+        for row in stores:
+            config = _provider_config(row, "bling")
+            values = _connection_values(config)
+            account, _ = _expected_identity(config, "bling")
+            if ((values["refresh_token"] and values["refresh_token"] in refreshes)
+                    or (values["app_id"], account) in accounts):
+                expanded.add(row.get("store_id"))
+        if expanded == selected_ids:
+            return [row for row in stores if row.get("store_id") in expanded]
+        selected_ids = expanded
+
+
+def _validate_stores(stores: list[dict], providers=None, store_ids=None) -> list[dict]:
+    providers = _providers(providers)
+    selected = _selected_stores(stores, store_ids)
+    stores = _bling_aliases(stores, selected) if providers == ("bling",) else selected
     if not stores or len(stores) > 100:
         raise HTTPException(409, "A quantidade de lojas locais não é válida para a migração.")
     seen = set()
@@ -125,8 +177,10 @@ def _validate_stores(stores: list[dict]) -> list[dict]:
             raise HTTPException(409, "Há uma loja com identidade inválida ou duplicada.")
         seen.add(store_id)
         connections = []
-        for provider in PROVIDERS:
+        for provider in providers:
             config = _provider_config(store, provider)
+            if config.get("central") or config.get("central_migrated"):
+                raise HTTPException(409, "A integração selecionada já é controlada pela Central.")
             values = _connection_values(config)
             if not all(values.values()):
                 raise HTTPException(409, detail={
@@ -148,11 +202,14 @@ def _validate_stores(stores: list[dict]) -> list[dict]:
     return result
 
 
-def preview(client_id: str) -> dict:
-    stores = _validate_stores(_raw_stores(client_id))
+def preview(client_id: str, providers=None, store_ids=None) -> dict:
+    selected_providers = _providers(providers)
+    stores = _validate_stores(_raw_stores(client_id), selected_providers, store_ids)
     fingerprint = _canonical_hash(stores)
     return {
         "eligible": True,
+        "providers": list(selected_providers),
+        "store_ids": [store["store_id"] for store in stores],
         "preview_fingerprint": fingerprint,
         "stores_total": len(stores),
         "connections_total": sum(len(store["connections"]) for store in stores),
@@ -270,7 +327,7 @@ def _validation_failure(exc, store_id, provider, values):
     return HTTPException(exc.status_code, failure)
 
 
-def _prepare_connections(client_id: str, stores: list[dict]) -> list[dict]:
+def _prepare_connections(client_id: str, stores: list[dict], *, allow_refresh: bool = True) -> list[dict]:
     prepared = copy.deepcopy(stores)
     for store in prepared:
         for connection in store["connections"]:
@@ -279,7 +336,13 @@ def _prepare_connections(client_id: str, stores: list[dict]) -> list[dict]:
             expires_at = int(connection.get("expires_at") or 0)
             refresh_needed = expires_at <= int(time.time()) + 300
             try:
-                if not refresh_needed:
+                if not allow_refresh:
+                    # A copied credential may already belong to another Central
+                    # connection. Identity reads are safe before ownership is
+                    # established; consuming its refresh token is not.
+                    identity, site = _identity(provider, values["access_token"])
+                    expires_at = max(1, expires_at)
+                elif not refresh_needed:
                     identity, site = _identity(provider, values["access_token"])
                 else:
                     refreshed = _refresh(provider, values)
@@ -288,7 +351,7 @@ def _prepare_connections(client_id: str, stores: list[dict]) -> list[dict]:
                     expires_at = refreshed["expires_at"]
                     identity, site = _identity(provider, values["access_token"])
             except HTTPException as exc:
-                if exc.status_code == 401 and not refresh_needed:
+                if allow_refresh and exc.status_code == 401 and not refresh_needed:
                     try:
                         refreshed = _refresh(provider, values)
                         _persist_refresh(client_id, store["store_id"], provider, values, refreshed)
@@ -334,6 +397,22 @@ def _delete_backup(client_id: str, state: dict) -> bool:
 
 
 def cleanup_expired_backup(client_id: str, *, now: int | None = None) -> dict:
+    archive_dir = os.path.join(integracoes._tenant_path(client_id), "central_migration_backups")
+    if os.path.isdir(archive_dir):
+        for name in os.listdir(archive_dir):
+            if not re.fullmatch(r"[a-f0-9]{32}\.json", name):
+                continue
+            path = os.path.join(archive_dir, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    archived = json.load(handle)
+                expires = int(archived.get("backup_expires_at") or 0)
+                if expires and expires <= int(time.time() if now is None else now) and archived.get("backup_status") != "deleted":
+                    deleted = _delete_backup(client_id, archived)
+                    archived["backup_status"] = "deleted" if deleted else "delete_failed"
+                    integracoes._integracoes_escrever_lojas_config_atomico(path, archived)
+            except (OSError, ValueError, TypeError):
+                continue
     state = _read_state(client_id)
     expires = int(state.get("backup_expires_at") or 0)
     if expires and expires <= int(time.time() if now is None else now) and state.get("backup_status") != "deleted":
@@ -343,6 +422,17 @@ def cleanup_expired_backup(client_id: str, *, now: int | None = None) -> dict:
             state["backup_deleted_at"] = int(time.time() if now is None else now)
         _write_state(client_id, state)
     return state
+
+
+def _archive_completed_backup(client_id, state):
+    if state.get("status") != "completed" or not state.get("backup_entries"):
+        return
+    operation_id = str(state.get("operation_id") or "")
+    if not OPERATION_ID_RE.fullmatch(operation_id):
+        raise HTTPException(409, "O backup da migração anterior não pôde ser identificado.")
+    directory = os.path.join(integracoes._tenant_path(client_id), "central_migration_backups")
+    os.makedirs(directory, exist_ok=True)
+    integracoes._integracoes_escrever_lojas_config_atomico(os.path.join(directory, operation_id + ".json"), state)
 
 
 def cleanup_all_expired_backups() -> None:
@@ -395,17 +485,21 @@ def _create_backup(client_id: str, operation_id: str, stores: list[dict], source
     }
 
 
-def _cloud_payload(operation_id: str, stores: list[dict]) -> dict:
-    return {"operation_id": operation_id, "stores": [{
+def _cloud_payload(operation_id: str, stores: list[dict], providers=None) -> dict:
+    payload = {"operation_id": operation_id, "stores": [{
         "store_id": store["store_id"], "name": store["name"],
         "connections": [{key: connection[key] for key in (
             "provider", "app_id", "app_secret", "access_token", "refresh_token", "expires_at",
             "expected_account_id", "expected_site_id")}
                         for connection in store["connections"]],
     } for store in stores]}
+    if _providers(providers) == ("bling",):
+        payload.update(providers=["bling"], legacy_copies_stopped=True)
+    return payload
 
 
-def _scrub_local(client_id: str, store_ids: set[str], operation_id: str) -> None:
+def _scrub_local(client_id: str, store_ids: set[str], operation_id: str, providers=None) -> None:
+    providers = _providers(providers)
     removable = {"app_id", "client_id", "id", "app_secret", "client_secret", "secret",
                  "access_token", "refresh_token", "oauth_draft", "oauth_pending_state"}
     with integracoes.lojas_config_lock(client_id):
@@ -417,44 +511,57 @@ def _scrub_local(client_id: str, store_ids: set[str], operation_id: str) -> None
             store_id = str(store.get("store_id") or "").strip()
             if store_id not in store_ids:
                 continue
-            for provider in PROVIDERS:
+            for provider in providers:
                 config = _provider_config(store, provider)
                 for key in removable:
                     config.pop(key, None)
                 config.update(central_migrated=True, connected=True, migration_id=operation_id)
+                if providers == ("bling",):
+                    config.update(central=True, central_scope="provider", oauth_invalid=False, status="conectado", motivo="")
         integracoes._integracoes_validar_lojas_config(stores, "limpeza após migração")
         integracoes._integracoes_escrever_lojas_config_atomico(_stores_path(client_id), stores)
+        if providers == ("bling",):
+            integracoes._integracoes_espelhar_backup_final_seguro(client_id, _stores_path(client_id), stores)
 
 
 def execute(client_id: str, migration_client, *, operation_id: str, preview_fingerprint: str,
-            confirmed: bool) -> dict:
+            confirmed: bool, providers=None, store_ids=None, legacy_copies_stopped: bool = False) -> dict:
     # Two explicit clicks must not rotate the same local token before its backup.
     with _EXECUTE_LOCK:
         return _execute(client_id, migration_client, operation_id=operation_id,
-                        preview_fingerprint=preview_fingerprint, confirmed=confirmed)
+                        preview_fingerprint=preview_fingerprint, confirmed=confirmed,
+                        providers=providers, store_ids=store_ids, legacy_copies_stopped=legacy_copies_stopped)
 
 
 def _completed_result(client_id, state):
     store_ids = {entry["store_id"] for entry in state.get("backup_entries") or []}
     if not store_ids:
         raise HTTPException(409, "A migração não possui identidades locais verificáveis.")
-    _scrub_local(client_id, store_ids, state["operation_id"])
+    _scrub_local(client_id, store_ids, state["operation_id"], state.get("providers"))
     state.update(status="completed", completed_at=int(time.time()), failure=None)
     _write_state(client_id, state)
     return {"success": True, "status": "completed", "operation_id": state["operation_id"],
             "stores_total": state["stores_total"], "connections_total": state["connections_total"],
+            "providers": list(_providers(state.get("providers"))), "store_ids": sorted(store_ids),
             "backup_expires_at": state["backup_expires_at"], "logout_required": True}
 
 
 def _execute(client_id: str, migration_client, *, operation_id: str, preview_fingerprint: str,
-             confirmed: bool) -> dict:
+             confirmed: bool, providers=None, store_ids=None, legacy_copies_stopped: bool = False) -> dict:
+    providers = _providers(providers)
     if not confirmed:
         raise HTTPException(400, "Confirme a migração depois de revisar a prévia.")
+    if providers == ("bling",) and legacy_copies_stopped is not True:
+        raise HTTPException(400, "Confirme que todos os computadores foram atualizados e que as sessões antigas do JK estão fechadas.")
     if not OPERATION_ID_RE.fullmatch(str(operation_id or "")):
         raise HTTPException(400, "Identificador de migração inválido.")
     state = cleanup_expired_backup(client_id)
     same_operation = (state.get("operation_id") == operation_id
                       and state.get("source_fingerprint") == preview_fingerprint)
+    if state.get("operation_id") == operation_id and (
+            _providers(state.get("providers")) != providers
+            or (store_ids is not None and set(state.get("store_ids") or []) != set(store_ids))):
+        raise HTTPException(409, "Retome a operação com as mesmas integrações e lojas da prévia original.")
     if same_operation and state.get("status") == "completed":
         return _completed_result(client_id, state)
     previous_id = str(state.get("operation_id") or "")
@@ -479,14 +586,14 @@ def _execute(client_id: str, migration_client, *, operation_id: str, preview_fin
             raise HTTPException(409, {"code": "legacy_migration_pending", "operation_id": previous_id,
                                       "preview_fingerprint": state.get("source_fingerprint"),
                                       "message": "Retome a operação original antes de iniciar outra migração."})
-    current_preview = preview(client_id)
+    current_preview = preview(client_id, providers, store_ids)
     resumable = (state.get("operation_id") == operation_id
                  and state.get("source_fingerprint") == preview_fingerprint
                  and state.get("backup_status") == "frozen"
                  and state.get("status") in {"backup_ready", "uploading", "failed"})
     if current_preview["preview_fingerprint"] != preview_fingerprint and not resumable:
         raise HTTPException(409, "As lojas mudaram depois da prévia; revise novamente.")
-    stores = _validate_stores(_raw_stores(client_id))
+    stores = _validate_stores(_raw_stores(client_id), providers, store_ids)
     previous_failure = state.get("failure") or {}
     if previous_failure.get("code") == "legacy_refresh_uncertain":
         for store in stores:
@@ -497,13 +604,17 @@ def _execute(client_id: str, migration_client, *, operation_id: str, preview_fin
                         == previous_failure.get("refresh_fingerprint")):
                     raise HTTPException(409, previous_failure)
     if not resumable:
+        _archive_completed_backup(client_id, state)
         try:
-            prepared = _prepare_connections(client_id, stores)
+            prepared = (_prepare_connections(client_id, stores, allow_refresh=False)
+                        if providers == ("bling",) else _prepare_connections(client_id, stores))
             state = _create_backup(client_id, operation_id, prepared, preview_fingerprint)
+            state.update(providers=list(providers), store_ids=[store["store_id"] for store in stores])
             _write_state(client_id, state)
         except HTTPException as exc:
             public_failure = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
             _write_state(client_id, {"schema": 1, "operation_id": operation_id, "status": "failed",
+                                     "providers": list(providers), "store_ids": [store["store_id"] for store in stores],
                                      "source_fingerprint": preview_fingerprint,
                                      "failure": public_failure})
             raise
@@ -535,7 +646,7 @@ def _execute(client_id: str, migration_client, *, operation_id: str, preview_fin
     state.update(status="uploading", failure=None)
     _write_state(client_id, state)
     try:
-        result = migration_client.call("POST", "/migrations/legacy", _cloud_payload(operation_id, prepared))
+        result = migration_client.call("POST", "/migrations/legacy", _cloud_payload(operation_id, prepared, providers))
     except HTTPException as exc:
         state.update(status="failed", failure=(exc.detail if isinstance(exc.detail, dict)
                                                else {"message": str(exc.detail)}))
@@ -574,6 +685,8 @@ def status(client_id: str, migration_client=None, operation_id: str = "") -> dic
         "operation_id": str(state.get("operation_id") or ""),
         "preview_fingerprint": str(state.get("source_fingerprint") or ""),
         "status": str(state.get("status") or "not_started"),
+        "providers": list(_providers(state.get("providers"))),
+        "store_ids": list(state.get("store_ids") or []),
         "stores_total": int(state.get("stores_total") or 0),
         "connections_total": int(state.get("connections_total") or 0),
         "backup_status": str(state.get("backup_status") or "none"),
@@ -588,13 +701,17 @@ def status(client_id: str, migration_client=None, operation_id: str = "") -> dic
     }
 
 
-def finalize_after_central_login(client_id: str, central_stores: list[dict]) -> bool:
+def finalize_after_central_login(client_id: str, central_stores: list[dict], providers=None) -> bool:
     """Finish local scrubbing after an uncertain upload that did activate centrally."""
     state = cleanup_expired_backup(client_id)
     if (state.get("backup_status") != "frozen"
             or state.get("status") not in {"backup_ready", "uploading", "failed"}
             or not OPERATION_ID_RE.fullmatch(str(state.get("operation_id") or ""))):
         return False
+    state_providers = _providers(state.get("providers"))
+    if providers is not None and _providers(providers) != state_providers:
+        return False
+    providers = state_providers
     targets = {}
     for entry in state.get("backup_entries") or []:
         if not isinstance(entry, dict):
@@ -602,17 +719,17 @@ def finalize_after_central_login(client_id: str, central_stores: list[dict]) -> 
         store_id = str(entry.get("store_id") or "")
         provider = str(entry.get("provider") or "")
         field = str(entry.get("field") or "")
-        if provider not in PROVIDERS or field not in SECRET_FIELDS or not STORE_ID_RE.fullmatch(store_id):
+        if provider not in providers or field not in SECRET_FIELDS or not STORE_ID_RE.fullmatch(store_id):
             return False
         targets.setdefault(store_id, set()).add(provider)
-    if not targets or any(providers != set(PROVIDERS) for providers in targets.values()):
+    if not targets or any(selected != set(providers) for selected in targets.values()):
         return False
     central_by_id = {str((store or {}).get("store_id") or ""): store for store in central_stores or []}
     for store_id in targets:
         integrations = (central_by_id.get(store_id) or {}).get("integracoes") or {}
-        if not all(bool((integrations.get(provider) or {}).get("central")) for provider in PROVIDERS):
+        if not all(bool((integrations.get(provider) or {}).get("central")) for provider in providers):
             return False
-    _scrub_local(client_id, set(targets), str(state["operation_id"]))
+    _scrub_local(client_id, set(targets), str(state["operation_id"]), providers)
     state.update(status="completed", completed_at=int(time.time()), failure=None)
     _write_state(client_id, state)
     return True
