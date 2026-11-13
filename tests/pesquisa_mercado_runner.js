@@ -1259,7 +1259,7 @@ async function completeSalesAndMonthlyDetails() {
     assert.equal(h.runner.browser.getURL(), `${base}/anuncios/111`, 'restore seller first page after detail collection');
     assert.equal(h.saved().status, 'completed_partial');
     assert.equal(h.saved().checkpoint.sellerCollection, undefined, 'published collection no longer needs the pending cursor');
-    assert(h.events.some(event => /vendas e media do anuncio 7 de 8/.test(event.job.progress.detail)), 'detail progress remains visible');
+    assert(h.events.some(event => /Consultando anuncios pendentes.*de 7 concluidos nesta tentativa/.test(event.job.progress.detail)), 'detail progress remains visible');
 }
 
 async function detailTimeoutPreservesPartialAndContinues() {
@@ -2067,7 +2067,164 @@ async function legacyIncompleteCategoryIdentity() {
     assert.doesNotThrow(() => ambiguous.runner.snapshot(), 'malformed legacy entries cannot crash progress events');
 }
 
+
+function parallelDetailBrowsers(h) {
+    const browsers = [h.runner.browser];
+    h.runner.createDetailBrowser = index => {
+        let url = '';
+        const browser = { index, stops: 0, finishes: [], destroyed: false,
+            async prepare() {},
+            async navigate(value) { url = value; },
+            getURL: () => url,
+            stop() { this.stops += 1; },
+            async finish(status) { this.finishes.push(status); },
+            destroy() { this.destroyed = true; }
+        };
+        browsers[index] = browser;
+        return browser;
+    };
+    return browsers;
+}
+
+async function untilDetail(predicate) {
+    const deadline = Date.now() + 2000;
+    while (!predicate()) {
+        assert(Date.now() < deadline, 'parallel detail fixture did not reach the expected state');
+        await detailDelay(1);
+    }
+}
+
+async function parallelDetailsOnlyRetryMissing() {
+    const ids = Array.from({ length: 8 }, (_, index) => `MLB10000004${String(index).padStart(2, '0')}`);
+    const listing = ids.map((id, index) => salesListing(id, index === 0 ? { vendas: 0, media_mensal: 0, rankable: true } : {}));
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), reason: 'avant_data_incomplete', incomplete: true }),
+        { detailRetryDelaysMs: undefined });
+    const browsers = parallelDetailBrowsers(h);
+    const attempts = new Map(), activeBrowsers = new Set();
+    let peak = 0;
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id, attempt = (attempts.get(id) || 0) + 1;
+        attempts.set(id, attempt);
+        assert(!activeBrowsers.has(options.browser), 'one worker cannot navigate two advertisements at once');
+        activeBrowsers.add(options.browser); peak = Math.max(peak, activeBrowsers.size);
+        await options.browser.navigate(options.url);
+        await detailDelay(2);
+        assert.equal(options.browser.getURL(), options.url, 'each concurrent navigation keeps its own document');
+        activeBrowsers.delete(options.browser);
+        const available = id !== ids[2] && (id !== ids[1] || attempt >= 2);
+        return { anuncios: available ? [salesListing(id, { vendas: 50, media_mensal: 5, rankable: true })] : [] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(peak, 4, 'four independent advertisement consultations run concurrently');
+    assert.equal(browsers.length, 4, 'only three auxiliary browsers are needed');
+    assert(!attempts.has(ids[0]), 'an advertisement already complete with zero values never enters the detail queue');
+    assert.equal(attempts.get(ids[1]), 2, 'a recovered advertisement leaves all later retry rounds');
+    assert.equal(attempts.get(ids[2]), 3, 'only a still missing advertisement reaches the third consultation');
+    for (const id of ids.slice(3)) assert.equal(attempts.get(id), 1);
+    assert.equal(h.vendors.get('id:111').anuncios.length, listing.length);
+    assert.equal(h.saved().status, 'completed_partial');
+    assert(h.events.some(event => /Reconsultando apenas anuncios pendentes.*de 1 concluidos/.test(event.job.progress.detail)),
+        'retry progress describes only the remaining advertisements');
+    assert(browsers.slice(1).every(browser => browser.finishes.includes('completed_partial')));
+}
+
+async function parallelDetailsPauseKeepsOutOfOrderAttempts() {
+    const ids = Array.from({ length: 6 }, (_, index) => `MLB10000005${String(index).padStart(2, '0')}`);
+    const listing = ids.map(id => salesListing(id)), releases = [], firstCalls = [];
+    const create = () => harness(avantFlowPages(), async () => ({ anuncios: copy(listing), reason: 'avant_data_incomplete', incomplete: true }));
+    const h = create(); parallelDetailBrowsers(h);
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        firstCalls.push(id);
+        await options.browser.navigate(options.url);
+        if (id === ids[1]) return { anuncios: [] };
+        if (id === ids[2]) return { anuncios: [salesListing(id, { vendas: 20, media_mensal: 2, rankable: true })] };
+        // Deliberately ignore abort to prove late callbacks cannot mutate state.
+        await new Promise(resolve => releases.push(resolve));
+        const late = { anuncios: [salesListing(id, { vendas: 999, media_mensal: 99, rankable: true })] };
+        options.onPartial(late);
+        return late;
+    });
+    await h.runner.start();
+    await untilDetail(() => {
+        const collection = h.saved().checkpoint.sellerCollection;
+        return collection && collection.completedIndices?.includes(1) && collection.result.anuncios[2].rankable;
+    });
+    await h.runner.stop('paused'); await h.runner.task;
+    const paused = h.saved(), privateCollection = copy(paused.checkpoint.sellerCollection);
+    assert.equal(privateCollection.index, 0, 'the contiguous cursor never jumps past the first interrupted detail');
+    assert(privateCollection.completedIndices.includes(1), 'a completed but unavailable consultation is persisted outside the cursor');
+    releases.forEach(release => release());
+    await detailDelay(2);
+    assert.deepEqual(h.saved().checkpoint.sellerCollection, privateCollection, 'late workers cannot change a paused checkpoint');
+    const restarted = create(), resumedCalls = [];
+    restarted.restoreCheckpoint(paused); parallelDetailBrowsers(restarted);
+    withDetailCollector(restarted, async options => {
+        resumedCalls.push(options.expectedItem.id);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 30, media_mensal: 3, rankable: true })] };
+    });
+    await restarted.runner.resume('run-1'); await restarted.runner.task;
+    assert(!resumedCalls.includes(ids[1]), 'an unsuccessful detail already attempted in this round is not repeated on resume');
+    assert(!resumedCalls.includes(ids[2]), 'a detail completed out of order is not repeated on resume');
+    assert.deepEqual([...resumedCalls].sort(), [ids[0], ...ids.slice(3)].sort());
+    assert.equal(restarted.vendors.get('id:111').anuncios.find(item => item.id === ids[2]).vendas, 20);
+}
+
+async function parallelDetailsLoginUsesBlockedBrowser() {
+    const ids = Array.from({ length: 5 }, (_, index) => `MLB10000006${String(index).padStart(2, '0')}`);
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    const browsers = parallelDetailBrowsers(h), authBrowsers = [];
+    const factory = h.runner.createDetailBrowser;
+    h.runner.createDetailBrowser = index => {
+        const browser = factory(index);
+        browser.ensureAvantSession = async () => { authBrowsers.push(browser); return { authenticated: false, attempted: true }; };
+        return browser;
+    };
+    const calls = [];
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        if (options.expectedItem.id === ids[1]) {
+            await detailDelay(1);
+            return { authRequired: true, reason: 'avant_login_required', anuncios: [] };
+        }
+        return waitForDetailAbort(options.signal);
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(h.saved().status, 'waiting_login');
+    assert.equal(h.runner.loginBrowser, browsers[1], 'show-browser can select the worker which needs authentication');
+    assert.deepEqual(authBrowsers, [browsers[1]], 'Avant recovery is attempted only inside the blocked worker');
+    assert.equal(calls.length, 4, 'no fifth task starts after a fatal login failure');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
+    assert(browsers.slice(1).every(browser => browser.stops >= 1), 'login stops every sibling browser');
+    assert.equal(h.vendors.size, 0, 'an interrupted seller cannot publish a premature result');
+}
+
+async function parallelDetailTimeoutOnlyStopsItsBrowser() {
+    const ids = Array.from({ length: 6 }, (_, index) => `MLB10000007${String(index).padStart(2, '0')}`);
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }), { detailTimeoutMs: 15 });
+    const browsers = parallelDetailBrowsers(h), calls = [];
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        if (options.expectedItem.id === ids[0]) return waitForDetailAbort(options.signal);
+        await detailDelay(1);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 60, media_mensal: 6, rankable: true })] };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(calls.length, 6, 'a timed-out consultation does not prevent the remaining advertisements');
+    assert.equal(h.stopped(), 1, 'only the timed-out main browser is stopped');
+    assert(browsers.slice(1).every(browser => browser.stops === 0), 'healthy concurrent browsers keep running');
+    const ads = h.vendors.get('id:111').anuncios;
+    assert.equal(ads.filter(item => item.rankable).length, 5);
+    assert.equal(h.saved().status, 'completed_partial');
+}
+
 (async () => {
+    await parallelDetailsOnlyRetryMissing();
+    await parallelDetailsPauseKeepsOutOfOrderAttempts();
+    await parallelDetailsLoginUsesBlockedBrowser();
+    await parallelDetailTimeoutOnlyStopsItsBrowser();
     await lateCategoryFiltersAndSharedFailure();
     await recoverOnlyIncompleteAndFailedSeeds();
     await pauseAndResumeIncompleteRecovery();

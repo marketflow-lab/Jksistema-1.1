@@ -297,6 +297,72 @@ async function testBrowserIsolationAndNavigation() {
     await h.api.quit();
 }
 
+async function testFourDetailBrowsersAndLoginLifecycle() {
+    const saved = { id: 'parallel-login', owner: 'one', status: 'waiting_login', revision: 2,
+        counters: {}, checkpoint: {} };
+    const h = harness([saved]);
+    await h.command('status', 'one');
+    const runner = h.api.coordinator();
+    runner.job = clone(saved);
+    const main = runner.browser;
+    const extras = [1, 2, 3].map(index => runner.createDetailBrowser(index));
+    assert.equal(h.windows.length, 0, 'detail adapters create windows lazily');
+    try {
+        await main.prepare();
+        await Promise.all(extras.map(browser => browser.prepare()));
+        const browsers = [main, ...extras];
+        const urls = browsers.map((_browser, index) => `https://produto.mercadolivre.com.br/MLB-${1234567890 + index}-item`);
+        assert.equal(h.windows.length, 4);
+        assert.equal(h.events.filter(event => event.type === 'restore').length, 1, 'only the main worker restores the shared session');
+        assert.equal(h.events.filter(event => event.type === 'extensions').length, 1, 'extensions are prepared once before detail workers');
+        assert(h.windows.every(window => window.options.webPreferences.session === h.session));
+        assert(h.windows.every(window => window.options.webPreferences.contextIsolation && !window.options.webPreferences.nodeIntegration));
+        assert(h.windows.every(window => window.webContents.downloadGuard && !window.visible));
+        await Promise.all(browsers.map((browser, index) => browser.navigate(urls[index])));
+        assert.deepEqual(browsers.map(browser => browser.getURL()), urls, 'each worker retains its own document during parallel navigation');
+        h.windows[2].webContents.emit('did-navigate', {}, urls[2], 403);
+        assert.equal(extras[1].getNavigationStatus().statusCode, 403);
+        assert.equal(main.getNavigationStatus(), null, 'detail navigation status cannot replace the main document status');
+        assert.equal(extras[0].getNavigationStatus(), null);
+        await Promise.all(browsers.map((browser, index) => browser.executeJavaScript(`fixture-worker-${index}`)));
+        assert(h.windows.every((window, index) => window.webContents.scripts[0].code === `fixture-worker-${index}`));
+        await Promise.all(browsers.map(browser => browser.ensureAvantSession({})));
+        assert.deepEqual(h.avantChecks.map(check => check.contents), h.windows.map(window => window.webContents), 'Avant checks use the corresponding worker, including parallel requests');
+        await assert.rejects(extras[0].navigate('https://evil.example/'), /fora do Mercado Livre/);
+        let denied = false;
+        h.windows[1].webContents.emit('will-redirect', { preventDefault: () => { denied = true; } }, 'https://evil.example/');
+        assert(denied, 'detail workers retain the same navigation allowlist');
+        h.windows[1].blockLoads = true;
+        const controller = new AbortController();
+        const loading = extras[0].navigate(urls[0], controller.signal);
+        controller.abort();
+        await assert.rejects(loading, error => error.name === 'AbortError');
+        assert.deepEqual(h.windows.map(window => window.webContents.stops), [0, 1, 0, 0], 'a detail abort stops only that worker');
+        h.windows[1].releaseLoad();
+        runner.loginBrowser = extras[1];
+        await Promise.all(extras.map(browser => browser.finish('waiting_login')));
+        assert.deepEqual(h.windows.map(window => window.destroyed), [false, true, false, true], 'only the blocked detail window survives login finalization');
+        await assert.rejects(h.command('show-browser', 'two', saved.id), /Pesquisa n[aã]o encontrada/);
+        assert(h.windows.every(window => !window.visible), 'another owner cannot reveal the blocked window');
+        await h.command('show-browser', 'one', saved.id);
+        assert.equal(h.windows[2].visible, true, 'show-browser reveals the detail that requested login');
+        assert.equal(h.windows[0].visible, false);
+        await assert.rejects(extras[0].prepare(), /encerrado/, 'disposed workers cannot create replacement windows after completion');
+        await h.command('resume', 'one', saved.id);
+        assert.equal(h.windows[2].destroyed, true, 'an authorized resume disposes the previous run login window');
+        assert.equal(runner.loginBrowser, null);
+    } finally { await h.api.quit(); }
+    assert(h.windows.every(window => window.destroyed), 'quit destroys every research window');
+
+    const idle = harness([saved]);
+    const blocked = idle.api.browser(1);
+    await blocked.prepare();
+    idle.api.coordinator().loginBrowser = blocked;
+    await blocked.finish('waiting_login');
+    await idle.api.quit();
+    assert(idle.windows.every(window => window.destroyed), 'quit also destroys a retained login worker without an active run');
+}
+
 async function testOwnershipAndQueue() {
     const h = harness();
     assert.throws(() => h.api.command({ sender: { isDestroyed: () => false, getURL: () => 'https://evil.example/' } }, 'start', {
@@ -854,6 +920,7 @@ async function testTypedBrowserTimeoutsAndRecovery() {
 }
 
 async function main() {
+    await testFourDetailBrowsersAndLoginLifecycle();
     await testTypedBrowserTimeoutsAndRecovery();
     await testIncompleteRecoveryAndTerminalDiagnostics();
     await testNamesLoginContextOwnership();

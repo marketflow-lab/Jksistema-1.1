@@ -6,6 +6,7 @@ const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyServic
 });
 let pesquisaMercadoCoordinator = null;
 let pesquisaMercadoWindow = null;
+const pesquisaMercadoDetailBrowsers = new Set();
 let pesquisaMercadoBrowserJobId = '';
 let pesquisaMercadoAuthToken = '';
 let pesquisaMercadoAvantEmail = '';
@@ -120,23 +121,21 @@ function pesquisaMercadoBackendRequest(method, pathname, body, token = pesquisaM
     });
 }
 
-function ensurePesquisaMercadoBrowser() {
+function createPesquisaMercadoBrowserWindow(title, onNavigation, onClosed) {
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-    if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) return pesquisaMercadoWindow;
     const worker = new BrowserWindow({ width: 1280, height: 900, show: false,
-        title: 'Pesquisa de Mercado - coleta', backgroundColor: '#ffffff',
+        title, backgroundColor: '#ffffff',
         webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
             userAgent: ML_BROWSER_USER_AGENT, session: getMlSession() }
     });
-    pesquisaMercadoWindow = worker;
     worker.setMenuBarVisibility(false);
     worker.webContents.setUserAgent(ML_BROWSER_USER_AGENT);
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // Closing the auxiliary window only hides it, preserving the active job.
     worker.on('close', event => { if (!pesquisaMercadoQuitting) { event.preventDefault(); worker.hide(); } });
-    worker.on('closed', () => { if (pesquisaMercadoWindow === worker) { pesquisaMercadoWindow = null; pesquisaMercadoBrowserJobId = ''; pesquisaMercadoNavigationStatus = null; } });
+    worker.on('closed', onClosed);
     worker.webContents.on('did-navigate', (_event, url, statusCode) => {
-        pesquisaMercadoNavigationStatus = Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { url, statusCode } : null;
+        onNavigation(Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { url, statusCode } : null);
     });
     worker.webContents.on('will-navigate', (event, url) => {
         if (!isAllowedFavoritosWorkerUrl(url)) event.preventDefault();
@@ -148,30 +147,65 @@ function ensurePesquisaMercadoBrowser() {
     return worker;
 }
 
-function pesquisaMercadoBrowserAdapter() {
-    return {
+function ensurePesquisaMercadoBrowser() {
+    if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
+    if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) return pesquisaMercadoWindow;
+    const worker = createPesquisaMercadoBrowserWindow('Pesquisa de Mercado - coleta',
+        status => { pesquisaMercadoNavigationStatus = status; },
+        () => { if (pesquisaMercadoWindow === worker) { pesquisaMercadoWindow = null; pesquisaMercadoBrowserJobId = ''; pesquisaMercadoNavigationStatus = null; } });
+    pesquisaMercadoWindow = worker;
+    return worker;
+}
+
+function pesquisaMercadoBrowserAdapter(detailIndex = 0) {
+    const detail = Number.isInteger(detailIndex) && detailIndex >= 1 && detailIndex <= 3;
+    if (detailIndex !== 0 && !detail) throw new Error('Tarefa de pesquisa invalida.');
+    let detailWindow = null, detailNavigationStatus = null, detailSession = null, disposed = false;
+    const currentWindow = () => {
+        const worker = detail ? detailWindow : pesquisaMercadoWindow;
+        return worker && !worker.isDestroyed() ? worker : null;
+    };
+    const setNavigationStatus = status => {
+        if (detail) detailNavigationStatus = status;
+        else pesquisaMercadoNavigationStatus = status;
+    };
+    const ensureWindow = () => {
+        if (disposed || pesquisaMercadoQuitting) throw new Error('O navegador da pesquisa foi encerrado.');
+        if (!detail) return ensurePesquisaMercadoBrowser();
+        if (!currentWindow()) {
+            detailWindow = createPesquisaMercadoBrowserWindow(`Pesquisa de Mercado - tarefa ${detailIndex + 1}`,
+                setNavigationStatus, () => { detailWindow = null; detailNavigationStatus = null; detailSession = null; });
+        }
+        return detailWindow;
+    };
+    const adapter = {
         async prepare() {
             if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-            await restaurarSessaoAvantProAntesDeAbrirNavegador('before-pesquisa-mercado-start', {});
-            if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
-            await ensureChromeExtensionsForMlSession();
-            ensurePesquisaMercadoBrowser();
+            // The main browser prepares the shared session before details start.
+            if (!detail) {
+                await restaurarSessaoAvantProAntesDeAbrirNavegador('before-pesquisa-mercado-start', {});
+                if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
+                await ensureChromeExtensionsForMlSession();
+            }
+            ensureWindow();
         },
         getURL() {
-            return pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents.getURL() : '';
+            const worker = currentWindow();
+            return worker ? worker.webContents.getURL() : '';
         },
         getNavigationStatus() {
-            const current = pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents.getURL() : '';
-            return pesquisaMercadoNavigationStatus && pesquisaMercadoNavigationStatus.url === current ? { ...pesquisaMercadoNavigationStatus } : null;
+            const status = detail ? detailNavigationStatus : pesquisaMercadoNavigationStatus;
+            return status && status.url === adapter.getURL() ? { ...status } : null;
         },
         isLoading() {
-            return !!(pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() && pesquisaMercadoWindow.webContents.isLoadingMainFrame());
+            const worker = currentWindow();
+            return !!(worker && worker.webContents.isLoadingMainFrame());
         },
         async navigate(url, signal) {
             if (!pesquisaMercadoRunnerModule.allowedUrl(url)) throw new Error('Link fora do Mercado Livre.');
-            const worker = ensurePesquisaMercadoBrowser();
+            const worker = ensureWindow();
             if (signal && signal.aborted) { const err = new Error('Pesquisa interrompida.'); err.name = 'AbortError'; throw err; }
-            pesquisaMercadoNavigationStatus = null;
+            setNavigationStatus(null);
             let timer;
             let abort;
             const interrupted = new Promise((_resolve, reject) => {
@@ -188,13 +222,13 @@ function pesquisaMercadoBrowserAdapter() {
             });
             try {
                 await Promise.race([worker.loadURL(url), interrupted]);
-                pesquisaMercadoBrowserJobId = String(pesquisaMercadoCoordinator && (pesquisaMercadoCoordinator.namesJobId
+                if (!detail) pesquisaMercadoBrowserJobId = String(pesquisaMercadoCoordinator && (pesquisaMercadoCoordinator.namesJobId
                     || pesquisaMercadoCoordinator.job && pesquisaMercadoCoordinator.job.id) || '');
             }
             finally { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); }
         },
         async executeJavaScript(code) {
-            const worker = ensurePesquisaMercadoBrowser();
+            const worker = ensureWindow();
             if (!isAllowedFavoritosWorkerUrl(worker.webContents.getURL())) throw new Error('Pagina de coleta nao permitida.');
             let timer;
             try {
@@ -209,18 +243,44 @@ function pesquisaMercadoBrowserAdapter() {
             } finally { clearTimeout(timer); }
         },
         async ensureAvantSession(options = {}) {
-            if (!pesquisaMercadoAvantSession) pesquisaMercadoAvantSession = new pesquisaMercadoAvantModule.AvantSession({
-                getContents: () => pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() ? pesquisaMercadoWindow.webContents : null,
-                getEmail: () => pesquisaMercadoAvantEmail,
-                getContext: () => pesquisaMercadoAvantContext
-            });
-            return pesquisaMercadoAvantSession.ensure(options);
+            let session = detail ? detailSession : pesquisaMercadoAvantSession;
+            if (!session) {
+                session = new pesquisaMercadoAvantModule.AvantSession({
+                    getContents: () => { const worker = currentWindow(); return worker ? worker.webContents : null; },
+                    getEmail: () => pesquisaMercadoAvantEmail,
+                    getContext: () => pesquisaMercadoAvantContext
+                });
+                if (detail) detailSession = session;
+                else pesquisaMercadoAvantSession = session;
+            }
+            return session.ensure(options);
         },
-        stop() { if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) pesquisaMercadoWindow.webContents.stop(); },
+        stop() { const worker = currentWindow(); if (worker) worker.webContents.stop(); },
+        show() {
+            const worker = currentWindow();
+            if (!worker) return false;
+            worker.show(); worker.focus();
+            return true;
+        },
+        destroy() {
+            if (!detail || disposed) return;
+            disposed = true;
+            const worker = currentWindow();
+            if (worker) worker.destroy();
+            detailSession = null;
+            pesquisaMercadoDetailBrowsers.delete(adapter);
+        },
         async finish(status) {
-            if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed() && status !== 'waiting_login') pesquisaMercadoWindow.hide();
+            if (detail) {
+                if (status !== 'waiting_login' || !pesquisaMercadoCoordinator || pesquisaMercadoCoordinator.loginBrowser !== adapter) adapter.destroy();
+            } else {
+                const worker = currentWindow();
+                if (worker && status !== 'waiting_login') worker.hide();
+            }
         }
     };
+    if (detail) pesquisaMercadoDetailBrowsers.add(adapter);
+    return adapter;
 }
 
 function getPesquisaMercadoCoordinator() {
@@ -230,6 +290,7 @@ function getPesquisaMercadoCoordinator() {
         api: pesquisaMercadoBackendRequest,
         taxonomy: pesquisaMercadoTaxonomy,
         browser: pesquisaMercadoBrowserAdapter(),
+        createDetailBrowser: index => pesquisaMercadoBrowserAdapter(index),
         pageScripts: require(path.join(sharedDir, 'page-scripts.js')),
         collector: require(path.join(sharedDir, 'shared-collector.js')),
         emit: payload => {
@@ -237,6 +298,11 @@ function getPesquisaMercadoCoordinator() {
         }
     });
     return pesquisaMercadoCoordinator;
+}
+
+function destroyPesquisaMercadoDetailBrowsers() {
+    for (const browser of [...pesquisaMercadoDetailBrowsers]) browser.destroy();
+    if (pesquisaMercadoCoordinator) pesquisaMercadoCoordinator.loginBrowser = null;
 }
 
 function pesquisaMercadoCommand(event, action, payload = {}) {
@@ -268,7 +334,7 @@ async function executePesquisaMercadoCommand(action, payload) {
     const runner = getPesquisaMercadoCoordinator();
     const jobId = String(payload.jobId || runner.job && runner.job.id || '');
     if (runner.task && payload.jobId && runner.job.id !== jobId) throw new Error('Outra pesquisa ja esta em execucao neste aplicativo.');
-    let authorizedLatest;
+    let authorizedLatest, authorizedJob;
     // Validate ownership using the new token before replacing the active request context.
     if (runner.task && runner.job) {
         await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(runner.job.id)}`, undefined, token);
@@ -277,13 +343,17 @@ async function executePesquisaMercadoCommand(action, payload) {
     } else {
         authorizedLatest = await pesquisaMercadoBackendRequest('GET', '/api/pesquisa-mercado/jobs/latest', undefined, token);
     }
-    if (action === 'recover-incomplete') await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`, undefined, token);
+    if (action === 'recover-incomplete' || action === 'show-browser' && payload.purpose !== 'categories' && jobId) {
+        authorizedJob = await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`, undefined, token);
+    }
     if (pesquisaMercadoAuthToken !== token && !runner.task && !runner.namesTask) {
+        destroyPesquisaMercadoDetailBrowsers();
         pesquisaMercadoAvantEmail = '';
         pesquisaMercadoAvantContext += 1;
         pesquisaMercadoAvantSession = null;
     }
     if (configAction && !runner.task && !runner.namesTask) {
+        destroyPesquisaMercadoDetailBrowsers();
         if (pesquisaMercadoAvantEmail !== avantEmail) {
             pesquisaMercadoAvantContext += 1;
             pesquisaMercadoAvantSession = null;
@@ -322,7 +392,7 @@ async function executePesquisaMercadoCommand(action, payload) {
             worker.show(); worker.focus();
             return { success: true };
         }
-        const response = jobId ? await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`) : authorizedLatest;
+        const response = authorizedJob || (jobId ? await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`) : authorizedLatest);
         if (!response || !response.job || payload.purpose !== 'names' && !['running', 'paused', 'waiting_login', 'interrupted', 'completed_partial', 'failed'].includes(response.job.status)) throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
         if (payload.purpose === 'names') {
             if (runner.task || runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
@@ -333,6 +403,11 @@ async function executePesquisaMercadoCommand(action, payload) {
             return { success: true };
         }
         if (runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
+        if (response.job.status === 'waiting_login' && runner.job && runner.job.id === response.job.id
+            && runner.loginBrowser && typeof runner.loginBrowser.show === 'function' && runner.loginBrowser.show()) {
+            const { id, status, revision, counters, message, created_at, updated_at } = response.job;
+            return { job: { id, status, revision, counters, message, created_at, updated_at } };
+        }
         const hadBrowser = pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed();
         const changedJob = pesquisaMercadoBrowserJobId !== response.job.id;
         if (!hadBrowser) await runner.browser.prepare();
@@ -368,6 +443,7 @@ async function persistPesquisaMercadoBeforeQuit() {
         pesquisaMercadoCategoriesToken = '';
         pesquisaMercadoCategoryChoices.clear();
         pesquisaMercadoCategoryChildren.clear();
+        destroyPesquisaMercadoDetailBrowsers();
         if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) pesquisaMercadoWindow.destroy();
     }
 }

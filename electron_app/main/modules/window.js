@@ -435,6 +435,7 @@ function renderServerSetupScreen(win, clientConfig) {
 function getChromeExtensionsRoots() {
     const roots = [
         process.env.JK_CHROME_EXTENSIONS_DIR,
+        app.isPackaged && process.resourcesPath ? path.join(process.resourcesPath, 'extensoes_chrome') : null,
         path.join(getLocalBackendRuntimeDir(), 'extensoes_chrome'),
         path.join(app.getPath('userData'), JK_LOCAL_BACKEND_DIR_NAME, 'extensoes_chrome'),
         path.join(getAppRootDir(), 'extensoes_chrome'),

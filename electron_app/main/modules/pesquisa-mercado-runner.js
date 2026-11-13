@@ -377,6 +377,9 @@ class PesquisaMercadoRunner {
     constructor(options) {
         this.api = options.api;
         this.browser = options.browser;
+        this.createDetailBrowser = options.createDetailBrowser;
+        this.detailBrowsers = [this.browser];
+        this.loginBrowser = null;
         this.scripts = options.pageScripts;
         this.collector = options.collector;
         this.taxonomy = options.taxonomy || null;
@@ -454,6 +457,11 @@ class PesquisaMercadoRunner {
             if (this.job.id !== job.id) throw new Error('Outra pesquisa ja esta em execucao neste aplicativo.');
             return this.snapshot();
         }
+        for (const browser of this.detailBrowsers.slice(1)) {
+            if (typeof browser.destroy === 'function') browser.destroy();
+        }
+        this.detailBrowsers = [this.browser];
+        this.loginBrowser = null;
         this.job = clone(job);
         this.job.counters = { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0, ...(job.counters || {}) };
         this.checkpoint = initialCheckpoint(job.checkpoint);
@@ -518,13 +526,13 @@ class PesquisaMercadoRunner {
         finally { signal.removeEventListener('abort', abort); }
     }
 
-    async ensureAvantSession(signal, state, { force = false, rankingOnly = false } = {}) {
-        if (typeof this.browser.ensureAvantSession !== 'function') return true;
+    async ensureAvantSession(signal, state, { force = false, rankingOnly = false, browser = this.browser } = {}) {
+        if (typeof browser.ensureAvantSession !== 'function') return true;
         if (!force && state.checked) return true;
         state.checked = true;
         let result;
         try {
-            result = await this.nameStep(() => this.browser.ensureAvantSession({ signal, force, rankingOnly }), signal);
+            result = await this.nameStep(() => browser.ensureAvantSession({ signal, force, rankingOnly }), signal);
         } catch (error) {
             if (error && error.status === 404) error.avantSessionRejected = true;
             if (error && (error.name === 'AbortError' || error.status === 401 || error.status === 403 || error.status === 404)) throw error;
@@ -540,11 +548,11 @@ class PesquisaMercadoRunner {
         throw error;
     }
 
-    async recoverAvantSession(result, signal, state) {
+    async recoverAvantSession(result, signal, state, browser = this.browser) {
         if (!requiresAvantLogin(result) || state.forced || state.attempted
-            || typeof this.browser.ensureAvantSession !== 'function') return false;
+            || typeof browser.ensureAvantSession !== 'function') return false;
         state.forced = true;
-        await this.ensureAvantSession(signal, state, { force: true });
+        await this.ensureAvantSession(signal, state, { force: true, browser });
         return true;
     }
 
@@ -703,7 +711,7 @@ class PesquisaMercadoRunner {
         this.stopStatus = status;
         this.job.status = status;
         if (this.controller) this.controller.abort();
-        if (typeof this.browser.stop === 'function') this.browser.stop();
+        this.stopBrowsers();
         this.setProgress(status, status === 'cancelled' ? 'Pesquisa cancelada; resultados preservados.' : 'Pesquisa pausada; progresso salvo.');
         await this.save();
         return this.snapshot();
@@ -729,8 +737,14 @@ class PesquisaMercadoRunner {
         return this.saveQueue;
     }
 
-    check() {
-        if (this.controller.signal.aborted) {
+    stopBrowsers() {
+        for (const browser of this.detailBrowsers) {
+            if (typeof browser.stop === 'function') browser.stop();
+        }
+    }
+
+    check(signal = this.controller.signal) {
+        if (this.controller.signal.aborted || signal.aborted) {
             const err = new Error('Pesquisa interrompida.');
             err.name = 'AbortError';
             throw err;
@@ -742,7 +756,7 @@ class PesquisaMercadoRunner {
         if (recovery && recovery.generation !== Number(this.job.generation || 0)) throw new Error('A pesquisa foi atualizada. Reabra o progresso salvo.');
     }
 
-    async attempt(operation, signal = this.controller.signal) {
+    async attempt(operation, signal = this.controller.signal, browser = this.browser) {
         let last;
         const avantState = { checked: false, attempted: false, forced: false };
         for (let index = 0; index < 3; index += 1) {
@@ -751,13 +765,14 @@ class PesquisaMercadoRunner {
                 const result = await this.nameStep(() => operation(avantState), signal);
                 this.check();
                 if (result && (result.authRequired || result.avantAuthRequired || result.reason === 'avant_login_required')) {
-                    if (await this.nameStep(() => this.recoverAvantSession(result, signal, avantState), signal)) { index -= 1; continue; }
+                    if (await this.nameStep(() => this.recoverAvantSession(result, signal, avantState, browser), signal)) { index -= 1; continue; }
                     const err = new Error(result.reason || 'Conclua o login do Mercado Livre ou Avant e clique em Retomar.');
                     err.waitingLogin = true;
                     throw err;
                 }
                 return result;
             } catch (err) {
+                if (err.waitingLogin || err.status === 401 || err.status === 403) this.loginBrowser = browser;
                 if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
                 if (index < 2) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
@@ -1330,6 +1345,215 @@ class PesquisaMercadoRunner {
         this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
 
+    async detailBrowserPool(size, signal) {
+        const count = typeof this.createDetailBrowser === 'function' ? Math.min(4, size) : 1;
+        while (this.detailBrowsers.length < count) {
+            this.check(signal);
+            const browser = this.createDetailBrowser(this.detailBrowsers.length);
+            if (!browser || this.detailBrowsers.includes(browser)) throw new Error('Navegador de consulta indisponivel.');
+            this.detailBrowsers.push(browser);
+            if (typeof browser.prepare === 'function') await this.nameStep(() => browser.prepare(), signal);
+        }
+        return this.detailBrowsers.slice(0, count);
+    }
+
+    async collectSellerDetail(seller, items, index, browser, signal) {
+        this.check(signal);
+        const item = items[index];
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal.addEventListener('abort', abort, { once: true });
+        let timer, latestPartial = null, collectionTimedOut = false, active = true;
+        const armTimeout = (milliseconds, phase) => {
+            if (!active || controller.signal.aborted) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                collectionTimedOut = phase !== 'navigation';
+                controller.abort();
+                if (typeof browser.stop === 'function') browser.stop();
+            }, milliseconds);
+        };
+        // Legacy collectors retain a bounded call. Current collectors give
+        // navigation and the loaded Avant panel separate time budgets.
+        armTimeout(this.detailTimeoutMs, 'collection');
+        try {
+            let detail;
+            try {
+                detail = await this.attempt(async () => {
+                    let attemptActive = true;
+                    latestPartial = null;
+                    const alive = () => attemptActive && active && !controller.signal.aborted;
+                    const capture = partial => {
+                        if (!alive()) return false;
+                        const invalid = !partial || partial.authRequired || partial.avantAuthRequired
+                            || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
+                        latestPartial = invalid ? null : clone(partial);
+                        return !invalid;
+                    };
+                    try {
+                        const observed = await this.collector.collectDetail({
+                            browser, signal: controller.signal, url: canonicalUrl(item.url),
+                            expectedItem: { id: item.id || '', url: item.url },
+                            seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
+                            timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
+                            onNavigationStart: () => {
+                                if (!alive()) return;
+                                latestPartial = null;
+                                armTimeout(this.detailNavigationTimeoutMs, 'navigation');
+                            },
+                            onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
+                            onPartial: capture
+                        });
+                        // Authentication or a changed document also vetoes
+                        // metrics observed before the terminal result.
+                        const valid = capture(observed);
+                        return valid ? observed : { ...observed, anuncios: [] };
+                    } finally { attemptActive = false; }
+                }, controller.signal, browser);
+            } catch (error) {
+                this.check(signal);
+                if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
+                detail = latestPartial;
+            }
+            this.check(signal);
+            const found = (detail.anuncios || []).find(candidate => item.id
+                ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
+                : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+            if (found && found.seller_confirmed === true && sameSeller(seller, found)
+                && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
+                    id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
+                }))) {
+                const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
+                    || String(value || '').toLowerCase().startsWith('avantpro');
+                const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+                const previousProof = item.seller_confirmed !== false
+                    && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
+                    && !/identidade|vendedor|escopo|catalogo/.test(previousError) && sameSeller(seller, item)
+                    && (!(item.avant_seller_id || item.avant_seller_perfil_url) || sameSeller(seller, {
+                        id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                    })) && (!item.catalogo || item.seller_confirmed === true && /anuncio|item/i.test(String(item.vendas_rotulo || '')) && sameSeller(seller, {
+                        id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
+                    }));
+                const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
+                const freshComplete = this.collector.isComplete(found);
+                let reusedUnconfirmed = false;
+                // A detail panel may expose only the metric missing from the card.
+                // Keep existing values visible, but only reuse proven provenance
+                // to construct a complete rank from separate observations.
+                for (const [value, sources] of [
+                    ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
+                    ['media_mensal', ['media_mensal_fonte']],
+                    ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
+                    ['data_criacao', ['dataCriacaoFonte']]
+                ]) {
+                    if (freshComplete) {
+                        merged[value] = found[value] ?? (value === 'data_criacao' ? '' : null);
+                        for (const source of sources) merged[source] = found[source] || '';
+                        continue;
+                    }
+                    if (value === 'media_vendas_mensal' && (found[value] === null || found[value] === undefined)
+                        && Number.isFinite(found.media_mensal)) {
+                        merged[value] = found.media_mensal;
+                        merged.media_vendas_mensal_fonte = found.media_mensal_fonte;
+                        continue;
+                    }
+                    if (found[value] === null || found[value] === undefined || found[value] === '') {
+                        if (item[value] !== undefined) {
+                            merged[value] = item[value];
+                            for (const source of sources) if (item[source] !== undefined) merged[source] = item[source];
+                            const monthlySource = item.media_mensal_fonte || item.media_vendas_mensal_fonte;
+                            const provenance = value === 'vendas' ? avantSource(item.vendasFonte || item.vendas_fonte)
+                                : value === 'data_criacao' ? avantSource(item.dataCriacaoFonte)
+                                    || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte)
+                                : avantSource(monthlySource) || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte);
+                            if (item[value] !== null && item[value] !== '' && (!previousProof || !provenance)) reusedUnconfirmed = true;
+                        }
+                    }
+                }
+                const catalogueProof = !merged.catalogo || /anuncio|item/i.test(String(merged.vendas_rotulo || '')) && sameSeller(seller, {
+                    id: merged.avant_seller_id, perfilUrl: merged.avant_seller_perfil_url
+                });
+                merged.rankable = (found.rankable === true || ['sem_dados_avant', 'sem_quantidade_avant'].includes(found.status)) && catalogueProof;
+                merged.rankable = !reusedUnconfirmed && this.collector.isComplete(merged);
+                if (merged.rankable) { merged.status = 'analisado'; merged.erro = ''; }
+                else if (reusedUnconfirmed) {
+                    merged.status = 'vendedor_nao_confirmado';
+                    merged.erro = 'A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
+                }
+                items[index] = merged;
+            }
+        } catch (error) {
+            this.check(signal);
+            if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+            // A bounded unavailable detail keeps the original card's evidence.
+        } finally {
+            active = false;
+            clearTimeout(timer);
+            signal.removeEventListener('abort', abort);
+        }
+    }
+
+    async collectDetailRound(seller, collection) {
+        const items = collection.result.anuncios;
+        // Keep out-of-order completions until the contiguous cursor catches up.
+        // Unavailable details also count as attempted within this round.
+        const completed = new Set((Array.isArray(collection.completedIndices) ? collection.completedIndices : []).filter(index =>
+            Number.isSafeInteger(index) && index >= collection.index && index < items.length));
+        const advance = () => {
+            while (collection.index < items.length && (completed.has(collection.index)
+                || this.collector.isComplete(items[collection.index]) || !allowedUrl(items[collection.index].url))) {
+                completed.delete(collection.index);
+                collection.index += 1;
+            }
+            collection.completedIndices = [...completed].sort((a, b) => a - b);
+        };
+        advance();
+        const pending = [];
+        for (let index = collection.index; index < items.length; index += 1) {
+            if (!completed.has(index) && !this.collector.isComplete(items[index]) && allowedUrl(items[index].url)) pending.push(index);
+        }
+        if (!pending.length) return false;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        this.controller.signal.addEventListener('abort', abort, { once: true });
+        let cursor = 0, finished = 0, firstError;
+        try {
+            const browsers = await this.detailBrowserPool(pending.length, controller.signal);
+            const progress = () => {
+                const label = collection.detailRound ? 'Reconsultando apenas anuncios pendentes' : 'Consultando anuncios pendentes';
+                this.setProgress('collecting', `${label} de ${seller.nome || seller.id || 'vendedor'}: ${finished} de ${pending.length} concluidos nesta tentativa; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+            };
+            const work = async browser => {
+                try {
+                    while (cursor < pending.length) {
+                        this.check(controller.signal);
+                        const index = pending[cursor++];
+                        progress();
+                        await this.collectSellerDetail(seller, items, index, browser, controller.signal);
+                        this.check(controller.signal);
+                        completed.add(index);
+                        finished += 1;
+                        progress();
+                        advance();
+                        await this.save();
+                    }
+                } catch (error) {
+                    if (!firstError) firstError = error;
+                    controller.abort();
+                    this.stopBrowsers();
+                }
+            };
+            // All workers must settle before run() saves a terminal status or a
+            // later seller can reuse these windows and mutate the checkpoint.
+            await Promise.all(browsers.map(work));
+            if (firstError) throw firstError;
+            this.check(controller.signal);
+            return true;
+        } finally {
+            this.controller.signal.removeEventListener('abort', abort);
+        }
+    }
+
     async complementSellerListings(seller, result, allAdsUrl, discoverySeed = null) {
         if (typeof this.collector.collectDetail !== 'function' || typeof this.collector.isComplete !== 'function') return result;
         const saved = this.checkpoint.sellerCollection;
@@ -1354,146 +1578,7 @@ class PesquisaMercadoRunner {
                 delete collection.retryDelayMs;
                 await this.save();
             }
-            for (let index = collection.index; index < items.length; index += 1) {
-                this.check();
-                const item = items[index];
-                if (this.collector.isComplete(item) || !allowedUrl(item.url)) { collection.index = index + 1; continue; }
-                this.setProgress('collecting', `Consultando vendas e media do anuncio ${index + 1} de ${items.length} de ${seller.nome || seller.id || 'vendedor'}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
-                const controller = new AbortController();
-                const abort = () => controller.abort();
-                this.controller.signal.addEventListener('abort', abort, { once: true });
-                let timer, latestPartial = null, collectionTimedOut = false, active = true;
-                const armTimeout = (milliseconds, phase) => {
-                    if (!active || controller.signal.aborted) return;
-                    clearTimeout(timer);
-                    timer = setTimeout(() => {
-                        collectionTimedOut = phase !== 'navigation';
-                        controller.abort();
-                        if (typeof this.browser.stop === 'function') this.browser.stop();
-                    }, milliseconds);
-                };
-                // Legacy collectors retain a bounded call. Current collectors give
-                // navigation and the loaded Avant panel separate time budgets.
-                armTimeout(this.detailTimeoutMs, 'collection');
-                try {
-                    navigated = true;
-                    let detail;
-                    try {
-                        detail = await this.attempt(async () => {
-                            let attemptActive = true;
-                            latestPartial = null;
-                            const alive = () => attemptActive && active && !controller.signal.aborted;
-                            const capture = partial => {
-                                if (!alive()) return false;
-                                const invalid = !partial || partial.authRequired || partial.avantAuthRequired
-                                    || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
-                                latestPartial = invalid ? null : clone(partial);
-                                return !invalid;
-                            };
-                            try {
-                                const observed = await this.collector.collectDetail({
-                                    browser: this.browser, signal: controller.signal, url: canonicalUrl(item.url),
-                                    expectedItem: { id: item.id || '', url: item.url },
-                                    seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
-                                    timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
-                                    onNavigationStart: () => {
-                                        if (!alive()) return;
-                                        latestPartial = null;
-                                        armTimeout(this.detailNavigationTimeoutMs, 'navigation');
-                                    },
-                                    onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
-                                    onPartial: capture
-                                });
-                                // Authentication or a changed document also vetoes
-                                // metrics observed before the terminal result.
-                                const valid = capture(observed);
-                                return valid ? observed : { ...observed, anuncios: [] };
-                            } finally { attemptActive = false; }
-                        }, controller.signal);
-                    } catch (error) {
-                        this.check();
-                        if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
-                        detail = latestPartial;
-                    }
-                    this.check();
-                    const found = (detail.anuncios || []).find(candidate => item.id
-                        ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
-                        : canonicalUrl(candidate.url) === canonicalUrl(item.url));
-                    if (found && found.seller_confirmed === true && sameSeller(seller, found)
-                        && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
-                            id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
-                        }))) {
-                        const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
-                            || String(value || '').toLowerCase().startsWith('avantpro');
-                        const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-                        const previousProof = item.seller_confirmed !== false
-                            && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
-                            && !/identidade|vendedor|escopo|catalogo/.test(previousError) && sameSeller(seller, item)
-                            && (!(item.avant_seller_id || item.avant_seller_perfil_url) || sameSeller(seller, {
-                                id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
-                            })) && (!item.catalogo || item.seller_confirmed === true && /anuncio|item/i.test(String(item.vendas_rotulo || '')) && sameSeller(seller, {
-                                id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url
-                            }));
-                        const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
-                        const freshComplete = this.collector.isComplete(found);
-                        let reusedUnconfirmed = false;
-                        // A detail panel may expose only the metric missing from the card.
-                        // Keep existing values visible, but only reuse proven provenance
-                        // to construct a complete rank from separate observations.
-                        for (const [value, sources] of [
-                            ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
-                            ['media_mensal', ['media_mensal_fonte']],
-                            ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
-                            ['data_criacao', ['dataCriacaoFonte']]
-                        ]) {
-                            if (freshComplete) {
-                                merged[value] = found[value] ?? (value === 'data_criacao' ? '' : null);
-                                for (const source of sources) merged[source] = found[source] || '';
-                                continue;
-                            }
-                            if (value === 'media_vendas_mensal' && (found[value] === null || found[value] === undefined)
-                                && Number.isFinite(found.media_mensal)) {
-                                merged[value] = found.media_mensal;
-                                merged.media_vendas_mensal_fonte = found.media_mensal_fonte;
-                                continue;
-                            }
-                            if (found[value] === null || found[value] === undefined || found[value] === '') {
-                                if (item[value] !== undefined) {
-                                    merged[value] = item[value];
-                                    for (const source of sources) if (item[source] !== undefined) merged[source] = item[source];
-                                    const monthlySource = item.media_mensal_fonte || item.media_vendas_mensal_fonte;
-                                    const provenance = value === 'vendas' ? avantSource(item.vendasFonte || item.vendas_fonte)
-                                        : value === 'data_criacao' ? avantSource(item.dataCriacaoFonte)
-                                            || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte)
-                                        : avantSource(monthlySource) || monthlySource === 'calculado_vendas_dias_avantpro' && avantSource(item.vendasFonte);
-                                    if (item[value] !== null && item[value] !== '' && (!previousProof || !provenance)) reusedUnconfirmed = true;
-                                }
-                            }
-                        }
-                        const catalogueProof = !merged.catalogo || /anuncio|item/i.test(String(merged.vendas_rotulo || '')) && sameSeller(seller, {
-                            id: merged.avant_seller_id, perfilUrl: merged.avant_seller_perfil_url
-                        });
-                        merged.rankable = (found.rankable === true || ['sem_dados_avant', 'sem_quantidade_avant'].includes(found.status)) && catalogueProof;
-                        merged.rankable = !reusedUnconfirmed && this.collector.isComplete(merged);
-                        if (merged.rankable) { merged.status = 'analisado'; merged.erro = ''; }
-                        else if (reusedUnconfirmed) {
-                            merged.status = 'vendedor_nao_confirmado';
-                            merged.erro = 'A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
-                        }
-                        items[index] = merged;
-                    }
-                } catch (error) {
-                    this.check();
-                    if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
-                    // A bounded unavailable detail keeps the original card's evidence.
-                } finally {
-                    active = false;
-                    clearTimeout(timer);
-                    this.controller.signal.removeEventListener('abort', abort);
-                }
-                collection.index = index + 1;
-                await this.save();
-            }
+            navigated = await this.collectDetailRound(seller, collection) || navigated;
             if (collection.detailRound >= this.detailRetryDelaysMs.length
                 || !items.some(item => !this.collector.isComplete(item) && allowedUrl(item.url))) break;
             // An empty successful response also needs a fresh consultation. Save
@@ -1501,6 +1586,7 @@ class PesquisaMercadoRunner {
             collection.retryDelayMs = this.detailRetryDelaysMs[collection.detailRound];
             collection.detailRound += 1;
             collection.index = 0;
+            collection.completedIndices = [];
             await this.save();
         }
         this.check();
@@ -1902,7 +1988,8 @@ class PesquisaMercadoRunner {
                 this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.');
             try { await this.save(); } catch (_saveError) { this.emit(this.snapshot()); }
         } finally {
-            if (typeof this.browser.finish === 'function') await this.browser.finish(this.job.status).catch(() => {});
+            await Promise.allSettled(this.detailBrowsers.map(browser =>
+                typeof browser.finish === 'function' ? browser.finish(this.job.status) : undefined));
         }
     }
 

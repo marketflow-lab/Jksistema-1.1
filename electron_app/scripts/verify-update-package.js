@@ -54,6 +54,20 @@ function walk(root) {
   return files;
 }
 
+function validateBundledAvantProAtRoot(resourcesRoot, failures) {
+  const relativeRoot = 'extensoes_chrome/avant_pro';
+  const sourceRoot = path.join(repoRoot, relativeRoot);
+  if (!fileExists(path.join(sourceRoot, 'manifest.json'))) {
+    failures.push(`extensao Avant Pro ausente na fonte: ${relativeRoot}/manifest.json`);
+    return;
+  }
+  for (const source of walk(sourceRoot)) {
+    const relative = toPosix(path.relative(sourceRoot, source));
+    const packaged = path.join(resourcesRoot, relativeRoot, relative);
+    if (!filesEqual(source, packaged)) failures.push(`extensao Avant Pro ausente/divergente no update: ${relativeRoot}/${relative}`);
+  }
+}
+
 const failures = [];
 let contract;
 try {
@@ -66,6 +80,11 @@ const pkg = readJson(path.join(appDir, 'package.json'));
 const updateConfig = require('./electron-builder-update-config');
 const localResource = (updateConfig.extraResources || []).find(entry => toPosix(entry?.to) === 'local_app');
 const filters = Array.isArray(localResource?.filter) ? localResource.filter.map(toPosix) : [];
+if (!(updateConfig.extraResources || []).some(entry =>
+  toPosix(entry?.from) === '../extensoes_chrome' && toPosix(entry?.to) === 'extensoes_chrome')) {
+  failures.push('extensoes_chrome ausente na configuracao update');
+}
+
 for (const required of [
   '!python_runtime/**',
   '!python_wheels/**',
@@ -88,6 +107,7 @@ if (!String(updateConfig?.win?.artifactName || '').includes('-Update-')) {
 }
 
 if (packagedRoot) {
+  validateBundledAvantProAtRoot(packagedRoot, failures);
   const localApp = path.join(packagedRoot, 'local_app');
   if (!directoryExists(localApp)) failures.push('local_app ausente no pacote update');
   const profilePath = path.join(localApp, 'installer-package-profile.json');
