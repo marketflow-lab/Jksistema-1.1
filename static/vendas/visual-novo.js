@@ -370,7 +370,11 @@
         find('vnPause').disabled = Boolean(pauseButton?.disabled);
         find('vnSync').classList.toggle('vn-syncing', Boolean(snapshot.sync?.running || snapshot.sync?.emAndamento || snapshot.syncEmAndamento));
         find('vnForce').checked = Boolean(document.getElementById('forcarSync')?.checked);
-        find('vnAuto').checked = Boolean(document.getElementById('syncAutomatico')?.checked);
+        const automatico = document.getElementById('syncAutomatico');
+        find('vnAuto').checked = Boolean(automatico?.checked);
+        find('vnAuto').indeterminate = Boolean(automatico?.indeterminate);
+        find('vnAuto').disabled = !automatico || automatico.disabled;
+        find('vnAuto').title = automatico?.title || '';
         find('vnLoading').hidden = !(snapshot.loading || snapshot.updating || snapshot.graphUpdating);
         text('vnReadError', snapshot.loadError || '');
         find('vnReadRetry').hidden = !snapshot.loadError;

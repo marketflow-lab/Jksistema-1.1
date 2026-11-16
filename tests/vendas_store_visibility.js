@@ -28,8 +28,8 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const [asset, expectedCacheKey] of Object.entries({
   'styles.css': '20261020-vendas-status-compacto-v2',
   'runtime.js': '20261027-cache-persistente-v1',
-  'periodo-cache.js': '20261112-status-resumido-v1',
-  'sync.js': '20261112-sync-status-linha-v1',
+  'periodo-cache.js': '20261116-automacao-salva-v1',
+  'sync.js': '20261116-automacao-salva-v1',
   'dados-render.js': '20261030-resumo-salvo-v1',
 })) {
   assert.ok(
@@ -90,7 +90,7 @@ const pageHtml = `<!doctype html>
           <option value="__todos">Todas as lojas virtuais</option>
         </select>
         <label class="sync-toggle"><input id="forcarSync" type="checkbox"><span>Re-sincronizar</span></label>
-        <label class="sync-toggle"><input id="syncAutomatico" type="checkbox" checked><span>Atualizar automaticamente</span></label>
+        <label class="sync-toggle"><input id="syncAutomatico" type="checkbox" disabled><span>Atualizar automaticamente</span></label>
         <div class="sync-actions">
           <button id="btnSync" type="button">Atualizar</button>
           <button id="btnCancel" type="button">Cancelar</button>
@@ -128,6 +128,7 @@ var periodoSelecionadoPeloUsuario = false;
 var dados = [];
 var devolucaoItens = [];
 var obterAuthHeaders = () => ({ Authorization: 'Bearer test' });
+var mesmaLoja = (left, right) => String(left) === String(right);
 var fecharCalendariosData = () => {};
 var setSyncButtons = isSyncing => {
   btnSync.disabled = isSyncing;
@@ -146,7 +147,13 @@ window.__stores = [
   { nome: 'Deckas' },
   { nome: 'Leri' },
   { nome: 'RCL' }
-];
+].map((loja, index) => ({ ...loja, store_id: 'store-' + index }));
+var vendasSyncMonitor = {
+  refresh: async () => ({ active: false, automacao: { lojas: window.__stores.map(loja => ({
+    loja: loja.nome, store_id: loja.store_id, habilitado: true
+  })) } }),
+  getLastPayload: () => ({ active: false, automacao: { lojas: [], habilitadas: 0, pendentes: 0 } })
+};
 window.fetch = async (url, options = {}) => {
   window.__fetchCalls.push({ url: String(url), cache: options.cache || '' });
   await new Promise(resolve => setTimeout(resolve, window.__fetchDelayMs));
@@ -230,7 +237,7 @@ async function readLayout(page) {
     assertLayout(await readLayout(page), 7, 'desktop');
 
     const refreshed = await page.evaluate(async () => {
-      window.__stores = [...window.__stores, { nome: 'Loja Centro' }];
+      window.__stores = [...window.__stores, { nome: 'Loja Centro', store_id: 'store-centro' }];
       const loaded = await carregarLojas({ silencioso: true });
       return {
         loaded,

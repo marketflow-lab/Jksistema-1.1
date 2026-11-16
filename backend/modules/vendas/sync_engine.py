@@ -161,6 +161,19 @@ def sincronizar_vendas(req: VendasSyncRequest, client_id: str):
     }
 
 
+def configurar_atualizacao_automatica(req: VendasSyncRequest, client_id: str):
+    """Persist the checkbox for an authorized store, independently of page state."""
+    if req.automatico:
+        # Enabling resumes saved work and queues the visible period, reusing
+        # closed days. The resync checkbox belongs to an explicit manual run.
+        result = sincronizar_vendas(req.model_copy(update={"forcar_resync": False}), client_id)
+    else:
+        req = _resolve_store(req, client_id)
+        SyncQueue(client_id).pause_automatic(req.store_id)
+        result = {"accepted": True, "store_id": req.store_id}
+    return {**result, "automatico": req.automatico, "automacao": SyncQueue(client_id).summary()}
+
+
 def _safe_failure(exc):
     status = getattr(exc, "status_code", 500)
     if status == 401 and getattr(exc, "code", None) == "bling_reconnect_required":

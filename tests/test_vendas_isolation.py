@@ -42,6 +42,7 @@ EXPECTED_ROUTES = {
     ("POST", "/api/vendas/sync/cancel", "cancelar_sincronizacao_vendas"),
     ("GET", "/api/vendas/sync/progress", "progresso_sincronizacao_vendas"),
     ("POST", "/api/vendas/sync", "sincronizar_vendas"),
+    ("POST", "/api/vendas/sync/automatico", "configurar_atualizacao_automatica_vendas"),
     ("GET", "/api/notas-entrada", "listar_notas_entrada"),
     ("GET", "/api/notas-entrada/itens", "listar_itens_devolucoes"),
     ("POST", "/api/notas-entrada/motivos/buscar", "buscar_motivos_devolucoes"),
@@ -106,7 +107,9 @@ assert margin_configuration[0].name == "api_medias_compras_configuracao_margens"
 assert set(margin_configuration[0].methods) == {"GET"}
 paths={path:item for path,item in backend_api.app.openapi().get("paths",{}).items() if path.startswith("/api/vendas") or path.startswith("/api/notas-entrada") or path.startswith("/api/unidades-negocios")}
 raw=json.dumps(paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
-print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest()}))
+previous_paths={path:item for path,item in paths.items() if path != "/api/vendas/sync/automatico"}
+previous_raw=json.dumps(previous_paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
+print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest(),"previous_openapi":hashlib.sha256(previous_raw.encode()).hexdigest()}))
 '''
     completed = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
@@ -116,10 +119,12 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # Deferred Medias photos add one POST, and SKU comments add GET and PUT.
         # Importacoes base-custos adds one GET to the previous 543/541 contract.
         # Approved import margin concurrency adds the verified configuration GET.
-        "routes": 545,
-        "pairs": 543,
+        # Immediate automatic settings add one POST; all older paths are frozen.
+        "routes": 546,
+        "pairs": 544,
         "duplicates": [],
-        "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
+        "openapi": "cdff2722a11d4efdd5c3f0392dabcdc03dbfa595eb3164e2e644eb0398d7e50c",
+        "previous_openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }
 
 
@@ -137,7 +142,7 @@ def test_domain_has_no_dynamic_runtime_bridge_or_wildcard_imports() -> None:
             assert "from fastapi" not in source and "import fastapi" not in source, path.name
 
 
-def test_module_factory_preserves_the_twenty_two_route_contracts(tmp_path: Path) -> None:
+def test_module_factory_preserves_vendas_route_contracts(tmp_path: Path) -> None:
     module = _create_module(tmp_path)
     actual = set()
     for route in module.router.routes:

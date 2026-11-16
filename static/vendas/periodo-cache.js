@@ -70,8 +70,11 @@ function atualizarPeriodoComRecarregamento(marcarSelecaoManual = false, preferen
 function setSyncButtons(isSyncing) {
     const automacao = vendasSyncMonitor.getLastPayload()?.automacao;
     const verificandoConexoes = automacao?.verificando_conexoes === true;
-    btnSync.disabled = isSyncing || verificandoConexoes;
-    btnCancel.disabled = !isSyncing && !verificandoConexoes && !automacao?.habilitadas && !automacao?.pendentes;
+    const configurando = (typeof configurandoAutomacaoVendas !== 'undefined' && configurandoAutomacaoVendas)
+        || (typeof confirmandoAutomacaoVendas !== 'undefined' && confirmandoAutomacaoVendas);
+    btnSync.disabled = isSyncing || verificandoConexoes || configurando;
+    btnCancel.disabled = configurando || (!isSyncing && !verificandoConexoes && !automacao?.habilitadas && !automacao?.pendentes);
+    if (typeof atualizarControleAutomacaoVendas === 'function') atualizarControleAutomacaoVendas();
 }
 
 function possuiColetaAgendadaVendas(data) {
@@ -160,6 +163,7 @@ function resumoLojaSelecionadaSyncVendas(estados, dataReferencia) {
 }
 
 function renderAutomacaoSyncVendas(data, painel = document.getElementById('syncPersistenteStatus')) {
+    if (typeof atualizarControleAutomacaoVendas === 'function') atualizarControleAutomacaoVendas(data);
     if (!painel) return;
     const automacao = data?.automacao;
     const verificandoConexoes = automacao?.verificando_conexoes === true;

@@ -260,8 +260,8 @@ assert.strictEqual(dadosCompactados.labels.at(-1), 'dia-319', 'compactação dev
 assert.strictEqual(dadosCompactados.series[0].at(-1), 319, 'séries devem preservar o valor do último ponto');
 
 assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
-assert.match(htmlStatic, /periodo-cache\.js\?v=20261112-status-resumido-v1/);
-assert.match(htmlStatic, /sync\.js\?v=20261112-sync-status-linha-v1/);
+assert.match(htmlStatic, /periodo-cache\.js\?v=20261116-automacao-salva-v1/);
+assert.match(htmlStatic, /sync\.js\?v=20261116-automacao-salva-v1/);
 assert.match(htmlStatic, /dados-render\.js\?v=20261030-resumo-salvo-v1/);
 assert.match(htmlStatic, /grafico\.js\?v=20261112-periodo-grafico-v1/);
 assert.match(htmlStatic, /init\.js\?v=20261027-cache-servidor-v2/);

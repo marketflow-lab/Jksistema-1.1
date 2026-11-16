@@ -240,6 +240,10 @@ def create_vendas_router(
     def sincronizar_vendas(req: VendasSyncRequest, client_id: str = Depends(tenant_dependency)):
         return _transport(sync_service.iniciar, req, client_id)
 
+    @router.post("/api/vendas/sync/automatico", name="configurar_atualizacao_automatica_vendas")
+    def configurar_atualizacao_automatica_vendas(req: VendasSyncRequest, client_id: str = Depends(tenant_dependency)):
+        return _transport(sync_service.configurar_automatico, req, client_id)
+
     @router.get("/api/notas-entrada", name="listar_notas_entrada")
     def listar_notas_entrada(
         data_inicio: str = None,

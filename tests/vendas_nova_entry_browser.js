@@ -464,6 +464,45 @@ async function verifySyncStatus(context, fixture, width, modern) {
     }
 }
 
+async function verifyAutomaticControl(context, fixture) {
+    const { page, frame } = await loadCase(context, fixture, false, 1206);
+    try {
+        const source = frame.locator('#syncAutomatico');
+        assert.equal(await source.isChecked(), false, 'a tela inicia sem indicar automação ativa sem confirmação');
+        assert.equal(await source.isDisabled(), true);
+        await frame.evaluate(() => JKVendasNova.show());
+        const mirror = frame.locator('#vnAuto');
+        await frame.waitForFunction(() => document.getElementById('vnAuto').disabled === true);
+        assert.equal(await mirror.isDisabled(), true, 'o novo layout preserva a espera pela configuração');
+        await frame.evaluate(() => {
+            const checkbox = document.getElementById('syncAutomatico');
+            checkbox.checked = false;
+            checkbox.indeterminate = true;
+            checkbox.disabled = false;
+            checkbox.title = 'Atualização automática ativada em 1 de 2 lojas.';
+            checkbox.addEventListener('change', () => { window.__automaticChanges = (window.__automaticChanges || 0) + 1; });
+            JKVendasNova.refresh();
+        });
+        await frame.waitForFunction(() => document.getElementById('vnAuto').indeterminate === true);
+        assert.equal(await mirror.isDisabled(), false);
+        assert.equal(await mirror.getAttribute('title'), 'Atualização automática ativada em 1 de 2 lojas.');
+        await mirror.click();
+        assert.equal(await source.isChecked(), true, 'o novo layout encaminha a ativação ao controle original');
+        assert.equal(await frame.evaluate(() => window.__automaticChanges), 1);
+        await frame.evaluate(() => {
+            const checkbox = document.getElementById('syncAutomatico');
+            checkbox.indeterminate = false;
+            checkbox.disabled = true;
+            JKVendasNova.refresh();
+        });
+        await frame.waitForFunction(() => document.getElementById('vnAuto').disabled === true);
+        assert.equal(await mirror.evaluate(element => element.indeterminate), false);
+        check('new layout mirrors confirmed automation and pending writes', true, { width: 1206 });
+    } finally {
+        await page.close();
+    }
+}
+
 (async () => {
     let context;
     try {
@@ -494,6 +533,7 @@ async function verifySyncStatus(context, fixture, width, modern) {
         }
         await verifyPhotoFeedback(context, fixture);
         await verifyLoadingFailure(context, fixture);
+        await verifyAutomaticControl(context, fixture);
         for (const width of [1206, 390]) {
             await verifySyncStatus(context, fixture, width, false);
             await verifySyncStatus(context, fixture, width, true);

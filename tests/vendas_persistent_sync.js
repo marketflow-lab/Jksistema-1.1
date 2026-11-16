@@ -19,7 +19,7 @@ function element() {
 
 function setup(options = {}) {
     const elements = Object.fromEntries(['btnSync', 'btnCancel', 'forcarSync', 'syncAutomatico', 'status', 'syncPersistenteStatus'].map(id => [id, element()]));
-    elements.syncAutomatico.checked = true;
+    elements.syncAutomatico.disabled = true;
     const calls = [];
     const events = {};
     let refreshCount = 0;
@@ -79,11 +79,152 @@ function freezeState(value) {
 }
 
 (async () => {
+    const savedState = (enabledA = false, enabledB = false) => ({
+        active: false,
+        automacao: {
+            habilitadas: Number(enabledA) + Number(enabledB), pendentes: 0, jobs: [],
+            lojas: [
+                { loja: 'Loja A', store_id: 'id-a', habilitado: enabledA, status: enabledA ? 'complete' : 'paused' },
+                { loja: 'Loja B', store_id: 'id-b', habilitado: enabledB, status: enabledB ? 'complete' : 'paused' }
+            ]
+        }
+    });
+    const initial = setup();
+    initial.context.atualizarControleAutomacaoVendas();
+    assert.equal(initial.elements.syncAutomatico.disabled, true, 'aguarda a configuração persistida antes de liberar o controle');
+    assert.equal(initial.elements.syncAutomatico.checked, false);
+    initial.context.aplicarEstadoMonitorSyncVendas(savedState());
+    assert.equal(initial.elements.syncAutomatico.disabled, false);
+    assert.equal(initial.elements.syncAutomatico.checked, false, 'reabrir a tela pausada não pode indicar automação ativa');
+    assert.equal(initial.calls.length, 0, 'ler o estado salvo não pode reativar lojas pausadas');
+
+    const mixedState = savedState(true, false);
+    const mixedControl = setup({ payload: mixedState });
+    mixedControl.context.aplicarEstadoMonitorSyncVendas(mixedState);
+    assert.equal(mixedControl.elements.syncAutomatico.checked, false);
+    assert.equal(mixedControl.elements.syncAutomatico.indeterminate, true, 'Todas representa planos parcialmente ativos');
+    mixedControl.context.lojaSelecionada = 'Loja B';
+    mixedControl.context.renderAutomacaoSyncVendas(mixedState);
+    assert.equal(mixedControl.elements.syncAutomatico.indeterminate, false);
+    assert.equal(mixedControl.elements.syncAutomatico.checked, false);
+    mixedControl.context.lojasDisponiveis[0].nome = 'Loja renomeada';
+    mixedControl.context.lojaSelecionada = 'Loja renomeada';
+    mixedControl.context.renderAutomacaoSyncVendas(mixedState);
+    assert.equal(mixedControl.elements.syncAutomatico.checked, true, 'a configuração acompanha store_id após mudança de nome');
+    assert.equal(mixedControl.calls.length, 0, 'trocar a loja selecionada apenas consulta a configuração');
+    mixedControl.context.lojaSelecionada = '__todas';
+    mixedControl.context.renderAutomacaoSyncVendas(mixedState);
+    await mixedControl.context.executarSync();
+    assert.deepEqual(mixedControl.calls.map(call => call.body.automatico), [true, false], 'Atualizar preserva os planos individuais de uma seleção parcial');
+
+    let activation;
+    activation = setup({ payload: savedState(), fetch: async call => {
+        const state = savedState(true, false);
+        activation.setPayload(state);
+        return { ok: true, json: async () => ({ accepted: true, automatico: true, automacao: state.automacao }) };
+    } });
+    activation.context.lojaSelecionada = 'Loja A';
+    activation.context.aplicarEstadoMonitorSyncVendas(savedState());
+    activation.elements.forcarSync.checked = true;
+    activation.elements.syncAutomatico.checked = true;
+    await activation.elements.syncAutomatico.listeners.change();
+    assert.equal(activation.calls.length, 1, 'ativar o checkbox salva imediatamente, sem aguardar o botão Atualizar');
+    assert.equal(activation.calls[0].url, '/api/vendas/sync/automatico');
+    assert.deepEqual(activation.calls[0].body, {
+        loja: 'Loja A', store_id: 'id-a', data_inicio: '2024-01-01', data_fim: '2026-10-15',
+        automatico: true, forcar_resync: false
+    });
+    assert.equal(activation.elements.syncAutomatico.checked, true);
+    assert.equal(activation.elements.syncAutomatico.disabled, false);
+
+    const collecting = savedState(true, false);
+    collecting.active = true;
+    collecting.active_count = 1;
+    collecting.automacao.lojas[0].status = 'running';
+    let releaseAutomatic;
+    let deactivation;
+    deactivation = setup({ payload: collecting, fetch: async () => {
+        await new Promise(resolve => { releaseAutomatic = resolve; });
+        const state = savedState();
+        deactivation.setPayload(state);
+        return { ok: true, json: async () => ({ accepted: true, automatico: false, automacao: state.automacao }) };
+    } });
+    deactivation.context.lojaSelecionada = 'Loja A';
+    deactivation.context.aplicarEstadoMonitorSyncVendas(collecting);
+    assert.equal(deactivation.context.syncEmAndamento, true);
+    assert.equal(deactivation.elements.syncAutomatico.disabled, false, 'a coleta ativa permite desativar a automação da loja');
+    deactivation.elements.syncAutomatico.checked = false;
+    const disableAutomatic = deactivation.elements.syncAutomatico.listeners.change();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(deactivation.elements.syncAutomatico.disabled, true, 'bloqueia somente enquanto salva a alteração');
+    assert.equal(deactivation.elements.btnSync.disabled, true);
+    assert.equal(deactivation.elements.btnCancel.disabled, true);
+    assert.equal(deactivation.calls[0].body.automatico, false);
+    releaseAutomatic();
+    await disableAutomatic;
+    assert.equal(deactivation.elements.syncAutomatico.checked, false);
+    assert.equal(deactivation.elements.syncAutomatico.disabled, false);
+    assert.equal(deactivation.calls.length, 1);
+
+    const configurationFailure = setup({ payload: savedState(true, false), fetch: async () => {
+        throw new TypeError('Failed to fetch');
+    } });
+    configurationFailure.context.lojaSelecionada = 'Loja A';
+    configurationFailure.context.aplicarEstadoMonitorSyncVendas(configurationFailure.context.vendasSyncMonitor.getLastPayload());
+    configurationFailure.elements.syncAutomatico.checked = false;
+    await configurationFailure.elements.syncAutomatico.listeners.change();
+    assert.equal(configurationFailure.elements.syncAutomatico.checked, true, 'uma gravação sem confirmação restaura o último estado conhecido');
+    assert.equal(configurationFailure.elements.syncAutomatico.disabled, false);
+    assert.equal(configurationFailure.calls.length, 1, 'uma falha de gravação não provoca novas tentativas silenciosas');
+    assert.match(configurationFailure.elements.status.innerHTML, /Não foi possível confirmar/);
+
+    let partialConfiguration;
+    partialConfiguration = setup({ payload: savedState(), fetch: async call => {
+        if (call.body.store_id === 'id-b') {
+            return { ok: false, status: 403, json: async () => ({ detail: 'Acesso negado à Loja B.' }) };
+        }
+        const state = savedState(true, false);
+        partialConfiguration.setPayload(state);
+        return { ok: true, json: async () => ({ accepted: true, automatico: true, automacao: state.automacao }) };
+    } });
+    partialConfiguration.context.aplicarEstadoMonitorSyncVendas(savedState());
+    partialConfiguration.elements.syncAutomatico.checked = true;
+    await partialConfiguration.elements.syncAutomatico.listeners.change();
+    assert.deepEqual(partialConfiguration.calls.map(call => call.body.store_id), ['id-a', 'id-b']);
+    assert.equal(partialConfiguration.elements.syncAutomatico.indeterminate, true, 'uma falha parcial preserva a loja cuja configuração foi confirmada');
+    assert.match(partialConfiguration.elements.status.innerHTML, /Loja B: Acesso negado/);
+
+    const sessionConfigurationFailure = setup({ payload: savedState(), fetch: async () => ({
+        ok: false, status: 503, json: async () => ({ detail: 'connection_failed' })
+    }) });
+    sessionConfigurationFailure.context.aplicarEstadoMonitorSyncVendas(savedState());
+    sessionConfigurationFailure.elements.syncAutomatico.checked = true;
+    await sessionConfigurationFailure.elements.syncAutomatico.listeners.change();
+    assert.equal(sessionConfigurationFailure.calls.length, 1, 'uma falha global de sessão interrompe o registro das demais lojas');
+
+    const earlyManual = setup({ payload: savedState(true, false) });
+    await earlyManual.context.executarSync();
+    assert.deepEqual(earlyManual.calls.map(call => call.body.automatico), [true, false], 'Atualizar antes do primeiro monitor aguarda os planos salvos e preserva sua configuração');
+    const unavailableConfiguration = setup({ payload: { active: false } });
+    await unavailableConfiguration.context.executarSync();
+    assert.equal(unavailableConfiguration.calls.length, 0, 'uma configuração indisponível não pode virar automatico=false nos pedidos manuais');
+    assert.match(unavailableConfiguration.elements.status.textContent, /Não foi possível conferir/);
+    assert.equal(unavailableConfiguration.elements.syncAutomatico.disabled, true);
+
+    const mirroredControl = setup({ payload: savedState(true, false) });
+    let mirrorRefreshes = 0;
+    mirroredControl.context.window.JKVendasNova = { refresh() { mirrorRefreshes += 1; } };
+    mirroredControl.context.aplicarEstadoMonitorSyncVendas(mirroredControl.context.vendasSyncMonitor.getLastPayload());
+    const previousRefreshes = mirrorRefreshes;
+    mirroredControl.context.aplicarEstadoMonitorSyncVendas(mirroredControl.context.vendasSyncMonitor.getLastPayload());
+    assert(previousRefreshes > 0);
+    assert.equal(mirrorRefreshes, previousRefreshes, 'monitor sem alteração não atualiza repetidamente o novo layout');
+
     const partial = setup({ inicio: '2024-01-01', fim: '2024-01-01' });
     await partial.context.executarSync();
     assert.equal(partial.calls.length, 2, 'uma linha existente não pode fazer o dia desaparecer da solicitação de nenhuma loja');
     assert.deepEqual(partial.calls.map(call => call.body.store_id), ['id-a', 'id-b']);
-    assert(partial.calls.every(call => call.body.automatico === true && call.body.forcar_resync === false));
+    assert(partial.calls.every(call => call.body.automatico === false && call.body.forcar_resync === false));
 
     const historical = setup();
     await historical.context.executarSync();
@@ -119,6 +260,7 @@ function freezeState(value) {
         const globalFailure = setup({ payload: savedQueue,
             fetch: async () => ({ ok: false, status, json: async () => ({ detail }) }) });
         globalFailure.context.lojasDisponiveis = allStores;
+        globalFailure.context.aplicarEstadoMonitorSyncVendas(savedQueue);
 
         await globalFailure.context.executarSync();
 
@@ -453,9 +595,11 @@ function freezeState(value) {
     assert.equal(reopened.elements.syncAutomatico.checked, false);
 
     const pauseFails = setup({ payload: persisted, fetch: async () => ({ ok: false }) });
+    pauseFails.context.aplicarEstadoMonitorSyncVendas(persisted);
     await pauseFails.elements.btnCancel.listeners.click();
     assert.match(pauseFails.elements.status.textContent, /não confirmou a pausa/);
-    assert.equal(pauseFails.elements.syncAutomatico.checked, true);
+    assert.equal(pauseFails.elements.syncAutomatico.checked, false);
+    assert.equal(pauseFails.elements.syncAutomatico.indeterminate, true);
     assert.equal(pauseFails.elements.btnCancel.disabled, false);
 
     let releasePost;

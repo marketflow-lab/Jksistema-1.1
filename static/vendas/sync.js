@@ -588,6 +588,129 @@ async function aguardarFimSyncAtual() {
 }
 
 let envioSyncVendasPromise = null;
+let envioAutomacaoVendasPromise = null;
+let configurandoAutomacaoVendas = false;
+let confirmandoAutomacaoVendas = false;
+let automacaoVendasConfirmada = null;
+let clienteAutomacaoVendasConfirmada = null;
+
+function lojasDoControleAutomacaoVendas() {
+    const lojas = Array.isArray(lojasDisponiveis) ? lojasDisponiveis : [];
+    const selecionadas = lojaSelecionada === '__todas'
+        ? lojas : lojas.filter(loja => mesmaLoja(loja?.nome, lojaSelecionada));
+    if ((lojaSelecionada !== '__todas' && selecionadas.length !== 1)
+        || selecionadas.some(loja => !String(loja?.store_id || '').trim())) return [];
+    return [...new Map(selecionadas.map(loja => [String(loja.store_id), loja])).values()];
+}
+
+function atualizarControleAutomacaoVendas(data = null) {
+    const checkbox = document.getElementById('syncAutomatico');
+    if (!checkbox) return;
+    const anterior = [checkbox.checked, checkbox.indeterminate, checkbox.disabled, checkbox.title].join('|');
+    if (!configurandoAutomacaoVendas && Array.isArray(data?.automacao?.lojas)) {
+        automacaoVendasConfirmada = data.automacao;
+        clienteAutomacaoVendasConfirmada = obterClientId();
+    }
+    const confirmado = automacaoVendasConfirmada !== null
+        && clienteAutomacaoVendasConfirmada === obterClientId();
+    const lojas = lojasDoControleAutomacaoVendas();
+    const habilitadas = confirmado ? lojas.filter(loja => automacaoVendasConfirmada.lojas.some(
+        plano => String(plano.store_id) === String(loja.store_id) && plano.habilitado === true
+    )).length : 0;
+    checkbox.checked = lojas.length > 0 && habilitadas === lojas.length;
+    checkbox.indeterminate = habilitadas > 0 && habilitadas < lojas.length;
+    checkbox.disabled = !confirmado || !lojas.length || configurandoAutomacaoVendas || confirmandoAutomacaoVendas || Boolean(syncController);
+    checkbox.title = !confirmado ? 'Consultando a configuração salva.'
+        : checkbox.indeterminate ? `Atualização automática ativada em ${habilitadas} de ${lojas.length} lojas.`
+            : checkbox.checked ? 'Atualização automática ativada para a seleção.' : 'Atualização automática desativada para a seleção.';
+    if (anterior !== [checkbox.checked, checkbox.indeterminate, checkbox.disabled, checkbox.title].join('|')) {
+        window.JKVendasNova?.refresh?.();
+    }
+}
+
+async function alterarAutomacaoVendas() {
+    const checkbox = document.getElementById('syncAutomatico');
+    const habilitar = Boolean(checkbox?.checked);
+    const lojas = lojasDoControleAutomacaoVendas().map(loja => ({ nome: loja.nome, store_id: String(loja.store_id) }));
+    const cliente = obterClientId();
+    if (!cliente || cliente !== clienteAutomacaoVendasConfirmada || !automacaoVendasConfirmada
+        || !lojas.length || configurandoAutomacaoVendas || syncController) {
+        atualizarControleAutomacaoVendas();
+        return;
+    }
+    const inicio = getDataIniISO();
+    const fim = getDataFimISO();
+    if (!inicio || !fim || diasNoPeriodo(inicio, fim) <= 0) {
+        atualizarControleAutomacaoVendas();
+        statusEl.className = 'status-bar error';
+        statusEl.textContent = 'Informe um período válido para alterar a atualização automática.';
+        return;
+    }
+    configurandoAutomacaoVendas = true;
+    atualizarControleAutomacaoVendas();
+    setSyncButtons(syncEmAndamento);
+    statusEl.className = 'status-bar loading';
+    statusEl.innerHTML = `${spinnerHtml}${habilitar ? 'Ativando' : 'Desativando'} atualização automática...`;
+    let automacaoConfirmada = null;
+    const falhas = [];
+    envioAutomacaoVendasPromise = (async () => {
+        for (const loja of lojas) {
+            if (obterClientId() !== cliente) break;
+            try {
+                const resp = await fetchComTimeout('/api/vendas/sync/automatico', {
+                    method: 'POST',
+                    headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({
+                        loja: loja.nome, store_id: loja.store_id, data_inicio: inicio, data_fim: fim,
+                        forcar_resync: false, automatico: habilitar
+                    })
+                });
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw criarErroRegistroSyncVendas(resp.status, result);
+                if (result.accepted !== true || result.automatico !== habilitar || !Array.isArray(result.automacao?.lojas)) {
+                    throw new Error('O servidor não confirmou a alteração da atualização automática.');
+                }
+                automacaoConfirmada = result.automacao;
+            } catch (erro) {
+                falhas.push(`${loja.nome}: ${erro.message || 'Falha de comunicação.'}`);
+                if (erro.falhaSessaoSistema) break;
+            }
+        }
+        // Settle any monitor read started before the writes before displaying
+        // their authoritative response. Subsequent polling reads the saved state.
+        await vendasSyncMonitor.refresh().catch(() => null);
+    })();
+    try {
+        await envioAutomacaoVendasPromise;
+    } finally {
+        envioAutomacaoVendasPromise = null;
+        configurandoAutomacaoVendas = false;
+        if (obterClientId() !== cliente) {
+            atualizarControleAutomacaoVendas();
+            setSyncButtons(syncEmAndamento);
+            return;
+        }
+        if (automacaoConfirmada) {
+            aplicarEstadoMonitorSyncVendas({ ...vendasSyncMonitor.getLastPayload(), automacao: automacaoConfirmada });
+        }
+        atualizarControleAutomacaoVendas();
+        setSyncButtons(syncEmAndamento);
+        if (falhas.length) {
+            statusEl.className = 'status-bar error';
+            statusEl.innerHTML = '<strong>Não foi possível confirmar a alteração em todas as lojas.</strong><br>'
+                + falhas.map(escaparHtmlVendas).join('<br>')
+                + '<br>Confira o estado exibido e tente novamente.';
+        } else {
+            statusEl.className = 'status-bar';
+            statusEl.textContent = habilitar
+                ? 'Atualização automática ativada. O período foi registrado para sincronização.'
+                : 'Atualização automática desativada para a seleção.';
+        }
+        iniciarMonitoramentoProgresso();
+    }
+}
+
+document.getElementById('syncAutomatico')?.addEventListener('change', alterarAutomacaoVendas);
 
 function pedidoSyncVendasConfirmado(job, pedido) {
     const mesmaIdentidade = pedido.store_id
@@ -686,7 +809,25 @@ async function iniciarSyncLoja(lojaNome, periodo = null, opcoes = {}) {
 }
 
 async function executarSync(opcoes = {}) {
-    if (syncEmAndamento) return;
+    if (syncEmAndamento || configurandoAutomacaoVendas || confirmandoAutomacaoVendas) return;
+    if (!automacaoVendasConfirmada || clienteAutomacaoVendasConfirmada !== obterClientId()) {
+        confirmandoAutomacaoVendas = true;
+        setSyncButtons(false);
+        let confirmado = false;
+        try {
+            const estado = await vendasSyncMonitor.refresh({ propagateError: true });
+            if (!Array.isArray(estado?.automacao?.lojas)) throw new Error('Configuração da atualização automática indisponível.');
+            atualizarControleAutomacaoVendas(estado);
+            confirmado = true;
+        } catch (_erro) {
+            statusEl.className = 'status-bar error';
+            statusEl.textContent = 'Não foi possível conferir a atualização automática. Clique em Atualizar para tentar novamente.';
+        } finally {
+            confirmandoAutomacaoVendas = false;
+            setSyncButtons(syncEmAndamento);
+        }
+        if (!confirmado || syncEmAndamento) return;
+    }
     cancelarSyncAutomaticoVendas();
     fecharCalendariosData();
 
@@ -699,9 +840,9 @@ async function executarSync(opcoes = {}) {
     periodoSelecionadoPeloUsuario = true;
     const lojaSelecionadaNoInicio = lojaSelecionada;
     const opcoesSync = {
-        forcar_resync: Boolean(document.getElementById('forcarSync')?.checked),
-        automatico: Boolean(document.getElementById('syncAutomatico')?.checked)
+        forcar_resync: Boolean(document.getElementById('forcarSync')?.checked)
     };
+    const planosNoInicio = automacaoVendasConfirmada?.lojas || [];
     const diasSelecionados = diasNoPeriodo(dataIniIso, dataFimIso);
     if (diasSelecionados <= 0) {
         alert('A data final deve ser igual ou posterior à data inicial.');
@@ -788,7 +929,9 @@ async function executarSync(opcoes = {}) {
             statusEl.className = 'status-bar loading';
             statusEl.innerHTML = `${spinnerHtml}<strong>Registrando período para ${idx + 1} de ${lojasParaSincronizar.length} loja(s)...</strong>`;
             try {
-                envioSyncVendasPromise = iniciarSyncLoja(lojaAtual, periodoCompleto, opcoesSync);
+                const loja = lojasDisponiveis.find(item => mesmaLoja(item?.nome, lojaAtual));
+                const automatico = planosNoInicio.some(plano => String(plano.store_id) === String(loja?.store_id) && plano.habilitado === true);
+                envioSyncVendasPromise = iniciarSyncLoja(lojaAtual, periodoCompleto, { ...opcoesSync, automatico });
                 await envioSyncVendasPromise;
                 registradas += 1;
             } catch (erro) {
@@ -842,6 +985,7 @@ btnCancel.addEventListener('click', async () => {
     try {
         // A pausa deve chegar depois do registro em curso para não ser anulada por ele.
         if (envioSyncVendasPromise) await envioSyncVendasPromise.catch(() => {});
+        if (envioAutomacaoVendasPromise) await envioAutomacaoVendasPromise.catch(() => {});
         const resp = await fetchComTimeout('/api/vendas/sync/cancel', {
             method: 'POST',
             headers: obterAuthHeaders()
@@ -851,6 +995,12 @@ btnCancel.addEventListener('click', async () => {
         const checkbox = document.getElementById('syncAutomatico');
         if (checkbox) checkbox.checked = false;
         aplicarEstadoMonitorSyncVendas(await vendasSyncMonitor.refresh());
+        if (automacaoVendasConfirmada) {
+            atualizarControleAutomacaoVendas({ automacao: {
+                ...automacaoVendasConfirmada,
+                lojas: automacaoVendasConfirmada.lojas.map(loja => ({ ...loja, habilitado: false }))
+            } });
+        }
         statusEl.className = 'status-bar';
         statusEl.textContent = 'Sincronização pausada. O progresso confirmado foi preservado.';
     } catch (erro) {

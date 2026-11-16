@@ -20,6 +20,9 @@ class VendasSyncService:
     def progresso(self, client_id: str):
         return progress.progresso_sincronizacao_vendas(client_id)
 
+    def configurar_automatico(self, req: VendasSyncRequest, client_id: str):
+        return sync_engine.configurar_atualizacao_automatica(req, client_id)
+
     def cancelar(self, client_id: str):
         return progress.cancelar_sincronizacao_vendas(client_id)
 

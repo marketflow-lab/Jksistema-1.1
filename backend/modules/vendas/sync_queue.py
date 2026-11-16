@@ -863,6 +863,17 @@ class SyncQueue:
                 count += 1
         return count
 
+    def pause_automatic(self, store_id, now=None):
+        """Disable one store's plan without creating work or losing checkpoints."""
+        store_id = str(store_id or "").strip()
+        if not store_id:
+            raise ValueError("Identificador estavel da loja e obrigatorio.")
+        with self._transaction() as conn:
+            conn.execute("UPDATE plans SET enabled = 0 WHERE store_id = ?", (store_id,))
+            conn.execute("""UPDATE jobs SET status = 'paused', owner = NULL, lease_until = NULL,
+                updated_at = ? WHERE store_id = ? AND automatico = 1 AND status != 'complete'""",
+                         (_time(now), store_id))
+
     def pause_all(self, now=None):
         with self._transaction() as conn:
             conn.execute("""UPDATE jobs SET status = 'paused', owner = NULL, lease_until = NULL,
