@@ -268,8 +268,125 @@ async function testDetailObservationHooks() {
     console.log('Pesquisa de Mercado: hooks de navegacao, parcial filtrado, conflito, catalogo e cancelamento OK');
 }
 
+function detailGeometryBrowser(options = {}) {
+    let clock = 0, reads = 0, clicks = 0, nextScrolls = 0, firstClickAt = null, navigations = 0;
+    const id = 'MLB1000000311';
+    const url = 'https://www.mercadolivre.com.br/fixture/p/MLB9999999?wid=' + id;
+    const item = { id, url, catalogo: !!options.catalogue, seller_id: '123456',
+        seller_perfil_url: 'https://www.mercadolivre.com.br/perfil/FIXTURE', seller_confirmed: true,
+        vendas: 100, media_mensal: 5, vendasFonte: 'avantpro_dom_estruturado',
+        media_mensal_fonte: 'avantpro_dom_estruturado', data_criacao: '',
+        rankable: !options.catalogue, status: options.catalogue ? 'catalogo_sem_evidencia_vendedor' : 'analisado',
+        vendas_rotulo: options.catalogue ? 'vendidos' : 'vendas do anuncio' };
+    const browser = {
+        now: () => clock,
+        wait: async ms => { clock += ms; },
+        getURL: () => url,
+        async navigate() { navigations += 1; },
+        async executeJavaScript(code) {
+            if (code.includes('/*pm:snapshot*/')) {
+                reads += 1;
+                const height = options.height === 'steady' ? 1000
+                    : options.height === 'after-five' && reads <= 5 ? 1000 : 1000 + reads % 2;
+                const pending = options.delayed && clicks === 0
+                    || Number.isFinite(options.completeAfterMs) && clock < options.completeAfterMs;
+                const observed = pending ? { ...item, vendas: null, media_mensal: null,
+                    rankable: false, status: 'sem_dados_avant' } : { ...item };
+                return { url, height, atBottom: options.atBottom !== false, empty: !!options.empty, anuncios: [observed] };
+            }
+            if (code.includes('/*pm:avant-click*/')) {
+                if (firstClickAt === null) firstClickAt = clock;
+                clicks += 1;
+                return { clicked: options.delayed && clicks === 1 ? 1 : 0, eligiblePending: 0 };
+            }
+            if (code.includes('/*pm:scroll*/') && !code.includes('const y=0;')) nextScrolls += 1;
+            return {};
+        },
+        get counts() { return { reads, clicks, nextScrolls, firstClickAt, navigations }; }
+    };
+    return { browser, item, url, id };
+}
+
+async function testDetailStabilityIgnoresWholePageGeometry() {
+    for (const geometry of [
+        { height: 'oscillating', atBottom: true },
+        { height: 'steady', atBottom: false },
+        { height: 'after-five', atBottom: true }
+    ]) {
+        for (const catalogue of [false, true]) {
+            const { browser, id, url } = detailGeometryBrowser({ ...geometry, catalogue });
+            const result = await collector.collectDetail({ browser, url, expectedItem: { id },
+                now: browser.now, wait: browser.wait, timeoutMs: 30000, missingWaitMs: 15000 });
+            assert.equal(result.reason, catalogue ? 'avant_data_incomplete' : 'complete',
+                `${geometry.height}/${geometry.atBottom}/${catalogue}: page geometry cannot turn a stable detail into a timeout`);
+            assert(result.elapsedMs < 30000, 'the detail finishes within its existing thirty second collection budget');
+            assert.equal(result.anuncios.length, 1);
+            assert.equal(result.anuncios[0].vendas, 100);
+            assert.equal(result.anuncios[0].media_vendas_mensal, 5);
+            assert.equal(result.anuncios[0].rankable, !catalogue, 'a final catalog observation still cannot become seller-specific proof');
+            assert.equal(result.anuncios[0].rank, catalogue ? null : 1);
+            assert.equal(browser.counts.nextScrolls, 0, 'a single-item detail never scrolls to materialize the entire page');
+            if (catalogue) assert(result.elapsedMs >= 15000, 'an incomplete panel retains the bounded wait for missing seller proof');
+        }
+    }
+
+    const delayed = detailGeometryBrowser({ height: 'oscillating', atBottom: false, delayed: true });
+    const result = await collector.collectDetail({ browser: delayed.browser, url: delayed.url,
+        expectedItem: { id: delayed.id }, now: delayed.browser.now, wait: delayed.browser.wait,
+        timeoutMs: 30000, missingWaitMs: 15000 });
+    assert.equal(result.reason, 'complete');
+    assert(delayed.browser.counts.clicks >= 1, 'a delayed Avant panel is still triggered');
+    assert(delayed.browser.counts.firstClickAt < 1500, 'the first detail click does not wait for page-bottom or page-height stability');
+    assert.equal(delayed.browser.counts.nextScrolls, 0);
+    assert.equal(result.anuncios[0].rankable, true);
+
+    const misleadingEmpty = detailGeometryBrowser({ height: 'oscillating', atBottom: false,
+        empty: true, completeAfterMs: 3000 });
+    const recovered = await collector.collectDetail({ browser: misleadingEmpty.browser, url: misleadingEmpty.url,
+        expectedItem: { id: misleadingEmpty.id }, now: misleadingEmpty.browser.now, wait: misleadingEmpty.browser.wait,
+        timeoutMs: 30000, missingWaitMs: 15000 });
+    assert.equal(recovered.reason, 'complete', 'unrelated empty-page text cannot end an individual detail before Avant data arrives');
+    assert(recovered.elapsedMs >= 3000 && recovered.elapsedMs < 30000, 'the detail waits for the delayed panel within its existing budget');
+    assert.equal(recovered.anuncios[0].vendas, 100);
+    assert.equal(recovered.anuncios[0].media_vendas_mensal, 5);
+    assert.equal(recovered.anuncios[0].rankable, true);
+    console.log('Pesquisa de Mercado detail: dynamic height, no bottom, delayed panel and final catalog evidence OK');
+}
+
+async function testStableCatalogDetailDoesNotScheduleThreeVisits() {
+    const { PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+    const fixture = detailGeometryBrowser({ height: 'oscillating', atBottom: false, catalogue: true });
+    const seller = { key: 'id:123456', id: '123456', nome: 'Fixture Seller',
+        perfilUrl: 'https://www.mercadolivre.com.br/perfil/FIXTURE' };
+    const waits = [];
+    let runner;
+    const clockedCollector = { ...collector, collectDetail: options => collector.collectDetail({ ...options, now: fixture.browser.now }) };
+    runner = new PesquisaMercadoRunner({ browser: fixture.browser, collector: clockedCollector, pageScripts: scripts,
+        wait: async ms => { waits.push(ms); await fixture.browser.wait(ms); },
+        api: async (_method, _route, body) => ({ job: { ...runner.job,
+            status: body?.status || runner.job.status, revision: runner.job.revision + 1 } }) });
+    runner.job = { id: 'fixture-stable-detail', status: 'running', revision: 0, generation: 0,
+        counters: { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0 } };
+    runner.checkpoint = { progress: {}, incompleteCategories: [] };
+    runner.controller = new AbortController();
+    // This integration isolates collection and retry policy from category navigation.
+    runner.read = async () => ({});
+    const result = await runner.complementSellerListings(seller,
+        { anuncios: [fixture.item], reason: 'avant_data_incomplete', incomplete: true },
+        'https://lista.mercadolivre.com.br/_CustId_123456');
+    assert.equal(fixture.browser.counts.navigations, 1, 'the real collector supplies a final catalog result after one individual visit');
+    assert(!waits.includes(5000) && !waits.includes(15000), 'a final structural proof failure does not enter retry backoff');
+    assert.equal(result.reason, 'avant_data_incomplete');
+    assert.equal(result.anuncios[0].vendas, 100);
+    assert.equal(result.anuncios[0].media_vendas_mensal, 5);
+    assert.equal(result.anuncios[0].rankable, false, 'preventing repeated visits does not relax catalog provenance');
+    assert.equal(result.anuncios[0].rank, null);
+}
+
 async function run() {
     await testDetailObservationHooks();
+    await testDetailStabilityIgnoresWholePageGeometry();
+    await testStableCatalogDetailDoesNotScheduleThreeVisits();
     const fake = fakeBrowser();
     let updates = 0;
     const result = await collector.collectFirstPage({ browser: fake, now: fake.now, wait: fake.wait, settleMs: 20, pollMs: 10, onProgress: () => { updates += 1; } });

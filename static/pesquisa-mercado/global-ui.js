@@ -748,12 +748,27 @@
         const selected = state.sellers.find(seller => seller.seller_key === state.seller);
         elements['seller-label'].textContent = selected ? sellerLabel(selected) : 'Selecione um vendedor para ver seu ranking.';
     }
+    function announcementStatus(item, ranked) {
+        if (ranked) return { label: 'Analisado', title: '' };
+        const reason = safeText(item.erro);
+        const normalized = reason.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ');
+        const catalogueProofMissing = item.status === 'catalogo_sem_evidencia_vendedor'
+            || normalized.includes('vendas de catalogo sem identificacao especifica do vendedor')
+            || normalized.includes('o catalogo nao apresentou vendas avant pro comprovadas para este vendedor')
+            || normalized.includes('o catalogo nao comprovou vendas deste vendedor');
+        return catalogueProofMissing ? {
+            label: 'Anuncio de catálogo',
+            title: 'Vendas de catalogo sem identificacao especifica do vendedor. A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.'
+        } : { label: reason || item.status || 'Aguardando dados do Avant', title: '' };
+    }
     function renderRanking() {
         photoPreview.hide();
         const data = state.rankings[state.tab];
         const rows = data && Array.isArray(data.items) ? data.items : [];
         elements.body.innerHTML = rows.map(item => {
             const ranked = Number.isInteger(item.rank) && item.rank > 0;
+            const status = announcementStatus(item, ranked);
+            const statusTitle = status.title ? ` title="${escaped(status.title)}"` : '';
             const image = safeUrl(item.imagem, true);
             const url = safeUrl(item.url, false);
             return `<tr><td class="rank-cell">${ranked ? item.rank : ''}</td>` +
@@ -762,7 +777,7 @@
                 `<td>${escaped(sellerLabel(item))}</td><td>${escaped(formatPrice(item.preco))}</td>` +
                 `<td class="sales-cell">${number(item.vendas)}</td><td>${escaped(formatDate(item.data_criacao))}</td>` +
                 `<td>${number(item.media_vendas_mensal)}</td><td>${url ? `<a class="link" href="${escaped(url)}" target="_blank" rel="noopener noreferrer">Abrir</a>` : '—'}</td>` +
-                `<td><span class="status-chip${ranked ? '' : ' warning'}">${ranked ? 'Analisado' : escaped(item.erro || item.status || 'Aguardando dados do Avant')}</span></td></tr>`;
+                `<td><span class="status-chip${ranked ? '' : ' warning'}"${statusTitle}>${escaped(status.label)}</span></td></tr>`;
         }).join('');
         const total = data ? Number(data.total) || 0 : 0;
         const offset = state.offsets[state.tab];

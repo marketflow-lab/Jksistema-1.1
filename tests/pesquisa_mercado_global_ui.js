@@ -18,12 +18,17 @@ async function main() {
         categoria: 'Ferramentas', vendas: 105 - index, data_criacao: '2026-09-01', media_vendas_mensal: 105 - index,
         rank: index + 1, status: 'analisado'
     }));
+    const catalogueTooltip = 'Vendas de catalogo sem identificacao especifica do vendedor. A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
+    items[102] = { ...items[102], catalogo: true, rank: null, status: 'catalogo_sem_evidencia_vendedor' };
+    items[103] = { ...items[103], catalogo: true, rank: null, status: 'pending',
+        erro: 'Vendas de catálogo sem identificação específica do vendedor. ' + catalogueTooltip };
+    items[104] = { ...items[104], catalogo: true, erro: catalogueTooltip };
     items.push({ id: 'MLB2000000000', titulo: 'Pendente Avant', vendedor: 'Loja A', seller_key: 'id:1',
         categoria: 'Ferramentas', rank: null, vendas: null, media_vendas_mensal: null, erro: 'Avant sem dados',
         url: 'javascript:untrusted()', imagem: 'https://evil.example/image.png' });
     items.push({ id: 'MLB2000000001', titulo: 'Catálogo divergente', vendedor: 'Loja B', seller_key: 'id:2',
         categoria: 'Ferramentas', rank: null, erro: 'Vendedor divergente' });
-    let job = { id: 'job-test', status: 'running', revision: 1, counters: { categories: 1, pages: 2, sellers: 2, ads: 107, pending: 2 }, currentCategory: 'Ferramentas',
+    let job = { id: 'job-test', status: 'running', revision: 1, counters: { categories: 1, pages: 2, sellers: 2, ads: 107, pending: 4 }, currentCategory: 'Ferramentas',
         scopeCategory: { key: 'MLB-FERRAMENTAS', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' },
         message: 'Coletando Loja A: 33 anuncio(s).', progress: { phase: 'collecting',
             detail: 'Coletando dados do Avant Pro de Loja A: 33 anúncios coletados.',
@@ -111,12 +116,30 @@ async function main() {
         assert.strictEqual(await invalid.locator('td').first().textContent(), '', 'pendente não recebe posição numérica');
         assert.strictEqual(await invalid.locator('a,img').count(), 0, 'links e imagens de hosts externos devem ser recusados');
         assert.match(await invalid.textContent(), /Avant sem dados/);
+        for (const title of ['Produto 102', 'Produto 103']) {
+            const row = page.locator('#pm-global-body tr').filter({ hasText: title });
+            const chip = row.locator('.status-chip');
+            assert.strictEqual(await chip.textContent(), 'Anuncio de catálogo', 'falta de comprovação de catálogo usa um status curto');
+            await chip.hover();
+            assert.strictEqual(await chip.getAttribute('title'), catalogueTooltip, 'hover mantém a explicação exata sem duplicar o texto anterior');
+            assert.doesNotMatch(await row.innerText(), /identifica[cç][aã]o|origem dos dados/i, 'a explicação longa não amplia a linha da tabela');
+            assert.strictEqual(await row.locator('td').first().textContent(), '', 'catálogo sem comprovação continua sem posição no ranking');
+        }
+        const verifiedCatalogue = page.locator('#pm-global-body tr').filter({ hasText: 'Produto 104' }).locator('.status-chip');
+        assert.strictEqual(await verifiedCatalogue.textContent(), 'Analisado', 'catálogo validado mantém o estado analisado');
+        assert.strictEqual(await verifiedCatalogue.getAttribute('title'), null, 'erro legado não sobrepõe um catálogo validado');
+        const otherFailure = page.locator('#pm-global-body tr').filter({ hasText: 'Catálogo divergente' }).locator('.status-chip');
+        assert.strictEqual(await otherFailure.textContent(), 'Vendedor divergente', 'outras falhas não recebem o rótulo de falta de comprovação de catálogo');
+        assert.strictEqual(await otherFailure.getAttribute('title'), null);
         await page.locator('#pm-global-tab-vendedor').click();
         assert.strictEqual(await page.locator('#pm-global-sellers').isVisible(), true);
         await page.locator('#pm-global-seller-search').fill('Loja B');
         assert.strictEqual(await page.locator('.pm-global-seller').count(), 1, 'busca filtra a lista de vendedores');
         await page.locator('.pm-global-seller').click();
         await page.waitForFunction(() => document.querySelectorAll('#pm-global-body tr').length === 6);
+        const sellerCatalogue = page.locator('#pm-global-body tr').filter({ hasText: 'Produto 103' }).locator('.status-chip');
+        assert.strictEqual(await sellerCatalogue.textContent(), 'Anuncio de catálogo', 'ranking por vendedor compartilha o status curto');
+        assert.strictEqual(await sellerCatalogue.getAttribute('title'), catalogueTooltip);
         assert.strictEqual(await page.locator('#pm-global-tab-vendedor').getAttribute('aria-selected'), 'true');
         items.push({ ...items[100], id: 'MLB3000000000', titulo: 'Novo produto', rank: 106 });
         job = { ...job, revision: 2, counters: { ...job.counters, ads: 108 }, currentCategory: { key: 'MLB1', nome: 'Ferramentas', url: 'https://lista.mercadolivre.com.br/ferramentas' } };

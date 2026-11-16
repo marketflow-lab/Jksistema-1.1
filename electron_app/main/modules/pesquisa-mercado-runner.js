@@ -4,6 +4,7 @@
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
+const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed']);
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -180,7 +181,7 @@ function cleanSellerName(value, id = '') {
     return name;
 }
 
-function sellerIdentity(value) {
+function sellerIdentity(value, { ignoreInvalidProfile = false } = {}) {
     const ids = new Set(), profileIds = new Set();
     for (const field of ['id', 'sellerId', 'seller_id']) {
         const declared = String(value[field] || '').trim();
@@ -197,7 +198,10 @@ function sellerIdentity(value) {
             if (profileIds.size === 1) profile = `id:${[...profileIds][0]}`;
             else if (/^\/loja\//i.test(parsed.pathname)) profile = `store:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
             else if (/^\/perfil\//i.test(parsed.pathname)) profile = `profile:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
-        } catch (_error) { return { id: '', profile: '', conflict: true }; }
+        } catch (_error) {
+            return ignoreInvalidProfile ? { id: ids.size === 1 ? [...ids][0] : '', profile: '', conflict: ids.size > 1 }
+                : { id: '', profile: '', conflict: true };
+        }
     }
     return { id: ids.size === 1 ? [...ids][0] : '', profile, conflict: ids.size > 1 };
 }
@@ -209,6 +213,18 @@ function sameSeller(expected, observed) {
     if (left.profile && right.profile && !left.profile.startsWith('id:') && !right.profile.startsWith('id:') && left.profile !== right.profile) return false;
     if (left.id && right.id) return left.id === right.id;
     return !!(left.profile && right.profile && left.profile === right.profile);
+}
+
+function conflictingSeller(expected, observed) {
+    if (expected.seller_identity_conflict || observed.seller_identity_conflict) return true;
+    // An unreadable profile still fails ranking proof, but does not establish
+    // another seller. Retain any explicit numeric identity in that case.
+    const left = sellerIdentity(expected, { ignoreInvalidProfile: true });
+    const right = sellerIdentity(observed, { ignoreInvalidProfile: true });
+    if (left.conflict || right.conflict) return true;
+    if (left.id && right.id) return left.id !== right.id;
+    return !!(left.profile && right.profile && left.profile.split(':', 1)[0] === right.profile.split(':', 1)[0]
+        && left.profile !== right.profile);
 }
 
 function enrichSellerName(seller, anuncios) {
@@ -1345,6 +1361,39 @@ class PesquisaMercadoRunner {
         this.checkpoint.progress = progressState({ ...this.checkpoint.progress, warning: message });
     }
 
+    detailRetryState() {
+        const generation = Number(this.job.generation || 0);
+        const saved = this.checkpoint.detailRetryState;
+        if (!saved || saved.version !== 1 || saved.generation !== generation
+            || !saved.blocked || typeof saved.blocked !== 'object' || Array.isArray(saved.blocked)) {
+            this.checkpoint.detailRetryState = { version: 1, generation, blocked: {} };
+        }
+        return this.checkpoint.detailRetryState;
+    }
+
+    detailRetryKey(seller, item) {
+        const id = String(item.id || '').replace(/-/g, '').toUpperCase();
+        const key = /^MLB\d+$/.test(id) ? `id:${id}` : `url:${canonicalUrl(item.url)}`;
+        // The seller is part of the identity; the checkpoint itself belongs to
+        // one job/owner. JSON encoding also keeps arbitrary names off prototypes.
+        return JSON.stringify([seller.key, key]);
+    }
+
+    detailRetryBlocked(seller, item) {
+        return DETAIL_RETRY_BLOCKS.has(this.detailRetryState().blocked[this.detailRetryKey(seller, item)]);
+    }
+
+    canConsultDetail(seller, item) {
+        return !this.collector.isComplete(item) && allowedUrl(item.url) && !this.detailRetryBlocked(seller, item);
+    }
+
+    detailProgressCounts(seller, items) {
+        const validated = items.filter(item => this.collector.isComplete(item)).length;
+        const blocked = items.filter(item => !this.collector.isComplete(item)
+            && (!allowedUrl(item.url) || this.detailRetryBlocked(seller, item))).length;
+        return `validados: ${validated}; pendentes: ${items.length - validated}; sem reconsulta automatica: ${blocked}`;
+    }
+
     async detailBrowserPool(size, signal) {
         const count = typeof this.createDetailBrowser === 'function' ? Math.min(4, size) : 1;
         while (this.detailBrowsers.length < count) {
@@ -1363,7 +1412,7 @@ class PesquisaMercadoRunner {
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
-        let timer, latestPartial = null, collectionTimedOut = false, active = true;
+        let timer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
         const armTimeout = (milliseconds, phase) => {
             if (!active || controller.signal.aborted) return;
             clearTimeout(timer);
@@ -1414,17 +1463,18 @@ class PesquisaMercadoRunner {
                 this.check(signal);
                 if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
                 detail = latestPartial;
+                usedPartial = true;
             }
             this.check(signal);
             const found = (detail.anuncios || []).find(candidate => item.id
                 ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
                 : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+            const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
+                || String(value || '').toLowerCase().startsWith('avantpro');
             if (found && found.seller_confirmed === true && sameSeller(seller, found)
                 && (!(found.avant_seller_id || found.avant_seller_perfil_url) || sameSeller(seller, {
                     id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
                 }))) {
-                const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
-                    || String(value || '').toLowerCase().startsWith('avantpro');
                 const previousError = String(item.erro || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
                 const previousProof = item.seller_confirmed !== false
                     && !['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)
@@ -1482,6 +1532,21 @@ class PesquisaMercadoRunner {
                 }
                 items[index] = merged;
             }
+            // Only a settled response for this exact offer can stop automatic
+            // retries. A timeout/partial may still acquire seller proof later.
+            if (found && !this.collector.isComplete(items[index]) && !usedPartial
+                && !['partial', 'timeout', 'page_changed', 'invalid_page_result', 'no_listings_detected'].includes(detail.reason)) {
+                // A missing/partial Avant widget can carry these same statuses.
+                // Classify only its fresh metrics, never the merged card or rank.
+                const readAvantMetrics = avantSource(found.vendasFonte || found.vendas_fonte)
+                    && this.collector.isComplete({ ...found, rankable: true });
+                if (readAvantMetrics && found.status === 'catalogo_sem_evidencia_vendedor') return 'catalogue_proof_missing';
+                if (conflictingSeller(seller, found) || conflictingSeller(seller, {
+                    id: found.avant_seller_id, perfilUrl: found.avant_seller_perfil_url
+                }) || readAvantMetrics && (found.status === 'vendedor_nao_confirmado' || found.seller_confirmed === false)) {
+                    return 'seller_not_confirmed';
+                }
+            }
         } catch (error) {
             this.check(signal);
             if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
@@ -1501,7 +1566,7 @@ class PesquisaMercadoRunner {
             Number.isSafeInteger(index) && index >= collection.index && index < items.length));
         const advance = () => {
             while (collection.index < items.length && (completed.has(collection.index)
-                || this.collector.isComplete(items[collection.index]) || !allowedUrl(items[collection.index].url))) {
+                || !this.canConsultDetail(seller, items[collection.index]))) {
                 completed.delete(collection.index);
                 collection.index += 1;
             }
@@ -1510,9 +1575,12 @@ class PesquisaMercadoRunner {
         advance();
         const pending = [];
         for (let index = collection.index; index < items.length; index += 1) {
-            if (!completed.has(index) && !this.collector.isComplete(items[index]) && allowedUrl(items[index].url)) pending.push(index);
+            if (!completed.has(index) && this.canConsultDetail(seller, items[index])) pending.push(index);
         }
-        if (!pending.length) return false;
+        if (!pending.length) {
+            this.setProgress('collecting', `Sem novas consultas automaticas de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, items)}.`);
+            return false;
+        }
         const controller = new AbortController();
         const abort = () => controller.abort();
         this.controller.signal.addEventListener('abort', abort, { once: true });
@@ -1520,8 +1588,8 @@ class PesquisaMercadoRunner {
         try {
             const browsers = await this.detailBrowserPool(pending.length, controller.signal);
             const progress = () => {
-                const label = collection.detailRound ? 'Reconsultando apenas anuncios pendentes' : 'Consultando anuncios pendentes';
-                this.setProgress('collecting', `${label} de ${seller.nome || seller.id || 'vendedor'}: ${finished} de ${pending.length} concluidos nesta tentativa; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                const label = collection.detailRound ? 'Reconsultando apenas falhas temporarias' : 'Consultando anuncios pendentes';
+                this.setProgress('collecting', `${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
             };
             const work = async browser => {
                 try {
@@ -1529,8 +1597,11 @@ class PesquisaMercadoRunner {
                         this.check(controller.signal);
                         const index = pending[cursor++];
                         progress();
-                        await this.collectSellerDetail(seller, items, index, browser, controller.signal);
+                        const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal);
                         this.check(controller.signal);
+                        if (DETAIL_RETRY_BLOCKS.has(blockedReason)) {
+                            this.detailRetryState().blocked[this.detailRetryKey(seller, items[index])] = blockedReason;
+                        }
                         completed.add(index);
                         finished += 1;
                         progress();
@@ -1562,6 +1633,19 @@ class PesquisaMercadoRunner {
                 ...(discoverySeed ? { categoryKey: this.checkpoint.currentCategory.key,
                     seedKey: String(discoverySeed.id || canonicalUrl(discoverySeed.url)), seed: clone(discoverySeed) } : {}) };
         if (!Array.isArray(collection.result.anuncios)) return result;
+        const generation = Number(this.job.generation || 0);
+        if (collection.detailGeneration !== generation) {
+            // A manual recovery is a fresh consultation, including an exhausted
+            // collection preserved before publication. Completed ads still skip.
+            // Legacy generation-zero cursors retain their interrupted position.
+            if (Number.isSafeInteger(collection.detailGeneration) || generation > 0) {
+                collection.index = 0;
+                collection.detailRound = 0;
+                collection.completedIndices = [];
+                delete collection.retryDelayMs;
+            }
+            collection.detailGeneration = generation;
+        }
         if (!Number.isSafeInteger(collection.detailRound) || collection.detailRound < 0
             || collection.detailRound > this.detailRetryDelaysMs.length) collection.detailRound = 0;
         this.checkpoint.sellerCollection = collection;
@@ -1571,16 +1655,18 @@ class PesquisaMercadoRunner {
         while (true) {
             this.check();
             if (collection.retryDelayMs !== undefined) {
-                const pending = items.filter(item => !this.collector.isComplete(item) && allowedUrl(item.url)).length;
-                this.setProgress('collecting', `Aguardando para consultar novamente ${pending} anuncio(s) sem dados de ${seller.nome || seller.id || 'vendedor'}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
-                await this.nameStep(() => this.wait(this.detailRetryDelaysMs[collection.detailRound - 1] || 0), this.controller.signal);
+                const pending = items.filter(item => this.canConsultDetail(seller, item)).length;
+                if (pending) {
+                    this.setProgress('collecting', `Aguardando para reconsultar ${pending} anuncio(s) com falha temporaria de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, items)}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                    await this.nameStep(() => this.wait(this.detailRetryDelaysMs[collection.detailRound - 1] || 0), this.controller.signal);
+                }
                 this.check();
                 delete collection.retryDelayMs;
                 await this.save();
             }
             navigated = await this.collectDetailRound(seller, collection) || navigated;
             if (collection.detailRound >= this.detailRetryDelaysMs.length
-                || !items.some(item => !this.collector.isComplete(item) && allowedUrl(item.url))) break;
+                || !items.some(item => this.canConsultDetail(seller, item))) break;
             // An empty successful response also needs a fresh consultation. Save
             // the next round before waiting so pause/login keeps its exact cursor.
             collection.retryDelayMs = this.detailRetryDelaysMs[collection.detailRound];
@@ -1648,6 +1734,16 @@ class PesquisaMercadoRunner {
                     anuncios.push(...page.items);
                 }
                 if (anuncios.every(item => this.collector.isComplete(item))) {
+                    done.add(key);
+                    this.checkpoint.salesRecoverySellerKeys = [...done];
+                    await this.save();
+                    continue;
+                }
+                if (!anuncios.some(item => this.canConsultDetail(seller, item))) {
+                    // Published ads are normalized by the backend. Keep terminal
+                    // proof failures in the private checkpoint across app restarts.
+                    this.checkpoint.salesRecoveryPending = true;
+                    this.setProgress('collecting', `Sem novas consultas automaticas de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, anuncios)}.`);
                     done.add(key);
                     this.checkpoint.salesRecoverySellerKeys = [...done];
                     await this.save();

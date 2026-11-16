@@ -79,8 +79,8 @@
         const initialUrl = pageKey(await browser.getURL());
         const items = new Map();
         let lastSignature = '', stableSince = now(), reachedBottom = false, quiet = 0, empty = false;
-        let firstBottomAt = null, clicksPending = false;
-        let materialized = false, lastLayoutSignature = '', layoutStableSince = now(), layoutQuiet = 0;
+        let missingSince = null, clicksPending = false;
+        let materialized = !!opts.detail, lastLayoutSignature = '', layoutStableSince = now(), layoutQuiet = 0;
 
         const checkpoint = async () => {
             aborted(opts.signal);
@@ -111,6 +111,9 @@
         };
         await execute(scripts.prepareScript());
         await execute(scripts.scrollScript('top'));
+        // An individual offer is not a lazy result list. Carousels and images
+        // can keep moving the page bottom even after the Avant panel is ready.
+        if (opts.detail) missingSince = now();
 
         while (now() - start < timeout) {
             const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }));
@@ -120,7 +123,9 @@
                 return observe(finish(reason, true));
             }
             if (snapshot.url && initialUrl && pageKey(snapshot.url) !== initialUrl) return observe(finish('page_changed'));
-            empty = !!snapshot.empty;
+            // A PDP can contain an empty recommendations block. Only listing
+            // pages may use that page-wide signal to finish before Avant loads.
+            empty = !opts.detail && !!snapshot.empty;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {
                 if (!matchesExpected(incoming, opts.expectedItem)) continue;
                 const metric = ranking.calculateMetrics(incoming, now());
@@ -142,7 +147,12 @@
             }
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const list = Array.from(items.values());
-            const signature = JSON.stringify([snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
+            const signature = JSON.stringify(opts.detail
+                ? list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal,
+                    item.media_vendas_mensal, item.data_criacao, item.status, item.seller_confirmed,
+                    item.seller_id, item.seller_perfil_url, item.avant_seller_id, item.avant_seller_perfil_url,
+                    item.vendas_rotulo])
+                : [snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
             if (signature !== lastSignature) { lastSignature = signature; stableSince = now(); quiet = 0; }
             else quiet += 1;
             reachedBottom = !!snapshot.atBottom;
@@ -160,7 +170,7 @@
                     continue;
                 }
                 materialized = true;
-                firstBottomAt = now();
+                missingSince = now();
                 stableSince = now();
                 quiet = 0;
             }
@@ -169,13 +179,13 @@
             // current viewport must not reset the wait for missing metrics.
             if (quiet >= 2 && now() - stableSince >= settleMs && (!clicksPending || allReady)) {
                 if (allReady || empty) return finish('complete');
-                if (firstBottomAt !== null && now() - firstBottomAt >= missingWaitMs) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
+                if (missingSince !== null && now() - missingSince >= missingWaitMs) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
             const click = allReady ? null : await execute(scripts.clickAvantScript({ pending: list.filter(item => !isComplete(item, now())), detail: !!opts.detail }));
             if (click && click.loginBlocked) return observe(finish('avant_login_required', true));
             clicksPending = !!(click && (click.clicked > 0 || click.eligiblePending > 0 || (Array.isArray(click.pendingKeys) && click.pendingKeys.length)));
             // Pending cards must not turn a failed Avant session into an endless job.
-            if (quiet >= 2 && firstBottomAt !== null && now() - firstBottomAt >= missingWaitMs && !(click && click.clicked > 0)) {
+            if (quiet >= 2 && missingSince !== null && now() - missingSince >= missingWaitMs && !(click && click.clicked > 0)) {
                 if (!allReady && !empty) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
             await checkpoint();

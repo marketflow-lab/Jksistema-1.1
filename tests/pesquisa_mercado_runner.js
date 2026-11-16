@@ -1259,7 +1259,7 @@ async function completeSalesAndMonthlyDetails() {
     assert.equal(h.runner.browser.getURL(), `${base}/anuncios/111`, 'restore seller first page after detail collection');
     assert.equal(h.saved().status, 'completed_partial');
     assert.equal(h.saved().checkpoint.sellerCollection, undefined, 'published collection no longer needs the pending cursor');
-    assert(h.events.some(event => /Consultando anuncios pendentes.*de 7 concluidos nesta tentativa/.test(event.job.progress.detail)), 'detail progress remains visible');
+    assert(h.events.some(event => /Consultando anuncios pendentes.*consultados: 7 de 7 nesta tentativa; validados:/.test(event.job.progress.detail)), 'detail progress remains visible');
 }
 
 async function detailTimeoutPreservesPartialAndContinues() {
@@ -2123,7 +2123,7 @@ async function parallelDetailsOnlyRetryMissing() {
     for (const id of ids.slice(3)) assert.equal(attempts.get(id), 1);
     assert.equal(h.vendors.get('id:111').anuncios.length, listing.length);
     assert.equal(h.saved().status, 'completed_partial');
-    assert(h.events.some(event => /Reconsultando apenas anuncios pendentes.*de 1 concluidos/.test(event.job.progress.detail)),
+    assert(h.events.some(event => /Reconsultando apenas falhas temporarias.*consultados: [01] de 1 nesta tentativa/.test(event.job.progress.detail)),
         'retry progress describes only the remaining advertisements');
     assert(browsers.slice(1).every(browser => browser.finishes.includes('completed_partial')));
 }
@@ -2220,7 +2220,285 @@ async function parallelDetailTimeoutOnlyStopsItsBrowser() {
     assert.equal(h.saved().status, 'completed_partial');
 }
 
+
+function unprovedCatalogListing(id, metrics = {}) {
+    return salesListing(id, { url: `${base}/fixture/p/MLB9999999?wid=${id}`, catalogo: true,
+        vendas: 100, media_mensal: 5, data_criacao: '01/01/2020', vendas_rotulo: 'vendidos',
+        dataCriacaoFonte: 'avantpro_dom_estruturado', status: 'catalogo_sem_evidencia_vendedor',
+        ...metrics });
+}
+
+async function catalogDetailsAreConsultedOnceWithoutInventingRank() {
+    const listing = Array.from({ length: 48 }, (_, index) => unprovedCatalogListing('MLB' + (1000000800 + index)));
+    const calls = [], delays = [];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true, reason: 'avant_data_incomplete' }),
+        { detailRetryDelaysMs: undefined, wait: async ms => { if (ms >= 5000) delays.push(ms); } });
+    parallelDetailBrowsers(h);
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        await options.browser.navigate(options.url);
+        return { anuncios: [unprovedCatalogListing(options.expectedItem.id)], reason: 'avant_data_incomplete', incomplete: true };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.equal(calls.length, 48, '48 catalog cards receive one individual detail consultation, never 144 repeated visits');
+    assert.equal(new Set(calls).size, 48, 'every incomplete catalog card still receives its first individual consultation');
+    assert.deepEqual(delays, [], 'terminal catalog evidence does not schedule automatic backoff rounds');
+    const publication = h.vendors.get('id:111');
+    assert.equal(publication.anuncios.length, 48);
+    assert(publication.anuncios.every(item => item.vendas === 100 && item.media_mensal === 5), 'visible catalog metrics remain preserved');
+    assert(publication.anuncios.every(item => item.rankable === false && item.rank === null), 'aggregate catalog metrics cannot become seller rankings');
+    assert.equal(h.saved().status, 'completed_partial');
+    assert(h.events.some(event => /consultados: 48 de 48 nesta tentativa; validados: 0; pendentes: 48; sem reconsulta automatica: 48/.test(event.job.progress.detail)),
+        'progress separates completed consultations, validated advertisements and items that cannot be automatically retried');
+    assert(h.events.every(event => !JSON.stringify(event).includes('detailRetryState')), 'private retry decisions stay outside renderer progress events');
+}
+
+async function mixedDetailsOnlyRetryTransientFailures() {
+    const ids = Array.from({ length: 6 }, (_, index) => 'MLB' + (1000000900 + index));
+    const listing = [unprovedCatalogListing(ids[0]), salesListing(ids[1]), salesListing(ids[2]), salesListing(ids[3]),
+        salesListing(ids[4], { vendas: 0, media_mensal: 0, rankable: true }), unprovedCatalogListing(ids[5])];
+    const calls = [], attempts = new Map(), delays = [];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true, reason: 'avant_data_incomplete' }),
+        { detailRetryDelaysMs: undefined, wait: async ms => { if (ms >= 5000) delays.push(ms); } });
+    parallelDetailBrowsers(h);
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        calls.push(id); attempts.set(id, (attempts.get(id) || 0) + 1);
+        await options.browser.navigate(options.url);
+        if (id === ids[0]) return { anuncios: [unprovedCatalogListing(id)], reason: 'avant_data_incomplete' };
+        if (id === ids[1]) return { anuncios: [salesListing(id, { seller_id: '222', seller_perfil_url: `${base}/perfil/222`,
+            seller_confirmed: true, vendas: 999, media_mensal: 999, rankable: true, status: 'analisado' })], reason: 'complete' };
+        if (id === ids[2]) return { anuncios: [], reason: 'no_listings_detected' };
+        if (id === ids[5]) return { anuncios: [unprovedCatalogListing(id, { vendas_rotulo: 'vendas do anuncio', avant_seller_id: '111',
+            rankable: true, status: 'analisado' })], reason: 'complete' };
+        return { anuncios: [salesListing(id, { vendas: 20, media_mensal: 2, rankable: true, status: 'analisado' })], reason: 'complete' };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(ids.map(id => attempts.get(id) || 0), [1, 1, 3, 1, 0, 1],
+        'catalog and conflicting sellers stop after one final detail; only the empty response retries three times');
+    assert.deepEqual(delays, [5000, 15000]);
+    const ads = new Map(h.vendors.get('id:111').anuncios.map(item => [item.id, item]));
+    assert.equal(ads.get(ids[0]).rankable, false);
+    assert.equal(ads.get(ids[1]).vendas, null, 'another seller cannot overwrite the original advertisement');
+    assert.equal(ads.get(ids[1]).rankable, false);
+    assert.equal(ads.get(ids[5]).rankable, true, 'an individual detail may establish evidence that was missing from its catalog card');
+    assert(h.events.some(event => /Reconsultando apenas falhas temporarias.*consultados: [01] de 1 nesta tentativa/.test(event.job.progress.detail)),
+        'later progress counts only the transient failure');
+}
+
+async function missingAvantEvidenceRemainsRetryable() {
+    const variants = [
+        { name: 'catalog without widget', metrics: { vendas: null, media_mensal: null, data_criacao: '',
+            vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'catalog with only sales', metrics: { vendas: 100, media_mensal: null, data_criacao: '',
+            media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'catalog with unproven metric source', metrics: { vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'unconfirmed seller without widget', metrics: { catalogo: false, status: 'vendedor_nao_confirmado',
+            seller_id: '', seller_perfil_url: '', seller_confirmed: false, vendas: null, media_mensal: null,
+            data_criacao: '', vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'missing identity without explicit contradiction', metrics: { catalogo: false, status: 'sem_dados_avant',
+            seller_id: '', seller_perfil_url: '', seller_confirmed: true, vendas: null, media_mensal: null,
+            data_criacao: '', vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'unreadable seller profile without metrics', metrics: { catalogo: false, status: 'vendedor_nao_confirmado',
+            seller_id: '', seller_perfil_url: `${base}/perfil/bad%ZZ`, seller_confirmed: false, vendas: null, media_mensal: null,
+            data_criacao: '', vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } },
+        { name: 'matching numeric seller with another profile alias', metrics: { catalogo: false, status: 'sem_dados_avant',
+            seller_id: '111', seller_perfil_url: `${base}/perfil/store-brand-alias`, seller_confirmed: true, vendas: null,
+            media_mensal: null, data_criacao: '', vendasFonte: '', media_mensal_fonte: '', dataCriacaoFonte: '' } }
+    ];
+    for (const variant of variants) {
+        const id = 'MLB1000001301', delays = [];
+        const h = harness(avantFlowPages(), async () => ({ anuncios: [unprovedCatalogListing(id)], incomplete: true,
+            reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
+            wait: async ms => { if (ms >= 5000) delays.push(ms); } });
+        let attempts = 0;
+        withDetailCollector(h, async () => ++attempts === 1
+            ? { anuncios: [unprovedCatalogListing(id, variant.metrics)], reason: 'avant_data_incomplete', incomplete: true }
+            : { anuncios: [unprovedCatalogListing(id, { vendas_rotulo: 'vendas do anuncio', avant_seller_id: '111',
+                rankable: true, status: 'analisado' })], reason: 'complete' });
+        await h.runner.start(); await h.runner.task;
+        assert.equal(attempts, 2, `${variant.name} cannot permanently reject a detail before Avant evidence is available`);
+        assert.deepEqual(delays, [5000]);
+        assert.equal(h.vendors.get('id:111').anuncios[0].rankable, true, `${variant.name} can recover from a later full observation`);
+        assert.equal(h.saved().status, 'completed');
+    }
+}
+
+async function explicitSellerConflictsStopWithoutMetrics() {
+    const variants = [
+        { seller_id: '222', seller_perfil_url: '', seller_confirmed: true },
+        { seller_id: '222', seller_perfil_url: `${base}/perfil/bad%ZZ`, seller_confirmed: true },
+        { avant_seller_id: '222', seller_confirmed: true },
+        { seller_id: '', seller_perfil_url: `${base}/perfil/another-seller`, seller_confirmed: false },
+        { seller_identity_conflict: true, seller_confirmed: false }
+    ];
+    for (const identity of variants) {
+        const id = 'MLB1000001302', delays = [];
+        const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true,
+            reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
+            wait: async ms => { if (ms >= 5000) delays.push(ms); } });
+        let attempts = 0;
+        withDetailCollector(h, async () => {
+            attempts += 1;
+            return { anuncios: [salesListing(id, { ...identity, status: 'vendedor_nao_confirmado',
+                vendasFonte: '', media_mensal_fonte: '', titulo: 'Foreign seller title' })], reason: 'avant_data_incomplete' };
+        });
+        await h.runner.start(); await h.runner.task;
+        assert.equal(attempts, 1, 'an explicit seller contradiction stops repeated consultations even before metrics arrive');
+        assert.deepEqual(delays, []);
+        const ad = h.vendors.get('id:111').anuncios[0];
+        assert.equal(ad.vendas, null);
+        assert.notEqual(ad.titulo, 'Foreign seller title', 'conflicting seller evidence never merges into the expected offer');
+        assert.equal(ad.rankable, false);
+        assert.equal(h.saved().status, 'completed_partial');
+    }
+}
+
+async function terminalDetailDecisionsSurviveRestartPublicationAndNewGeneration() {
+    const blockedId = 'MLB1000001001', interruptedId = 'MLB1000001002';
+    const listing = [unprovedCatalogListing(blockedId), salesListing(interruptedId)];
+    const create = () => {
+        const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true, reason: 'avant_data_incomplete' }),
+            { detailRetryDelaysMs: undefined });
+        const api = h.runner.api;
+        h.runner.api = async (method, path, body) => {
+            if (method === 'GET' && path.endsWith('/vendedores')) return { items: [...h.vendors.values()].map(value => ({
+                ...copy(value.seller), seller_key: value.seller.key, pending: value.anuncios.filter(item => item.rankable !== true).length
+            })) };
+            if (method === 'GET' && path.includes('/ranking?')) {
+                const query = new URL(path, base).searchParams;
+                const ads = h.vendors.get(query.get('seller_key'))?.anuncios || [];
+                const offset = Number(query.get('offset'));
+                return { items: copy(ads.slice(offset, offset + 100)), total: ads.length, revision: 1 };
+            }
+            return api(method, path, body);
+        };
+        return h;
+    };
+    const h = create(), calls = [];
+    let entered;
+    const interrupted = new Promise(resolve => { entered = resolve; });
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id; calls.push(id);
+        await options.browser.navigate(options.url);
+        if (id === blockedId) return { anuncios: [unprovedCatalogListing(id)], reason: 'avant_data_incomplete' };
+        entered(); return waitForDetailAbort(options.signal);
+    });
+    await h.runner.start(); await interrupted;
+    await h.runner.stop('paused'); await h.runner.task;
+    assert.deepEqual(calls, [blockedId, interruptedId]);
+    const restarted = create(), resumedCalls = [];
+    restarted.restoreCheckpoint(h.saved());
+    withDetailCollector(restarted, async options => {
+        resumedCalls.push(options.expectedItem.id);
+        return { anuncios: [salesListing(options.expectedItem.id, { vendas: 20, media_mensal: 2, rankable: true, status: 'analisado' })], reason: 'complete' };
+    });
+    await restarted.runner.resume('run-1'); await restarted.runner.task;
+    assert.deepEqual(resumedCalls, [interruptedId], 'restart does not consult a catalog whose final detail was already rejected in this generation');
+    assert.equal(restarted.saved().status, 'completed_partial');
+    const publication = restarted.vendors.get('id:111');
+    const normalized = publication.anuncios.map(item => item.id === blockedId ? { ...item, status: 'pending', rankable: false,
+        erro: 'Dados pendentes', seller_confirmed: undefined, vendas_rotulo: '' } : item);
+    const savedSeller = { ...publication.seller, seller_key: 'id:111', pending: 1 };
+    const published = create(), publishedCalls = [];
+    historicResearch(published, [savedSeller], new Map([['id:111', normalized]]));
+    published.restoreCheckpoint({ ...restarted.saved(), status: 'paused' });
+    withDetailCollector(published, async options => {
+        publishedCalls.push(options.expectedItem.id);
+        return { anuncios: [unprovedCatalogListing(options.expectedItem.id)], reason: 'avant_data_incomplete' };
+    });
+    await published.runner.resume('run-1'); await published.runner.task;
+    assert.deepEqual(publishedCalls, [], 'publication that normalizes ad status to pending cannot erase the saved retry decision');
+    assert.equal(published.saved().checkpoint.salesRecoveryPending, true, 'a skipped automatic retry remains visibly pending');
+    const priorGeneration = published.saved().generation || 0;
+    await published.runner.recoverIncomplete('run-1', published.saved().revision); await published.runner.task;
+    assert.equal(published.saved().generation, priorGeneration + 1);
+    assert.deepEqual(publishedCalls, [blockedId], 'an explicit recovery generation permits one fresh individual consultation');
+    assert.equal(published.vendors.get('id:111').anuncios.find(item => item.id === blockedId).rankable, false,
+        'fresh manual consultation still cannot promote catalog totals without seller-specific proof');
+}
+
+
+async function newGenerationReopensInterruptedExhaustedCollection() {
+    const completeId = 'MLB1000001201', blockedId = 'MLB1000001202';
+    const listing = [salesListing(completeId, { vendas: 0, media_mensal: 0, rankable: true }), unprovedCatalogListing(blockedId)];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), incomplete: true, reason: 'avant_data_incomplete' }),
+        { detailRetryDelaysMs: undefined });
+    const api = h.runner.api, calls = [];
+    let failPublication = true;
+    h.runner.api = async (method, path, body) => {
+        if (method === 'PUT' && path.includes('/vendedores/') && failPublication) {
+            failPublication = false;
+            throw new Error('Fixture publication temporarily unavailable');
+        }
+        return api(method, path, body);
+    };
+    withDetailCollector(h, async options => {
+        calls.push(options.expectedItem.id);
+        return { anuncios: [unprovedCatalogListing(options.expectedItem.id)], reason: 'avant_data_incomplete' };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(calls, [blockedId]);
+    assert.equal(h.vendors.size, 0, 'failed publication retains an unpublished seller collection');
+    assert.equal(h.saved().status, 'completed_partial');
+    const exhausted = h.saved();
+    assert(exhausted.checkpoint.sellerCollection, 'the complete-but-unpublished detail cursor survives publication failure');
+    exhausted.checkpoint.sellerCollection.index = listing.length;
+    exhausted.checkpoint.sellerCollection.detailRound = 2;
+    h.restoreCheckpoint(exhausted);
+    await h.runner.recoverIncomplete('run-1', h.saved().revision); await h.runner.task;
+    assert.deepEqual(calls, [blockedId, blockedId], 'manual generation resets an old exhausted cursor while keeping completed advertisements excluded');
+    const publication = h.vendors.get('id:111');
+    assert(publication, 'the recovered unpublished seller can now publish its preserved collection');
+    assert.equal(publication.anuncios.length, listing.length);
+    assert.equal(publication.anuncios.find(item => item.id === completeId).rankable, true);
+    assert.equal(publication.anuncios.find(item => item.id === blockedId).rankable, false);
+}
+
+async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
+    for (const mode of ['elapsed-timeout', 'timeout-result', 'partial-result', 'page-changed', 'foreign-item-result']) {
+        const id = 'MLB1000001101', attempts = [], delays = [];
+        const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true, reason: 'avant_data_incomplete' }),
+            { detailTimeoutMs: 20, detailRetryDelaysMs: undefined, wait: async ms => { if (ms >= 5000) delays.push(ms); } });
+        withDetailCollector(h, async options => {
+            attempts.push(options.expectedItem.id);
+            await beginObservedDetail(options);
+            if (attempts.length === 1) {
+                const partial = { anuncios: [unprovedCatalogListing(mode === 'foreign-item-result' ? 'MLB9999999999' : id)], incomplete: true,
+                    reason: mode === 'timeout-result' ? 'timeout' : mode === 'page-changed' ? 'page_changed' : mode === 'foreign-item-result' ? 'avant_data_incomplete' : 'partial' };
+                if (mode === 'elapsed-timeout') { options.onPartial(partial); return waitForDetailAbort(options.signal); }
+                return partial;
+            }
+            return { anuncios: [unprovedCatalogListing(id, { vendas_rotulo: 'vendas do anuncio', avant_seller_id: '111',
+                rankable: true, status: 'analisado' })], reason: 'complete' };
+        });
+        await h.runner.start(); await h.runner.task;
+        assert.equal(attempts.length, 2, `${mode} cannot establish a permanent catalog rejection`);
+        assert.deepEqual(delays, [5000]);
+        assert.equal(h.vendors.get('id:111').anuncios[0].rankable, true, `${mode} can recover on a later final detail`);
+    }
+    const id = 'MLB1000001102';
+    const login = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true, reason: 'avant_data_incomplete' }),
+        { detailRetryDelaysMs: undefined });
+    let loginAttempts = 0;
+    withDetailCollector(login, async () => ++loginAttempts === 1
+        ? { authRequired: true, reason: 'avant_login_required', anuncios: [unprovedCatalogListing(id)] }
+        : { reason: 'complete', anuncios: [salesListing(id, { vendas: 10, media_mensal: 1, rankable: true })] });
+    await login.runner.start(); await login.runner.task;
+    assert.equal(login.saved().status, 'waiting_login');
+    await login.runner.resume('run-1'); await login.runner.task;
+    assert.equal(loginAttempts, 2, 'login cannot persist a terminal catalog rejection from an unauthenticated response');
+    assert.equal(login.vendors.get('id:111').anuncios[0].rankable, true);
+}
+
 (async () => {
+    await catalogDetailsAreConsultedOnceWithoutInventingRank();
+    await mixedDetailsOnlyRetryTransientFailures();
+    await missingAvantEvidenceRemainsRetryable();
+    await explicitSellerConflictsStopWithoutMetrics();
+    await terminalDetailDecisionsSurviveRestartPublicationAndNewGeneration();
+    await newGenerationReopensInterruptedExhaustedCollection();
+    await partialAndTimedOutCatalogEvidenceCanStillRecover();
     await parallelDetailsOnlyRetryMissing();
     await parallelDetailsPauseKeepsOutOfOrderAttempts();
     await parallelDetailsLoginUsesBlockedBrowser();
