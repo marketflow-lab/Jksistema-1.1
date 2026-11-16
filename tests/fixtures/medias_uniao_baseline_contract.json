@@ -64,6 +64,23 @@
         "default": null,
         "title": "Variacoes Anuncios Loja"
       }
+    },
+    "ListaPedidoPreferenciasColunasRequest": {
+      "colunas_ocultas": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Colunas Ocultas"
+      }
     }
   },
   "additive_routes": [
@@ -73,6 +90,13 @@
         "GET"
       ],
       "api_importacoes_base_custos"
+    ],
+    [
+      "/api/medias-compras/listas-pedidos/configuracao-margens",
+      [
+        "GET"
+      ],
+      "api_medias_compras_configuracao_margens"
     ]
   ]
 }

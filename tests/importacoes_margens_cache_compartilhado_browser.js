@@ -14,18 +14,26 @@ async function esperarFila(page) {
 
 (async () => {
     const browser = await chromium.launch({ headless: true });
+    const relogioOriginal = Date.now;
+    const instanteInicial = relogioOriginal();
     try {
+        // API timestamps and browser TTL checks share one controlled clock.
+        // Real Node/Chromium clocks can briefly disagree during tab reloads.
+        Date.now = () => instanteInicial;
         const { context, state, item } = await environment(browser);
-        await context.addInitScript(() => {
+        await context.addInitScript(instanteInicial => {
             if (location.origin !== 'http://127.0.0.1:8391') return;
-            const agora = Date.now.bind(Date);
-            Date.now = () => agora() + Number(localStorage.getItem('__relogio_margens') || 0);
-        });
+            Date.now = () => instanteInicial + Number(localStorage.getItem('__relogio_margens') || 0);
+        }, instanteInicial);
         const page = await context.newPage();
         await page.goto(origin + '/importacoes_lista.html?lista_id=A');
         await esperarMargem(page, '30,97%');
         await esperarFila(page);
         assert.equal(state.patches.length, 1);
+        assert.deepEqual(await page.evaluate(() => ({
+            fonte: cacheMargensLista['47'].fontes.consultado_em_ms, agora: Date.now(),
+        })), { fonte: instanteInicial, agora: instanteInicial },
+        'A fonte inicial não fica no futuro por diferenças de relógio entre API e navegador.');
         const primeira = state.patches[0];
         const fontesIniciais = state.sourceReads;
         const snapshotsAntes = state.requests.filter(url => url.includes('somente_salvos=true')).length;
@@ -110,5 +118,5 @@ async function esperarFila(page) {
         assert.deepEqual(state.errors, []);
         await context.close();
         console.log('Margens: cache compartilhado lista/SKU,61s sem PATCH, refresh15min, falha preservada, preço e revisão: OK');
-    } finally { await browser.close(); }
+    } finally { Date.now = relogioOriginal; await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

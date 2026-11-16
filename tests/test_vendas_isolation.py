@@ -99,6 +99,11 @@ for route in routes:
         pairs.append((method, route.path))
 duplicates=[item for item,count in collections.Counter(pairs).items() if count > 1]
 assert {method for method, path in pairs if path == "/api/comentarios-sku"} == {"GET", "PUT"}
+margin_configuration = [route for route in routes
+    if route.path == "/api/medias-compras/listas-pedidos/configuracao-margens"]
+assert len(margin_configuration) == 1
+assert margin_configuration[0].name == "api_medias_compras_configuracao_margens"
+assert set(margin_configuration[0].methods) == {"GET"}
 paths={path:item for path,item in backend_api.app.openapi().get("paths",{}).items() if path.startswith("/api/vendas") or path.startswith("/api/notas-entrada") or path.startswith("/api/unidades-negocios")}
 raw=json.dumps(paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
 print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicates,"openapi":hashlib.sha256(raw.encode()).hexdigest()}))
@@ -110,8 +115,9 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # Base f51ac1b7 has 537 routes / 535 method-path pairs.
         # Deferred Medias photos add one POST, and SKU comments add GET and PUT.
         # Importacoes base-custos adds one GET to the previous 543/541 contract.
-        "routes": 544,
-        "pairs": 542,
+        # Approved import margin concurrency adds the verified configuration GET.
+        "routes": 545,
+        "pairs": 543,
         "duplicates": [],
         "openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
     }

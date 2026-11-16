@@ -101,7 +101,9 @@ async function installRoutes(page) {
     assert.strictEqual(await block(page, 'ready').locator('[data-transporte-caixas]').innerText(), '38');
     assert.strictEqual(await block(page, 'ready').locator('[data-transporte-peso]').innerText(), '486,00 kg');
     assert((await block(page, 'ready').innerText()).includes('+ 2 Trays'), 'Trays não devem ser somados às caixas');
-    assert((await block(page, 'upload').innerText()).includes('0,2083573334 m³'));
+    assert((await block(page, 'upload').innerText()).includes('0,2084 m³'));
+    assert.strictEqual(await page.evaluate(() => todasListasCache.find(lista => lista.id === 'upload').total_m3),
+      0.2083573334, 'A exibição arredonda a cubagem, sem alterar o total usado nos cálculos');
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-caixas]').innerText(), '—');
     assert.strictEqual(await block(page, 'upload').locator('[data-transporte-peso]').innerText(), '—');
     assert((await block(page, 'unavailable').innerText()).includes('Dados do Packing List indisponíveis'));
@@ -115,13 +117,13 @@ async function installRoutes(page) {
     await embarque.waitFor();
     assert.strictEqual(await embarque.locator('h3').innerText(), 'Ningbo → Santos');
     assert((await embarque.innerText()).includes('03/12/2026'));
-    assert.strictEqual(await embarque.locator('.embarque-card-metragem').innerText(), '2,6683573334 m³');
+    assert.strictEqual(await embarque.locator('.embarque-card-metragem').innerText(), '2,6684 m³');
     await embarque.locator('.embarque-card-foto img').evaluate(img => img.decode());
     if (preview) await page.screenshot({ path: path.join(preview, 'importacoes-implementado.png'), fullPage: true });
     await embarque.getByRole('button', { name: /^Ver embarque\b/ }).click();
     const volumeCard = page.locator('.emb-resumo-card').filter({ has: page.locator('.emb-label', { hasText: /^M³ Total$/ }) });
     await volumeCard.locator('.emb-value').waitFor();
-    assert.strictEqual(await volumeCard.locator('.emb-value').innerText(), '2,6683573334 m³',
+    assert.strictEqual(await volumeCard.locator('.emb-value').innerText(), '2,6684 m³',
       'Detalhe e cabeçalho devem usar o Packing mesmo com referência antiga a lista removida');
     await page.locator('#btnVoltarEmbarque').click();
     await page.locator('#embarquesWrap .embarque-item').waitFor();
