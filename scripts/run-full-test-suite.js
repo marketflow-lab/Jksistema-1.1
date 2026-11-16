@@ -60,7 +60,11 @@ runStep('Testes Python com cobertura', process.execPath, ['scripts/run-python-te
 runStep('Limite de cobertura Python', python, ['-m', 'coverage', 'report', '--fail-under=30']);
 runStep('Relatorio XML de cobertura', python, ['-m', 'coverage', 'xml', '-o', 'test-results/coverage/coverage.xml']);
 runStep('Relatorio HTML de cobertura', python, ['-m', 'coverage', 'html', '-d', 'test-results/coverage/html']);
-runStep('Regressoes Node e Electron', process.execPath, ['scripts/run-node-regressions.js']);
+// The aggregate covers more than 260 files. Keep each file's own deadline,
+// while allowing the complete batch to finish on a slower CI runner.
+runStep('Regressoes Node e Electron', process.execPath, ['scripts/run-node-regressions.js'], {
+  timeout: 25 * 60 * 1000,
+});
 runStep('TypeScript do gateway', npm, ['--prefix', 'cloudflare/whatsapp-gateway', 'run', 'check']);
 runStep('Testes do gateway', npm, ['--prefix', 'cloudflare/whatsapp-gateway', 'test']);
 runStep('Contrato seguro do Bug Hunter', npm, ['run', 'test:bug-hunter:contract'], {
