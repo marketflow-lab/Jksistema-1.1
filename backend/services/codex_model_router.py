@@ -1,6 +1,6 @@
 """Policy-gated model routing for the JK Sistema internal Codex.
 
-GPT-5.5 remains the baseline and fallback.  A GPT-5.6 variant can only become
+GPT-6.1 Sol is the baseline and fallback.  A GPT-5.6 variant can only become
 effective when the exact task category is enabled by a versioned rollout
 policy.  This module does not change the model used by Codex Desktop.
 """
@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 
 
 MODEL_DECISION_VERSION = "1"
-BASELINE_MODEL = "gpt-5.5"
+BASELINE_MODEL = "gpt-6.1-sol"
 GPT_56_VARIANTS: tuple[str, ...] = (
     "gpt-5.6-luna",
     "gpt-5.6-terra",
@@ -192,7 +192,7 @@ class ModelRouter:
             reason = "category_rollout"
 
         if available is not None and effective not in available:
-            # GPT-5.5 is the mandatory fallback contract.  Do not silently pick
+            # The baseline is the mandatory fallback contract. Do not silently pick
             # another GPT-5.6 variant when it is missing.
             effective = BASELINE_MODEL
             reason = "baseline_required_unavailable"

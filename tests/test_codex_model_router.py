@@ -7,17 +7,18 @@ from backend.services.codex_model_router import (
 )
 
 
-def test_disabled_policy_keeps_gpt55_even_when_gpt56_is_requested():
+def test_disabled_policy_uses_supported_baseline_even_when_legacy_model_is_requested():
     decision = ModelRouter().decide(
         category="technical",
-        requested_model="codex:gpt-5.6-sol",
+        requested_model="codex:gpt-5.5",
         rollout_key="trace-1",
     )
 
     assert decision.effective_model == BASELINE_MODEL
     assert decision.reason_code == "policy_disabled"
     assert decision.rerouted is True
-    assert decision.requested_model == "gpt-5.6-sol"
+    assert decision.requested_model == "gpt-5.5"
+    assert decision.effective_model == "gpt-6.1-sol"
 
 
 def test_full_rollout_selects_variant_only_for_each_promoted_category():
@@ -48,7 +49,7 @@ def test_full_rollout_selects_variant_only_for_each_promoted_category():
     assert not_promoted.reason_code == "category_not_promoted"
 
 
-def test_rollout_bucket_is_deterministic_and_runtime_fallback_is_gpt55():
+def test_rollout_bucket_is_deterministic_and_runtime_fallback_is_baseline():
     audits = []
     policy = ModelRoutingPolicyV1.rollout(
         policy_version="pilot-50",

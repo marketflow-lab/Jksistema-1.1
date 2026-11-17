@@ -89,12 +89,15 @@ async function newScenario(browser, baseUrl, options = {}) {
   const pageErrors = [];
   page.on('pageerror', error => pageErrors.push(String(error && error.message || error)));
 
-  await page.addInitScript(({ full, seedLegacy, seedAutomaticAlert, seedActiveTask, testMode }) => {
+  await page.addInitScript(({ full, seedLegacy, seedCodexModel, seedAutomaticAlert, seedActiveTask, testMode }) => {
     Object.defineProperty(window, 'Worker', { configurable: true, value: undefined });
     window.__JK_CODEX_TEST_MODE__ = testMode === true;
     localStorage.setItem('permissions', JSON.stringify(full ? { full: true } : {}));
     localStorage.setItem('user_data', JSON.stringify({ username: full ? 'admin' : 'operador', client_id: '000002' }));
     localStorage.setItem('access_token', 'black-jhon-browser-test');
+    if (seedCodexModel) {
+      localStorage.setItem('jk_codex_settings_v1', JSON.stringify({ model: seedCodexModel }));
+    }
     if (seedLegacy) {
       localStorage.setItem('jk_codex_settings_v1', JSON.stringify({
         access: 'full_access',
@@ -127,6 +130,7 @@ async function newScenario(browser, baseUrl, options = {}) {
   }, {
     full: options.full === true,
     seedLegacy: options.seedLegacy === true,
+    seedCodexModel: options.seedCodexModel || '',
     seedAutomaticAlert: options.seedAutomaticAlert === true,
     seedActiveTask: options.seedActiveTask || '',
     testMode: options.fakeClock === true,
@@ -468,6 +472,7 @@ async function run() {
       const scenario = await newScenario(browser, baseUrl, {
         full: true,
         statusReady: true,
+        seedCodexModel: 'gpt-5.5',
         pageQuery: '?token=segredo-nao-enviar&code=oauth-nao-enviar#hash-secreto',
         pendingApprovals: [{
           id: 'approval-browser-1',
@@ -482,6 +487,7 @@ async function run() {
       });
       const { context, page, calls, pageErrors } = scenario;
       await page.locator('#jk-codex-panel.aberto').waitFor();
+      assert.strictEqual(await page.locator('#jk-codex-model').inputValue(), 'gpt-6.1-sol', 'modelo antigo salvo deve migrar para o padrao suportado');
       const openingMetrics = await page.evaluate(async () => {
         document.getElementById('jk-codex-close')?.click();
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -523,7 +529,7 @@ async function run() {
       await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Resposta primaria de teste.'));
       assert.strictEqual(calls.codexTasks.length, 1);
       assert.strictEqual(calls.codexTasks[0].sandbox, 'read_only');
-      assert.strictEqual(calls.codexTasks[0].model, 'gpt-5.5');
+      assert.strictEqual(calls.codexTasks[0].model, 'gpt-6.1-sol');
       assert.strictEqual(calls.codexTasks[0].screen_context.context_mode, 'manual');
       assert.ok(calls.codexTasks[0].screen_context.dom_scan.scanned_elements <= 300);
       assert.doesNotMatch(calls.codexTasks[0].screen_context.url_completa, /segredo|token|code|hash/i);
@@ -621,7 +627,7 @@ async function run() {
       assert.strictEqual(calls.codexTasks.length, 1);
       assert.strictEqual(calls.codexTasks[0].sandbox, 'read_only');
       assert.strictEqual(calls.codexTasks[0].approval_mode, 'read_only');
-      assert.strictEqual(calls.codexTasks[0].model, 'gpt-5.5');
+      assert.strictEqual(calls.codexTasks[0].model, 'gpt-6.1-sol');
       assert.strictEqual(calls.codexTasks[0].thread_id, undefined);
       assert.deepStrictEqual(calls.codexTasks[0].paths, []);
       assert.strictEqual(calls.iaChat.length, 0);
