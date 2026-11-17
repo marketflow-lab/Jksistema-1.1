@@ -48,6 +48,18 @@ const itens = [
     reserva_antes_chegada_atendida: false, risco_ruptura_antes_chegada: true, compra_sugerida: 0,
     falta_antes_chegada_quantidade: 600,
     avisos_planejamento: ['Pedido confirmado de 1.000 unidades chega no sexto mês; há falta até essa entrada.'] },
+  { ...base, sku: '005', saldo_atual_estoque: 0, posicao_estoque: 0, media_mensal_prevista: 4.83,
+    tendencia_vendas: 'indeterminada', variacao_vendas_percentual: null,
+    tendencia_motivo: 'Há meses sem vendas; confirme a disponibilidade do produto antes de interpretar alta ou queda.',
+    estoque_previsto_antes_chegada: 0, reserva_antes_chegada_quantidade: 4.83,
+    reserva_antes_chegada_atendida: false, risco_ruptura_antes_chegada: true,
+    falta_antes_chegada_quantidade: 29, compra_sugerida: 35, estoque_previsto_apos_chegada: 35,
+    estoque_alvo_apos_chegada: 33.83, planejamento_requer_revisao: true,
+    avisos_planejamento: [
+      'Há meses sem vendas; confirme a disponibilidade do produto antes de interpretar alta ou queda.',
+      'Orçamentos ou outras quantidades sem compra confirmada não abastecem esta previsão.',
+      'Há previsão de falta antes da chegada. A nova compra não repõe as vendas perdidas nesse intervalo.',
+    ] },
 ];
 
 (async () => {
@@ -102,12 +114,13 @@ const itens = [
     assert.strictEqual(await botao.getAttribute('title'), null, 'O balão não depende do title nativo');
     assert.strictEqual(await botao.getAttribute('aria-describedby'), 'balaoPlanejamentoCompra');
     const textoAntes = await balao.textContent();
-    assert(textoAntes.includes('Estoque antes da chegada: 80'));
-    assert(textoAntes.includes('Reserva para 1 mês: 120'));
+    const metrica = rotulo => balao.locator('.compra-planejamento-metrica').filter({ has: page.locator('dt', { hasText: rotulo }) }).locator('dd');
+    assert.strictEqual(await metrica('Antes de receber').textContent(), '80 un');
+    assert.strictEqual(await metrica('Reserva de 1 mês').textContent(), '120 un');
     assert(textoAntes.includes('Reserva insuficiente'));
     assert(textoAntes.includes('17/05/2027'));
-    assert(textoAntes.includes('Estoque previsto após receber a sugestão automática: 840'));
-    assert(textoAntes.includes('Meta de estoque para 7 meses após receber: 840'));
+    assert.strictEqual(await metrica('Após receber').textContent(), '840 un');
+    assert(textoAntes.includes('Meta: 7 meses após receber.'));
     assert(await balao.evaluate(el => el.parentElement === document.body), 'Balão precisa escapar do recorte da tabela');
     assert(await balao.evaluate(el => {
       const r = el.getBoundingClientRect();
@@ -129,26 +142,40 @@ const itens = [
     assert.strictEqual(await linha('002').locator('.previsao-seta--queda').evaluate(el => getComputedStyle(el).color), 'rgb(248, 113, 113)');
     await linha('002').locator('.compra-sugerida-editavel').hover();
     await balao.waitFor({ state: 'visible' });
-    assert((await balao.textContent()).includes('Estoque antes da chegada: 490'));
+    assert.strictEqual(await metrica('Antes de receber').textContent(), '490 un');
     assert(!(await balao.textContent()).includes('Reserva insuficiente'));
     assert(!(await linha('002').getAttribute('class')).includes('risco-'));
     assert.strictEqual((await linha('003').locator('.previsao-tendencia').textContent()).trim(), 'Dados insuficientes');
     await linha('003').locator('.compra-sugerida-editavel').hover();
     await balao.waitFor({ state: 'visible' });
-    assert((await balao.textContent()).includes('Revisar previsão'));
+    assert((await balao.textContent()).includes('Histórico insuficiente'));
     assert((await balao.textContent()).includes('<img src=x'));
     assert.strictEqual(await balao.locator('img').count(), 0, 'Motivos devem ser texto sem executar HTML');
     assert.strictEqual(await page.evaluate(() => Boolean(window.injecaoPrevisao)), false);
     assert((await linha('004').getAttribute('class')).includes('risco-critico'), 'Ruptura precisa aparecer mesmo com compra zero');
     await linha('004').locator('.compra-sugerida-editavel').hover();
     await balao.waitFor({ state: 'visible' });
-    assert((await balao.textContent()).includes('Falta antes da entrega: demanda sem cobertura de 600 unidades'));
+    assert((await balao.locator('.compra-planejamento-alerta').textContent()).includes('600 un antes da entrega'));
     assert.strictEqual((await linha('035').locator('.previsao-tendencia').textContent()).trim(), 'Queda a confirmar');
     assert.strictEqual(await linha('035').locator('.previsao-seta').count(), 0, 'Queda incerta não recebe seta de tendência confirmada');
     await linha('035').locator('.compra-sugerida-editavel').hover();
     await balao.waitFor({ state: 'visible' });
-    assert((await balao.textContent()).includes('Queda nas vendas com estoque zerado'));
-    assert((await balao.textContent()).includes('Falta antes da entrega: demanda sem cobertura de 480 unidades'));
+    assert((await balao.textContent()).includes('O produto está sem estoque; a queda nas vendas precisa ser confirmada.'));
+    assert((await balao.locator('.compra-planejamento-alerta').textContent()).includes('480 un antes da entrega'));
+    await linha('005').locator('.compra-sugerida-editavel').hover();
+    await balao.waitFor({ state: 'visible' });
+    assert.strictEqual(await balao.locator('.compra-planejamento-quantidade').textContent(), '35 un');
+    assert.strictEqual(await metrica('Antes de receber').textContent(), '0 un');
+    assert.strictEqual(await metrica('Reserva de 1 mês').textContent(), '4,83 un');
+    assert.strictEqual(await metrica('Após receber').textContent(), '35 un');
+    const resumoBaixoGiro = await balao.textContent();
+    assert.strictEqual(await balao.locator('.compra-planejamento-alerta').count(), 1, 'A falta e a reserva não devem gerar alertas duplicados');
+    assert(resumoBaixoGiro.includes('29 un antes da entrega'), 'O resumo deve preservar a quantidade prevista em falta');
+    assert.strictEqual(resumoBaixoGiro.split('Houve meses sem venda.').length - 1, 1);
+    assert(!resumoBaixoGiro.includes('Reserva insuficiente'), 'O alerta de falta já explica o risco principal');
+    assert(!resumoBaixoGiro.includes('33,83'), 'A meta em unidades não precisa repetir o saldo após receber');
+    assert(resumoBaixoGiro.includes('Só compras confirmadas entram nessa conta.'));
+    assert(await balao.evaluate(el => el.getBoundingClientRect().height < 470), 'O resumo deve caber sem um bloco extenso de texto');
     if (process.env.JK_MEDIAS_TOOLTIP_PREVIEW) {
       await page.screenshot({ path: process.env.JK_MEDIAS_TOOLTIP_PREVIEW });
     }
@@ -161,8 +188,8 @@ const itens = [
     assert.strictEqual((await linha('001').locator('.compra-sugerida-editavel').textContent()).trim(), '500');
     await linha('001').locator('.compra-sugerida-editavel').hover();
     await balao.waitFor({ state: 'visible' });
-    assert((await balao.textContent()).includes('Ajuste manual: as projeções exibidas são do cálculo automático'));
-    assert((await balao.textContent()).includes('Estoque antes da chegada: 80'), 'Ajuste manual não inventa saldo');
+    assert((await balao.locator('.compra-planejamento-manual').textContent()).includes('Os saldos são do cálculo automático'));
+    assert.strictEqual(await metrica('Antes de receber').textContent(), '80 un', 'Ajuste manual não inventa saldo');
     assert.deepStrictEqual(await page.evaluate(() => obterQuantidadesSugeridasEditadas()), { '001': 500 });
     await page.mouse.move(12, 12);
     await balao.waitFor({ state: 'hidden' });

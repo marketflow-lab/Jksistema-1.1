@@ -7,9 +7,11 @@ Atualização pequena pelo canal `app-update`, com proteção da leitura concorr
 - Os testes de autenticação controlam os prazos dos cenários que medem deadline e formulário desabilitado. Cancelamento explícito e troca de contexto preservam as verificações de uma única submissão.
 - A verificação de layout da Invoice readquire o cartão após uma atualização da lista e mantém todas as asserções de geometria. O teste de cache de margens aguarda a carga completa antes de avançar o relógio entre os cenários.
 - O teste do balão de pedidos estabiliza viewport e scroll antes do hover, mantendo a expiração de cinco segundos e a rejeição de respostas tardias.
+- O balão de compra destaca os três valores principais do planejamento e reúne os avisos sem duplicação, preservando o cálculo e a indicação de projeções manuais.
+- O teste de inclusão de SKU aguarda o foco inicial do modal antes de preencher os campos, evitando que o foco atrasado altere o SKU durante a digitação.
 
 O planejamento de compras da versão 1.0.360 integra esta base. O contrato do runtime permanece igual; o Update reutiliza o runtime compatível existente. O workflow verifica o Setup completo e o Update antes da publicação.
 
-Validação local: 332 testes Python aprovados e um teste de junction ignorado pela permissão do ambiente; oito arquivos de regressões de navegador, incluindo 45 casos de autenticação, 11 cenários de hover e oito cenários de Invoice; nove verificações de release e empacotamento aprovadas. Locks de dependências, manifesto do contexto, 25 espelhos HTML, contrato de runtime, sintaxe JavaScript, compilação Python e `git diff --check` conferidos.
+Validação local: 332 testes Python aprovados e um teste de junction ignorado pela permissão do ambiente; 25 arquivos de verificações JavaScript, sendo 22 de Médias e os testes de autenticação, Invoice e cache de margens; nove verificações de release e empacotamento aprovadas. Locks de dependências, manifesto do contexto, 25 espelhos HTML, contrato de runtime, sintaxe JavaScript, compilação Python e `git diff --check` conferidos.
 
 As quatro versões de pacote, os contratos de versão e o manifesto do bundle de contexto acompanham a 1.0.361. A publicação usa `app-update` com `publish=true`; a cópia instalada não é atualizada por esta tarefa.

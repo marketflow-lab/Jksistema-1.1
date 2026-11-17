@@ -134,24 +134,68 @@
         return '<span class="previsao-tendencia previsao-tendencia--' + plano.tendencia + '" title="' + escaparHtml(plano.motivo) + '">' + escaparHtml(plano.textoTendencia) + '</span>';
     }
 
-    function descricaoPlanejamentoCompra(item, manual) {
+    function resumoPlanejamentoCompra(item, manual) {
         const plano = obterPlanejamentoCompra(item);
-        if (!plano) return 'Clique para editar a sugestão de compra';
-        const partes = ['Entrega em 6 meses; reserva de 1 mês antes; meta de 7 meses no total após receber'];
-        if (plano.chegada) partes.push('Chegada prevista: ' + plano.chegada);
-        partes.push('Tendência: ' + plano.textoTendencia);
-        if (plano.motivo) partes.push(plano.motivo);
-        partes.push('A previsão usa meses completos e exclui o mês atual.');
-        if (plano.saldoAntes !== null) partes.push('Estoque antes da chegada: ' + numero(plano.saldoAntes) + ' unidades previstas');
-        if (plano.reserva !== null) partes.push('Reserva para 1 mês: ' + numero(plano.reserva) + ' unidades');
-        if (!plano.reservaAtendida) partes.push('Reserva insuficiente: a sobra prevista antes da chegada é menor que um mês de vendas');
-        if (plano.saldoDepois !== null) partes.push('Estoque previsto após receber a sugestão automática: ' + numero(plano.saldoDepois));
-        if (plano.metaDepois !== null) partes.push('Meta de estoque para 7 meses após receber: ' + numero(plano.metaDepois));
-        if (plano.riscoRuptura) partes.push('Falta antes da entrega: demanda sem cobertura de ' + numero(plano.faltaAntes || 0) + ' unidades');
-        if (plano.revisar) partes.push('Revisar previsão: confirme os dados indicados nos avisos antes de comprar');
-        partes.push(...plano.avisos);
-        if (manual) partes.push('Ajuste manual: as projeções exibidas são do cálculo automático');
-        return partes.join('\n');
+        if (!plano) return null;
+        const valor = n => n !== null && Number.isFinite(Number(n)) ? numero(n) + ' un' : '—';
+        const iguais = (a, b) => a.trim().replace(/\s+/g, ' ').toLowerCase() === b.trim().replace(/\s+/g, ' ').toLowerCase();
+        const tem = expressao => plano.avisos.some(texto => expressao.test(texto));
+        const saldoIncerto = tem(/estoque indisponível|estoque.*incompleto/i);
+        const falta = plano.faltaAntes > 0 ? 'Podem faltar cerca de ' + numero(plano.faltaAntes) + ' un antes da entrega.'
+            : 'Pode faltar estoque antes da entrega.';
+        const alerta = saldoIncerto ? 'Saldo não confirmado. Confira o estoque atual.'
+            : plano.riscoRuptura ? falta
+            : !plano.reservaAtendida ? 'Reserva insuficiente: a sobra não cobre 1 mês de vendas.' : '';
+        const motivos = [
+            [/meses sem vendas/i, 'Houve meses sem venda. Confira se faltou produto.'],
+            [/estoque.*zerado/i, 'O produto está sem estoque; a queda nas vendas precisa ser confirmada.'],
+            [/diverge/i, 'As vendas recentes e o histórico apontam direções diferentes.'],
+            [/concentrada em um mês/i, 'Um mês fora do padrão impede confirmar a tendência.'],
+            [/baixas ou esporádicas/i, 'As vendas são poucas ou irregulares para definir uma tendência.'],
+            [/histórico insuficiente|não há vendas suficientes/i, 'Faltam meses de vendas para confirmar a tendência.'],
+        ];
+        const incerta = ['insuficiente', 'indeterminada'].includes(plano.tendencia);
+        const motivo = incerta ? (motivos.find(([expressao]) => expressao.test(plano.motivo))?.[1] || plano.motivo) : '';
+        const semData = tem(/compras confirmadas sem previsão/i);
+        const regras = [
+            [/compras confirmadas sem previsão/i, 'Quantidade provisória: confirme as datas dos pedidos em andamento.'],
+            [/recebimentos com data estimada/i, 'Confirme o prazo das entregas em andamento.'],
+            [/recebimentos posteriores/i, 'Há outra entrega depois desta. Confira para evitar excesso.'],
+            [/orçamentos.*sem compra confirmada/i, 'Só compras confirmadas entram nessa conta.'],
+        ];
+        const avisos = [];
+        for (const aviso of plano.avisos) {
+            if (iguais(aviso, plano.motivo) || /há previsão de falta|a sobra prevista|estoque indisponível|estoque.*incompleto/i.test(aviso)) continue;
+            if (semData && /recebimentos com data estimada/i.test(aviso)) continue;
+            const texto = regras.find(([expressao]) => expressao.test(aviso))?.[1] || aviso;
+            if (!avisos.includes(texto)) avisos.push(texto);
+        }
+        if (plano.revisar && !alerta && !motivo && !avisos.length) avisos.push('Confira os dados antes de comprar.');
+        return {
+            titulo: 'Sugestão de compra', quantidade: valor(item.compra_sugerida),
+            entrega: (plano.chegada ? plano.chegada + ' · ' : '') + 'em 6 meses',
+            metricas: [
+                { rotulo: 'Antes de receber', valor: valor(plano.saldoAntes) },
+                { rotulo: 'Reserva de 1 mês', valor: valor(plano.reserva) },
+                { rotulo: 'Após receber', valor: valor(plano.saldoDepois) },
+            ],
+            alerta: alerta ? { texto: alerta, tipo: 'aviso' } : null,
+            tendencia: {
+                texto: plano.textoTendencia === 'Tendência indeterminada' ? 'Alta ou queda não confirmada' : plano.textoTendencia,
+                explicacao: motivo,
+            }, avisos,
+            rodape: 'Meta: 7 meses após receber.', manual: !!manual,
+            notaManual: manual ? 'Quantidade ajustada por você. Os saldos são do cálculo automático.' : '',
+        };
+    }
+
+    function descricaoPlanejamentoCompra(item, manual) {
+        const resumo = resumoPlanejamentoCompra(item, manual);
+        if (!resumo) return 'Clique para editar a sugestão de compra';
+        return [resumo.titulo + ': ' + resumo.quantidade, resumo.entrega,
+            ...resumo.metricas.map(metrica => metrica.rotulo + ': ' + metrica.valor),
+            resumo.alerta?.texto, resumo.tendencia.texto, resumo.tendencia.explicacao,
+            ...resumo.avisos, resumo.rodape, resumo.notaManual].filter(Boolean).join('\n');
     }
 
     function textosPlanejamentoCompra(item) {
@@ -412,6 +456,7 @@
         renderizarPrevisaoMensal,
         renderizarSetaTendenciaCompra,
         renderizarTendenciaCompra,
+        resumoPlanejamentoCompra,
         descricaoPlanejamentoCompra,
         textosPlanejamentoCompra,
         renderizarDetalhesPlanejamento,

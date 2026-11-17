@@ -8,6 +8,7 @@ async function allCalls(page) { return page.evaluate(() => __autosaveFixture.cal
 function workCalls(items) { return items.filter(call => /^(sku:|products$|add:|save:|summaries$)/.test(call.key)); }
 async function add(page, sku = '375-1') {
     await page.locator('#btnAdicionarSkuPedido').click();
+    await page.waitForFunction(() => document.activeElement === document.getElementById('addSkuInput'));
     await page.locator('#addSkuInput').fill(sku);
     await page.locator('#addSkuQtdInput').fill('4');
     await page.locator('#addSkuValorInput').fill('3,50');

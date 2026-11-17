@@ -1614,7 +1614,7 @@
 .compra-planejamento-balao {
     position: fixed;
     z-index: 60000;
-    width: min(370px, calc(100vw - 24px));
+    width: min(390px, calc(100vw - 24px));
     max-height: calc(100vh - 24px);
     overflow: auto;
     box-sizing: border-box;
@@ -1631,9 +1631,21 @@
     overflow-wrap: anywhere;
 }
 .compra-planejamento-balao[hidden] { display: none; }
-.compra-planejamento-titulo { display: block; margin-bottom: 9px; color: #b8deff; }
-.compra-planejamento-balao p { margin: 7px 0 0; }
-.compra-planejamento-balao .compra-planejamento-aviso { color: #ffce8b; font-weight: 600; }
+.compra-planejamento-cabecalho { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.compra-planejamento-titulo { display: block; color: #b8deff; font-size: 13px; }
+.compra-planejamento-quantidade { color: #edf5ff; font-size: 22px; line-height: 1.2; white-space: nowrap; }
+.compra-planejamento-entrega { margin: 5px 0 12px; color: #b6cbe4; font-size: 12px; }
+.compra-planejamento-metricas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.compra-planejamento-metrica { min-width: 0; padding: 9px 7px; background: #1c344b; border-radius: 6px; }
+.compra-planejamento-metrica dt { min-height: 34px; color: #c4d5e8; font-size: 12px; line-height: 1.4; }
+.compra-planejamento-metrica dd { margin: 2px 0 0; color: #edf5ff; font-size: 16px; font-weight: 700; line-height: 1.25; }
+.compra-planejamento-balao .compra-planejamento-alerta { margin: 11px 0 0; color: #ffce8b; font-weight: 600; }
+.compra-planejamento-balao .compra-planejamento-alerta--info { color: #b8deff; }
+.compra-planejamento-tendencia { margin: 10px 0 0; color: #edf5ff; }
+.compra-planejamento-explicacao { margin: 3px 0 0; color: #c4d5e8; font-size: 12px; }
+.compra-planejamento-avisos { display: grid; gap: 5px; margin: 9px 0 0; padding-left: 17px; color: #c4d5e8; font-size: 12px; }
+.compra-planejamento-rodape { margin: 11px 0 0; padding-top: 9px; border-top: 1px solid #365169; color: #b6cbe4; font-size: 11px; }
+.compra-planejamento-manual { margin: 5px 0 0; color: #9acbff; font-size: 11px; }
 @media (max-width: 600px) {
     .uniao-modal { width: calc(100vw - 20px); padding: 14px; }
     .uniao-modal .modal-actions { flex-wrap: wrap; }

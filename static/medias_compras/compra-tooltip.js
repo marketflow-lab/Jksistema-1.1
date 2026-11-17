@@ -91,20 +91,51 @@
         function mostrar(alvo, item, manual) {
             if (!alvo.isConnected) return;
             ocultarTooltipCompra();
+            const resumo = resumoPlanejamentoCompra(item, manual);
+            if (!resumo) return;
             instalarEventos();
             const el = obterBalao();
-            const titulo = document.createElement('strong');
-            titulo.className = 'compra-planejamento-titulo';
-            titulo.textContent = 'Planejamento da compra';
-            el.replaceChildren(titulo);
-            for (const texto of descricaoPlanejamentoCompra(item, manual).split('\n')) {
-                const linha = document.createElement('p');
-                linha.textContent = texto;
-                if (texto.startsWith('Reserva insuficiente:') || texto.startsWith('Falta antes da entrega:')) {
-                    linha.className = 'compra-planejamento-aviso';
-                }
-                el.appendChild(linha);
+            const texto = (tag, classe, valor) => {
+                const elemento = document.createElement(tag);
+                elemento.className = classe;
+                elemento.textContent = valor;
+                return elemento;
+            };
+            const cabecalho = document.createElement('div');
+            cabecalho.className = 'compra-planejamento-cabecalho';
+            cabecalho.append(
+                texto('strong', 'compra-planejamento-titulo', resumo.titulo),
+                texto('strong', 'compra-planejamento-quantidade', resumo.quantidade),
+            );
+            el.replaceChildren(cabecalho);
+            if (resumo.entrega) el.appendChild(texto('p', 'compra-planejamento-entrega', resumo.entrega));
+            const metricas = document.createElement('dl');
+            metricas.className = 'compra-planejamento-metricas';
+            for (const metrica of resumo.metricas || []) {
+                const celula = document.createElement('div');
+                celula.className = 'compra-planejamento-metrica';
+                celula.append(
+                    texto('dt', '', metrica.rotulo),
+                    texto('dd', '', metrica.valor),
+                );
+                metricas.appendChild(celula);
             }
+            el.appendChild(metricas);
+            if (resumo.alerta?.texto) {
+                const classe = 'compra-planejamento-alerta'
+                    + (resumo.alerta.tipo === 'info' ? ' compra-planejamento-alerta--info' : '');
+                el.appendChild(texto('p', classe, resumo.alerta.texto));
+            }
+            if (resumo.tendencia?.texto) el.appendChild(texto('p', 'compra-planejamento-tendencia', resumo.tendencia.texto));
+            if (resumo.tendencia?.explicacao) el.appendChild(texto('p', 'compra-planejamento-explicacao', resumo.tendencia.explicacao));
+            if (resumo.avisos?.length) {
+                const avisos = document.createElement('ul');
+                avisos.className = 'compra-planejamento-avisos';
+                for (const aviso of resumo.avisos) avisos.appendChild(texto('li', '', aviso));
+                el.appendChild(avisos);
+            }
+            if (resumo.rodape) el.appendChild(texto('p', 'compra-planejamento-rodape', resumo.rodape));
+            if (resumo.notaManual) el.appendChild(texto('p', 'compra-planejamento-manual', resumo.notaManual));
             alvoAtual = alvo;
             alvo.setAttribute('aria-describedby', el.id);
             el.hidden = false;
