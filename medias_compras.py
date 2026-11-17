@@ -250,15 +250,25 @@ def _calcular_planejamento_reposicao(
     if revisar:
         avisos.append(previsao["tendencia_motivo"])
     eventos = []
-    mesmo_dia = sem_data = confirmado = posteriores = 0.0
+    mesmo_dia = sem_data = confirmado = em_analise = analise_abatida = posteriores = 0.0
     for entrada in entradas or []:
         if not isinstance(entrada, dict):
             continue
         quantidade = _numero_planejamento(entrada.get("quantidade"))
         if quantidade <= 0:
             continue
-        confirmado += quantidade
         prevista = _data_planejamento(entrada.get("data_prevista"))
+        if entrada.get("confirmada", True) is False:
+            # These quantities already appear in the application's in-transit
+            # position. Reserve them against a duplicate purchase, but never
+            # assume an unconfirmed order can supply stock before arrival.
+            em_analise += quantidade
+            if prevista is not None and prevista > chegada:
+                posteriores += quantidade
+            else:
+                analise_abatida += quantidade
+            continue
+        confirmado += quantidade
         if prevista is None or prevista < referencia:
             # Prevent duplicate purchasing without pretending an undated order
             # can protect stock before arrival. The result is explicitly provisional.
@@ -289,18 +299,28 @@ def _calcular_planejamento_reposicao(
     consumo = ritmo * (lead - instante_anterior)
     faltante += max(0.0, consumo - saldo)
     antes = max(0.0, saldo - consumo)
-    necessidade = max(0.0, alvo - antes - mesmo_dia - sem_data)
+    necessidade = max(0.0, alvo - antes - mesmo_dia - sem_data - analise_abatida)
     # Ignore floating point dust at exact pack boundaries.
     compra = max(0, int(math.ceil((necessidade - 1e-9) / 5) * 5))
-    depois = antes + mesmo_dia + sem_data + compra
+    depois = antes + mesmo_dia + sem_data + analise_abatida + compra
+    sem_pedidos = max(0.0, alvo - max(0.0, fisico - ritmo * lead))
+    compra_sem_pedidos = max(0, int(math.ceil((sem_pedidos - 1e-9) / 5) * 5))
+    if em_analise:
+        revisar = True
+        if analise_abatida:
+            quantidade_texto = f"{analise_abatida:g}".replace(".", ",")
+            avisos.append(
+                f"Pedidos em análise: {quantidade_texto} un consideradas provisoriamente. "
+                "O estoque após a chegada depende de confirmar a compra e o prazo."
+            )
     if sem_data:
         revisar = True
         avisos.append(
             "Há compras confirmadas sem previsão válida de recebimento. Elas reduzem provisoriamente "
             "o novo pedido, mas não garantem a reserva antes da chegada; confirme as datas."
         )
-    if transito_legado > confirmado + 0.01:
-        avisos.append("Orçamentos ou outras quantidades sem compra confirmada não abastecem esta previsão.")
+    if transito_legado > confirmado + em_analise + 0.01:
+        avisos.append("Quantidades fora do saldo pendente não reduzem a compra. Confira a loja e os recebimentos.")
     if posteriores:
         avisos.append("Há recebimentos posteriores à nova chegada; revise o estoque acumulado nas próximas entregas.")
     if faltante > 1e-7:
@@ -341,6 +361,9 @@ def _calcular_planejamento_reposicao(
         "risco_ruptura_antes_chegada": faltante > 1e-7,
         "avisos_planejamento": avisos,
         "transito_confirmado": round(confirmado, 2),
+        "transito_em_analise_quantidade": round(em_analise, 2),
+        "pedidos_considerados_quantidade": round(confirmado + em_analise, 2),
+        "abatimento_pedidos_quantidade": max(0, compra_sem_pedidos - compra),
         "transito_sem_previsao_quantidade": round(sem_data, 2),
         "planejamento_requer_revisao": revisar,
     }

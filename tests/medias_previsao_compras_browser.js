@@ -7,6 +7,8 @@ const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
+const avisoPedidosEmAnalise = 'Pedidos em análise: 700 un consideradas provisoriamente. '
+  + 'O estoque após a chegada depende de confirmar a compra e o prazo.';
 const base = {
   titulo_anuncio: 'Produto simulado', vendas_mensais: { '2026-10': 100 },
   total_vendas_periodo: 600, media_mensal: 100, saldo_atual_estoque: 700,
@@ -60,6 +62,16 @@ const itens = [
       'Orçamentos ou outras quantidades sem compra confirmada não abastecem esta previsão.',
       'Há previsão de falta antes da chegada. A nova compra não repõe as vendas perdidas nesse intervalo.',
     ] },
+  { ...base, sku: '79', media_mensal: 124.33, total_vendas_periodo: 770,
+    saldo_atual_estoque: 0, estoque_em_transito: 700, posicao_estoque: 700,
+    transito_confirmado: 0, transito_em_analise_quantidade: 700,
+    pedidos_considerados_quantidade: 700, abatimento_pedidos_quantidade: 700,
+    media_mensal_prevista: 152.2, tendencia_vendas: 'alta', variacao_vendas_percentual: 254.88,
+    tendencia_motivo: 'Alta consistente nos meses completos', estoque_previsto_antes_chegada: 0,
+    reserva_antes_chegada_quantidade: 152.2, reserva_antes_chegada_atendida: false,
+    compra_sugerida: 370, estoque_previsto_apos_chegada: 1070, estoque_alvo_apos_chegada: 1065.4,
+    falta_antes_chegada_quantidade: 913.2, risco_ruptura_antes_chegada: true,
+    planejamento_requer_revisao: true, avisos_planejamento: [avisoPedidosEmAnalise] },
 ];
 
 (async () => {
@@ -100,7 +112,7 @@ const itens = [
     assert.strictEqual((await linha('001').locator('.previsao-detalhe').textContent()).trim(), 'Prev. 120');
     const balao = page.locator('#balaoPlanejamentoCompra');
     const botao = linha('001').locator('.compra-sugerida-editavel');
-    for (const sku of ['001', '002', '003', '004', '035']) {
+    for (const sku of ['001', '002', '003', '004', '035', '79']) {
       const texto = await linha(sku).locator('.compra-sugerida-cell').textContent();
       for (const detalhe of ['Antes:', 'Reserva:', 'Reserva insuficiente', 'Falta antes da entrega', 'Revisar previsão', 'Ajuste manual']) {
         assert(!texto.includes(detalhe), detalhe + ' só deve aparecer no balão da quantidade');
@@ -178,6 +190,26 @@ const itens = [
     assert(await balao.evaluate(el => el.getBoundingClientRect().height < 470), 'O resumo deve caber sem um bloco extenso de texto');
     if (process.env.JK_MEDIAS_TOOLTIP_PREVIEW) {
       await page.screenshot({ path: process.env.JK_MEDIAS_TOOLTIP_PREVIEW });
+    }
+    await page.mouse.move(12, 12);
+    await balao.waitFor({ state: 'hidden' });
+    const celulaPedidoEmAnalise = linha('79').locator('.compra-sugerida-cell');
+    assert.strictEqual((await celulaPedidoEmAnalise.textContent()).replace(/\s+/g, ''), '370↑Alta+254,88%',
+      'A célula deve mostrar somente quantidade, seta e tendência');
+    await celulaPedidoEmAnalise.locator('.previsao-seta--alta').hover();
+    assert.strictEqual(await balao.isVisible(), false, 'O aviso provisório só abre na quantidade');
+    await celulaPedidoEmAnalise.locator('.compra-sugerida-editavel').hover();
+    await balao.waitFor({ state: 'visible' });
+    assert.strictEqual(await balao.locator('.compra-planejamento-quantidade').textContent(), '370 un');
+    assert.strictEqual(await metrica('Antes de receber').textContent(), '0 un', 'Orçamento não garante estoque antes da chegada');
+    assert.strictEqual(await metrica('Reserva de 1 mês').textContent(), '152,2 un');
+    assert.strictEqual(await metrica('Após receber').textContent(), '1.070 un');
+    assert((await balao.locator('.compra-planejamento-alerta').textContent()).includes('913,2 un antes da entrega'));
+    assert.strictEqual(await balao.locator('.compra-planejamento-avisos li').textContent(), avisoPedidosEmAnalise,
+      'O aviso deve preservar a quantidade provisória e a condição de confirmar compra e prazo');
+    assert(!(await balao.textContent()).includes('Só compras confirmadas entram nessa conta.'));
+    if (process.env.JK_MEDIAS_PENDING_PREVIEW) {
+      await balao.screenshot({ path: process.env.JK_MEDIAS_PENDING_PREVIEW });
     }
     await page.mouse.move(12, 12);
     await balao.waitFor({ state: 'hidden' });

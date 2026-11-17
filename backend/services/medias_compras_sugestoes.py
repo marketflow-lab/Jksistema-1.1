@@ -27,7 +27,7 @@ from backend.services.medias_compras_excel import (
 from backend.services.medias_compras_fiscal import *
 from backend.services.medias_compras_visao import api_medias_compras_visao
 from backend.services.medias_compras_historico import ler_historico_vendas
-from backend.services.medias_compras_planejamento import entradas_confirmadas_por_sku, filtrar_estoque_loja
+from backend.services.medias_compras_planejamento import entradas_planejamento_por_sku, filtrar_estoque_loja
 from backend.services.runtime_bridge import bind_runtime_globals
 from medias_compras import calcular_reposicao_periodo
 
@@ -299,7 +299,7 @@ def _api_medias_compras_gerar_lista_compra_sync(
         if isinstance(listas_salvas, medias_common._ListasPedidosSnapshot):
             listas_salvas.require_unchanged = True
         transito_por_sku = _mapa_estoque_em_transito_por_sku(client_id, loja_sel, snapshot=listas_salvas)
-        entradas_por_sku = entradas_confirmadas_por_sku(
+        entradas_por_sku = entradas_planejamento_por_sku(
             listas_salvas, loja=loja_sel, store_id=store_id_escopo, data_referencia=fim_periodo,
         )
 

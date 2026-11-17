@@ -15,7 +15,7 @@ from typing import Literal, NamedTuple
 import pandas as pd
 from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta, registrar_tempo, leitura_atual, etapa
 from backend.services.medias_compras_historico import ler_historico_vendas
-from backend.services.medias_compras_planejamento import entradas_confirmadas_por_sku, campos_planejamento, filtrar_estoque_loja
+from backend.services.medias_compras_planejamento import entradas_planejamento_por_sku, campos_planejamento, filtrar_estoque_loja
 from fastapi import Depends, HTTPException
 
 from backend.schemas import MediasComprasRequest, MediasVisaoFotosRequest
@@ -339,7 +339,7 @@ def _api_medias_compras_visao_sync(
             listas = medias_common._ler_listas_pedidos_snapshot(
                 os.path.join(get_tenant_path(client_id), "listas_pedidos.json"),
             )
-            return entradas_confirmadas_por_sku(
+            return entradas_planejamento_por_sku(
                 listas, loja=loja_sel, store_id=store_id_escopo, data_referencia=fim_periodo,
             )
 

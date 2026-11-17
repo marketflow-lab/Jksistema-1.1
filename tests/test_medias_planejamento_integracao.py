@@ -47,6 +47,42 @@ def test_entradas_confirmadas_descontam_recebidos_e_isolam_identidade():
     assert listas == original
 
 
+def test_entradas_planejamento_incluem_analise_pendente_sem_misturar_lojas():
+    listas = [
+        _lista("Analisando orçamento", 100, promised_delivery_date="", itens=[
+            {"SKU": "STABLE", "Quantidade": 100, "received_quantity": 40},
+            {"SKU": "RECEIVED", "Quantidade": 20, "received_quantity": 20},
+        ]),
+        _lista("Em trânsito", 100, itens=[{"SKU": "STABLE", "Quantidade": 100, "received_quantity": 40}]),
+        _lista("Analisando orçamento", 500, store_id="store-b"),
+        _lista("Analisando orçamento", 600, unida_em_lista_id="destino"),
+        _lista("Recebido", 700),
+        _lista("Pedido cancelado", 800),
+        _lista("Lista gerada", 900),
+        _lista("Analisando orçamento", 30, store_id="", loja="Loja B"),
+        _lista("Analisando orçamento", 10, store_id="", loja="Loja A"),
+    ]
+    original = copy.deepcopy(listas)
+    entradas = planejamento.entradas_planejamento_por_sku(
+        iter(listas), loja="Loja A", store_id="store-a", data_referencia="2026-11-17",
+    )
+    assert entradas == {"STABLE": [
+        {"quantidade": 60, "data_prevista": "", "data_estimada": True, "confirmada": False},
+        {"quantidade": 60, "data_prevista": "2027-01-17", "data_estimada": False},
+        {"quantidade": 10, "data_prevista": "2027-01-17", "data_estimada": False, "confirmada": False},
+    ]}
+    assert listas == original
+
+
+@pytest.mark.parametrize("status", sorted(common.LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO))
+def test_planejamento_preserva_status_da_coluna_transito(status):
+    entrada = planejamento.entradas_planejamento_por_sku(
+        [_lista(status)], data_referencia="2026-11-17",
+    )["STABLE"][0]
+    assert entrada["quantidade"] == 100
+    assert entrada.get("confirmada", True) is (status != "Analisando orçamento")
+
+
 @pytest.mark.parametrize("extras, data, estimada", [
     ({"promised_delivery_date": "", "eta_date": "2027-02-10"}, "2027-02-10", True),
     ({"promised_delivery_date": "", "order_date": "2026-08-31"}, "2027-02-28", True),
@@ -93,7 +129,6 @@ def ambiente(tmp_path, monkeypatch):
             conn.execute("INSERT INTO vendas VALUES ('parcial','STABLE','2026-11-10','STABLE',9999,'Loja A')")
             conn.execute("INSERT INTO vendas VALUES ('outra-loja','STABLE','2026-10-01','STABLE',9999,'Loja B')")
         common._salvar_listas_pedidos(client, [
-            _lista("Analisando orçamento", 9000),
             _lista("Em trânsito", 100, id="confirmada", itens=[{"SKU": "STABLE", "Quantidade": 100, "received_quantity": 40}]),
             _lista("Em produção", 5000, id="outra-loja", store_id="store-b"),
         ])
@@ -164,6 +199,53 @@ def test_geracao_e_download_usam_as_mesmas_quantidades_da_tabela(ambiente, monke
     monkeypatch.setattr(sugestoes, "_gerar_excel_lista_pedido_bytes", excel)
     sugestoes._api_medias_compras_gerar_lista_sugestao_sync(meses=6, loja="Loja A", store_id="store-a", client_id="tenant-a")
     assert {item["SKU"]: item["Quantidade"] for item in exportados} == esperados
+
+
+def test_pedido_em_analise_abate_sugestao_na_tabela_lista_e_excel(ambiente, monkeypatch):
+    raiz = ambiente / "tenant-a"
+    with (raiz / "produtos_compilado.csv").open("a", encoding="utf-8") as arquivo:
+        arquivo.write("79,0,0,Loja A\n")
+    with sqlite3.connect(raiz / "vendas_historico.db") as conn:
+        for mes, quantidade in zip(range(5, 12), [73, 16, 75, 147, 253, 182, 97]):
+            conn.execute("INSERT INTO vendas VALUES (?,?,?,?,?,?)", (
+                f"sintetico-79-{mes}", "79", f"2026-{mes:02d}-01", "Produto sintético", quantidade, "Loja A",
+            ))
+    listas = common._carregar_listas_pedidos("tenant-a")
+    listas.append(_lista(
+        "Analisando orçamento", id="orcamento-sintetico", promised_delivery_date="",
+        itens=[{"SKU": "79", "Quantidade": 700, "received_quantity": 0}],
+    ))
+    common._salvar_listas_pedidos("tenant-a", listas)
+
+    linha = _visao()["79"]
+    assert linha["media_mensal_prevista"] == pytest.approx(152.2)
+    assert linha["estoque_em_transito"] == 700
+    assert linha["transito_confirmado"] == 0
+    assert linha["transito_em_analise_quantidade"] == 700
+    assert linha["pedidos_considerados_quantidade"] == 700
+    assert linha["abatimento_pedidos_quantidade"] == 700
+    assert linha["compra_sugerida"] == 370
+    assert linha["estoque_previsto_antes_chegada"] == 0
+    assert linha["reserva_antes_chegada_atendida"] is False
+    assert linha["planejamento_requer_revisao"] is True
+    assert "79" not in _visao(client="tenant-b")
+
+    req = ListaCompraRequest(opcao="media_6m", nome_lista="Pedido sintético com análise", loja="Loja A",
+                            store_id="store-a", fornecedor_id="supplier", periodo_meses=6)
+    resultado = sugestoes._api_medias_compras_gerar_lista_compra_sync(req, client_id="tenant-a")
+    criada = next(lista for lista in common._carregar_listas_pedidos("tenant-a") if lista["id"] == resultado["lista_id"])
+    assert next(item["Quantidade"] for item in criada["itens"] if item["SKU"] == "79") == 370
+    assert resultado["planejamento_requer_revisao"] is True
+
+    exportados = []
+    def excel(_nome, itens, **_kwargs):
+        exportados.extend(itens)
+        return b"xlsx-sintetico"
+    monkeypatch.setattr(sugestoes, "_gerar_excel_lista_pedido_bytes", excel)
+    sugestoes._api_medias_compras_gerar_lista_sugestao_sync(
+        meses=6, loja="Loja A", store_id="store-a", client_id="tenant-a",
+    )
+    assert next(item["Quantidade"] for item in exportados if item["SKU"] == "79") == 370
 
 
 def test_primeira_venda_antiga_e_mes_fechado_extra_compartilham_leitura(ambiente):

@@ -44,6 +44,8 @@ def exigir_json_finito(resultado):
         "estoque_previsto_apos_chegada", "estoque_alvo_apos_chegada",
         "reserva_antes_chegada_quantidade", "falta_antes_chegada_quantidade",
         "transito_sem_previsao_quantidade",
+        "transito_em_analise_quantidade", "pedidos_considerados_quantidade",
+        "abatimento_pedidos_quantidade",
     ):
         assert math.isfinite(resultado[chave]), chave
         assert resultado[chave] >= 0, chave
@@ -331,6 +333,103 @@ def test_unknown_receipt_does_not_claim_to_prevent_a_stockout():
     assert resultado["risco_ruptura_antes_chegada"] is True
     assert resultado["falta_antes_chegada_quantidade"] == pytest.approx(400)
     assert resultado["planejamento_requer_revisao"] is True
+
+
+def test_existing_quote_offsets_the_sku79_example_without_guaranteeing_delivery():
+    vendas = historico([73, 16, 75, 147, 253, 182], mes_atual=97)
+    sem_pedidos = planejar(vendas=vendas, saldo=0)
+    resultado = planejar(
+        vendas=vendas, saldo=0, transito=700,
+        entradas=[{"quantidade": 700, "data_prevista": None, "confirmada": False}],
+    )
+
+    assert resultado["media_mensal_prevista"] == pytest.approx(152.2)
+    assert sem_pedidos["compra_sugerida"] == 1070
+    assert resultado["compra_sugerida"] == 370
+    assert resultado["transito_em_analise_quantidade"] == 700
+    assert resultado["pedidos_considerados_quantidade"] == 700
+    assert resultado["abatimento_pedidos_quantidade"] == 700
+    assert resultado["transito_confirmado"] == 0
+    assert resultado["estoque_previsto_antes_chegada"] == 0
+    assert resultado["falta_antes_chegada_quantidade"] == pytest.approx(913.2)
+    assert resultado["reserva_antes_chegada_atendida"] is False
+    assert resultado["planejamento_requer_revisao"] is True
+    assert any("700 un consideradas provisoriamente" in aviso for aviso in resultado["avisos_planejamento"])
+    exigir_json_finito(resultado)
+
+
+@pytest.mark.parametrize("data_prevista", [None, "inválida", "2026-10-01", "2026-12-01", "2027-05-01"])
+def test_unconfirmed_supply_never_protects_the_prearrival_stock(data_prevista):
+    resultado = planejar(
+        saldo=200, transito=500,
+        entradas=[{"quantidade": 500, "data_prevista": data_prevista, "confirmada": False}],
+    )
+
+    assert resultado["compra_sugerida"] == 200
+    assert resultado["estoque_previsto_antes_chegada"] == 0
+    assert resultado["falta_antes_chegada_quantidade"] == 400
+    assert resultado["reserva_antes_chegada_atendida"] is False
+    assert resultado["transito_confirmado"] == 0
+    assert resultado["planejamento_requer_revisao"] is True
+
+
+def test_unconfirmed_supply_after_new_arrival_does_not_reduce_the_order():
+    resultado = planejar(
+        saldo=200, transito=500,
+        entradas=[{"quantidade": 500, "data_prevista": "2027-06-01", "confirmada": False}],
+    )
+
+    assert resultado["compra_sugerida"] == 700
+    assert resultado["abatimento_pedidos_quantidade"] == 0
+    assert resultado["transito_em_analise_quantidade"] == 500
+    assert resultado["estoque_previsto_apos_chegada"] == 700
+    assert resultado["falta_antes_chegada_quantidade"] == 400
+    assert resultado["planejamento_requer_revisao"] is True
+    assert any("posteriores" in aviso for aviso in resultado["avisos_planejamento"])
+
+
+def test_mixed_confirmed_and_provisional_supply_is_counted_once():
+    resultado = planejar(
+        saldo=200, transito=1000,
+        entradas=[
+            {"quantidade": 500, "data_prevista": "2026-12-01"},
+            {"quantidade": 500, "data_prevista": None, "confirmada": False},
+        ],
+    )
+
+    assert resultado["compra_sugerida"] == 100
+    assert resultado["transito_confirmado"] == 500
+    assert resultado["transito_em_analise_quantidade"] == 500
+    assert resultado["pedidos_considerados_quantidade"] == 1000
+    assert resultado["abatimento_pedidos_quantidade"] == 600
+    assert resultado["estoque_previsto_antes_chegada"] == 100
+    assert resultado["estoque_previsto_apos_chegada"] == 700
+
+
+def test_confirmed_supply_consumed_before_arrival_is_not_a_second_discount():
+    resultado = planejar(
+        vendas=historico([73, 16, 75, 147, 253, 182]), saldo=0, transito=700,
+        entradas=[{"quantidade": 700, "data_prevista": REFERENCIA}],
+    )
+
+    assert resultado["compra_sugerida"] == 1070
+    assert resultado["pedidos_considerados_quantidade"] == 700
+    assert resultado["abatimento_pedidos_quantidade"] == 0
+    assert resultado["falta_antes_chegada_quantidade"] == pytest.approx(213.2)
+
+
+def test_provisional_supply_larger_than_target_does_not_create_negative_orders():
+    resultado = planejar(
+        saldo=0, transito=1500,
+        entradas=[{"quantidade": 1500, "confirmada": False}],
+    )
+
+    assert resultado["compra_sugerida"] == 0
+    assert resultado["abatimento_pedidos_quantidade"] == 700
+    assert resultado["estoque_previsto_apos_chegada"] == 1500
+    assert resultado["estoque_previsto_antes_chegada"] == 0
+    assert resultado["planejamento_requer_revisao"] is True
+    exigir_json_finito(resultado)
 
 
 def test_purchase_rounds_up_to_five_without_adding_an_extra_month_of_reserve():

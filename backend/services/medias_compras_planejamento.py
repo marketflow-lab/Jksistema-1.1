@@ -76,6 +76,27 @@ def entradas_confirmadas_por_sku(listas, *, loja="__todas", store_id="", data_re
     Durable store identities take precedence over legacy display names. Missing
     dates remain explicit so the calculator cannot hide a stockout with them.
     """
+    return _entradas_por_sku(
+        listas, loja=loja, store_id=store_id, data_referencia=data_referencia,
+        status_permitidos=_STATUS_CONFIRMADOS,
+    )
+
+
+def entradas_planejamento_por_sku(listas, *, loja="__todas", store_id="", data_referencia):
+    """Include pending quotations provisionally, without treating them as stock.
+
+    The same statuses feed the existing transit column. Unconfirmed entries
+    carry an explicit flag so only confirmed receipts cover sales before arrival.
+    """
+    return _entradas_por_sku(
+        listas, loja=loja, store_id=store_id, data_referencia=data_referencia,
+        status_permitidos=common.LISTA_PEDIDO_STATUS_CONTABILIZADOS_TRANSITO,
+        sinalizar_analise=True,
+    )
+
+
+def _entradas_por_sku(listas, *, loja, store_id, data_referencia,
+                     status_permitidos, sinalizar_analise=False):
     referencia = _data(data_referencia)
     if referencia is None:
         raise ValueError("Data de referência inválida.")
@@ -85,7 +106,8 @@ def entradas_confirmadas_por_sku(listas, *, loja="__todas", store_id="", data_re
     for lista in listas:
         if not isinstance(lista, dict) or lista.get("unida_em_lista_id"):
             continue
-        if common._normalizar_status_lista_pedido(lista.get("status")) not in _STATUS_CONFIRMADOS:
+        status = common._normalizar_status_lista_pedido(lista.get("status"))
+        if status not in status_permitidos:
             continue
         if loja_normalizada != "__todas":
             identidade_lista = str(lista.get("store_id") or "").strip()
@@ -107,11 +129,14 @@ def entradas_confirmadas_por_sku(listas, *, loja="__todas", store_id="", data_re
             quantidade = max(0.0, _numero(item.get("Quantidade")) - _numero(recebida))
             if quantidade <= 0:
                 continue
-            mapa.setdefault(sku, []).append({
+            entrada = {
                 "quantidade": round(quantidade, 6),
                 "data_prevista": data_prevista,
                 "data_estimada": data_estimada,
-            })
+            }
+            if sinalizar_analise and status not in _STATUS_CONFIRMADOS:
+                entrada["confirmada"] = False
+            mapa.setdefault(sku, []).append(entrada)
     return mapa
 
 
@@ -126,6 +151,8 @@ def campos_planejamento(resultado):
         "falta_antes_chegada_quantidade", "reserva_antes_chegada_atendida",
         "risco_ruptura_antes_chegada", "avisos_planejamento", "transito_confirmado",
         "planejamento_requer_revisao", "transito_sem_previsao_quantidade",
+        "transito_em_analise_quantidade", "pedidos_considerados_quantidade",
+        "abatimento_pedidos_quantidade",
     )
     return {nome: resultado[nome] for nome in nomes if nome in resultado}
 
