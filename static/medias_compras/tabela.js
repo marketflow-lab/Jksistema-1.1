@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'compra-tooltip', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
+    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'compra-tooltip', 'soma-selecao', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
         const { prepararFotosVisao, agendarFotosMontadas, cancelarFotosVisao, placeholderFoto } = context.modules['tabela-fotos'];
         let controladorTabelaVirtual = null;
         let escopoTabelaVirtual = '';
@@ -99,6 +99,7 @@
         }
 
         function renderAbaAtual() {
+            context.modules['soma-selecao'].ocultarSomaSelecao();
             context.modules['compra-tooltip'].ocultarTooltipCompra();
             limparDetalhesListaPedido();
             ocultarBalaoEstoqueEmTransito();
@@ -319,6 +320,7 @@
         }
 
         function renderTabela(colunasMeses, itens, modo) {
+            context.modules['soma-selecao'].ocultarSomaSelecao();
             context.modules['compra-tooltip'].ocultarTooltipCompra();
             ocultarBalaoEstoqueEmTransito();
             const raiz = document.getElementById('secaoTabelaPrincipal');

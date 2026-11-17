@@ -354,7 +354,8 @@
     "static/devolucoes/relatorio.js",
     "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css",
-    "static/medias_compras/compra-tooltip.js"
+    "static/medias_compras/compra-tooltip.js",
+    "static/medias_compras/soma-selecao.js"
   ],
   "requiredSourceGlobs": [
     {
@@ -1028,7 +1029,8 @@
     "local_app/static/devolucoes/relatorio.js",
     "local_app/static/devolucoes/busca-motivos.js",
     "local_app/static/devolucoes/relatorio.css",
-    "local_app/static/medias_compras/compra-tooltip.js"
+    "local_app/static/medias_compras/compra-tooltip.js",
+    "local_app/static/medias_compras/soma-selecao.js"
   ],
   "requiredPackagedSourceParity": [
     "backend/modules/context_hub/product_evidence_editorial.py",
@@ -1300,7 +1302,8 @@
     "static/devolucoes/relatorio.js",
     "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css",
-    "static/medias_compras/compra-tooltip.js"
+    "static/medias_compras/compra-tooltip.js",
+    "static/medias_compras/soma-selecao.js"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",

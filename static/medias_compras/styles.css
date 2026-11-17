@@ -1611,6 +1611,24 @@
 .planejamento-alerta { color: #ffce8b; }
 .planejamento-ruptura { color: #ffb5b5; }
 .planejamento-manual { color: #9acbff; }
+.soma-selecao-balao {
+    position: fixed;
+    z-index: 10001;
+    padding: 10px 14px;
+    max-width: calc(100vw - 16px);
+    box-sizing: border-box;
+    border: 1px solid #71c3ff;
+    border-radius: 10px;
+    background: #10283f;
+    color: #f0f8ff;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    font-size: 14px;
+    font-weight: 600;
+    pointer-events: none;
+    user-select: none;
+}
+.soma-selecao-balao[hidden] { display: none; }
+
 .compra-planejamento-balao {
     position: fixed;
     z-index: 60000;
