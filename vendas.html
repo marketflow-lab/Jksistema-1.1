@@ -20,6 +20,7 @@
     <link rel="stylesheet" href="/vendas/visual-novo.css?v=20261020-vendas-status-compacto-v2">
     <link rel="stylesheet" href="/vendas/layout-imagens.css?v=20261112-sync-status-linha-v1">
     <link rel="stylesheet" href="/vendas/visual-petroleo.css?v=20261111-estilo-medias-v4">
+    <link rel="stylesheet" href="/vendas/grafico-loading.css?v=20261117-trend-translucido-v1">
 </head>
 <body>
 
@@ -180,8 +181,16 @@
                 </div>
             </div>
         </div>
-        <div class="grafico-wrapper">
+        <div id="graficoVendasWrapper" class="grafico-wrapper" aria-busy="false">
             <canvas id="graficoVendas"></canvas>
+            <div id="graficoVendasLoading" class="vendas-grafico-loading" role="status" aria-live="polite" hidden>
+                <div class="vendas-grafico-loading-card">
+                    <img class="vendas-grafico-loading-logo" src="/img/Logo%20Trend2.png" width="216" height="107" alt="Trend Minas" decoding="async">
+                    <div class="vendas-grafico-loading-track" aria-hidden="true"><span></span></div>
+                    <strong>Carregando vendas&hellip;</strong>
+                    <span id="graficoVendasLoadingScope" class="vendas-grafico-loading-scope"></span>
+                </div>
+            </div>
         </div>
         <div id="graficoEstoqueWrapper" class="grafico-wrapper grafico-estoque-wrapper">
             <div class="grafico-estoque-header">
@@ -331,8 +340,9 @@
     <script src="/vendas/pareto-report.js?v=20260728-vendas-relatorios-v2"></script>
     <script src="/vendas/general-sku-report.js?v=20260728-vendas-relatorios-v2"></script>
     <script src="/vendas/visual-novo-bridge.js?v=20261027-cache-persistente-v1"></script>
+    <script src="/vendas/grafico-loading.js?v=20261117-trend-translucido-v1"></script>
     <script src="/vendas/visual-novo-fotos.js?v=20261015-vendas-fotos-cadastro-v2"></script>
-    <script src="/vendas/visual-novo.js?v=20261116-automacao-salva-v1"></script>
+    <script src="/vendas/visual-novo.js?v=20261117-trend-translucido-v1"></script>
     <script src="/vendas/init.js?v=20261027-cache-servidor-v2"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>

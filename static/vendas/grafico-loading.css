@@ -1,0 +1,106 @@
+#graficoVendasWrapper {
+    position: relative;
+    isolation: isolate;
+    min-height: 280px;
+    overflow: hidden;
+}
+
+.vn-root #graficoVendasWrapper { min-height: 0; }
+
+#graficoVendasWrapper > canvas {
+    transition: opacity .18s ease, filter .18s ease;
+}
+
+#graficoVendasWrapper[aria-busy="true"] > canvas {
+    opacity: .78;
+    filter: blur(.35px);
+    pointer-events: none;
+}
+
+.vendas-grafico-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    border-radius: inherit;
+    background: rgba(7, 22, 34, .16);
+    cursor: progress;
+}
+
+.vendas-grafico-loading[hidden] { display: none !important; }
+
+.vendas-grafico-loading-card {
+    box-sizing: border-box;
+    width: 266px;
+    max-width: 100%;
+    padding: 17px 20px 18px;
+    border: 1px solid rgba(132, 194, 255, .45);
+    border-radius: 15px;
+    background: #fff;
+    color: #18314b;
+    opacity: .84;
+    text-align: center;
+    box-shadow: 0 12px 42px #0003;
+}
+
+.vendas-grafico-loading-logo {
+    display: block;
+    width: 216px;
+    max-width: 100%;
+    height: auto;
+    margin: 5px auto 12px;
+    animation: vendas-grafico-logo-pulse 1.35s ease-in-out infinite;
+}
+
+.vendas-grafico-loading-track {
+    height: 3px;
+    margin: 6px 4px 14px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #e2eef7;
+}
+
+.vendas-grafico-loading-track > span {
+    display: block;
+    width: 38%;
+    height: 100%;
+    border-radius: inherit;
+    background: #0484bd;
+    animation: vendas-grafico-loading-travel 1.35s ease-in-out infinite;
+}
+
+.vendas-grafico-loading-card > strong {
+    display: block;
+    font: 600 14px/1.45 'Segoe UI', Arial, sans-serif;
+    color: #173550;
+}
+
+.vendas-grafico-loading-scope {
+    display: block;
+    margin-top: 4px;
+    font: 400 11px/1.45 'Segoe UI', Arial, sans-serif;
+    color: #587086;
+    overflow-wrap: anywhere;
+}
+
+@keyframes vendas-grafico-logo-pulse {
+    0%, 100% { transform: scale(.94); opacity: .72; }
+    50% { transform: scale(1.025); opacity: 1; }
+}
+
+@keyframes vendas-grafico-loading-travel {
+    from { transform: translateX(-110%); }
+    to { transform: translateX(370%); }
+}
+
+@media (max-width: 520px) {
+    .vendas-grafico-loading-card { width: 226px; padding: 14px 15px; }
+    .vendas-grafico-loading-logo { width: 188px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #graficoVendasWrapper > canvas { transition: none; }
+    .vendas-grafico-loading-logo, .vendas-grafico-loading-track > span { animation: none; }
+}

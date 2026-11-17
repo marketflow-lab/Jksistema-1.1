@@ -568,14 +568,16 @@
             state.graphError = false;
         }
         const ready = !snapshot.graphError && !snapshot.graphLoading && snapshot.graph?.data != null;
+        const loading = !snapshot.graphError && !state.graphError && snapshot.graphLoading
+            && document.getElementById('graficoVendasLoading')?.hidden === false;
         const wasHidden = find('vnChartSlot').hidden;
-        // Only the presentation slots are hidden. Native canvas state and wrapper visibility remain owned by the engine.
-        find('vnChartSlot').hidden = !ready;
+        // O wrapper compartilhado mantém o indicador Trend Minas sobre o canvas durante a leitura.
+        find('vnChartSlot').hidden = !(ready || loading);
         find('vnStockSlot').hidden = !ready;
-        find('vnChartState').hidden = ready;
+        find('vnChartState').hidden = ready || loading;
+        if (wasHidden && (ready || loading)) resizeCharts();
         if (ready) {
             state.graphError = false;
-            if (wasHidden) resizeCharts();
             return;
         }
         find('vnChartStateSpinner').hidden = Boolean(snapshot.graphError) || state.graphError || !snapshot.graphLoading;
