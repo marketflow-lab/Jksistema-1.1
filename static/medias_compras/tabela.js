@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'compra-tooltip', 'soma-selecao', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
+    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'compra-tooltip', 'soma-selecao', 'selecao-celulas', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
         const { prepararFotosVisao, agendarFotosMontadas, cancelarFotosVisao, placeholderFoto } = context.modules['tabela-fotos'];
         let controladorTabelaVirtual = null;
         let escopoTabelaVirtual = '';
@@ -99,6 +99,7 @@
         }
 
         function renderAbaAtual() {
+            context.modules['selecao-celulas'].limparSelecaoCelulas();
             context.modules['soma-selecao'].ocultarSomaSelecao();
             context.modules['compra-tooltip'].ocultarTooltipCompra();
             limparDetalhesListaPedido();
@@ -333,6 +334,10 @@
             const scrollLeft = raiz.scrollLeft;
             const { headers, tbody } = prepararEstruturaTabela(colunasMeses);
             const tabela = document.getElementById('tblResultado');
+            context.modules['selecao-celulas'].configurarSelecaoCelulas({
+                tabela, itens, colunasMeses,
+                garantirLinhaVisivel: indice => controladorTabelaVirtual?.garantirLinhaVisivel(itens[indice]?.sku),
+            });
             if (!ancora) raiz.scrollTop = 0;
             const fotos = prepararFotosVisao(tbody, context.modules['visao-carregamento'].obterMetaFotosVisao());
             if (!itens.length) {
@@ -352,7 +357,10 @@
                 controladorTabelaVirtual = context.modules['tabela-virtual'].criarTabelaVirtual({
                     raiz, tabela, tbody, colunas: headers.length, overscan: 10,
                     renderizarLinha: (item, indice) => criarLinhaResultado(item, indice, colunasMeses, modo, !!fotos, marcarComentario),
-                    aoMontarLinhas: fotos ? agendarFotosMontadas : null,
+                    aoMontarLinhas: () => {
+                        if (fotos) agendarFotosMontadas();
+                        context.modules['selecao-celulas'].atualizarSelecaoCelulas();
+                    },
                 });
                 controladorTabelaVirtual.atualizarItens(itens, { ancora });
             }

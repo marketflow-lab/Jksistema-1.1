@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('init', ['core', 'state', 'api', 'transito', 'soma-selecao', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'editor-salvamento', 'importacao', 'tabela', 'listas-uniao'], () => {
+    app.defineModule('init', ['core', 'state', 'api', 'transito', 'soma-selecao', 'selecao-celulas', 'filtros', 'tabela-colunas', 'listas', 'pedido-hover', 'editor', 'editor-produtos', 'editor-salvamento', 'importacao', 'tabela', 'listas-uniao'], () => {
         function executarAcao(elemento) {
             const action = elemento.dataset.jkAction;
             if (action === 'periodo') return carregarVisao(Number(elemento.dataset.periodo));
@@ -26,6 +26,7 @@
 
         function ligarEventos() {
             app.modules['soma-selecao'].iniciarSomaSelecao();
+            app.modules['selecao-celulas'].iniciarSelecaoCelulas();
             ligarSalvamentoAutomaticoListaPedido();
             document.addEventListener('click', (event) => {
                 const elemento = event.target && event.target.closest ? event.target.closest('[data-jk-action]') : null;

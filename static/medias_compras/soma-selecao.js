@@ -70,6 +70,11 @@
                 return ocultarSomaSelecao();
             }
 
+            mostrarSomaValores(soma, quantidade, rect);
+        }
+
+        function mostrarSomaValores(soma, quantidade, rect) {
+            if (!quantidade || !Number.isFinite(soma)) return ocultarSomaSelecao();
             if (!balao) {
                 balao = document.createElement('div');
                 balao.id = 'balaoSomaSelecao';
@@ -94,6 +99,7 @@
             if (iniciado) return;
             iniciado = true;
             document.addEventListener('selectionchange', () => {
+                if (global.getSelection()?.isCollapsed && global.JKMedias.modules['selecao-celulas']?.temSelecaoCelulas()) return;
                 if (frame === null) frame = global.requestAnimationFrame(atualizarSomaSelecao);
             });
             document.addEventListener('keydown', evento => {
@@ -108,6 +114,6 @@
             global.addEventListener('pagehide', ocultarSomaSelecao);
         }
 
-        return { iniciarSomaSelecao, ocultarSomaSelecao };
+        return { iniciarSomaSelecao, ocultarSomaSelecao, mostrarSomaValores };
     });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

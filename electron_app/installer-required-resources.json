@@ -355,7 +355,8 @@
     "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css",
     "static/medias_compras/compra-tooltip.js",
-    "static/medias_compras/soma-selecao.js"
+    "static/medias_compras/soma-selecao.js",
+    "static/medias_compras/selecao-celulas.js"
   ],
   "requiredSourceGlobs": [
     {
@@ -1030,7 +1031,8 @@
     "local_app/static/devolucoes/busca-motivos.js",
     "local_app/static/devolucoes/relatorio.css",
     "local_app/static/medias_compras/compra-tooltip.js",
-    "local_app/static/medias_compras/soma-selecao.js"
+    "local_app/static/medias_compras/soma-selecao.js",
+    "local_app/static/medias_compras/selecao-celulas.js"
   ],
   "requiredPackagedSourceParity": [
     "backend/modules/context_hub/product_evidence_editorial.py",
@@ -1303,7 +1305,8 @@
     "static/devolucoes/busca-motivos.js",
     "static/devolucoes/relatorio.css",
     "static/medias_compras/compra-tooltip.js",
-    "static/medias_compras/soma-selecao.js"
+    "static/medias_compras/soma-selecao.js",
+    "static/medias_compras/selecao-celulas.js"
   ],
   "requiredPackagedRootFileExtensions": [
     ".py",
