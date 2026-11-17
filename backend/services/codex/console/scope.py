@@ -526,6 +526,10 @@ def _codex_configured_mcp_server_names() -> list[str]:
 
 def _codex_nonfull_config_overrides(*, fast_mode: bool = False) -> tuple[str, ...]:
     overrides = [
+        # Operational instructions come from the backend, never from AGENTS.md.
+        # Its discovery invokes a Windows filesystem helper that cannot enforce
+        # the restricted root-deny profile, even in an empty workspace.
+        "project_doc_max_bytes=0",
         'default_permissions="jk_black_jhon_readonly"',
         'permissions.jk_black_jhon_readonly.filesystem={":root"="deny",":minimal"="read",":workspace_roots"={"."="read"}}',
         "permissions.jk_black_jhon_readonly.network={enabled=false}",

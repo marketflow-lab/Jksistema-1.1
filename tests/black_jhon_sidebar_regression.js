@@ -1,6 +1,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const sidebarDir = path.join(root, 'static', 'ia-sidebar');
@@ -202,4 +203,39 @@ assert.match(vendasAssistant, /window\.__JK_IA_SIDEBAR_LOAD_FULL__/);
 const combined = chunks.map(file => fs.readFileSync(path.join(sidebarDir, file), 'utf8')).join('\n');
 new Function(combined);
 
-console.log('BLACK_JHON_SIDEBAR_REGRESSION_OK');
+async function verifyCodexHttpErrors() {
+  const fetchSource = codex.match(/    async function _codexFetchJson\([\s\S]*?\n    \}/)?.[0];
+  assert.ok(fetchSource, 'O transporte do Black Jhon deve estar disponivel para verificacao');
+  const cases = [
+    { data: { detail: 'Sessao expirada.' }, message: 'Sessao expirada.' },
+    {
+      data: { detail: { message: 'A consulta nao pode iniciar.', error_code: 'INTERNAL_CODE', internal_detail: 'NAO EXPOR' } },
+      message: 'A consulta nao pode iniciar.',
+    },
+    { data: { detail: { error_code: 'INTERNAL_CODE', internal_detail: 'NAO EXPOR' } }, message: 'HTTP 409' },
+    { data: { detail: { message: { internal_detail: 'NAO EXPOR' } } }, message: 'HTTP 409' },
+    { data: {}, message: 'HTTP 409' },
+  ];
+  for (const item of cases) {
+    const sandbox = {
+      _authHeaders: () => ({}),
+      _codexApiUrls: () => ['/api/codex/tasks'],
+      window: { __JK_IA_SIDEBAR_FETCH__: async () => ({ ok: false, status: 409, json: async () => item.data }) },
+    };
+    vm.runInNewContext(fetchSource + '\nglobalThis.fetchJson = _codexFetchJson;', sandbox);
+    await assert.rejects(sandbox.fetchJson('/api/codex/tasks'), error => {
+      assert.strictEqual(error.message, item.message);
+      assert.strictEqual(error.status, 409);
+      assert.strictEqual(error.url, '/api/codex/tasks');
+      assert.doesNotMatch(error.message, /\[object Object\]|INTERNAL_CODE|NAO EXPOR/);
+      return true;
+    });
+  }
+}
+
+verifyCodexHttpErrors().then(() => {
+  console.log('BLACK_JHON_SIDEBAR_REGRESSION_OK');
+}).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

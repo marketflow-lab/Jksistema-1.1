@@ -113,7 +113,7 @@ class CodexUniversalAccessTest(unittest.TestCase):
         start_thread.assert_called_once_with(task_id)
         self.assertEqual(task["sandbox"], "read_only")
         self.assertEqual(task["approval_mode"], "read_only")
-        self.assertEqual(task["model"], "gpt-5.5")
+        self.assertEqual(task["model"], "gpt-6.1-sol")
         self.assertEqual(task["reasoning_effort"], "xhigh")
         self.assertEqual(task["speed"], "standard")
         self.assertEqual(task["service_tier"], "")

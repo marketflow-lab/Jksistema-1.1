@@ -6,7 +6,7 @@ import os
 import threading
 from typing import Any, Optional
 
-from backend.services import codex_ai_telemetry, codex_evaluations
+from backend.services import codex_ai_telemetry, codex_evaluations, codex_model_router
 
 CODEX_SANDBOXES = {"read_only", "workspace_write", "full_access"}
 CODEX_INTERNAL_ALLOWED_SANDBOXES = {"read_only"}
@@ -139,7 +139,7 @@ CODEX_RUNTIME_CONFIG_ERROR_CACHE = CONSOLE_STATE.runtime_config_error_cache
 
 BLACK_JHON_DISPLAY_NAME = "Black Jhon"
 
-CODEX_DEFAULT_MODEL = "gpt-5.5"
+CODEX_DEFAULT_MODEL = codex_model_router.BASELINE_MODEL
 CODEX_SIDEBAR_TASK_PROMPT_VERSION = "black-jhon-sidebar-task-2026-07-20-v2"
 CODEX_SIDEBAR_TASK_SCHEMA_VERSION = "codex-sidebar-task-v2"
 

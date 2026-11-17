@@ -391,7 +391,7 @@ def _codex_process_stream_event(
 
 def _codex_normalizar_model(value: Optional[str]) -> str:
     model = str(value or os.getenv("JK_CODEX_MODEL") or CODEX_DEFAULT_MODEL).strip()
-    if not model:
+    if not model or model.lower() == "gpt-5.5":
         return CODEX_DEFAULT_MODEL
     if len(model) > 80 or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", model):
         raise HTTPException(status_code=400, detail="Modelo Codex invalido.")
@@ -434,14 +434,21 @@ def _codex_reasoning_effort_enum(value: Optional[str]):
 def _codex_sdk_response_compat(value: Any) -> Any:
     """Keep the beta Python SDK compatible with newer Codex protocol values."""
     if isinstance(value, dict):
-        return {
-            key: (
-                "xhigh"
-                if key == "reasoningEffort" and item in {"max", "ultra"}
-                else _codex_sdk_response_compat(item)
-            )
-            for key, item in value.items()
-        }
+        normalized = {}
+        for key, item in value.items():
+            if key == "reasoningEffort" and isinstance(item, str) and item in {"max", "ultra"}:
+                item = "xhigh"
+            elif key == "codexErrorInfo" and isinstance(item, str):
+                from openai_codex.generated.v2_all import CodexErrorInfoValue
+
+                try:
+                    CodexErrorInfoValue(item)
+                except ValueError:
+                    # Retain the failure and its message when a newer runtime
+                    # adds a classification unknown to the beta SDK.
+                    item = "other"
+            normalized[key] = _codex_sdk_response_compat(item)
+        return normalized
     if isinstance(value, list):
         return [_codex_sdk_response_compat(item) for item in value]
     return value
@@ -450,18 +457,28 @@ def _codex_sdk_response_compat(value: Any) -> Any:
 def _codex_apply_sdk_protocol_compat() -> None:
     from openai_codex.client import CodexClient
     from openai_codex.errors import CodexError
+    from openai_codex.generated.notification_registry import NOTIFICATION_MODELS
 
-    if getattr(CodexClient.request, "_jk_protocol_compat", False):
-        return
+    if not getattr(CodexClient.request, "_jk_protocol_compat", False):
+        def request_compat(self, method, params, *, response_model):
+            result = self._request_raw(method, params)
+            if not isinstance(result, dict):
+                raise CodexError(f"{method} response must be a JSON object")
+            return response_model.model_validate(_codex_sdk_response_compat(result))
 
-    def request_compat(self, method, params, *, response_model):
-        result = self._request_raw(method, params)
-        if not isinstance(result, dict):
-            raise CodexError(f"{method} response must be a JSON object")
-        return response_model.model_validate(_codex_sdk_response_compat(result))
+        request_compat._jk_protocol_compat = True
+        CodexClient.request = request_compat
 
-    request_compat._jk_protocol_compat = True
-    CodexClient.request = request_compat
+    if not getattr(CodexClient._coerce_notification, "_jk_protocol_compat", False):
+        original_coerce_notification = CodexClient._coerce_notification
+
+        def coerce_notification_compat(self, method, params):
+            if method in NOTIFICATION_MODELS:
+                params = _codex_sdk_response_compat(params)
+            return original_coerce_notification(self, method, params)
+
+        coerce_notification_compat._jk_protocol_compat = True
+        CodexClient._coerce_notification = coerce_notification_compat
 
 
 def _codex_normalizar_speed(value: Optional[str]) -> str:

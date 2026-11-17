@@ -7,7 +7,7 @@
       "server_version": "2026.07.20-plan-v2"
     },
     "models": {
-      "baseline": "gpt-5.5",
+      "baseline": "gpt-6.1-sol",
       "explicit_candidates": [
         "gpt-5.6-luna",
         "gpt-5.6-terra",
@@ -1300,6 +1300,6 @@
       "tool_catalog": "379fd5635d2620b6f1d17a4b1224a05f08f46a379e990388575cd85203c92f47"
     }
   },
-  "contracts_sha256": "2d664d0c1e4b1352ac5bc0882b9f639bc52fd048c0da92b6f84302f5b445d93a",
+  "contracts_sha256": "99c38650d1a39c345935b2a709cf4bf37bb29f23f8dfe869df1c0e48d7633627",
   "snapshot_schema_version": "1.0"
 }

@@ -806,7 +806,8 @@
       const saved = full ? _codexReadStoredSettings() : {};
       // Perfis mutaveis nunca atravessam sessoes: Black Jhon sempre reabre em leitura.
       _codexSetSelectValue('jk-codex-access', 'read_only');
-      _codexSetSelectValue('jk-codex-model', full ? (saved.model || 'gpt-5.5') : 'gpt-5.5');
+      const savedModel = saved.model === 'gpt-5.5' ? 'gpt-6.1-sol' : saved.model;
+      _codexSetSelectValue('jk-codex-model', full ? (savedModel || 'gpt-6.1-sol') : 'gpt-6.1-sol');
       _codexSetSelectValue('jk-codex-reasoning', full ? (saved.reasoning_effort || 'xhigh') : 'xhigh');
       _codexSetSelectValue('jk-codex-speed', full ? (saved.speed || 'standard') : 'standard');
       codexPaths = full && Array.isArray(saved.paths) ? saved.paths.map(String).filter(Boolean).slice(0, 20) : [];
@@ -836,7 +837,7 @@
         access: runtime.access,
         sandbox: runtime.sandbox,
         approval_mode: runtime.approval_mode,
-        model: full ? (document.getElementById('jk-codex-model')?.value || 'gpt-5.5') : 'gpt-5.5',
+        model: full ? (document.getElementById('jk-codex-model')?.value || 'gpt-6.1-sol') : 'gpt-6.1-sol',
         reasoning_effort: full ? (document.getElementById('jk-codex-reasoning')?.value || 'xhigh') : 'xhigh',
         speed,
         service_tier: speed === 'fast' ? 'priority' : '',
@@ -2274,7 +2275,10 @@
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok) {
             const detail = data && (data.detail || data.message || data.error);
-            const httpErro = new Error(detail || `HTTP ${resp.status}`);
+            const message = typeof detail === 'string'
+              ? detail
+              : (detail && typeof detail.message === 'string' ? detail.message : '');
+            const httpErro = new Error(message || `HTTP ${resp.status}`);
             httpErro.status = resp.status;
             httpErro.url = url;
             ultimoHttpErro = httpErro;

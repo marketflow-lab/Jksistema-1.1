@@ -678,7 +678,7 @@
         <label class="jk-codex-select-wrap" title="Modelo">
           <span class="jk-codex-select-icon" aria-hidden="true">&#128187;</span>
           <select class="jk-codex-select" id="jk-codex-model" title="Modelo">
-            <option value="gpt-5.5">GPT-5.5</option>
+            <option value="gpt-6.1-sol">GPT-6.1 Sol</option>
             <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
             <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
             <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
