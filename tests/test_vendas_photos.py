@@ -184,8 +184,11 @@ def test_http_opt_in_preserves_default_and_extends_optional_summary_contract(mon
     parameters = app.openapi()["paths"]["/api/vendas/resumo"]["get"]["parameters"]
     assert [item["name"] for item in parameters] == ["data_inicio", "data_fim", "sku", "loja", "unidade_negocio", "incluir_ebazar", "somente_salvos", "cache_mode"]
     assert not any(item["in"] == "header" for item in parameters)
-    # Base 84e12f7a already has 22 routes; saved-only/stale add query options only.
-    assert len(router.routes) == 22
+    # Immediate automatic settings add one POST; photo opt-in adds no routes.
+    assert len(router.routes) == 23
+    automatic_settings = [route for route in router.routes if route.path == "/api/vendas/sync/automatico"]
+    assert len(automatic_settings) == 1
+    assert automatic_settings[0].methods == {"POST"}
 
 
 def _write_catalog_records(tenant, records):

@@ -20,11 +20,11 @@ function declaredFunction(source, name) {
   return prefix + source.slice(start, source.indexOf('\n}', start) + 2);
 }
 
-function putExtension(directory, version = '7.33.5') {
+function putExtension(directory, version = '7.33.5', extraManifest = {}) {
   fs.mkdirSync(directory, { recursive: true });
   fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({
     name: 'Avantpro ML', version, manifest_version: 3, key: 'fixture-avant-key',
-    background: { service_worker: 'background.js' }
+    background: { service_worker: 'background.js' }, ...extraManifest
   }));
   fs.writeFileSync(path.join(directory, 'background.js'), '// fixture background');
   fs.writeFileSync(path.join(directory, 'index.js'), '// fixture content');
@@ -62,6 +62,7 @@ function browserHarness(directory, options = {}) {
     declaredFunction(appPathsSource, 'resolveAppRootDir'),
     ...['getChromeExtensionsRoots', 'compareVersionStrings', 'findInstalledChromeExtensionVersions',
       'getChromeExtensionManifestIdentity', 'readChromeExtensionManifest', 'isAvantProExtensionCandidate',
+      'isAvantProExtensionCompatibleWithElectron',
       'findUnpackedChromeExtensions', 'loadChromeExtensionsForMlSession'].map(name => declaredFunction(windowSource, name))
   ];
   vm.runInContext(functions.join('\n'), context);
@@ -89,6 +90,37 @@ async function packagedExtensionWithoutChrome(directory) {
   assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [chromeExtension], 'a Chrome installation retains its existing preference over the bundled fallback');
 }
 
+async function chromeSidePanelFallsBackToCompatibleLogin(directory) {
+  const h = browserHarness(directory);
+  const bundled = path.join(h.resources, 'extensoes_chrome', 'avant_pro');
+  const chromeRoot = path.join(h.context.getChromeUserDataDir(), 'Default', 'Extensions', extensionId);
+  const modern = path.join(chromeRoot, '7.38.5_0');
+  putExtension(bundled);
+  putExtension(modern, '7.38.5', {
+    permissions: ['storage', 'sidePanel'], side_panel: { default_path: 'login-panel.html' }
+  });
+  const modernManifest = fs.readFileSync(path.join(modern, 'manifest.json'), 'utf8');
+  assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [bundled],
+    'the Chrome side-panel login must not shadow the compatible packaged login');
+  await h.context.loadChromeExtensionsForMlSession();
+  assert.equal(h.loaded[0].extensionDir, bundled, 'Electron loads the compatible login instead of the unsupported panel');
+  assert.equal(fs.readFileSync(path.join(modern, 'manifest.json'), 'utf8'), modernManifest,
+    'compatibility selection must preserve the Chrome extension');
+
+  const compatibleChrome = path.join(chromeRoot, '7.33.6_0');
+  putExtension(compatibleChrome, '7.33.6');
+  assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [compatibleChrome],
+    'a compatible Chrome version keeps its existing precedence');
+  putExtension(compatibleChrome, '7.38.5', { permissions: ['sidePanel'] });
+  putExtension(modern, '7.38.5', { side_panel: { default_path: 'login-panel.html' } });
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], bundled, 'the panel manifest alone requires fallback');
+  putExtension(modern, '7.38.5', { permissions: ['sidePanel'] });
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], bundled, 'the panel permission alone requires fallback');
+
+  putExtension(bundled, '7.38.5', { side_panel: { default_path: 'login-panel.html' } });
+  assert.equal(h.context.findUnpackedChromeExtensions().length, 0, 'an unsupported bundled panel cannot be loaded either');
+}
+
 function explicitAndDevelopmentRoots(directory) {
   const explicit = path.join(directory, 'custom', 'extensoes_chrome');
   const h = browserHarness(directory, { packaged: false, env: { JK_CHROME_EXTENSIONS_DIR: explicit } });
@@ -101,6 +133,14 @@ function explicitAndDevelopmentRoots(directory) {
   assert(!roots.includes(path.dirname(resourcesExtension)), 'development mode must not load an unrelated Electron resources directory');
   assert(roots.includes(path.join(h.localApp, 'extensoes_chrome')), 'existing source roots are preserved');
   assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [extensionDir]);
+  const compatibleFallback = path.join(h.localApp, 'extensoes_chrome', 'avant_pro');
+  putExtension(compatibleFallback);
+  putExtension(extensionDir, '7.38.5', { permissions: ['sidePanel'] });
+  assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [compatibleFallback],
+    'an incompatible explicit root must fall back to a compatible source');
+  h.context.process.env.JK_FORCE_CHROME_EXTENSIONS_DIR = '1';
+  assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [compatibleFallback],
+    'forcing a root cannot enable an unsupported API');
   const disabled = browserHarness(path.join(directory, 'disabled'), { enabled: false });
   putExtension(path.join(disabled.resources, 'extensoes_chrome', 'avant_pro'));
   assert.equal(disabled.context.findUnpackedChromeExtensions().length, 0, 'the user setting still disables Avant Pro');
@@ -137,6 +177,7 @@ function updateRejectsMissingOrStaleExtension(directory) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'jk-packaged-avant-'));
   try {
     await packagedExtensionWithoutChrome(path.join(directory, 'clean-install'));
+    await chromeSidePanelFallsBackToCompatibleLogin(path.join(directory, 'side-panel-login'));
     explicitAndDevelopmentRoots(path.join(directory, 'development'));
     updateRejectsMissingOrStaleExtension(path.join(directory, 'package-gate'));
   } finally {
@@ -144,5 +185,5 @@ function updateRejectsMissingOrStaleExtension(directory) {
       && path.basename(directory).startsWith('jk-packaged-avant-'), 'cleanup remains inside the named temporary fixture');
     fs.rmSync(directory, { recursive: true, force: true });
   }
-  console.log('Packaged Avant Pro: clean install, separate resources, dev roots and update asset parity OK');
+  console.log('Packaged Avant Pro: compatible login fallback, clean install, dev roots and update asset parity OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

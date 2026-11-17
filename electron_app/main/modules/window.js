@@ -549,6 +549,15 @@ function isAvantProExtensionCandidate(extensionDir) {
     return /avant\s*pro|avantpro/i.test(manifestText);
 }
 
+function isAvantProExtensionCompatibleWithElectron(extensionDir) {
+    const manifest = readChromeExtensionManifest(extensionDir);
+    if (!manifest) return false;
+    // Electron has no chrome.sidePanel API. Keep the bundled in-page login
+    // available when Chrome updates Avantpro to a side-panel-only login.
+    return !manifest.side_panel && !(Array.isArray(manifest.permissions)
+        && manifest.permissions.includes('sidePanel'));
+}
+
 function findUnpackedChromeExtensions() {
     const candidates = [];
     const explicitRoots = process.env.JK_CHROME_EXTENSIONS_DIR ? [path.resolve(process.env.JK_CHROME_EXTENSIONS_DIR)] : [];
@@ -558,7 +567,8 @@ function findUnpackedChromeExtensions() {
     if (!avantProEnabled) {
         return [];
     }
-    const chromeInstalledExtensions = avantProEnabled ? findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID) : [];
+    const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID)
+        .filter(isAvantProExtensionCompatibleWithElectron);
     const preferInstalled = !/^(0|false|nao|não|off|no)$/i.test(String(process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS || '1'));
     const forceExplicitRoots = /^(1|true|sim|yes)$/i.test(String(process.env.JK_FORCE_CHROME_EXTENSIONS_DIR || ''));
     const allowBundledFallback = !chromeInstalledExtensions.length
@@ -613,6 +623,7 @@ function findUnpackedChromeExtensions() {
     const unique = [];
     for (const candidate of Array.from(new Set(candidates.map(item => path.resolve(item))))) {
         if (!isAvantProExtensionCandidate(candidate)) continue;
+        if (!isAvantProExtensionCompatibleWithElectron(candidate)) continue;
         const identity = getChromeExtensionManifestIdentity(candidate);
         if (seen.has(identity)) continue;
         seen.add(identity);
