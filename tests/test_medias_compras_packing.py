@@ -10,7 +10,7 @@ import re
 import subprocess
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Event
+from threading import Barrier, Event, get_ident
 
 import openpyxl
 import pytest
@@ -374,6 +374,73 @@ def test_upload_filename_nao_controla_destino(tenants):
     assert len(docs) == 1
     assert docs[0].parent == tenants / "cliente-a" / "packing_lists"
     assert docs[0].name != "escape.xlsx"
+
+
+def test_leitura_snapshot_aguarda_commit_antes_de_abrir_json(tenants, monkeypatch):
+    caminho = str(tenants / "cliente-a" / "listas_pedidos.json")
+    chave = common.canonical_path_key(caminho)
+    commit_iniciado = Event()
+    liberar_commit = Event()
+    leitor_acessou = Event()
+    leitor_aguardando = Event()
+    leitor_abriu = Event()
+    leitor_id = None
+    lock_original = common.path_lock_for
+    open_original = open
+    replace_original = os.replace
+
+    class LockObservado:
+        def __init__(self, path):
+            self.lock = lock_original(path)
+
+        def __enter__(self):
+            if get_ident() == leitor_id:
+                if not self.lock.acquire(blocking=False):
+                    leitor_aguardando.set()
+                    leitor_acessou.set()
+                    self.lock.acquire()
+            else:
+                self.lock.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.lock.release()
+
+    def abrir(path, *args, **kwargs):
+        if get_ident() == leitor_id and common.canonical_path_key(path) == chave:
+            leitor_abriu.set()
+            leitor_acessou.set()
+        return open_original(path, *args, **kwargs)
+
+    def substituir(origem, destino):
+        if common.canonical_path_key(destino) == chave:
+            commit_iniciado.set()
+            assert liberar_commit.wait(timeout=5), "O teste deve liberar o commit."
+        return replace_original(origem, destino)
+
+    def ler():
+        nonlocal leitor_id
+        leitor_id = get_ident()
+        return common._carregar_listas_pedidos("cliente-a")
+
+    monkeypatch.setattr(common, "path_lock_for", LockObservado)
+    monkeypatch.setattr(common, "open", abrir, raising=False)
+    monkeypatch.setattr(os, "replace", substituir)
+    atualizada = _lista(nome_lista="Pedido atualizado")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        escritor = executor.submit(common._salvar_listas_pedidos_no_caminho, caminho, [atualizada])
+        try:
+            assert commit_iniciado.wait(timeout=5)
+            leitor = executor.submit(ler)
+            assert leitor_acessou.wait(timeout=5)
+            assert leitor_aguardando.is_set(), "O leitor deve disputar o lock mantido pelo escritor."
+            assert not leitor_abriu.is_set(), "O JSON não pode ficar aberto durante o replace."
+            assert not leitor.done()
+        finally:
+            liberar_commit.set()
+        escritor.result(timeout=5)
+        assert leitor.result(timeout=5)[0]["nome_lista"] == "Pedido atualizado"
+        assert leitor_abriu.is_set()
 
 
 @pytest.mark.parametrize("directory_race", [False, True], ids=["normal", "directory-created-during-realpath"])

@@ -411,8 +411,24 @@ async function main() {
         await test({ email:'' }, async f => {
             const result = await f.session.ensure(); assert.equal(result.reason, 'avant_email_missing'); assert.equal(await f.submits(), 0);
         });
-        await test({ beginPopup:true, disabled:true, timeoutMs:800 }, async f => {
-            const result = await f.session.ensure(); assert.equal(result.authenticated, false); assert.equal(result.attempted, false);
+        await test({ beginPopup:true, disabled:true, timeoutMs:10000 }, async f => {
+            const frame = f.contents.mainFrame.framesInSubtree.find(candidate => candidate.url.startsWith(AUTH_URL));
+            assert(frame, 'The auth iframe must be ready before testing a disabled form.');
+            const execute = frame.executeJavaScript;
+            const now = Date.now;
+            let elapsed = 0;
+            // Expire after the disabled form replies, rather than racing its IPC response.
+            frame.executeJavaScript = async code => {
+                const result = await execute.call(frame, code);
+                elapsed = f.session.timeoutMs + 1;
+                return result;
+            };
+            Date.now = () => now() + elapsed;
+            let result;
+            try { result = await f.session.ensure(); }
+            finally { Date.now = now; frame.executeJavaScript = execute; }
+            assert.equal(result.authenticated, false); assert.equal(result.attempted, false);
+            assert.deepEqual(f.stats.frameResults, [{ ready:false }]);
             assert.equal(await f.submits(), 0, 'Filling alone must never authenticate.');
             assert.equal(await f.page.frames().find(frame => frame.url().startsWith(AUTH_URL)).locator('#email').inputValue(), FIXTURE_EMAIL);
         });

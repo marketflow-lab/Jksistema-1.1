@@ -521,11 +521,14 @@ class _ListasPedidosSnapshot(list):
 
 
 def _ler_listas_pedidos_snapshot(caminho):
-    try:
-        with open(caminho, "rb") as stream:
-            source = stream.read()
-    except FileNotFoundError:
-        source = b""
+    # Windows cannot replace the JSON while another reader keeps it open.
+    # Release the shared commit mutex before parsing/copying the snapshot.
+    with path_lock_for(caminho):
+        try:
+            with open(caminho, "rb") as stream:
+                source = stream.read()
+        except FileNotFoundError:
+            source = b""
     try:
         rows = json.loads(source.decode("utf-8-sig")) if source else []
     except (ValueError, UnicodeError):
