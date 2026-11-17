@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Médias e Pedidos - JK Sistema</title>
-    <link rel="stylesheet" href="/medias_compras/styles.css?v=20261106-fotos-adiadas">
+    <link rel="stylesheet" href="/medias_compras/styles.css?v=20261117-previsao-hover-v2">
     <link rel="stylesheet" href="/medias_compras/layout.css?v=20261111-cabecalho-fundo-estoque-v3">
     <link rel="stylesheet" href="/medias_compras/atualizacao-arquivo.css?v=20261029-v1">
     <script src="/auth.js?v=20261016-carregamento-integral-v2"></script>
@@ -53,7 +53,7 @@
                     <button id="btnPeriodo6" class="btn-periodo active" type="button" data-jk-action="periodo" data-periodo="6">6 meses</button>
                     <button id="btnPeriodo12" class="btn-periodo" type="button" data-jk-action="periodo" data-periodo="12">12 meses</button>
                 </div>
-                <p class="filter-hint">Base da média mensal de vendas</p>
+                <p class="filter-hint">Histórico exibido; VMM usa meses completos</p>
             </div>
             <div class="lojas-filter">
                 <p class="filter-label" id="lojasLabel"><svg class="medias-icon" aria-hidden="true" focusable="false"><use href="/medias_compras/icones.svg#loja"></use></svg>Lojas <span class="filter-hint">Selecione para filtrar os resultados</span></p>
@@ -93,6 +93,7 @@
             </div>
         </div>
         <div id="statusOcultados" class="muted"></div>
+        <p id="planejamentoPolitica" class="planejamento-politica"><span>Entrega em <strong>6 meses</strong></span><span>Reserva de <strong>1 mês antes</strong> da chegada</span><span>Meta de <strong>7 meses no total após receber</strong></span></p>
         <div id="secaoTabelaPrincipal" class="table-wrap">
         <table id="tblResultado" data-jk-no-enhance="1">
             <thead>
@@ -159,7 +160,7 @@
 <div id="modalListaCompra" class="modal-backdrop" aria-hidden="true">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="tituloModalListaCompra">
         <h2 id="tituloModalListaCompra" class="modal-title">Gerar lista de compra</h2>
-        <p class="modal-subtitle">Escolha a estratégia.</p>
+        <p class="modal-subtitle">Previsão por produto: entrega em 6 meses, reserva de 1 mês antes e meta de 7 meses no total após receber. Quantidades editadas manualmente prevalecem.</p>
 
         <div class="campo-lista">
             <label for="nomeListaPedido">Nome da lista</label>
@@ -174,17 +175,17 @@
         </div>
 
         <div class="opcoes-lista">
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="media_6m" checked> Usar sugestão automática do período selecionado</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="10"> Sugestão do período + 10%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="20"> Sugestão do período + 20%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="30"> Sugestão do período + 30%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="40"> Sugestão do período + 40%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="50"> Sugestão do período + 50%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="60"> Sugestão do período + 60%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="70"> Sugestão do período + 70%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="80"> Sugestão do período + 80%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="90"> Sugestão do período + 90%</label>
-            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="100"> Sugestão do período + 100%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="media_6m" checked> Usar previsão automática de alta ou queda por produto</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="10"> Demanda prevista + 10%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="20"> Demanda prevista + 20%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="30"> Demanda prevista + 30%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="40"> Demanda prevista + 40%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="50"> Demanda prevista + 50%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="60"> Demanda prevista + 60%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="70"> Demanda prevista + 70%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="80"> Demanda prevista + 80%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="90"> Demanda prevista + 90%</label>
+            <label class="opcao-item"><input type="radio" name="opcaoCompra" value="100"> Demanda prevista + 100%</label>
         </div>
 
         <div class="modal-status" id="modalListaCompraStatus" role="status" aria-live="polite"></div>
@@ -243,7 +244,7 @@
     </div>
 </div>
 
-<script src="/medias_compras/core.js?v=20261013-soma-cubagem-v1"></script>
+<script src="/medias_compras/core.js?v=20261117-previsao-hover-v2"></script>
 <script src="/medias_compras/state.js?v=20261029-periodo-inicial-6-meses"></script>
 <script src="/medias_compras/api.js?v=20261016-carregamento-integral-v2"></script>
 <script src="/medias_compras/resultados.js?v=20261020-medias-carregamento"></script>
@@ -251,8 +252,9 @@
 <script src="/medias_compras/visao-carregamento.js?v=20261106-fotos-adiadas"></script>
 <script src="/medias_compras/fornecedores.js?v=20261002-fornecedor-listas-v1"></script>
 <script src="/medias_compras/transito.js?v=20260826-medias-modular-v1"></script>
+<script src="/medias_compras/compra-tooltip.js?v=20261117-previsao-hover-v2"></script>
 <script src="/medias_compras/filtros.js?v=20261111-imagens-v1"></script>
-<script src="/medias_compras/tabela-colunas.js?v=20260901-medias-table-layout-v2"></script>
+<script src="/medias_compras/tabela-colunas.js?v=20261117-previsao-hover-v2"></script>
 <script src="/medias_compras/listas-carregamento.js?v=20261028-listas-cache-v1"></script>
 <script src="/medias_compras/listas.js?v=20261029-uniao-listas-v1"></script>
 <script src="/medias_compras/pedido-hover.js?v=20261016-salvamento-automatico-v1"></script>
@@ -263,7 +265,7 @@
 <script src="/medias_compras/importacao.js?v=20261029-atualizacao-arquivo-v1"></script>
 <script src="/medias_compras/tabela-virtual.js?v=20261106-fotos-adiadas"></script>
 <script src="/medias_compras/tabela-fotos.js?v=20261111-recuperacao-fotos"></script>
-<script src="/medias_compras/tabela.js?v=20261111-recuperacao-fotos"></script>
+<script src="/medias_compras/tabela.js?v=20261117-previsao-hover-v2"></script>
 <script src="/medias_compras/listas-uniao.js?v=20261029-uniao-listas-v1"></script>
 <script src="/medias_compras/init.js?v=20261029-uniao-listas-v1"></script>
 <script src="/table_columns.js"></script>

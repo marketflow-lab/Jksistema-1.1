@@ -1571,6 +1571,69 @@
 .uniao-conflito select { width: 100%; min-width: 0; padding: 8px; background: #111822; border: 1px solid #556072; border-radius: 5px; color: #f1f4f9; }
 .uniao-modal .modal-actions { position: sticky; bottom: -1px; background: #1d2230; padding: 12px 0 2px; }
 .uniao-modal button:disabled { opacity: .5; cursor: not-allowed; }
+.planejamento-politica {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 18px;
+    margin: 6px 0 10px;
+    color: #b6cbe4;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.planejamento-politica.hidden { display: none; }
+.previsao-detalhe,
+.planejamento-detalhe {
+    display: block;
+    margin-top: 4px;
+    color: #c4d5e8;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.previsao-tendencia {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    color: #c4d5e8;
+}
+.previsao-tendencia--alta { color: #9de2bf; }
+.previsao-tendencia--queda { color: #ffb5b5; }
+.previsao-tendencia--insuficiente { color: #e6cd91; }
+.compra-sugerida-valor { display: flex; align-items: center; justify-content: center; gap: 3px; }
+.compra-sugerida-valor .compra-sugerida-editavel { flex: 0 1 auto; width: auto; min-width: 48px; }
+.previsao-seta { flex: 0 0 auto; font-size: 18px; font-weight: 700; line-height: 1; }
+.previsao-seta--alta { color: #4ade80; }
+.previsao-seta--queda { color: #f87171; }
+.planejamento-alerta { color: #ffce8b; }
+.planejamento-ruptura { color: #ffb5b5; }
+.planejamento-manual { color: #9acbff; }
+.compra-planejamento-balao {
+    position: fixed;
+    z-index: 60000;
+    width: min(370px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 14px 16px;
+    border: 1px solid #55728f;
+    border-radius: 8px;
+    background: #142638;
+    color: #edf5ff;
+    box-shadow: 0 8px 28px #0009;
+    font-size: 13px;
+    line-height: 1.45;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.compra-planejamento-balao[hidden] { display: none; }
+.compra-planejamento-titulo { display: block; margin-bottom: 9px; color: #b8deff; }
+.compra-planejamento-balao p { margin: 7px 0 0; }
+.compra-planejamento-balao .compra-planejamento-aviso { color: #ffce8b; font-weight: 600; }
 @media (max-width: 600px) {
     .uniao-modal { width: calc(100vw - 20px); padding: 14px; }
     .uniao-modal .modal-actions { flex-wrap: wrap; }

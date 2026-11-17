@@ -7,7 +7,6 @@ import json
 import math
 import os
 import re
-import sqlite3
 import unicodedata
 import uuid
 from datetime import datetime
@@ -27,6 +26,8 @@ from backend.services.medias_compras_excel import (
 )
 from backend.services.medias_compras_fiscal import *
 from backend.services.medias_compras_visao import api_medias_compras_visao
+from backend.services.medias_compras_historico import ler_historico_vendas
+from backend.services.medias_compras_planejamento import entradas_confirmadas_por_sku, filtrar_estoque_loja
 from backend.services.runtime_bridge import bind_runtime_globals
 from medias_compras import calcular_reposicao_periodo
 
@@ -133,6 +134,10 @@ def _resolver_quantidade_sugerida(
     return int(quantidade_calculada or 0)
 
 
+def _titulo_historico_planejamento(valor):
+    return re.sub(r"\s+", " ", str(valor or "").strip())
+
+
 async def api_medias_compras_gerar_lista_compra(
     req: ListaCompraRequest,
     client_id: str = Depends(medias_common.get_tenant_id)
@@ -179,7 +184,6 @@ def _api_medias_compras_gerar_lista_compra_sync(
         )
         loja_sel = escopo_loja["loja"]
         store_id_escopo = escopo_loja["store_id"]
-        loja_sel_norm = loja_sel.lower()
         periodo_meses = int(req.periodo_meses or 6)
         if periodo_meses not in (3, 6, 12):
             periodo_meses = 6
@@ -241,55 +245,31 @@ def _api_medias_compras_gerar_lista_compra_sync(
             return (1, sku_txt)
 
         meses_ref = _meses_referencia(periodo_meses)
-        inicio_periodo = f"{meses_ref[0]}-01"
         fim_periodo = datetime.now().strftime("%Y-%m-%d")
 
-        # Vendas totais do perÃƒÂ­odo selecionado por SKU, consolidadas por tenant e filtradas pela loja.
+        # Share the dashboard's monthly history and duplicate rules. Reading a
+        # purchase suggestion must not create database indexes as a side effect.
         vendas_total_periodo = {}
-        db_paths = _listar_bancos_vendas_tenant(client_id, loja_sel)
-        ids_vendas_processados = set()
-        for db_vendas in db_paths:
-            if not (db_vendas and os.path.exists(db_vendas)):
-                continue
-
-            conn = sqlite3.connect(db_vendas)
-            try:
-                conn.row_factory = sqlite3.Row
-                cur = conn.cursor()
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_vendas_sku_data ON vendas(sku, data)")
-
-                query = (
-                    """
-                    SELECT id_unico, sku, COALESCE(quantidade, 0) AS qtd
-                    FROM vendas
-                    WHERE sku IS NOT NULL
-                      AND trim(sku) != ''
-                      AND date(data) BETWEEN ? AND ?
-                    """
-                )
-                params = [inicio_periodo, fim_periodo]
-                filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
-                if filtro_loja_sql:
-                    query += filtro_loja_sql
-                    params.extend(filtro_loja_params)
-
-                rows = cur.execute(query, params).fetchall()
-                for r in rows:
-                    sku = _normalizar_sku_mes(str(r["sku"] or "").strip())
-                    if not sku:
-                        continue
-                    id_unico = str(r["id_unico"] or "").strip()
-                    qtd = float(r["qtd"] or 0)
-                    chave_unica = id_unico or f"{os.path.basename(db_vendas)}::{sku}::{qtd}"
-                    if chave_unica in ids_vendas_processados:
-                        continue
-                    ids_vendas_processados.add(chave_unica)
-                    vendas_total_periodo[sku] = vendas_total_periodo.get(sku, 0.0) + qtd
-            finally:
-                conn.close()
+        historico_planejamento = {}
+        db_paths = tuple(path for path in _listar_bancos_vendas_tenant(client_id, loja_sel)
+                         if path and os.path.exists(path))
+        if db_paths:
+            filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
+            vendas_por_sku, _, _ = ler_historico_vendas(
+                client_id=client_id, loja=loja_sel, store_id=store_id_escopo,
+                db_paths=db_paths, meses=periodo_meses, fim_periodo=fim_periodo,
+                filtro_sql=filtro_loja_sql, filtro_params=filtro_loja_params,
+                normalizar_sku=_normalizar_sku_mes, titulo_valido=_titulo_historico_planejamento,
+                planejamento=historico_planejamento,
+            )
+            vendas_total_periodo = {
+                sku: sum(float(item["vendas_mensais"].get(mes, 0) or 0) for mes in meses_ref)
+                for sku, item in vendas_por_sku.items()
+            }
 
         # Estoque atual por SKU considerando a loja selecionada.
         saldo_por_sku = {}
+        estoque_completo = False
         arquivo_estoque = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
         if arquivo_estoque and os.path.exists(arquivo_estoque):
             try:
@@ -297,20 +277,19 @@ def _api_medias_compras_gerar_lista_compra_sync(
                 if not df_est.empty:
                     colunas_lower = {str(c).strip().lower(): c for c in df_est.columns}
                     col_sku = colunas_lower.get("sku") or next((c for c in df_est.columns if str(c).strip().lower() == "sku"), None)
-                    col_loja_sync = colunas_lower.get("loja_sync")
-                    if col_loja_sync is not None and loja_sel_norm != "__todas":
-                        df_est = df_est[
-                            df_est[col_loja_sync].astype(str).str.strip().str.lower() == loja_sel_norm
-                        ].copy()
+                    df_est = filtrar_estoque_loja(df_est, loja_sel, store_id_escopo)
+                    estoque_completo = col_sku is not None and any(
+                        nome in colunas_lower for nome in ("saldo_loja", "saldo", "saldo_total"))
                     if col_sku is not None:
                         for _, row in df_est.iterrows():
                             sku_raw = str(row.get(col_sku, "") or "").strip()
                             if not sku_raw:
                                 continue
                             sku = _normalizar_sku_mes(sku_raw)
-                            saldo_loja = _safe_float(row.get("saldo_loja", 0), 0.0)
-                            # Compatibilidade com bases antigas sem coluna saldo_loja.
-                            saldo_total = saldo_loja if saldo_loja != 0 else _safe_float(row.get("saldo", row.get("saldo_total", 0)), 0.0)
+                            coluna_saldo = next((colunas_lower[nome] for nome in (
+                                "saldo_loja", "saldo", "saldo_total",
+                            ) if nome in colunas_lower), None)
+                            saldo_total = _safe_float(row.get(coluna_saldo, 0), 0.0)
                             saldo_por_sku[sku] = saldo_por_sku.get(sku, 0.0) + saldo_total
             except Exception:
                 saldo_por_sku = saldo_por_sku or {}
@@ -320,6 +299,9 @@ def _api_medias_compras_gerar_lista_compra_sync(
         if isinstance(listas_salvas, medias_common._ListasPedidosSnapshot):
             listas_salvas.require_unchanged = True
         transito_por_sku = _mapa_estoque_em_transito_por_sku(client_id, loja_sel, snapshot=listas_salvas)
+        entradas_por_sku = entradas_confirmadas_por_sku(
+            listas_salvas, loja=loja_sel, store_id=store_id_escopo, data_referencia=fim_periodo,
+        )
 
         # Cadastro por SKU para foto, tÃƒÂ­tulo em inglÃƒÂªs, OEM e link.
         cadastro_por_sku = {}
@@ -386,10 +368,15 @@ def _api_medias_compras_gerar_lista_compra_sync(
                 "link": link,
             }
 
-        todos_skus = set(vendas_total_periodo.keys()) | set(saldo_por_sku.keys())
+        todos_skus = (set(vendas_total_periodo) | set(saldo_por_sku) | set(historico_planejamento)
+                      | set(cadastro_por_sku) | set(transito_por_sku) | set(entradas_por_sku))
         itens_lista = []
         fator_crescimento = 1 + (crescimento_percent / 100.0)
         quantidades_sugeridas_aplicadas = set()
+        avisos_planejamento = set()
+        planejamento_requer_revisao = not estoque_completo
+        if not estoque_completo:
+            avisos_planejamento.add("Estoque indisponível ou incompleto; confira o saldo antes de comprar.")
 
         for sku in sorted(todos_skus, key=_sku_sort_key):
             sku_cmp = _normalizar_sku_mes(sku).upper()
@@ -409,7 +396,13 @@ def _api_medias_compras_gerar_lista_compra_sync(
                 ciclo_compra_meses=3,
                 margem_seguranca_meses=1,
                 fator_crescimento=fator_reposicao,
+                vendas_mensais=(historico_planejamento.get(sku) or {}).get("vendas_mensais", {}),
+                primeira_venda=(historico_planejamento.get(sku) or {}).get("primeira_venda", ""),
+                data_referencia=fim_periodo,
+                entradas_previstas=entradas_por_sku.get(sku, []),
             )
+            planejamento_requer_revisao = planejamento_requer_revisao or bool(reposicao.get("planejamento_requer_revisao"))
+            avisos_planejamento.update(reposicao.get("avisos_planejamento") or [])
             quantidade_compra = _resolver_quantidade_sugerida(
                 sku,
                 reposicao.get("compra_sugerida", 0),
@@ -636,6 +629,8 @@ def _api_medias_compras_gerar_lista_compra_sync(
             "crescimento_percent": crescimento_percent,
             "periodo_meses": periodo_meses,
             "lead_time_meses": lead_time_meses,
+            "planejamento_requer_revisao": planejamento_requer_revisao,
+            "avisos_planejamento": sorted(avisos_planejamento),
             "total_quantidades_ajustadas": len(quantidades_sugeridas_aplicadas),
         }
     except HTTPException:

@@ -13,6 +13,7 @@ from threading import Lock, RLock
 import copy
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import zlib
@@ -69,6 +70,7 @@ class _Projecao:
     vendas: tuple[bytes, ...]
     titulos: dict
     ultimas: dict
+    primeiras: dict
     assinatura: str
 
 
@@ -185,6 +187,7 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
     blocos = []
     titulos = {}
     ultimas = {}
+    primeiras = {}
     ordens_titulos = {}
     skus_normalizados = {}
     titulos_validados = {}
@@ -226,6 +229,13 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
                     ordens_titulos[sku_norm] = ordem
             if data_iso and (sku_norm not in ultimas or data_iso > ultimas[sku_norm]):
                 ultimas[sku_norm] = data_iso
+            if data_iso and data_iso <= fim and (sku_norm not in primeiras or data_iso < primeiras[sku_norm]):
+                try:
+                    quantidade_inicial = float(quantidade or 0)
+                except (TypeError, ValueError, OverflowError):
+                    quantidade_inicial = 0.0
+                if math.isfinite(quantidade_inicial) and quantidade_inicial > 0:
+                    primeiras[sku_norm] = data_iso
             if data_iso and inicio <= data_iso <= fim:
                 # Keep original row order and raw SKU: both affect the legacy
                 # id_unico/fallback deduplication and floating-point sums.
@@ -248,16 +258,19 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
     weight += sum(len(bloco) + 64 for bloco in blocos)
     weight += sum(96 + _peso_textos(sku, *value) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
-    return _Projecao(tuple(blocos), titulos, ultimas, digest.hexdigest()), weight + 128
+    weight += sum(72 + _peso_textos(sku, date) for sku, date in primeiras.items())
+    return _Projecao(tuple(blocos), titulos, ultimas, primeiras, digest.hexdigest()), weight + 128
 
 
 def _consolidar(paths, projecoes, ultimo_mes):
-    refs = {periodo: _meses_referencia(ultimo_mes, periodo) for periodo in (3, 6, 12)}
+    # Thirteen inclusive months supply twelve complete months for forecasting.
+    refs = {periodo: _meses_referencia(ultimo_mes, periodo) for periodo in (3, 6, 12, 13)}
     conjuntos = {periodo: set(meses) for periodo, meses in refs.items()}
     vendas = {periodo: {} for periodo in refs}
     vistos = {periodo: set() for periodo in refs}
     titulos = {}
     ultimas = {}
+    primeiras = {}
     for path, projecao in zip(paths, projecoes):
         basename = os.path.basename(path)
         for identificador, sku_original, sku_norm, mes, qty in _vendas_da_projecao(projecao):
@@ -284,21 +297,25 @@ def _consolidar(paths, projecoes, ultimo_mes):
         for sku, data in projecao.ultimas.items():
             if sku not in ultimas or data > ultimas[sku]:
                 ultimas[sku] = data
+        for sku, data in projecao.primeiras.items():
+            if sku not in primeiras or data < primeiras[sku]:
+                primeiras[sku] = data
     weight = sum(400 + _peso_textos(sku) + len(item["vendas_mensais"]) * 112
                  for period in vendas.values() if period is not None for sku, item in period.items())
     weight += sum(160 + _peso_textos(sku, *value.values()) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
+    weight += sum(72 + _peso_textos(sku, date) for sku, date in primeiras.items())
     assinaturas = tuple(projecao.assinatura for projecao in projecoes)
-    return (vendas, titulos, ultimas, assinaturas), weight + len(assinaturas) * 128
+    return (vendas, titulos, ultimas, primeiras, assinaturas), weight + len(assinaturas) * 128
 
 
 def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_periodo,
                         filtro_sql, filtro_params, normalizar_sku, titulo_valido,
-                        normalizacao_token=None, snapshot=None):
+                        normalizacao_token=None, snapshot=None, planejamento=None):
     """Return independent result maps while keeping immutable projections private."""
     paths = tuple(str(path) for path in db_paths if path and os.path.exists(path))
     revisoes = tuple(_revisao_banco(path) for path in paths)
-    refs = _meses_referencia(fim_periodo[:7], 12)
+    refs = _meses_referencia(fim_periodo[:7], 13)
     inicio = refs[0] + "-01"
     params = tuple(filtro_params)
     scope = (str(client_id), str(store_id), str(loja), filtro_sql, params,
@@ -316,7 +333,7 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
             ))
         return _consolidar(paths, projecoes, fim_periodo[:7])
 
-    vendas, titulos, ultimas, assinaturas = _CONSOLIDADOS.obter(
+    vendas, titulos, ultimas, primeiras, assinaturas = _CONSOLIDADOS.obter(
         key, revisoes, construir,
         lambda: tuple(_revisao_banco(path) for path in paths) == revisoes,
     )
@@ -324,4 +341,12 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
         snapshot["historico_vendas"] = _LeituraHistorico(scope[:5], paths, revisoes, assinaturas)
     if vendas[meses] is None:
         raise ValueError("Quantidade de venda inválida no período selecionado.")
+    if isinstance(planejamento, dict):
+        if vendas[13] is None:
+            raise ValueError("Quantidade de venda inválida no histórico de planejamento.")
+        planejamento.update({
+            sku: {"vendas_mensais": dict(item["vendas_mensais"]),
+                  "primeira_venda": primeiras.get(sku, "")}
+            for sku, item in vendas[13].items()
+        })
     return copy.deepcopy(vendas[meses]), copy.deepcopy(titulos), dict(ultimas)

@@ -81,6 +81,89 @@
         return '<strong>' + numero(meses) + '</strong>';
     }
 
+    function obterPlanejamentoCompra(item) {
+        if (!item || Number(item.planejamento_versao) !== 1) return null;
+        const numeroValido = valor => valor !== null && valor !== undefined && valor !== '' && Number.isFinite(Number(valor)) ? Number(valor) : null;
+        const tipos = { alta: 'Alta', queda: 'Queda', estavel: 'Estável', insuficiente: 'Dados insuficientes', indeterminada: 'Tendência indeterminada' };
+        const tendencia = Object.hasOwn(tipos, item.tendencia_vendas) ? item.tendencia_vendas : 'indeterminada';
+        const variacao = numeroValido(item.variacao_vendas_percentual);
+        const percentual = variacao !== null && ['alta', 'queda'].includes(tendencia)
+            ? ' ' + (variacao > 0 ? '+' : '') + numero(variacao) + '%' : '';
+        const textoTendencia = tendencia === 'indeterminada' && variacao !== null && variacao !== 0
+            ? (variacao > 0 ? 'Alta a confirmar' : 'Queda a confirmar') : tipos[tendencia] + percentual;
+        const avisos = Array.isArray(item.avisos_planejamento) ? item.avisos_planejamento.map(String).filter(Boolean) : [];
+        return {
+            tendencia, textoTendencia,
+            mediaPrevista: numeroValido(item.media_mensal_prevista),
+            saldoAntes: numeroValido(item.estoque_previsto_antes_chegada),
+            saldoDepois: numeroValido(item.estoque_previsto_apos_chegada),
+            metaDepois: numeroValido(item.estoque_alvo_apos_chegada),
+            faltaAntes: numeroValido(item.falta_antes_chegada_quantidade),
+            reserva: numeroValido(item.reserva_antes_chegada_quantidade),
+            riscoRuptura: item.risco_ruptura_antes_chegada === true,
+            reservaAtendida: item.reserva_antes_chegada_atendida === true,
+            revisar: item.planejamento_requer_revisao === true,
+            motivo: String(item.tendencia_motivo || ''),
+            chegada: String(item.data_chegada_prevista || '').replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$3/$2/$1'),
+            avisos,
+        };
+    }
+
+    function textosPrevisaoMensal(item) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano) return [numero(item && item.media_mensal)];
+        return [numero(item.media_mensal), 'Prev. ' + (plano.mediaPrevista === null ? '—' : numero(plano.mediaPrevista))];
+    }
+
+    function renderizarPrevisaoMensal(item) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano) return '';
+        const media = plano.mediaPrevista === null ? '—' : numero(plano.mediaPrevista);
+        return '<span class="previsao-detalhe" aria-label="Previsão mensal: ' + escaparHtml(media) + '">Prev. ' + escaparHtml(media) + '</span>';
+    }
+
+    function renderizarSetaTendenciaCompra(item) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano || !['alta', 'queda'].includes(plano.tendencia)) return '';
+        return '<span class="previsao-seta previsao-seta--' + plano.tendencia + '" aria-hidden="true">' + (plano.tendencia === 'alta' ? '↑' : '↓') + '</span>';
+    }
+
+    function renderizarTendenciaCompra(item) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano) return '';
+        return '<span class="previsao-tendencia previsao-tendencia--' + plano.tendencia + '" title="' + escaparHtml(plano.motivo) + '">' + escaparHtml(plano.textoTendencia) + '</span>';
+    }
+
+    function descricaoPlanejamentoCompra(item, manual) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano) return 'Clique para editar a sugestão de compra';
+        const partes = ['Entrega em 6 meses; reserva de 1 mês antes; meta de 7 meses no total após receber'];
+        if (plano.chegada) partes.push('Chegada prevista: ' + plano.chegada);
+        partes.push('Tendência: ' + plano.textoTendencia);
+        if (plano.motivo) partes.push(plano.motivo);
+        partes.push('A previsão usa meses completos e exclui o mês atual.');
+        if (plano.saldoAntes !== null) partes.push('Estoque antes da chegada: ' + numero(plano.saldoAntes) + ' unidades previstas');
+        if (plano.reserva !== null) partes.push('Reserva para 1 mês: ' + numero(plano.reserva) + ' unidades');
+        if (!plano.reservaAtendida) partes.push('Reserva insuficiente: a sobra prevista antes da chegada é menor que um mês de vendas');
+        if (plano.saldoDepois !== null) partes.push('Estoque previsto após receber a sugestão automática: ' + numero(plano.saldoDepois));
+        if (plano.metaDepois !== null) partes.push('Meta de estoque para 7 meses após receber: ' + numero(plano.metaDepois));
+        if (plano.riscoRuptura) partes.push('Falta antes da entrega: demanda sem cobertura de ' + numero(plano.faltaAntes || 0) + ' unidades');
+        if (plano.revisar) partes.push('Revisar previsão: confirme os dados indicados nos avisos antes de comprar');
+        partes.push(...plano.avisos);
+        if (manual) partes.push('Ajuste manual: as projeções exibidas são do cálculo automático');
+        return partes.join('\n');
+    }
+
+    function textosPlanejamentoCompra(item) {
+        const plano = obterPlanejamentoCompra(item);
+        if (!plano) return [numero(item && item.compra_sugerida)];
+        return [numero(item.compra_sugerida), plano.textoTendencia];
+    }
+
+    function renderizarDetalhesPlanejamento(item, manual) {
+        return '';
+    }
+
     function formatarMoedaUSD(valor) {
         return '$ ' + Number(valor || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
@@ -324,6 +407,14 @@
         numero,
         calcularCoberturaMeses,
         formatarCoberturaMeses,
+        obterPlanejamentoCompra,
+        textosPrevisaoMensal,
+        renderizarPrevisaoMensal,
+        renderizarSetaTendenciaCompra,
+        renderizarTendenciaCompra,
+        descricaoPlanejamentoCompra,
+        textosPlanejamentoCompra,
+        renderizarDetalhesPlanejamento,
         formatarMoedaUSD,
         parseNumeroFlex,
         toNumeroDecimal,

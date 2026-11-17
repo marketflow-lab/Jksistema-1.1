@@ -24,6 +24,7 @@ def sources(tmp_path, monkeypatch):
     stock.write_text("sku,loja_sync,saldo_loja\n", encoding="utf-8")
     monkeypatch.setattr(visao, "normalizar_texto", normalizar_texto, raising=False)
     monkeypatch.setattr(visao, "PASTA_INFO", str(tmp_path))
+    monkeypatch.setattr(visao, "get_tenant_path", lambda client: str(tmp_path / client))
     monkeypatch.setattr(visao, "ARQUIVO_DB_PRODUTOS", "", raising=False)
     monkeypatch.setattr(visao, "ARQUIVO_DB_CADASTRO_PRODUTOS", "", raising=False)
     monkeypatch.setattr(visao, "_migrar_arquivo_legado_para_tenant", lambda _client, name, _legacy: str(stock) if name == "produtos_compilado.csv" else "", raising=False)

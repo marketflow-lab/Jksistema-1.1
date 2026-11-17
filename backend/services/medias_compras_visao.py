@@ -15,6 +15,7 @@ from typing import Literal, NamedTuple
 import pandas as pd
 from backend.services.medias_compras_leitura import ler_csv, consulta_medias, fotos_da_consulta, registrar_tempo, leitura_atual, etapa
 from backend.services.medias_compras_historico import ler_historico_vendas
+from backend.services.medias_compras_planejamento import entradas_confirmadas_por_sku, campos_planejamento, filtrar_estoque_loja
 from fastapi import Depends, HTTPException
 
 from backend.schemas import MediasComprasRequest, MediasVisaoFotosRequest
@@ -294,6 +295,7 @@ def _api_medias_compras_visao_sync(
         db_paths = _db_paths if _db_paths is not None else _listar_bancos_vendas_tenant(client_id, loja_sel)
         db_paths = tuple(path for path in db_paths if path and os.path.exists(path))
         vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = {}, {}, {}
+        historico_planejamento = {}
         if db_paths:
             filtro_loja_sql, filtro_loja_params = _sql_filtro_loja_vendas(loja_sel)
             vendas_por_sku, titulos_vendas_por_sku, ultima_venda_snapshot = ler_historico_vendas(
@@ -302,6 +304,7 @@ def _api_medias_compras_visao_sync(
                 filtro_sql=filtro_loja_sql, filtro_params=filtro_loja_params,
                 normalizar_sku=_normalizar_sku_mes, titulo_valido=_titulo_venda_valido,
                 normalizacao_token=normalizar_texto, snapshot=_fontes_snapshot,
+                planejamento=historico_planejamento,
             )
         leitura = leitura_atual()
         if leitura is not None:
@@ -311,7 +314,7 @@ def _api_medias_compras_visao_sync(
         etapas = _fontes_snapshot.get("etapas_visao") if isinstance(_fontes_snapshot, dict) else None
 
         def carregar_estoque():
-            return _carregar_estoque_visao(client_id, loja_sel)
+            return _carregar_estoque_visao(client_id, loja_sel, store_id_escopo)
 
         estoque = (
             etapas.obter("estoque", carregar_estoque, completo=lambda valor: valor.completo)
@@ -331,6 +334,21 @@ def _api_medias_compras_visao_sync(
             sku: float((detalhe or {}).get("total", 0) or 0)
             for sku, detalhe in transito_detalhado_por_sku.items()
         }
+
+        def carregar_entradas_planejamento():
+            listas = medias_common._ler_listas_pedidos_snapshot(
+                os.path.join(get_tenant_path(client_id), "listas_pedidos.json"),
+            )
+            return entradas_confirmadas_por_sku(
+                listas, loja=loja_sel, store_id=store_id_escopo, data_referencia=fim_periodo,
+            )
+
+        entradas_por_sku = (
+            etapas.obter(
+                "transito", carregar_entradas_planejamento,
+                variacao=("planejamento", fim_periodo, store_id_escopo),
+            ) if etapas is not None else carregar_entradas_planejamento()
+        )
         ultima_venda_por_sku = (
             _mapa_ultima_venda_por_sku(client_id, loja_sel, _db_paths=db_paths)
             if _db_paths is not None else _mapa_ultima_venda_por_sku(client_id, loja_sel)
@@ -349,6 +367,8 @@ def _api_medias_compras_visao_sync(
             | cadastro.skus_visiveis
             | set(transito_por_sku)
             | set(ultima_venda_por_sku)
+            | set(historico_planejamento)
+            | set(entradas_por_sku)
         )
         itens = []
 
@@ -378,7 +398,16 @@ def _api_medias_compras_visao_sync(
                 ciclo_compra_meses=3,
                 margem_seguranca_meses=1,
                 fator_crescimento=1.0,
+                vendas_mensais=(historico_planejamento.get(sku) or {}).get("vendas_mensais", {}),
+                primeira_venda=(historico_planejamento.get(sku) or {}).get("primeira_venda", ""),
+                data_referencia=fim_periodo,
+                entradas_previstas=entradas_por_sku.get(sku, []),
             )
+            if not estoque.completo and reposicao.get("planejamento_versao"):
+                reposicao["planejamento_requer_revisao"] = True
+                reposicao.setdefault("avisos_planejamento", []).append(
+                    "Estoque indisponível ou incompleto; confira o saldo antes de comprar.",
+                )
 
             cad_principal = cadastro.produtos.get(sku, {})
             foto_cadastro = str(cad_principal.get("foto") or "").strip()
@@ -406,6 +435,7 @@ def _api_medias_compras_visao_sync(
                 "lead_time_meses": float(reposicao.get("lead_time_meses", 6) or 6),
                 "meses_cobertura": float(reposicao.get("meses_cobertura", 0) or 0),
                 "compra_sugerida": int(reposicao.get("compra_sugerida", 0) or 0),
+                **campos_planejamento(reposicao),
                 "ultima_venda": ultima_venda,
                 "meses_sem_vender": int(meses_sem_vender),
                 "aviso_sem_venda": aviso_sem_venda,
@@ -485,23 +515,21 @@ class _EstoqueVisao(NamedTuple):
 
 
 @etapa("estoque")
-def _carregar_estoque_visao(client_id, loja_sel):
-    loja_sel_norm = loja_sel.lower()
+def _carregar_estoque_visao(client_id, loja_sel, store_id=""):
     # Saldo de estoque por SKU considerando a loja selecionada.
     saldo_por_sku = {}
     arquivo_estoque = _migrar_arquivo_legado_para_tenant(client_id, "produtos_compilado.csv", ARQUIVO_DB_PRODUTOS)
     if arquivo_estoque and os.path.exists(arquivo_estoque):
         try:
             df_est = ler_csv(arquivo_estoque).fillna("")
+            if df_est.empty:
+                return _EstoqueVisao({}, False)
             if not df_est.empty:
                 colunas_lower = {str(c).strip().lower(): c for c in df_est.columns}
                 col_sku = colunas_lower.get("sku") or next((c for c in df_est.columns if str(c).strip().lower() == "sku"), None)
-                col_loja_sync = colunas_lower.get("loja_sync")
-
-                if col_loja_sync is not None and loja_sel_norm != "__todas":
-                    df_est = df_est[
-                        df_est[col_loja_sync].astype(str).str.strip().str.lower() == loja_sel_norm
-                    ].copy()
+                df_est = filtrar_estoque_loja(df_est, loja_sel, store_id)
+                if col_sku is None or not any(nome in colunas_lower for nome in ("saldo_loja", "saldo", "saldo_total")):
+                    return _EstoqueVisao({}, False)
 
                 if col_sku is not None:
                     for _, row in df_est.iterrows():
@@ -510,15 +538,18 @@ def _carregar_estoque_visao(client_id, loja_sel):
                             continue
                         sku_norm = _normalizar_sku_mes(sku_raw)
 
-                        saldo_loja = _safe_float(row.get("saldo_loja", 0), 0.0)
-                        # Compatibilidade com bases antigas sem coluna saldo_loja.
-                        saldo_total = saldo_loja if saldo_loja != 0 else _safe_float(row.get("saldo", row.get("saldo_total", 0)), 0.0)
+                        # A real zero in the store column must not become total/Full stock.
+                        coluna_saldo = next((colunas_lower[nome] for nome in (
+                            "saldo_loja", "saldo", "saldo_total",
+                        ) if nome in colunas_lower), None)
+                        saldo_total = _safe_float(row.get(coluna_saldo, 0), 0.0)
 
                         saldo_por_sku[sku_norm] = saldo_por_sku.get(sku_norm, 0.0) + saldo_total
         except Exception:
             # Se o estoque estiver invalido, nÃ£o quebra a tela; retorna com saldo zero.
             return _EstoqueVisao(saldo_por_sku, False)
-    return _EstoqueVisao(saldo_por_sku, True)
+        return _EstoqueVisao(saldo_por_sku, True)
+    return _EstoqueVisao(saldo_por_sku, False)
 
 
 class _CadastroVisao(NamedTuple):

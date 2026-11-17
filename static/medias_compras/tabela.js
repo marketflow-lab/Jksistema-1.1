@@ -2,7 +2,7 @@
     'use strict';
 
     const app = global.JKMedias;
-    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
+    app.defineModule('tabela', ['core', 'state', 'api', 'resultados', 'transito', 'compra-tooltip', 'pedido-hover', 'filtros', 'tabela-colunas', 'tabela-virtual', 'tabela-fotos', 'visao-carregamento'], (context) => {
         const { prepararFotosVisao, agendarFotosMontadas, cancelarFotosVisao, placeholderFoto } = context.modules['tabela-fotos'];
         let controladorTabelaVirtual = null;
         let escopoTabelaVirtual = '';
@@ -99,6 +99,7 @@
         }
 
         function renderAbaAtual() {
+            context.modules['compra-tooltip'].ocultarTooltipCompra();
             limparDetalhesListaPedido();
             ocultarBalaoEstoqueEmTransito();
             const titulo = document.getElementById('tituloTabela');
@@ -106,6 +107,7 @@
             const btnAbaOcultados = document.getElementById('btnAbaOcultados');
             const secaoTabelaPrincipal = document.getElementById('secaoTabelaPrincipal');
             const secaoListasPedidos = document.getElementById('secaoListasPedidos');
+            document.getElementById('planejamentoPolitica')?.classList.toggle('hidden', abaAtual === 'listas_pedidos');
             const visiveisTodos = obterItensVisiveis();
             const ocultadosTodos = obterItensOcultados();
             const visiveis = filtrarItensPorPesquisaSku(visiveisTodos);
@@ -169,7 +171,7 @@
             head.innerHTML = '';
             const headers = ['SKU', 'Foto', 'Título anúncio']
                 .concat(colunasMeses.map(c => c.key))
-                .concat(['Total período', 'VMM', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
+                .concat(['Total período', 'VMM fechada', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
             chavesColunasAtuais = ['sku', 'foto', 'titulo_anuncio']
                 .concat(colunasMeses.map((_c, indice) => 'mes_' + indice))
                 .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'cobertura_meses', 'compra_sugerida', 'acao']);
@@ -211,6 +213,8 @@
                     th.appendChild(label);
                 }
                 th.dataset.colKey = chavesColunasAtuais[idx] || ('col_' + idx);
+                if (th.dataset.colKey === 'media_mensal') th.title = 'VMM dos últimos meses completos do período selecionado. O mês corrente exibido nas vendas não entra nessa média. A previsão mensal por produto aparece abaixo.';
+                if (th.dataset.colKey === 'compra_sugerida') th.title = 'Quantidade para completar 7 meses de estoque após receber, com a tendência de alta ou queda de cada produto. Passe o mouse sobre a quantidade para ver o saldo previsto antes da entrega e a reserva de 1 mês.';
                 if (th.dataset.colKey.startsWith('mes_')) {
                     th.classList.add('col-venda-mes', (idx - inicioMeses) % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b');
                     if (idx === inicioMeses) th.classList.add('col-venda-mes-primeira');
@@ -239,13 +243,16 @@
             const saldoFisicoNivel = Number(i.saldo_atual_estoque || 0);
             const posicaoEstoqueNivel = Number(i.posicao_estoque || 0);
             const mesesRestantesNivel = calcularCoberturaMeses(posicaoEstoqueNivel, mediaMensalNivel) ?? 999;
+            const planejamento = obterPlanejamentoCompra(i);
 
-            if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
-                if (saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5) {
+            if (modo !== 'ocultados' && planejamento) {
+                if (planejamento.riscoRuptura) {
                     tr.classList.add('risco-critico');
-                } else {
+                } else if (!planejamento.reservaAtendida || planejamento.revisar || compraSugeridaNivel > 0) {
                     tr.classList.add('risco-atencao');
                 }
+            } else if (modo !== 'ocultados' && compraSugeridaNivel > 0) {
+                tr.classList.add(saldoFisicoNivel <= 0 || mesesRestantesNivel <= 1.5 ? 'risco-critico' : 'risco-atencao');
             }
 
             const tds = [];
@@ -276,14 +283,15 @@
             const compraSugerida = Number(i.compra_sugerida || 0);
 
             tds.push('<td class="num col-total-periodo"><strong>' + numero(i.total_vendas_periodo || 0) + '</strong></td>');
-            tds.push('<td class="num">' + numero(i.media_mensal || 0) + '</td>');
+            tds.push('<td class="num">' + numero(i.media_mensal || 0) + renderizarPrevisaoMensal(i) + '</td>');
             tds.push('<td class="num col-estoque-fisico"><strong>' + numero(i.saldo_atual_estoque || 0) + '</strong></td>');
             tds.push(renderizarCelulaEstoqueEmTransito(i));
             tds.push('<td class="num col-posicao-estoque"><strong>' + numero(i.posicao_estoque || 0) + '</strong></td>');
             tds.push('<td class="num col-cobertura-estoque" title="Posição de estoque dividida pela VMM">' + formatarCoberturaMeses(i.posicao_estoque, i.media_mensal) + '</td>');
             const classeCompraPositiva = compraSugerida > 0 ? ' positiva' : '';
             const skuCompraCodificado = encodeURIComponent(String(i.sku || ''));
-            tds.push('<td class="num compra-sugerida-cell"><button type="button" class="compra-sugerida-editavel' + classeCompraPositiva + '" data-sku="' + skuCompraCodificado + '" title="Clique para editar a sugestão de compra" aria-label="Editar sugestão de compra do SKU ' + escaparHtml(i.sku || '') + '">' + numero(compraSugerida) + '</button></td>');
+            const ajusteManual = comprasSugeridasEditadas.has(normalizarSku(i.sku));
+            tds.push('<td class="num compra-sugerida-cell"><div class="compra-sugerida-valor"><button type="button" class="compra-sugerida-editavel' + classeCompraPositiva + '" data-sku="' + skuCompraCodificado + '" aria-label="Editar sugestão de compra do SKU ' + escaparHtml(i.sku || '') + '">' + numero(compraSugerida) + '</button>' + renderizarSetaTendenciaCompra(i) + '</div>' + renderizarTendenciaCompra(i) + '</td>');
 
             const skuCodificado = encodeURIComponent(String(i.sku || ''));
             if (modo === 'ocultados') {
@@ -302,6 +310,7 @@
             );
             const botaoCompraSugerida = tr.querySelector('.compra-sugerida-editavel');
             if (botaoCompraSugerida) {
+                context.modules['compra-tooltip'].configurarTooltipCompra(botaoCompraSugerida, i, ajusteManual);
                 botaoCompraSugerida.addEventListener('click', () => {
                     iniciarEdicaoCompraSugerida(botaoCompraSugerida, botaoCompraSugerida.dataset.sku || '');
                 });
@@ -310,6 +319,7 @@
         }
 
         function renderTabela(colunasMeses, itens, modo) {
+            context.modules['compra-tooltip'].ocultarTooltipCompra();
             ocultarBalaoEstoqueEmTransito();
             const raiz = document.getElementById('secaoTabelaPrincipal');
             const escopo = JSON.stringify([tenantKey, userScopeKey, storeIdSelecionado, lojaSelecionada, periodoAtual, modo, filtroSkuAtual]);

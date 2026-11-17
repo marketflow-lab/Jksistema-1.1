@@ -252,7 +252,7 @@
                 return [numero(valor)];
             }
             if (colKey === 'total_periodo') return [numero(item && item.total_vendas_periodo)];
-            if (colKey === 'media_mensal') return [numero(item && item.media_mensal)];
+            if (colKey === 'media_mensal') return textosPrevisaoMensal(item);
             if (colKey === 'saldo_estoque') return [numero(item && item.saldo_atual_estoque)];
             if (colKey === 'estoque_transito') return [numero(item && item.estoque_em_transito)];
             if (colKey === 'posicao_estoque') return [numero(item && item.posicao_estoque)];
@@ -263,7 +263,7 @@
                 );
                 return [cobertura === null ? 'Sem venda' : numero(cobertura)];
             }
-            if (colKey === 'compra_sugerida') return [numero(item && item.compra_sugerida)];
+            if (colKey === 'compra_sugerida') return textosPlanejamentoCompra(item);
             if (colKey === 'acao') return ['Reexibir'];
             return [''];
         }
