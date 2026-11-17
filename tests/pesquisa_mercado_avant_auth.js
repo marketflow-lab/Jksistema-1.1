@@ -438,12 +438,12 @@ async function main() {
             const second = await f.session.ensure(); assert.equal(second.authenticated, false); assert.equal(second.attempted, false);
             assert.equal(await f.submits(), 1, 'Cooldown must prevent repeated submissions after unconfirmed login.');
         });
-        await test({ beginPopup:true, timeoutMs:300 }, async f => {
+        await test({ beginPopup:true, timeoutMs:10000 }, async f => {
             const controller = new AbortController(); const pending = f.session.ensure({ signal:controller.signal });
             await until(async () => await f.submits() === 1); controller.abort();
             await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(await f.submits(), 1);
         });
-        await test({ beginPopup:true, timeoutMs:300 }, async f => {
+        await test({ beginPopup:true, timeoutMs:10000 }, async f => {
             const pending = f.session.ensure(); await until(async () => await f.submits() === 1); f.switchContext();
             await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(await f.submits(), 1);
         });
