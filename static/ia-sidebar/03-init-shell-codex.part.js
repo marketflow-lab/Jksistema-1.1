@@ -37,7 +37,6 @@
     let codexHistoryVisible = false;
     let codexHistoryTasks = [];
     let codexPollFailures = {};
-    let codexRenderedFinalTasks = new Set();
     let codexFallbackTasks = new Set();
     let codexOperationalFailureCount = 0;
     let codexOperationalFailureTasks = new Set();
@@ -1750,6 +1749,30 @@
       }
     }
 
+    function _codexRespostaIdentity(item) {
+      const taskId = String(item?.task_id || '').trim();
+      if (item?.role !== 'assistant' || !taskId) return '';
+      const text = _codexTextoVisual(String(item.text || ''));
+      const contentKind = String(item.content_kind || 'task');
+      const kind = String(item.kind || '')
+        || (contentKind === 'report' || String(item.classExtra || '').includes('codex-report') ? 'report' : 'task');
+      return JSON.stringify([
+        taskId, kind, contentKind, String(item.content_id || taskId), text,
+        item.truncated === true, Math.max(Number(item.full_length || 0), text.length),
+      ]);
+    }
+
+    function _codexHistoricoSemRespostasRepetidas(entries) {
+      const seen = new Set();
+      return entries.filter(item => {
+        const key = _codexRespostaIdentity(item);
+        if (!key) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }
+
     function _codexSalvarHistoricoLocal() {
       try {
         const limpo = codexMessagesAtuais
@@ -1764,8 +1787,10 @@
       const lista = document.getElementById('jk-codex-messages');
       if (!lista) return;
       lista.innerHTML = '';
-      codexMessagesAtuais = (Array.isArray(entriesOverride) ? entriesOverride : _codexLerHistoricoLocal())
-        .filter(item => !_codexEhAlertaAutomatico(item));
+      codexMessagesAtuais = _codexHistoricoSemRespostasRepetidas(
+        (Array.isArray(entriesOverride) ? entriesOverride : _codexLerHistoricoLocal())
+          .filter(item => !_codexEhAlertaAutomatico(item))
+      );
       if (!codexMessagesAtuais.length) {
         _codexAddMsg('status', 'Codex interno pronto para verificar o ambiente local.', '', { persist: false });
         return;
@@ -2230,7 +2255,6 @@
       if (codexActionPollTimer) clearTimeout(codexActionPollTimer);
       codexActionPollTimer = null;
       codexPollFailures = {};
-      codexRenderedFinalTasks = new Set();
       codexFallbackTasks = new Set();
       codexOperationalFailureCount = 0;
       codexOperationalFailureTasks = new Set();
@@ -2264,6 +2288,9 @@
       });
       const text = prepared.text;
       if (_codexEhStatusEnvioObsoleto(role, text)) return null;
+      const responseKey = _codexRespostaIdentity({ ...options, ...prepared, role, classExtra });
+      if (options.persist !== false && responseKey
+        && codexMessagesAtuais.some(item => _codexRespostaIdentity(item) === responseKey)) return null;
       const div = document.createElement('div');
       div.className = `jk-codex-msg ${role || 'assistant'} ${classExtra || ''}`.trim();
       if (role === 'assistant') {
@@ -3030,10 +3057,7 @@
           : String(task.required_input || '');
         const message = required || task.final_response || 'Preciso de mais dados para continuar.';
         _codexSetStatus('Aguardando os dados solicitados.');
-        if (!codexRenderedFinalTasks.has(task.task_id)) {
-          codexRenderedFinalTasks.add(task.task_id);
-          _codexAddMsg('assistant', message, '', { task_id: task.task_id });
-        }
+        _codexAddMsg('assistant', message, '', { task_id: task.task_id });
       } else if (status === 'queued') {
         _codexSetStatus(_codexStatusComDetalhe('Codex na fila...', task));
       } else if (status === 'running') {
@@ -3054,19 +3078,22 @@
           error: erroTask,
           operationalFailureCount: codexOperationalFailureCount,
         });
-        if (fallbackPermitido && !codexFallbackTasks.has(task.task_id)) {
+        const fallbackRespondido = task.task_id && codexMessagesAtuais.some(item =>
+          item.role === 'assistant' && item.kind === 'fallback' && item.task_id === task.task_id);
+        if (fallbackRespondido) {
           codexFallbackTasks.add(task.task_id);
-          codexRenderedFinalTasks.add(task.task_id);
+          _codexSetStatus('Resposta da IA secundaria restaurada.');
+        } else if (fallbackPermitido && !codexFallbackTasks.has(task.task_id)) {
+          codexFallbackTasks.add(task.task_id);
           _codexSetStatus('Codex principal indisponivel. Ativando fallback de leitura...');
-          void _blackJhonResponderComIaSecundaria(task.prompt, task.screen_context, erroTask).catch((fallbackError) => {
+          void _blackJhonResponderComIaSecundaria(task.prompt, task.screen_context, erroTask, task.task_id).catch((fallbackError) => {
             const msg = _codexErroCurto(fallbackError, erroTask);
             _codexSetStatus(msg, true);
-            _codexAddMsg('assistant', msg, '', { task_id: task.task_id });
+            _codexAddMsg('assistant', msg, '', { task_id: task.task_id, kind: 'fallback' });
           });
         } else {
           _codexSetStatus(erroTask, true);
-          if (!codexRenderedFinalTasks.has(task.task_id)) {
-            codexRenderedFinalTasks.add(task.task_id);
+          if (!codexFallbackTasks.has(task.task_id)) {
             _codexAddMsg('assistant', erroTask, '', { task_id: task.task_id });
           }
         }
@@ -3078,10 +3105,7 @@
         if (task.thread_id) {
           _codexSetThreadId(task.thread_id);
         }
-        if (!codexRenderedFinalTasks.has(task.task_id)) {
-          codexRenderedFinalTasks.add(task.task_id);
-          _codexAddMsg('assistant', task.final_response || (status === 'partial' ? 'A tarefa terminou parcialmente, sem resposta final comprovada.' : 'Codex concluiu sem resposta final.'), '', { task_id: task.task_id });
-        }
+        _codexAddMsg('assistant', task.final_response || (status === 'partial' ? 'A tarefa terminou parcialmente, sem resposta final comprovada.' : 'Codex concluiu sem resposta final.'), '', { task_id: task.task_id });
       } else if (status === 'canceled' || status === 'cancel_requested') {
         _codexSetStatus('Tarefa Codex cancelada.');
       }
@@ -3437,7 +3461,7 @@
         && _blackJhonErroPermiteFallback(error);
     }
 
-    async function _blackJhonResponderComIaSecundaria(prompt, screenContext, motivo = '') {
+    async function _blackJhonResponderComIaSecundaria(prompt, screenContext, motivo = '', taskId = '') {
       const promptSeguro = String(prompt || '').trim();
       for (let i = codexMessagesAtuais.length - 1; i >= 0; i -= 1) {
         const item = codexMessagesAtuais[i];
@@ -3470,7 +3494,7 @@
       });
       const resposta = String(data && data.resposta || '').trim();
       if (!resposta) throw new Error('A IA secundaria do sistema nao retornou resposta.');
-      _codexAddMsg('assistant', resposta, 'black-jhon-fallback', { kind: 'fallback' });
+      _codexAddMsg('assistant', resposta, 'black-jhon-fallback', { kind: 'fallback', task_id: taskId });
       _codexSetStatus('Resposta concluida pela IA secundaria; o Codex continua configurado como principal.');
       if (motivo) console.warn('[Black Jhon] Fallback de leitura acionado:', motivo);
       return true;

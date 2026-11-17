@@ -237,14 +237,15 @@ async function newScenario(browser, baseUrl, options = {}) {
       return json(200, {
         success: true,
         task: {
-          task_id: 'task-browser-1',
+          task_id: options.distinctTaskIds === true ? `task-browser-${calls.codexTasks.length}` : 'task-browser-1',
           conversation_id: canonicalConversationId,
           conversation_generation: 1,
           conversation_state: 'active',
           channel: 'app',
           prompt: payload.prompt,
           sandbox: payload.sandbox,
-          status: options.taskRunning === true ? 'running' : 'completed',
+          status: options.taskState || (options.taskRunning === true ? 'running' : 'completed'),
+          error: options.taskError || '',
           final_response: options.taskResponse || options.largeTaskResponse || (options.taskRunning === true ? '' : 'Resposta primaria de teste.'),
           paths: payload.paths || [],
         },
@@ -313,19 +314,20 @@ async function newScenario(browser, baseUrl, options = {}) {
         }],
       });
     }
-    if (pathname === '/api/codex/tasks/task-browser-1') {
+    if (pathname === '/api/codex/tasks/task-browser-1' || (options.distinctTaskIds === true && /^\/api\/codex\/tasks\/task-browser-\d+$/.test(pathname))) {
       calls.codexTaskDetailGets += 1;
       const completed = options.taskRunning === true && calls.codexTaskDetailGets > 1;
       return json(200, {
         success: true,
         task: {
-          task_id: 'task-browser-1',
+          task_id: pathname.split('/').pop(),
           conversation_id: canonicalConversationId,
           conversation_generation: 1,
           conversation_state: 'active',
           channel: 'app',
           thread_id: completed ? 'thread-old-poll' : '',
-          status: options.taskRunning === true ? (completed ? 'completed' : 'running') : 'completed',
+          status: options.taskState || (options.taskRunning === true ? (completed ? 'completed' : 'running') : 'completed'),
+          error: options.taskError || '',
           final_response: options.taskResponse || options.largeTaskResponse || (completed ? 'RESPOSTA ANTIGA NAO DEVE VOLTAR' : 'Resposta primaria de teste.'),
         },
       });
@@ -473,10 +475,170 @@ async function newScenario(browser, baseUrl, options = {}) {
   return { context, page, calls, pageErrors };
 }
 
+async function readTaskHistory(page, taskId = 'task-browser-1') {
+  const history = await page.evaluate((id) => {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key.startsWith('jk_codex_history_v2_')) continue;
+      const messages = JSON.parse(localStorage.getItem(key) || '[]');
+      if (Array.isArray(messages) && messages.some(item => item.task_id === id)) return { key, messages };
+    }
+    return null;
+  }, taskId);
+  assert.ok(history, 'historico persistido da tarefa deve existir');
+  return history;
+}
+
+async function reloadCodexPanel(page, taskId = 'task-browser-1') {
+  const restored = page.waitForResponse(response => new URL(response.url()).pathname === `/api/codex/tasks/${taskId}` && response.request().method() === 'GET');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator('#jk-ia-light-fab').click();
+  await page.locator('#jk-codex-panel.aberto').waitFor();
+  await restored;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function runReplyRestorationRegressions(browser, baseUrl) {
+  for (const taskState of ['completed', 'failed']) {
+    const reply = taskState === 'failed' ? 'Falha sintetica sem fallback.' : 'Resposta sintetica preservada.';
+    const { context, page, calls, pageErrors } = await newScenario(browser, baseUrl, {
+      full: true,
+      statusReady: true,
+      taskState,
+      taskResponse: reply,
+      taskError: taskState === 'failed' ? reply : '',
+    });
+    try {
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await page.locator('#jk-codex-input').fill('Consulta sintetica para restauracao.');
+      await page.locator('#jk-codex-readonly').click();
+      await page.waitForFunction(text => document.querySelector('#jk-codex-messages')?.textContent.includes(text), reply);
+      for (let reload = 0; reload <= 2; reload += 1) {
+        if (reload) await reloadCodexPanel(page);
+        assert.strictEqual(calls.codexTasks.length, 1, `${taskState}: recarregar nao deve criar outra tarefa`);
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.user').count(), 1);
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').count(), 1, `${taskState}: a resposta deve aparecer uma vez apos ${reload} recargas`);
+        const { messages } = await readTaskHistory(page);
+        assert.strictEqual(messages.filter(item => item.role === 'assistant' && item.task_id === 'task-browser-1').length, 1, `${taskState}: historico persistido nao pode acumular copias`);
+      }
+      assert.strictEqual(calls.iaChat.length, 0, 'restauracao nao deve gerar resposta secundaria');
+      assert.deepStrictEqual(pageErrors, []);
+    } finally {
+      await context.close();
+    }
+  }
+
+  {
+    const reply = 'Resposta igual para tarefas diferentes.';
+    const { context, page, calls, pageErrors } = await newScenario(browser, baseUrl, {
+      full: true, statusReady: true, distinctTaskIds: true, taskResponse: reply,
+    });
+    try {
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      for (let task = 1; task <= 2; task += 1) {
+        await page.locator('#jk-codex-input').fill(`Consulta sintetica ${task}.`);
+        await page.locator('#jk-codex-readonly').click();
+        await page.waitForFunction(count => document.querySelectorAll('#jk-codex-messages .jk-codex-msg.assistant').length === count, task);
+      }
+      const history = await readTaskHistory(page);
+      assert.deepStrictEqual(history.messages.filter(item => item.role === 'assistant').map(item => item.task_id), ['task-browser-1', 'task-browser-2']);
+      await page.evaluate(({ key, messages }) => {
+        const firstReply = messages.find(item => item.role === 'assistant' && item.task_id === 'task-browser-1');
+        const secondReply = messages.find(item => item.role === 'assistant' && item.task_id === 'task-browser-2');
+        localStorage.setItem(key, JSON.stringify(messages.concat(
+          { ...firstReply, at: '2026-07-10T12:00:01Z' },
+          { ...secondReply, at: '2026-07-10T12:00:02Z' },
+          { role: 'assistant', text: 'Mensagem legada sem identificador.' },
+          { role: 'assistant', text: 'Mensagem legada sem identificador.' },
+        )));
+      }, history);
+      for (let reload = 1; reload <= 2; reload += 1) {
+        await reloadCodexPanel(page, 'task-browser-2');
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').count(), 4, 'saneamento deve remover apenas copias identificadas, preservando tarefas diferentes e mensagens legadas');
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.user').count(), 2);
+        const persisted = await readTaskHistory(page);
+        assert.deepStrictEqual(persisted.messages.filter(item => item.role === 'assistant' && item.task_id).map(item => item.task_id), ['task-browser-1', 'task-browser-2']);
+        assert.strictEqual(persisted.messages.filter(item => item.role === 'assistant' && !item.task_id && item.text === 'Mensagem legada sem identificador.').length, 2);
+      }
+      assert.strictEqual(calls.codexTasks.length, 2);
+      assert.deepStrictEqual(pageErrors, []);
+    } finally {
+      await context.close();
+    }
+  }
+
+  for (const hasPriorAssistant of [false, true]) {
+    const reply = 'Conclusao ausente no historico pendente.';
+    const { context, page, calls, pageErrors } = await newScenario(browser, baseUrl, {
+      full: true, statusReady: true, taskResponse: reply,
+    });
+    try {
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await page.locator('#jk-codex-input').fill('Consulta sintetica pendente.');
+      await page.locator('#jk-codex-readonly').click();
+      await page.waitForFunction(text => document.querySelector('#jk-codex-messages')?.textContent.includes(text), reply);
+      const history = await readTaskHistory(page);
+      await page.evaluate(({ key, messages, hasPriorAssistant }) => {
+        const pending = messages.filter(item => item.role !== 'assistant').map(item => ({ ...item, kind: 'pending' }));
+        if (hasPriorAssistant) {
+          const prior = messages.find(item => item.role === 'assistant');
+          const text = 'Preciso de mais dados para continuar.';
+          pending.push({ ...prior, text, full_length: text.length, truncated: false });
+        }
+        localStorage.setItem(key, JSON.stringify(pending));
+      }, { ...history, hasPriorAssistant });
+      await reloadCodexPanel(page);
+      const expectedReplies = hasPriorAssistant ? 2 : 1;
+      assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').count(), expectedReplies, 'task_id do usuario ou de um pedido anterior de dados nao deve suprimir a conclusao ainda nao exibida');
+      assert.match(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').last().textContent(), /Conclusao ausente no historico pendente/);
+      if (hasPriorAssistant) assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').first().textContent(), 'Preciso de mais dados para continuar.');
+      assert.strictEqual((await readTaskHistory(page)).messages.filter(item => item.role === 'assistant').length, expectedReplies);
+      assert.strictEqual(calls.codexTasks.length, 1);
+      assert.deepStrictEqual(pageErrors, []);
+    } finally {
+      await context.close();
+    }
+  }
+
+  {
+    const { context, page, calls, pageErrors } = await newScenario(browser, baseUrl, {
+      full: true,
+      statusReady: true,
+      distinctTaskIds: true,
+      taskState: 'failed',
+      taskError: 'Backend do Codex temporariamente indisponivel.',
+    });
+    try {
+      await page.locator('#jk-codex-panel.aberto').waitFor();
+      await page.locator('#jk-codex-input').fill('Explique os dados sinteticos visiveis.');
+      await page.locator('#jk-codex-readonly').click();
+      await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Backend do Codex temporariamente indisponivel.'));
+      await page.locator('#jk-codex-input').fill('Explique novamente os dados sinteticos visiveis.');
+      await page.locator('#jk-codex-readonly').click();
+      await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Resposta da IA secundaria de teste.'));
+      for (let reload = 0; reload <= 2; reload += 1) {
+        if (reload) await reloadCodexPanel(page, 'task-browser-2');
+        assert.strictEqual(calls.iaChat.length, 1, 'restaurar fallback persistido nao deve gerar nova resposta secundaria');
+        assert.strictEqual(calls.codexTasks.length, 2);
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').count(), 2, 'restaurar fallback nao deve acrescentar o erro primario da mesma tarefa');
+        const { messages } = await readTaskHistory(page, 'task-browser-2');
+        const replies = messages.filter(item => item.role === 'assistant' && item.task_id === 'task-browser-2');
+        assert.strictEqual(replies.length, 1);
+        assert.strictEqual(replies[0].kind, 'fallback');
+        assert.strictEqual(replies[0].text, 'Resposta da IA secundaria de teste.');
+      }
+      assert.deepStrictEqual(pageErrors, []);
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function run() {
   const { server, baseUrl } = await startStaticServer();
   const browser = await chromium.launch({ headless: true });
   try {
+    await runReplyRestorationRegressions(browser, baseUrl);
     {
       const scenario = await newScenario(browser, baseUrl, {
         full: true,
@@ -867,7 +1029,7 @@ async function run() {
     {
       const largeTaskResponse = 'T'.repeat(20000);
       const scenario = await newScenario(browser, baseUrl, { full: true, statusReady: true, largeTaskResponse });
-      const { context, page, pageErrors } = scenario;
+      const { context, page, calls, pageErrors } = scenario;
       await page.locator('#jk-codex-panel.aberto').waitFor();
       await page.locator('#jk-codex-input').fill('Retorne uma resposta longa para o teste.');
       await page.locator('#jk-codex-readonly').click();
@@ -886,8 +1048,19 @@ async function run() {
       const popup = await popupPromise;
       await popup.locator('pre').waitFor();
       assert.strictEqual((await popup.locator('pre').textContent()).length, largeTaskResponse.length);
-      assert.deepStrictEqual(pageErrors, []);
       await popup.close();
+      for (let reload = 1; reload <= 2; reload += 1) {
+        await reloadCodexPanel(page);
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-msg.assistant').count(), 1, 'previa truncada restaurada deve ser reconhecida como a mesma resposta integral da tarefa');
+        assert.strictEqual(await page.locator('#jk-codex-messages .jk-codex-open-fulltext').count(), 1);
+        const { messages } = await readTaskHistory(page);
+        const replies = messages.filter(item => item.role === 'assistant');
+        assert.strictEqual(replies.length, 1);
+        assert.strictEqual(replies[0].truncated, true);
+        assert.strictEqual(replies[0].content_id, 'task-browser-1');
+      }
+      assert.strictEqual(calls.codexTasks.length, 1);
+      assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }
 
