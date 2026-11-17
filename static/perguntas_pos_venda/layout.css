@@ -11,14 +11,19 @@ body.ppv-page {
     background: #071622 url('/medias_compras/images/fundo-graficos.png') center bottom / max(100%, 1600px) auto repeat-y;
     color-scheme: dark;
     font-family: 'Segoe UI', Arial, sans-serif;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
+html:has(> body.ppv-page) { scrollbar-width: thin; scrollbar-color: rgba(156,183,215,.5) transparent; }
+html:has(> body.ppv-page)::-webkit-scrollbar { width: 8px; height: 8px; }
+html:has(> body.ppv-page)::-webkit-scrollbar-thumb { background: rgba(156,183,215,.5); border-radius: 8px; }
 .ppv-page::before { display: none; }
 .ppv-page > .container {
-    grid-template-rows: auto auto minmax(0, 1fr);
+    /* Let the header and accounts scroll away while the inbox keeps a full workspace. */
+    grid-template-rows: auto auto minmax(520px, calc(100dvh - 36px));
     gap: 14px;
-    height: 100dvh;
-    min-height: 0;
+    height: auto;
+    min-height: 100dvh;
     max-width: 1800px;
     padding: 18px 20px;
 }
@@ -117,7 +122,7 @@ body.ppv-page {
 .ppv-page .perguntas-last-update { font-size: 10px; font-weight: 400; }
 
 .ppv-page .questions-inbox-layout { grid-template-columns: minmax(280px, 27%) minmax(0,1fr); gap: 12px; border: 0; background: transparent; }
-.ppv-page .questions-list-pane, .ppv-page .question-detail-pane { border: 1px solid #34536d; border-radius: 10px; background: #0a1d2d; }
+.ppv-page .questions-list-pane, .ppv-page .question-detail-pane { border: 1px solid #34536d; border-radius: 10px; background: #0a1d2d; overscroll-behavior: auto; }
 .ppv-page .question-row { grid-template-columns: 60px minmax(0,1fr); gap: 8px 10px; min-height: 132px; padding: 13px 10px; border-bottom-color: #29465c; }
 .ppv-page .question-row.active { background: #10354a; box-shadow: inset 3px 0 #66d7ff; }
 .ppv-page .question-row-thumb { width: 60px; height: 64px; border-color: #34536d; background: #132c41; }
@@ -189,8 +194,6 @@ body.ppv-page {
     .ppv-page .summary.perguntas-summary-inline .metric span { font-size: 9px; }
 }
 @media (max-width: 900px) and (min-width: 721px) {
-    body.ppv-page { overflow: auto; }
-    .ppv-page > .container { height: auto; min-height: 100dvh; grid-template-rows: auto auto minmax(520px,1fr); }
     .ppv-page .topbar { flex-wrap: wrap; }
     .ppv-page .module-store-header .store-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
     .ppv-page .module-store-header .store-card .store-options { left: auto; right: 0; }

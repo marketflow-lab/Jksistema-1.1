@@ -605,48 +605,67 @@ async function verifyListingStock(page) {
 
 async function verifyResponsiveLayout({ page }) {
   await page.waitForFunction(() => document.querySelectorAll('.question-chat-bubble').length === 12);
-  await page.setViewportSize({ width: 1033, height: 657 });
-  await delay(50);
-  const desktop = await page.evaluate(() => {
-    const container = document.querySelector('.container');
-    const panel = document.querySelector('.panel');
-    const layout = document.querySelector('.questions-inbox-layout');
-    const left = document.querySelector('.questions-list-pane');
-    const right = document.querySelector('.question-detail-pane');
-    const rect = element => element.getBoundingClientRect();
-    left.scrollTop = 0;
-    right.scrollTop = 0;
-    left.scrollTop = left.scrollHeight;
-    const leftAfter = left.scrollTop;
-    const rightBefore = right.scrollTop;
-    right.scrollTop = right.scrollHeight;
-    return {
-      viewport: { width: innerWidth, height: innerHeight },
-      container: rect(container),
-      panel: rect(panel),
-      layout: rect(layout),
-      left: { rect: rect(left), clientHeight: left.clientHeight, scrollHeight: left.scrollHeight, scrollTop: leftAfter, afterRightScroll: left.scrollTop },
-      right: { rect: rect(right), clientHeight: right.clientHeight, scrollHeight: right.scrollHeight, scrollTop: right.scrollTop, before: rightBefore },
-      leftOverflow: getComputedStyle(left).overflowY,
-      rightOverflow: getComputedStyle(right).overflowY,
-      leftScrollbarWidth: getComputedStyle(left).scrollbarWidth,
-      bodyScrollWidth: document.documentElement.scrollWidth,
-      bodyScrollHeight: document.documentElement.scrollHeight,
-    };
-  });
-  assert(Math.abs(desktop.container.width - desktop.viewport.width) <= 1, 'container deve acompanhar toda a largura da viewport');
-  assert(Math.abs(desktop.container.height - desktop.viewport.height) <= 1, 'container deve acompanhar toda a altura da viewport');
-  assert(desktop.panel.bottom <= desktop.viewport.height + 1, 'painel deve terminar dentro da viewport');
-  assert(desktop.bodyScrollWidth <= desktop.viewport.width, 'layout desktop não pode criar rolagem horizontal no documento');
-  assert(desktop.bodyScrollHeight <= desktop.viewport.height, 'layout desktop não pode depender da rolagem do documento');
-  assert(Math.abs(desktop.left.rect.y - desktop.right.rect.y) <= 1 && desktop.right.rect.x > desktop.left.rect.x, 'fila e detalhe devem permanecer lado a lado');
-  assert.strictEqual(desktop.leftOverflow, 'auto');
-  assert.strictEqual(desktop.rightOverflow, 'auto');
-  assert.strictEqual(desktop.leftScrollbarWidth, 'thin', 'scrollbar da fila deve usar largura discreta');
-  assert(desktop.left.scrollHeight > desktop.left.clientHeight && desktop.left.scrollTop > 0, 'fila deve rolar dentro da própria coluna');
-  assert(desktop.right.scrollHeight > desktop.right.clientHeight && desktop.right.scrollTop > 0, 'mensagens devem rolar dentro da própria coluna');
-  assert.strictEqual(desktop.right.before, 0, 'rolagem da fila não pode mover as mensagens');
-  assert.strictEqual(desktop.left.afterRightScroll, desktop.left.scrollTop, 'rolagem das mensagens não pode mover a fila');
+  for (const viewport of [{ width: 1033, height: 657 }, { width: 1347, height: 681 }]) {
+    await page.setViewportSize(viewport);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await delay(50);
+    const desktop = await page.evaluate(() => {
+      const container = document.querySelector('.container');
+      const panel = document.querySelector('.panel');
+      const layout = document.querySelector('.questions-inbox-layout');
+      const left = document.querySelector('.questions-list-pane');
+      const right = document.querySelector('.question-detail-pane');
+      const rect = element => element.getBoundingClientRect();
+      left.scrollTop = 0;
+      right.scrollTop = 0;
+      left.scrollTop = left.scrollHeight;
+      const leftAfter = left.scrollTop;
+      const rightBefore = right.scrollTop;
+      right.scrollTop = right.scrollHeight;
+      return {
+        viewport: { width: document.documentElement.clientWidth, height: innerHeight },
+        container: rect(container),
+        panel: rect(panel),
+        layout: rect(layout),
+        left: { rect: rect(left), clientHeight: left.clientHeight, scrollHeight: left.scrollHeight, scrollTop: leftAfter, afterRightScroll: left.scrollTop },
+        right: { rect: rect(right), clientHeight: right.clientHeight, scrollHeight: right.scrollHeight, scrollTop: right.scrollTop, before: rightBefore },
+        leftOverflow: getComputedStyle(left).overflowY,
+        rightOverflow: getComputedStyle(right).overflowY,
+        leftScrollbarWidth: getComputedStyle(left).scrollbarWidth,
+        bodyScrollWidth: document.documentElement.scrollWidth,
+        bodyScrollHeight: document.documentElement.scrollHeight,
+      };
+    });
+    assert(Math.abs(desktop.container.width - desktop.viewport.width) <= 1, 'container deve acompanhar toda a largura da viewport');
+    assert(desktop.container.height > desktop.viewport.height, 'container deve crescer para permitir rolar o cabeçalho');
+    assert(desktop.panel.height >= desktop.viewport.height - 48, 'painel de atendimento deve ocupar quase toda a altura da viewport');
+    assert(desktop.bodyScrollWidth <= desktop.viewport.width, 'layout desktop não pode criar rolagem horizontal no documento');
+    assert(desktop.bodyScrollHeight > desktop.viewport.height, 'layout desktop deve permitir a rolagem da página');
+    assert(Math.abs(desktop.left.rect.y - desktop.right.rect.y) <= 1 && desktop.right.rect.x > desktop.left.rect.x, 'fila e detalhe devem permanecer lado a lado');
+    assert(desktop.left.rect.height > desktop.viewport.height / 2 && desktop.right.rect.height > desktop.viewport.height / 2, 'fila e detalhe devem ter mais da metade da altura da tela');
+    assert.strictEqual(desktop.leftOverflow, 'auto');
+    assert.strictEqual(desktop.rightOverflow, 'auto');
+    assert.strictEqual(desktop.leftScrollbarWidth, 'thin', 'scrollbar da fila deve usar largura discreta');
+    assert(desktop.left.scrollHeight > desktop.left.clientHeight && desktop.left.scrollTop > 0, 'fila deve rolar dentro da própria coluna');
+    assert(desktop.right.scrollHeight > desktop.right.clientHeight && desktop.right.scrollTop > 0, 'mensagens devem rolar dentro da própria coluna');
+    assert.strictEqual(desktop.right.before, 0, 'rolagem da fila não pode mover as mensagens');
+    assert.strictEqual(desktop.left.afterRightScroll, desktop.left.scrollTop, 'rolagem das mensagens não pode mover a fila');
+    const focused = await page.evaluate(() => {
+      const panel = document.querySelector('.panel');
+      window.scrollTo(0, panel.getBoundingClientRect().top + window.scrollY);
+      return {
+        scrollY,
+        panelTop: panel.getBoundingClientRect().top,
+        panelBottom: panel.getBoundingClientRect().bottom,
+        headerBottom: document.querySelector('.topbar').getBoundingClientRect().bottom,
+        accountsBottom: document.querySelector('.ppv-accounts-content').getBoundingClientRect().bottom,
+        viewportHeight: innerHeight,
+      };
+    });
+    assert(focused.scrollY > 0, 'página desktop deve aceitar rolagem até o atendimento');
+    assert(focused.headerBottom <= 0 && focused.accountsBottom <= 0, 'cabeçalho e contas devem sair da área visível ao rolar até o atendimento');
+    assert(focused.panelTop >= 0 && focused.panelTop <= 24 && focused.panelBottom <= focused.viewportHeight, 'painel inteiro deve ficar acessível após rolar a página');
+  }
 
   await page.setViewportSize({ width: 800, height: 360 });
   await page.evaluate(() => window.scrollTo(0, 0));
