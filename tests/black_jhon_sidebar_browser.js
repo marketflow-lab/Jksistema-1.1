@@ -470,9 +470,106 @@ async function newScenario(browser, baseUrl, options = {}) {
   });
 
   await page.goto(`${baseUrl}/test.html${options.pageQuery || ''}`, { waitUntil: 'domcontentloaded' });
+  if (options.hostTableStyleOrder === 'before') {
+    await page.addStyleTag({ url: `${baseUrl}/${options.hostTableStyles || 'medias_compras/styles.css'}` });
+  }
+  if (options.hostTableStyleOrder) {
+    await page.addScriptTag({ url: `${baseUrl}/table_columns.js` });
+  }
   await page.locator('#jk-ia-light-fab').click();
   await page.locator('#jk-ia-fab').waitFor({ state: 'visible' });
+  if (options.hostTableStyleOrder === 'after') {
+    await page.addStyleTag({ url: `${baseUrl}/${options.hostTableStyles || 'medias_compras/styles.css'}` });
+  }
   return { context, page, calls, pageErrors };
+}
+
+async function runTableLayoutRegressions(browser, baseUrl) {
+  const summaries = [
+    ['Faturamento', 'R$ 218.403,15'],
+    ['Pedidos', '1.234'],
+    ['Itens vendidos', '2.468'],
+    ['Ticket medio', 'R$ 176,99'],
+    ['Lucro estimado', 'R$ 24.305,23'],
+    ['Margem estimada', '11,13%'],
+  ];
+  const details = [
+    ['Faturamento', 'R$ 218.403,15', 'Vendas dos produtos favoritos no periodo consultado.'],
+    ['Pedidos', '1.234', 'Pedidos validos encontrados no periodo selecionado.'],
+    ['Lucro estimado', 'R$ 24.305,23', 'Margem calculada com observacao extensa que deve continuar legivel dentro do painel.'],
+  ];
+  for (const host of [
+    { stylesheet: 'medias_compras/styles.css', order: 'before', columns: [2, 3], widths: [330, 410, 800] },
+    { stylesheet: 'medias_compras/styles.css', order: 'after', columns: [2, 3], widths: [330, 410, 800] },
+    { stylesheet: 'favoritos/styles/01-foundation.css', order: 'after', columns: [2], widths: [410] },
+  ]) {
+    for (const columns of host.columns) {
+      const rows = columns === 2 ? summaries : details;
+      const headers = columns === 2 ? ['Indicador', 'Valor'] : ['Indicador', 'Valor', 'Detalhe'];
+      const taskResponse = [
+        '## Indicadores dos Favoritos', '',
+        `| ${headers.join(' | ')} |`,
+        `| ${headers.map(() => '---').join(' | ')} |`,
+        ...rows.map(row => `| ${row.join(' | ')} |`),
+      ].join('\n');
+      const { context, page, calls, pageErrors } = await newScenario(browser, baseUrl, {
+        full: true, statusReady: true, taskResponse, hostTableStyleOrder: host.order, hostTableStyles: host.stylesheet,
+      });
+      try {
+        await page.locator('#jk-codex-panel.aberto').waitFor();
+        await page.locator('#jk-codex-input').fill('Mostre os indicadores sinteticos em tabela.');
+        await page.locator('#jk-codex-readonly').click();
+        const table = page.locator('#jk-codex-messages .jk-ia-table-responsive');
+        await table.waitFor();
+        assert.deepStrictEqual(await table.locator('tbody tr').evaluateAll(elements => elements.map(row => Array.from(row.cells, cell => cell.textContent.trim()))), rows);
+        for (const width of host.widths) {
+          await page.locator('#jk-codex-panel').evaluate((panel, size) => panel.style.setProperty('--jk-codex-panel-width', `${size}px`), width);
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const layout = await table.evaluate(element => {
+            const wrap = element.closest('.jk-ia-table-wrap');
+            const message = element.closest('.jk-codex-msg');
+            const cells = Array.from(element.querySelectorAll('tbody td'));
+            const tableRect = element.getBoundingClientRect();
+            const wrapRect = wrap.getBoundingClientRect();
+            const messageRect = message.getBoundingClientRect();
+            const textFits = cells.every(cell => {
+              const range = document.createRange();
+              range.selectNodeContents(cell);
+              const cellRect = cell.getBoundingClientRect();
+              return Array.from(range.getClientRects()).every(rect => rect.width > 0 && rect.height > 0
+                && rect.left >= cellRect.left - 1 && rect.right <= cellRect.right + 1
+                && rect.top >= cellRect.top - 1 && rect.bottom <= cellRect.bottom + 1
+                && rect.left >= wrapRect.left - 1 && rect.right <= wrapRect.right + 1);
+            });
+            const header = element.querySelector('thead').getBoundingClientRect();
+            return {
+              tableFits: tableRect.left >= wrapRect.left - 1 && tableRect.right <= wrapRect.right + 1,
+              messageFits: message.scrollWidth <= message.clientWidth + 1 && wrapRect.right <= messageRect.right + 1,
+              tableHeight: tableRect.height,
+              cellDisplays: Array.from(new Set(cells.map(cell => getComputedStyle(cell).display))),
+              textFits,
+              headerVisible: header.width > 10 && header.height > 10,
+              tableBackground: getComputedStyle(element).backgroundColor,
+            };
+          });
+          const label = `${columns} colunas, painel ${width}px, ${host.stylesheet} ${host.order}`;
+          assert.strictEqual(layout.tableFits, true, `${label}: tabela deve caber na largura util`);
+          assert.strictEqual(layout.messageFits, true, `${label}: mensagem deve caber no painel`);
+          assert.strictEqual(layout.textFits, true, `${label}: cada texto deve permanecer visivel dentro da propria celula`);
+          assert.notStrictEqual(layout.tableBackground, 'rgb(255, 255, 255)', `${label}: fundo branco global nao pode apagar a leitura do texto claro do chat`);
+          assert.deepStrictEqual(layout.cellDisplays, [columns === 3 && width <= 560 ? 'grid' : 'table-cell'], `${label}: tabela curta deve manter colunas e tabela extensa deve adaptar linhas`);
+          if (columns === 2) {
+            assert.strictEqual(layout.headerVisible, true, `${label}: cabecalhos Indicador e Valor devem ficar visiveis`);
+            assert.ok(layout.tableHeight <= 320, `${label}: seis indicadores devem ocupar uma tabela compacta, altura ${layout.tableHeight}px`);
+          }
+        }
+        assert.strictEqual(calls.codexTasks.length, 1);
+        assert.deepStrictEqual(pageErrors, []);
+      } finally {
+        await context.close();
+      }
+    }
+  }
 }
 
 async function readTaskHistory(page, taskId = 'task-browser-1') {
@@ -638,6 +735,7 @@ async function run() {
   const { server, baseUrl } = await startStaticServer();
   const browser = await chromium.launch({ headless: true });
   try {
+    await runTableLayoutRegressions(browser, baseUrl);
     await runReplyRestorationRegressions(browser, baseUrl);
     {
       const scenario = await newScenario(browser, baseUrl, {

@@ -69,7 +69,7 @@ assert.match(mercadoLivreSymbol, /class="cls-1"/);
 assert.match(ui, /title="Reiniciar memoria"/);
 assert.match(ui, /container-name:jk-codex-panel/);
 assert.match(ui, /@container jk-codex-panel \(max-width:560px\)/);
-assert.match(ui, /\.jk-ia-table-responsive td::before\{content:attr\(data-label\)/);
+assert.match(ui, /td::before\{content:attr\(data-label\)/);
 assert.match(render, /class="jk-ia-table-wrap"/);
 assert.match(render, /class="jk-ia-table-responsive" data-columns=/);
 assert.match(render, /data-label=/);

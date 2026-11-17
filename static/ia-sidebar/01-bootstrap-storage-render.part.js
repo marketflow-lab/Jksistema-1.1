@@ -535,7 +535,7 @@
           ? `<tbody>${bodyRows.map(r => `<tr>${r.map((c, index) => `<td data-label="${tableDataLabel(headerCells[index], index)}">${c}</td>`).join('')}</tr>`).join('')}</tbody>`
           : '';
         const columnCount = Math.max(1, header.length);
-        out.push(`<div class="jk-ia-table-wrap" role="region" aria-label="Tabela de resultados" tabindex="0"><table class="jk-ia-table-responsive" data-columns="${columnCount}">${headHtml}${bodyHtml}</table></div>`);
+        out.push(`<div class="jk-ia-table-wrap" role="region" aria-label="Tabela de resultados" tabindex="0"><table class="jk-ia-table-responsive" data-columns="${columnCount}" data-jk-no-enhance="1">${headHtml}${bodyHtml}</table></div>`);
         continue;
       }
 
