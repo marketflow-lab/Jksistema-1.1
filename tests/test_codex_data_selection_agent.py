@@ -19,6 +19,45 @@ from backend.services.codex_data_selection_agent import (
 )
 
 
+def test_selector_uses_default_from_live_catalog_for_unavailable_model() -> None:
+    from backend.services.codex_data_selection_agent import _CodexPlannerRuntime
+
+    runtime = _CodexPlannerRuntime()
+    runtime._codex = object()
+    runtime._available_models = ["gpt-future-small", "gpt-future-default"]
+    runtime._model_catalog = {
+        "gpt-future-small": {"id": "gpt-future-small", "is_default": False},
+        "gpt-future-default": {"id": "gpt-future-default", "is_default": True},
+    }
+    assert runtime.resolve_model("gpt-retired") == "gpt-future-default"
+
+
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_selector_sends_supported_reasoning_without_downgrade(monkeypatch, tmp_path, effort) -> None:
+    from types import SimpleNamespace
+    from backend.services import codex_data_selection_agent
+    from backend.services.codex.console import telemetry
+
+    calls = {}
+
+    class FakeThread:
+        def run(self, prompt, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(final_response="{}")
+
+    class FakeClient:
+        def thread_start(self, **kwargs):
+            return FakeThread()
+
+    monkeypatch.setattr(telemetry, "instance", lambda: None)
+    monkeypatch.setattr(codex_data_selection_agent, "_isolated_planner_cwd", lambda: str(tmp_path))
+    runtime = codex_data_selection_agent._CodexPlannerRuntime()
+    runtime._codex = FakeClient()
+    runtime._available_models = ["gpt-6.1-sol"]
+    runtime.run(prompt="Metadados sinteticos", model="gpt-6.1-sol", reasoning_effort=effort)
+    assert calls["effort"].value == effort
+
+
 def _plan(*, tool_calls=None, context_hub=None, action="collect", requested_fields=None) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,

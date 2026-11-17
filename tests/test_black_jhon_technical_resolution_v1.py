@@ -360,21 +360,21 @@ def test_final_failure_after_gap_never_promotes_round_one_yes_to_cta_state() -> 
     assert statuses["final"] == "error"
 
 
-def test_structured_final_uses_sol_high_and_does_not_resume_thread(monkeypatch) -> None:
+def test_structured_final_preserves_configured_model_and_does_not_resume_thread(monkeypatch) -> None:
     captured = {}
 
     def fake_call(_client_id, payload, model_req):
         captured["context"] = dict(payload.context)
         captured["model"] = model_req
         payload.context["_codex_thread_id_result"] = "should-not-be-adopted"
-        return '{"overall_decision":"yes"}', "codex:gpt-5.6-sol"
+        return '{"overall_decision":"yes"}', "codex:gpt-6.1-terra"
 
     monkeypatch.setattr(clients, "_ia_agent_perguntas_chamar_modelo", fake_call)
     monkeypatch.setattr(clients, "_ia_raciocinio_perguntas_configurado", lambda: "medium")
     client = clients._PerguntasVertexGeminiV2Client(
         "tenant-a",
         "Loja A",
-        "codex:gpt-5.4-mini",
+        "codex:gpt-6.1-terra",
         agent_input={
             "_codex_job_id": "job-1",
             "_codex_thread_id": "thread-original",
@@ -416,7 +416,7 @@ def test_structured_final_uses_sol_high_and_does_not_resume_thread(monkeypatch) 
     )
 
     assert payload["overall_decision"] == "yes"
-    assert captured["model"] == "codex:gpt-5.6-sol"
+    assert captured["model"] == "codex:gpt-6.1-terra"
     assert captured["context"]["_codex_reasoning_effort"] == "high"
     assert captured["context"]["_codex_thread_id"] == ""
     assert captured["context"]["_codex_persist_thread"] is False

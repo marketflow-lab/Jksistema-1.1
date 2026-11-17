@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
+from backend.services import gpt_model_catalog
+
 
 DATASET_SCHEMA_VERSION = "black-jhon-evaluation.v2"
 RUN_SCHEMA_VERSION = "black-jhon-evaluation-run.v1"
@@ -30,12 +32,7 @@ HOLDOUT_CASES = 30
 REAL_CASES = 100
 SYNTHETIC_CASES = 20
 
-MODEL_IDS = (
-    "gpt-5.5",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "gpt-5.6-sol",
-)
+MODEL_IDS = gpt_model_catalog.CODEX_MODEL_IDS
 
 CATEGORY_QUOTAS = {
     "stock_catalog_listing_fitment": 20,
@@ -285,7 +282,7 @@ def campaign_budget() -> dict[str, int]:
 def paired_model_comparison(
     results: Iterable[Mapping[str, Any]],
     *,
-    baseline_model: str = "gpt-5.5",
+    baseline_model: str = gpt_model_catalog.DEFAULT_CODEX_MODEL,
     candidate_model: str,
     category: str,
 ) -> dict[str, Any]:

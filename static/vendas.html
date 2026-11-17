@@ -9,6 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/pt.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/plugins/rangePlugin.js"></script>
+    <script src="/ia-model-catalog.js?v=20261117-gpt-catalog-v1"></script>
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
     <script src="/cache-persistente.js?v=20261027-v1"></script>
     <script src="/vendas/cache-dados.js?v=20261112-status-resumido-v1"></script>
@@ -253,12 +254,7 @@
                     <!-- Barra flutuante: modelo + ações -->
                     <div id="iaFloatBarVendas">
                         <select id="iaModelSelectVendas" title="Modelo de IA" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;font-size:.62rem;border-radius:8px;padding:4px 8px;cursor:pointer;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:30px;width:132px;min-width:132px;max-width:132px;">
-                                                        <optgroup label="OpenAI">
-                                                            <option value="gpt-5.4-nano">Nano</option>
-                                                            <option value="gpt-5.4-mini">Mini</option>
-                                                            <option value="gpt-5.4">GPT-5.4</option>
-                                                            <option value="gpt-5.5">GPT-5.5</option>
-                                                        </optgroup>
+                                                        <optgroup label="OpenAI"><option value="">Carregando modelos...</option></optgroup>
                                                         <optgroup label="DeepSeek">
                                                             <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
                                                             <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
@@ -274,6 +270,7 @@
                                                             <option value="vertex:gemini-2.0-flash">Vertex 2.0 Flash</option>
                                                         </optgroup>
                         </select>
+                        <select id="iaReasoningSelectVendas" title="Nível de raciocínio" style="display:none;"><option value="medium">Médio</option></select>
                         <button id="btnHistoricoConvVendas" type="button" title="Ver conversas salvas" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;cursor:pointer;font-size:.9rem;border-radius:10px;padding:6px 12px;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:36px;display:flex;align-items:center;justify-content:center;">🗂</button>
                         <button id="btnNovaConvVendas" type="button" title="Nova conversa" style="background:rgba(8,38,55,.92);border:1px solid rgba(120,227,212,.4);color:#8ee9de;cursor:pointer;font-size:.85rem;border-radius:10px;padding:6px 12px;backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35);min-height:36px;display:flex;align-items:center;justify-content:center;font-weight:600;">✏️ Nova</button>
                     </div>

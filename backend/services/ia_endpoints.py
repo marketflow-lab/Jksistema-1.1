@@ -39,7 +39,7 @@ from backend.schemas import (
     IARagReindexRequest,
 )
 from backend.services.runtime_bridge import bind_runtime_globals
-from backend.services import codex_turn_context
+from backend.services import codex_turn_context, gpt_model_catalog
 from backend.modules.perguntas_pos_venda.ai import api as perguntas_agent_api
 from backend.modules.perguntas_pos_venda.ai.validation import ML_PERGUNTAS_IA_V2_MODO
 from backend.services.ia_common import *
@@ -332,8 +332,8 @@ def _ia_sidebar_provider_settings(requested_model: str) -> tuple[str, str, str]:
     policy = str(config.get("ia_sidebar_response_provider_policy") or "codex_only").strip().lower()
     if policy not in {"codex_only", "codex_then_configured_fallback"}:
         policy = "codex_only"
-    configured_chat = _normalizar_ia_modelo_padrao(config.get("ia_modelo_chat") or "codex:gpt-5.5")
-    codex_model = configured_chat if _modelo_eh_codex(configured_chat) else "codex:gpt-5.5"
+    configured_chat = _normalizar_ia_modelo_padrao(config.get("ia_modelo_chat") or f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}")
+    codex_model = configured_chat if _modelo_eh_codex(configured_chat) else f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}"
     requested = _normalizar_ia_modelo_padrao(requested_model)
     fallback_model = str(config.get("ia_sidebar_fallback_model") or "").strip()
     if not fallback_model and requested and not _modelo_eh_codex(requested):
@@ -845,8 +845,8 @@ def _ia_chat_prepare_data_selection(
             conversation_anchors=anchors,
             previous_evidence=None,
             data_gap=None,
-            model="gpt-5.6-luna",
-            reasoning_effort="low",
+            model=codex_data_selection_agent.DEFAULT_MODEL,
+            reasoning_effort=codex_data_selection_agent.DEFAULT_REASONING_EFFORT,
             max_calls=_IA_CHAT_SELECTION_MAX_CALLS,
         )
     except Exception as exc:
@@ -1389,16 +1389,18 @@ def ia_chat(payload: IAChatRequest, request: Request, client_id: str = Depends(g
 
 async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenant_id)):
     pode_escolher_modelo = _usuario_pode_escolher_modelo_chat(request, client_id)
+    codex_models, openai_models = ([], [])
+    if pode_escolher_modelo:
+        codex_models, openai_models = await asyncio.gather(
+            asyncio.to_thread(_listar_modelos_codex_configuraveis),
+            asyncio.to_thread(_listar_modelos_openai_api),
+        )
     return {
         "success": True,
         "pode_escolher_modelo_chat": pode_escolher_modelo,
-        "codex": _listar_modelos_codex_configuraveis() if pode_escolher_modelo else [],
-        "openai": [
-            {"name": "gpt-5.4-nano", "display_name": "Nano"},
-            {"name": "gpt-5.4-mini", "display_name": "Mini"},
-            {"name": "gpt-5.4", "display_name": "GPT-5.4"},
-            {"name": "gpt-5.5", "display_name": "GPT-5.5"},
-        ] if pode_escolher_modelo else [],
+        "codex": codex_models,
+        "openai": openai_models,
+        "reasoning_efforts": list(gpt_model_catalog.REASONING_EFFORTS) if pode_escolher_modelo else [],
         "deepseek": [
             {"name": "deepseek-v4-flash", "display_name": "DeepSeek V4 Flash"},
             {"name": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro"},
@@ -1420,7 +1422,7 @@ async def ia_listar_modelos(request: Request, client_id: str = Depends(get_tenan
             "deepseek": "deepseek-v4-flash",
             "gemini": "gemini:gemini-2.5-flash",
             "vertex": f"vertex:{_vertex_ai_modelo_padrao()}",
-            "codex": "codex:gpt-5.5",
+            "codex": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
             "vertex_project_id": _vertex_ai_project_id_configurado(),
             "vertex_location": _vertex_ai_location(),
             "vertex_service_account_email": _vertex_ai_service_account_email(),

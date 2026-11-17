@@ -19,6 +19,13 @@ from backend.services.codex.console import tasks as console_tasks
 from backend.services.codex.console import queueing as console_queueing
 
 
+@pytest.fixture(autouse=True)
+def _synthetic_store_scope(monkeypatch):
+    # These orchestration cases use synthetic sessions and must not depend on
+    # an operational integration context or consult real store files.
+    monkeypatch.setattr(whatsapp_bridge, "_whatsapp_session_stores", lambda *_args, **_kwargs: [])
+
+
 def _evidence(status: str, reason: str = "") -> dict:
     conclusive = status in {"complete", "confirmed_zero"}
     return {"schema": "jk.codex.evidence.v1", "status": status,
@@ -132,6 +139,35 @@ def test_version_five_dual_config_is_migrated_to_parallel_capacity(monkeypatch):
     assert config["retry_policy"] == "bounded"
     assert config["max_active_task_agents_per_conversation"] == 6
     assert config["max_active_task_agents_global"] == 12
+
+
+@pytest.mark.parametrize(("model", "requested", "expected"), [
+    ("gpt-6.1-sol", "ultra", "ultra"),
+    ("gpt-6-luna", "ultra", "max"),
+])
+def test_subtask_reasoning_reaches_task_payload_with_model_capabilities(monkeypatch, model, requested, expected):
+    captured = {}
+    config = {**_config(), "task_agent_model": model}
+    monkeypatch.setattr(codex_whatsapp_agents.CONVERSATION_RUNTIME, "resolve_model", lambda value: value)
+    monkeypatch.setattr(whatsapp_bridge, "_message_prompt", lambda *_args, **_kwargs: "Pedido sintetico")
+
+    def create(payload, session, **kwargs):
+        captured.update(payload=payload, metadata=kwargs["channel_metadata"])
+        return {"success": True, "task": {"task_id": "synthetic-task", "channel_metadata": kwargs["channel_metadata"]}}
+
+    monkeypatch.setattr(console_tasks, "create", create)
+    monkeypatch.setattr(console_tasks, "update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(console_tasks, "load", lambda *_args, **_kwargs: None)
+    whatsapp_bridge._create_dual_worker_task(
+        config, message={"message_type": "text"}, message_id="synthetic-message",
+        subject="synthetic-subject", phone="synthetic-phone", session=_session(),
+        conversation_id="synthetic-conversation", request_text="Pedido sintetico",
+        job_prompt="Pedido sintetico", job_title="Consulta", media=None, transcription=None,
+        phone_ai_behavior="", query_policy={}, reasoning_effort=requested,
+    )
+    assert captured["payload"].model == model
+    assert captured["payload"].reasoning_effort == expected
+    assert captured["metadata"]["reasoning_level"] == expected
 
 
 def test_conversation_reply_does_not_create_worker(monkeypatch):
@@ -495,7 +531,7 @@ def test_codex_conversation_lanes_are_distinct_and_legacy_identity_is_stable():
     assert len({legacy, conversation, worker}) == 3
 
 
-def test_new_codex_reasoning_aliases_are_accepted_by_beta_sdk_compatibility():
+def test_new_codex_reasoning_levels_are_preserved_by_packaged_sdk_compatibility():
     normalized = console_agent_loop._codex_sdk_response_compat({
         "supportedReasoningEfforts": [
             {"reasoningEffort": "max"},
@@ -503,8 +539,8 @@ def test_new_codex_reasoning_aliases_are_accepted_by_beta_sdk_compatibility():
         ]
     })
     assert normalized["supportedReasoningEfforts"] == [
-        {"reasoningEffort": "xhigh"},
-        {"reasoningEffort": "xhigh"},
+        {"reasoningEffort": "max"},
+        {"reasoningEffort": "ultra"},
     ]
 
 
@@ -1876,7 +1912,7 @@ def test_failed_third_subtask_does_not_cancel_created_siblings(monkeypatch):
     assert [item["task_id"] for item in pending["subtasks"][:2]] == ["task-1", "task-2"]
     assert pending["subtasks"][2]["task_id"] == ""
     assert pending["subtasks"][2]["state"] == "waiting_retry"
-    assert all(item["reasoning_effort"] == "low" for item in pending["subtasks"])
+    assert [item["reasoning_effort"] for item in pending["subtasks"]] == ["xhigh", "high", "medium"]
 
 
 def test_restart_keeps_deadline_canceled_pending_terminal_partial(monkeypatch):

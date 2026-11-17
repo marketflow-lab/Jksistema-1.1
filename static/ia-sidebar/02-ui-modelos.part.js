@@ -570,12 +570,7 @@
     <div id="jk-ia-panel-header">
       <h3>Black Jhon</h3>
       <select id="jk-ia-model-sel" title="Modelo de IA" style="display:none;background:#0b3040;border:1px solid rgba(120,227,212,.3);color:#8ee9de;font-size:.68rem;border-radius:8px;padding:6px 8px;cursor:pointer;max-width:90px;min-height:36px;">
-        <optgroup label="OpenAI">
-          <option value="gpt-5.4-nano">Nano</option>
-          <option value="gpt-5.4-mini">Mini</option>
-          <option value="gpt-5.4">GPT-5.4</option>
-          <option value="gpt-5.5">GPT-5.5</option>
-        </optgroup>
+        <optgroup label="OpenAI"><option value="">Carregando modelos...</option></optgroup>
         <optgroup label="DeepSeek">
           <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
           <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
@@ -591,6 +586,7 @@
           <option value="vertex:gemini-2.0-flash">Vertex 2.0 Flash</option>
         </optgroup>
       </select>
+      <select id="jk-ia-reasoning-sel" title="Nível de raciocínio" style="display:none;"><option value="medium">Médio</option></select>
       <button class="jk-ia-hbtn" id="jk-ia-btn-historico" title="Ver conversas">🗂</button>
       <button class="jk-ia-hbtn" id="jk-ia-btn-nova" title="Nova conversa">✏️</button>
       <button class="jk-ia-hbtn" id="jk-ia-btn-fechar" title="Fechar">✕</button>
@@ -659,7 +655,7 @@
             <small id="jk-codex-token-detail">-</small>
           </div>
         </div>
-        <div class="jk-codex-live-block" id="jk-codex-reasoning" hidden></div>
+        <div class="jk-codex-live-block" id="jk-codex-live-reasoning" hidden></div>
         <div class="jk-codex-live-block" id="jk-codex-live-answer" hidden></div>
         <div id="jk-codex-log-list"></div>
       </div>
@@ -677,24 +673,11 @@
         </label>
         <label class="jk-codex-select-wrap" title="Modelo">
           <span class="jk-codex-select-icon" aria-hidden="true">&#128187;</span>
-          <select class="jk-codex-select" id="jk-codex-model" title="Modelo">
-            <option value="gpt-6.1-sol">GPT-6.1 Sol</option>
-            <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
-            <option value="gpt-5.6-terra">GPT-5.6 Terra</option>
-            <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
-            <option value="gpt-5.4">GPT-5.4</option>
-            <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-            <option value="gpt-5.4-nano">GPT-5.4 Nano</option>
-          </select>
+          <select class="jk-codex-select" id="jk-codex-model" title="Modelo"><option value="gpt-6.1-sol">GPT-6.1 Sol</option></select>
         </label>
         <label class="jk-codex-select-wrap" title="Raciocinio">
           <span class="jk-codex-select-icon" aria-hidden="true">&#128161;</span>
-          <select class="jk-codex-select" id="jk-codex-reasoning" title="Raciocinio">
-            <option value="low">Baixa</option>
-            <option value="medium">Media</option>
-            <option value="high">Alta</option>
-            <option value="xhigh">Altissimo</option>
-          </select>
+          <select class="jk-codex-select" id="jk-codex-reasoning" title="Raciocinio"><option value="xhigh">Muito alto</option></select>
         </label>
         <label class="jk-codex-select-wrap" title="Velocidade">
           <span class="jk-codex-select-icon" aria-hidden="true">&#9889;</span>
@@ -850,21 +833,11 @@
   `;
 
   function _nomeModeloLimpo(item) {
-    const nomesFixos = {
-      'gpt-5.4-nano': 'Nano',
-      'gpt-5.4-mini': 'Mini',
-      'gpt-5.4': 'GPT-5.4',
-      'gpt-5.5': 'GPT-5.5',
-      'deepseek-v4-flash': 'DeepSeek V4 Flash',
-      'deepseek-v4-pro': 'DeepSeek V4 Pro',
-    };
-    const nome = String(item?.name || '').trim();
-    if (nomesFixos[nome]) return nomesFixos[nome];
-    return String(item?.display_name || nome || '').replace(/[�]/g, '').trim();
+    return String(item?.display_name || item?.name || '').replace(/[�]/g, '').trim();
   }
 
   function _substituirGrupoModelos(selectEl, label, modelos) {
-    if (!selectEl || !Array.isArray(modelos) || !modelos.length) return;
+    if (!selectEl || !Array.isArray(modelos)) return;
     let grupo = Array.from(selectEl.querySelectorAll('optgroup')).find(el => el.label === label);
     if (!grupo) {
       grupo = document.createElement('optgroup');
@@ -876,7 +849,7 @@
       const option = document.createElement('option');
       option.value = item.name;
       option.textContent = _nomeModeloLimpo(item);
-      if (item.description) option.title = item.description;
+      window.JKAIModelCatalog.decorate(option, item);
       grupo.appendChild(option);
     });
   }
@@ -900,16 +873,27 @@
         if (!data || !data.success) return;
         const podeEscolher = data.pode_escolher_modelo_chat === true;
         _aplicarPermissaoModeloChat(selectEl, podeEscolher);
-        _substituirGrupoModelos(selectEl, 'OpenAI', data.openai || []);
-        _substituirGrupoModelos(selectEl, 'DeepSeek', data.deepseek || []);
-        _substituirGrupoModelos(selectEl, 'Gemini API', data.gemini || []);
-        _substituirGrupoModelos(selectEl, 'Vertex AI (Google Cloud)', data.vertex || []);
+        _substituirGrupoModelos(selectEl, 'Codex', (data.codex || []).filter(item => item.available !== false || item.name === valorSalvo));
+        _substituirGrupoModelos(selectEl, 'OpenAI', (data.openai || []).filter(item => item.available !== false || item.name === valorSalvo));
+        _substituirGrupoModelos(selectEl, 'DeepSeek', (data.deepseek || []).filter(item => item.available !== false || item.name === valorSalvo));
+        _substituirGrupoModelos(selectEl, 'Gemini API', (data.gemini || []).filter(item => item.available !== false || item.name === valorSalvo));
+        _substituirGrupoModelos(selectEl, 'Vertex AI (Google Cloud)', (data.vertex || []).filter(item => item.available !== false || item.name === valorSalvo));
+        if (podeEscolher && valorSalvo && !Array.from(selectEl.options).some(opt => opt.value === valorSalvo)) {
+          const savedOption = document.createElement('option');
+          savedOption.value = valorSalvo;
+          savedOption.textContent = `${valorSalvo} (indisponível no momento)`;
+          savedOption.disabled = true;
+          selectEl.appendChild(savedOption);
+        }
         const valores = Array.from(selectEl.options).map(opt => opt.value);
         const modeloSistema = data?.defaults?.chat || data?.defaults?.sistema || '';
         const valorPreferido = podeEscolher && valores.includes(valorSalvo)
           ? valorSalvo
           : (valores.includes(modeloSistema) ? modeloSistema : selectEl.value);
         if (valorPreferido) selectEl.value = valorPreferido;
+        const reasoning = document.getElementById('jk-ia-reasoning-sel');
+        window.JKAIModelCatalog.reasoning(reasoning, selectEl, localStorage.getItem('ia_reasoning_sidebar'));
+        if (reasoning) reasoning.style.display = podeEscolher ? '' : 'none';
         return;
       } catch (_) {}
     }

@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from backend.services import gpt_model_catalog
+
 
 LEGACY_SCHEMA_VERSION = "1.0"
 SCHEMA_VERSION = "2.0"
@@ -1018,6 +1020,7 @@ class _CodexPlannerRuntime:
         self._lock = threading.RLock()
         self._codex: Any = None
         self._available_models: list[str] = []
+        self._model_catalog: dict[str, dict[str, Any]] = {}
         self._effective_model = ""
         self._started_at = ""
         self._last_used_at = ""
@@ -1028,9 +1031,9 @@ class _CodexPlannerRuntime:
             return self._codex
         from backend.services.codex.console import execution as console_execution
         from backend.services.codex.console import telemetry as console_telemetry
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex import Codex, CodexConfig
 
-        console_execution.apply_sdk_protocol_compat()
         runtime_bin = console_execution.require_runtime_ready()
         client = Codex(
             CodexConfig(
@@ -1045,19 +1048,9 @@ class _CodexPlannerRuntime:
         self._started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         try:
             response = client.models(include_hidden=False)
-            data = getattr(response, "data", None) or getattr(response, "models", None) or []
-            self._available_models = list(
-                dict.fromkeys(
-                    _clean_text(
-                        getattr(item, "id", None)
-                        or getattr(item, "model", None)
-                        or (item.get("id") if isinstance(item, dict) else ""),
-                        100,
-                    )
-                    for item in data
-                )
-            )
-            self._available_models = [item for item in self._available_models if item]
+            rows = gpt_model_catalog.register_codex_models(response)
+            self._model_catalog = {item["id"]: item for item in rows}
+            self._available_models = list(self._model_catalog)
         except Exception:
             self._available_models = []
         return client
@@ -1071,12 +1064,16 @@ class _CodexPlannerRuntime:
                 pass
 
     def resolve_model(self, requested: str) -> str:
-        value = _clean_text(requested, 100).removeprefix("codex:") or DEFAULT_MODEL
+        value = gpt_model_catalog.normalize_codex_model(requested, default=DEFAULT_MODEL)
         with self._lock:
             self._start_locked()
             if not self._available_models or value in self._available_models:
                 return value
-            for fallback in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4"):
+            default_model = next(
+                (item["id"] for item in self._model_catalog.values() if item.get("is_default")),
+                gpt_model_catalog.DEFAULT_CODEX_MODEL,
+            )
+            for fallback in (default_model, gpt_model_catalog.DEFAULT_CODEX_MODEL, *self._available_models):
                 if fallback in self._available_models:
                     return fallback
         raise RuntimeError("data_selection_model_unavailable")
@@ -1094,6 +1091,7 @@ class _CodexPlannerRuntime:
     ) -> dict[str, Any]:
         from backend.services.codex.console import execution as console_execution
         from backend.services.codex.console import telemetry as console_telemetry
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex.generated.v2_all import ReasoningSummary
 
         tenant = _clean_text(client_id, 80) or "default"
@@ -1117,6 +1115,7 @@ class _CodexPlannerRuntime:
             try:
                 client = self._start_locked()
                 effective_model = self.resolve_model(model)
+                effective_reasoning = gpt_model_catalog.normalize_reasoning(reasoning_effort, model=effective_model)
                 service_tier = console_execution.normalize_service_tier("priority", "fast")
                 thread = client.thread_start(
                     cwd=_isolated_planner_cwd(),
@@ -1134,7 +1133,7 @@ class _CodexPlannerRuntime:
                 result = thread.run(
                     prompt,
                     model=effective_model,
-                    effort=console_execution.reasoning_effort(reasoning_effort),
+                    effort=gpt_model_catalog.sdk_reasoning_effort(effective_reasoning, model=effective_model),
                     approval_mode=console_execution.approval_mode("read_only", "read_only"),
                     output_schema=DATA_SELECTION_PLAN_SCHEMA,
                     summary=ReasoningSummary.model_validate("none"),

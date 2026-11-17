@@ -658,6 +658,7 @@ async function chamarAssistenteBackendVendas(pergunta, anexos = []) {
         message: pergunta,
         page: 'Vendas',
         model: _modelSel,
+        reasoning_effort: _modelSel ? document.getElementById('iaReasoningSelectVendas')?.value : undefined,
         context: obterResumoTelaVendas(),
         history: obterHistoricoAssistenteVendas(),
         attachments: anexos
@@ -727,7 +728,7 @@ async function enviarPerguntaAssistenteVendas(perguntaManual) {
 }
 
 function substituirGrupoModelosIA(selectEl, label, modelos) {
-    if (!selectEl || !Array.isArray(modelos) || !modelos.length) return;
+    if (!selectEl || !Array.isArray(modelos)) return;
     let grupo = Array.from(selectEl.querySelectorAll('optgroup')).find((el) => el.label === label);
     if (!grupo) {
         grupo = document.createElement('optgroup');
@@ -739,7 +740,7 @@ function substituirGrupoModelosIA(selectEl, label, modelos) {
         const option = document.createElement('option');
         option.value = item.name;
         option.textContent = item.display_name || item.name;
-        if (item.description) option.title = item.description;
+        window.JKAIModelCatalog.decorate(option, item);
         grupo.appendChild(option);
     });
 }
@@ -766,16 +767,27 @@ async function carregarModelosAssistenteVendas() {
             if (!data || !data.success) return;
             const podeEscolher = data.pode_escolher_modelo_chat === true;
             aplicarPermissaoModeloChatVendas(selectEl, podeEscolher);
-            substituirGrupoModelosIA(selectEl, 'OpenAI', data.openai || []);
-            substituirGrupoModelosIA(selectEl, 'DeepSeek', data.deepseek || []);
-            substituirGrupoModelosIA(selectEl, 'Gemini API', data.gemini || []);
-            substituirGrupoModelosIA(selectEl, 'Vertex AI (Google Cloud)', data.vertex || []);
-            const valores = Array.from(selectEl.options).map(opt => opt.value);
+            substituirGrupoModelosIA(selectEl, 'Codex', (data.codex || []).filter(item => item.available !== false || item.name === valorSalvo));
+            substituirGrupoModelosIA(selectEl, 'OpenAI', (data.openai || []).filter(item => item.available !== false || item.name === valorSalvo));
+            substituirGrupoModelosIA(selectEl, 'DeepSeek', (data.deepseek || []).filter(item => item.available !== false || item.name === valorSalvo));
+            substituirGrupoModelosIA(selectEl, 'Gemini API', (data.gemini || []).filter(item => item.available !== false || item.name === valorSalvo));
+            substituirGrupoModelosIA(selectEl, 'Vertex AI (Google Cloud)', (data.vertex || []).filter(item => item.available !== false || item.name === valorSalvo));
+            if (podeEscolher && valorSalvo && !Array.from(selectEl.options).some(opt => opt.value === valorSalvo)) {
+          const savedOption = document.createElement('option');
+          savedOption.value = valorSalvo;
+          savedOption.textContent = `${valorSalvo} (indisponível no momento)`;
+          savedOption.disabled = true;
+          selectEl.appendChild(savedOption);
+        }
+        const valores = Array.from(selectEl.options).map(opt => opt.value);
             const modeloSistema = data?.defaults?.sistema || '';
             const valorPreferido = podeEscolher && valores.includes(valorSalvo)
                 ? valorSalvo
                 : (valores.includes(modeloSistema) ? modeloSistema : selectEl.value);
             if (valorPreferido) selectEl.value = valorPreferido;
+            const reasoning = document.getElementById('iaReasoningSelectVendas');
+            window.JKAIModelCatalog.reasoning(reasoning, selectEl, localStorage.getItem('ia_reasoning_vendas'));
+            if (reasoning) reasoning.style.display = podeEscolher ? '' : 'none';
             return;
         } catch (_error) {}
     }
@@ -795,6 +807,7 @@ if (_iaModelSel) {
     _iaModelSel.addEventListener('change', () => {
         if (_iaModelSel.dataset.podeEscolherModelo === 'true') {
             localStorage.setItem('ia_model_vendas', _iaModelSel.value);
+            window.JKAIModelCatalog.reasoning(document.getElementById('iaReasoningSelectVendas'), _iaModelSel);
         }
     });
     carregarModelosAssistenteVendas().catch(() => {});
@@ -845,3 +858,7 @@ if (graficosContainerVendas && navActionsVendas) {
         btn.style.pointerEvents = '';
     });
 }
+
+document.getElementById('iaReasoningSelectVendas')?.addEventListener('change', event => {
+    if (_iaModelSel?.dataset.podeEscolherModelo === 'true') localStorage.setItem('ia_reasoning_vendas', event.target.value);
+});

@@ -57,7 +57,7 @@ def _configure_identity(ctx: dict[str, Any], task_id: str) -> None:
     task = ctx["task"]
     sandbox = ctx["sandbox"]
     model = _codex_normalizar_model(task.get("model"))
-    reasoning_effort = _codex_reasoning_effort_enum(task.get("reasoning_effort"))
+    reasoning_effort = _codex_reasoning_effort_enum(task.get("reasoning_effort"), model=model)
     speed = _codex_normalizar_speed(task.get("speed"))
     service_tier = _codex_normalizar_service_tier(task.get("service_tier"), speed)
     approval_profile = _codex_normalizar_approval_profile(
@@ -126,7 +126,7 @@ def _enforce_read_only(ctx: dict[str, Any], task_id: str) -> None:
         ctx["sandbox"] = "read_only"
         if not ctx["trusted_model_config"]:
             ctx["model"] = _codex_normalizar_model(None)
-            ctx["reasoning_effort"] = _codex_reasoning_effort_enum(None)
+            ctx["reasoning_effort"] = _codex_reasoning_effort_enum(None, model=ctx["model"])
             ctx["speed"] = _codex_normalizar_speed(None)
             ctx["service_tier"] = _codex_normalizar_service_tier(
                 None, ctx["speed"]

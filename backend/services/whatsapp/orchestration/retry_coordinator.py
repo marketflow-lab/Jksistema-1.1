@@ -653,7 +653,7 @@ def _create_retry_worker_task(
         subtask_index=index,
         subtask_total=max(1, total),
         requires_web=bool(holder.get("requires_web", True)),
-        reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        reasoning_effort=str(holder.get("reasoning_effort") or pending.get("reasoning_effort") or ""),
     )
 
 

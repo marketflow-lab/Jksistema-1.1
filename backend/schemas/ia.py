@@ -18,6 +18,7 @@ class IAChatRequest(BaseModel):
     history: Optional[list[dict]] = None
     attachments: Optional[list[IAChatAttachment]] = None
     model: Optional[str] = None  # Modelo de IA solicitado pelo chat
+    reasoning_effort: Optional[str] = None
     tool_results: Optional[list[dict]] = None
     conversa_id: Optional[str] = None
     modulo: Optional[str] = None

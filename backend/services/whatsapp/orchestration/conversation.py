@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import Any, Optional
 
+from backend.services import gpt_model_catalog
 from backend.services.codex.console import tasks as console_tasks
 from backend.services.whatsapp import conversation_context as whatsapp_conversation_context
 from backend.services.whatsapp import delivery as whatsapp_delivery
@@ -372,10 +373,15 @@ def _create_dual_subtask(
 ) -> dict[str, Any]:
     subtask_id = f"s{index}-{uuid.uuid4().hex[:8]}"
     subtask_prompt = str(subtask.get("prompt") or job_prompt).strip()
+    settings = _whatsapp_dual_agent_settings(config)
+    reasoning = gpt_model_catalog.normalize_reasoning(
+        subtask.get("reasoning_effort") or settings["task_agent_reasoning"],
+        model=settings["task_agent_model"],
+    )
     item = {
         "subtask_id": subtask_id, "logical_subtask_id": subtask_id,
         "title": str(subtask.get("title") or job_title).strip()[:180], "prompt": subtask_prompt[:12000],
-        "requires_web": bool(subtask.get("requires_web")), "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        "requires_web": bool(subtask.get("requires_web")), "reasoning_effort": reasoning,
         "task_id": "", "current_attempt": 1, "attempt_task_ids": [], "retry_count": 0,
         "next_retry_at_epoch": 0, "state": "running",
     }
@@ -387,7 +393,7 @@ def _create_dual_subtask(
             phone_ai_behavior=phone_ai_behavior, query_policy=query_policy, job_group_id=job_group_id,
             subtask_id=subtask_id, logical_subtask_id=subtask_id, attempt=1,
             subtask_index=index, subtask_total=total, requires_web=bool(subtask.get("requires_web")),
-            reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+            reasoning_effort=reasoning,
         )
         task_id = str(task.get("task_id") or "")
         item.update({"task_id": task_id, "attempt_task_ids": [task_id] if task_id else []})
@@ -451,7 +457,7 @@ def _build_dual_worker_pending(
         "prompt": str(first.get("prompt") or job_prompt)[:12000] if not is_group else "",
         "title": str(first.get("title") or job_title)[:180] if not is_group else "",
         "requires_web": bool(first.get("requires_web", True)) if not is_group else True,
-        "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT, "verified_facts": [], "verified_sources": [],
+        "reasoning_effort": str(first.get("reasoning_effort") or WHATSAPP_TASK_AGENT_REASONING_DEFAULT), "verified_facts": [], "verified_sources": [],
         "auth_retry_active": initial_auth_retry, "auth_notice_pending": initial_auth_retry, "auth_notice_sent": False,
         "last_conversation_at": _now(), "last_conversation_at_epoch": now_epoch, "tick_index": 0,
         "wait_notice_count": 0, "awaiting_notified": True, "handoff_status": "worker_running",

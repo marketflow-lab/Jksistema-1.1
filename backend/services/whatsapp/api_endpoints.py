@@ -92,13 +92,19 @@ def _apply_bridge_model_config(config: dict[str, Any], payload: WhatsappBridgeCo
             payload.conversation_agent_model, WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT,
         )
     if payload.conversation_agent_reasoning is not None:
-        config["conversation_agent_reasoning"] = _normalize_codex_reasoning_effort(payload.conversation_agent_reasoning)
+        config["conversation_agent_reasoning"] = whatsapp_settings.normalize_codex_reasoning_effort(
+            payload.conversation_agent_reasoning,
+            config.get("conversation_agent_model") or WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT,
+        )
     if payload.task_agent_model is not None:
         config["task_agent_model"] = _normalize_codex_agent_model(
             payload.task_agent_model, WHATSAPP_TASK_AGENT_MODEL_DEFAULT,
         )
     if payload.task_agent_reasoning is not None:
-        config["task_agent_reasoning"] = WHATSAPP_TASK_AGENT_REASONING_DEFAULT
+        config["task_agent_reasoning"] = whatsapp_settings.normalize_codex_reasoning_effort(
+            payload.task_agent_reasoning,
+            config.get("task_agent_model") or WHATSAPP_TASK_AGENT_MODEL_DEFAULT,
+        )
 
 
 def _apply_bridge_timing_config(config: dict[str, Any], payload: WhatsappBridgeConfigRequest) -> None:

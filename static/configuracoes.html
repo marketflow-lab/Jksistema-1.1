@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configurações - JK Sistema</title>
+    <script src="/ia-model-catalog.js?v=20261117-gpt-catalog-v1"></script>
     <style>
         :root {
             --bg: #101214;
@@ -418,6 +419,8 @@
                             <h3>Geral</h3>
                             <label class="label" for="iaModeloPadrao">IA padrão geral</label>
                             <select id="iaModeloPadrao"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaRaciocinioPadrao">Nível de raciocínio</label>
+                            <select id="iaRaciocinioPadrao"><option value="medium">Carregando capacidades...</option></select>
                             <label class="label" for="iaModoPadrao">Usar nesta função</label>
                             <select id="iaModoPadrao"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
                             <div class="hint">Usada como fallback quando uma função não tiver modelo próprio configurado.</div>
@@ -426,36 +429,28 @@
                             <h3>Perguntas ML</h3>
                             <label class="label" for="iaModeloPerguntas">IA que responde perguntas</label>
                             <select id="iaModeloPerguntas"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
-                            <label class="label" for="iaRaciocinioPerguntas">Nível de raciocínio do Codex</label>
-                            <select id="iaRaciocinioPerguntas">
-                                <option value="low">Baixo — mais rápido</option>
-                                <option value="medium" selected>Médio — equilibrado</option>
-                                <option value="high">Alto — mais análise</option>
-                                <option value="xhigh">Muito alto — análise máxima</option>
-                            </select>
+                            <label class="label" for="iaRaciocinioPerguntas">Nível de raciocínio</label>
+                            <select id="iaRaciocinioPerguntas"><option value="medium">Carregando capacidades...</option></select>
                             <label class="label" for="iaModoPerguntas">Usar nesta função</label>
                             <select id="iaModoPerguntas"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
-                            <div class="hint">Usada apenas nas respostas públicas do anúncio. O nível é aplicado ao Codex; nos demais provedores, fica salvo e é ignorado.</div>
+                            <div class="hint">Usada apenas nas respostas públicas do anúncio. As opções acompanham os níveis aceitos pelo modelo escolhido.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Pos-venda ML</h3>
                             <label class="label" for="iaModeloPosVenda">IA que responde pos-venda</label>
                             <select id="iaModeloPosVenda"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
-                            <label class="label" for="iaRaciocinioPosVenda">Nível de raciocínio do Codex</label>
-                            <select id="iaRaciocinioPosVenda">
-                                <option value="low">Baixo — mais rápido</option>
-                                <option value="medium" selected>Médio — equilibrado</option>
-                                <option value="high">Alto — mais análise</option>
-                                <option value="xhigh">Muito alto — análise máxima</option>
-                            </select>
+                            <label class="label" for="iaRaciocinioPosVenda">Nível de raciocínio</label>
+                            <select id="iaRaciocinioPosVenda"><option value="medium">Carregando capacidades...</option></select>
                             <label class="label" for="iaModoPosVenda">Usar nesta função</label>
                             <select id="iaModoPosVenda"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
-                            <div class="hint">Usada nas respostas privadas após a venda. O nível é aplicado ao Codex; nos demais provedores, fica salvo e é ignorado.</div>
+                            <div class="hint">Usada nas respostas privadas após a venda. As opções acompanham os níveis aceitos pelo modelo escolhido.</div>
                         </div>
                         <div class="setting-card">
                             <h3>Chat lateral</h3>
                             <label class="label" for="iaModeloChat">IA do chat lateral</label>
                             <select id="iaModeloChat"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaRaciocinioChat">Nível de raciocínio</label>
+                            <select id="iaRaciocinioChat"><option value="medium">Carregando capacidades...</option></select>
                             <label class="label" for="iaModoChat">Usar nesta função</label>
                             <select id="iaModoChat"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
                             <div class="hint">Usada pelo assistente do sistema e pelas conversas no sidebar.</div>
@@ -464,6 +459,8 @@
                             <h3>Favoritos</h3>
                             <label class="label" for="iaModeloFavoritos">IA que ajuda a fazer favoritos</label>
                             <select id="iaModeloFavoritos"><option value="vertex:gemini-2.5-flash">Vertex Gemini 2.5 Flash</option></select>
+                            <label class="label" for="iaRaciocinioFavoritos">Nível de raciocínio</label>
+                            <select id="iaRaciocinioFavoritos"><option value="medium">Carregando capacidades...</option></select>
                             <label class="label" for="iaModoFavoritos">Usar nesta função</label>
                             <select id="iaModoFavoritos"><option value="modelo">IA normal</option><option value="agente">Agente Cloud</option></select>
                             <label class="check-item"><input id="iaFavoritosUsarImagem" type="checkbox"><span>Usar imagem para comparar os anúncios</span></label>
@@ -701,19 +698,13 @@
                         <div class="setting-card">
                             <h3>Dois agentes Codex</h3>
                             <label class="label" for="waConversationAgentModel">Agente de conversa</label>
-                            <select id="waConversationAgentModel"><option value="gpt-5.6-luna">Codex conversacional (gpt-5.6-luna)</option></select>
+                            <select id="waConversationAgentModel"><option value="">Carregando modelos...</option></select>
                             <label class="label" for="waConversationAgentReasoning">Inteligência da conversa</label>
-                            <select id="waConversationAgentReasoning">
-                                <option value="low">Baixa — resposta rápida</option>
-                                <option value="medium">Média</option>
-                                <option value="high">Alta</option>
-                            </select>
+                            <select id="waConversationAgentReasoning"><option value="low">Carregando capacidades...</option></select>
                             <label class="label" for="waTaskAgentModel">Agente de tarefa e pesquisa</label>
-                            <select id="waTaskAgentModel"><option value="gpt-5.6-sol">Codex de tarefa (gpt-5.6-sol)</option></select>
+                            <select id="waTaskAgentModel"><option value="">Carregando modelos...</option></select>
                             <label class="label" for="waTaskAgentReasoning">Inteligência da tarefa</label>
-                            <select id="waTaskAgentReasoning" disabled>
-                                <option value="low">Baixa — rápida</option>
-                            </select>
+                            <select id="waTaskAgentReasoning"><option value="low">Carregando capacidades...</option></select>
                             <label class="label" for="waConversationInterval">Conversar durante tarefas a cada</label>
                             <select id="waConversationInterval">
                                 <option value="30">30 segundos</option>
@@ -819,7 +810,7 @@
                     </div>
                     <div class="grid-2">
                         <div><label class="label" for="codexObsSurface">Canal</label><select id="codexObsSurface"><option value="">Todos</option><option value="sidebar">Chat lateral</option><option value="whatsapp">WhatsApp</option><option value="public_questions">Perguntas públicas</option><option value="post_sale">Pós-venda</option></select></div>
-                        <div><label class="label" for="codexObsModel">Modelo</label><select id="codexObsModel"><option value="">Todos</option><option value="gpt-5.5">GPT-5.5</option><option value="gpt-5.6-luna">GPT-5.6 Luna</option><option value="gpt-5.6-terra">GPT-5.6 Terra</option><option value="gpt-5.6-sol">GPT-5.6 Sol</option></select></div>
+                        <div><label class="label" for="codexObsModel">Modelo</label><select id="codexObsModel"><option value="">Todos</option></select></div>
                         <div><label class="label" for="codexObsProvider">Provedor</label><select id="codexObsProvider"><option value="">Todos</option><option value="codex">Codex</option><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="vertex">Vertex AI</option></select></div>
                         <div><label class="label" for="codexObsResult">Resultado</label><select id="codexObsResult"><option value="">Todos</option><option value="completed">Concluído</option><option value="ok">OK</option><option value="failed">Falhou</option></select></div>
                     </div>
@@ -836,12 +827,7 @@
                         <div><h2>Avaliação sem rede</h2><div class="hint">Executa apenas a base revisada e as respostas congeladas. O limite da campanha é 600 execuções.</div></div>
                         <button id="codexEvalRefresh" class="btn-refresh" type="button">Atualizar histórico</button>
                     </div>
-                    <div class="checkbox-grid" id="codexEvalModels">
-                        <label class="check-item"><input type="checkbox" value="gpt-5.5" checked><span>GPT-5.5 atual</span></label>
-                        <label class="check-item"><input type="checkbox" value="gpt-5.6-luna"><span>GPT-5.6 Luna</span></label>
-                        <label class="check-item"><input type="checkbox" value="gpt-5.6-terra" checked><span>GPT-5.6 Terra</span></label>
-                        <label class="check-item"><input type="checkbox" value="gpt-5.6-sol"><span>GPT-5.6 Sol</span></label>
-                    </div>
+                    <div class="checkbox-grid" id="codexEvalModels"><span class="small">Carregando modelos...</span></div>
                     <div class="grid-2">
                         <div><label class="label" for="codexEvalSplit">Conjunto</label><select id="codexEvalSplit"><option value="holdout">Holdout (30 casos)</option><option value="calibration">Calibração (90 casos)</option><option value="all">Todos (120 casos)</option></select></div>
                         <div><label class="label" for="codexEvalRepetitions">Repetições</label><input id="codexEvalRepetitions" type="number" min="1" max="5" value="1"></div>
@@ -1096,7 +1082,7 @@
 
     function normalizarIaRaciocinio(valor) {
         const nivel = String(valor || '').trim().toLowerCase();
-        return ['low', 'medium', 'high', 'xhigh'].includes(nivel) ? nivel : 'medium';
+        return Object.hasOwn(window.JKAIModelCatalog.labels, nivel) ? nivel : 'medium';
     }
 
     function setStatus(texto, tipo = '') {
@@ -1595,24 +1581,13 @@
     }
 
     function nomeModeloIALimpo(modelo) {
-        const nomesFixos = {
-            'codex:gpt-5.6-sol': 'Codex GPT-5.6 Sol',
-            'codex:gpt-5.6-terra': 'Codex GPT-5.6 Terra',
-            'codex:gpt-5.6-luna': 'Codex GPT-5.6 Luna',
-            'codex:gpt-5.5': 'Codex GPT-5.5',
-            'codex:gpt-5.4': 'Codex GPT-5.4',
-            'codex:gpt-5.4-mini': 'Codex GPT-5.4 Mini',
-            'codex:gpt-5.3-codex-spark': 'Codex GPT-5.3 Codex Spark',
-            'gpt-5.4-nano': 'Nano',
-            'gpt-5.4-mini': 'Mini',
-            'gpt-5.4': 'GPT-5.4',
-            'gpt-5.5': 'GPT-5.5',
-            'deepseek-v4-flash': 'DeepSeek V4 Flash',
-            'deepseek-v4-pro': 'DeepSeek V4 Pro',
-        };
-        const nome = String(modelo?.name || '').trim();
-        if (nomesFixos[nome]) return nomesFixos[nome];
-        return String(modelo?.display_name || modelo?.name || nome).replace(/[�]/g, '').trim();
+        return String(modelo?.display_name || modelo?.name || '').replace(/[�]/g, '').trim();
+    }
+
+    function atualizarRaciociniosIA(config = {}) {
+        [['Padrao', 'padrao'], ['Perguntas', 'perguntas'], ['PosVenda', 'pos_venda'], ['Chat', 'chat'], ['Favoritos', 'favoritos']].forEach(([suffix, key]) => {
+            window.JKAIModelCatalog.reasoning(document.getElementById('iaRaciocinio' + suffix), document.getElementById('iaModelo' + suffix), config['ia_raciocinio_' + key]);
+        });
     }
 
     function adicionarOpcaoModeloIA(grupo, modelo, selecionado) {
@@ -1622,6 +1597,7 @@
         const opt = document.createElement('option');
         opt.value = nome;
         opt.textContent = nomeModeloIALimpo(modelo);
+        window.JKAIModelCatalog.decorate(opt, modelo);
         if (nome === selecionado) opt.selected = true;
         grupo.appendChild(opt);
     }
@@ -1640,7 +1616,7 @@
         selectEl.innerHTML = '';
         let contemSelecionado = false;
         grupos.forEach(grupoInfo => {
-            const itens = Array.isArray(grupoInfo.itens) ? grupoInfo.itens : [];
+            const itens = (Array.isArray(grupoInfo.itens) ? grupoInfo.itens : []).filter(item => item.available !== false || item.name === modeloSelecionado);
             if (!itens.length) return;
             const grupo = document.createElement('optgroup');
             grupo.label = grupoInfo.label;
@@ -1664,41 +1640,14 @@
 
     async function carregarModelosIA(selecionados = {}) {
         const cfg = typeof selecionados === 'string' ? { padrao: selecionados } : (selecionados || {});
-        const fallback = [
-            { label: 'Codex', itens: [
-                { name: 'codex:gpt-5.6-sol', display_name: 'Codex GPT-5.6 Sol' },
-                { name: 'codex:gpt-5.6-terra', display_name: 'Codex GPT-5.6 Terra' },
-                { name: 'codex:gpt-5.6-luna', display_name: 'Codex GPT-5.6 Luna' },
-                { name: 'codex:gpt-5.5', display_name: 'Codex GPT-5.5' },
-                { name: 'codex:gpt-5.4', display_name: 'Codex GPT-5.4' },
-                { name: 'codex:gpt-5.4-mini', display_name: 'Codex GPT-5.4 Mini' },
-                { name: 'codex:gpt-5.3-codex-spark', display_name: 'Codex GPT-5.3 Codex Spark' },
-            ]},
-            { label: 'Vertex AI', itens: [
-                { name: 'vertex:gemini-2.5-flash', display_name: 'Vertex Gemini 2.5 Flash' },
-                { name: 'vertex:gemini-2.5-pro', display_name: 'Vertex Gemini 2.5 Pro' },
-            ]},
-            { label: 'OpenAI', itens: [
-                { name: 'gpt-5.4-nano', display_name: 'GPT-5.4 Nano' },
-                { name: 'gpt-5.4-mini', display_name: 'GPT-5.4 Mini' },
-                { name: 'gpt-5.4', display_name: 'GPT-5.4' },
-                { name: 'gpt-5.5', display_name: 'GPT-5.5' },
-            ]},
-            { label: 'DeepSeek', itens: [
-                { name: 'deepseek-v4-flash', display_name: 'DeepSeek V4 Flash' },
-                { name: 'deepseek-v4-pro', display_name: 'DeepSeek V4 Pro' },
-            ]},
-            { label: 'Gemini API', itens: [
-                { name: 'gemini:gemini-2.5-flash', display_name: 'Gemini API 2.5 Flash' },
-                { name: 'gemini:gemini-2.5-pro', display_name: 'Gemini API 2.5 Pro' },
-            ]},
-        ];
-
         const modelosConfigurados = new Set(Object.values(cfg).map(valor => String(valor || '').trim()).filter(Boolean));
-        let grupos = fallback.map(grupo => ({
-            ...grupo,
-            itens: grupo.itens.filter(modelo => modelosConfigurados.has(String(modelo.name || '').trim()))
-        }));
+        const groupsByProvider = new Map();
+        modelosConfigurados.forEach(name => {
+            const label = name.startsWith('codex:') ? 'Codex' : name.startsWith('gpt-') ? 'OpenAI' : name.startsWith('vertex:') ? 'Vertex AI' : name.startsWith('deepseek-') ? 'DeepSeek' : 'Gemini API';
+            if (!groupsByProvider.has(label)) groupsByProvider.set(label, []);
+            groupsByProvider.get(label).push({ name, display_name: name });
+        });
+        let grupos = Array.from(groupsByProvider, ([label, itens]) => ({ label, itens }));
         try {
             const resp = await fetch('/api/ia/modelos', { headers: obterAuthHeaders(), cache: 'no-store' });
             if (resp.ok) {
@@ -1904,10 +1853,9 @@
             if (selectIaModelo) selectIaModelo.value = modeloIA;
             if (selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntas;
             if (selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVenda;
-            if (selectIaRaciocinioPerguntas) selectIaRaciocinioPerguntas.value = normalizarIaRaciocinio(cfg?.ia_raciocinio_perguntas);
-            if (selectIaRaciocinioPosVenda) selectIaRaciocinioPosVenda.value = normalizarIaRaciocinio(cfg?.ia_raciocinio_pos_venda);
             if (selectIaModeloChat) selectIaModeloChat.value = modeloChat;
             if (selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritos;
+            atualizarRaciociniosIA(cfg);
             if (selectIaModo) selectIaModo.value = normalizarIaModo(cfg?.ia_modo_padrao);
             if (selectIaModoPerguntas) selectIaModoPerguntas.value = normalizarIaModo(cfg?.ia_modo_perguntas);
             if (selectIaModoPosVenda) selectIaModoPosVenda.value = normalizarIaModo(cfg?.ia_modo_pos_venda);
@@ -1962,6 +1910,9 @@
                     ia_modelo_padrao: selectIaModelo ? String(selectIaModelo.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_perguntas: selectIaModeloPerguntas ? String(selectIaModeloPerguntas.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
                     ia_modelo_pos_venda: selectIaModeloPosVenda ? String(selectIaModeloPosVenda.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
+                    ia_raciocinio_padrao: normalizarIaRaciocinio(document.getElementById('iaRaciocinioPadrao')?.value),
+                    ia_raciocinio_chat: normalizarIaRaciocinio(document.getElementById('iaRaciocinioChat')?.value),
+                    ia_raciocinio_favoritos: normalizarIaRaciocinio(document.getElementById('iaRaciocinioFavoritos')?.value),
                     ia_raciocinio_perguntas: selectIaRaciocinioPerguntas ? normalizarIaRaciocinio(selectIaRaciocinioPerguntas.value) : 'medium',
                     ia_raciocinio_pos_venda: selectIaRaciocinioPosVenda ? normalizarIaRaciocinio(selectIaRaciocinioPosVenda.value) : 'medium',
                     ia_modelo_chat: selectIaModeloChat ? String(selectIaModeloChat.value || 'vertex:gemini-2.5-flash').trim() : 'vertex:gemini-2.5-flash',
@@ -2011,10 +1962,9 @@
             if (modeloSalvo && selectIaModelo) selectIaModelo.value = modeloSalvo;
             if (modeloPerguntasSalvo && selectIaModeloPerguntas) selectIaModeloPerguntas.value = modeloPerguntasSalvo;
             if (modeloPosVendaSalvo && selectIaModeloPosVenda) selectIaModeloPosVenda.value = modeloPosVendaSalvo;
-            if (selectIaRaciocinioPerguntas) selectIaRaciocinioPerguntas.value = raciocinioPerguntasSalvo;
-            if (selectIaRaciocinioPosVenda) selectIaRaciocinioPosVenda.value = raciocinioPosVendaSalvo;
             if (modeloChatSalvo && selectIaModeloChat) selectIaModeloChat.value = modeloChatSalvo;
             if (modeloFavoritosSalvo && selectIaModeloFavoritos) selectIaModeloFavoritos.value = modeloFavoritosSalvo;
+            atualizarRaciociniosIA(data?.configuracoes || {});
             if (selectIaModo) selectIaModo.value = modoSalvo;
             if (selectIaModoPerguntas) selectIaModoPerguntas.value = modoPerguntasSalvo;
             if (selectIaModoPosVenda) selectIaModoPosVenda.value = modoPosVendaSalvo;
@@ -2226,6 +2176,10 @@
     document.getElementById('contextHubSearchForm')?.addEventListener('submit', buscarContextHub);
     btnContextHubPublish?.addEventListener('click', () => executarAcaoContextHubGeneration('publish'));
     btnContextHubRollback?.addEventListener('click', () => executarAcaoContextHubGeneration('rollback'));
+
+    ['Padrao', 'Perguntas', 'PosVenda', 'Chat', 'Favoritos'].forEach(suffix => {
+        document.getElementById('iaModelo' + suffix)?.addEventListener('change', () => atualizarRaciociniosIA());
+    });
 
     renderPermissionGrid();
     limparFormularioUsuario(false);

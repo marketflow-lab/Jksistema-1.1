@@ -39,6 +39,7 @@ from backend.services import (
     codex_model_router,
     codex_operational_memory,
     codex_turn_context,
+    gpt_model_catalog,
 )
 
 
@@ -390,45 +391,28 @@ def _codex_process_stream_event(
 
 
 def _codex_normalizar_model(value: Optional[str]) -> str:
-    model = str(value or os.getenv("JK_CODEX_MODEL") or CODEX_DEFAULT_MODEL).strip()
-    if not model or model.lower() == "gpt-5.5":
-        return CODEX_DEFAULT_MODEL
-    if len(model) > 80 or not re.fullmatch(r"[A-Za-z0-9_.:/-]+", model):
+    default = gpt_model_catalog.default_codex_model()
+    model = str(value or os.getenv("JK_CODEX_MODEL") or default).strip()
+    if not model.lower().startswith(("gpt-", "codex:")) and len(model) <= 80 and re.fullmatch(r"[A-Za-z0-9_.:/-]+", model):
+        return model
+    try:
+        return gpt_model_catalog.normalize_codex_model(model, default)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Modelo Codex invalido.")
-    return model
 
 
-def _codex_normalizar_reasoning_effort(value: Optional[str]) -> str:
-    raw = str(value or os.getenv("JK_CODEX_REASONING_EFFORT") or "xhigh").strip().lower()
-    aliases = {
-        "nenhum": "none",
-        "none": "none",
-        "minimo": "minimal",
-        "minimal": "minimal",
-        "baixa": "low",
-        "baixo": "low",
-        "low": "low",
-        "media": "medium",
-        "medio": "medium",
-        "medium": "medium",
-        "alta": "high",
-        "alto": "high",
-        "high": "high",
-        "altissimo": "xhigh",
-        "altissima": "xhigh",
-        "xhigh": "xhigh",
-    }
-    effort = aliases.get(raw, raw)
-    if effort not in CODEX_REASONING_EFFORTS:
+def _codex_normalizar_reasoning_effort(value: Optional[str], *, model: Optional[str] = None) -> str:
+    fallback = gpt_model_catalog.default_reasoning(model) if model else "xhigh"
+    raw = value or os.getenv("JK_CODEX_REASONING_EFFORT") or fallback
+    try:
+        return gpt_model_catalog.normalize_reasoning(raw, model=model, default="xhigh", strict=True)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Nivel de raciocinio Codex invalido.")
-    return effort
 
 
-def _codex_reasoning_effort_enum(value: Optional[str]):
-    effort = _codex_normalizar_reasoning_effort(value)
-    from openai_codex.generated.v2_all import ReasoningEffort
-
-    return getattr(ReasoningEffort, effort)
+def _codex_reasoning_effort_enum(value: Optional[str], *, model: Optional[str] = None):
+    effort = _codex_normalizar_reasoning_effort(value, model=model)
+    return gpt_model_catalog.sdk_reasoning_effort(effort, model=model)
 
 
 def _codex_sdk_response_compat(value: Any) -> Any:
@@ -437,7 +421,11 @@ def _codex_sdk_response_compat(value: Any) -> Any:
         normalized = {}
         for key, item in value.items():
             if key == "reasoningEffort" and isinstance(item, str) and item in {"max", "ultra"}:
-                item = "xhigh"
+                from openai_codex.generated.v2_all import ReasoningEffort
+                try:
+                    ReasoningEffort(item)
+                except ValueError:
+                    item = "xhigh"
             elif key == "codexErrorInfo" and isinstance(item, str):
                 from openai_codex.generated.v2_all import CodexErrorInfoValue
 
@@ -455,6 +443,8 @@ def _codex_sdk_response_compat(value: Any) -> Any:
 
 
 def _codex_apply_sdk_protocol_compat() -> None:
+    from backend.services import ia_providers
+    ia_providers._codex_prefer_packaged_provider_sdk()
     from openai_codex.client import CodexClient
     from openai_codex.errors import CodexError
     from openai_codex.generated.notification_registry import NOTIFICATION_MODELS

@@ -92,7 +92,7 @@ def test_campaign_limit_and_injected_runner_are_deterministic():
             "scores": {name: 100 for name in evaluation.SCORE_WEIGHTS},
         },
     )
-    assert run["execution_count"] == 120
+    assert run["execution_count"] == 30 * len(evaluation.MODEL_IDS)
     assert all(item["score"]["passed"] for item in run["results"])
 
     with pytest.raises(evaluation.EvaluationContractError, match="campaign_limit"):
@@ -117,7 +117,7 @@ def test_paired_comparison_only_recommends_manual_category_promotion():
                 {
                     "case_id": f"case-{index}",
                     "category": "sales_returns_reports",
-                    "model_effective": "gpt-5.5",
+                    "model_effective": "gpt-6.1-sol",
                     "score": {"score": 90, "automatic_failures": []},
                     "tokens": 1000,
                     "duration_ms": 1000,

@@ -25,6 +25,7 @@ from backend.services import (
     codex_model_router,
     codex_operational_memory,
     codex_turn_context,
+    gpt_model_catalog,
 )
 from . import state as console_state
 
@@ -57,13 +58,15 @@ def _codex_decide_model(
     requested_model: str,
     rollout_key: str,
     channel_metadata: Any = None,
+    explicit_model: bool = False,
 ) -> codex_model_router.ModelDecisionV1:
     router = codex_model_router.ModelRouter(_codex_model_routing_policy())
     return router.decide(
         category=_codex_model_category(prompt, channel_metadata),
         requested_model=requested_model,
         rollout_key=rollout_key,
-        available_models={codex_model_router.BASELINE_MODEL, *codex_model_router.GPT_56_VARIANTS},
+        available_models={row["id"] for row in gpt_model_catalog.get_codex_models(discover=False)},
+        explicit_model=explicit_model,
     )
 
 

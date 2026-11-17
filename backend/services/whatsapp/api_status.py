@@ -49,7 +49,7 @@ from backend.services.whatsapp.contracts import (
     WhatsappTemplatesRequest,
     WhatsappVoiceToggleRequest,
 )
-from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents
+from backend.services import admin_usuarios_common, codex_actions, codex_whatsapp_agents, gpt_model_catalog
 from backend.services.codex.console import queueing as console_queueing
 from backend.services.codex.console import telemetry as console_telemetry
 from backend.services.whatsapp_bridge_store import WhatsappBridgeStore
@@ -324,6 +324,10 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
     audio_messages = _audio_messages_status()
     codex = console_telemetry.status_payload()
     ai_settings = _whatsapp_ai_settings(config)
+    reasoning_model = (
+        ai_settings["model"] if ai_settings["model"].startswith("codex:")
+        else gpt_model_catalog.DEFAULT_CODEX_MODEL
+    )
     dual_settings = _whatsapp_dual_agent_settings(config)
     dual_runtime = codex_whatsapp_agents.CONVERSATION_RUNTIME.diagnostics()
     data_selection_runtime = codex_whatsapp_agents.DATA_SELECTION_RUNTIME.diagnostics()
@@ -356,7 +360,7 @@ def _public_status(config: dict[str, Any], worker: Optional[dict[str, Any]] = No
         "codex_reasoning_effort": ai_settings["codex_reasoning_effort"],
         "codex_reasoning_policy": ai_settings["codex_reasoning_policy"],
         "codex_reasoning_max": ai_settings["codex_reasoning_max"],
-        "codex_reasoning_options": list(WHATSAPP_CODEX_REASONING_OPTIONS),
+        "codex_reasoning_options": list(gpt_model_catalog.reasoning_efforts(reasoning_model)),
         "codex_reasoning_policies": list(WHATSAPP_CODEX_REASONING_POLICIES),
         "orchestration_mode": WHATSAPP_ORCHESTRATION_MODE_DEFAULT,
         "progress_interval_seconds": _normalize_progress_interval(config.get("progress_interval_seconds")),

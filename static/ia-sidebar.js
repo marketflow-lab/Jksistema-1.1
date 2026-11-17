@@ -475,6 +475,15 @@
     window.__JK_IA_SIDEBAR_SOURCE_LOADING__ = true;
     marcarBotaoCarregando(true, false);
     fullLoadingPromise = (async () => {
+      if (!window.JKAIModelCatalog) {
+        await new Promise((resolve, reject) => {
+          const helper = document.createElement('script');
+          helper.src = '/ia-model-catalog.js?v=20261117-gpt-catalog-v1';
+          helper.onload = resolve;
+          helper.onerror = () => reject(new Error('Nao foi possivel carregar o catalogo de modelos.'));
+          (document.head || document.documentElement).appendChild(helper);
+        });
+      }
       const partes = await obterPartesParaCarregamento(opts);
       if (window.__JK_IA_SIDEBAR_BOOTSTRAPPED__ || document.getElementById('jk-ia-fab')) return;
       const script = document.createElement('script');

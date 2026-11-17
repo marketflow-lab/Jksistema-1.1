@@ -64,6 +64,7 @@ async function newScenario(browser, baseUrl, options = {}) {
   }
   const calls = {
     codexTasks: [],
+    codexModels: 0,
     codexTaskGets: 0,
     codexTaskGetUrls: [],
     codexTaskDetailGets: 0,
@@ -155,6 +156,14 @@ async function newScenario(browser, baseUrl, options = {}) {
       return json(status, payload);
     };
 
+    if (pathname === '/api/codex/models') {
+      calls.codexModels += 1;
+      if (options.catalogFallbackOnce && calls.codexModels === 1) return json(503, { detail: 'Catalogo temporariamente indisponivel.' });
+      return json(200, { success: true, default_model: options.defaultCodexModel || 'gpt-6.1-sol', default_reasoning_effort: options.defaultCodexModel === 'gpt-6-luna' ? 'low' : 'xhigh', models: [
+        { id: 'gpt-6.1-sol', name: 'codex:gpt-6.1-sol', display_name: 'GPT-6.1 Sol', reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], default_reasoning_effort: 'high', available: true },
+        { id: 'gpt-6-luna', name: 'codex:gpt-6-luna', display_name: 'GPT-6 Luna', reasoning_efforts: ['minimal', 'low', 'medium'], default_reasoning_effort: 'low', available: true },
+      ] });
+    }
     if (pathname === '/api/codex/status') {
       calls.codexStatus += 1;
       if (options.authAlwaysChecking === true) {
@@ -524,22 +533,27 @@ async function run() {
       assert.strictEqual(calls.reportSettingsPuts[0].settings.global.target_margin_pct, 24);
       await page.locator('#jk-codex-report-settings-dialog').waitFor({ state: 'hidden' });
 
+      assert.strictEqual(await page.locator('#jk-codex-reasoning').count(), 1, 'seletor de raciocinio possui ID unico');
+      await page.locator('#jk-codex-reasoning').selectOption('max');
       await page.locator('#jk-codex-input').fill('Responda apenas com um teste de leitura.');
       await page.locator('#jk-codex-readonly').evaluate(button => button.click());
       await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Resposta primaria de teste.'));
       assert.strictEqual(calls.codexTasks.length, 1);
       assert.strictEqual(calls.codexTasks[0].sandbox, 'read_only');
       assert.strictEqual(calls.codexTasks[0].model, 'gpt-6.1-sol');
+      assert.strictEqual(calls.codexTasks[0].reasoning_effort, 'max', 'raciocinio max selecionado deve chegar ao backend');
       assert.strictEqual(calls.codexTasks[0].screen_context.context_mode, 'manual');
       assert.ok(calls.codexTasks[0].screen_context.dom_scan.scanned_elements <= 300);
       assert.doesNotMatch(calls.codexTasks[0].screen_context.url_completa, /segredo|token|code|hash/i);
       assert.strictEqual(calls.codexTasks[0].screen_context.url_completa, `${baseUrl}/test.html`);
       assert.strictEqual(calls.iaChat.length, 0);
 
+      await page.locator('#jk-codex-reasoning').selectOption('ultra');
       await page.locator('#jk-codex-input').fill('Segunda consulta para validar cache de contexto.');
       await page.locator('#jk-codex-readonly').evaluate(button => button.click());
       await page.waitForFunction(() => document.querySelectorAll('#jk-codex-messages .jk-codex-msg.user').length >= 2);
       assert.strictEqual(calls.codexTasks.length, 2);
+      assert.strictEqual(calls.codexTasks[1].reasoning_effort, 'ultra', 'raciocinio ultra selecionado deve chegar ao backend');
       assert.strictEqual(calls.codexTasks[1].screen_context.dom_scan.sequence, calls.codexTasks[0].screen_context.dom_scan.sequence);
       assert.strictEqual(calls.codexTasks[1].screen_context.dom_scan.cache_hit, true);
 
@@ -596,6 +610,48 @@ async function run() {
       await page.waitForFunction(() => window.__favoritosLocalCalls === 1);
       await page.waitForFunction(() => document.querySelector('#jk-codex-messages')?.textContent.includes('Preenchi e salvei Pesquisa 1 e Pesquisa 2'));
       assert.strictEqual(calls.codexTasks.length, 2, 'acao local confirmada nao deve criar tarefa Codex duplicada');
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, { full: true, statusReady: true, defaultCodexModel: 'gpt-6-luna' });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.waitForFunction(() => document.getElementById('jk-codex-model')?.value === 'gpt-6-luna');
+      assert.deepStrictEqual(await page.locator('#jk-codex-reasoning option').evaluateAll(items => items.map(item => item.value)), ['minimal', 'low', 'medium']);
+      assert.strictEqual(await page.locator('#jk-codex-reasoning option[value="ultra"]').count(), 0, 'default Luna deve usar suas capacidades reais');
+      await page.locator('#jk-codex-input').fill('Confirme o modelo padrao.');
+      await page.locator('#jk-codex-readonly').click();
+      await waitForCondition(() => calls.codexTasks.length === 1, 'consulta com default do catalogo nao foi enviada');
+      assert.strictEqual(calls.codexTasks[0].model, 'gpt-6-luna');
+      assert(['minimal', 'low', 'medium'].includes(calls.codexTasks[0].reasoning_effort));
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, { full: true, statusReady: true, defaultCodexModel: 'gpt-6-luna', seedCodexModel: 'gpt-6.1-sol' });
+      const { context, page, pageErrors } = scenario;
+      await page.waitForFunction(() => document.querySelector('#jk-codex-model option[value="gpt-6-luna"]'));
+      assert.strictEqual(await page.locator('#jk-codex-model').inputValue(), 'gpt-6.1-sol', 'preferencia valida salva deve prevalecer sobre o default do servidor');
+      assert.strictEqual(await page.locator('#jk-codex-reasoning option[value="ultra"]').count(), 1);
+      assert.deepStrictEqual(pageErrors, []);
+      await context.close();
+    }
+
+    {
+      const scenario = await newScenario(browser, baseUrl, { full: true, statusReady: true, catalogFallbackOnce: true });
+      const { context, page, calls, pageErrors } = scenario;
+      await page.waitForFunction(() => document.querySelector('#jk-codex-status')?.textContent.includes('Black Jhon pronto'));
+      assert.strictEqual(await page.locator('#jk-codex-reasoning option[value="ultra"]').count(), 0, 'fallback conservador nao deve inventar ultra');
+      await page.locator('#jk-codex-refresh').click();
+      await waitForCondition(() => calls.codexModels === 2, 'atualizar deve buscar novamente o catalogo apos fallback');
+      await page.locator('#jk-codex-reasoning option[value="ultra"]').waitFor({ state: 'attached' });
+      await page.locator('#jk-codex-reasoning').selectOption('ultra');
+      await page.locator('#jk-codex-input').fill('Consulta apos atualizacao do catalogo.');
+      await page.locator('#jk-codex-readonly').click();
+      await waitForCondition(() => calls.codexTasks.length === 1, 'consulta apos atualizacao nao foi enviada');
+      assert.strictEqual(calls.codexTasks[0].reasoning_effort, 'ultra');
       assert.deepStrictEqual(pageErrors, []);
       await context.close();
     }

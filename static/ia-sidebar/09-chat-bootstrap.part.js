@@ -442,6 +442,7 @@
         message: perguntaFinal,
         page: _modulo(),
         model: modelEscolhido,
+        reasoning_effort: modelEscolhido ? document.getElementById('jk-ia-reasoning-sel')?.value : undefined,
         context: contextoTela,
         history: historico,
         attachments: anx,
@@ -515,6 +516,7 @@
           _codexAtualizarVisibilidade();
           return;
         }
+        if (id === 'jk-codex-model') window.JKAIModelCatalog.reasoning(document.getElementById('jk-codex-reasoning'), document.getElementById('jk-codex-model'));
         _codexPersistSettings();
         _codexAtualizarConfigTooltips();
       });
@@ -670,9 +672,13 @@
       _modelSelSidebar.addEventListener('change', () => {
         if (_modelSelSidebar.dataset.podeEscolherModelo === 'true') {
           localStorage.setItem('ia_model_sidebar', _modelSelSidebar.value);
+          window.JKAIModelCatalog.reasoning(document.getElementById('jk-ia-reasoning-sel'), _modelSelSidebar);
         }
       });
     }
+    document.getElementById('jk-ia-reasoning-sel')?.addEventListener('change', event => {
+      if (_modelSelSidebar?.dataset.podeEscolherModelo === 'true') localStorage.setItem('ia_reasoning_sidebar', event.target.value);
+    });
     // Fechar painel ao clicar fora
     _msgPrepararNotificacoesWindows();
     _msgMontarEmojiPanel();

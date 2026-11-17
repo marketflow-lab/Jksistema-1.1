@@ -197,8 +197,11 @@ def atualizar_configuracoes_globais(config: Any, req: ConfiguracoesGlobaisReques
         req.ia_modelo_pos_venda or atuais.get("ia_modelo_pos_venda") or atuais["ia_modelo_padrao"]
     )
     for campo, valor_raciocinio in (
+        ("ia_raciocinio_padrao", req.ia_raciocinio_padrao),
         ("ia_raciocinio_perguntas", req.ia_raciocinio_perguntas),
         ("ia_raciocinio_pos_venda", req.ia_raciocinio_pos_venda),
+        ("ia_raciocinio_chat", req.ia_raciocinio_chat),
+        ("ia_raciocinio_favoritos", req.ia_raciocinio_favoritos),
     ):
         atuais[campo] = configuracoes._normalizar_ia_raciocinio(
             valor_raciocinio if valor_raciocinio is not None else atuais.get(campo)

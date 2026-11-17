@@ -1,8 +1,8 @@
 """Policy-gated model routing for the JK Sistema internal Codex.
 
-GPT-6.1 Sol is the baseline and fallback.  A GPT-5.6 variant can only become
-effective when the exact task category is enabled by a versioned rollout
-policy.  This module does not change the model used by Codex Desktop.
+GPT-6.1 Sol is the baseline and fallback. Explicit supported model choices are
+honored; automatic category promotion remains controlled by a versioned rollout
+policy. This module does not change the model used by Codex Desktop.
 """
 
 from __future__ import annotations
@@ -11,9 +11,12 @@ import hashlib
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping, Optional
 
+from backend.services import gpt_model_catalog
 
-MODEL_DECISION_VERSION = "1"
-BASELINE_MODEL = "gpt-6.1-sol"
+
+MODEL_DECISION_VERSION = "2"
+BASELINE_MODEL = gpt_model_catalog.DEFAULT_CODEX_MODEL
+EXPLICIT_MODELS = gpt_model_catalog.CODEX_MODEL_IDS
 GPT_56_VARIANTS: tuple[str, ...] = (
     "gpt-5.6-luna",
     "gpt-5.6-terra",
@@ -161,6 +164,7 @@ class ModelRouter:
         requested_model: object = BASELINE_MODEL,
         rollout_key: object,
         available_models: Optional[Iterable[str]] = None,
+        explicit_model: Optional[bool] = None,
     ) -> ModelDecisionV1:
         category_code = normalize_category(category)
         requested = normalize_model_name(requested_model) or BASELINE_MODEL
@@ -173,7 +177,12 @@ class ModelRouter:
 
         effective = BASELINE_MODEL
         reason = "baseline_default"
-        if category_code == "unknown":
+        permitted_explicit = set(EXPLICIT_MODELS) if available is None else available
+        explicit = requested != BASELINE_MODEL if explicit_model is None else explicit_model
+        if explicit and requested in permitted_explicit:
+            effective = requested
+            reason = "explicit_model"
+        elif category_code == "unknown":
             reason = "unknown_category"
         elif not self.policy.enabled:
             reason = "policy_disabled"
@@ -244,6 +253,7 @@ class ModelRouter:
     ) -> ModelDecisionV1:
         effective = normalize_model_name(effective_model)
         permitted = {BASELINE_MODEL}
+        permitted.update(row["id"] for row in gpt_model_catalog.get_codex_models(discover=False))
         category_model = self.policy.category_models.get(decision.category)
         if self.policy.enabled and category_model in self.policy.allowed_models:
             permitted.add(str(category_model))

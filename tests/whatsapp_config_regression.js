@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const root = path.resolve(__dirname, '..');
 const canonical = fs.readFileSync(path.join(root, 'static', 'configuracoes.html'), 'utf8');
@@ -97,8 +98,23 @@ assert(!historyUi.includes('pela ligação'), 'removed call transcript label is 
 assert(ui.includes('window.jkWhatsappSelecionarUsuario'), 'selected JK user is not connected to phone settings');
 assert(ui.includes("request('/api/ia/modelos')"), 'AI catalog is not loaded for WhatsApp');
 assert(ui.includes("agent_architecture: 'dual_codex'"), 'dual Codex architecture is not saved');
-assert(ui.includes("conversation_agent_model: String(conversationAgentModel.value || 'gpt-5.6-luna').trim()"), 'Luna conversation model is not saved');
-assert(ui.includes("task_agent_model: String(taskAgentModel.value || 'gpt-5.6-sol').trim()"), 'Sol task model is not saved');
+assert(ui.includes('conversation_agent_model: String(conversationAgentModel.value'), 'configured conversation model is not saved');
+assert(ui.includes('task_agent_model: String(taskAgentModel.value'), 'configured task model is not saved');
+const saveStart = ui.indexOf('    const payload = {', ui.indexOf("byId('waSave').addEventListener"));
+const saveEnd = ui.indexOf('    const data = await request', saveStart);
+const payloadContext = {
+  latestPayload: { ai_model: 'codex:gpt-6.1-sol', codex_reasoning_effort: 'max', codex_reasoning_max: 'ultra' },
+  workerUrl: { value: '' }, businessPhone: { value: '' },
+  conversationAgentModel: { value: 'gpt-6.1-sol' }, conversationAgentReasoning: { value: 'ultra' },
+  taskAgentModel: { value: 'gpt-6-luna' }, taskAgentReasoning: { value: 'minimal' },
+  conversationInterval: { value: '30' }, conversationWorkers: { value: '4' },
+  conversationRuntimePool: { value: '4' }, globalTaskAgents: { value: '12' }, enabled: { checked: true },
+};
+vm.runInNewContext(ui.slice(saveStart, saveEnd) + '\nglobalThis.savedPayload = payload;', payloadContext);
+assert(payloadContext.savedPayload.conversation_agent_reasoning === 'ultra', 'conversation intelligence selection was overwritten');
+assert(payloadContext.savedPayload.task_agent_reasoning === 'minimal', 'task intelligence selection was overwritten');
+assert(payloadContext.savedPayload.codex_reasoning_effort === 'max', 'existing shared reasoning preference was overwritten');
+assert(payloadContext.savedPayload.task_agent_model === 'gpt-6-luna', 'configured task model was overwritten');
 assert(ui.includes('progress_messages_enabled: false'), 'legacy progress messages must stay disabled');
 assert(ui.includes('jk_black_jhon_nova_pergunta'), 'new-question utility template is not displayed');
 assert(ui.includes('jk_black_jhon_nova_pergunta_v2'), 'question-suggestion quick-reply template is not displayed');
@@ -112,7 +128,7 @@ assert(service.includes('TYPING_REFRESH_SECONDS = 20'), 'typing refresh must rem
 assert(service.includes('TYPING_MAX_SECONDS = 0'), 'typing heartbeat must not have a total deadline');
 assert(service.includes('/typing"'), 'local bridge typing endpoint missing');
 assert(service.includes('pairing_pending'), 'pairing no longer auto-activates the local bridge');
-assert(bridgeSettings.includes('WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"'), 'WhatsApp Codex default changed');
+assert(bridgeSettings.includes('gpt_model_catalog.DEFAULT_CODEX_MODEL'), 'WhatsApp default must follow the common catalog');
 assert(service.includes('def _create_selected_ai_task('), 'selected WhatsApp AI is not routed');
 assert(service.includes('def _progress_pulse_worker('), 'WhatsApp Codex progress worker is missing');
 assert(service.includes('/progress"'), 'WhatsApp progress endpoint is not called');

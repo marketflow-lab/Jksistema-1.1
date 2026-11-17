@@ -12,17 +12,21 @@ from typing import Any, Callable, Optional
 from fastapi import HTTPException
 
 from backend.services.env_config import _env_config_bool
+from backend.services import gpt_model_catalog
 
 
 CONFIG_GLOBAIS_DEFAULT = {
     "auto_sync_estoque_janela_minutos": 30,
-    "ia_modelo_padrao": "codex:gpt-5.5",
-    "ia_modelo_perguntas": "codex:gpt-5.5",
-    "ia_modelo_pos_venda": "codex:gpt-5.5",
+    "ia_modelo_padrao": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
+    "ia_modelo_perguntas": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
+    "ia_modelo_pos_venda": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
+    "ia_raciocinio_padrao": "medium",
     "ia_raciocinio_perguntas": "medium",
     "ia_raciocinio_pos_venda": "medium",
-    "ia_modelo_chat": "codex:gpt-5.5",
-    "ia_modelo_favoritos": "codex:gpt-5.5",
+    "ia_raciocinio_chat": "medium",
+    "ia_raciocinio_favoritos": "medium",
+    "ia_modelo_chat": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
+    "ia_modelo_favoritos": f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}",
     "ia_modo_padrao": "modelo",
     "ia_modo_perguntas": "modelo",
     "ia_modo_pos_venda": "modelo",
@@ -100,12 +104,11 @@ def _normalizar_ia_modo(valor: object) -> str:
     return "modelo"
 
 
-IA_RACIOCINIO_NIVEIS = ("low", "medium", "high", "xhigh")
+IA_RACIOCINIO_NIVEIS = gpt_model_catalog.REASONING_EFFORTS
 
 
 def _normalizar_ia_raciocinio(valor: object) -> str:
-    nivel = str(valor or "").strip().lower()
-    return nivel if nivel in IA_RACIOCINIO_NIVEIS else "medium"
+    return gpt_model_catalog.normalize_reasoning(valor)
 
 
 def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
@@ -114,8 +117,14 @@ def _normalizar_configuracoes_globais(payload: Optional[dict] = None) -> dict:
         dados.update(payload)
     for chave in ("ia_modo_padrao", "ia_modo_perguntas", "ia_modo_pos_venda", "ia_modo_chat", "ia_modo_favoritos"):
         dados[chave] = _normalizar_ia_modo(dados.get(chave))
-    for chave in ("ia_raciocinio_perguntas", "ia_raciocinio_pos_venda"):
+    for chave in ("ia_raciocinio_padrao", "ia_raciocinio_perguntas", "ia_raciocinio_pos_venda", "ia_raciocinio_chat", "ia_raciocinio_favoritos"):
         dados[chave] = _normalizar_ia_raciocinio(dados.get(chave))
+    for chave in ("ia_modelo_padrao", "ia_modelo_perguntas", "ia_modelo_pos_venda", "ia_modelo_chat", "ia_modelo_favoritos"):
+        modelo = str(dados.get(chave) or "").strip()
+        if modelo.lower().startswith("codex:"):
+            curto = modelo.split(":", 1)[1].strip()
+            if not curto or curto.lower().startswith("gpt-"):
+                dados[chave] = f"codex:{gpt_model_catalog.normalize_codex_model(modelo)}"
     for chave in ("ia_agent_resource_name", "ia_agent_endpoint_url"):
         dados[chave] = str(dados.get(chave) or "").strip()
     dados["ia_openai_ativa"] = bool(dados.get("ia_openai_ativa", True))

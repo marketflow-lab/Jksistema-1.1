@@ -143,11 +143,51 @@
     return params.toString();
   }
 
+  let modelsLoaded = false;
+  async function loadModels() {
+    if (modelsLoaded) return;
+    const helper = window.JKAIModelCatalog;
+    let models = helper.fallbackCodex();
+    let defaultModel = 'gpt-6.1-sol';
+    try {
+      const catalog = await api('/api/codex/models');
+      if (Array.isArray(catalog.models) && catalog.models.length) models = catalog.models;
+      defaultModel = catalog.default_model || defaultModel;
+    } catch (_) {}
+    const filter = byId('codexObsModel');
+    const previousFilter = filter?.value || '';
+    helper.fill(filter, models, previousFilter, { rawCodex: true });
+    if (filter) {
+      const all = document.createElement('option');
+      all.value = '';
+      all.textContent = 'Todos';
+      filter.insertBefore(all, filter.firstChild);
+      filter.value = previousFilter;
+    }
+    const target = byId('codexEvalModels');
+    const checked = new Set(Array.from(target?.querySelectorAll('input:checked') || []).map(item => item.value));
+    target?.replaceChildren();
+    models.filter(model => model.available !== false).forEach(model => {
+      const label = document.createElement('label');
+      label.className = 'check-item';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = helper.stripCodex(model.id || model.name);
+      input.checked = checked.size ? checked.has(input.value) : input.value === defaultModel;
+      const text = document.createElement('span');
+      text.textContent = model.display_name || input.value;
+      label.append(input, text);
+      target?.appendChild(label);
+    });
+    modelsLoaded = true;
+  }
+
   async function load(force = false) {
     if (loading || (loaded && !force)) return;
     loading = true;
     setStatus('codexObsStatus', 'Carregando indicadores agregados...', 'loading');
     try {
+      await loadModels();
       const query = queryWindow();
       const suffix = query ? `?${query}` : '';
       const [summary, timeseries, runs, mcp] = await Promise.all([

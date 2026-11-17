@@ -10,8 +10,11 @@ class ConfiguracoesGlobaisRequest(BaseModel):
     ia_modelo_padrao: str | None = None
     ia_modelo_perguntas: str | None = None
     ia_modelo_pos_venda: str | None = None
+    ia_raciocinio_padrao: str | None = None
     ia_raciocinio_perguntas: str | None = None
     ia_raciocinio_pos_venda: str | None = None
+    ia_raciocinio_chat: str | None = None
+    ia_raciocinio_favoritos: str | None = None
     ia_modelo_chat: str | None = None
     ia_modelo_favoritos: str | None = None
     ia_modo_padrao: str | None = None

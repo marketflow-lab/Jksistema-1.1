@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import csv
+import copy
 import datetime as dt
 import functools
 import hashlib
@@ -48,6 +49,7 @@ from backend.services.runtime_bridge import bind_runtime_globals
 from backend.services.ia_common import *
 from backend.services.ia_context import get_tenant_id, get_tenant_path
 from backend.services.ia_state import *
+from backend.services import gpt_model_catalog
 
 
 _CODEX_PERSISTENT_TURNS_LOCK = threading.RLock()
@@ -686,35 +688,74 @@ def _codex_modelo_nome_curto(model_name: str | None) -> str:
     nome = str(model_name or "").strip()
     if nome.lower().startswith("codex:"):
         nome = nome.split(":", 1)[1].strip()
-    return nome or "gpt-5.5"
+    if not nome or nome.lower().startswith("gpt-"):
+        return gpt_model_catalog.normalize_codex_model(nome)
+    # Preserve custom runtime aliases accepted by older integrations. Public
+    # discovery still advertises only validated GPT identifiers.
+    return nome
 
 
 IA_MODELO_PADRAO_SISTEMA = "vertex:gemini-2.5-flash"
 
 
-CODEX_CONFIGURABLE_MODELS = (
-    ("gpt-5.6-sol", "Codex GPT-5.6 Sol"),
-    ("gpt-5.6-terra", "Codex GPT-5.6 Terra"),
-    ("gpt-5.6-luna", "Codex GPT-5.6 Luna"),
-    ("gpt-5.5", "Codex GPT-5.5"),
-    ("gpt-5.4", "Codex GPT-5.4"),
-    ("gpt-5.4-mini", "Codex GPT-5.4 Mini"),
-    ("gpt-5.3-codex-spark", "Codex GPT-5.3 Codex Spark"),
-)
-
-CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+CODEX_REASONING_EFFORTS = gpt_model_catalog.REASONING_EFFORTS
 
 
-def _normalizar_codex_reasoning_effort(value: object) -> str:
-    effort = str(value or "").strip().lower()
-    return effort if effort in CODEX_REASONING_EFFORTS else "medium"
+def _normalizar_codex_reasoning_effort(value: object, model: str | None = None) -> str:
+    capability_model = model if str(model or "").lower().removeprefix("codex:").startswith("gpt-") else None
+    return gpt_model_catalog.normalize_reasoning(value, model=capability_model)
 
 
-def _listar_modelos_codex_configuraveis() -> list[dict[str, str]]:
-    return [
-        {"name": f"codex:{slug}", "display_name": display_name}
-        for slug, display_name in CODEX_CONFIGURABLE_MODELS
-    ]
+def _listar_modelos_codex_configuraveis() -> list[dict[str, Any]]:
+    return gpt_model_catalog.get_codex_models()
+
+
+_OPENAI_MODEL_CATALOG_LOCK = threading.RLock()
+_OPENAI_MODEL_CATALOG_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _listar_modelos_openai_api() -> list[dict[str, Any]]:
+    """Discover API models using its own credential, independently of Codex login."""
+    api_key = str(_obter_openai_api_key() or "").strip()
+    if not api_key:
+        return gpt_model_catalog.get_api_fallback_models()
+    cache_key = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    with _OPENAI_MODEL_CATALOG_LOCK:
+        cached = _OPENAI_MODEL_CATALOG_CACHE.get(cache_key)
+        if cached and now - cached[0] < 300:
+            return copy.deepcopy(cached[1])
+        try:
+            response = requests.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                verify=requests_tls_verify(),
+                timeout=(3, 6),
+            )
+            response.raise_for_status()
+            data = response.json()
+            rows = []
+            seen: set[str] = set()
+            for item in (data.get("data") or [])[:1000]:
+                model = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
+                if not re.fullmatch(r"gpt-[A-Za-z0-9._-]{1,90}", model) or model in seen:
+                    continue
+                if re.search(r"(?:^|-)(?:audio|realtime|transcribe|tts|image)(?:-|$)|-search-preview(?:-|$)", model):
+                    continue
+                seen.add(model)
+                row = gpt_model_catalog.public_model(model, provider="openai")
+                row.update(source="openai_api", available=True)
+                rows.append(row)
+            rows.sort(key=lambda row: row["id"], reverse=True)
+            if not rows:
+                raise ValueError("openai_model_catalog_empty")
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            rows = copy.deepcopy(cached[1]) if cached else gpt_model_catalog.get_api_fallback_models()
+        _OPENAI_MODEL_CATALOG_CACHE[cache_key] = (now, copy.deepcopy(rows))
+        if len(_OPENAI_MODEL_CATALOG_CACHE) > 8:
+            oldest = min(_OPENAI_MODEL_CATALOG_CACHE, key=lambda key: _OPENAI_MODEL_CATALOG_CACHE[key][0])
+            _OPENAI_MODEL_CATALOG_CACHE.pop(oldest, None)
+        return rows
 
 
 GEMINI_31_FLASH_MODEL = "gemini-3.1-flash"
@@ -747,7 +788,7 @@ def _normalizar_ia_modelo_padrao(model_name: str | None) -> str:
         return f"vertex:{curto}" if curto else IA_MODELO_PADRAO_SISTEMA
     if _modelo_eh_codex(nome):
         curto = _codex_modelo_nome_curto(nome)
-        return f"codex:{curto}" if curto else "codex:gpt-5.5"
+        return f"codex:{curto}"
     if nome.lower().startswith(("gpt-", "deepseek-")):
         return nome
     curto = _vertex_modelo_nome_curto(nome)
@@ -863,14 +904,17 @@ def _ia_modelo_pos_venda_configurado() -> str:
 
 def _ia_raciocinio_finalidade_configurado(finalidade: str) -> str:
     chave_por_finalidade = {
+        "padrao": "ia_raciocinio_padrao",
         "perguntas": "ia_raciocinio_perguntas",
         "pos_venda": "ia_raciocinio_pos_venda",
         "pos-venda": "ia_raciocinio_pos_venda",
+        "chat": "ia_raciocinio_chat",
+        "favoritos": "ia_raciocinio_favoritos",
     }
     chave = chave_por_finalidade.get(str(finalidade or "").strip().lower())
     try:
         cfg = _carregar_configuracoes_globais()
-        return _normalizar_codex_reasoning_effort(cfg.get(chave) if chave else "")
+        return _normalizar_codex_reasoning_effort((cfg.get(chave) if chave else "") or cfg.get("ia_raciocinio_padrao"))
     except Exception:
         logger.exception("Erro ao carregar raciocinio de IA para finalidade %s", finalidade)
         return "medium"
@@ -886,7 +930,7 @@ def _ia_raciocinio_pos_venda_configurado() -> str:
 
 def _ia_codex_reasoning_effort_payload(payload: IAChatRequest) -> str:
     context = payload.context if isinstance(payload.context, dict) else {}
-    explicit = str(context.get("_codex_reasoning_effort") or "").strip()
+    explicit = str(payload.reasoning_effort or context.get("_codex_reasoning_effort") or "").strip()
     if explicit:
         return _normalizar_codex_reasoning_effort(explicit)
     finalidade = str(context.get("ia_finalidade") or context.get("tipo_treinamento") or "").strip().lower()
@@ -894,7 +938,11 @@ def _ia_codex_reasoning_effort_payload(payload: IAChatRequest) -> str:
         return _ia_raciocinio_pos_venda_configurado()
     if finalidade in {"perguntas", "perguntas_anuncio"} or str(context.get("modulo") or "").strip() == "perguntas_pos_venda":
         return _ia_raciocinio_perguntas_configurado()
-    return "medium"
+    if finalidade in {"chat", "favoritos"}:
+        return _ia_raciocinio_finalidade_configurado(finalidade)
+    if str(payload.modulo or context.get("modulo") or "").strip() == "favoritos":
+        return _ia_raciocinio_finalidade_configurado("favoritos")
+    return _ia_raciocinio_finalidade_configurado("chat" if payload.modulo == "global" else "padrao")
 
 
 def _ia_modelo_chat_configurado() -> str:
@@ -1209,7 +1257,7 @@ def _chamar_codex_chat_com_thread(
     prompt = "\n\n".join(blocos)
     model = _codex_modelo_nome_curto(payload.model)
     reasoning_effort_name = _normalizar_codex_reasoning_effort(
-        reasoning_effort or _ia_codex_reasoning_effort_payload(payload)
+        reasoning_effort or _ia_codex_reasoning_effort_payload(payload), model
     )
     session_key = str(conversation_key or thread_id or uuid.uuid4().hex).strip()
     registry_key = str(active_turn_key or conversation_key or thread_id or session_key).strip()
@@ -1219,8 +1267,9 @@ def _chamar_codex_chat_com_thread(
     )
 
     try:
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
-        from openai_codex.generated.v2_all import ReasoningEffort, ReasoningSummary
+        from openai_codex.generated.v2_all import ReasoningSummary
 
         with _codex_local_image_files(imagens, cwd) as (image_paths, image_file_failures):
             turn_prompt = (
@@ -1273,7 +1322,9 @@ def _chamar_codex_chat_com_thread(
                 "cwd": cwd,
                 "model": model,
                 "approval_mode": ApprovalMode.deny_all,
-                "effort": getattr(ReasoningEffort, reasoning_effort_name, ReasoningEffort.medium),
+                "effort": gpt_model_catalog.sdk_reasoning_effort(
+                    reasoning_effort_name, model=model if model.lower().startswith("gpt-") else None,
+                ),
                 "summary": ReasoningSummary.model_validate("auto"),
             }
             if output_schema is not None:
@@ -1921,12 +1972,9 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
         logger.warning("[IA] OPENAI_API_KEY ausente.")
         return _ia_reply_or_legacy_fallback(payload, _resposta_fallback_simpatico(payload.message))
 
-    _MODELOS_PERMITIDOS = {
-        "gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5",
-    }
     _model_env = (os.getenv("OPENAI_MODEL") or "gpt-5.4-nano").strip()
     _model_req = str(payload.model or "").strip()
-    model = _model_req if _model_req in _MODELOS_PERMITIDOS else _model_env
+    model = _model_req if re.fullmatch(r"gpt-[A-Za-z0-9._-]{1,90}", _model_req) else _model_env
     mensagem = str(payload.message or "").strip()
     anexos = _ia_chat_normalizar_anexos(payload)
     ctx_payload = payload.context if isinstance(payload.context, dict) else {}
@@ -2058,6 +2106,12 @@ def _chamar_openai_responses(payload: IAChatRequest, client_id: str) -> str:
             "model": model,
             "input": input_messages,
         }
+        if gpt_model_catalog.reasoning_efforts(model, provider="openai"):
+            request_json["reasoning"] = {
+                "effort": gpt_model_catalog.normalize_reasoning(
+                    _ia_codex_reasoning_effort_payload(payload), model=model, provider="openai"
+                )
+            }
         if modo_rapido:
             request_json["max_output_tokens"] = 360
         resp = requests.post(

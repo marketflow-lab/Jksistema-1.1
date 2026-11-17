@@ -14,6 +14,7 @@ from typing import Any
 
 from backend.routers.codex_console import create_codex_console_router
 from backend.services import jk_codex_mcp_server
+from backend.services import gpt_model_catalog
 from backend.services.codex.console import contracts as console_contracts
 from backend.services.codex.console import execution as console_execution
 from backend.services.codex.console import security as console_security
@@ -94,7 +95,8 @@ def build_codex_contract_snapshot() -> dict[str, Any]:
         },
         "models": {
             "baseline": console_state.CODEX_DEFAULT_MODEL,
-            "explicit_candidates": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+            "explicit_candidates": list(gpt_model_catalog.CODEX_MODEL_IDS),
+            "reasoning_efforts": list(gpt_model_catalog.REASONING_EFFORTS),
         },
         "mcp": {
             "protocol": jk_codex_mcp_server.MCP_PROTOCOL_V2,

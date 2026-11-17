@@ -39,6 +39,7 @@ from backend.services import (
     codex_model_router,
     codex_operational_memory,
     codex_turn_context,
+    gpt_model_catalog,
 )
 from . import bindings
 
@@ -657,8 +658,11 @@ def _codex_status_payload(*, background_auth: bool = False) -> dict[str, Any]:
         "auth_file_path": auth_file,
         "cwd": _codex_base_dir(),
         "defaults": {
-            "model": str(os.getenv("JK_CODEX_MODEL") or CODEX_DEFAULT_MODEL).strip() or CODEX_DEFAULT_MODEL,
-            "reasoning_effort": str(os.getenv("JK_CODEX_REASONING_EFFORT") or "xhigh").strip() or "xhigh",
+            "model": gpt_model_catalog.configured_codex_model(),
+            "reasoning_effort": gpt_model_catalog.normalize_reasoning(
+                os.getenv("JK_CODEX_REASONING_EFFORT"), model=gpt_model_catalog.configured_codex_model(),
+                default=gpt_model_catalog.default_reasoning(gpt_model_catalog.configured_codex_model()),
+            ),
             "speed": str(os.getenv("JK_CODEX_SPEED") or "standard").strip() or "standard",
             "approval_mode": "read_only",
             "sandbox": "read_only",

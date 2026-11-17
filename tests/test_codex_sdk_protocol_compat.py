@@ -11,6 +11,7 @@ from openai_codex.client import CodexClient
 from openai_codex.generated.v2_all import (
     CodexErrorInfoValue,
     ErrorNotification,
+    ReasoningEffort,
     TurnCompletedNotification,
     TurnStartResponse,
 )
@@ -112,7 +113,13 @@ def test_known_error_codes_structured_variants_and_reasoning_compat_are_preserve
 
     assert result["known"] == payload["known"]
     assert result["structured"] == payload["structured"]
-    assert result["reasoning"] == [{"reasoningEffort": effort} for effort in ("xhigh", "xhigh", "high")]
+    expected_efforts = []
+    for effort in ("max", "ultra", "high"):
+        try:
+            expected_efforts.append(ReasoningEffort(effort).value)
+        except ValueError:
+            expected_efforts.append("xhigh")
+    assert result["reasoning"] == [{"reasoningEffort": effort} for effort in expected_efforts]
     assert payload == original
 
 

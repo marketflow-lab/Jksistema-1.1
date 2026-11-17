@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -195,3 +196,54 @@ def test_warm_runtime_uses_v3_schema_in_read_only_mode_without_tools(monkeypatch
     assert black_jhon_prompting.PROMPT_CONTRACT_V3_VERSION in calls["prompt"]
     assert result["schema_version"] == black_jhon_prompting.CONVERSATION_DECISION_V3
     assert result["decision_contract_mode"] == "v3"
+
+
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_warm_runtime_sends_supported_reasoning_without_downgrade(monkeypatch, tmp_path, effort) -> None:
+    calls = {}
+
+    class FakeThread:
+        id = "synthetic-model-metadata"
+
+        def run(self, prompt, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(final_response=json.dumps(_decision_payload()))
+
+    class FakeClient:
+        def thread_start(self, **kwargs):
+            return FakeThread()
+
+    monkeypatch.setattr(console_paths, "base_dir", lambda: tmp_path)
+    from backend.services.codex.console import telemetry
+    monkeypatch.setattr(telemetry, "instance", lambda: None)
+    runtime = codex_whatsapp_agents.WarmConversationRuntime()
+    runtime._codex = FakeClient()
+    runtime._available_models = ["gpt-6.1-sol"]
+    result = runtime.run(
+        thread_id="", model="gpt-6.1-sol", reasoning_effort=effort,
+        event_type="user_message", user_message="Mensagem sintetica",
+    )
+    assert calls["effort"].value == effort
+    assert result["reasoning_effort"] == effort
+
+
+def test_warm_runtime_uses_live_catalog_default_for_retired_model() -> None:
+    runtime = codex_whatsapp_agents.WarmConversationRuntime()
+    runtime._codex = object()
+    runtime._available_models = ["gpt-future-small", "gpt-future-default"]
+    runtime._model_catalog = {
+        "gpt-future-small": {"id": "gpt-future-small", "is_default": False},
+        "gpt-future-default": {"id": "gpt-future-default", "is_default": True},
+    }
+    assert runtime.resolve_model("gpt-retired") == "gpt-future-default"
+
+
+def test_decision_preserves_requested_task_and_subtask_reasoning() -> None:
+    payload = _decision_payload(
+        action="delegate", job_prompt="Consulta sintetica",
+        task={"title": "Consulta", "prompt": "Consulta sintetica", "reasoning_effort": "ultra"},
+        subtasks=[{"title": "Parte", "prompt": "Parte sintetica", "reasoning_effort": "max"}],
+    )
+    normalized = codex_whatsapp_agents.normalize_decision(payload, event_type="user_message")
+    assert normalized["task"]["reasoning_effort"] == "ultra"
+    assert normalized["subtasks"][0]["reasoning_effort"] == "max"

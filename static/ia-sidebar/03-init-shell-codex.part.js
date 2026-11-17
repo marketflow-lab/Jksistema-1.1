@@ -822,6 +822,45 @@
       _codexAtualizarPathChips();
     }
 
+    let codexModelCatalogPromise = null;
+    let codexModelCatalog = null;
+    let codexModelCatalogAt = 0;
+    async function _codexCarregarModelos(force = false) {
+      const ttl = codexModelCatalog?.fallback ? 2000 : 300000;
+      if (!force && codexModelCatalog && Date.now() - codexModelCatalogAt < ttl) return codexModelCatalog;
+      if (codexModelCatalogPromise) return codexModelCatalogPromise;
+      codexModelCatalogPromise = (async () => {
+        const helper = window.JKAIModelCatalog;
+        const saved = _usuarioLocalEhFull() ? _codexReadStoredSettings() : {};
+        const select = document.getElementById('jk-codex-model');
+        let models = helper.fallbackCodex();
+        let defaultModel = 'gpt-6.1-sol';
+        let defaultEffort = '';
+        let fallback = true;
+        try {
+          const data = await _codexFetchJson('/api/codex/models');
+          if (Array.isArray(data.models) && data.models.length) {
+            models = data.models;
+            fallback = models.every(model => model.source === 'bundled' || model.available == null);
+          }
+          defaultModel = helper.stripCodex(data.default_model || defaultModel);
+          defaultEffort = data.default_reasoning_effort || '';
+        } catch (_) {}
+        const selected = saved.model === 'gpt-5.5' ? defaultModel : (saved.model || defaultModel);
+        helper.fill(select, models, selected, { rawCodex: true, defaultModel });
+        const preferredEffort = saved.reasoning_effort || defaultEffort || select?.selectedOptions?.[0]?.dataset.defaultReasoningEffort || 'xhigh';
+        helper.reasoning(document.getElementById('jk-codex-reasoning'), select, preferredEffort);
+        codexModelCatalog = { models, defaultModel, defaultEffort, fallback };
+        codexModelCatalogAt = Date.now();
+        return codexModelCatalog;
+      })();
+      try {
+        return await codexModelCatalogPromise;
+      } finally {
+        codexModelCatalogPromise = null;
+      }
+    }
+
     function _codexAccessToRuntime(accessValue) {
       void accessValue;
       return { access: 'read_only', sandbox: 'read_only', approval_mode: 'read_only' };
@@ -837,8 +876,8 @@
         access: runtime.access,
         sandbox: runtime.sandbox,
         approval_mode: runtime.approval_mode,
-        model: full ? (document.getElementById('jk-codex-model')?.value || 'gpt-6.1-sol') : 'gpt-6.1-sol',
-        reasoning_effort: full ? (document.getElementById('jk-codex-reasoning')?.value || 'xhigh') : 'xhigh',
+        model: document.getElementById('jk-codex-model')?.value || codexModelCatalog?.defaultModel || 'gpt-6.1-sol',
+        reasoning_effort: document.getElementById('jk-codex-reasoning')?.value || codexModelCatalog?.defaultEffort || 'xhigh',
         speed,
         service_tier: speed === 'fast' ? 'priority' : '',
         goal: full ? String(document.getElementById('jk-codex-goal-input')?.value || '').trim() : '',
@@ -1290,7 +1329,7 @@
       if (!box) return;
       if (!task) {
         box.hidden = true;
-        _codexSetLiveBlock('jk-codex-reasoning', '', '');
+        _codexSetLiveBlock('jk-codex-live-reasoning', '', '');
         _codexSetLiveBlock('jk-codex-live-answer', '', '');
         document.getElementById('jk-codex-log-list')?.replaceChildren();
         const pctEl = document.getElementById('jk-codex-context-pct');
@@ -1335,7 +1374,7 @@
           return `${index + 1}. [${state}] ${label}`;
         }).join('\n')
         : String(task.live_plan || '');
-      _codexSetLiveBlock('jk-codex-reasoning', 'Plano e raciocinio', planText || task.reasoning_summary || '');
+      _codexSetLiveBlock('jk-codex-live-reasoning', 'Plano e raciocinio', planText || task.reasoning_summary || '');
       const status = String(task.status || '');
       const requiredInput = task.required_input && typeof task.required_input === 'object'
         ? (task.required_input.message || task.required_input.prompt || '')
@@ -2861,6 +2900,7 @@
         ? setTimeout(() => statusController.abort(), requestTimeoutMs)
         : null;
       _codexAtualizarVisibilidade();
+      await _codexCarregarModelos(!silencioso && !authPoll);
       if (!silencioso) _codexSetStatus('Verificando Codex...');
       try {
         const data = await _codexFetchJson('/api/codex/status', {
@@ -2876,8 +2916,9 @@
         }
         const defaults = data && data.defaults && typeof data.defaults === 'object' ? data.defaults : {};
         const saved = _codexReadStoredSettings();
-        if (!saved.model && defaults.model) _codexSetSelectValue('jk-codex-model', defaults.model);
-        if (!saved.reasoning_effort && defaults.reasoning_effort) _codexSetSelectValue('jk-codex-reasoning', defaults.reasoning_effort);
+        if (!saved.reasoning_effort && defaults.reasoning_effort && !codexModelCatalog?.defaultEffort) {
+          window.JKAIModelCatalog.reasoning(document.getElementById('jk-codex-reasoning'), document.getElementById('jk-codex-model'), defaults.reasoning_effort);
+        }
         if (!saved.speed && defaults.speed) _codexSetSelectValue('jk-codex-speed', defaults.speed);
         const msg = data && data.message ? data.message : 'Status do Codex recebido.';
         const authState = String(data && data.authentication_state || '');
@@ -3772,6 +3813,7 @@
         return;
       }
       const full = _usuarioLocalEhFull();
+      await _codexCarregarModelos();
       const settings = _codexCollectSettings(full ? forcedAccess : 'read_only');
       const attachmentIds = full ? _codexAttachmentIds() : [];
       const temAnexos = full && _codexAttachmentPaths().length > 0;

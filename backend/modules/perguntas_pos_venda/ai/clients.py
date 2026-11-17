@@ -7,6 +7,7 @@ import re
 from ml_questions_gemini.prompt_builder import _untrusted_json_block
 from ml_questions_gemini.public_reply_policy import PUBLIC_REPLY_EVIDENCE_GUIDANCE
 from backend.modules.context_hub.store_sku_contracts import canonical_json
+from backend.services import gpt_model_catalog
 from .runtime import (
     AIAnswer,
     AIResponseParser,
@@ -15,6 +16,7 @@ from .runtime import (
     Optional,
     _ia_raciocinio_perguntas_configurado,
     _ia_raciocinio_pos_venda_configurado,
+    _codex_modelo_nome_curto,
     _ia_tool_get_bling_product,
     marketplace_listing_query,
     _ia_tool_get_product_data,
@@ -100,7 +102,7 @@ _PUBLIC_TECHNICAL_RESEARCH_STAGES = frozenset({
     "technical_resolution_round_1",
     "technical_resolution_final",
 })
-_PUBLIC_TECHNICAL_RESEARCH_MODEL = "codex:gpt-5.6-sol"
+_PUBLIC_TECHNICAL_RESEARCH_MODEL = f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}"
 _PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT = "high"
 
 
@@ -289,8 +291,17 @@ class _PerguntasVertexGeminiV2Client:
         stage_model = self.model_req
         stage_reasoning_effort = self.reasoning_effort
         if not fluxo_pos_venda and not self._is_regulated and stage in _PUBLIC_TECHNICAL_RESEARCH_STAGES:
-            stage_model = _PUBLIC_TECHNICAL_RESEARCH_MODEL
-            stage_reasoning_effort = _PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT
+            stage_model = (
+                f"codex:{_codex_modelo_nome_curto(self.model_req)}"
+                if str(self.model_req or "").lower().startswith("codex:")
+                else _PUBLIC_TECHNICAL_RESEARCH_MODEL
+            )
+            minimum = gpt_model_catalog.REASONING_EFFORTS.index(_PUBLIC_TECHNICAL_RESEARCH_REASONING_EFFORT)
+            requested = gpt_model_catalog.normalize_reasoning(self.reasoning_effort)
+            stage_reasoning_effort = _normalizar_codex_reasoning_effort(
+                requested if gpt_model_catalog.REASONING_EFFORTS.index(requested) >= minimum else "high",
+                stage_model,
+            )
         # LocalImageInput necessarily carries an absolute, short-lived file
         # path. Evidence-graph turns are therefore always ephemeral and never
         # resume or update the job's persistent operational thread.
@@ -349,6 +360,7 @@ class _PerguntasVertexGeminiV2Client:
                 "_codex_reasoning_effort": stage_reasoning_effort,
             },
             model=stage_model,
+            reasoning_effort=stage_reasoning_effort,
             tool_results=effective_tool_results,
             attachments=(
                 list(self._document_vision_attachments)

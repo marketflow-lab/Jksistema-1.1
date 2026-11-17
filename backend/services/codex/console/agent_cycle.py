@@ -6,6 +6,8 @@ import re
 import time
 from typing import Any, Optional
 
+from backend.services import gpt_model_catalog
+
 
 def _initialize(
     ctx: dict[str, Any],
@@ -221,18 +223,15 @@ def _collect_mcp_results(ctx: dict[str, Any], task_id: str) -> None:
 
 
 def _raise_reasoning(ctx: dict[str, Any], task_id: str, task: dict[str, Any], run_kwargs: dict[str, Any]) -> None:
-    levels = ("low", "medium", "high", "xhigh")
     current = str(
         (_codex_load_task(task_id) or task).get("reasoning_level")
         or task.get("reasoning_effort")
         or "medium"
     )
     maximum = str(task.get("reasoning_max") or "xhigh")
-    try:
-        next_level = levels[min(levels.index(current) + 1, levels.index(maximum))]
-    except ValueError:
-        next_level = "high"
-    run_kwargs["effort"] = _codex_reasoning_effort_enum(next_level)
+    model = str(run_kwargs.get("model") or task.get("model") or gpt_model_catalog.DEFAULT_CODEX_MODEL)
+    next_level = gpt_model_catalog.next_reasoning(current, maximum, model=model)
+    run_kwargs["effort"] = _codex_reasoning_effort_enum(next_level, model=model)
     _codex_update_task(task_id, reasoning_level=next_level)
 
 
@@ -641,20 +640,16 @@ def _finish_cycle(
             if isinstance(item, dict)
         )
         if needs_more:
-            levels = ("low", "medium", "high", "xhigh")
             current = str(
                 (_codex_load_task(task_id) or task).get("reasoning_level")
                 or task.get("reasoning_effort")
                 or "medium"
             )
             maximum = str(task.get("reasoning_max") or "xhigh")
-            try:
-                next_index = min(levels.index(current) + 1, levels.index(maximum))
-            except ValueError:
-                next_index = levels.index("high")
-            next_level = levels[next_index]
+            model = str(run_kwargs.get("model") or task.get("model") or gpt_model_catalog.DEFAULT_CODEX_MODEL)
+            next_level = gpt_model_catalog.next_reasoning(current, maximum, model=model)
             if next_level != current:
-                run_kwargs["effort"] = _codex_reasoning_effort_enum(next_level)
+                run_kwargs["effort"] = _codex_reasoning_effort_enum(next_level, model=model)
                 _codex_update_task(
                     task_id,
                     reasoning_level=next_level,

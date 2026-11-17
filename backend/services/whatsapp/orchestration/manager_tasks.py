@@ -24,6 +24,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from backend.services import gpt_model_catalog
 from urllib.parse import quote, unquote, urlparse
 from zoneinfo import ZoneInfo
 import requests
@@ -187,7 +188,9 @@ def _create_dual_worker_task(
 ) -> dict[str, Any]:
     settings = _whatsapp_dual_agent_settings(config)
     task_model = codex_whatsapp_agents.CONVERSATION_RUNTIME.resolve_model(settings["task_agent_model"])
-    reasoning = settings["task_agent_reasoning"]
+    reasoning = gpt_model_catalog.normalize_reasoning(
+        reasoning_effort or settings["task_agent_reasoning"], model=task_model,
+    )
     group_id = str(job_group_id or message_id).strip()
     child_id = str(subtask_id or "main").strip()
     logical_id = str(logical_subtask_id or child_id).strip()
@@ -195,6 +198,8 @@ def _create_dual_worker_task(
     worker_config = {
         **dict(config),
         "ai_model": f"codex:{task_model}",
+        "task_agent_model": task_model,
+        "task_agent_reasoning": reasoning,
         "codex_reasoning_effort": reasoning,
         "codex_reasoning_policy": "fixed",
         "codex_reasoning_max": reasoning,
@@ -209,6 +214,7 @@ def _create_dual_worker_task(
         attempt_number, subtask_index, subtask_total, media, transcription, query_policy,
         phone_ai_behavior, job_prompt or request_text, requires_web,
     )
+    metadata["reasoning_level"] = reasoning
     metadata["phone_ai_behavior"] = (
         UNTRUSTED_EVIDENCE_DEVELOPER_INSTRUCTION + "\n" + str(metadata.get("phone_ai_behavior") or "")
     )[:2000]
@@ -262,6 +268,11 @@ def _start_sol_subtask(
     attempt = max(1, int(subtask.get("current_attempt") or 1))
     child_id = logical_id if attempt <= 1 else f"{logical_id}-a{attempt}"
     base_prompt = str(subtask.get("prompt") or pending.get("job_prompt") or pending.get("request_text") or "").strip()
+    settings = _whatsapp_dual_agent_settings(config)
+    reasoning = gpt_model_catalog.normalize_reasoning(
+        subtask.get("reasoning_effort") or settings["task_agent_reasoning"],
+        model=settings["task_agent_model"],
+    )
     worker_prompt = (
         base_prompt
         + "\n\nPACOTE INTERNO JA COLETADO PELO LUNA GERENCIADOR:\n"
@@ -275,7 +286,7 @@ def _start_sol_subtask(
         "title": str(subtask.get("title") or pending.get("job_title") or "Pesquisa")[:180],
         "prompt": base_prompt[:12000],
         "requires_web": bool(subtask.get("requires_web")) if "requires_web" in subtask else bool(plan.get("requires_web")),
-        "reasoning_effort": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+        "reasoning_effort": reasoning,
         "task_id": "",
         "current_attempt": attempt,
         "attempt_task_ids": list(subtask.get("attempt_task_ids") or []),
@@ -295,7 +306,7 @@ def _start_sol_subtask(
             phone_ai_behavior=str(pending.get("phone_ai_behavior") or ""), query_policy=worker_policy,
             job_group_id=group_id, subtask_id=child_id, logical_subtask_id=logical_id,
             attempt=attempt, subtask_index=index, subtask_total=total,
-            requires_web=item["requires_web"], reasoning_effort=WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+            requires_web=item["requires_web"], reasoning_effort=reasoning,
         )
         task_id = str(task.get("task_id") or "")
         item["task_id"] = task_id

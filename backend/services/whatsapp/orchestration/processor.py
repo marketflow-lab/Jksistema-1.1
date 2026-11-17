@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 from backend.schemas import IAChatAttachment, IAChatRequest
+from backend.services import gpt_model_catalog
 from backend.services.whatsapp import formatting as whatsapp_formatting
 from backend.services.whatsapp import audio_processing as whatsapp_audio_processing
 from backend.services.whatsapp import transcription as whatsapp_transcription
@@ -298,7 +299,10 @@ def _create_selected_ai_task(
         else {}
     )
     request_text = str(incoming_metadata.get("request_text") or prompt or "")
-    reasoning_level = str(dual_settings.get("task_agent_reasoning") or "low")
+    reasoning_level = gpt_model_catalog.normalize_reasoning(
+        incoming_metadata.get("reasoning_level") or dual_settings["task_agent_reasoning"],
+        model=dual_settings["task_agent_model"],
+    )
     report_mode = console_execution.is_report_request(request_text)
     requested_profile = str(incoming_metadata.get("orchestration_profile") or "").strip()
     requested_role = str(incoming_metadata.get("agent_role") or "").strip().lower()

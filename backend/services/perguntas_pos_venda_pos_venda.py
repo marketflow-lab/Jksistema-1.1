@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from __future__ import annotations
 import base64
+from backend.services import gpt_model_catalog
 import copy
 import csv
 import functools
@@ -1488,7 +1489,7 @@ def _ml_pos_venda_gerar_resposta_ia(
         _ia_modelo_pos_venda_configurado(),
         conversa.get("_codex_operational_failure_count"),
     )
-    model_req = str(provider_selection.get("model") or "codex:gpt-5.5")
+    model_req = str(provider_selection.get("model") or f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}")
     provider_context = {
         "modulo": "perguntas_pos_venda",
         "tipo": ML_POS_VENDA_IA_V2_MODO,

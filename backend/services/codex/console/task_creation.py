@@ -57,15 +57,15 @@ def _base_context(
     whatsapp_query_only = bool(query_policy)
     external_safe_mode = origin == "whatsapp"
     sandbox = _codex_normalizar_sandbox(payload.sandbox)
-    model = _codex_normalizar_model(payload.model)
-    reasoning_effort = _codex_normalizar_reasoning_effort(payload.reasoning_effort)
+    model = _codex_normalizar_model(payload.model if is_full or trusted else None)
+    reasoning_effort = _codex_normalizar_reasoning_effort(payload.reasoning_effort, model=model)
     speed = _codex_normalizar_speed(payload.speed)
     service_tier = _codex_normalizar_service_tier(payload.service_tier, speed)
     if whatsapp_query_only or not is_full:
         sandbox = "read_only"
     if not is_full and not trusted:
         model = _codex_normalizar_model(None)
-        reasoning_effort = _codex_normalizar_reasoning_effort(None)
+        reasoning_effort = _codex_normalizar_reasoning_effort(None, model=model)
         speed = _codex_normalizar_speed(None)
         service_tier = _codex_normalizar_service_tier(None, speed)
     conversation_id = _codex_resolve_new_conversation_id(
@@ -87,7 +87,9 @@ def _base_context(
         requested_model=model,
         rollout_key=f"{sessao.get('client_id')}:{conversation_id}",
         channel_metadata=metadata,
+        explicit_model=bool(payload.model and (is_full or trusted)),
     )
+    reasoning_effort = _codex_normalizar_reasoning_effort(reasoning_effort, model=decision.effective_model)
     cwd = _codex_readonly_cwd_for_session(sessao, conversation_id)
     attachment_ids, attachment_paths = _codex_resolve_attachment_ids(
         payload.attachments, sessao, conversation_id

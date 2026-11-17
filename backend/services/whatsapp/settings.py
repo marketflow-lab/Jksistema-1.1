@@ -12,12 +12,12 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from backend.services import ia_providers
+from backend.services import gpt_model_catalog, ia_providers
 
 
-WHATSAPP_AI_DEFAULT_MODEL = "codex:gpt-5.5"
-WHATSAPP_CODEX_REASONING_DEFAULT = "xhigh"
-WHATSAPP_CODEX_REASONING_OPTIONS = ("low", "medium", "high", "xhigh")
+WHATSAPP_AI_DEFAULT_MODEL = f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}"
+WHATSAPP_CODEX_REASONING_DEFAULT = gpt_model_catalog.default_reasoning(gpt_model_catalog.DEFAULT_CODEX_MODEL)
+WHATSAPP_CODEX_REASONING_OPTIONS = gpt_model_catalog.REASONING_EFFORTS
 WHATSAPP_CODEX_REASONING_POLICY_DEFAULT = "adaptive"
 WHATSAPP_CODEX_REASONING_POLICIES = ("adaptive", "fixed")
 WHATSAPP_ORCHESTRATION_MODE_DEFAULT = "all_when_codex_selected"
@@ -71,11 +71,11 @@ def normalize_ai_model(value: Any) -> str:
     return ia_providers._normalizar_ia_modelo_padrao(raw)
 
 
-def normalize_codex_reasoning_effort(value: Any) -> str:
-    effort = str(value or WHATSAPP_CODEX_REASONING_DEFAULT).strip().lower()
+def normalize_codex_reasoning_effort(value: Any, model: Any = None) -> str:
+    effort = str(value or gpt_model_catalog.default_reasoning(model)).strip().lower()
     if effort not in WHATSAPP_CODEX_REASONING_OPTIONS:
         raise HTTPException(status_code=400, detail="Padrao de inteligencia do Codex invalido.")
-    return effort
+    return gpt_model_catalog.normalize_reasoning(effort, model=model)
 
 
 def normalize_codex_reasoning_policy(value: Any) -> str:
@@ -91,7 +91,10 @@ def normalize_codex_agent_model(value: Any, default: str) -> str:
         raw = raw.split(":", 1)[1]
     if len(raw) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", raw):
         raise HTTPException(status_code=400, detail="Modelo do agente Codex invalido.")
-    return raw
+    try:
+        return gpt_model_catalog.normalize_codex_model(raw, default=default)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Modelo do agente Codex invalido.") from exc
 
 
 def normalize_agent_architecture(value: Any) -> str:
@@ -186,6 +189,12 @@ def dual_agent_settings(
     client_id: Any = None,
 ) -> dict[str, Any]:
     source = config if isinstance(config, dict) else {}
+    conversation_model = normalize_codex_agent_model(
+        source.get("conversation_agent_model"), WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
+    )
+    task_model = normalize_codex_agent_model(
+        source.get("task_agent_model"), WHATSAPP_TASK_AGENT_MODEL_DEFAULT
+    )
     worker_count = normalize_capacity(
         source.get("conversation_worker_count"), WHATSAPP_CONVERSATION_WORKER_COUNT_DEFAULT, 1, 8
     )
@@ -218,16 +227,16 @@ def dual_agent_settings(
         "response_provider_policy": normalize_response_provider_policy(
             source.get("response_provider_policy")
         ),
-        "conversation_agent_model": normalize_codex_agent_model(
-            source.get("conversation_agent_model"), WHATSAPP_CONVERSATION_AGENT_MODEL_DEFAULT
-        ),
+        "conversation_agent_model": conversation_model,
         "conversation_agent_reasoning": normalize_codex_reasoning_effort(
-            source.get("conversation_agent_reasoning") or WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT
+            source.get("conversation_agent_reasoning") or WHATSAPP_CONVERSATION_AGENT_REASONING_DEFAULT,
+            conversation_model,
         ),
-        "task_agent_model": normalize_codex_agent_model(
-            source.get("task_agent_model"), WHATSAPP_TASK_AGENT_MODEL_DEFAULT
+        "task_agent_model": task_model,
+        "task_agent_reasoning": normalize_codex_reasoning_effort(
+            source.get("task_agent_reasoning") or WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
+            task_model,
         ),
-        "task_agent_reasoning": WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
         "conversation_agent_speed": WHATSAPP_CODEX_SPEED_DEFAULT,
         "conversation_agent_service_tier": WHATSAPP_CODEX_SERVICE_TIER_DEFAULT,
         "task_agent_speed": WHATSAPP_CODEX_SPEED_DEFAULT,
@@ -300,7 +309,8 @@ def normalize_progress_interval(value: Any) -> int:
 def ai_settings(config: dict[str, Any]) -> dict[str, str]:
     source = config if isinstance(config, dict) else {}
     model = normalize_ai_model(source.get("ai_model"))
-    reasoning = normalize_codex_reasoning_effort(source.get("codex_reasoning_effort"))
+    codex_model = model if model.startswith("codex:") else gpt_model_catalog.DEFAULT_CODEX_MODEL
+    reasoning = normalize_codex_reasoning_effort(source.get("codex_reasoning_effort"), codex_model)
     if model.startswith("codex:"):
         provider = "codex"
     elif model.startswith("vertex:"):
@@ -323,7 +333,7 @@ def ai_settings(config: dict[str, Any]) -> dict[str, str]:
         ),
         "codex_reasoning_effort": reasoning,
         "codex_reasoning_policy": normalize_codex_reasoning_policy(source.get("codex_reasoning_policy")),
-        "codex_reasoning_max": normalize_codex_reasoning_effort(source.get("codex_reasoning_max") or reasoning),
+        "codex_reasoning_max": normalize_codex_reasoning_effort(source.get("codex_reasoning_max") or reasoning, codex_model),
     }
 
 

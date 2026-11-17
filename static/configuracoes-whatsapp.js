@@ -118,35 +118,27 @@
     if (latestPayload) renderPersonalNumbers(latestPayload);
   }
 
+  function syncAgentReasoning(payload = {}) {
+    const helper = window.JKAIModelCatalog;
+    helper.reasoning(conversationAgentReasoning, conversationAgentModel, payload.conversation_agent_reasoning || conversationAgentReasoning.dataset.selectedReasoning, 'low');
+    helper.reasoning(taskAgentReasoning, taskAgentModel, payload.task_agent_reasoning || taskAgentReasoning.dataset.selectedReasoning, 'low');
+    delete conversationAgentReasoning.dataset.selectedReasoning;
+    delete taskAgentReasoning.dataset.selectedReasoning;
+  }
+
   async function loadAiModels(selectedConversation = '', selectedTask = '') {
     if (aiModelsLoaded) return;
-    const data = await request('/api/ia/modelos');
-    const models = (Array.isArray(data.codex) ? data.codex : []).map(item => ({
-      value: String(item.name || '').replace(/^codex:/i, ''),
-      label: String(item.display_name || item.name || ''),
-    })).filter(item => item.value);
-    [['gpt-5.6-luna', 'Codex conversacional (gpt-5.6-luna)'], ['gpt-5.6-sol', 'Codex de tarefa (gpt-5.6-sol)']].forEach(([value, label]) => {
-      if (!models.some(item => item.value === value)) models.push({ value, label });
-    });
-    function fill(select, selected, fallback) {
-      select.replaceChildren();
-      models.forEach(model => {
-        const option = document.createElement('option');
-        option.value = model.value;
-        option.textContent = model.label || model.value;
-        select.appendChild(option);
-      });
-      select.value = selected || fallback;
-      if (!select.value) {
-        const option = document.createElement('option');
-        option.value = selected || fallback;
-        option.textContent = selected || fallback;
-        select.appendChild(option);
-        select.value = selected || fallback;
-      }
-    }
-    fill(conversationAgentModel, selectedConversation, 'gpt-5.6-luna');
-    fill(taskAgentModel, selectedTask, 'gpt-5.6-sol');
+    const helper = window.JKAIModelCatalog;
+    let models = helper.fallbackCodex();
+    let defaultModel = 'gpt-6.1-sol';
+    try {
+      const data = await request('/api/ia/modelos');
+      if (Array.isArray(data.codex) && data.codex.length) models = data.codex;
+      defaultModel = helper.stripCodex(data.defaults?.codex || defaultModel);
+    } catch (_) {}
+    helper.fill(conversationAgentModel, models, selectedConversation || defaultModel, { rawCodex: true, defaultModel });
+    helper.fill(taskAgentModel, models, selectedTask || defaultModel, { rawCodex: true, defaultModel });
+    syncAgentReasoning(latestPayload || {});
     aiModelsLoaded = true;
   }
 
@@ -435,10 +427,10 @@
     if (firstRender) {
       workerUrl.value = payload.worker_url || '';
       businessPhone.value = payload.business_phone || '';
-      conversationAgentModel.dataset.selectedModel = payload.conversation_agent_model || 'gpt-5.6-luna';
-      taskAgentModel.dataset.selectedModel = payload.task_agent_model || 'gpt-5.6-sol';
-      conversationAgentReasoning.value = payload.conversation_agent_reasoning || 'low';
-      taskAgentReasoning.value = 'low';
+      conversationAgentModel.dataset.selectedModel = payload.conversation_agent_model || 'gpt-6.1-sol';
+      taskAgentModel.dataset.selectedModel = payload.task_agent_model || 'gpt-6.1-sol';
+      conversationAgentReasoning.dataset.selectedReasoning = payload.conversation_agent_reasoning || 'low';
+      taskAgentReasoning.dataset.selectedReasoning = payload.task_agent_reasoning || 'low';
       conversationInterval.value = String(payload.conversation_interval_seconds || 30);
       conversationWorkers.value = String(payload.conversation_worker_count || 4);
       conversationRuntimePool.value = String(payload.conversation_runtime_pool_size || 4);
@@ -556,10 +548,10 @@
       business_phone: businessPhone.value.trim(),
       agent_architecture: 'dual_codex',
       response_provider_policy: (latestPayload && latestPayload.response_provider_policy) || 'codex_only',
-      conversation_agent_model: String(conversationAgentModel.value || 'gpt-5.6-luna').trim(),
+      conversation_agent_model: String(conversationAgentModel.value || 'gpt-6.1-sol').trim(),
       conversation_agent_reasoning: String(conversationAgentReasoning.value || 'low').trim(),
-      task_agent_model: String(taskAgentModel.value || 'gpt-5.6-sol').trim(),
-      task_agent_reasoning: 'low',
+      task_agent_model: String(taskAgentModel.value || 'gpt-6.1-sol').trim(),
+      task_agent_reasoning: String(taskAgentReasoning.value || 'low').trim(),
       conversation_interval_seconds: Number(conversationInterval.value || 30),
       wait_message_after_seconds: 15,
       wait_message_repeat_seconds: 30,
@@ -575,10 +567,10 @@
       data_selection_enabled: true,
       data_selection_worker_count: 4,
       data_selection_runtime_pool_size: 4,
-      ai_model: (latestPayload && latestPayload.ai_model) || 'codex:gpt-5.5',
-      codex_reasoning_effort: 'low',
+      ai_model: (latestPayload && latestPayload.ai_model) || 'codex:gpt-6.1-sol',
+      codex_reasoning_effort: (latestPayload && latestPayload.codex_reasoning_effort) || taskAgentReasoning.value || 'low',
       codex_reasoning_policy: 'fixed',
-      codex_reasoning_max: 'low',
+      codex_reasoning_max: (latestPayload && latestPayload.codex_reasoning_max) || taskAgentReasoning.value || 'low',
       orchestration_mode: 'all_when_codex_selected',
       progress_interval_seconds: 8,
       progress_explain_wait: false,
@@ -591,6 +583,7 @@
     if (data.task_agent_model) taskAgentModel.value = data.task_agent_model;
     if (data.conversation_agent_reasoning) conversationAgentReasoning.value = data.conversation_agent_reasoning;
     if (data.task_agent_reasoning) taskAgentReasoning.value = data.task_agent_reasoning;
+    syncAgentReasoning(data);
     if (data.conversation_interval_seconds) conversationInterval.value = String(data.conversation_interval_seconds);
     if (data.conversation_worker_count) conversationWorkers.value = String(data.conversation_worker_count);
     if (data.conversation_runtime_pool_size) conversationRuntimePool.value = String(data.conversation_runtime_pool_size);
@@ -679,13 +672,15 @@
     if (latestPayload) renderPersonalNumbers(latestPayload);
     byId('waPairingResult').textContent = '';
   });
+  conversationAgentModel.addEventListener('change', () => syncAgentReasoning());
+  taskAgentModel.addEventListener('change', () => syncAgentReasoning());
   tab.addEventListener('click', () => loadStatus(true));
   loadStatus(true).then(async () => {
     await Promise.all([
       loadTargetUsers(),
       loadAiModels(
-        (latestPayload && latestPayload.conversation_agent_model) || conversationAgentModel.dataset.selectedModel || 'gpt-5.6-luna',
-        (latestPayload && latestPayload.task_agent_model) || taskAgentModel.dataset.selectedModel || 'gpt-5.6-sol',
+        (latestPayload && latestPayload.conversation_agent_model) || conversationAgentModel.dataset.selectedModel || 'gpt-6.1-sol',
+        (latestPayload && latestPayload.task_agent_model) || taskAgentModel.dataset.selectedModel || 'gpt-6.1-sol',
       ),
     ]);
   }).catch(error => setStatus(error.message, 'error'));

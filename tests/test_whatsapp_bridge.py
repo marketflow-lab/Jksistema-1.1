@@ -79,8 +79,8 @@ def test_worker_url_requires_https_outside_localhost():
 
 def test_whatsapp_ai_defaults_and_validation():
     defaults = whatsapp_bridge._default_config()
-    assert defaults["ai_model"] == "codex:gpt-5.5"
-    assert defaults["codex_reasoning_effort"] == "xhigh"
+    assert defaults["ai_model"] == "codex:gpt-6.1-sol"
+    assert defaults["codex_reasoning_effort"] == "low"
     assert defaults["codex_reasoning_policy"] == "adaptive"
     assert defaults["codex_reasoning_max"] == "xhigh"
     assert defaults["progress_interval_seconds"] == 8
@@ -428,7 +428,7 @@ def test_whatsapp_admin_model_is_preserved_for_read_only_user(codex_runtime):
 
     task = result["task"]
     assert task["requested_model"] == "gpt-5.6-terra"
-    assert task["effective_model"] == "gpt-5.5"
+    assert task["effective_model"] == "gpt-5.6-terra"
     assert task["reasoning_effort"] == "high"
     assert task["speed"] == "fast"
     assert task["service_tier"] == "priority"
@@ -4752,7 +4752,7 @@ def test_status_lists_numbers_grouped_by_user_with_three_number_limit(monkeypatc
     assert status["ai_model"] == "codex:gpt-5.6-sol"
     assert status["ai_provider"] == "codex"
     assert status["codex_reasoning_effort"] == "high"
-    assert status["codex_reasoning_options"] == ["low", "medium", "high", "xhigh"]
+    assert status["codex_reasoning_options"] == ["low", "medium", "high", "xhigh", "max", "ultra"]
     assert status["channel_mode"] == "question_replies_only_v1"
     assert status["conversation_scope"] == "whatsapp_phone_isolated"
 
@@ -5028,14 +5028,14 @@ def test_completed_pairing_activates_bridge_when_health_is_ready(monkeypatch):
     assert config["pairing_pending"] is False
 
 
-def test_codex_sdk_compat_maps_new_max_effort_response():
+def test_codex_sdk_compat_preserves_supported_max_effort_response():
     payload = {
         "reasoningEffort": "max",
         "thread": {"reasoningEffort": "max", "items": [{"reasoningEffort": "high"}]},
     }
     assert console_agent_loop._codex_sdk_response_compat(payload) == {
-        "reasoningEffort": "xhigh",
-        "thread": {"reasoningEffort": "xhigh", "items": [{"reasoningEffort": "high"}]},
+        "reasoningEffort": "max",
+        "thread": {"reasoningEffort": "max", "items": [{"reasoningEffort": "high"}]},
     }
 
 

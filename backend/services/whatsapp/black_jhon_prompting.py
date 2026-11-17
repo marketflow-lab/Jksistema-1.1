@@ -12,6 +12,7 @@ import hashlib
 import json
 from typing import Any, Mapping
 
+from backend.services import gpt_model_catalog
 from backend.services.whatsapp import black_jhon_v3_contracts as _v3_contracts
 from backend.services.whatsapp import black_jhon_context_serialization as _context_serialization
 
@@ -96,8 +97,9 @@ DECISION_PROMPT_INSTRUCTIONS = (
     "referencias resolvidas necessarias para que o agente seguinte receba um pedido autossuficiente.\n"
     "Ao delegar, preencha requires_web e, somente quando o trabalho tiver partes realmente independentes, divida-o "
     "em ate seis subtasks autossuficientes. Nao crie varios agentes para uma contagem simples que uma unica "
-    "ferramenta consegue consultar em paralelo. Todos os agentes de tarefa executam em low; mantenha "
-    "reasoning_effort como low em cada subtask. Se nao houver divisao util, deixe subtasks vazio.\n"
+    "ferramenta consegue consultar em paralelo. Escolha reasoning_effort conforme o trabalho de cada subtask; "
+    "o servidor valida esse nivel contra as capacidades do modelo configurado. "
+    "Se nao houver divisao util, deixe subtasks vazio.\n"
     "Classifique semanticamente a relacao com a tarefa ativa em relation_to_active_job. Uma consulta de estado deve "
     "usar reply com answer_basis=active_job; uma correcao ou complemento deve usar steer; uma nova tarefa independente "
     "deve usar queue. Nao dependa de palavras isoladas ou pontuacao para decidir essa relacao.\n"
@@ -281,7 +283,7 @@ def conversation_decision_v2_schema(base_schema: Mapping[str, Any]) -> dict[str,
                 "title": {"type": "string", "maxLength": 180},
                 "prompt": {"type": "string", "maxLength": 12000},
                 "requires_web": {"type": "boolean"},
-                "reasoning_effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh"]},
+                "reasoning_effort": {"type": "string", "enum": list(gpt_model_catalog.REASONING_EFFORTS)},
             },
         },
         **properties,

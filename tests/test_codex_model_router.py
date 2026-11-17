@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.services.codex_model_router import (
     BASELINE_MODEL,
+    EXPLICIT_MODELS,
     ModelRouter,
     ModelRoutingPolicyV1,
 )
@@ -43,7 +46,7 @@ def test_full_rollout_selects_variant_only_for_each_promoted_category():
     ).effective_model == "gpt-5.6-sol"
 
     not_promoted = router.decide(
-        category="fitment", requested_model="gpt-5.6-sol", rollout_key="d"
+        category="fitment", requested_model=BASELINE_MODEL, rollout_key="d"
     )
     assert not_promoted.effective_model == BASELINE_MODEL
     assert not_promoted.reason_code == "category_not_promoted"
@@ -89,3 +92,37 @@ def test_unavailable_candidate_never_switches_to_another_gpt56_variant():
     )
     assert decision.effective_model == BASELINE_MODEL
     assert decision.reason_code == "candidate_unavailable"
+
+
+@pytest.mark.parametrize("model", EXPLICIT_MODELS)
+def test_explicit_supported_model_is_honored_without_automatic_category_promotion(model):
+    decision = ModelRouter().decide(
+        category="general", requested_model=f"codex:{model}", rollout_key="explicit",
+        available_models=EXPLICIT_MODELS,
+        explicit_model=True,
+    )
+    assert decision.effective_model == model
+    if model != BASELINE_MODEL:
+        assert decision.reason_code == "explicit_model"
+        assert decision.rerouted is False
+
+
+def test_future_model_requires_runtime_availability_before_being_selected():
+    router = ModelRouter()
+    unavailable = router.decide(category="general", requested_model="gpt-6.2-example", rollout_key="future")
+    assert unavailable.effective_model == BASELINE_MODEL
+    available = router.decide(
+        category="general", requested_model="gpt-6.2-example", rollout_key="future",
+        available_models={BASELINE_MODEL, "gpt-6.2-example"},
+    )
+    assert available.effective_model == "gpt-6.2-example"
+
+
+def test_explicit_baseline_is_preserved_even_with_category_rollout_enabled():
+    router = ModelRouter(ModelRoutingPolicyV1.rollout(policy_version="pilot", categories={"technical": 100}))
+    decision = router.decide(
+        category="technical", requested_model=BASELINE_MODEL, rollout_key="explicit-baseline",
+        explicit_model=True,
+    )
+    assert decision.effective_model == BASELINE_MODEL
+    assert decision.reason_code == "explicit_model"

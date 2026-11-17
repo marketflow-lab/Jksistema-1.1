@@ -9,9 +9,24 @@
     "models": {
       "baseline": "gpt-6.1-sol",
       "explicit_candidates": [
-        "gpt-5.6-luna",
+        "gpt-6.1-sol",
+        "gpt-6-astra",
+        "gpt-6.1-terra",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6-sol",
         "gpt-5.6-terra",
-        "gpt-5.6-sol"
+        "gpt-5.6-luna"
+      ],
+      "reasoning_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra"
       ]
     },
     "request_models": {
@@ -1222,6 +1237,13 @@
         "methods": [
           "GET"
         ],
+        "name": "codex_listar_modelos",
+        "path": "/api/codex/models"
+      },
+      {
+        "methods": [
+          "GET"
+        ],
         "name": "codex_status_user",
         "path": "/api/codex/status"
       },
@@ -1300,6 +1322,6 @@
       "tool_catalog": "379fd5635d2620b6f1d17a4b1224a05f08f46a379e990388575cd85203c92f47"
     }
   },
-  "contracts_sha256": "99c38650d1a39c345935b2a709cf4bf37bb29f23f8dfe869df1c0e48d7633627",
+  "contracts_sha256": "a91588224762672e62964920acce5aef6982fd2d8a385bc86ed091c352c583a8",
   "snapshot_schema_version": "1.0"
 }

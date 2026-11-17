@@ -85,10 +85,26 @@ def test_public_technical_research_stages_use_sol_high(monkeypatch, stage):
     client._invoke_stage_model("Analise tecnica", {"category": "compatibility"}, stage=stage)
 
     call = captured[0]
-    assert call["model_req"] == "codex:gpt-5.6-sol"
-    assert call["payload"].model == "codex:gpt-5.6-sol"
+    assert call["model_req"] == "codex:gpt-6.1-sol"
+    assert call["payload"].model == "codex:gpt-6.1-sol"
     assert call["payload"].context["_codex_reasoning_effort"] == "high"
     assert call["payload"].context["context_collection_stage"] == stage
+
+
+@pytest.mark.parametrize("effort", ("high", "xhigh", "max", "ultra"))
+def test_technical_research_preserves_selected_current_model_and_higher_effort(monkeypatch, effort):
+    captured = _capture_model_call(monkeypatch)
+    client = clients._PerguntasVertexGeminiV2Client(
+        "tenant-test", "Loja Teste", "codex:gpt-6-astra",
+        _agent_input("Serve no veiculo?"), reasoning_effort=effort,
+    )
+
+    client._invoke_stage_model("Analise tecnica", {"category": "compatibility"}, stage="technical_resolution_final")
+
+    call = captured[0]
+    assert call["model_req"] == "codex:gpt-6-astra"
+    assert call["payload"].reasoning_effort == effort
+    assert call["payload"].context["_codex_reasoning_effort"] == effort
 
 
 def test_public_listing_generation_keeps_configured_model_and_effort(monkeypatch):

@@ -8,6 +8,7 @@ import unicodedata
 
 from backend.services.favoritos_ml import _favoritos_ml_url_item_id
 from backend.services.vin_transient import contains_vin_like_identifier
+from backend.services import gpt_model_catalog
 
 from .attachments import message_attachments as _ml_pos_venda_mensagem_anexos
 from .input_contracts import (
@@ -487,7 +488,7 @@ def _perguntas_codex_provider_selection(
 
     configured = _normalizar_ia_modelo_padrao(str(configured_model or "").strip())
     codex_model = _normalizar_ia_modelo_padrao(
-        str(os.getenv("IA_PPV_CODEX_MODEL") or (configured if _modelo_eh_codex(configured) else "codex:gpt-5.5"))
+        str(os.getenv("IA_PPV_CODEX_MODEL") or (configured if _modelo_eh_codex(configured) else f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}"))
     )
     try:
         failures = max(0, int(operational_failure_count or 0))

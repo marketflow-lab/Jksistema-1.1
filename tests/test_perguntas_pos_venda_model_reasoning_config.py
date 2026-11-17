@@ -62,6 +62,34 @@ def test_reasoning_configuration_round_trip_is_separate_and_normalized():
     assert second["ia_raciocinio_pos_venda"] == "medium"
 
 
+def test_all_ai_purposes_preserve_current_models_and_extended_reasoning():
+    fake = _ConfigApiFake()
+    result = configuracoes_api.atualizar_configuracoes_globais(
+        fake,
+        ConfiguracoesGlobaisRequest(
+            auto_sync_estoque_janela_minutos=30,
+            ia_modelo_padrao="codex:gpt-5.5",
+            ia_modelo_perguntas="codex:gpt-6-astra",
+            ia_modelo_chat="codex:gpt-6.1-terra",
+            ia_modelo_favoritos="gpt-6-sol",
+            ia_raciocinio_padrao="max",
+            ia_raciocinio_perguntas="ultra",
+            ia_raciocinio_pos_venda="minimal",
+            ia_raciocinio_chat="none",
+            ia_raciocinio_favoritos="max",
+        ),
+    )["configuracoes"]
+    assert result["ia_modelo_padrao"] == "codex:gpt-6.1-sol"
+    assert result["ia_modelo_perguntas"] == "codex:gpt-6-astra"
+    assert result["ia_modelo_chat"] == "codex:gpt-6.1-terra"
+    assert result["ia_modelo_favoritos"] == "gpt-6-sol"
+    assert [result[f"ia_raciocinio_{purpose}"] for purpose in ("padrao", "perguntas", "pos_venda", "chat", "favoritos")] == ["max", "ultra", "minimal", "none", "max"]
+    preserved = configuracoes_api.atualizar_configuracoes_globais(
+        fake, ConfiguracoesGlobaisRequest(auto_sync_estoque_janela_minutos=45),
+    )["configuracoes"]
+    assert all(preserved[key] == value for key, value in result.items() if key.startswith("ia_raciocinio_"))
+
+
 def test_provider_resolves_reasoning_by_questions_and_post_sale(monkeypatch):
     monkeypatch.setattr(
         ia_providers,
@@ -84,7 +112,7 @@ def test_provider_resolves_reasoning_by_questions_and_post_sale(monkeypatch):
 
     assert ia_providers._ia_codex_reasoning_effort_payload(question) == "low"
     assert ia_providers._ia_codex_reasoning_effort_payload(post_sale) == "xhigh"
-    assert ia_providers._normalizar_codex_reasoning_effort("ultra") == "medium"
+    assert ia_providers._normalizar_codex_reasoning_effort("ultra") == "ultra"
 
 
 def test_codex_thread_run_receives_configured_post_sale_effort(monkeypatch, tmp_path):
@@ -420,9 +448,9 @@ def test_v2_keeps_provider_fallback_and_imposes_server_flow(
     )
 
     assert answer == "Resposta segura"
-    assert model == "codex:gpt-5.5"
+    assert model == "codex:gpt-6.1-sol"
     assert captured == {
-        "model": "codex:gpt-5.5",
+        "model": "codex:gpt-6.1-sol",
         "reasoning_effort": "high",
         "flow": expected_flow,
     }

@@ -315,7 +315,7 @@ def _load_config() -> dict[str, Any]:
                         "partial_delivery_debounce_seconds": WHATSAPP_PARTIAL_DEBOUNCE_DEFAULT,
                         "job_deadline_seconds": WHATSAPP_JOB_DEADLINE_DEFAULT,
                         "retry_policy": "bounded",
-                        "task_agent_reasoning": "low",
+                        "task_agent_reasoning": stored_config.get("task_agent_reasoning") or WHATSAPP_TASK_AGENT_REASONING_DEFAULT,
                         "max_subtasks_per_job": WHATSAPP_MAX_SUBTASKS_DEFAULT,
                         "max_active_task_agents_per_conversation": WHATSAPP_MAX_ACTIVE_TASK_AGENTS_DEFAULT,
                         "max_active_task_agents_global": WHATSAPP_MAX_ACTIVE_TASK_AGENTS_GLOBAL_DEFAULT,

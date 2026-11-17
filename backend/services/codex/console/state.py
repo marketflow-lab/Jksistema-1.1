@@ -6,7 +6,7 @@ import os
 import threading
 from typing import Any, Optional
 
-from backend.services import codex_ai_telemetry, codex_evaluations, codex_model_router
+from backend.services import codex_ai_telemetry, codex_evaluations, codex_model_router, gpt_model_catalog
 
 CODEX_SANDBOXES = {"read_only", "workspace_write", "full_access"}
 CODEX_INTERNAL_ALLOWED_SANDBOXES = {"read_only"}
@@ -143,7 +143,7 @@ CODEX_DEFAULT_MODEL = codex_model_router.BASELINE_MODEL
 CODEX_SIDEBAR_TASK_PROMPT_VERSION = "black-jhon-sidebar-task-2026-07-20-v2"
 CODEX_SIDEBAR_TASK_SCHEMA_VERSION = "codex-sidebar-task-v2"
 
-CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+CODEX_REASONING_EFFORTS = set(gpt_model_catalog.REASONING_EFFORTS)
 
 CODEX_SPEEDS = {"standard", "fast"}
 

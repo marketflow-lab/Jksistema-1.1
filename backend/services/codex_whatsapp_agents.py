@@ -16,6 +16,7 @@ import uuid
 from collections import deque
 from typing import Any, Optional
 
+from backend.services import gpt_model_catalog
 from backend.services.whatsapp import black_jhon_prompting
 
 
@@ -86,7 +87,7 @@ _BASE_DECISION_SCHEMA: dict[str, Any] = {
                     "requires_web": {"type": "boolean"},
                     "reasoning_effort": {
                         "type": "string",
-                        "enum": ["low", "medium", "high", "xhigh"],
+                        "enum": list(gpt_model_catalog.REASONING_EFFORTS),
                     },
                 },
             },
@@ -381,7 +382,7 @@ def normalize_decision(
     job_prompt = _clean_text(raw_task.get("prompt") or parsed.get("job_prompt"), 12000)
     requires_web = bool(raw_task.get("requires_web")) if "requires_web" in raw_task else bool(parsed.get("requires_web"))
     task_reasoning = _clean_text(raw_task.get("reasoning_effort"), 20).lower()
-    if task_reasoning not in {"low", "medium", "high", "xhigh"}:
+    if task_reasoning not in gpt_model_catalog.REASONING_EFFORTS:
         task_reasoning = "low"
     if action in {"delegate", "queue"} and not job_prompt:
         raise RuntimeError("conversation_agent_empty_job_prompt")
@@ -397,7 +398,11 @@ def normalize_decision(
                 "title": _clean_text(item.get("title"), 180) or _clean_text(parsed.get("job_title"), 180),
                 "prompt": prompt,
                 "requires_web": bool(item.get("requires_web")),
-                "reasoning_effort": "low",
+                "reasoning_effort": (
+                    _clean_text(item.get("reasoning_effort"), 20).lower()
+                    if _clean_text(item.get("reasoning_effort"), 20).lower() in gpt_model_catalog.REASONING_EFFORTS
+                    else "low"
+                ),
             }
         )
     raw_context = parsed.get("resolved_context") if isinstance(parsed.get("resolved_context"), dict) else {}
@@ -837,6 +842,7 @@ class WarmConversationRuntime:
         self._lock = threading.RLock()
         self._codex: Any = None
         self._available_models: list[str] = []
+        self._model_catalog: dict[str, dict[str, Any]] = {}
         self._last_error = ""
         self._started_at = ""
         self._last_used_at = ""
@@ -848,9 +854,9 @@ class WarmConversationRuntime:
         from backend.services.codex.console import execution as console_execution
         from backend.services.codex.console import paths as console_paths
         from backend.services.codex.console import telemetry as console_telemetry
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex import Codex, CodexConfig
 
-        console_execution.apply_sdk_protocol_compat()
         runtime_bin = console_execution.require_runtime_ready()
         client = Codex(
             CodexConfig(
@@ -866,13 +872,9 @@ class WarmConversationRuntime:
         self._last_error = ""
         try:
             response = client.models(include_hidden=False)
-            data = getattr(response, "data", None) or getattr(response, "models", None) or []
-            models: list[str] = []
-            for item in data:
-                value = getattr(item, "id", None) or getattr(item, "model", None) or (item.get("id") if isinstance(item, dict) else "")
-                if value:
-                    models.append(str(value))
-            self._available_models = list(dict.fromkeys(models))
+            rows = gpt_model_catalog.register_codex_models(response)
+            self._model_catalog = {item["id"]: item for item in rows}
+            self._available_models = list(self._model_catalog)
         except Exception:
             self._available_models = []
         return client
@@ -886,12 +888,16 @@ class WarmConversationRuntime:
                 pass
 
     def resolve_model(self, requested: str) -> str:
-        value = _clean_text(requested, 100).removeprefix("codex:")
+        value = gpt_model_catalog.normalize_codex_model(requested)
         with self._lock:
             self._start_locked()
             if not self._available_models or value in self._available_models:
                 return value
-            for fallback in ("gpt-5.6-terra", "gpt-5.5", "gpt-5.4"):
+            default_model = next(
+                (item["id"] for item in self._model_catalog.values() if item.get("is_default")),
+                gpt_model_catalog.DEFAULT_CODEX_MODEL,
+            )
+            for fallback in (default_model, gpt_model_catalog.DEFAULT_CODEX_MODEL, *self._available_models):
                 if fallback in self._available_models:
                     return fallback
         raise RuntimeError(f"codex_model_unavailable:{value}")
@@ -921,6 +927,7 @@ class WarmConversationRuntime:
         from backend.services.codex.console import execution as console_execution
         from backend.services.codex.console import paths as console_paths
         from backend.services.codex.console import telemetry as console_telemetry
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex.generated.v2_all import ReasoningSummary
 
         decision_contract = _decision_runtime_contract()
@@ -1017,6 +1024,7 @@ class WarmConversationRuntime:
                 try:
                     client = self._start_locked()
                     effective_model = self.resolve_model(model)
+                    effective_reasoning = gpt_model_catalog.normalize_reasoning(reasoning_effort, model=effective_model)
                     effective_model_for_telemetry = effective_model
                     kwargs = {
                         "cwd": str(console_paths.base_dir()),
@@ -1059,7 +1067,7 @@ class WarmConversationRuntime:
                     result = thread.run(
                         prompt,
                         model=effective_model,
-                        effort=console_execution.reasoning_effort(reasoning_effort),
+                        effort=gpt_model_catalog.sdk_reasoning_effort(effective_reasoning, model=effective_model),
                         approval_mode=console_execution.approval_mode("read_only", "read_only"),
                         output_schema=decision_contract["schema"],
                         summary=ReasoningSummary.model_validate("none"),
@@ -1075,7 +1083,7 @@ class WarmConversationRuntime:
                             "thread_id": _clean_text(getattr(thread, "id", ""), 200),
                             "requested_model": _clean_text(model, 100).removeprefix("codex:"),
                             "effective_model": effective_model,
-                            "reasoning_effort": reasoning_effort,
+                            "reasoning_effort": effective_reasoning,
                             "speed": effective_speed,
                             "service_tier": effective_service_tier or "",
                             "response_provider": "codex",
@@ -1122,6 +1130,7 @@ class WarmConversationRuntime:
         from backend.services.codex.console import execution as console_execution
         from backend.services.codex.console import paths as console_paths
         from backend.services.codex.console import telemetry as console_telemetry
+        console_execution.apply_sdk_protocol_compat()
         from openai_codex.generated.v2_all import ReasoningSummary
 
         prompt = _manager_prompt(
@@ -1140,6 +1149,7 @@ class WarmConversationRuntime:
                 try:
                     client = self._start_locked()
                     effective_model = self.resolve_model(model)
+                    effective_reasoning = gpt_model_catalog.normalize_reasoning(reasoning_effort, model=effective_model)
                     kwargs = {
                         "cwd": str(console_paths.base_dir()),
                         "model": effective_model,
@@ -1157,7 +1167,7 @@ class WarmConversationRuntime:
                     result = thread.run(
                         prompt,
                         model=effective_model,
-                        effort=console_execution.reasoning_effort(reasoning_effort),
+                        effort=gpt_model_catalog.sdk_reasoning_effort(effective_reasoning, model=effective_model),
                         approval_mode=console_execution.approval_mode("read_only", "read_only"),
                         output_schema=FUNCTION_MANAGER_PLAN_SCHEMA,
                         summary=ReasoningSummary.model_validate("none"),
@@ -1169,7 +1179,7 @@ class WarmConversationRuntime:
                             "thread_id": _clean_text(getattr(thread, "id", ""), 200),
                             "requested_model": _clean_text(model, 100).removeprefix("codex:"),
                             "effective_model": effective_model,
-                            "reasoning_effort": reasoning_effort,
+                            "reasoning_effort": effective_reasoning,
                             "speed": effective_speed,
                             "service_tier": effective_service_tier or "",
                             "prompt_contract": black_jhon_prompting.prompt_contract_diagnostics(),

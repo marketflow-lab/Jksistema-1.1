@@ -5,11 +5,18 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.services import codex_assistant
+from backend.routers.codex_models import codex_listar_modelos
 from backend.services.codex.console import api as codex_console
 
 
 def create_codex_console_router() -> APIRouter:
     router = APIRouter(tags=["codex-console"])
+    router.add_api_route(
+        "/api/codex/models",
+        codex_listar_modelos,
+        methods=["GET"],
+        name="codex_listar_modelos",
+    )
     router.add_api_route(
         "/api/admin/codex/status",
         codex_console.codex_status,

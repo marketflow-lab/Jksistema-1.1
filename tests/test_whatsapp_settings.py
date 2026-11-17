@@ -43,6 +43,52 @@ def test_ai_and_dual_settings_components_match_facade() -> None:
     assert dual["job_deadline_seconds"] == 0
 
 
+@pytest.mark.parametrize("effort", ["max", "ultra"])
+def test_whatsapp_preserves_supported_reasoning_in_both_agent_roles(effort) -> None:
+    configured = settings.dual_agent_settings({
+        "conversation_agent_model": "gpt-6.1-sol",
+        "conversation_agent_reasoning": effort,
+        "task_agent_model": "gpt-6.1-terra",
+        "task_agent_reasoning": effort,
+    })
+    assert configured["conversation_agent_reasoning"] == effort
+    assert configured["task_agent_reasoning"] == effort
+
+
+def test_whatsapp_reasoning_respects_each_model_capabilities() -> None:
+    configured = settings.dual_agent_settings({
+        "conversation_agent_model": "gpt-6-luna",
+        "conversation_agent_reasoning": "ultra",
+        "task_agent_model": "gpt-6.1-sol",
+        "task_agent_reasoning": "ultra",
+    })
+    assert configured["conversation_agent_reasoning"] != "ultra"
+    assert configured["task_agent_reasoning"] == "ultra"
+
+
+def test_whatsapp_migrates_retired_codex_model_and_uses_supported_default() -> None:
+    configured = settings.ai_settings({"ai_model": "codex:gpt-5.5"})
+    assert configured["model"] == "codex:gpt-6.1-sol"
+    assert configured["codex_reasoning_effort"] == "low"
+
+
+def test_whatsapp_config_update_keeps_supported_task_reasoning() -> None:
+    from backend.services.whatsapp.api_endpoints import _apply_bridge_model_config
+    from backend.services.whatsapp.contracts import WhatsappBridgeConfigRequest
+
+    config = {"task_agent_model": "gpt-6.1-sol"}
+    _apply_bridge_model_config(config, WhatsappBridgeConfigRequest(task_agent_reasoning="ultra"))
+    assert config["task_agent_reasoning"] == "ultra"
+
+
+def test_whatsapp_config_migration_keeps_explicit_task_reasoning(monkeypatch) -> None:
+    monkeypatch.setattr(whatsapp_bridge, "_json_read", lambda *_args, **_kwargs: {
+        "version": 5, "agent_architecture": "dual_codex",
+        "task_agent_model": "gpt-6.1-sol", "task_agent_reasoning": "ultra",
+    })
+    assert whatsapp_bridge._load_config()["task_agent_reasoning"] == "ultra"
+
+
 @pytest.mark.parametrize(
     ("normalizer", "arguments"),
     [

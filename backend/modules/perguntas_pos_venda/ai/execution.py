@@ -14,6 +14,7 @@ from ml_questions_gemini.schemas import (
 )
 from fastapi import HTTPException
 from backend.services.compatibility_coverage import COMPATIBILITY_COVERAGE_VERSION
+from backend.services import gpt_model_catalog
 from ..research_failures import MANUAL_RESEARCH_RECOVERY, safe_research_failures
 
 from .runtime import (
@@ -356,7 +357,7 @@ def _perguntas_ia_execucao_configurar(client_id: str, agent_input: dict, started
     selection = _perguntas_codex_provider_selection(
         configured_model or settings.model, (agent_input or {}).get("_codex_operational_failure_count"),
     )
-    model_req = str(selection.get("model") or "codex:gpt-5.5")
+    model_req = str(selection.get("model") or f"codex:{gpt_model_catalog.DEFAULT_CODEX_MODEL}")
     settings.model = model_req
     diagnostics = [{
         "function": ML_PERGUNTAS_IA_V2_MODO,
