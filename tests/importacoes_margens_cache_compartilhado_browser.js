@@ -9,7 +9,9 @@ async function esperarMargem(page, valor) {
         ?.textContent.includes(valor), valor);
 }
 async function esperarFila(page) {
-    await page.waitForFunction(() => !filaMargensLista);
+    // A margem salva aparece antes de a fila e os complementos da carga começarem.
+    await page.waitForFunction(() => cicloAnaliseMargensAutomaticas > 0 && !filaMargensLista
+        && !verificacaoCustosEmAndamento && controladoresAuxiliares.size === 0);
 }
 
 (async () => {

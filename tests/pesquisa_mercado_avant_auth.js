@@ -327,15 +327,31 @@ async function main() {
             assert(frame, 'The loading auth frame must exist.');
             // Isolate the overall deadline from browser IPC latency. Actual
             // delayed rendering and uncertain submissions use real frames above.
+            const now = Date.now;
+            const executePage = f.contents.executeJavaScript;
+            const executeFrame = frame.executeJavaScript;
+            let clock = now();
+            f.contents.executeJavaScript = async () => {
+                f.stats.pageExecutions++;
+                return { state:'login_form' };
+            };
             frame.executeJavaScript = async () => {
                 f.stats.frameExecutions++;
+                clock += 25;
                 return { ready:false };
             };
-            const started = Date.now();
-            const result = await f.session.ensure();
+            Date.now = () => clock;
+            const started = clock;
+            let result, elapsed;
+            try { result = await f.session.ensure(); elapsed = clock - started; }
+            finally {
+                Date.now = now;
+                f.contents.executeJavaScript = executePage;
+                frame.executeJavaScript = executeFrame;
+            }
             assert.deepEqual(result, { authenticated:false, attempted:false, reason:'avant_login_not_confirmed' });
-            assert(Date.now() - started >= 150, 'A loading login form must use the overall timeout.');
-            assert(Date.now() - started < 1000, 'A form that never renders must still time out.');
+            assert(elapsed >= 150, 'A loading login form must use the overall timeout.');
+            assert(elapsed < 1000, 'A form that never renders must still time out.');
             assert(f.stats.frameExecutions > 1, 'A loading frame must be polled until the deadline.');
             assert.equal(await f.submits(), 0);
         });
@@ -411,8 +427,24 @@ async function main() {
         await test({ email:'' }, async f => {
             const result = await f.session.ensure(); assert.equal(result.reason, 'avant_email_missing'); assert.equal(await f.submits(), 0);
         });
-        await test({ beginPopup:true, disabled:true, timeoutMs:800 }, async f => {
-            const result = await f.session.ensure(); assert.equal(result.authenticated, false); assert.equal(result.attempted, false);
+        await test({ beginPopup:true, disabled:true, timeoutMs:10000 }, async f => {
+            const frame = f.contents.mainFrame.framesInSubtree.find(candidate => candidate.url.startsWith(AUTH_URL));
+            assert(frame, 'The auth iframe must be ready before testing a disabled form.');
+            const execute = frame.executeJavaScript;
+            const now = Date.now;
+            let elapsed = 0;
+            // Expire after the disabled form replies, rather than racing its IPC response.
+            frame.executeJavaScript = async code => {
+                const result = await execute.call(frame, code);
+                elapsed = f.session.timeoutMs + 1;
+                return result;
+            };
+            Date.now = () => now() + elapsed;
+            let result;
+            try { result = await f.session.ensure(); }
+            finally { Date.now = now; frame.executeJavaScript = execute; }
+            assert.equal(result.authenticated, false); assert.equal(result.attempted, false);
+            assert.deepEqual(f.stats.frameResults, [{ ready:false }]);
             assert.equal(await f.submits(), 0, 'Filling alone must never authenticate.');
             assert.equal(await f.page.frames().find(frame => frame.url().startsWith(AUTH_URL)).locator('#email').inputValue(), FIXTURE_EMAIL);
         });
@@ -422,12 +454,12 @@ async function main() {
             const second = await f.session.ensure(); assert.equal(second.authenticated, false); assert.equal(second.attempted, false);
             assert.equal(await f.submits(), 1, 'Cooldown must prevent repeated submissions after unconfirmed login.');
         });
-        await test({ beginPopup:true, timeoutMs:300 }, async f => {
+        await test({ beginPopup:true, timeoutMs:10000 }, async f => {
             const controller = new AbortController(); const pending = f.session.ensure({ signal:controller.signal });
             await until(async () => await f.submits() === 1); controller.abort();
             await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(await f.submits(), 1);
         });
-        await test({ beginPopup:true, timeoutMs:300 }, async f => {
+        await test({ beginPopup:true, timeoutMs:10000 }, async f => {
             const pending = f.session.ensure(); await until(async () => await f.submits() === 1); f.switchContext();
             await assert.rejects(pending, error => error.name === 'AbortError'); assert.equal(await f.submits(), 1);
         });

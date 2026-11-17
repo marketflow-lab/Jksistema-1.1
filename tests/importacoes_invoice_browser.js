@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { expect } = require('@playwright/test');
 
 const root = path.resolve(__dirname, '..');
 const previewDirectory = process.env.JK_INVOICE_PREVIEW_DIR;
@@ -534,31 +535,33 @@ async function testCommercialInvoiceStopsAfterSaveFailure(page) {
 }
 
 async function assertLayout(pill, width, editing) {
-  // evaluate não aguarda a visibilidade ou a estabilidade após trocar o viewport.
-  await pill.waitFor({ state: 'visible' });
-  await pill.scrollIntoViewIfNeeded();
-  const layout = await pill.evaluate(element => {
-    const card = element.closest('.lista-item');
-    const rect = element.getBoundingClientRect();
-    const cardRect = card.getBoundingClientRect();
-    const actionRect = card.querySelector('.lista-card-acoes')?.getBoundingClientRect();
-    const input = element.querySelector('input');
-    const inputRect = input?.getBoundingClientRect();
-    return {
-      cardWidth: card.clientWidth,
-      cardScrollWidth: card.scrollWidth,
-      fits: card.scrollWidth <= card.clientWidth + 1,
-      within: rect.left >= cardRect.left && rect.right <= cardRect.right + 1,
-      overlaps: actionRect && rect.left < actionRect.right && rect.right > actionRect.left &&
-        rect.top < actionRect.bottom && rect.bottom > actionRect.top,
-      actionsVisible: !actionRect || actionRect.width > 0,
-      inputFits: !inputRect || inputRect.right <= rect.right + 1,
-      inputWidth: inputRect?.width,
-    };
-  });
-  assert(layout.fits && layout.within && !layout.overlaps && layout.actionsVisible,
-    'Invoice ' + (editing ? 'em edição' : 'com texto longo') + ' deve caber sem ocultar ações em ' + width + 'px: ' + JSON.stringify(layout));
-  if (editing) assert(layout.inputFits && layout.inputWidth >= 55, 'Editor de Invoice deve permanecer utilizável em ' + width + 'px: ' + JSON.stringify(layout));
+  // A atualização das listas pode remontar o cartão enquanto o viewport estabiliza.
+  await expect(async () => {
+    await pill.waitFor({ state: 'visible' });
+    await pill.scrollIntoViewIfNeeded();
+    const layout = await pill.evaluate(element => {
+      const card = element.closest('.lista-item');
+      const rect = element.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const actionRect = card.querySelector('.lista-card-acoes')?.getBoundingClientRect();
+      const input = element.querySelector('input');
+      const inputRect = input?.getBoundingClientRect();
+      return {
+        cardWidth: card.clientWidth,
+        cardScrollWidth: card.scrollWidth,
+        fits: card.scrollWidth <= card.clientWidth + 1,
+        within: rect.left >= cardRect.left && rect.right <= cardRect.right + 1,
+        overlaps: actionRect && rect.left < actionRect.right && rect.right > actionRect.left &&
+          rect.top < actionRect.bottom && rect.bottom > actionRect.top,
+        actionsVisible: !actionRect || actionRect.width > 0,
+        inputFits: !inputRect || inputRect.right <= rect.right + 1,
+        inputWidth: inputRect?.width,
+      };
+    });
+    assert(layout.fits && layout.within && !layout.overlaps && layout.actionsVisible,
+      'Invoice ' + (editing ? 'em edição' : 'com texto longo') + ' deve caber sem ocultar ações em ' + width + 'px: ' + JSON.stringify(layout));
+    if (editing) assert(layout.inputFits && layout.inputWidth >= 55, 'Editor de Invoice deve permanecer utilizável em ' + width + 'px: ' + JSON.stringify(layout));
+  }).toPass({ timeout: 8000 });
 }
 
 async function testResponsiveLayout(page) {

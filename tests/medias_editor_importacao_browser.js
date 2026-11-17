@@ -293,7 +293,13 @@ const json = (route, body, status = 200) => route.fulfill({
     await page.locator('#lojaBotoes button').filter({ hasText: 'JK Pecas' }).click();
     await page.locator('#btnAbaListasPedidos').click();
     await page.locator('.lista-item').filter({ hasText: 'Pedido importado' }).click();
-    await page.locator('#editorListaPedido:not(.hidden)').waitFor();
+    // The panel is visible while its items are still loading from cache or the API.
+    await page.waitForFunction(expectedCount => {
+      const editor = document.getElementById('editorListaPedido');
+      return listaPedidoAtual?.id === 'lista-2' && editor && !editor.classList.contains('hidden')
+        && !editor.inert
+        && document.querySelectorAll('#tblListaPedidoItens input[data-kind="sku"]').length === expectedCount;
+    }, casosSku.length);
     const skusReabertos = await page.locator('#tblListaPedidoItens input[data-kind="sku"]').evaluateAll(inputs => inputs.map(input => input.value));
     assert.deepStrictEqual(skusReabertos.sort(), casosSku.map(([sku]) => sku.toUpperCase()).sort());
 

@@ -356,6 +356,10 @@ const listas = [{
     await oculto('balaoFotoListaPedido');
     await afastar();
     await page.setViewportSize({ width: 1536, height: 920 });
+    // Settle resize/scroll before opening the popup whose timeout is under test.
+    await afastar();
+    await qtd('006').scrollIntoViewIfNeeded();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     cenarios += 1;
 
     // A blocked source becomes unavailable after five seconds and cannot revive on late completion.
@@ -368,6 +372,7 @@ const listas = [{
     assert.doesNotMatch(texto, /Estoque atual\s*0\b|Pedidos a caminho\s*0\b/);
     await liberar('006');
     assert.doesNotMatch(await popupQtd.innerText(), /987|654/);
+    assert.strictEqual(consultas.filter(consulta => consulta.sku === '006').length, 1);
     await afastar();
     await oculto('balaoQuantidadeListaPedido');
     cenarios += 1;
