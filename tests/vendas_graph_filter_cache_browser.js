@@ -197,7 +197,7 @@ async function main() {
         // A combination never visited has no snapshot, but its chart request must still start now.
         await period(page, '2022-01-01', '2022-02-28');
         const cold = await waitHeld(url => url.pathname === '/api/vendas/grafico' && url.searchParams.get('data_inicio') === '2022-01-01');
-        assert.ok(state.held.some(item => item.url.pathname === '/api/vendas/resumo' && item.url.searchParams.get('data_inicio') === '2022-01-01'));
+        await waitHeld(url => url.pathname === '/api/vendas/resumo' && url.searchParams.get('data_inicio') === '2022-01-01');
         await release(cold, graphFor({...base,start:'2022-01-01',end:'2022-02-28'}));
         await expectGraph(page, {...base,start:'2022-01-01',end:'2022-02-28'}, 'cold chart completes before summary');
 
