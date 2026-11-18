@@ -26,6 +26,9 @@
     let taxonomySearchTimer = null;
     let refreshTask = null;
     let refreshRequested = false;
+    let pageEditor = null;
+    let paginationSignature = '';
+    let reconcilingPagination = false;
     let synchronizeTask = null;
     let sessionToken = window.localStorage.getItem('access_token') || '';
     const avantEmailStoragePrefix = 'jkPesquisaMercadoAvantEmail:v1:';
@@ -34,7 +37,7 @@
     for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete', 'incomplete', 'incomplete-list', 'incomplete-count', 'recovery-progress', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
-        'body', 'empty', 'count', 'previous', 'next', 'page', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
+        'body', 'empty', 'count', 'first', 'previous', 'next', 'last', 'page', 'pagination', 'page-numbers', 'page-error', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
         'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated',
         'taxonomy-search', 'taxonomy-clear-search', 'avant-email', 'avant-email-note']) elements[name] = el(name);
 
@@ -637,6 +640,7 @@
     function changeMode(mode) {
         photoPreview.hide();
         if (!modes.includes(mode) || state.disposed) return;
+        cancelPageEditing();
         state.mode = mode;
         for (const value of modes) {
             const active = value === mode;
@@ -729,6 +733,7 @@
             button.setAttribute('aria-pressed', seller.seller_key === state.seller ? 'true' : 'false');
             button.textContent = `${sellerLabel(seller)}${seller.ads != null ? ` · ${number(seller.ads)} anúncios` : ''}`;
             button.addEventListener('click', () => {
+                cancelPageEditing();
                 state.seller = seller.seller_key;
                 state.offsets.vendedor = 0;
                 state.rankings.vendedor = null;
@@ -761,6 +766,150 @@
             title: 'Vendas de catalogo sem identificacao especifica do vendedor. A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.'
         } : { label: reason || item.status || 'Aguardando dados do Avant', title: '' };
     }
+    function pagination() {
+        const data = state.rankings[state.tab];
+        const rawTotal = Number(data && data.total);
+        const total = Number.isSafeInteger(rawTotal) && rawTotal > 0 ? rawTotal : 0;
+        return {
+            page: Math.floor(state.offsets[state.tab] / pageSize) + 1,
+            pages: Math.max(1, Math.ceil(total / pageSize)),
+            available: !!state.activeJob && total > 0 && (state.tab !== 'vendedor' || !!state.seller)
+        };
+    }
+    function clearPageError() {
+        elements['page-error'].hidden = true;
+        elements['page-error'].textContent = '';
+        if (pageEditor) pageEditor.input.removeAttribute('aria-invalid');
+    }
+    function createPageButton(page, current, button = document.createElement('button')) {
+        button.type = 'button';
+        button.className = 'btn pm-global-page-number';
+        button.dataset.page = safeText(page);
+        button.textContent = safeText(page);
+        button.setAttribute('aria-label', `Página ${page}`);
+        button.disabled = !current.available;
+        if (page === current.page) {
+            button.setAttribute('aria-current', 'page');
+            button.setAttribute('aria-describedby', 'pm-global-page-help');
+        } else {
+            button.removeAttribute('aria-current');
+            button.removeAttribute('aria-describedby');
+        }
+        return button;
+    }
+    function cancelPageEditing(focusCurrent = false) {
+        if (!pageEditor) return;
+        const input = pageEditor.input;
+        pageEditor = null;
+        // Preserve the other buttons so a click made while editing still reaches its target.
+        const current = pagination();
+        const button = createPageButton(current.page, current);
+        input.replaceWith(button);
+        clearPageError();
+        if (focusCurrent) renderPagination(true);
+    }
+    function renderPagination(focusCurrent = false) {
+        const current = pagination();
+        elements.page.textContent = `Página ${current.page} de ${current.pages}`;
+        elements.first.disabled = elements.previous.disabled = !current.available || current.page <= 1;
+        elements.last.disabled = elements.next.disabled = !current.available || current.page >= current.pages;
+        if (pageEditor) {
+            if (pageEditor.generation !== state.generation || pageEditor.tab !== state.tab
+                || pageEditor.seller !== (state.tab === 'vendedor' ? state.seller : '') || !current.available) cancelPageEditing();
+        }
+        const signature = `${current.page}:${current.pages}:${current.available}`;
+        if (signature !== paginationSignature) {
+            const focusedPage = elements['page-numbers'].contains(document.activeElement) && document.activeElement.dataset.page;
+            const focusedEditor = pageEditor && document.activeElement === pageEditor.input;
+            const selection = focusedEditor ? [pageEditor.input.selectionStart, pageEditor.input.selectionEnd] : null;
+            const start = Math.max(2, Math.min(current.page - 2, current.pages - 5));
+            const pages = [1];
+            if (start > 2) pages.push(null);
+            for (let page = start; page < Math.min(start + 5, current.pages); page++) pages.push(page);
+            if (start + 5 < current.pages) pages.push(null);
+            if (current.pages > 1) pages.push(current.pages);
+            const nodes = pages.map(page => {
+                if (page !== null) {
+                    if (pageEditor && page === current.page) return pageEditor.input;
+                    return createPageButton(page, current,
+                        elements['page-numbers'].querySelector(`button[data-page="${page}"]`) || undefined);
+                }
+                const ellipsis = document.createElement('span');
+                ellipsis.className = 'pm-global-page-ellipsis';
+                ellipsis.textContent = '…';
+                ellipsis.setAttribute('aria-hidden', 'true');
+                return ellipsis;
+            });
+            // Reconcile in place so live totals preserve the editor and the other click targets.
+            reconcilingPagination = true;
+            try {
+                let cursor = elements['page-numbers'].firstChild;
+                for (const node of nodes) {
+                    if (node === cursor) cursor = cursor.nextSibling;
+                    else elements['page-numbers'].insertBefore(node, cursor);
+                }
+                while (cursor) { const next = cursor.nextSibling; cursor.remove(); cursor = next; }
+            } finally { reconcilingPagination = false; }
+            if (focusedEditor && pageEditor) {
+                pageEditor.input.focus({ preventScroll: true });
+                pageEditor.input.setSelectionRange(...selection);
+            }
+            paginationSignature = signature;
+            if (focusedPage) focusCurrent = true;
+        }
+        if (focusCurrent) elements['page-numbers'].querySelector('[aria-current="page"]').focus({ preventScroll: true });
+    }
+    function navigatePage(page, focusCurrent = false) {
+        if (state.disposed) return;
+        currentSession();
+        const current = pagination();
+        if (!current.available || !Number.isSafeInteger(page)) return;
+        page = Math.min(current.pages, Math.max(1, page));
+        cancelPageEditing();
+        if (page === current.page) { renderPagination(focusCurrent); return; }
+        state.offsets[state.tab] = (page - 1) * pageSize;
+        state.generation += 1;
+        renderPagination(focusCurrent);
+        refresh();
+    }
+    function startPageEditing(button) {
+        if (state.disposed || pageEditor || !button.matches('[aria-current="page"]') || !pagination().available) return;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.inputMode = 'numeric';
+        input.enterKeyHint = 'go';
+        input.className = 'pm-global-page-editor';
+        input.value = safeText(pagination().page);
+        input.setAttribute('aria-label', 'Página desejada');
+        input.setAttribute('aria-describedby', 'pm-global-page-help pm-global-page-error');
+        input.autocomplete = 'off';
+        pageEditor = { input, generation: state.generation, tab: state.tab, seller: state.tab === 'vendedor' ? state.seller : '' };
+        button.replaceWith(input);
+        input.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                cancelPageEditing(true);
+            } else if (event.key === 'Enter') {
+                event.preventDefault();
+                const value = input.value.trim();
+                const page = Number(value);
+                const current = pagination();
+                if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(page) || page < 1 || page > current.pages) {
+                    elements['page-error'].textContent = `Digite um número de página entre 1 e ${current.pages}.`;
+                    elements['page-error'].hidden = false;
+                    input.setAttribute('aria-invalid', 'true');
+                    return;
+                }
+                navigatePage(page, true);
+            }
+        });
+        input.addEventListener('input', clearPageError);
+        input.addEventListener('blur', () => {
+            if (!reconcilingPagination && pageEditor && pageEditor.input === input) cancelPageEditing();
+        });
+        input.focus({ preventScroll: true });
+        input.select();
+    }
     function renderRanking() {
         photoPreview.hide();
         const data = state.rankings[state.tab];
@@ -780,15 +929,12 @@
                 `<td><span class="status-chip${ranked ? '' : ' warning'}"${statusTitle}>${escaped(status.label)}</span></td></tr>`;
         }).join('');
         const total = data ? Number(data.total) || 0 : 0;
-        const offset = state.offsets[state.tab];
         elements.empty.hidden = rows.length > 0;
         elements.empty.textContent = state.tab === 'vendedor' && !state.seller
             ? 'Selecione um vendedor para ver seu ranking.' : state.activeJob
                 ? 'Nenhum anúncio disponível para estes filtros.' : 'Inicie uma pesquisa para consultar os rankings.';
         elements.count.textContent = `${number(total)} anúncio(s)`;
-        elements.page.textContent = `Página ${Math.floor(offset / pageSize) + 1} de ${Math.max(1, Math.ceil(total / pageSize))}`;
-        elements.previous.disabled = offset === 0;
-        elements.next.disabled = offset + pageSize >= total;
+        renderPagination();
     }
     async function loadRankings() {
         if (!state.activeJob || state.disposed) return;
@@ -821,6 +967,14 @@
         }));
         if (state.disposed || generation !== state.generation || !state.activeJob || jobId !== state.activeJob.id) { refreshRequested = true; return; }
         tabs.forEach((tab, index) => { state.rankings[tab] = results[index]; });
+        let correctedOffset = false;
+        tabs.forEach((tab, index) => {
+            const total = Number(results[index].total);
+            const pages = Number.isSafeInteger(total) && total > 0 ? Math.ceil(total / pageSize) : 1;
+            const lastOffset = (pages - 1) * pageSize;
+            if (state.offsets[tab] > lastOffset) { state.offsets[tab] = lastOffset; correctedOffset = true; }
+        });
+        if (correctedOffset) { state.generation += 1; renderPagination(); refreshRequested = true; return; }
         renderRanking();
     }
     function refresh() {
@@ -950,6 +1104,7 @@
         }
     }
     function changeTab(tab) {
+        cancelPageEditing();
         state.tab = tab;
         elements['tab-geral'].setAttribute('aria-selected', tab === 'geral' ? 'true' : 'false');
         elements['tab-vendedor'].setAttribute('aria-selected', tab === 'vendedor' ? 'true' : 'false');
@@ -962,10 +1117,12 @@
     }
     function filtersChanged() {
         photoPreview.hide();
+        cancelPageEditing();
         state.query = elements.search.value.trim();
         state.category = elements.category.value;
         state.offsets = { geral: 0, vendedor: 0 };
         state.generation += 1;
+        renderPagination();
         window.clearTimeout(debounce);
         debounce = window.setTimeout(refresh, 250);
     }
@@ -1029,10 +1186,23 @@
             catch (error) { showMessage(userErrorMessage(error), true); elements['avant-email'].reportValidity(); }
         });
     }
-    for (const [name, direction] of [['previous', -1], ['next', 1]]) elements[name].addEventListener('click', () => {
-        state.offsets[state.tab] = Math.max(0, state.offsets[state.tab] + direction * pageSize);
-        state.generation += 1;
-        refresh();
+    for (const name of ['first', 'previous', 'next', 'last']) elements[name].addEventListener('click', () => {
+        const current = pagination();
+        navigatePage(name === 'first' ? 1 : name === 'last' ? current.pages : current.page + (name === 'next' ? 1 : -1));
+    });
+    elements['page-numbers'].addEventListener('click', event => {
+        const button = event.target.closest('button[data-page]');
+        if (button && !button.disabled && Number(button.dataset.page) !== pagination().page) navigatePage(Number(button.dataset.page));
+    });
+    elements['page-numbers'].addEventListener('dblclick', event => {
+        const button = event.target.closest('button[aria-current="page"]');
+        if (button && !button.disabled) { event.preventDefault(); startPageEditing(button); }
+    });
+    elements['page-numbers'].addEventListener('keydown', event => {
+        if (['Enter', 'F2'].includes(event.key) && event.target.matches('button[aria-current="page"]')) {
+            event.preventDefault();
+            startPageEditing(event.target);
+        }
     });
     window.addEventListener('message', onMessage);
     const onStorage = event => {
@@ -1049,6 +1219,7 @@
         unsubscribe = () => window.top.postMessage({ channel: 'jk-pesquisa-mercado-command', requestId: `pm-${Date.now()}-${++state.commandSerial}`, action: 'unsubscribe', payload: {} }, '*');
     }
     function dispose() {
+        cancelPageEditing();
         photoPreview.dispose();
         state.disposed = true;
         if (window.__jkPesquisaMercadoChangeMode === changeMode) delete window.__jkPesquisaMercadoChangeMode;

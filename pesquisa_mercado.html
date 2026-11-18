@@ -407,11 +407,20 @@
                             </table>
                             <div id="pm-global-empty" class="empty-state">Inicie uma pesquisa para consultar os rankings.</div>
                         </div>
-                        <div class="pm-global-pagination" aria-label="P&aacute;ginas do ranking">
-                            <button class="btn" type="button" id="pm-global-previous" disabled>Anterior</button>
-                            <span id="pm-global-page">P&aacute;gina 1 de 1</span>
-                            <button class="btn" type="button" id="pm-global-next" disabled>Pr&oacute;xima</button>
-                        </div>
+                        <nav class="pm-global-pagination" id="pm-global-pagination" aria-label="P&aacute;ginas do ranking">
+                            <div class="pm-global-page-start">
+                                <button class="btn" type="button" id="pm-global-first" disabled><span aria-hidden="true">&laquo;</span> Primeira</button>
+                                <button class="btn" type="button" id="pm-global-previous" disabled><span aria-hidden="true">&lsaquo;</span> Anterior</button>
+                            </div>
+                            <div class="pm-global-page-numbers" id="pm-global-page-numbers"></div>
+                            <div class="pm-global-page-end">
+                                <button class="btn" type="button" id="pm-global-next" disabled>Pr&oacute;xima <span aria-hidden="true">&rsaquo;</span></button>
+                                <button class="btn" type="button" id="pm-global-last" disabled>&Uacute;ltima <span aria-hidden="true">&raquo;</span></button>
+                            </div>
+                            <span id="pm-global-page" class="pm-global-page-sr-only" aria-live="polite" aria-atomic="true">P&aacute;gina 1 de 1</span>
+                            <span id="pm-global-page-help" class="pm-global-page-sr-only">Dois cliques ou Enter na p&aacute;gina atual permitem editar. Enter confirma; Escape cancela.</span>
+                        </nav>
+                        <p id="pm-global-page-error" class="pm-global-page-error" role="alert" hidden></p>
                     </div>
                 </div>
                 <p class="footer-note">Ranking pela m&eacute;dia mensal do Avant, como no Favoritos. An&uacute;ncios sem m&eacute;tricas suficientes ficam ao final, com o motivo e sem posi&ccedil;&atilde;o num&eacute;rica. Os resultados s&atilde;o atualizados a cada vendedor conclu&iacute;do, em p&aacute;ginas de 100 an&uacute;ncios.</p>
