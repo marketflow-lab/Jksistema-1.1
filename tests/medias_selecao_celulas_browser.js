@@ -8,10 +8,12 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'medias_compras.html'), 'utf8');
 const meses = ['2026-05', '2026-06', '2026-07', '2026-08', '2026-09', '2026-10'];
+const fotoProduto = 'http://photos.test/produto-001.svg';
 const itens = Array.from({ length: 100 }, (_, indice) => {
   const vendas = indice === 0 ? [1, 0, 0, 14, 29, 18] : indice === 1 ? [0, 0, 0, 2, 3, 4] : [0, 0, 0, 1, 2, 3];
   return {
     sku: String(indice + 1).padStart(3, '0'),
+    foto: indice === 0 ? fotoProduto : '',
     titulo_anuncio: 'Sensor Ford Ranger 3.0 Troller T4',
     vendas_mensais: Object.fromEntries(meses.map((mes, coluna) => [mes, vendas[coluna]])),
     total_vendas_periodo: vendas.reduce((soma, valor) => soma + valor, 0),
@@ -83,19 +85,42 @@ async function aguardarFrames(page) {
       if (url.pathname === '/api/lojas') return route.fulfill({ json: [{ nome: 'Loja simulada', store_id: 'simulado' }] });
       if (url.pathname === '/api/medias-compras/preferencias-skus-ocultos') return route.fulfill({ json: { skus_ocultos: [] } });
       if (url.pathname === '/api/medias-compras/visao') return route.fulfill({ json: { colunas_meses: meses.map(key => ({ key })), itens } });
+      if (url.hostname === 'photos.test') return route.fulfill({ contentType: 'image/svg+xml', body:
+        '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="300"><rect width="600" height="300" fill="#46aee8"/></svg>' });
       if (url.pathname === '/auth.js') return route.fulfill({ contentType: 'application/javascript', body: 'window.verificarSessao=()=>true;window.obterAuthHeaders=()=>({});' });
       return route.fulfill({ contentType: 'application/javascript', body: '' });
     });
     await page.goto('http://jk.test/medias_compras.html');
     const balao = page.locator('#balaoSomaSelecao');
     const selecionadas = page.locator('#tblResultado .celula-selecionada');
+    const foto = page.locator(seletorCelula(0, 1) + ' .foto-sku');
+    const ampliacao = page.locator('#balaoFotoListaPedido');
     await page.locator(seletorCelula(0, 6)).waitFor();
+    assert(['auto', 'default'].includes(await page.locator(seletorCelula(0, 6)).evaluate(el => getComputedStyle(el).cursor)),
+      'A seleção para soma deve preservar o indicador anterior do mouse nas células');
 
     await arrastar(page, 0, 6, 0, 8);
     await esperarSoma(page, '61');
     assert.strictEqual(await selecionadas.count(), 3);
     assert.strictEqual(await page.evaluate(() => getSelection().toString()), '', 'O arrasto deve selecionar células inteiras');
     assert.strictEqual(await copiar(page), '14\t29\t18');
+
+    await foto.hover();
+    await ampliacao.waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.querySelector('#balaoFotoListaPedido img')?.naturalWidth > 0);
+    assert.strictEqual(await ampliacao.locator('img').getAttribute('src'), fotoProduto);
+    assert((await ampliacao.boundingBox()).width > (await foto.boundingBox()).width * 3,
+      'Passar o mouse sobre a foto deve exibir uma imagem maior fora da célula');
+    assert.strictEqual(await selecionadas.count(), 3, 'Ampliar a foto deve preservar a seleção usada na soma');
+    await esperarSoma(page, '61');
+    await page.mouse.move(0, 0);
+    await ampliacao.waitFor({ state: 'hidden' });
+    assert.strictEqual(await copiar(page), '14\t29\t18', 'Sair da foto deve preservar a cópia das células selecionadas');
+    await foto.hover();
+    await ampliacao.waitFor({ state: 'visible' });
+    await page.evaluate(() => window.dispatchEvent(new Event('jk-photo-policy-changed')));
+    await ampliacao.waitFor({ state: 'hidden' });
+    await esperarSoma(page, '61');
 
     await arrastar(page, 0, 6, 1, 8);
     await esperarSoma(page, '70');
@@ -169,9 +194,14 @@ async function aguardarFrames(page) {
     assert.strictEqual(todas[0].split('\t').length, 16, 'A seleção completa deve excluir a coluna de ações');
     assert.strictEqual(todas[0].split('\t')[6], '14');
 
+    await page.evaluate(() => { document.getElementById('secaoTabelaPrincipal').scrollTop = 0; });
+    await foto.waitFor();
+    await foto.hover();
+    await ampliacao.waitFor({ state: 'visible' });
     await page.evaluate(() => renderAbaAtual());
     assert.strictEqual(await selecionadas.count(), 0, 'Uma nova renderização deve limpar a seleção anterior');
     await balao.waitFor({ state: 'hidden' });
+    await ampliacao.waitFor({ state: 'hidden' });
     await page.evaluate(() => { document.getElementById('secaoTabelaPrincipal').scrollTop = 0; });
     const botao = page.locator('#tblResultado .compra-sugerida-editavel[data-sku="001"]');
     await botao.waitFor();

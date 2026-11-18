@@ -20,6 +20,8 @@ from backend.modules.perguntas_pos_venda.ai import inputs as agent_inputs
 from backend.modules.perguntas_pos_venda.ai import queries as agent_queries
 from backend.modules.perguntas_pos_venda.ai import sources as agent_sources
 from backend.modules.perguntas_pos_venda.ai import validation as agent_validation
+from backend.services.configuracoes import CONFIG_GLOBAIS_DEFAULT
+from backend.services.gpt_model_catalog import DEFAULT_CODEX_MODEL
 from ml_questions_gemini import AIAnswer
 
 
@@ -410,8 +412,8 @@ class MlPosVendaAIConfigTests(unittest.TestCase):
 
     def test_backend_has_dedicated_pos_venda_config(self):
         source = backend_text()
-        self.assertIn('"ia_modelo_pos_venda": "codex:gpt-5.5"', source)
-        self.assertIn('"ia_modo_pos_venda": "modelo"', source)
+        self.assertEqual(CONFIG_GLOBAIS_DEFAULT["ia_modelo_pos_venda"], f"codex:{DEFAULT_CODEX_MODEL}")
+        self.assertEqual(CONFIG_GLOBAIS_DEFAULT["ia_modo_pos_venda"], "modelo")
         self.assertIn("def _ia_modelo_pos_venda_configurado()", source)
         self.assertIn("def _ia_modo_pos_venda_configurado()", source)
         self.assertIn('"pos_venda": _ia_modelo_pos_venda_configurado()', source)

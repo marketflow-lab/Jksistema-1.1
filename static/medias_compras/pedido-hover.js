@@ -219,30 +219,31 @@
             }
         }
 
-        function configurarDetalhesLinhaListaPedido(linha) {
-            const foto = linha.querySelector('.foto-sku');
-            const quantidade = linha.querySelector('input[data-kind="qtd"]');
-            if (foto) {
-                foto.tabIndex = 0;
-                foto.setAttribute('aria-label', (foto.alt || 'Foto do produto') + '. Passe o mouse ou use o teclado para ampliar.');
-            }
-            [foto, quantidade].filter(Boolean).forEach(alvo => {
-                if (alvo.dataset.detalhesPedidoLigados) return;
-                alvo.dataset.detalhesPedidoLigados = '1';
-                const mostrar = () => {
-                    if (alvo === foto) mostrarFoto(alvo);
-                    else void mostrarQuantidade(alvo, linha);
-                };
-                const ocultar = () => {
-                    if (ativo && ativo.alvo === alvo) limparDetalhesListaPedido();
-                };
-                alvo.addEventListener('mouseenter', mostrar);
-                alvo.addEventListener('mouseleave', ocultar);
-                alvo.addEventListener('focus', mostrar);
-                alvo.addEventListener('blur', ocultar);
-            });
+        function configurarDetalhesAlvo(alvo, mostrar) {
+            if (!alvo || alvo.dataset.detalhesPedidoLigados) return;
+            alvo.dataset.detalhesPedidoLigados = '1';
+            const ocultar = () => {
+                if (ativo && ativo.alvo === alvo) limparDetalhesListaPedido();
+            };
+            alvo.addEventListener('mouseenter', mostrar);
+            alvo.addEventListener('mouseleave', ocultar);
+            alvo.addEventListener('focus', mostrar);
+            alvo.addEventListener('blur', ocultar);
         }
 
-        return { limparDetalhesListaPedido, configurarDetalhesLinhaListaPedido };
+        function configurarAmpliacaoFoto(foto) {
+            if (!foto) return;
+            foto.tabIndex = 0;
+            foto.setAttribute('aria-label', (foto.alt || 'Foto do produto') + '. Passe o mouse ou use o teclado para ampliar.');
+            configurarDetalhesAlvo(foto, () => mostrarFoto(foto));
+        }
+
+        function configurarDetalhesLinhaListaPedido(linha) {
+            configurarAmpliacaoFoto(linha.querySelector('.foto-sku'));
+            const quantidade = linha.querySelector('input[data-kind="qtd"]');
+            configurarDetalhesAlvo(quantidade, () => { void mostrarQuantidade(quantidade, linha); });
+        }
+
+        return { limparDetalhesListaPedido, configurarDetalhesLinhaListaPedido, configurarAmpliacaoFoto };
     });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

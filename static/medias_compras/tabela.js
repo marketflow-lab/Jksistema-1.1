@@ -303,6 +303,7 @@
             }
 
             tr.innerHTML = tds.join('');
+            context.modules['pedido-hover'].configurarAmpliacaoFoto(tr.querySelector('.foto-sku'));
             marcarComentario?.(tr, tr.firstElementChild, i.sku);
             const detalhesTransito = normalizarDetalhesEstoqueEmTransito(i);
             configurarBalaoEstoqueEmTransito(
@@ -321,6 +322,7 @@
         }
 
         function renderTabela(colunasMeses, itens, modo) {
+            context.modules['pedido-hover'].limparDetalhesListaPedido();
             context.modules['soma-selecao'].ocultarSomaSelecao();
             context.modules['compra-tooltip'].ocultarTooltipCompra();
             ocultarBalaoEstoqueEmTransito();

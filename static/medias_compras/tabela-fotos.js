@@ -1,7 +1,7 @@
 (function installJKMediasTabelaFotos(global) {
     'use strict';
 
-    global.JKMedias.defineModule('tabela-fotos', ['core', 'state', 'api', 'resultados', 'visao-carregamento'], (context) => {
+    global.JKMedias.defineModule('tabela-fotos', ['core', 'state', 'api', 'resultados', 'visao-carregamento', 'pedido-hover'], (context) => {
         const { api, resultados } = context.modules;
         const seletorCelulaFoto = '[data-jk-medias-foto]';
         const placeholderFoto = '<span class="foto-empty foto-reserva">—</span>';
@@ -12,6 +12,7 @@
         let revisaoCadastroFotos = 0;
 
         function cancelarFotosVisao() {
+            context.modules['pedido-hover'].limparDetalhesListaPedido();
             if (!fotosVisao) return;
             const anterior = fotosVisao;
             fotosVisao = null;
@@ -74,6 +75,7 @@
                     + ' data-jk-photo-revision="' + escaparHtml(revisao)
                     + '" alt="Foto ' + escaparHtml(celula.dataset.jkMediasFoto) + '" loading="lazy" decoding="async">'
                 : '<span class="foto-empty foto-reserva">Sem foto</span>';
+            context.modules['pedido-hover'].configurarAmpliacaoFoto(celula.querySelector('.foto-sku'));
         }
 
         async function preencherFotosMontadas(estado) {

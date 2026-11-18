@@ -287,12 +287,25 @@ async function testFotosAdiadas(browser) {
     await page.waitForFunction(() => document.querySelector('#tblResultado .foto-sku')?.naturalWidth > 0);
     assert.strictEqual(await input.inputValue(), '17');
     assert(await input.evaluate(el => el === document.activeElement));
-    await input.press('Enter');
+    const fotoCarregada = primeiraLinha.locator('.foto-sku');
+    const ampliacao = page.locator('#balaoFotoListaPedido');
+    await fotoCarregada.scrollIntoViewIfNeeded();
+    await settle(page);
+    await fotoCarregada.hover();
+    await ampliacao.waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.querySelector('#balaoFotoListaPedido img')?.naturalWidth > 0);
+    assert.strictEqual(await ampliacao.locator('img').getAttribute('src'), 'http://jk.test/foto.gif',
+      'A foto recebida depois da montagem da linha também deve ampliar ao passar o mouse');
+    assert((await ampliacao.boundingBox()).width > (await fotoCarregada.boundingBox()).width * 3);
+    assert(await input.evaluate(el => el === document.activeElement), 'Ampliar a foto não deve tirar o foco da edição');
+    await page.keyboard.press('Enter');
+    await ampliacao.waitFor({ state: 'hidden' });
     await settle(page);
     assert.strictEqual(await page.evaluate(codigo => __fotos.chamadas.filter(item => item.body.skus.includes(codigo)).length, sku(1)), 1);
 
     assert.deepStrictEqual(await page.evaluate(() => __fotos.invalidacoes), [], 'o lote POST é somente leitura');
     await page.evaluate(() => window.dispatchEvent(new Event('jk:cadastro-operation-finished')));
+    await ampliacao.waitFor({ state: 'hidden' });
     const anterior = await esperarLote(sku(1), '', primeira.id + 1);
     await page.locator('#lojaBotoes .loja-btn').last().click();
     const loja = await esperarLote(sku(1), 'store-virtual', anterior.id + 1);
