@@ -105,6 +105,10 @@ margin_configuration = [route for route in routes
 assert len(margin_configuration) == 1
 assert margin_configuration[0].name == "api_medias_compras_configuracao_margens"
 assert set(margin_configuration[0].methods) == {"GET"}
+model_catalog = [route for route in routes if route.path == "/api/codex/models"]
+assert len(model_catalog) == 1
+assert model_catalog[0].name == "codex_listar_modelos"
+assert set(model_catalog[0].methods) == {"GET"}
 paths={path:item for path,item in backend_api.app.openapi().get("paths",{}).items() if path.startswith("/api/vendas") or path.startswith("/api/notas-entrada") or path.startswith("/api/unidades-negocios")}
 raw=json.dumps(paths,sort_keys=True,ensure_ascii=False,separators=(",",":"))
 previous_paths={path:item for path,item in paths.items() if path != "/api/vendas/sync/automatico"}
@@ -120,8 +124,9 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # Importacoes base-custos adds one GET to the previous 543/541 contract.
         # Approved import margin concurrency adds the verified configuration GET.
         # Immediate automatic settings add one POST; all older paths are frozen.
-        "routes": 546,
-        "pairs": 544,
+        # The approved shared GPT catalog adds GET /api/codex/models outside Vendas.
+        "routes": 547,
+        "pairs": 545,
         "duplicates": [],
         "openapi": "cdff2722a11d4efdd5c3f0392dabcdc03dbfa595eb3164e2e644eb0398d7e50c",
         "previous_openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",
