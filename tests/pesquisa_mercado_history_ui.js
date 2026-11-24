@@ -20,8 +20,11 @@ async function main() {
         titulo: title || `Produto ${index}`, vendedor: 'Loja A', preco: 19.9, vendas: 100 + index, media_vendas_mensal: 10,
         rank: index + 1, status: 'analisado', url: `https://produto.mercadolivre.com.br/MLB-${1000000000 + index}-produto` });
     const historyAds = Array.from({ length: 105 }, (_, index) => ad(index));
+    const avantMetrics = { vendas_exibicao: '188', vendas_rotulo: 'Vendas estimadas', vendas_limite_inferior: '+100',
+        data_criacao: 'há 2 anos', media_vendas_mensal_exibicao: '5/Mês', media_mensal_rotulo: 'Vendas mensais' };
+    Object.assign(historyAds[0], avantMetrics);
     historyAds[104] = { ...ad(104, 'Sem Avant'), rank: null, vendas: null, media_vendas_mensal: null, url: 'javascript:untrusted()' };
-    const consolidatedAds = [{ ...ad(0, '<script>untrusted()</script>'), observations: 9, research_count: 2, source_job_id: oldB.id,
+    const consolidatedAds = [{ ...ad(0, '<script>untrusted()</script>'), ...avantMetrics, observations: 9, research_count: 2, source_job_id: oldB.id,
         observed_at: '2026-10-06T13:00:00Z', date_approximate: false },
     { ...ad(1, 'Pendente atual'), rank: null, media_vendas_mensal: null, observations: 1, research_count: 1, source_job_id: oldA.id,
         observed_at: '2026-10-05T10:00:00Z', date_approximate: true, url: 'https://evil.example/item' }];
@@ -56,7 +59,7 @@ async function main() {
         if (diagnostic) { json(diagnostic[1] === oldA.id ? {
             scopePath: [{ ...scopes[0], nome: 'Ciclismo' }, { ...scopes[0], nome: 'Freios' }],
             incompleteCategories: oldA.salesRecoveryPending ? [] : [{ key: 'MLB1', nome: 'Pastilhas', code: 'category_access_denied', motivo: 'private raw details' }, { key: 'MLB2', nome: 'Legado', code: 'legacy_unknown' }],
-            salesRecoveryPending: oldA.salesRecoveryPending === true,
+            salesRecoveryPending: oldA.salesRecoveryPending === true, legacyAvantMetricsPending: oldA.legacyAvantMetricsPending === true,
             recovery: oldA.status === 'running' ? { generation: 1, index: 0, total: 2 } : null
         } : { scopePath: [], incompleteCategories: [], recovery: null }); return; }
         if (/^\/jobs\/[^/]+\/vendedores$/.test(suffix)) { json({ items: [{ seller_key: 'id:1', vendedor: 'Loja A' }, { seller_key: 'id:2', vendedor: 'Loja B' }] }); return; }
@@ -72,7 +75,8 @@ async function main() {
             first_research_at: oldA.created_at, last_research_at: oldB.created_at, owner_revision: revision }); return; }
         if (suffix === '/consolidado/ranking') { json({ items: items.slice(offset, offset + limit), total: items.length, owner_revision: revision }); return; }
         if (suffix === '/consolidado/origens') { json({ items: [oldB, oldA].map(job => ({ source_job_id: job.id, scope_category: job.scope_category,
-            status: job.status, observed_at: job.updated_at, date_approximate: job.id === oldA.id, vendas: 100, media_vendas_mensal: 10 })), total: 2, owner_revision: revision }); return; }
+            status: job.status, observed_at: job.updated_at, date_approximate: job.id === oldA.id, vendas: 100, media_vendas_mensal: 10,
+            ...(job.id === oldB.id ? avantMetrics : {}) })), total: 2, owner_revision: revision }); return; }
         json({ detail: 'Not found' }, 404);
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -143,6 +147,7 @@ async function main() {
         await page.waitForFunction(() => document.getElementById('pm-history-detail-heading').textContent.includes('Suspensão') && document.querySelectorAll('#pm-history-detail-rows tr').length === 100);
         await page.waitForTimeout(350);
         assert.match(await page.locator('#pm-history-detail-heading').textContent(), /Suspensão/, 'late selection A cannot overwrite selected research B');
+        assert.match(await page.locator('#pm-history-detail-rows tr').first().innerText(), /188.*Vendas estimadas.*\+100.*há 2 anos.*5\/Mês/s);
         await page.locator('#pm-history-detail-next').click();
         await page.waitForFunction(() => document.querySelectorAll('#pm-history-detail-rows tr').length === 5);
         const pending = page.locator('#pm-history-detail-rows tr').filter({ hasText: 'Sem Avant' });
@@ -187,6 +192,7 @@ async function main() {
         await mode('consolidated');
         await page.waitForFunction(() => window.__jkPesquisaMercadoHistory.state.consolidated.revision === 9 && !window.__jkPesquisaMercadoHistory.state.consolidated.busy);
         assert.strictEqual(await page.locator('#pm-consolidated-rows script').count(), 0);
+        assert.match(await page.locator('#pm-consolidated-rows tr').first().innerText(), /188.*Vendas estimadas.*\+100.*há 2 anos.*5\/Mês/s);
         assert.match(await page.locator('#pm-consolidated-rows').textContent(), /<script>untrusted\(\)<\/script>/);
         assert.match(await page.locator('#pm-consolidated-rows [data-origin-index="0"]').textContent(), /Ver 2 pesquisa/, 'distinct research count is not an alias observation count');
         const latestPending = page.locator('#pm-consolidated-rows tr').filter({ hasText: 'Pendente atual' });
@@ -196,6 +202,7 @@ async function main() {
         await page.locator('#pm-consolidated-rows [data-origin-index="0"]').click();
         await page.waitForFunction(() => document.querySelectorAll('#pm-consolidated-origin-list .pm-saved-card').length === 2);
         assert.match(await page.locator('#pm-consolidated-origin-list').textContent(), /Concluída parcialmente|Cancelada/);
+        assert.match(await page.locator('#pm-consolidated-origin-list article').first().innerText(), /188.*Vendas estimadas.*5\/Mês.*Data de criação: há 2 anos/s);
         await page.locator('#pm-consolidated-origin-list [data-consult-job="old-B"]').click();
         await page.waitForFunction(() => !document.getElementById('pm-panel-history').hidden && document.getElementById('pm-history-detail-heading').textContent.includes('Suspensão'));
         assert.deepStrictEqual(await page.evaluate(() => window.__commands), [], 'saved queries issue no operational command');
@@ -238,6 +245,15 @@ async function main() {
         await page.locator('#pm-history-recover-incomplete').click();
         assert.strictEqual(await page.evaluate(() => window.__recoveryCalls.length), 2);
         oldA.status = 'running';
+        await page.evaluate(() => window.__releaseRecovery());
+        await page.waitForFunction(() => !window.__jkPesquisaMercadoHistory.state.history.recoverBusy);
+
+        oldA.status = 'cancelled'; oldA.legacyAvantMetricsPending = true;
+        await page.evaluate(() => window.__jkPesquisaMercadoHistory.openDetail('old-A'));
+        assert.strictEqual(await page.locator('#pm-history-recover-incomplete').textContent(), 'Reconsultar métricas do Avant');
+        assert.strictEqual(await page.locator('#pm-history-recover-incomplete').isEnabled(), true);
+        await page.locator('#pm-history-recover-incomplete').click();
+        assert.deepStrictEqual(await page.evaluate(() => window.__recoveryCalls.at(-1)), { jobId: 'old-A', expectedRevision: 4 });
         await page.evaluate(() => window.__releaseRecovery());
         await page.waitForFunction(() => !window.__jkPesquisaMercadoHistory.state.history.recoverBusy);
 

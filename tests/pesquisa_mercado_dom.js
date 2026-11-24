@@ -33,9 +33,10 @@ function pdpPill(value) {
     return '<div class="avt-relative avt-flex avt-items-center avt-gap-1.5 avt-rounded-full avt-border avt-px-3 avt-py-1.5 avt-text-sm avt-font-semibold">'
         + '<span class="avt-min-w-0 avt-flex-1">' + value + '</span></div>';
 }
-function pdpRoot({ total = 100, rhythm = 10, monthly = '5/Mês', created = '12/03/2025', attrs = '', extra = '' } = {}) {
+function pdpRoot({ total = 100, estimated = 155, rhythm = 10, monthly = '5/Mês', created = '12/03/2025', attrs = '', extra = '' } = {}) {
     return '<div id="productInfo" class="avantpro-in-product-content" ' + attrs + '>'
-        + (total === null ? '' : pdpPill(total + ' Vendidos')) + pdpPill('888 Estoque') + pdpStat('Vendas estimadas', '155')
+        + (total === null ? '' : pdpPill(total + ' Vendidos')) + pdpPill('888 Estoque')
+        + (estimated === null ? '' : pdpStat('Vendas estimadas', estimated))
         + (rhythm === null ? '' : pdpStat('Ritmo atual (vendas/mês)', rhythm))
         + (monthly === null ? '' : pdpStat('Vendas mensais', monthly))
         + (created ? pdpStat('Anúncio criado em', created) : '') + extra + '</div>';
@@ -175,7 +176,7 @@ async function run() {
         const originalLive = await page.evaluate(originalAvant.render('extrair-anuncios-avant-pro-dom-webview-1', { p0: '1000' }));
         const normalizedLive = await page.evaluate(scripts.snapshotScript({ seller: officialSeller }));
         assert.equal(normalizedLive.anuncios[0].preco, 67.63);
-        assert.equal(normalizedLive.anuncios[0].vendas, 1000, 'total explicito do catalogo normaliza separador de milhar');
+        assert.equal(normalizedLive.anuncios[0].vendas, 4372, 'estimativa publica do painel; nao atribuida ao vendedor de catalogo');
         assert.equal(normalizedLive.anuncios[0].vendas_estimadas, 4372, 'estimativa e preservada separadamente do total observado');
         assert.equal(normalizedLive.anuncios[0].media_mensal, 1566, 'ritmo PT-BR com ponto representa milhar');
         assert.equal(normalizedLive.anuncios[0].data_criacao, '24/06/2026', 'idade inline nao pode substituir a data de criacao');
@@ -201,14 +202,16 @@ async function run() {
         assert.equal(plainProduct.anuncios[0].vendas, 50);
         assert.equal(plainProduct.anuncios[0].data_criacao, '03/09/2026');
         assert.equal(plainProduct.anuncios[0].media_mensal, 99);
+        assert.equal(plainProduct.anuncios[0].avant_detail_observed, undefined);
         await page.setContent(fixture(card(9, '<section class="avantpro-product-info">' + liveAvantRow('Vendas estimadas', '4.372') + liveAvantRow('Ritmo atual (vendas/mês)', '1.566') + liveAvantRow('Anúncio criado em', '31/02/2026') + '</section>')));
         await page.evaluate(scripts.prepareScript()); // A new independent fixture starts a new collection.
         const estimatesOnly = await page.evaluate(scripts.snapshotScript({ seller: officialSeller }));
-        assert.equal(estimatesOnly.anuncios[0].vendas, null, 'vendas estimadas nunca substituem total ausente');
+        assert.equal(estimatesOnly.anuncios[0].vendas, 4372);
+        assert.equal(estimatesOnly.anuncios[0].vendas_rotulo, 'vendas estimadas');
         assert.equal(estimatesOnly.anuncios[0].media_mensal, 1566);
         assert.equal(estimatesOnly.anuncios[0].data_criacao, '', 'data calendario invalida e rejeitada');
-        assert.equal(estimatesOnly.anuncios[0].rankable, false, 'media sem quantidade nao encerra a coleta de dados');
-        assert.equal(estimatesOnly.anuncios[0].status, 'sem_quantidade_avant');
+        assert.equal(estimatesOnly.anuncios[0].rankable, true);
+        assert.equal(estimatesOnly.anuncios[0].status, 'analisado');
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
 
         await page.setContent(fixture(card(1, '<span>+10 mil vendidos</span>')));
@@ -362,13 +365,45 @@ async function run() {
             return (await page.evaluate(scripts.snapshotScript({ seller, detail: true }))).anuncios[0];
         };
         const modern = await readModern(pdpRoot());
-        assert.equal(modern.vendas, 100, 'pill Vendidos informa quantidade; estimativa 155 e estoque 888 nao substituem total');
+        assert.equal(modern.vendas, 155);
+        assert.equal(modern.vendas_rotulo, 'vendas estimadas');
         assert.equal(modern.vendas_estimadas, 155);
         assert.equal(modern.media_mensal, 5, 'media mensal do Avant e separada do ritmo atual');
         assert.equal(modern.ritmo_atual, 10);
         assert.equal(modern.data_criacao, '12/03/2025');
         assert.equal(modern.rankable, true);
         assert.equal(modern.avant_seller_id, '', 'vendedor nao e fabricado a partir da URL da pagina');
+        for (const [month, displayedDate, normalizedDate] of [
+            [5, 'mar/2024 (aprox.)', 'mar/2024 (aprox.)'],
+            [8, 'Março de 2025', 'mar/2025 (aprox.)']
+        ]) {
+            const observed = await readModern(pdpRoot({ total: '+100', estimated: '188', monthly: month + '/Mês',
+                created: displayedDate, extra: pdpStat('Catálogo criado em', '23/11/2026') + pdpStat('Criado', 'Há 700 dias') }));
+            assert.deepEqual([observed.avant_metrics_version, observed.vendas, observed.vendas_rotulo, observed.vendas_exibicao, observed.vendas_limite_inferior],
+                [3, 188, 'vendas estimadas', '188', '+100']);
+            assert.deepEqual([observed.data_criacao, observed.media_vendas_mensal, observed.media_vendas_mensal_exibicao, observed.media_mensal_rotulo],
+                [normalizedDate, month, month + '/Mês', 'vendas mensais']);
+            assert.equal(observed.rankable, true);
+            assert.equal(observed.avant_detail_observed, true);
+        }
+        const threshold = await readModern(pdpRoot({ total: '+100', estimated: null, created: 'Há 400 dias',
+            extra: pdpStat('Catálogo criado em', '24/11/2026') }));
+        assert.deepEqual([threshold.vendas, threshold.vendas_exibicao, threshold.data_criacao, threshold.rankable], [null, '+100', '', false]);
+        const perSeller = await readModern(pdpRoot({ total: '+100', estimated: '188', extra: liveAvantRow('Vendas do vendedor neste anúncio', '160') }));
+        assert.deepEqual([perSeller.vendas, perSeller.vendas_exibicao, perSeller.vendas_rotulo, perSeller.vendas_estimadas],
+            [160, '160', 'vendas do vendedor neste anuncio', 188]);
+        const waitingMonthly = await readModern(pdpRoot({ monthly: '' }));
+        assert.deepEqual([waitingMonthly.media_mensal, waitingMonthly.media_mensal_rotulo, waitingMonthly.ritmo_atual, waitingMonthly.rankable],
+            [null, 'vendas mensais', 10, false]);
+        const rhythmOnly = await readModern(pdpRoot({ monthly: null }));
+        assert.deepEqual([rhythmOnly.media_mensal, rhythmOnly.media_mensal_rotulo, rhythmOnly.media_vendas_mensal_exibicao],
+            [10, 'ritmo atual (vendas/mes)', '10']);
+        await page.evaluate(html => { document.getElementById('productInfo').outerHTML = html; },
+            pdpRoot({ total: '+100', estimated: '', monthly: '', created: 'Há 400 dias' }));
+        const updated = (await page.evaluate(scripts.snapshotScript({ seller, detail: true }))).anuncios[0];
+        assert.deepEqual([updated.vendas, updated.vendas_exibicao, updated.media_mensal, updated.data_criacao, updated.rankable],
+            [null, '+100', null, '', false], 'uma leitura explicita de limite e campos pendentes substitui o cache deste anuncio');
+        await readModern(pdpRoot());
         let modernClock = Date.parse('2026-10-14T12:00:00Z');
         const modernPartials = [];
         const modernDetail = await detailCollector.collectDetail({ browser: adapter, seller, expectedItem: { id: modernItemId }, now: () => modernClock,
@@ -376,16 +411,15 @@ async function run() {
             wait: async ms => { modernClock += ms; await new Promise(resolve => setTimeout(resolve, ms)); },
             settleMs: 40, missingWaitMs: 300, pollMs: 40, timeoutMs: 3000 });
         assert.equal(modernDetail.incomplete, false, JSON.stringify(modernDetail));
-        assert.equal(modernDetail.anuncios[0].vendas, 100);
+        assert.equal(modernDetail.anuncios[0].vendas, 155);
         assert.equal(modernDetail.anuncios[0].media_mensal, 5);
         assert.equal(modernDetail.anuncios[0].ritmo_atual, 10);
-        assert.equal(modernDetail.anuncios[0].media_vendas_mensal, require('../static/pesquisa-mercado/shared-ranking').calculateMetrics(modern, modernClock).media,
-            'calculo total/data continua a regra do ranking quando ha data');
-        assert.equal(modernDetail.anuncios[0].media_mensal_fonte, 'calculado_vendas_dias_avantpro');
+        assert.equal(modernDetail.anuncios[0].media_vendas_mensal, 5);
+        assert.equal(modernDetail.anuncios[0].media_mensal_fonte, 'avantpro_dom_estruturado');
         assert.ok(modernPartials.length >= 2, 'cartoes modernos sao observados antes da estabilidade final');
         assert.ok(modernPartials.every(partial => partial.reason === 'partial' && partial.primeira_pagina === false));
         assert.ok(modernPartials.every(partial => partial.anuncios.length === 1 && partial.anuncios[0].id === modernItemId));
-        assert.ok(modernPartials.every(partial => partial.anuncios[0].vendas === 100 && partial.anuncios[0].vendas_estimadas === 155));
+        assert.ok(modernPartials.every(partial => partial.anuncios[0].vendas === 155 && partial.anuncios[0].vendas_estimadas === 155));
         assert.ok(modernPartials.every(partial => partial.anuncios[0].rankable === true && partial.anuncios[0].media_mensal === 5));
 
         const withoutDate = await readModern(pdpRoot({ created: '' }));
@@ -394,16 +428,16 @@ async function run() {
             settleMs: 40, missingWaitMs: 300, pollMs: 40, timeoutMs: 3000 });
         assert.equal(directDetail.anuncios[0].media_vendas_mensal, 5, 'sem data usa media mensal 5, sem trocar pelo ritmo 10');
         const bundledModern = await readModern(pdpRoot({ rhythm: null }));
-        assert.equal(bundledModern.vendas, 100);
+        assert.equal(bundledModern.vendas, 155);
         assert.equal(bundledModern.media_mensal, 5, 'cards do bundled 7.0.3 mantem total e media');
-        const modernZeros = await readModern(pdpRoot({ total: 0, rhythm: null, monthly: '0/Mês', created: '' }));
+        const modernZeros = await readModern(pdpRoot({ total: 0, estimated: null, rhythm: null, monthly: '0/Mês', created: '' }));
         assert.equal(modernZeros.vendas, 0);
         assert.equal(modernZeros.media_mensal, 0);
         assert.equal(modernZeros.rankable, true);
         const estimateOnlyModern = await readModern(pdpRoot({ total: null }));
-        assert.equal(estimateOnlyModern.vendas, null);
+        assert.equal(estimateOnlyModern.vendas, 155);
         assert.equal(estimateOnlyModern.vendas_estimadas, 155);
-        assert.equal(estimateOnlyModern.rankable, false, 'estimativa nao vira quantidade de vendas');
+        assert.equal(estimateOnlyModern.rankable, true);
         const plainTailwind = await readModern(pdpRoot().replace('class="avantpro-in-product-content"', 'class="other-product-content"'));
         assert.equal(plainTailwind.vendas, null, 'classes tailwind sem raiz Avant comprovada sao ignoradas');
         assert.equal(plainTailwind.rankable, false);
@@ -412,6 +446,7 @@ async function run() {
         for (const attrs of ['data-item-id="' + foreignId + '"', 'data-product-id="' + foreignId + '"', 'data-catalog-product-id="' + foreignId + '"',
             'data-item-id="' + modernItemId + '" data-mlb="' + foreignId + '"']) {
             const foreign = await readModern(pdpRoot({ total: 999, attrs }));
+            assert.equal(foreign.avant_detail_observed, undefined);
             assert.equal(foreign.vendas, null, 'identidade explicita divergente nao fornece quantidade para o PDP: ' + attrs);
             assert.equal(foreign.rankable, false);
         }
@@ -425,7 +460,7 @@ async function run() {
         assert.equal(conflictingProfileRoot.vendas, null, 'linha legada nao sobrescreve perfil explicito estrangeiro na raiz');
         assert.equal(conflictingProfileRoot.rankable, false);
         const declaredSellerRoot = await readModern(pdpRoot({ attrs: 'data-seller-id="123456"' }), profileHeader);
-        assert.equal(declaredSellerRoot.vendas, 100);
+        assert.equal(declaredSellerRoot.vendas, 155);
         assert.equal(declaredSellerRoot.avant_seller_id, '123456', 'id explicito verdadeiro e propagado, sem fabricar prova de vendedor');
         assert.equal(declaredSellerRoot.rankable, true);
         await page.setContent('<main>' + header + pdpRoot({ total: 999,
@@ -435,12 +470,12 @@ async function run() {
         const profilesWithSameId = (await page.evaluate(scripts.snapshotScript({ seller: { id: '123456', nome: 'Loja Alvo', perfilUrl: 'https://lista.mercadolivre.com.br/_CustId_123456' }, detail: true }))).anuncios[0];
         assert.equal(profilesWithSameId.vendas, null, 'mesmo seller_id nas queries nao resolve perfis nomeados incompatíveis');
         assert.equal(profilesWithSameId.rankable, false);
-        const ignoredRecommendation = await readModern(pdpRoot({ extra: '<section class="recommendations">' + pdpRoot({ total: 999 })
+        const ignoredRecommendation = await readModern(pdpRoot({ extra: '<section class="recommendations">' + pdpRoot({ total: 999, estimated: 777 })
             + '<a href="https://lista.mercadolivre.com.br/_CustId_999">Outro vendedor</a></section>' }));
-        assert.equal(ignoredRecommendation.vendas, 100);
+        assert.equal(ignoredRecommendation.vendas, 155);
         assert.equal(ignoredRecommendation.seller_confirmed, true, 'links de recomendacao nao se tornam prova de vendedor');
-        const foreignPanelModern = await readModern(pdpRoot() + '<aside class="avantpro-panel"><a href="https://produto.mercadolivre.com.br/MLB-99999999-outro-_JM">Outro item</a>' + pdpRoot({ total: 999 }) + '</aside>');
-        assert.equal(foreignPanelModern.vendas, 100);
+        const foreignPanelModern = await readModern(pdpRoot() + '<aside class="avantpro-panel"><a href="https://produto.mercadolivre.com.br/MLB-99999999-outro-_JM">Outro item</a>' + pdpRoot({ total: 999, estimated: 777 }) + '</aside>');
+        assert.equal(foreignPanelModern.vendas, 155);
         assert.equal(foreignPanelModern.rankable, true);
         const foreignLinkedRoot = await readModern(pdpRoot({ total: 999, extra: '<a href="https://www.mercadolivre.com.br/outro/p/MLB99999999">Outro catalogo</a>' }));
         assert.equal(foreignLinkedRoot.vendas, null, 'link de outro catalogo sem wid tambem invalida a raiz');
@@ -459,14 +494,14 @@ async function run() {
         assert.equal(clearedRoots.rankable, false);
         await page.goto('https://www.mercadolivre.com.br/fixture/p/MLB9999999?wid=' + modernItemId);
         const matchingCatalogRoot = await readModern(pdpRoot({ attrs: 'data-product-id="MLB9999999" data-catalog-product-id="MLB9999999"' }));
-        assert.equal(matchingCatalogRoot.vendas, 100, 'id de produto do caminho p e distinto do wid e aceito quando corresponde');
+        assert.equal(matchingCatalogRoot.vendas, 155, 'id de produto do caminho p e distinto do wid e aceito quando corresponde');
         assert.equal(matchingCatalogRoot.rankable, false, 'pill de catalogo sem prova especifica continua pendente');
         const catalogPartials = [];
         const catalogDetail = await detailCollector.collectDetail({ browser: adapter, seller, expectedItem: { id: modernItemId },
             onPartial: partial => { catalogPartials.push(partial); }, settleMs: 40, missingWaitMs: 100, pollMs: 40, timeoutMs: 3000 });
         assert.equal(catalogDetail.reason, 'avant_data_incomplete');
         assert.ok(catalogPartials.length >= 2);
-        assert.ok(catalogPartials.every(partial => partial.anuncios[0].vendas === 100 && partial.anuncios[0].media_mensal === 5));
+        assert.ok(catalogPartials.every(partial => partial.anuncios[0].vendas === 155 && partial.anuncios[0].media_mensal === 5));
         assert.ok(catalogPartials.every(partial => partial.anuncios[0].status === 'catalogo_sem_evidencia_vendedor'
             && partial.anuncios[0].rankable === false && partial.anuncios[0].rank === null), 'observacao preserva valores sem atribuir vendas de catalogo ao vendedor');
         await page.goto(modernUrl);

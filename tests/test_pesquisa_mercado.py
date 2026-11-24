@@ -519,7 +519,8 @@ def test_recovery_diagnostic_is_compact_closed_and_owner_scoped(client, store):
     response = client.get(endpoint, headers=headers)
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"scopePath", "incompleteCategories", "incompleteCategoriesTotal", "salesRecoveryPending", "recovery"}
+    assert set(body) == {"scopePath", "incompleteCategories", "incompleteCategoriesTotal", "salesRecoveryPending", "legacyAvantMetricsPending", "recovery"}
+    assert body["legacyAvantMetricsPending"] is True
     assert body["incompleteCategoriesTotal"] == 1
     assert body["salesRecoveryPending"] is False
     assert body["scopePath"] == [job["checkpoint"]["scope"]["category"]]
@@ -556,6 +557,69 @@ def test_diagnostic_exposes_metrics_only_pending_and_allows_another_recovery(cli
     recovered = client.post(base + "/recover-incomplete", json={"expected_revision": job["revision"]}, headers=headers)
     assert recovered.status_code == 200
     assert recovered.json()["job"]["checkpoint"]["recovery"] == {"version": 1, "generation": 1, "categoryKeys": [], "index": 0}
+
+
+@pytest.mark.parametrize("status", ["completed", "cancelled"])
+def test_legacy_avant_recovery_preserves_history_until_publication(client, store, status):
+    job = store.start("cliente-a", "alice")
+    job_id = job["id"]
+    old = ad(1, monthly=3043.75, media_mensal_fonte="calculado_vendas_dias_avantpro")
+    # Previously stored direct metrics also lack the panel labels needed to tell
+    # a true estimate from a bound. They must be eligible even at unrelated dates.
+    other = ad(2, monthly=17, sales=41, media_mensal_fonte="avantpro_painel")
+    old = {**old, "avant_metrics_version": 3, "avant_detail_observed": True}
+    original = publish(store, job, [old, other])
+    assert original["legacyAvantMetricsPending"] is True
+    closed = store.checkpoint(job_id, "cliente-a", "alice", status=status, checkpoint={"salesRecoverySellerKeys": ["id:123"]})
+    before = store.ranking(job_id, "cliente-a", "alice")["items"]
+    assert "avant_metrics_version" not in before[0] and "avant_detail_observed" not in before[0]
+    assert store.get(job_id, "cliente-a", "alice") == closed == store.latest("cliente-a", "alice")
+    assert store.history("cliente-a", "alice")["items"][0]["legacyAvantMetricsPending"]
+    assert store.job_summary(job_id, "cliente-a", "alice")["legacyAvantMetricsPending"]
+    assert not store.history("cliente-a", "bob")["items"]
+    with pytest.raises(HTTPException) as forbidden:
+        store.recover_incomplete(job_id, "cliente-a", "bob", expected_revision=closed["revision"])
+    assert forbidden.value.status_code == 404
+    reopened = store.recover_incomplete(job_id, "cliente-a", "alice", expected_revision=closed["revision"])
+    checkpoint = reopened["checkpoint"]
+    assert checkpoint.get("legacyAvantMetricsOnly", False) == (status == "cancelled")
+    assert checkpoint["recovery"]["categoryKeys"] == []
+    assert checkpoint["salesRecoveryPending"] and checkpoint["legacyAvantMetricsPending"]
+    assert "salesRecoverySellerKeys" not in checkpoint
+    assert store.ranking(job_id, "cliente-a", "alice")["items"] == before
+    if status == "cancelled":
+        failed = store.checkpoint(job_id, "cliente-a", "alice", status="failed", generation=reopened["generation"])
+        reopened = store.recover_incomplete(job_id, "cliente-a", "alice", expected_revision=failed["revision"])
+        assert reopened["checkpoint"]["legacyAvantMetricsOnly"] and not reopened["checkpoint"]["recovery"]["categoryKeys"]
+    details = {"avant_metrics_version": 3, "vendas_rotulo": "Vendas estimadas", "vendas_exibicao": "124",
+               "vendas_limite_inferior": "+100", "vendas_estimadas": 124, "data_criacao": "Há 4 meses",
+               "dataCriacaoFonte": "avantpro_dom_estruturado", "media_vendas_mensal_exibicao": "31",
+               "media_mensal_rotulo": "Ritmo atual", "media_mensal_fonte": "avantpro_painel"}
+    fresh = ad(1, monthly=31, sales=124, **details)
+    def republish(ads):
+        return store.publish(job_id, "id:123", "cliente-a", "alice", seller(), ads, generation=reopened["generation"])
+
+    assert republish([fresh, other])["legacyAvantMetricsPending"] is True
+    # A definitive new pending observation no longer counts as ranked legacy.
+    updated = republish([fresh, ad(2, monthly=None, sales=None, rankable=False, avant_metrics_version=3,
+                                  avant_detail_observed=True)])
+    assert updated["legacyAvantMetricsPending"] is False and updated["counters"]["pending"] == 1
+    headers = {"Authorization": "Bearer cliente-a:alice"}
+    prefix = "/api/pesquisa-mercado/consolidado"
+    projection = client.get(prefix + "/origens", params={"ad_key": "id:MLB1", "seller_key": "id:123"}, headers=headers)
+    consolidated = client.get(prefix + "/ranking", headers=headers)
+    assert projection.status_code == consolidated.status_code == 200
+    ranked, pending = store.ranking(job_id, "cliente-a", "alice")["items"]
+    assert pending["avant_detail_observed"] is True and pending["avant_metrics_version"] == 3
+    for record in (ranked, projection.json()["items"][0], consolidated.json()["items"][0]):
+        assert all(record[name] == value for name, value in details.items())
+    assert not store.diagnostic(job_id, "cliente-a", "alice")["legacyAvantMetricsPending"]
+    # A stale checkpoint flag cannot reopen a completed, current-format publication.
+    closed = store.checkpoint(job_id, "cliente-a", "alice", status="completed", generation=reopened["generation"])
+    assert closed["status"] == status
+    with pytest.raises(HTTPException) as no_legacy:
+        store.recover_incomplete(job_id, "cliente-a", "alice", expected_revision=closed["revision"])
+    assert no_legacy.value.status_code == 409
 
 
 def test_idempotent_atomic_seller_publication_and_authoritative_counters(store):
@@ -870,7 +934,8 @@ def test_http_contract_auth_statuses_and_strict_owner_requests(client):
     assert response.status_code == 200
     job = response.json()["job"]
     base = f"/api/pesquisa-mercado/jobs/{job['id']}"
-    assert set(job) == {"id", "status", "revision", "checkpoint", "counters", "message", "created_at", "updated_at"}
+    assert set(job) == {"id", "status", "revision", "checkpoint", "counters", "message", "created_at", "updated_at", "legacyAvantMetricsPending"}
+    assert job["legacyAvantMetricsPending"] is False
     assert client.get(base, headers={"Authorization": "Bearer cliente-a:bob"}).status_code == 404
     assert client.post("/api/pesquisa-mercado/jobs", json={"client_id": "cliente-b"}, headers=headers).status_code == 422
     assert client.patch(base + "/checkpoint", json={"status": "auth_required"}, headers=headers).status_code == 422

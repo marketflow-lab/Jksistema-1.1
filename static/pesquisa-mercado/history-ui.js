@@ -16,6 +16,21 @@
     const escaped = value => text(value).replace(/[&<>"']/g, value => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[value]);
     const number = value => value !== null && value !== '' && Number.isFinite(Number(value))
         ? Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—';
+    function metricText(display, value, label) {
+        const main = display || number(value);
+        return escaped(main) + (display && label ? `<small>${escaped(label)}</small>` : '');
+    }
+    function salesText(item) {
+        const display = item.vendas_exibicao || item.vendas_limite_inferior;
+        const limit = item.vendas_limite_inferior;
+        const label = [item.vendas_rotulo, limit && limit !== display ? `Limite inferior: ${limit}` : ''].filter(Boolean).join(' · ');
+        return metricText(display, item.vendas, label);
+    }
+    function monthlyText(item) {
+        const value = metricText(item.media_vendas_mensal_exibicao, item.media_vendas_mensal, item.media_mensal_rotulo);
+        return item.media_mensal_fonte === 'calculado_vendas_dias_avantpro'
+            ? value + '<small>Cálculo antigo · aguardando reconsulta</small>' : value;
+    }
     const date = value => {
         const parsed = new Date(value);
         return value && Number.isFinite(parsed.getTime()) ? parsed.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' }) : '—';
@@ -38,7 +53,16 @@
     const incompleteCategories = job => Array.isArray(job && job.incompleteCategories) ? job.incompleteCategories
         : Array.isArray(job && job.checkpoint && job.checkpoint.incompleteCategories) ? job.checkpoint.incompleteCategories : [];
     const salesRecoveryPending = job => !!job && (job.salesRecoveryPending === true || !!job.checkpoint && job.checkpoint.salesRecoveryPending === true);
-    const canRecover = job => !!job && ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    function canRecover(job) {
+        if (!job) return false;
+        if (job.legacyAvantMetricsPending === true && ['completed', 'completed_partial', 'failed', 'cancelled'].includes(job.status)) return true;
+        return ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    }
+    function recoveryLabel(job) {
+        if (job && job.legacyAvantMetricsPending) return 'Reconsultar métricas do Avant';
+        return incompleteCategories(job).length || Number(job && job.incompleteCount) > 0
+            ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+    }
     function incompleteReason(item) {
         const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
             category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
@@ -128,13 +152,13 @@
         <section class="pm-saved-detail" aria-label="Resultado da pesquisa escolhida"><div class="pm-saved-detail-heading" id="pm-history-detail-heading"><span class="pm-saved-eyebrow">Consulta de pesquisa salva</span><h3>Selecione uma pesquisa</h3></div>
         <div class="pm-saved-detail-body" id="pm-history-detail-body" hidden><div class="pm-global-actions"><button type="button" class="btn" id="pm-history-refresh-names">Atualizar nomes das lojas</button><button type="button" class="btn" id="pm-history-names-browser" hidden>Mostrar navegador</button><button type="button" class="btn" id="pm-history-recover-incomplete" hidden>Tentar categorias incompletas novamente</button><button type="button" class="btn" id="pm-history-diagnostic-browser" hidden>Mostrar navegador para diagnóstico</button></div><p id="pm-history-diagnostic-message" class="pm-saved-note" hidden>Os resultados estão disponíveis. Atualize para consultar as pendências desta pesquisa.</p><p id="pm-history-recovery-progress" class="pm-saved-note" hidden></p><details id="pm-history-incomplete" class="pm-category-incomplete" hidden><summary id="pm-history-incomplete-summary">Categorias incompletas e motivos</summary><ul id="pm-history-incomplete-list"></ul></details><div class="pm-global-tabs" role="tablist" aria-label="Rankings da pesquisa salva"><button type="button" class="pm-global-tab" role="tab" aria-selected="true" aria-controls="pm-history-ranking-panel" id="pm-history-tab-geral">Ranking geral</button><button type="button" class="pm-global-tab" role="tab" aria-selected="false" aria-controls="pm-history-ranking-panel" tabindex="-1" id="pm-history-tab-vendedor">Ranking por vendedor</button></div>
         <div class="pm-saved-detail-filters"><input type="search" id="pm-history-detail-search" maxlength="200" aria-label="Buscar anúncios da pesquisa salva" placeholder="Título, MLB ou vendedor"><select id="pm-history-detail-category" aria-label="Escopo dos resultados"><option value="">Todos os escopos dos resultados</option></select><select id="pm-history-detail-seller" aria-label="Vendedor da pesquisa salva" hidden></select></div>
-        <div id="pm-history-ranking-panel" role="tabpanel" aria-labelledby="pm-history-tab-geral"><p class="pm-saved-message" id="pm-history-detail-message" role="status"></p><div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Média mensal</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-history-detail-rows"></tbody></table></div>${pager('history-detail', 'Páginas da pesquisa escolhida')}</div></div></section></div>
+        <div id="pm-history-ranking-panel" role="tabpanel" aria-labelledby="pm-history-tab-geral"><p class="pm-saved-message" id="pm-history-detail-message" role="status"></p><div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Data de criação</th><th>Média mensal</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-history-detail-rows"></tbody></table></div>${pager('history-detail', 'Páginas da pesquisa escolhida')}</div></div></section></div>
         <p class="pm-saved-note" style="margin-top:16px">Consultas manuais por vendedor feitas anteriormente não foram gravadas e não aparecem neste histórico.</p>`;
     consolidatedRoot.innerHTML = `<div class="pm-saved-heading"><div><h2>Consolidado de todas as pesquisas</h2><p class="pm-saved-note">Pesquisas gerais salvas para seu usuário e cliente. Mercado Livre Brasil.</p></div><button type="button" class="btn" id="pm-consolidated-refresh">Atualizar</button></div>
         <div class="pm-saved-stats" id="pm-consolidated-stats"></div><div class="pm-saved-rule">Cada anúncio aparece uma vez por vendedor, com sua observação mais recente. As vendas repetidas não são somadas.<br><span class="pm-saved-note">O filtro de escopo inclui anúncios encontrados nesse escopo e mostra sua observação mais recente entre todas as pesquisas. Ranking pela média mensal do Avant. Sem dados suficientes, o anúncio fica sem posição numérica.</span></div>
         <div class="pm-saved-filters"><div class="pm-saved-field"><label for="pm-consolidated-search">Buscar anúncio</label><input type="search" id="pm-consolidated-search" maxlength="200" placeholder="Título, MLB ou vendedor"></div>${scopeField('consolidated', 'Escopo da pesquisa de origem')}<div class="pm-saved-field"><label for="pm-consolidated-evidence">Dados do anúncio</label><select id="pm-consolidated-evidence"><option value="">Todos os anúncios</option><option value="rankable">Com dados para ranking</option><option value="pending">Sem dados suficientes</option></select></div></div>
         <p class="pm-saved-message" id="pm-consolidated-message" role="status"></p><section class="pm-saved-origin" id="pm-consolidated-origins" aria-label="Pesquisas de origem do anúncio" hidden><div class="pm-saved-heading"><h3 id="pm-consolidated-origin-title"></h3><button type="button" class="btn" id="pm-consolidated-origin-close">Fechar origens</button></div><p class="pm-saved-message" id="pm-consolidated-origin-message" role="status"></p><div class="pm-saved-list" id="pm-consolidated-origin-list"></div>${pager('consolidated-origin', 'Páginas das observações')}</section>
-        <div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Média mensal</th><th>Última consulta</th><th>Pesquisas de origem</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-consolidated-rows"></tbody></table></div>${pager('consolidated', 'Páginas do consolidado')}<p class="pm-saved-note" id="pm-consolidated-range" style="margin-top:12px"></p>`;
+        <div class="pm-saved-table"><table><thead><tr><th>Pos.</th><th>Anúncio</th><th>Vendedor</th><th>Preço</th><th>Vendas</th><th>Data de criação</th><th>Média mensal</th><th>Última consulta</th><th>Pesquisas de origem</th><th>Situação</th><th>Link</th></tr></thead><tbody id="pm-consolidated-rows"></tbody></table></div>${pager('consolidated', 'Páginas do consolidado')}<p class="pm-saved-note" id="pm-consolidated-range" style="margin-top:12px"></p>`;
     function resetInputs() {
         for (const id of ['history-search', 'history-scope', 'history-status', 'history-detail-search', 'history-detail-category', 'consolidated-search', 'consolidated-scope', 'consolidated-evidence']) el(id).value = '';
     }
@@ -230,9 +254,12 @@
             if (!state.disposed && state.history === h) { renderHistory(); renderDetail(); }
         }
     }
+    function creationDate(value) {
+        return text(value).trim().replace(/^(\d{4})-(\d{2})-(\d{2}).*$/, '$3/$2/$1');
+    }
     function rankCells(item) {
         const ranked = Number.isInteger(item.rank) && item.rank > 0;
-        return `<td class="rank-cell">${ranked ? item.rank : ''}</td><td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id || item.ad_key)}</small></td><td>${escaped(sellerLabel(item))}</td><td>${escaped(price(item.preco))}</td><td>${number(item.vendas)}</td><td>${number(item.media_vendas_mensal)}</td>`;
+        return `<td class="rank-cell">${ranked ? item.rank : ''}</td><td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id || item.ad_key)}</small></td><td>${escaped(sellerLabel(item))}</td><td>${escaped(price(item.preco))}</td><td>${salesText(item)}</td><td>${escaped(creationDate(item.data_criacao) || '—')}</td><td>${monthlyText(item)}</td>`;
     }
     function evidenceCell(item) {
         const ranked = Number.isInteger(item.rank) && item.rank > 0;
@@ -252,8 +279,7 @@
         el('history-names-browser').disabled = h.namesBusy;
         el('history-recover-incomplete').hidden = !canRecover(h.detail);
         el('history-recover-incomplete').disabled = operationBusy || !canRecover(h.detail);
-        el('history-recover-incomplete').textContent = incompleteCategories(h.detail).length || Number(h.detail && h.detail.incompleteCount) > 0
-            ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+        el('history-recover-incomplete').textContent = recoveryLabel(h.detail);
         el('history-diagnostic-browser').hidden = !h.detail || !['completed_partial', 'failed'].includes(h.detail.status);
         el('history-diagnostic-browser').disabled = operationBusy;
         const incomplete = incompleteCategories(h.detail), recovery = h.detail && h.detail.checkpoint && h.detail.checkpoint.recovery;
@@ -290,7 +316,7 @@
         const c = state.consolidated;
         el('consolidated-origins').hidden = !c.origin;
         el('consolidated-origin-title').textContent = c.origin ? `Pesquisas de origem: ${c.origin.titulo || c.origin.id || c.origin.ad_key}` : '';
-        el('consolidated-origin-list').innerHTML = c.originItems.map(item => `<article class="pm-saved-card"><div class="pm-saved-card-top"><span>${observed(item)}</span>${statusChip(item.status)}</div><h3>${escaped(scopeName(item))}</h3><div class="pm-saved-card-foot"><span>Vendas: ${number(item.vendas)} · Média mensal: ${number(item.media_vendas_mensal)}</span><button type="button" class="btn" data-consult-job="${escaped(item.source_job_id)}">Consultar pesquisa</button></div></article>`).join('');
+        el('consolidated-origin-list').innerHTML = c.originItems.map(item => `<article class="pm-saved-card"><div class="pm-saved-card-top"><span>${observed(item)}</span>${statusChip(item.status)}</div><h3>${escaped(scopeName(item))}</h3><div class="pm-saved-card-foot"><span>Vendas: ${salesText(item)} · Média mensal: ${monthlyText(item)}${item.data_criacao ? ` · Data de criação: ${escaped(creationDate(item.data_criacao))}` : ''}</span><button type="button" class="btn" data-consult-job="${escaped(item.source_job_id)}">Consultar pesquisa</button></div></article>`).join('');
         renderPager('consolidated-origin', c.originOffset, c.originTotal, 25, c.originBusy);
     }
     async function loadHistory(fresh, retried) {
@@ -350,7 +376,7 @@
                 request(`${base}/resumo`, {}, 'history-detail'), requestDiagnostic(base),
                 request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')]);
             if (state.history !== h || h.detailGeneration !== generation || state.disposed) return;
-            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
+            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, legacyAvantMetricsPending: diagnostic.legacyAvantMetricsPending ?? result.job.legacyAvantMetricsPending, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
             h.detailSellers = sellers.items || []; h.detailCategories = categories.items || []; h.detailSeller = h.detailSellers.length ? h.detailSellers[0].seller_key : '';
             await loadDetailRanking();
         } catch (error) {
@@ -369,7 +395,7 @@
                 request(`${base}/vendedores`, {}, 'history-detail'), request(`${base}/categorias`, {}, 'history-detail')
             ]);
             if (state.history !== h || h.detailGeneration !== generation || state.disposed) return;
-            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
+            h.detail = { ...result.job, diagnosticUnavailable: diagnostic.unavailable === true, scopePath: diagnostic.scopePath, incompleteCount: diagnostic.incompleteCategoriesTotal, salesRecoveryPending: diagnostic.salesRecoveryPending === true, legacyAvantMetricsPending: diagnostic.legacyAvantMetricsPending ?? result.job.legacyAvantMetricsPending, checkpoint: { incompleteCategories: diagnostic.incompleteCategories, recovery: diagnostic.recovery } };
             const selectedSeller = h.detailSellers.find(item => item.seller_key === h.detailSeller);
             h.detailSellers = sellers.items || [];
             if (h.detailSeller && !h.detailSellers.some(item => item.seller_key === h.detailSeller)) h.detailSellers.push(selectedSeller || { seller_key: h.detailSeller, vendedor: h.detailSeller });
@@ -521,7 +547,7 @@
         currentSession();
         const h = state.history, jobId = h.detailId, revision = h.detail && h.detail.revision;
         if (!jobId || h.deleteBusy || h.namesBusy || h.recoverBusy || h.detailBusy || !canRecover(h.detail)) return;
-        h.recoverBusy = true; renderHistory(); renderDetail(); message('history-detail', 'Preparando uma nova tentativa para as categorias incompletas…');
+        h.recoverBusy = true; renderHistory(); renderDetail(); message('history-detail', 'Preparando a nova consulta…');
         try {
             if (typeof window.__jkPesquisaMercadoRecoverIncomplete !== 'function') throw new Error('Abra a pesquisa no aplicativo JK Sistema.');
             const result = await window.__jkPesquisaMercadoRecoverIncomplete(jobId, revision);

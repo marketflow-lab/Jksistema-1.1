@@ -55,7 +55,7 @@
             return { ...item, rankable: isComplete(item, nowMs),
                 media_mensal_fonte: source, media_vendas_mensal_fonte: source,
                 erro: item.erro || (!hasSales ? 'O Avant Pro ainda nao informou a quantidade de vendas.'
-                    : (!hasMetric ? 'O Avant Pro ainda nao informou ritmo mensal ou vendas com data de criacao.' : '')) };
+                    : (!hasMetric ? 'O Avant Pro ainda nao informou a metrica mensal deste anuncio.' : '')) };
         }), nowMs);
     }
 
@@ -132,7 +132,7 @@
                 const hasSales = Number.isFinite(metric.vendas) && metric.vendas >= 0;
                 const item = incoming.rankable === true && !isComplete(incoming, now())
                     ? { ...incoming, rankable: false, status: hasSales ? 'sem_dados_avant' : 'sem_quantidade_avant',
-                        erro: hasSales ? 'Aguardando ritmo mensal ou vendas e data de criacao do Avant Pro.' : 'Aguardando a quantidade de vendas do Avant Pro.' }
+                        erro: hasSales ? 'Aguardando a metrica mensal do Avant Pro.' : 'Aguardando a quantidade de vendas do Avant Pro.' }
                     : incoming;
                 const key = item.id || item.key || item.url;
                 if (!key) continue;
@@ -141,9 +141,10 @@
                 // A later empty DOM read may be a virtualized card. Keep confirmed
                 // evidence, but never keep a rank after an explicit seller conflict.
                 const conflict = ['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status);
-                items.set(key, previous && previous.rankable && !item.rankable && !conflict
-                    ? { ...previous, ordem_coleta: order }
-                    : { ...previous, ...item, ordem_coleta: order });
+                const keepPrevious = previous && previous.rankable && !item.rankable && !conflict && item.avant_metrics_version !== 3;
+                const observation = keepPrevious ? previous : (item.avant_metrics_version === 3 || previous?.avant_metrics_version === 3
+                    ? item : { ...previous, ...item });
+                items.set(key, { ...observation, ordem_coleta: order });
             }
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const list = Array.from(items.values());
@@ -151,7 +152,7 @@
                 ? list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal,
                     item.media_vendas_mensal, item.data_criacao, item.status, item.seller_confirmed,
                     item.seller_id, item.seller_perfil_url, item.avant_seller_id, item.avant_seller_perfil_url,
-                    item.vendas_rotulo])
+                    item.vendas_rotulo, item.vendas_exibicao, item.media_mensal_rotulo, item.media_vendas_mensal_exibicao])
                 : [snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
             if (signature !== lastSignature) { lastSignature = signature; stableSince = now(); quiet = 0; }
             else quiet += 1;
@@ -209,5 +210,5 @@
         return collectFirstPage({ ...opts, detail: true });
     }
 
-    return Object.freeze({ collectFirstPage, collectDetail, isComplete, finalizeListings, discoveryScript: () => defaultScripts.discoveryScript() });
+    return Object.freeze({ AVANT_METRICS_VERSION: 3, collectFirstPage, collectDetail, isComplete, finalizeListings, discoveryScript: () => defaultScripts.discoveryScript() });
 });

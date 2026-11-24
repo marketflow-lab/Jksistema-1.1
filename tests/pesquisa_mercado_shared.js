@@ -24,6 +24,17 @@ assert.equal(derived.media_mensal_fonte, 'calculado_vendas_dias_avantpro');
 assert.equal(derived.media_vendas_mensal_fonte, derived.media_mensal_fonte);
 assert.equal(collector.finalizeListings([{ vendas: null, media_mensal: 4, rankable: true }], now)[0].rank, null);
 
+const panelItem = { avant_metrics_version: 3, vendas: 188, vendas_rotulo: 'vendas estimadas', vendas_limite_inferior: '+100',
+    data_criacao: '23/11/2026', media_mensal: 8, media_mensal_fonte: 'avantpro_dom_estruturado', rankable: true };
+const oneDayLater = new Date(2026, 10, 24).getTime();
+assert.equal(collector.AVANT_METRICS_VERSION, panelItem.avant_metrics_version);
+const direct = collector.finalizeListings([panelItem], oneDayLater)[0];
+assert.equal(direct.media_vendas_mensal, 8);
+assert.equal(direct.media_vendas_mensal_fonte, 'avantpro_dom_estruturado');
+assert.equal(ranking.calculateMetrics({ ...panelItem, data_criacao: 'mar/2024 (aprox.)' }, now).dataCriacao, null);
+assert.equal(collector.isComplete({ ...panelItem, media_mensal: null, ritmo_atual: 15 }, oneDayLater), false);
+assert.equal(collector.isComplete({ ...panelItem, vendas: null, vendas_exibicao: '+100' }, oneDayLater), false);
+
 const ranked = ranking.rankListings([
     { id: 'unknown', vendas: 999999, media_mensal: 9999, rankable: false },
     { id: 'b', vendas: 50, media_mensal: 10, posicao: 2, ordem_coleta: 2 },

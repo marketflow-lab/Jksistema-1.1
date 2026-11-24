@@ -6,6 +6,12 @@ const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed']);
+const AVANT_METRIC_FIELDS = [
+    'vendas', 'vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas',
+    'vendas_limite_inferior', 'media_mensal', 'media_mensal_fonte', 'media_mensal_rotulo',
+    'media_vendas_mensal', 'media_vendas_mensal_fonte', 'media_vendas_mensal_exibicao',
+    'ritmo_atual', 'data_criacao', 'dataCriacaoFonte', 'meses_desde_criacao'
+];
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -23,6 +29,11 @@ const CATEGORY_FAILURES = Object.freeze({
     category_read_failed: 'Nao foi possivel consultar a categoria.',
     category_pagination_failed: 'Nao foi possivel abrir a proxima pagina da categoria.'
 });
+
+function hasLegacyAvantMetrics(item, version) {
+    return item?.rankable === true
+        && (!Number.isSafeInteger(item.avant_metrics_version) || item.avant_metrics_version < version);
+}
 
 function categoryFailure(error, stage = 'category') {
     const code = Object.prototype.hasOwnProperty.call(CATEGORY_FAILURES, error && error.code) ? error.code
@@ -441,6 +452,7 @@ class PesquisaMercadoRunner {
             currentCategory: this.checkpoint && this.checkpoint.currentCategory || null,
             incompleteCategories, incompleteCount: incompleteCategories.length,
             salesRecoveryPending: !!(this.checkpoint && this.checkpoint.salesRecoveryPending),
+            legacyAvantMetricsPending: this.job.legacyAvantMetricsPending === true,
             recovery: recovery ? { generation: recovery.generation, index: recovery.index, total: recovery.categoryKeys.length } : null,
             progress: progressState(this.checkpoint && this.checkpoint.progress) } };
     }
@@ -482,6 +494,17 @@ class PesquisaMercadoRunner {
         this.job = clone(job);
         this.job.counters = { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0, ...(job.counters || {}) };
         this.checkpoint = initialCheckpoint(job.checkpoint);
+        const metricsVersion = this.collector.AVANT_METRICS_VERSION;
+        const savedCollections = [this.checkpoint.sellerCollection, this.checkpoint.preservedSellerCollection?.collection];
+        this.refreshLegacyAvant = !!(job.legacyAvantMetricsPending || this.checkpoint.legacyAvantMetricsPending
+            || metricsVersion && savedCollections.some(collection => {
+                const anuncios = collection?.result?.anuncios;
+                return Array.isArray(anuncios) && anuncios.some(item => hasLegacyAvantMetrics(item, metricsVersion));
+            }));
+        if (job.legacyAvantMetricsPending && !this.checkpoint.legacyAvantMetricsPending && metricsVersion) {
+            delete this.checkpoint.salesRecoverySellerKeys;
+            this.checkpoint.legacyAvantMetricsPending = true;
+        }
         this.officialNavigation = null;
         validateCheckpointTaxonomy(this.checkpoint);
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
@@ -1384,13 +1407,25 @@ class PesquisaMercadoRunner {
         return DETAIL_RETRY_BLOCKS.has(this.detailRetryState().blocked[this.detailRetryKey(seller, item)]);
     }
 
+    needsLegacyAvantRefresh(item) {
+        const version = this.collector.AVANT_METRICS_VERSION;
+        return this.refreshLegacyAvant && !!version && hasLegacyAvantMetrics(item, version);
+    }
+
+    areAvantMetricsComplete(item) {
+        return !this.needsLegacyAvantRefresh(item) && this.collector.isComplete(item);
+    }
+
     canConsultDetail(seller, item) {
-        return !this.collector.isComplete(item) && allowedUrl(item.url) && !this.detailRetryBlocked(seller, item);
+        const metricsVersion = this.collector.AVANT_METRICS_VERSION;
+        const needsPanel = metricsVersion && item.avant_metrics_version === metricsVersion
+            && !item.avant_detail_observed && (item.media_mensal_rotulo !== 'vendas mensais' || !item.data_criacao);
+        return (!this.areAvantMetricsComplete(item) || needsPanel) && allowedUrl(item.url) && !this.detailRetryBlocked(seller, item);
     }
 
     detailProgressCounts(seller, items) {
-        const validated = items.filter(item => this.collector.isComplete(item)).length;
-        const blocked = items.filter(item => !this.collector.isComplete(item)
+        const validated = items.filter(item => this.areAvantMetricsComplete(item)).length;
+        const blocked = items.filter(item => !this.areAvantMetricsComplete(item)
             && (!allowedUrl(item.url) || this.detailRetryBlocked(seller, item))).length;
         return `validados: ${validated}; pendentes: ${items.length - validated}; sem reconsulta automatica: ${blocked}`;
     }
@@ -1487,13 +1522,29 @@ class PesquisaMercadoRunner {
                     }));
                 const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
                 const freshComplete = this.collector.isComplete(found);
+                const currentVersion = this.collector.AVANT_METRICS_VERSION;
+                if (this.needsLegacyAvantRefresh(item) && found.avant_metrics_version !== currentVersion) return;
+                if (currentVersion && found.avant_metrics_version === currentVersion && item.avant_metrics_version !== currentVersion) {
+                    const settled = !usedPartial && !['partial', 'timeout', 'page_changed', 'invalid_page_result', 'no_listings_detected'].includes(detail.reason);
+                    const showedPanelMetrics = !!(found.vendas_exibicao || found.data_criacao || found.media_vendas_mensal_exibicao);
+                    if (freshComplete || !this.needsLegacyAvantRefresh(item) || settled && showedPanelMetrics) {
+                        // Never complete a fresh observation with values derived by the old parser.
+                        for (const field of AVANT_METRIC_FIELDS) {
+                            if (!Object.hasOwn(found, field)) delete merged[field];
+                        }
+                        merged.rankable = freshComplete;
+                        items[index] = merged;
+                    }
+                    if (found.status === 'catalogo_sem_evidencia_vendedor' && settled && showedPanelMetrics) return 'catalogue_proof_missing';
+                    return;
+                }
                 let reusedUnconfirmed = false;
                 // A detail panel may expose only the metric missing from the card.
                 // Keep existing values visible, but only reuse proven provenance
                 // to construct a complete rank from separate observations.
                 for (const [value, sources] of [
-                    ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo']],
-                    ['media_mensal', ['media_mensal_fonte']],
+                    ['vendas', ['vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas', 'vendas_limite_inferior']],
+                    ['media_mensal', ['media_mensal_fonte', 'media_mensal_rotulo', 'media_vendas_mensal_exibicao']],
                     ['media_vendas_mensal', ['media_vendas_mensal_fonte']],
                     ['data_criacao', ['dataCriacaoFonte']]
                 ]) {
@@ -1635,11 +1686,14 @@ class PesquisaMercadoRunner {
                     seedKey: String(discoverySeed.id || canonicalUrl(discoverySeed.url)), seed: clone(discoverySeed) } : {}) };
         if (!Array.isArray(collection.result.anuncios)) return result;
         const generation = Number(this.job.generation || 0);
-        if (collection.detailGeneration !== generation) {
+        const metricsVersion = this.collector.AVANT_METRICS_VERSION;
+        const refreshLegacyCursor = !!(metricsVersion && collection.detailMetricsVersion !== metricsVersion
+            && collection.result.anuncios.some(item => this.needsLegacyAvantRefresh(item)));
+        if (collection.detailGeneration !== generation || refreshLegacyCursor) {
             // A manual recovery is a fresh consultation, including an exhausted
             // collection preserved before publication. Completed ads still skip.
             // Legacy generation-zero cursors retain their interrupted position.
-            if (Number.isSafeInteger(collection.detailGeneration) || generation > 0) {
+            if (Number.isSafeInteger(collection.detailGeneration) || generation > 0 || refreshLegacyCursor) {
                 collection.index = 0;
                 collection.detailRound = 0;
                 collection.completedIndices = [];
@@ -1647,6 +1701,7 @@ class PesquisaMercadoRunner {
             }
             collection.detailGeneration = generation;
         }
+        if (metricsVersion) collection.detailMetricsVersion = metricsVersion;
         if (!Number.isSafeInteger(collection.detailRound) || collection.detailRound < 0
             || collection.detailRound > this.detailRetryDelaysMs.length) collection.detailRound = 0;
         this.checkpoint.sellerCollection = collection;
@@ -1678,11 +1733,15 @@ class PesquisaMercadoRunner {
         }
         this.check();
         if (navigated) await this.read(allAdsUrl, 'first-page');
-        const missing = items.filter(item => !this.collector.isComplete(item)).length;
+        const missing = items.filter(item => !this.areAvantMetricsComplete(item)).length;
         const previousReason = collection.result.reason || 'complete';
         const reason = !missing && ['complete', 'avant_data_incomplete'].includes(previousReason)
             ? 'complete' : missing && previousReason === 'complete' ? 'avant_data_incomplete' : previousReason;
-        const anuncios = typeof this.collector.finalizeListings === 'function' ? this.collector.finalizeListings(items) : items;
+        const legacy = new Map(items.filter(item => this.needsLegacyAvantRefresh(item))
+            .map(item => [this.detailRetryKey(seller, item), item]));
+        const anuncios = typeof this.collector.finalizeListings === 'function'
+            ? this.collector.finalizeListings(items).map(item => legacy.get(this.detailRetryKey(seller, item)) || item)
+            : items;
         return { ...collection.result, anuncios, reason, incomplete: reason !== 'complete' || missing > 0,
             total: items.length, com_dados_avant: items.length - missing, incompletos: missing };
     }
@@ -1705,7 +1764,7 @@ class PesquisaMercadoRunner {
             this.checkpoint.salesRecoverySellerKeys = [];
             this.checkpoint.salesRecoveryPending = false;
             if (saved && Array.isArray(saved.result && saved.result.anuncios)) {
-                const pendingIndex = saved.result.anuncios.findIndex(item => !this.collector.isComplete(item));
+                const pendingIndex = saved.result.anuncios.findIndex(item => !this.areAvantMetricsComplete(item));
                 saved.index = pendingIndex < 0 ? saved.result.anuncios.length : pendingIndex;
             }
             await this.save();
@@ -1734,7 +1793,8 @@ class PesquisaMercadoRunner {
                     }
                     anuncios.push(...page.items);
                 }
-                if (anuncios.every(item => this.collector.isComplete(item))) {
+                if (anuncios.every(item => this.areAvantMetricsComplete(item))
+                    && !anuncios.some(item => this.canConsultDetail(seller, item))) {
                     done.add(key);
                     this.checkpoint.salesRecoverySellerKeys = [...done];
                     await this.save();
@@ -1783,6 +1843,7 @@ class PesquisaMercadoRunner {
             }
         }
         this.checkpoint.salesCollectionVersion = 2;
+        delete this.checkpoint.legacyAvantMetricsPending;
         delete this.checkpoint.salesRecoverySellerKeys;
         await this.save();
         this.salesRecoveryFinished = true;
@@ -1919,6 +1980,15 @@ class PesquisaMercadoRunner {
                 await this.save();
             }
             await this.recoverPublishedSales();
+            if (this.checkpoint.legacyAvantMetricsOnly) {
+                delete this.checkpoint.legacyAvantMetricsOnly;
+                this.job.status = 'cancelled';
+                this.setProgress('cancelled', this.job.legacyAvantMetricsPending
+                    ? 'Reprocessamento encerrado com anuncios ainda pendentes.'
+                    : 'Reprocessamento das metricas concluido.');
+                await this.save();
+                return;
+            }
             if (!this.checkpoint.discoveryInitialized) {
                 this.setProgress('categories', 'Carregando as categorias do Mercado Livre...');
                 const root = await this.read('https://www.mercadolivre.com.br/', 'index');

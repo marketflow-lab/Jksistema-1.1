@@ -100,6 +100,21 @@
     })[character]);
     const number = value => value !== null && value !== '' && Number.isFinite(Number(value))
         ? Number(value).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—';
+    function metricText(display, value, label) {
+        const main = display || number(value);
+        return escaped(main) + (display && label ? `<small>${escaped(label)}</small>` : '');
+    }
+    function salesText(item) {
+        const display = item.vendas_exibicao || item.vendas_limite_inferior;
+        const limit = item.vendas_limite_inferior;
+        const label = [item.vendas_rotulo, limit && limit !== display ? `Limite inferior: ${limit}` : ''].filter(Boolean).join(' · ');
+        return metricText(display, item.vendas, label);
+    }
+    function monthlyText(item) {
+        const value = metricText(item.media_vendas_mensal_exibicao, item.media_vendas_mensal, item.media_mensal_rotulo);
+        return item.media_mensal_fonte === 'calculado_vendas_dias_avantpro'
+            ? value + '<small>Cálculo antigo · aguardando reconsulta</small>' : value;
+    }
     function safeUrl(value, image) {
         try {
             const url = new URL(safeText(value));
@@ -203,7 +218,16 @@
     const incompleteCategories = job => Array.isArray(job && job.incompleteCategories) ? job.incompleteCategories
         : Array.isArray(job && job.checkpoint && job.checkpoint.incompleteCategories) ? job.checkpoint.incompleteCategories : [];
     const salesRecoveryPending = job => !!job && (job.salesRecoveryPending === true || !!job.checkpoint && job.checkpoint.salesRecoveryPending === true);
-    const canRecover = job => !!job && ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    function canRecover(job) {
+        if (!job) return false;
+        if (job.legacyAvantMetricsPending === true && ['completed', 'completed_partial', 'failed', 'cancelled'].includes(job.status)) return true;
+        return ['completed_partial', 'failed'].includes(job.status) && (Number(job.incompleteCount) > 0 || incompleteCategories(job).length > 0 || salesRecoveryPending(job));
+    }
+    function recoveryLabel(job) {
+        if (job && job.legacyAvantMetricsPending) return 'Reconsultar métricas do Avant';
+        return incompleteCategories(job).length || Number(job && job.incompleteCount) > 0
+            ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+    }
     function scopeName(job) {
         const checkpoint = job && job.checkpoint || {};
         const path = job && job.scopePath || checkpoint.officialTaxonomy && checkpoint.officialTaxonomy.ancestry || checkpoint.scope && checkpoint.scope.path;
@@ -419,8 +443,7 @@
         if (elements['recover-incomplete']) {
             elements['recover-incomplete'].hidden = !canRecover(state.activeJob);
             elements['recover-incomplete'].disabled = !sessionToken || state.busy || !!deleting || !canRecover(state.activeJob);
-            elements['recover-incomplete'].textContent = incompleteCategories(state.activeJob).length || Number(state.activeJob && state.activeJob.incompleteCount) > 0
-                ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
+            elements['recover-incomplete'].textContent = recoveryLabel(state.activeJob);
         }
         if (elements['refresh-names']) elements['refresh-names'].disabled = !sessionToken || state.busy || !!deleting || !state.activeJob || ['queued', 'running', 'pausing', 'waiting_login'].includes(status) || state.taxonomy.loading;
         elements['taxonomy-refresh'].disabled = taxonomyDisabled;
@@ -924,8 +947,8 @@
                 `<td>${image ? `<button class="pm-global-photo-trigger" type="button" aria-label="Ampliar foto de ${escaped(item.titulo || 'anúncio sem título')}"><img class="pm-global-photo" src="${escaped(image)}" alt="" loading="lazy" referrerpolicy="no-referrer"></button>` : '—'}</td>` +
                 `<td class="title-cell">${escaped(item.titulo || 'Anúncio sem título')}<small>${escaped(item.id)}</small></td>` +
                 `<td>${escaped(sellerLabel(item))}</td><td>${escaped(formatPrice(item.preco))}</td>` +
-                `<td class="sales-cell">${number(item.vendas)}</td><td>${escaped(formatDate(item.data_criacao))}</td>` +
-                `<td>${number(item.media_vendas_mensal)}</td><td>${url ? `<a class="link" href="${escaped(url)}" target="_blank" rel="noopener noreferrer">Abrir</a>` : '—'}</td>` +
+                `<td class="sales-cell">${salesText(item)}</td><td>${escaped(formatDate(item.data_criacao))}</td>` +
+                `<td class="monthly-cell">${monthlyText(item)}</td><td>${url ? `<a class="link" href="${escaped(url)}" target="_blank" rel="noopener noreferrer">Abrir</a>` : '—'}</td>` +
                 `<td><span class="status-chip${ranked ? '' : ' warning'}"${statusTitle}>${escaped(status.label)}</span></td></tr>`;
         }).join('');
         const total = data ? Number(data.total) || 0 : 0;

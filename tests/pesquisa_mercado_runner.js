@@ -1562,6 +1562,46 @@ async function legacySalesRecoveryKeepsAllSavedPages() {
     assert.equal(h.saved().status, 'completed');
 }
 
+async function reprocessPublishedAvantMetrics() {
+    const h = harness(avantFlowPages());
+    const previous = { ...seller('111'), id: '111', nome: 'Seller 111', seller_key: 'id:111' };
+    const oldMetrics = { vendas: 100, data_criacao: '24/11/2026', media_vendas_mensal: 3043.75,
+        media_mensal_fonte: 'calculado_vendas_dias_avantpro', rankable: true };
+    const freshMetrics = { avant_metrics_version: 3, vendas: 188, vendas_exibicao: '188', vendas_rotulo: 'vendas estimadas',
+        data_criacao: 'mar/2024 (aprox.)', media_vendas_mensal_exibicao: '5/Mês', media_mensal: 5,
+        media_mensal_rotulo: 'vendas mensais', avant_detail_observed: true, rankable: true };
+    const ids = ['MLB1000000661', 'MLB1000000662', 'MLB1000000663'];
+    const listings = [
+        salesListing(ids[0], { ...oldMetrics, categoria: 'Original' }),
+        salesListing(ids[1], oldMetrics), salesListing(ids[2], freshMetrics)
+    ];
+    historicResearch(h, [previous], new Map([[previous.seller_key, listings]]));
+    const saved = h.saved();
+    h.restoreCheckpoint({ ...saved, status: 'completed', legacyAvantMetricsPending: true,
+        checkpoint: { ...saved.checkpoint, incompleteCategories: [], salesCollectionVersion: 2 } });
+    const consulted = [];
+    withDetailCollector(h, async ({ expectedItem }) => {
+        consulted.push(expectedItem.id);
+        return expectedItem.id === ids[0]
+            ? { reason: 'complete', anuncios: [salesListing(ids[0], freshMetrics)] }
+            : { reason: 'timeout', anuncios: [] };
+    });
+    h.runner.collector.AVANT_METRICS_VERSION = 3;
+    await h.runner.recoverIncomplete('run-1', h.saved().revision);
+    await h.runner.task;
+    const updated = new Map(h.vendors.get(previous.seller_key).anuncios.map(item => [item.id, item]));
+    assert.deepEqual(consulted.sort(), ids.slice(0, 2), 'only old classified items are re-read');
+    assert.equal(updated.size, 3, 'saved research still contains every advertisement');
+    assert.equal(updated.get(ids[0]).vendas, 188);
+    assert.equal(updated.get(ids[0]).data_criacao, 'mar/2024 (aprox.)');
+    assert.equal(updated.get(ids[0]).media_vendas_mensal, 5);
+    assert.equal(updated.get(ids[0]).categoria, 'Original');
+    assert.equal(updated.get(ids[1]).media_vendas_mensal, 3043.75, 'a timeout keeps the saved observation eligible for a retry');
+    assert.equal(updated.get(ids[1]).avant_metrics_version, undefined);
+    assert.equal(updated.get(ids[2]).avant_metrics_version, 3);
+    assert.equal(h.saved().status, 'completed_partial');
+}
+
 async function legacyUnavailableSellerPreservesAdsAndContinues() {
     const pages = avantFlowPages();
     pages[`${base}/perfil/111`] = seller('333');
@@ -2542,6 +2582,7 @@ async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
     await salesDetailLoginKeepsCursor();
     await legacySalesRecoveryKeepsAllSavedPages();
     await legacyUnavailableSellerPreservesAdsAndContinues();
+    await reprocessPublishedAvantMetrics();
     await legacyPartialSalesRequireTheirOwnProvenance();
     await freshCompleteDetailReplacesUnconfirmedOptionalMetrics();
     await retryPublishedPendingAfterVersionTwo();

@@ -18,6 +18,9 @@ async function main() {
         categoria: 'Ferramentas', vendas: 105 - index, data_criacao: '2026-09-01', media_vendas_mensal: 105 - index,
         rank: index + 1, status: 'analisado'
     }));
+    Object.assign(items[0], { vendas_exibicao: '188', vendas_rotulo: 'Vendas estimadas', vendas_limite_inferior: '+100', data_criacao: 'há 2 anos',
+        media_vendas_mensal_exibicao: '5/Mês', media_mensal_rotulo: 'Vendas mensais' });
+    Object.assign(items[1], { vendas: null, vendas_limite_inferior: '+100', media_vendas_mensal_exibicao: '4/Mês', media_mensal_rotulo: 'Ritmo atual' });
     const catalogueTooltip = 'Vendas de catalogo sem identificacao especifica do vendedor. A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
     items[102] = { ...items[102], catalogo: true, rank: null, status: 'catalogo_sem_evidencia_vendedor' };
     items[103] = { ...items[103], catalogo: true, rank: null, status: 'pending',
@@ -99,6 +102,12 @@ async function main() {
         await page.goto(`${origin}/pesquisa_mercado.html`);
         await page.locator('#pm-mode-global').click();
         await page.waitForFunction(() => document.querySelectorAll('#pm-global-body tr').length === 100);
+        const ranking = page.locator('#pm-global-body tr');
+        assert.match(await ranking.first().locator('.sales-cell').innerText(), /188.*Vendas estimadas.*\+100/s);
+        assert.match(await ranking.first().innerText(), /há 2 anos.*5\/Mês/s);
+        assert.strictEqual(await ranking.nth(1).locator('.sales-cell').innerText(), '+100');
+        assert.match(await ranking.nth(1).locator('.monthly-cell').innerText(), /4\/Mês.*Ritmo atual/s);
+        assert.strictEqual(await ranking.nth(2).locator('.monthly-cell').innerText(), '103', 'legado mantém a formatação numérica');
         assert.strictEqual(await page.locator('#pm-global-status').textContent(), 'O sistema está pesquisando');
         assert.match(await page.locator('#pm-global-status-detail').textContent(), /Loja A: 33/);
         assert.match(await page.locator('#pm-global-status-warning').textContent(), /Avant Pro.*A pesquisa continua/);
@@ -266,6 +275,13 @@ async function main() {
         assert.deepStrictEqual(await page.evaluate(() => ({ jobId: window.__lastCommandPayload.jobId, expectedRevision: window.__lastCommandPayload.expectedRevision })),
             { jobId: job.id, expectedRevision: salesRecoveryRevision });
         assert.strictEqual(commands.filter(action => action === 'recover-incomplete').length, 2);
+        job = { ...job, status: 'completed', revision: job.revision + 2, legacyAvantMetricsPending: true, salesRecoveryPending: false, checkpoint: {} };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.strictEqual(await page.locator('#pm-global-recover-incomplete').textContent(), 'Reconsultar métricas do Avant');
+        const legacyRevision = job.revision;
+        await page.locator('#pm-global-recover-incomplete').click();
+        await page.waitForFunction(() => document.querySelector('#pm-global-recover-incomplete').hidden);
+        assert.deepStrictEqual(await page.evaluate(() => [window.__lastCommandPayload.jobId, window.__lastCommandPayload.expectedRevision]), [job.id, legacyRevision]);
         await page.evaluate(() => {
             localStorage.removeItem('access_token');
             dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));

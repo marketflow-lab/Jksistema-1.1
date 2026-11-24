@@ -79,7 +79,7 @@
 #pm-global-seller-label { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
 .pm-global-ranking table { min-width: 1100px; }
 .pm-global-ranking .title-cell { min-width: 230px; }
-.pm-global-ranking .title-cell small { display: block; color: var(--muted); margin-top: 5px; }
+.pm-global-ranking .title-cell small, .pm-global-ranking .sales-cell small, .pm-global-ranking .monthly-cell small { display: block; color: var(--muted); margin-top: 5px; }
 .pm-global-ranking .status-chip { white-space: normal; max-width: 280px; }
 .pm-category-incomplete { margin-top: 12px; color: #fcd34d; font-size: 12px; overflow-wrap: anywhere; }
 .pm-category-incomplete summary { cursor: pointer; }

@@ -53,6 +53,17 @@
 
     function calculateMetrics(anuncio, nowMs) {
         const item = anuncio || {};
+        if (item.avant_metrics_version === 3) {
+            const monthly = item.media_mensal ?? item.media_vendas_mensal;
+            // A month/year observation has no known day. Never use it to
+            // derive sales or convert an approximate date to the first day.
+            const exactDate = /^\d{2}\/\d{2}\/\d{4}$/.test(item.data_criacao) ? date(item.data_criacao) : null;
+            return {
+                vendas: Number.isSafeInteger(item.vendas) && item.vendas >= 0 ? item.vendas : null,
+                media: Number.isFinite(monthly) && monthly >= 0 ? monthly : null,
+                meses: null, dataCriacao: exactDate
+            };
+        }
         const vendas = salesNumber(item.vendas);
         const direct = number(item.media_vendas_mensal ?? item.media_mensal ?? item.ritmo_atual ?? item.ritmo_vendas_mes ?? '');
         const dataCriacao = date(item.data_criacao);

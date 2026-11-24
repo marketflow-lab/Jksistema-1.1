@@ -103,6 +103,7 @@ class PesquisaMercadoDiagnosticResponse(PesquisaMercadoClosedResponse):
     incompleteCategories: list[PesquisaMercadoIncompleteCategory]
     incompleteCategoriesTotal: int
     salesRecoveryPending: bool
+    legacyAvantMetricsPending: bool = False
     recovery: PesquisaMercadoRecoveryProgress | None
 
 
@@ -128,6 +129,7 @@ class PesquisaMercadoHistoryItem(PesquisaMercadoClosedResponse):
     counters: PesquisaMercadoCounters
     created_at: str
     updated_at: str
+    legacyAvantMetricsPending: bool = False
 
 
 class PesquisaMercadoHistoryResponse(PesquisaMercadoClosedResponse):
@@ -140,7 +142,19 @@ class PesquisaMercadoHistoryJobResponse(PesquisaMercadoClosedResponse):
     job: PesquisaMercadoHistoryItem
 
 
-class PesquisaMercadoConsolidatedAd(PesquisaMercadoClosedResponse):
+class PesquisaMercadoAvantMetrics(PesquisaMercadoClosedResponse):
+    vendas_exibicao: str | None = None
+    vendas_rotulo: str | None = None
+    vendas_limite_inferior: str | None = None
+    vendas_estimadas: float | None = None
+    dataCriacaoFonte: str | None = None
+    media_vendas_mensal_exibicao: str | None = None
+    media_mensal_rotulo: str | None = None
+    avant_metrics_version: int | None = None
+    avant_detail_observed: bool | None = None
+
+
+class PesquisaMercadoConsolidatedAd(PesquisaMercadoAvantMetrics):
     id: str
     url: str
     titulo: str
@@ -217,7 +231,7 @@ class PesquisaMercadoConsolidatedCategoriesResponse(PesquisaMercadoClosedRespons
     owner_revision: int
 
 
-class PesquisaMercadoOrigin(PesquisaMercadoClosedResponse):
+class PesquisaMercadoOrigin(PesquisaMercadoAvantMetrics):
     source_job_id: str
     status: PesquisaMercadoStatus
     scope_category: PesquisaMercadoCategory | None
@@ -226,6 +240,9 @@ class PesquisaMercadoOrigin(PesquisaMercadoClosedResponse):
     rankable: bool
     media_vendas_mensal: float | None
     vendas: float | None
+    data_criacao: str = ""
+    vendasFonte: str = ""
+    media_mensal_fonte: str = ""
 
 
 class PesquisaMercadoOriginsResponse(PesquisaMercadoClosedResponse):

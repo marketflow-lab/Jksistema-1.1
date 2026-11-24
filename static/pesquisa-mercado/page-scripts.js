@@ -661,7 +661,7 @@
             if (row.matches('.avantpro-product-info-row')) {
                 const label = row.querySelector('.avantpro-product-info-row-label');
                 const value = row.querySelector('.avantpro-product-info-row-value');
-                return label && value ? { label: norm(label.textContent), value: clean(value.getAttribute('title') || value.textContent) } : null;
+                return label ? { label: norm(label.textContent), value: clean(value && value.textContent) } : null;
             }
             if (!modernRoot) return null;
             if (row.matches('.avt-rounded-full')) {
@@ -673,10 +673,10 @@
             }
             const label = row.querySelector(':scope > .avt-mb-1 > span');
             const value = row.querySelector(':scope > .avt-text-base.avt-font-semibold');
-            return label && value ? { label: norm(label.textContent), value: clean(value.textContent) } : null;
+            return label ? { label: norm(label.textContent), value: clean(value && value.textContent) } : null;
         };
         const metricNumber = value => {
-            let text = clean(value).toLowerCase().replace(/^\+\s*/, '');
+            let text = clean(value).toLowerCase();
             const matched = text.match(/^(\d[\d.,]*)(?:\s*(mil|k|mi|milh[aoõ]+es?))?$/i);
             if (!matched) return null;
             text = matched[1];
@@ -691,7 +691,14 @@
             const text = clean(value);
             const br = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s|$)/);
             const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]|$)/);
-            if (!br && !iso) return '';
+            if (!br && !iso) {
+                const monthYear = norm(text).match(/^([a-z]+\.?|\d{1,2})\s*(?:\/|(?:\s+de)?\s+)\s*(\d{4})(?:\s*\(aprox\.?\))?$/);
+                if (!monthYear || Number(monthYear[2]) < 1900) return '';
+                const months = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+                const name = monthYear[1].replace(/\.$/, '');
+                const index = /^\d+$/.test(name) ? Number(name) - 1 : months.findIndex(m => m === name || m.slice(0, 3) === name);
+                return months[index] ? months[index].slice(0, 3) + '/' + monthYear[2] + ' (aprox.)' : '';
+            }
             const year = Number(br ? br[3] : iso[1]), month = Number(br ? br[2] : iso[2]), day = Number(br ? br[1] : iso[3]);
             const date = new Date(Date.UTC(year, month - 1, day));
             if (year < 1900 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
@@ -699,32 +706,50 @@
         };
         const readMetrics = rows => {
             const modernRoot = modernRootState.root;
-            const metrics = { total: null, totalLabel: '', totalPriority: 0, estimated: null, monthly: null, monthlyLabel: '', monthlyHistorical: null, catalog: false,
-                identityConflict: modernRootState.conflict, created: '', sellerName: '',
+            const metrics = { total: null, totalLabel: '', totalText: '', totalPriority: 0, lowerBound: '', lowerBoundPriority: 0,
+                estimated: null, estimatedSeen: false, estimatedText: '',
+                monthly: null, monthlyLabel: '', monthlyText: '', monthlyHistorical: null, historicalSeen: false, historicalText: '', catalog: false,
+                identityConflict: modernRootState.conflict, created: '', createdSeen: false, sellerName: '',
                 sellerId: clean(modernRoot && modernRoot.getAttribute('data-seller-id')),
                 perfilUrl: absolute(modernRoot && modernRoot.getAttribute('data-seller-profile-url')), rows: 0 };
             for (const row of rows) {
                 const pair = metricLabelValue(row);
                 if (!pair) continue;
                 const { label, value } = pair;
-                if (!label || !value) continue;
+                if (!label) continue;
                 metrics.rows += 1;
                 if (/^(?:vendas? (?:do|deste) (?:produto|anuncio|item|catalogo)|quantidade vendida|vendas? do vendedor neste anuncio|vendidos?)$/.test(label)) {
-                    const total = metricNumber(value);
+                    if (label.includes('catalogo')) metrics.catalog = true;
                     const priority = /(?:anuncio|item)/.test(label) ? 2 : 1;
+                    if (value.startsWith('+') && Number.isSafeInteger(metricNumber(value.slice(1)))) {
+                        metrics.lowerBound = value;
+                        metrics.lowerBoundPriority = priority;
+                        continue;
+                    }
+                    const total = metricNumber(value);
                     if (Number.isSafeInteger(total) && priority >= metrics.totalPriority) {
                         metrics.total = total;
                         metrics.totalLabel = label;
+                        metrics.totalText = value;
                         metrics.totalPriority = priority;
                     }
                 } else if (label === 'catalogo') metrics.catalog = true;
-                else if (/^vendas? estimadas?$/.test(label)) metrics.estimated = metricNumber(value);
-                else if (/^vendas? mensais$/.test(label)) metrics.monthlyHistorical = metricNumber(value.replace(/\s*\/\s*m[eê]s\s*$/i, ''));
-                else if (/^ritmo atual(?:\s|\(|$)/.test(label)) {
+                else if (/^vendas? estimadas?$/.test(label)) {
+                    metrics.estimatedSeen = true;
+                    metrics.estimated = metricNumber(value);
+                    if (Number.isSafeInteger(metrics.estimated)) metrics.estimatedText = value;
+                } else if (/^vendas? mensais$/.test(label)) {
+                    metrics.historicalSeen = true;
+                    metrics.monthlyHistorical = metricNumber(value.replace(/\s*\/\s*m[eê]s\s*$/i, ''));
+                    metrics.historicalText = value;
+                } else if (/^ritmo atual(?:\s|\(|$)/.test(label)) {
                     metrics.monthly = metricNumber(value);
                     metrics.monthlyLabel = label;
-                } else if (/^(?:anuncio|catalogo) criado em$|^criado em$/.test(label)) metrics.created = metricDate(value);
-                else if (/^(?:nome do )?vendedor$/.test(label)) {
+                    metrics.monthlyText = value;
+                } else if (/^(?:anuncio criado em|criado em)$/.test(label)) {
+                    metrics.createdSeen = true;
+                    metrics.created = metricDate(value);
+                } else if (/^(?:nome do )?vendedor$/.test(label)) {
                     metrics.sellerName = value;
                     const anchor = row.querySelector('a[href]');
                     const evidence = identity(anchor && anchor.getAttribute('href'));
@@ -745,11 +770,31 @@
                 || current.sellerId && previous.sellerId && current.sellerId !== previous.sellerId
                 || current.perfilUrl && previous.perfilUrl && current.perfilUrl !== previous.perfilUrl) return current;
             const combined = { ...previous, rows: Math.max(previous.rows || 0, current.rows || 0) };
-            if (Number.isFinite(current.total)) {
-                combined.total = current.total; combined.totalLabel = current.totalLabel; combined.totalPriority = current.totalPriority;
+            if (Number.isFinite(current.total) && current.totalPriority >= (previous.totalPriority || 0)) {
+                Object.assign(combined, { total: current.total, totalLabel: current.totalLabel, totalPriority: current.totalPriority, totalText: current.totalText });
+            } else if (current.lowerBound && current.lowerBoundPriority >= previous.totalPriority && !Number.isFinite(current.total)) {
+                Object.assign(combined, { total: null, totalLabel: '', totalPriority: 0, totalText: '' });
             }
-            for (const field of ['estimated', 'monthly', 'monthlyHistorical']) if (Number.isFinite(current[field])) combined[field] = current[field];
-            for (const field of ['monthlyLabel', 'created', 'sellerName', 'sellerId', 'perfilUrl']) if (current[field]) combined[field] = current[field];
+            if (current.estimatedSeen) {
+                combined.estimatedSeen = true;
+                combined.estimated = current.estimated;
+                combined.estimatedText = current.estimatedText;
+            }
+            if (current.monthlyLabel) {
+                combined.monthly = current.monthly;
+                combined.monthlyLabel = current.monthlyLabel;
+                combined.monthlyText = current.monthlyText;
+            }
+            if (current.historicalSeen) {
+                combined.historicalSeen = true;
+                combined.monthlyHistorical = current.monthlyHistorical;
+                combined.historicalText = current.historicalText;
+            }
+            if (current.createdSeen) {
+                combined.createdSeen = true;
+                combined.created = current.created;
+            }
+            for (const field of ['lowerBound', 'lowerBoundPriority', 'sellerName', 'sellerId', 'perfilUrl']) if (current[field]) combined[field] = current[field];
             if (current.sellerId || current.perfilUrl) combined.identityConflict = !!current.identityConflict;
             combined.catalog = !!(previous.catalog || current.catalog);
             return combined;
@@ -779,7 +824,7 @@
             }
             return content.contains(node) && !node.closest(cardSelector + ', [class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]');
         };
-        const structuredCache = window.__JK_PM_AVANT_STRUCTURED_CACHE || (window.__JK_PM_AVANT_STRUCTURED_CACHE = Object.create(null));
+        const structuredCache = window.__JK_PM_AVANT_STRUCTURED_CACHE_V3 || (window.__JK_PM_AVANT_STRUCTURED_CACHE_V3 = Object.create(null));
         const currentClick = window.__JK_AVANT_LAST_CARD_CLICKED || {};
         const resolvedKeys = (window.__JK_AVANT_LAST_QUEUE_RESULT || {}).resolvedKeys || [];
         const resultRoot = content.querySelector('.ui-search-layout, [data-testid="search-results"], .ui-search-results') || content;
@@ -858,7 +903,7 @@
             else if (metrics.rows) structuredCache[detailKey] = metrics;
             anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
-                _avantEvidence: { present: avantRoots.length > 0, sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
+                _avantEvidence: { present: avantRoots.length > 0, detailPage: !!(options && options.detail), sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
         }
         const categories = [], categorySeen = new Set();
@@ -1158,16 +1203,20 @@
             const identityConflict = !!evidence.identityConflict || !!((evidence.sellerId || evidence.perfilUrl) && !same(evidence.sellerId, evidence.perfilUrl));
             const targetName = meaningfulName(seller.vendedor || seller.nome);
             const nameConflict = identityConflict || !!(!strongNumeric && !storeBrand && targetName && observedName && norm(targetName) !== norm(observedName));
-            // Only the explicit structured label is a total. Favoritos' historical
-            // fallback may substitute estimated sales or parse PT-BR thousands as decimals.
             const source = 'avantpro_dom_estruturado';
-            const monthlySource = 'avantpro_dom_estruturado';
-            const sales = metrics.total;
-            const monthly = Number.isFinite(metrics.monthlyHistorical) ? metrics.monthlyHistorical : metrics.monthly;
+            // A seller-specific count belongs to this offer. Product estimates and
+            // public thresholds in the same panel have different meanings.
+            const useEstimate = !evidence.sellerMetric && Number.isSafeInteger(metrics.estimated);
+            const sales = useEstimate ? metrics.estimated : metrics.total;
+            const salesLabel = useEstimate ? 'vendas estimadas' : metrics.totalLabel || (metrics.lowerBound ? 'vendidos' : '');
+            const salesText = useEstimate ? metrics.estimatedText : metrics.totalText || metrics.lowerBound || '';
+            const monthly = metrics.historicalSeen ? metrics.monthlyHistorical : metrics.monthly;
+            const monthlyLabel = metrics.historicalSeen ? 'vendas mensais' : metrics.monthlyLabel || '';
+            const monthlyText = metrics.historicalSeen ? metrics.historicalText : metrics.monthlyText || '';
             const validSales = Number.isFinite(sales) && sales >= 0;
             const validMonthly = Number.isFinite(monthly) && monthly >= 0;
             const catalogueProof = !base.catalogo || (evidence.sellerMetric && same(evidence.sellerId, evidence.perfilUrl));
-            const rankable = scoped && !nameConflict && catalogueProof && validSales && (validMonthly || !!metrics.created);
+            const rankable = scoped && !nameConflict && catalogueProof && validSales && validMonthly;
             const item = { ...base, vendedor: nameConflict ? '' : observedName || meaningfulName(base.vendedor) || meaningfulName(page.vendedor),
                 seller_name_kind: observedName ? 'seller' : page.seller_name_kind || 'seller',
                 seller_name_source: observedName ? 'avant' : 'perfil',
@@ -1175,13 +1224,18 @@
                 avant_seller_id: evidence.sellerId || '', avant_seller_perfil_url: evidence.perfilUrl || '',
                 seller_confirmed: scoped && !nameConflict, vendas: validSales ? sales : null,
                 vendasFonte: validSales ? source : '', vendas_fonte: validSales ? source : '',
-                vendas_rotulo: metrics.totalLabel || '', vendas_estimadas: Number.isFinite(metrics.estimated) ? metrics.estimated : null,
-                media_mensal: validMonthly ? monthly : null, media_mensal_fonte: validMonthly ? monthlySource : '',
+                ...(metrics.rows ? { avant_metrics_version: 3 } : {}),
+                ...(evidence.detailPage && scoped && !nameConflict && catalogueProof && (validSales || validMonthly || metrics.created || metrics.lowerBound)
+                    ? { avant_detail_observed: true } : {}),
+                vendas_rotulo: salesLabel, vendas_exibicao: salesText, vendas_limite_inferior: metrics.lowerBound || '',
+                vendas_estimadas: Number.isSafeInteger(metrics.estimated) ? metrics.estimated : null,
+                media_mensal: validMonthly ? monthly : null, media_vendas_mensal: validMonthly ? monthly : null,
+                media_mensal_rotulo: monthlyLabel, media_vendas_mensal_exibicao: monthlyText, media_mensal_fonte: validMonthly ? source : '',
                 ritmo_atual: Number.isFinite(metrics.monthly) ? metrics.monthly : null,
                 data_criacao: metrics.created || '', dataCriacaoFonte: metrics.created ? source : '',
                 rankable, status: rankable ? 'analisado' : (!scoped || nameConflict ? 'vendedor_nao_confirmado' : (!catalogueProof ? 'catalogo_sem_evidencia_vendedor' : (!validSales ? 'sem_quantidade_avant' : 'sem_dados_avant')))
             };
-            item.erro = rankable ? '' : (!scoped || nameConflict ? 'Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado.' : (!catalogueProof ? 'O catalogo nao apresentou vendas Avant Pro comprovadas para este vendedor.' : (!validSales ? 'O Avant Pro ainda nao apresentou a quantidade de vendas deste anuncio.' : 'O Avant Pro ainda nao apresentou ritmo mensal ou data de criacao para calcular a media deste anuncio.')));
+            item.erro = rankable ? '' : (!scoped || nameConflict ? 'Nao foi possivel confirmar que o anuncio pertence ao vendedor pesquisado.' : (!catalogueProof ? 'O catalogo nao apresentou vendas Avant Pro comprovadas para este vendedor.' : (!validSales ? 'O Avant Pro ainda nao apresentou a quantidade de vendas deste anuncio.' : 'O Avant Pro ainda nao apresentou a metrica mensal deste anuncio.')));
             delete item._avantEvidence;
             return item;
         });
@@ -1236,7 +1290,7 @@
                 + '}finally{if(previous===undefined)delete window.__JK_PM_AVANT_PENDING_KEYS;else window.__JK_PM_AVANT_PENDING_KEYS=previous;}})()';
         };
         const scrollScript = target => '/*pm:scroll*/(function(){const el=document.scrollingElement||document.documentElement;const y=' + (target === 'top' ? '0' : 'Math.min(el.scrollHeight, (window.scrollY||el.scrollTop||0)+Math.max(350,window.innerHeight*0.75))') + ';window.scrollTo(0,y);return {y:y,height:el.scrollHeight};})()';
-        const prepareScript = () => '/*pm:prepare*/window.__JK_PM_AVANT_STRUCTURED_CACHE=Object.create(null);window.__JK_PM_AVANT_DETAIL_CLICKS=Object.create(null);' + render('coletar-primeira-pagina-favoritos-controlada-1', {});
+        const prepareScript = () => '/*pm:prepare*/window.__JK_PM_AVANT_STRUCTURED_CACHE_V3=Object.create(null);window.__JK_PM_AVANT_DETAIL_CLICKS=Object.create(null);' + render('coletar-primeira-pagina-favoritos-controlada-1', {});
         const nextCategoryPageScript = expectedUrl => '/*pm:next-category*/(' + clickNextCategoryPage.toString() + ')(' + JSON.stringify(String(expectedUrl || '')) + ')';
         return Object.freeze({ discoveryScript, sellerInfoScript: discoveryScript, snapshotScript, clickAvantScript, scrollScript, prepareScript, nextCategoryPageScript });
     }

@@ -34,6 +34,12 @@ STATUSES = ACTIVE_STATUSES | TERMINAL_STATUSES
 MAX_CHECKPOINT_BYTES = 64 * 1024 * 1024
 MAX_PUBLICATION_BYTES = 64 * 1024 * 1024
 COUNTER_KEYS = ("categories", "pages", "sellers", "ads", "pending")
+AVANT_DISPLAY_FIELDS = ("vendas_exibicao", "vendas_rotulo", "vendas_limite_inferior",
+                        "dataCriacaoFonte", "media_vendas_mensal_exibicao", "media_mensal_rotulo")
+LEGACY_AVANT_METRICS = ("rankable=1 AND (json_type(payload,'$.avant_metrics_version') IS NOT 'integer' "
+                        "OR json_extract(payload,'$.avant_metrics_version')<3)")
+JOB_LEGACY_METRICS = f"EXISTS(SELECT 1 FROM pm_ads WHERE job_id=pm_jobs.id AND {LEGACY_AVANT_METRICS}) AS legacy_avant"
+JOB_SUMMARY_FIELDS = f"id,status,revision,counters,created_at,updated_at,scope_key,scope_name,scope_url,{JOB_LEGACY_METRICS}"
 DIAGNOSTIC_REASONS = {
     "legacy_unknown": "Motivo anterior desconhecido.",
     "category_link_missing": "O link oficial desta categoria nao foi localizado.",
@@ -307,7 +313,8 @@ def _normalize_ad(raw: dict, seller: dict, original_index: int) -> tuple[str, di
     avant_identity_present = bool(_text(raw.get("avant_seller_id"), 80) or _text(raw.get("avant_seller_perfil_url"), 4000))
     avant_identity_matches = not avant_identity_present or catalog_identified
     sales_avant = source in {"avant", "avant_pro", "avant-pro"} or source.startswith("avantpro")
-    avant = sales_avant or monthly_source in {"avant", "avant_pro", "avant-pro"} or monthly_source.startswith("avantpro")
+    monthly_avant = monthly_source in {"avant", "avant_pro", "avant-pro"} or monthly_source.startswith("avantpro")
+    avant = sales_avant or monthly_avant
     reasons = []
     if not belongs:
         reasons.append("Identidade do vendedor do anuncio nao confirmada.")
@@ -349,6 +356,21 @@ def _normalize_ad(raw: dict, seller: dict, original_index: int) -> tuple[str, di
         "catalogo": catalog, "avant_seller_id": _text(raw.get("avant_seller_id"), 80),
         "avant_seller_perfil_url": _ml_url(raw.get("avant_seller_perfil_url")),
     }
+    for field in AVANT_DISPLAY_FIELDS:
+        if isinstance(raw.get(field), str) and raw[field].strip():
+            ad[field] = _text(raw[field], 160)
+    estimated = _number(raw.get("vendas_estimadas"))
+    if estimated is not None:
+        ad["vendas_estimadas"] = estimated
+    detail_observed = raw.get("avant_detail_observed") is True
+    panel_evidence = (detail_observed or estimated is not None or ad.get("vendas_exibicao")
+                      or ad.get("vendas_limite_inferior") or ad.get("media_vendas_mensal_exibicao")
+                      or ad["data_criacao"] and ad.get("dataCriacaoFonte", "").lower().startswith("avant"))
+    if (type(raw.get("avant_metrics_version")) is int and raw["avant_metrics_version"] == 3
+            and monthly_source != "calculado_vendas_dias_avantpro" and (not rankable or monthly_avant) and panel_evidence):
+        ad["avant_metrics_version"] = 3
+        if detail_observed:
+            ad["avant_detail_observed"] = True
     return key, ad
 
 
@@ -457,6 +479,7 @@ class PesquisaMercadoStore:
                     for row in conn.execute("SELECT job_id,seller_key,ad_key,payload FROM pm_ads").fetchall():
                         conn.execute("UPDATE pm_ads SET ranking_key=? WHERE job_id=? AND seller_key=? AND ad_key=?", (_ranking_key(json.loads(row["payload"])), row["job_id"], row["seller_key"], row["ad_key"]))
                 conn.execute("CREATE INDEX IF NOT EXISTS pm_ads_shared_ranking ON pm_ads(job_id,ranking_key COLLATE PM_RANKING)")
+                conn.execute(f"CREATE INDEX IF NOT EXISTS pm_ads_legacy_avant ON pm_ads(job_id,rankable) WHERE {LEGACY_AVANT_METRICS}")
                 try:
                     self._migrate_history(conn)
                 except Exception:
@@ -538,7 +561,7 @@ class PesquisaMercadoStore:
 
     @staticmethod
     def _job(conn, job_id: str, tenant: str, user: str):
-        row = conn.execute("SELECT * FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user)).fetchone()
+        row = conn.execute(f"SELECT *,{JOB_LEGACY_METRICS} FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user)).fetchone()
         if row is None:
             raise HTTPException(404, "Pesquisa nao encontrada.")
         return row
@@ -549,6 +572,7 @@ class PesquisaMercadoStore:
             "id": row["id"], "status": row["status"], "revision": row["revision"],
             "checkpoint": json.loads(row["checkpoint"]), "counters": json.loads(row["counters"]),
             "message": row["message"], "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "legacyAvantMetricsPending": bool(row["legacy_avant"]),
         }
         if row["generation"]:
             result["generation"] = row["generation"]
@@ -603,18 +627,31 @@ class PesquisaMercadoStore:
             row = self._job(conn, job_id, tenant, user)
             if row["revision"] != expected_revision:
                 raise HTTPException(409, "A pesquisa foi atualizada. Atualize a consulta antes de reprocessar.")
-            if row["status"] not in {"completed_partial", "failed"}:
+            legacy = bool(row["legacy_avant"])
+            if row["status"] not in {"completed_partial", "failed"} and not (legacy and row["status"] in {"completed", "cancelled"}):
                 raise HTTPException(409, "Somente uma pesquisa encerrada com pendencias pode ser reprocessada.")
             other = conn.execute("SELECT id FROM pm_jobs WHERE tenant=? AND username=? AND status IN ('running','paused','waiting_login') AND id<>?", (tenant, user, job_id)).fetchone()
             if other is not None:
                 raise HTTPException(409, "Outra pesquisa ja esta ativa para este usuario.")
             checkpoint = json.loads(row["checkpoint"])
-            keys = self._recovery_categories(checkpoint)
-            if not keys and not checkpoint.get("salesRecoveryPending"):
+            only_metrics = row["status"] == "cancelled" or checkpoint.get("legacyAvantMetricsOnly") is True
+            keys = [] if only_metrics else self._recovery_categories(checkpoint)
+            if not keys and not legacy and not checkpoint.get("salesRecoveryPending"):
                 raise HTTPException(409, "Esta pesquisa nao possui categorias ou dados pendentes para reprocessar.")
             generation = row["generation"] + 1
             checkpoint["recovery"] = {"version": 1, "generation": generation, "categoryKeys": keys, "index": 0}
-            checkpoint["progress"] = {"phase": "preparing", "detail": "Preparando a recuperacao das categorias pendentes.", "warning": ""}
+            if legacy:
+                checkpoint["legacyAvantMetricsPending"] = True
+                checkpoint["salesRecoveryPending"] = True
+                checkpoint.pop("salesRecoverySellerKeys", None)
+            else:
+                checkpoint.pop("legacyAvantMetricsPending", None)
+            if only_metrics:
+                checkpoint["legacyAvantMetricsOnly"] = True
+            else:
+                checkpoint.pop("legacyAvantMetricsOnly", None)
+            detail = "Preparando a releitura das metricas do Avant Pro." if legacy else "Preparando a recuperacao das categorias pendentes."
+            checkpoint["progress"] = {"phase": "preparing", "detail": detail, "warning": ""}
             conn.execute("UPDATE pm_jobs SET status='running',generation=?,checkpoint=?,message=?,revision=revision+1,updated_at=? WHERE id=?", (generation, _json(checkpoint, MAX_CHECKPOINT_BYTES), checkpoint["progress"]["detail"], _now(), job_id))
             self._bump_owner_revision(conn, tenant, user)
             return self._public(self._job(conn, job_id, tenant, user))
@@ -633,7 +670,7 @@ class PesquisaMercadoStore:
             "categoryIndex": 0, "discoveryInitialized": True, "phase": "categories",
         } if normalized_category is not None else {}
         with self._connection(tenant, write=True) as conn:
-            active = conn.execute("SELECT * FROM pm_jobs WHERE tenant=? AND username=? AND status IN ('running','paused','waiting_login')", (tenant, user)).fetchone()
+            active = conn.execute(f"SELECT *,{JOB_LEGACY_METRICS} FROM pm_jobs WHERE tenant=? AND username=? AND status IN ('running','paused','waiting_login')", (tenant, user)).fetchone()
             if active is not None:
                 return self._public(active)
             job_id = uuid.uuid4().hex
@@ -649,7 +686,7 @@ class PesquisaMercadoStore:
     def latest(self, client_id: str, username: str) -> dict | None:
         tenant, user = self._owner(client_id, username)
         with self._connection(tenant) as conn:
-            row = conn.execute("SELECT * FROM pm_jobs WHERE tenant=? AND username=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (tenant, user)).fetchone()
+            row = conn.execute(f"SELECT *,{JOB_LEGACY_METRICS} FROM pm_jobs WHERE tenant=? AND username=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (tenant, user)).fetchone()
             return self._public(row) if row else None
 
     def get(self, job_id: str, client_id: str, username: str) -> dict:
@@ -693,7 +730,8 @@ class PesquisaMercadoStore:
                 index = recovery.get("index")
                 progress = {"generation": row["generation"], "index": index if type(index) is int and 0 <= index <= len(recovery["categoryKeys"]) else 0, "total": len(recovery["categoryKeys"])}
             return {"scopePath": path, "incompleteCategories": incomplete, "incompleteCategoriesTotal": len(pending),
-                    "salesRecoveryPending": bool(checkpoint.get("salesRecoveryPending")), "recovery": progress}
+                    "salesRecoveryPending": bool(checkpoint.get("salesRecoveryPending")), "recovery": progress,
+                    "legacyAvantMetricsPending": bool(row["legacy_avant"])}
 
     def delete(self, job_id: str, client_id: str, username: str) -> dict:
         """Remove a closed research and its observations in one owner-scoped write."""
@@ -741,6 +779,10 @@ class PesquisaMercadoStore:
                 raise HTTPException(409, "Pesquisa encerrada. Inicie uma nova execucao.")
             if checkpoint is not None:
                 previous_checkpoint = json.loads(row["checkpoint"])
+                if previous_checkpoint.get("legacyAvantMetricsOnly"):
+                    checkpoint["legacyAvantMetricsOnly"] = True
+                else:
+                    checkpoint.pop("legacyAvantMetricsOnly", None)
                 if row["generation"]:
                     recovery = checkpoint.get("recovery")
                     previous_recovery = previous_checkpoint.get("recovery") or {}
@@ -768,6 +810,9 @@ class PesquisaMercadoStore:
                     if key in {"categories", "pages"}:
                         next_counters[key] = value
             next_status = status or row["status"]
+            if (next_status in {"completed", "completed_partial"} and row["generation"]
+                    and json.loads(row["checkpoint"]).get("legacyAvantMetricsOnly") is True):
+                next_status = "cancelled"
             next_message = _text(message, 600) if message is not None else row["message"]
             next_checkpoint = encoded_checkpoint if encoded_checkpoint is not None else row["checkpoint"]
             if discovery is not None:
@@ -930,10 +975,16 @@ class PesquisaMercadoStore:
     def job_summary(self, job_id: str, client_id: str, username: str) -> dict:
         tenant, user = self._owner(client_id, username)
         with self._connection(tenant) as conn:
-            row = conn.execute("SELECT id,status,revision,counters,created_at,updated_at,scope_key,scope_name,scope_url FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user)).fetchone()
+            row = conn.execute(f"SELECT {JOB_SUMMARY_FIELDS} FROM pm_jobs WHERE id=? AND tenant=? AND username=?", (job_id, tenant, user)).fetchone()
             if row is None:
                 raise HTTPException(404, "Pesquisa nao encontrada.")
-            return {"id": row["id"], "status": row["status"], "revision": row["revision"], "scope_category": self._scope(row), "counters": json.loads(row["counters"]), "created_at": row["created_at"], "updated_at": row["updated_at"]}
+            return self._summary(row)
+
+    def _summary(self, row) -> dict:
+        return {"id": row["id"], "status": row["status"], "revision": row["revision"],
+                "scope_category": self._scope(row), "counters": json.loads(row["counters"]),
+                "created_at": row["created_at"], "updated_at": row["updated_at"],
+                "legacyAvantMetricsPending": bool(row["legacy_avant"])}
 
     def history(self, client_id: str, username: str, *, offset=0, limit=25, q="", status="", scope_category="", revision=None) -> dict:
         tenant, user = self._owner(client_id, username)
@@ -952,8 +1003,8 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             owner_revision = self._owner_revision(conn, tenant, user, revision)
             total = conn.execute("SELECT COUNT(*) FROM pm_jobs WHERE " + where, args).fetchone()[0]
-            rows = conn.execute("SELECT id,status,revision,counters,created_at,updated_at,scope_key,scope_name,scope_url FROM pm_jobs WHERE " + where + " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
-            items = [{"id": row["id"], "status": row["status"], "revision": row["revision"], "scope_category": self._scope(row), "counters": json.loads(row["counters"]), "created_at": row["created_at"], "updated_at": row["updated_at"]} for row in rows]
+            rows = conn.execute(f"SELECT {JOB_SUMMARY_FIELDS} FROM pm_jobs WHERE " + where + " ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            items = [self._summary(row) for row in rows]
             return {"items": items, "total": total, "owner_revision": owner_revision}
 
     @staticmethod
@@ -1061,8 +1112,17 @@ class PesquisaMercadoStore:
         with self._connection(tenant) as conn:
             owner_revision = self._owner_revision(conn, tenant, user, revision)
             total = conn.execute(sql + "SELECT COUNT(*)" + joined, args).fetchone()[0]
-            rows = conn.execute(sql + "SELECT job_id AS source_job_id,research_status AS status,scope_key,scope_name,scope_url,rankable,monthly AS media_vendas_mensal,sales AS vendas,observed_at,effective_observed_at" + joined + " ORDER BY effective_observed_at DESC,publication_sequence DESC,research_created_at DESC,job_id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
-            items = [{"source_job_id": row["source_job_id"], "status": row["status"], "scope_category": self._scope(row), "observed_at": row["effective_observed_at"], "date_approximate": row["observed_at"] is None, "rankable": bool(row["rankable"]), "media_vendas_mensal": row["media_vendas_mensal"], "vendas": row["vendas"]} for row in rows]
+            rows = conn.execute(sql + "SELECT job_id AS source_job_id,research_status AS status,scope_key,scope_name,scope_url,rankable,monthly AS media_vendas_mensal,sales AS vendas,observed_at,effective_observed_at,payload" + joined + " ORDER BY effective_observed_at DESC,publication_sequence DESC,research_created_at DESC,job_id DESC LIMIT ? OFFSET ?", (*args, limit, offset)).fetchall()
+            items = []
+            fields = (*AVANT_DISPLAY_FIELDS, "vendas_estimadas", "avant_metrics_version", "avant_detail_observed",
+                      "data_criacao", "media_mensal_fonte", "vendasFonte")
+            for row in rows:
+                ad = json.loads(row["payload"])
+                item = {field: ad[field] for field in fields if field in ad}
+                item.update(source_job_id=row["source_job_id"], status=row["status"], scope_category=self._scope(row),
+                            observed_at=row["effective_observed_at"], date_approximate=row["observed_at"] is None,
+                            rankable=bool(row["rankable"]), media_vendas_mensal=row["media_vendas_mensal"], vendas=row["vendas"])
+                items.append(item)
             return {"items": items, "total": total, "owner_revision": owner_revision}
 
     def ranking(self, job_id: str, client_id: str, username: str, *, offset=0, limit=100, q="", category="", seller_key="") -> dict:
