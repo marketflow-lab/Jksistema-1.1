@@ -2095,7 +2095,7 @@ async function untilDetail(predicate) {
 }
 
 async function parallelDetailsOnlyRetryMissing() {
-    const ids = Array.from({ length: 8 }, (_, index) => `MLB10000004${String(index).padStart(2, '0')}`);
+    const ids = Array.from({ length: 10 }, (_, index) => `MLB10000004${String(index).padStart(2, '0')}`);
     const listing = ids.map((id, index) => salesListing(id, index === 0 ? { vendas: 0, media_mensal: 0, rankable: true } : {}));
     const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listing), reason: 'avant_data_incomplete', incomplete: true }),
         { detailRetryDelaysMs: undefined });
@@ -2115,8 +2115,8 @@ async function parallelDetailsOnlyRetryMissing() {
         return { anuncios: available ? [salesListing(id, { vendas: 50, media_mensal: 5, rankable: true })] : [] };
     });
     await h.runner.start(); await h.runner.task;
-    assert.equal(peak, 4, 'four independent advertisement consultations run concurrently');
-    assert.equal(browsers.length, 4, 'only three auxiliary browsers are needed');
+    assert.equal(peak, 8, 'at most eight advertisements are consulted together even when more are pending');
+    assert.equal(browsers.length, 8, 'the main browser and seven auxiliary browsers service the entire queue');
     assert(!attempts.has(ids[0]), 'an advertisement already complete with zero values never enters the detail queue');
     assert.equal(attempts.get(ids[1]), 2, 'a recovered advertisement leaves all later retry rounds');
     assert.equal(attempts.get(ids[2]), 3, 'only a still missing advertisement reaches the third consultation');
@@ -2171,7 +2171,7 @@ async function parallelDetailsPauseKeepsOutOfOrderAttempts() {
 }
 
 async function parallelDetailsLoginUsesBlockedBrowser() {
-    const ids = Array.from({ length: 5 }, (_, index) => `MLB10000006${String(index).padStart(2, '0')}`);
+    const ids = Array.from({ length: 9 }, (_, index) => `MLB10000006${String(index).padStart(2, '0')}`);
     const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
     const browsers = parallelDetailBrowsers(h), authBrowsers = [];
     const factory = h.runner.createDetailBrowser;
@@ -2194,7 +2194,7 @@ async function parallelDetailsLoginUsesBlockedBrowser() {
     assert.equal(h.saved().status, 'waiting_login');
     assert.equal(h.runner.loginBrowser, browsers[1], 'show-browser can select the worker which needs authentication');
     assert.deepEqual(authBrowsers, [browsers[1]], 'Avant recovery is attempted only inside the blocked worker');
-    assert.equal(calls.length, 4, 'no fifth task starts after a fatal login failure');
+    assert.equal(calls.length, 8, 'the ninth advertisement stays queued when login is required');
     assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
     assert(browsers.slice(1).every(browser => browser.stops >= 1), 'login stops every sibling browser');
     assert.equal(h.vendors.size, 0, 'an interrupted seller cannot publish a premature result');

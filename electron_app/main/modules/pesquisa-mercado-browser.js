@@ -158,7 +158,7 @@ function ensurePesquisaMercadoBrowser() {
 }
 
 function pesquisaMercadoBrowserAdapter(detailIndex = 0) {
-    const detail = Number.isInteger(detailIndex) && detailIndex >= 1 && detailIndex <= 3;
+    const detail = Number.isInteger(detailIndex) && detailIndex >= 1 && detailIndex < pesquisaMercadoRunnerModule.MAX_CONCURRENT_DETAILS;
     if (detailIndex !== 0 && !detail) throw new Error('Tarefa de pesquisa invalida.');
     let detailWindow = null, detailNavigationStatus = null, detailSession = null, disposed = false;
     const currentWindow = () => {

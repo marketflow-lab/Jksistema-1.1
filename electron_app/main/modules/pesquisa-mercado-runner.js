@@ -3,6 +3,7 @@
 // A page only observes this coordinator. Its lifetime belongs to Electron main.
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
+const MAX_CONCURRENT_DETAILS = 8;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed']);
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
@@ -1395,7 +1396,7 @@ class PesquisaMercadoRunner {
     }
 
     async detailBrowserPool(size, signal) {
-        const count = typeof this.createDetailBrowser === 'function' ? Math.min(4, size) : 1;
+        const count = typeof this.createDetailBrowser === 'function' ? Math.min(MAX_CONCURRENT_DETAILS, size) : 1;
         while (this.detailBrowsers.length < count) {
             this.check(signal);
             const browser = this.createDetailBrowser(this.detailBrowsers.length);
@@ -2146,4 +2147,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };
+module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };

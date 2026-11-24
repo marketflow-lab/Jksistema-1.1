@@ -297,7 +297,7 @@ async function testBrowserIsolationAndNavigation() {
     await h.api.quit();
 }
 
-async function testFourDetailBrowsersAndLoginLifecycle() {
+async function testEightDetailBrowsersAndLoginLifecycle() {
     const saved = { id: 'parallel-login', owner: 'one', status: 'waiting_login', revision: 2,
         counters: {}, checkpoint: {} };
     const h = harness([saved]);
@@ -305,14 +305,15 @@ async function testFourDetailBrowsersAndLoginLifecycle() {
     const runner = h.api.coordinator();
     runner.job = clone(saved);
     const main = runner.browser;
-    const extras = [1, 2, 3].map(index => runner.createDetailBrowser(index));
+    const extras = Array.from({ length: 7 }, (_, index) => runner.createDetailBrowser(index + 1));
+    assert.throws(() => runner.createDetailBrowser(8), /Tarefa de pesquisa invalida/);
     assert.equal(h.windows.length, 0, 'detail adapters create windows lazily');
     try {
         await main.prepare();
         await Promise.all(extras.map(browser => browser.prepare()));
         const browsers = [main, ...extras];
         const urls = browsers.map((_browser, index) => `https://produto.mercadolivre.com.br/MLB-${1234567890 + index}-item`);
-        assert.equal(h.windows.length, 4);
+        assert.equal(h.windows.length, 8);
         assert.equal(h.events.filter(event => event.type === 'restore').length, 1, 'only the main worker restores the shared session');
         assert.equal(h.events.filter(event => event.type === 'extensions').length, 1, 'extensions are prepared once before detail workers');
         assert(h.windows.every(window => window.options.webPreferences.session === h.session));
@@ -337,11 +338,11 @@ async function testFourDetailBrowsersAndLoginLifecycle() {
         const loading = extras[0].navigate(urls[0], controller.signal);
         controller.abort();
         await assert.rejects(loading, error => error.name === 'AbortError');
-        assert.deepEqual(h.windows.map(window => window.webContents.stops), [0, 1, 0, 0], 'a detail abort stops only that worker');
+        assert(h.windows.every((window, index) => window.webContents.stops === (index === 1 ? 1 : 0)), 'a detail abort stops only that worker');
         h.windows[1].releaseLoad();
         runner.loginBrowser = extras[1];
         await Promise.all(extras.map(browser => browser.finish('waiting_login')));
-        assert.deepEqual(h.windows.map(window => window.destroyed), [false, true, false, true], 'only the blocked detail window survives login finalization');
+        assert(h.windows.every((window, index) => window.destroyed === (index !== 0 && index !== 2)), 'only the main and blocked detail windows survive login finalization');
         await assert.rejects(h.command('show-browser', 'two', saved.id), /Pesquisa n[aã]o encontrada/);
         assert(h.windows.every(window => !window.visible), 'another owner cannot reveal the blocked window');
         await h.command('show-browser', 'one', saved.id);
@@ -920,7 +921,7 @@ async function testTypedBrowserTimeoutsAndRecovery() {
 }
 
 async function main() {
-    await testFourDetailBrowsersAndLoginLifecycle();
+    await testEightDetailBrowsersAndLoginLifecycle();
     await testTypedBrowserTimeoutsAndRecovery();
     await testIncompleteRecoveryAndTerminalDiagnostics();
     await testNamesLoginContextOwnership();
