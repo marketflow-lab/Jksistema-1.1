@@ -160,6 +160,47 @@ function slowAvantLazyBrowser() {
     };
 }
 
+async function testPartialAvantObservations() {
+    const url = 'https://produto.mercadolivre.com.br/MLB-1000000-fixture';
+    const observed = { id: 'MLB1000000', url, seller_id: '123456', seller_confirmed: true, avant_metrics_version: 3,
+        vendas: 188, vendas_rotulo: 'vendas estimadas', vendas_exibicao: '188', vendas_limite_inferior: '+100',
+        media_mensal: 5, media_vendas_mensal: 5, media_mensal_rotulo: 'vendas mensais', media_vendas_mensal_exibicao: '5/Mês',
+        data_criacao: 'mar/2024 (aprox.)', rankable: true, status: 'analisado' };
+    const partial = { id: observed.id, url, seller_id: observed.seller_id, seller_confirmed: true, avant_metrics_version: 3,
+        media_mensal: 5, media_vendas_mensal: 5, media_mensal_rotulo: 'vendas mensais', media_vendas_mensal_exibicao: '5/Mês',
+        vendas: null, rankable: false, status: 'sem_quantidade_avant' };
+    async function collect(frames, detail = true) {
+        let reads = 0, clock = 0;
+        const opts = { url, expectedItem: detail ? { id: observed.id } : null, now: () => clock, wait: async ms => { clock += ms; },
+            settleMs: 20, missingWaitMs: 40, pollMs: 10, browser: { navigate: async () => {}, getURL: () => url,
+                executeJavaScript: async code => code.includes('/*pm:snapshot*/')
+                    ? { url, atBottom: true, height: 100, anuncios: [frames[Math.min(reads++, frames.length - 1)]] } : {} } };
+        return (detail ? collector.collectDetail(opts) : collector.collectFirstPage(opts));
+    }
+    for (const detail of [false, true]) {
+        const result = await collect([observed, partial], detail);
+        assert.equal(result.com_dados_avant, 1, 'a partial rendering must not erase a confirmed reading for the same seller');
+        const [item] = result.anuncios;
+        assert.deepEqual([item.vendas, item.media_vendas_mensal, item.data_criacao, item.vendas_limite_inferior], [188, 5, observed.data_criacao, '+100']);
+    }
+    for (const latest of [
+        { ...partial, vendas_exibicao: '+100', vendas_limite_inferior: '+100' },
+        { ...partial, media_mensal: null, media_vendas_mensal: null, media_vendas_mensal_exibicao: '' },
+        { ...partial, media_mensal: 8, media_vendas_mensal: 8, media_vendas_mensal_exibicao: '8/Mês' },
+        { ...partial, data_criacao: 'jan/2025 (aprox.)' },
+        { ...partial, seller_id: '654321' },
+        { ...partial, seller_confirmed: false, status: 'vendedor_nao_confirmado' },
+        { ...partial, catalogo: true, status: 'catalogo_sem_evidencia_vendedor' },
+    ]) {
+        const result = await collect([observed, latest]);
+        assert.equal(result.com_dados_avant, 0, 'an explicit replacement or changed seller must win over an earlier reading');
+        assert.equal(result.anuncios[0].vendas, null);
+    }
+    const otherSeller = await collect([{ ...observed, avant_metrics_version: undefined },
+        { ...partial, avant_metrics_version: undefined, seller_id: '654321' }]);
+    assert.equal(otherSeller.anuncios[0].vendas_exibicao, undefined, 'legacy reads must not inherit fields from a different seller');
+}
+
 async function testDetailObservationHooks() {
     const url = 'https://produto.mercadolivre.com.br/MLB-1000000-fixture';
     const target = { id: 'MLB1000000', url, seller_id: '123456', seller_confirmed: true,
@@ -395,6 +436,7 @@ async function testStableCatalogDetailDoesNotScheduleThreeVisits() {
 }
 
 async function run() {
+    await testPartialAvantObservations();
     await testDetailObservationHooks();
     await testDetailStabilityIgnoresWholePageGeometry();
     await testStableCatalogDetailDoesNotScheduleThreeVisits();

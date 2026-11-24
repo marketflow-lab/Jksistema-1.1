@@ -2,7 +2,7 @@
 const assert = require('assert');
 const { chromium } = require('playwright');
 const scripts = require('../static/pesquisa-mercado/page-scripts');
-const { normalizeCategory } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { normalizeCategory, sameSeller } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 const { collectFirstPage } = require('../static/pesquisa-mercado/shared-collector');
 const { createPageScriptRenderer } = require('./helpers/favoritos_browser_sources');
 const path = require('path');
@@ -32,6 +32,12 @@ function pdpStat(label, value) {
 function pdpPill(value) {
     return '<div class="avt-relative avt-flex avt-items-center avt-gap-1.5 avt-rounded-full avt-border avt-px-3 avt-py-1.5 avt-text-sm avt-font-semibold">'
         + '<span class="avt-min-w-0 avt-flex-1">' + value + '</span></div>';
+}
+function avantSellerLinks(profile, listings) {
+    const field = (label, link, text) => '<div class="avt-flex avt-w-full avt-items-start"><div class="avt-flex avt-min-w-0 avt-flex-1 avt-flex-col">'
+        + '<span>' + label + '</span><span><a href="' + link + '">' + text + '</a></span></div></div>';
+    return '<div class="avt-space-y-4"><div class="avt-grid avt-grid-cols-2 avt-gap-4">'
+        + field('Vendedor', profile, 'Loja Alvo') + field('Anúncios', listings, '25') + '</div></div>';
 }
 function pdpRoot({ total = 100, estimated = 155, rhythm = 10, monthly = '5/Mês', created = '12/03/2025', attrs = '', extra = '' } = {}) {
     return '<div id="productInfo" class="avantpro-in-product-content" ' + attrs + '>'
@@ -63,6 +69,18 @@ async function run() {
         const wrongHeader = await page.evaluate(scripts.discoveryScript());
         assert.equal(wrongHeader.vendedor, '', 'URL do vendedor alvo nao comprova nome de um header com outro ID');
         assert.equal(wrongHeader.seller_identity_conflict, true);
+        const numericListing = 'https://lista.mercadolivre.com.br/_CustId_123456';
+        const numericSeller = { id: '123456', nome: seller.nome, perfilUrl: numericListing };
+        const offerSellerProof = item => ({ id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url });
+        await page.setContent(fixture(card(1, avant(50, seller.nome, 'Vendas do produto', avantSellerLinks(seller.perfilUrl, numericListing)))));
+        const twoLinksCard = (await page.evaluate(scripts.snapshotScript({ seller: numericSeller }))).anuncios[0];
+        assert.equal(twoLinksCard.rankable, true, 'o perfil e a lista do mesmo vendedor se confirmam no card');
+        assert.ok(sameSeller(numericSeller, offerSellerProof(twoLinksCard)));
+        await page.setContent(fixture(card(1, avant(50, seller.nome, 'Vendas do produto', avantSellerLinks(seller.perfilUrl + '?seller_id=999999', numericListing)))));
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: numericSeller }))).anuncios[0].rankable, false, 'o segundo ID divergente invalida o card');
+        await page.setContent(fixture(card(1, avant(50, seller.nome, 'Vendas do produto', avantSellerLinks(seller.perfilUrl, numericListing)))
+            .replace('<article class="poly-card">', '<article class="poly-card" data-seller-id="999999">')));
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: numericSeller }))).anuncios[0].rankable, false, 'o ID do card também precisa concordar');
         const foreignNameCard = card(1, avant(50, 'Outro vendedor', 'Vendas do produto', '<a href="https://lista.mercadolivre.com.br/_CustId_999">Outro vendedor</a>'))
             .replace('<article class="poly-card">', '<article class="poly-card" data-seller-id="123456">');
         await page.setContent(fixture(foreignNameCard));
@@ -451,6 +469,38 @@ async function run() {
             assert.equal(foreign.rankable, false);
         }
         const profileHeader = '<h1 class="ui-pdp-title">Produto fixture</h1><a class="ui-pdp-seller__link" href="' + seller.perfilUrl + '">Loja Alvo</a>';
+        const brandUrl = 'https://www.mercadolivre.com.br/loja/marca';
+        const brandSeller = { perfilUrl: brandUrl, nome: 'Marca', seller_name_kind: 'store_brand' };
+        for (const [expected, links, valid] of [
+            [numericSeller, avantSellerLinks(seller.perfilUrl, numericListing), true],
+            [numericSeller, avantSellerLinks(seller.perfilUrl + '?seller_id=999999', numericListing), false],
+            [brandSeller, avantSellerLinks(seller.perfilUrl, brandUrl), true],
+            [brandSeller, avantSellerLinks(seller.perfilUrl + '?seller_id=123456', brandUrl + '?seller_id=999999'), false],
+            [brandSeller, avantSellerLinks(seller.perfilUrl, numericListing), false],
+            [{ ...brandSeller, id: '123456' }, avantSellerLinks(seller.perfilUrl, numericListing), true],
+            [brandSeller, avantSellerLinks(seller.perfilUrl, brandUrl + '-outra'), false],
+        ]) {
+            const title = '<h1 class="ui-pdp-title">Produto fixture</h1><a class="ui-pdp-seller__link" href="' + expected.perfilUrl + '">Loja</a>';
+            await page.setContent('<main>' + title + pdpRoot({ total: '+100', estimated: 188, monthly: '5/Mês', extra: links }) + '</main>');
+            await page.evaluate(scripts.prepareScript());
+            const item = (await page.evaluate(scripts.snapshotScript({ seller: expected, detail: true }))).anuncios[0];
+            assert.equal(item.rankable, valid);
+            if (valid) {
+                assert.deepEqual([item.vendas, item.media_vendas_mensal, item.seller_confirmed], [188, 5, true]);
+                assert.ok(sameSeller(expected, offerSellerProof(item)), 'a identidade publicada é aceita pelo runner');
+            }
+        }
+        const avantLogin = '<div><h4>Comece a usar o Avantpro!</h4><button type="button">Entrar</button>'
+            + '<p>Não possui uma conta? <a href="https://cadastro.avantpro.com.br/ml">Crie uma aqui</a></p></div>';
+        for (const [panel, shouldLogin] of [[pdpRoot({ extra: avantLogin }), true], [avantLogin, false],
+            [pdpRoot({ extra: '<div hidden>' + avantLogin + '</div>' }), false],
+            ['<aside class="recommendations">' + pdpRoot({ extra: avantLogin }) + '</aside>', false],
+            [pdpRoot({ extra: avantLogin.replace('>Entrar<', '>Ajuda<') }), false]]) {
+            await page.setContent('<main>' + header + panel + '</main>');
+            const login = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+            assert.equal(login.avantAuthRequired, shouldLogin);
+            assert.equal(login.authReason === 'avant_login_required', shouldLogin);
+        }
         const foreignSellerRoot = await readModern(pdpRoot({ total: 999, attrs: 'data-seller-id="999999"' }), profileHeader);
         assert.equal(foreignSellerRoot.vendas, null, 'seller alvo conhecido rejeita id explicito divergente mesmo com cabecalho somente de perfil');
         assert.equal(foreignSellerRoot.rankable, false);

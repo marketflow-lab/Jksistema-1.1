@@ -109,7 +109,7 @@
             const match = ids.size ? [null, [...ids][0]] : null;
             const profile = url.match(/^(https:\/\/[^/]+\/perfil\/[^/?#]+)/i);
             const store = url.match(/^https:\/\/[^/]+\/loja\/([^/?#]+)/i);
-            if (store) return { id: '', perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
+            if (store) return { id: '', claimedId: match && match[1], perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
             return { id: match ? match[1] : '', perfilUrl: profile ? profile[1].replace(/\/$/, '') : (match ? vehicleStockUrl(url) || 'https://lista.mercadolivre.com.br/_CustId_' + match[1] : ''), store: false };
         };
         const productId = (value, element) => {
@@ -500,10 +500,6 @@
         const avantDialog = nodes('[role="dialog"], [class*="avantpro"][class*="modal"], [class*="avantpro"][class*="login"]')
             .some(node => visibleAuthControl(node) && /avant\s*pro|avantpro/.test(norm(node.textContent))
                 && /login|entrar|credenciais|seu e.?mail|vincular conta/.test(norm(node.textContent)));
-        const avantAuthRequired = avantDialog || (/(^|\.)avantprocloud\.com\.br$/i.test(location.hostname)
-            && location.protocol === 'https:' && (/\/login(?:\/|$)/i.test(location.pathname)
-                || nodes('#avantauth-root form').some(visibleAuthControl)));
-        const authReason = mlAuthReason || (avantAuthRequired ? 'avant_login_required' : '');
         const sellerExcluded = '[class*="recommend"], [class*="carousel"], [class*="eshop"], [class*="same-seller"], .poly-card, .ui-search-layout__item, .ui-search-result, .ui-search-result__wrapper, [data-testid="search-result"]';
         const officialStore = nodes('a[href*="/loja/"]', content).find(anchor => {
             if (!identity(anchor.getAttribute('href')).store || anchor.closest(sellerExcluded)) return false;
@@ -580,14 +576,40 @@
         const seenElements = new Set();
         const cardSelector = '.ui-search-layout__item, .poly-card, .ui-search-result, [data-testid="search-result"], .ui-search-result__wrapper';
         // Avant uses structured rows in search results and stat cards in the PDP.
-        // The PDP templates in bundled 7.0.3 and Chrome 7.32.3 mount this exact root.
         const avantDetailRoot = '#productInfo.avantpro-in-product-content';
+        const avantSelector = '[class*="avantpro"], [id*="avantpro"]';
         const excludedMetricArea = '[class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]';
         const currentItemId = productId(url);
         const expectedSellerId = clean(options && options.seller && (options.seller.id || options.seller.sellerId || options.seller.seller_id));
         const scopedSellerId = sellerId || expectedSellerId;
         const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
         const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja)\//i.test(value || '');
+        // Avant 7.24 displays a seller profile followed by the link to their listings.
+        // Reconcile every observed ID before choosing a link for the runner.
+        const sellerProof = (anchors, declaredIds = [], declaredProfile = null) => {
+            const identities = Array.from(new Set(anchors.map(anchor => anchor.getAttribute('href'))), identity);
+            if (declaredProfile) identities.push(declaredProfile);
+            const ids = new Set([...declaredIds, ...identities.map(info => info.id)].filter(Boolean));
+            const id = [...ids][0] || '';
+            // A storefront query parameter can contradict an ID but cannot establish an account by itself.
+            const allIds = new Set([...ids, ...identities.map(info => info.claimedId).filter(Boolean)]);
+            const profiles = [...new Set(identities.map(info => info.perfilUrl).filter(namedProfile))];
+            const references = [expectedSellerProfile.perfilUrl, perfilUrl].filter(namedProfile);
+            const matches = (a, b) => a.toLowerCase() === b.toLowerCase();
+            const scopedProfile = references.map(ref => profiles.find(p => matches(ref, p))).find(Boolean);
+            // A brand storefront and a seller nickname can refer to the same offer.
+            // The same storefront/profile link or an independent matching ID must corroborate them.
+            const inconsistentProfiles = ['/perfil/', '/loja/'].some(type => {
+                const observed = profiles.filter(p => p.toLowerCase().includes(type));
+                return observed.length && new Set([...observed, ...references.filter(p => p.toLowerCase().includes(type))].map(p => p.toLowerCase())).size > 1;
+            });
+            const conflict = identities.some(info => info.conflict) || allIds.size > 1 || !!(scopedSellerId && allIds.size && !allIds.has(scopedSellerId))
+                || inconsistentProfiles || !!(profiles.length && references.length && !scopedProfile && !(id && id === scopedSellerId));
+            const numericLink = identities.find(info => info.id && !namedProfile(info.perfilUrl));
+            const profile = scopedProfile || (!references.length && profiles[0]) || (numericLink && numericLink.perfilUrl)
+                || (!id && profiles[0]) || '';
+            return { id, perfilUrl: profile, conflict };
+        };
         const currentUpId = (url.match(/\/up\/(MLBU\d+)/i) || [])[1] || '';
         const currentCatalogId = (url.match(/\/p\/(MLB\d+)/i) || [])[1] || '';
         const rootMatchesDocument = root => {
@@ -604,18 +626,11 @@
             if (/^MLB\d+$/.test(declaredProduct) && ![currentCatalogId.toUpperCase(), currentItemId].includes(declaredProduct)) return false;
             if (/^MLB\d+$/.test(declaredCatalog) && declaredCatalog !== currentCatalogId.toUpperCase()) return false;
             const declaredSeller = clean(root.getAttribute('data-seller-id'));
-            if (declaredSeller && scopedSellerId && declaredSeller !== scopedSellerId) return false;
             const declaredProfileUrl = clean(root.getAttribute('data-seller-profile-url'));
             const declaredProfile = identity(declaredProfileUrl);
-            if (declaredProfileUrl && !absolute(declaredProfileUrl) || declaredProfile.conflict
-                || declaredSeller && declaredProfile.id && declaredSeller !== declaredProfile.id
-                || declaredProfile.id && scopedSellerId && declaredProfile.id !== scopedSellerId) return false;
-            if (namedProfile(declaredProfile.perfilUrl)
-                && [perfilUrl, expectedSellerProfile.perfilUrl].filter(namedProfile)
-                    .some(profile => profile.toLowerCase() !== declaredProfile.perfilUrl.toLowerCase())) return false;
-            const namedSellerProfiles = new Set([declaredProfile.perfilUrl].filter(namedProfile).map(profile => profile.toLowerCase()));
-            for (const anchor of nodes('a[href]', root)) {
-                if (anchor.closest(excludedMetricArea + ', [role="dialog"], aside')) continue;
+            const anchors = nodes('a[href]', root).filter(anchor => !anchor.closest(excludedMetricArea + ', [role="dialog"], aside'));
+            if (declaredProfileUrl && !absolute(declaredProfileUrl) || sellerProof(anchors, [declaredSeller], declaredProfile).conflict) return false;
+            for (const anchor of anchors) {
                 const target = absolute(anchor.getAttribute('href'));
                 if (!target) continue;
                 const linkedItem = productId(target), linkedUp = (target.match(/\/up\/(MLBU\d+)/i) || [])[1] || '';
@@ -623,14 +638,6 @@
                 if (linkedItem && currentItemId && linkedItem !== currentItemId) return false;
                 if (linkedUp && linkedUp.toUpperCase() !== currentUpId.toUpperCase()) return false;
                 if (linkedCatalog && linkedCatalog.toUpperCase() !== currentCatalogId.toUpperCase()) return false;
-                const linkedSeller = identity(target);
-                if (linkedSeller.conflict || linkedSeller.id && scopedSellerId && linkedSeller.id !== scopedSellerId) return false;
-                if (namedProfile(linkedSeller.perfilUrl)) {
-                    if ([perfilUrl, expectedSellerProfile.perfilUrl].filter(namedProfile)
-                        .some(profile => profile.toLowerCase() !== linkedSeller.perfilUrl.toLowerCase())) return false;
-                    namedSellerProfiles.add(linkedSeller.perfilUrl.toLowerCase());
-                    if (namedSellerProfiles.size > 1) return false;
-                }
             }
             return true;
         };
@@ -651,6 +658,16 @@
             return { root: matching.length === 1 ? matching[0] : null,
                 conflict: matching.length > 1 || candidates.length > 0 && matching.length === 0 };
         })();
+        const avantDetailLogin = modernRootState.root && nodes('h4', modernRootState.root).some(title => {
+            const panel = title.parentElement;
+            return norm(title.textContent) === 'comece a usar o avantpro!' && visibleAuthControl(title)
+                && nodes('button', panel).some(button => norm(button.textContent) === 'entrar' && visibleAuthControl(button))
+                && nodes('a[href="https://cadastro.avantpro.com.br/ml"]', panel).some(visibleAuthControl);
+        });
+        const avantAuthRequired = !!(avantDialog || avantDetailLogin || (/(^|\.)avantprocloud\.com\.br$/i.test(location.hostname)
+            && location.protocol === 'https:' && (/\/login(?:\/|$)/i.test(location.pathname)
+                || nodes('#avantauth-root form').some(visibleAuthControl))));
+        const authReason = mlAuthReason || (avantAuthRequired ? 'avant_login_required' : '');
         const metricRows = scope => nodes('.avantpro-product-info-row', scope).concat(
             nodes('.avt-rounded-lg.avt-p-3.avt-text-center, .avt-rounded-full.avt-font-semibold', scope)
                 .filter(node => !!modernRootState.root && node.closest(avantDetailRoot) === modernRootState.root)
@@ -844,25 +861,24 @@
             const key = id || productUrl;
             if (known.has(key)) continue;
             known.add(key);
-            const sellerLink = nodes('a[href]', card).find(anchor => {
+            const cardLinks = nodes('a[href]', card).filter(anchor => !anchor.closest(excludedMetricArea));
+            const sellerLink = cardLinks.find(anchor => {
                 const info = identity(anchor.getAttribute('href'));
                 return info.id || info.perfilUrl;
             });
-            const cardIdentity = identity(sellerLink && sellerLink.href);
-            const attributedSeller = clean(card.getAttribute('data-seller-id')) || cardIdentity.id;
-            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"], [data-jk-field]', card);
-            const avantText = norm(avantRoots.map(node => node.textContent).join(' '));
-            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).find(anchor => {
-                const info = identity(anchor.href); return info.id || info.perfilUrl;
-            });
-            const avantIdentity = identity(avantLink && avantLink.href);
+            const enclosingSeller = link.closest('[data-seller-id]');
+            const cardIdentity = sellerProof(cardLinks, [clean(card.getAttribute('data-seller-id')),
+                enclosingSeller && card.contains(enclosingSeller) && clean(enclosingSeller.getAttribute('data-seller-id'))]);
+            const attributedSeller = cardIdentity.id;
+            const avantRoots = nodes(avantSelector + ', [data-jk-field]', card);
+            const avantIdentity = sellerProof(cardLinks.filter(anchor => anchor.closest(avantSelector + ', [data-jk-field]')));
             const localRows = metricRows(card);
             let metrics = readMetrics(localRows);
             const clickedId = clean(currentClick.id || currentClick.mlb).replace('-', '').toUpperCase();
             const capturedCurrent = !!(id && clickedId === id && resolvedKeys.includes('id:' + id));
             metrics = combineMetrics(structuredCache[key], metrics);
             if (capturedCurrent) metrics = combineMetrics(metrics, readMetrics(floatingRowsFor(id, productUrl)));
-            if (metrics.identityConflict) delete structuredCache[key];
+            if (cardIdentity.conflict || avantIdentity.conflict || metrics.identityConflict) delete structuredCache[key];
             else if (metrics.rows) structuredCache[key] = metrics;
             const image = card.querySelector('img');
             const title = card.querySelector('.poly-component__title, .ui-search-item__title, h2, h3') || link;
@@ -885,21 +901,20 @@
                 _avantEvidence: {
                     present: avantRoots.length > 0,
                     sellerId: avantIdentity.id || metrics.sellerId, perfilUrl: avantIdentity.perfilUrl || metrics.perfilUrl,
-                    identityConflict: !!(avantIdentity.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics
+                    identityConflict: !!(cardIdentity.conflict || avantIdentity.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics
                 }
             });
         }
         // Item pages are used for discovery and optional explicit detail collection.
         if (!anuncios.length && isProduct(url) && document.querySelector('.ui-pdp-title, [data-testid="product-title"]')) {
             const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
-            const avantRoots = nodes('[class*="avantpro"], [id*="avantpro"]', content).filter(node => detailNodeBelongs(node, productId(url), url));
-            const text = norm(avantRoots.map(node => node.textContent).join(' '));
-            const avantLink = avantRoots.flatMap(node => nodes('a[href]', node)).filter(anchor => detailNodeBelongs(anchor, productId(url), url))
-                .find(anchor => identity(anchor.href).id || identity(anchor.href).perfilUrl);
-            const proof = identity(avantLink && avantLink.href);
+            const avantRoots = nodes(avantSelector, content).filter(node => detailNodeBelongs(node, productId(url), url));
+            const proof = sellerProof(nodes('a[href]', content).filter(anchor => anchor.closest(avantSelector) && detailNodeBelongs(anchor, productId(url), url)),
+                [clean(modernRootState.root && modernRootState.root.getAttribute('data-seller-id'))],
+                identity(modernRootState.root && modernRootState.root.getAttribute('data-seller-profile-url')));
             const detailKey = productId(url) || url;
             const metrics = combineMetrics(structuredCache[detailKey], readMetrics(floatingRows.filter(row => detailNodeBelongs(row, productId(url), url))));
-            if (metrics.identityConflict) delete structuredCache[detailKey];
+            if (proof.conflict || metrics.identityConflict) delete structuredCache[detailKey];
             else if (metrics.rows) structuredCache[detailKey] = metrics;
             anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,

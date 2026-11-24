@@ -65,6 +65,34 @@
         return !!expected.url && pageKey(item.url) === pageKey(expected.url);
     }
 
+    function compatiblePartialPanel(previous, item) {
+        if (previous.avant_metrics_version !== 3 || !item.seller_confirmed || !previous.seller_confirmed
+            || Boolean(item.catalogo) !== Boolean(previous.catalogo)) return false;
+        const bothHaveSellerId = (previous.seller_id || previous.avant_seller_id) && (item.seller_id || item.avant_seller_id);
+        const bothHaveProfile = ['seller_perfil_url', 'avant_seller_perfil_url'].some(field => previous[field] && item[field]);
+        if (!bothHaveSellerId && !bothHaveProfile) return false;
+
+        // A row that disappears while the panel renders differs from a visible
+        // lower bound or a monthly row explicitly showing an unavailable value.
+        if (item.vendas == null && (item.vendas_rotulo || item.vendas_exibicao || item.vendas_limite_inferior)) return false;
+        if ((item.media_mensal ?? item.media_vendas_mensal) == null && (item.media_mensal_rotulo || item.media_vendas_mensal_exibicao)) return false;
+        return ['vendas', 'vendas_rotulo', 'vendas_exibicao', 'vendas_limite_inferior', 'vendas_estimadas',
+            'media_mensal', 'media_vendas_mensal', 'media_mensal_rotulo', 'media_vendas_mensal_exibicao',
+            'ritmo_atual', 'data_criacao'].every(field =>
+            item[field] == null || item[field] === '' || item[field] === previous[field]);
+    }
+
+    function selectObservation(previous, item) {
+        if (!previous || item.seller_confirmed === false || (item.catalogo && !previous.catalogo)
+            || ['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status)) return item;
+        const sellerIds = [previous.seller_id, previous.avant_seller_id, item.seller_id, item.avant_seller_id].filter(Boolean).map(String);
+        if (new Set(sellerIds).size > 1 || ['seller_perfil_url', 'avant_seller_perfil_url'].some(field =>
+            previous[field] && item[field] && pageKey(previous[field]) !== pageKey(item[field]))) return item;
+        if (previous.rankable && !item.rankable && (item.avant_metrics_version !== 3 || compatiblePartialPanel(previous, item))) return previous;
+        if (item.avant_metrics_version === 3 || previous.avant_metrics_version === 3) return item;
+        return { ...previous, ...item };
+    }
+
     async function collectFirstPage(options) {
         const opts = options || {}, browser = opts.browser;
         if (!browser || typeof browser.executeJavaScript !== 'function' || typeof browser.getURL !== 'function') throw new Error('Navegador da Pesquisa de Mercado indisponivel.');
@@ -138,12 +166,7 @@
                 if (!key) continue;
                 const previous = items.get(key);
                 const order = previous ? previous.ordem_coleta : items.size + 1;
-                // A later empty DOM read may be a virtualized card. Keep confirmed
-                // evidence, but never keep a rank after an explicit seller conflict.
-                const conflict = ['vendedor_nao_confirmado', 'catalogo_sem_evidencia_vendedor'].includes(item.status);
-                const keepPrevious = previous && previous.rankable && !item.rankable && !conflict && item.avant_metrics_version !== 3;
-                const observation = keepPrevious ? previous : (item.avant_metrics_version === 3 || previous?.avant_metrics_version === 3
-                    ? item : { ...previous, ...item });
+                const observation = selectObservation(previous, item);
                 items.set(key, { ...observation, ordem_coleta: order });
             }
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));

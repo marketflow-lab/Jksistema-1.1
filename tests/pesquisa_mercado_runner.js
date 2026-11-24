@@ -2168,6 +2168,32 @@ async function parallelDetailsOnlyRetryMissing() {
     assert(browsers.slice(1).every(browser => browser.finishes.includes('completed_partial')));
 }
 
+async function optionalDetailDoesNotDelayMissingDetails() {
+    const [enrichmentId, pendingId] = ['MLB1000000461', 'MLB1000000462'];
+    const listings = [
+        salesListing(enrichmentId, { avant_metrics_version: 3, vendas: 188, media_mensal: 5,
+            media_mensal_rotulo: 'ritmo atual', rankable: true }),
+        salesListing(pendingId)
+    ];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listings), reason: 'avant_data_incomplete', incomplete: true }),
+        { detailRetryDelaysMs: undefined });
+    parallelDetailBrowsers(h);
+    const attempts = [];
+    withDetailCollector(h, async ({ expectedItem }) => {
+        attempts.push(expectedItem.id);
+        return { reason: 'timeout', anuncios: [] };
+    });
+    h.runner.collector.AVANT_METRICS_VERSION = 3;
+
+    await h.runner.start(); await h.runner.task;
+
+    assert.equal(attempts.filter(id => id === enrichmentId).length, 1);
+    assert.equal(attempts.filter(id => id === pendingId).length, 3);
+    const published = h.vendors.get('id:111').anuncios.find(item => item.id === enrichmentId);
+    assert.equal(published.rankable, true);
+    assert.equal(published.media_vendas_mensal, 5);
+}
+
 async function parallelDetailsPauseKeepsOutOfOrderAttempts() {
     const ids = Array.from({ length: 6 }, (_, index) => `MLB10000005${String(index).padStart(2, '0')}`);
     const listing = ids.map(id => salesListing(id)), releases = [], firstCalls = [];
@@ -2540,6 +2566,7 @@ async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
     await newGenerationReopensInterruptedExhaustedCollection();
     await partialAndTimedOutCatalogEvidenceCanStillRecover();
     await parallelDetailsOnlyRetryMissing();
+    await optionalDetailDoesNotDelayMissingDetails();
     await parallelDetailsPauseKeepsOutOfOrderAttempts();
     await parallelDetailsLoginUsesBlockedBrowser();
     await parallelDetailTimeoutOnlyStopsItsBrowser();

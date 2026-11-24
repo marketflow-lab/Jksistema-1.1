@@ -1416,9 +1416,9 @@ class PesquisaMercadoRunner {
         return !this.needsLegacyAvantRefresh(item) && this.collector.isComplete(item);
     }
 
-    canConsultDetail(seller, item) {
+    canConsultDetail(seller, item, enrichComplete = true) {
         const metricsVersion = this.collector.AVANT_METRICS_VERSION;
-        const needsPanel = metricsVersion && item.avant_metrics_version === metricsVersion
+        const needsPanel = enrichComplete && metricsVersion && item.avant_metrics_version === metricsVersion
             && !item.avant_detail_observed && (item.media_mensal_rotulo !== 'vendas mensais' || !item.data_criacao);
         return (!this.areAvantMetricsComplete(item) || needsPanel) && allowedUrl(item.url) && !this.detailRetryBlocked(seller, item);
     }
@@ -1612,13 +1612,14 @@ class PesquisaMercadoRunner {
 
     async collectDetailRound(seller, collection) {
         const items = collection.result.anuncios;
+        const enrichComplete = collection.detailRound === 0;
         // Keep out-of-order completions until the contiguous cursor catches up.
         // Unavailable details also count as attempted within this round.
         const completed = new Set((Array.isArray(collection.completedIndices) ? collection.completedIndices : []).filter(index =>
             Number.isSafeInteger(index) && index >= collection.index && index < items.length));
         const advance = () => {
             while (collection.index < items.length && (completed.has(collection.index)
-                || !this.canConsultDetail(seller, items[collection.index]))) {
+                || !this.canConsultDetail(seller, items[collection.index], enrichComplete))) {
                 completed.delete(collection.index);
                 collection.index += 1;
             }
@@ -1627,7 +1628,7 @@ class PesquisaMercadoRunner {
         advance();
         const pending = [];
         for (let index = collection.index; index < items.length; index += 1) {
-            if (!completed.has(index) && this.canConsultDetail(seller, items[index])) pending.push(index);
+            if (!completed.has(index) && this.canConsultDetail(seller, items[index], enrichComplete)) pending.push(index);
         }
         if (!pending.length) {
             this.setProgress('collecting', `Sem novas consultas automaticas de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, items)}.`);
@@ -1711,7 +1712,7 @@ class PesquisaMercadoRunner {
         while (true) {
             this.check();
             if (collection.retryDelayMs !== undefined) {
-                const pending = items.filter(item => this.canConsultDetail(seller, item)).length;
+                const pending = items.filter(item => this.canConsultDetail(seller, item, false)).length;
                 if (pending) {
                     this.setProgress('collecting', `Aguardando para reconsultar ${pending} anuncio(s) com falha temporaria de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, items)}; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
                     await this.nameStep(() => this.wait(this.detailRetryDelaysMs[collection.detailRound - 1] || 0), this.controller.signal);
@@ -1722,7 +1723,7 @@ class PesquisaMercadoRunner {
             }
             navigated = await this.collectDetailRound(seller, collection) || navigated;
             if (collection.detailRound >= this.detailRetryDelaysMs.length
-                || !items.some(item => this.canConsultDetail(seller, item))) break;
+                || !items.some(item => this.canConsultDetail(seller, item, false))) break;
             // An empty successful response also needs a fresh consultation. Save
             // the next round before waiting so pause/login keeps its exact cursor.
             collection.retryDelayMs = this.detailRetryDelaysMs[collection.detailRound];
