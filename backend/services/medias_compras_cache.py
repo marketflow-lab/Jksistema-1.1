@@ -74,6 +74,34 @@ def _compactar_fontes(source):
     )
 
 
+def _confirmar_fontes_calculadas(before, after, expected_target, probe):
+    from backend.services.medias_compras_fontes import categorias_alteradas, fontes_consistentes
+
+    sales_categories = {"vendas_db", "vendas_wal"}
+    for _ in range(3):
+        if (before.pendente or after.pendente or before.autoridade != after.autoridade
+                or expected_target != after.alvo):
+            return False, after
+        consistent = fontes_consistentes(before, after)
+        if before.assinatura == after.assinatura:
+            return consistent, after
+        if not consistent and not set(categorias_alteradas(before, after)) <= sales_categories:
+            return False, after
+
+        # Comparing the filtered sales rows can take long enough for another
+        # SQLite commit. Recheck the same calculation with the newer revision.
+        # Only the exact final revision that passes both checks can be published.
+        verified = probe()
+        if verified == after:
+            return consistent, verified
+        if (verified.pendente or verified.autoridade != after.autoridade or verified.alvo != after.alvo
+                or verified.politica_fotos != after.politica_fotos
+                or not set(categorias_alteradas(after, verified)) <= sales_categories):
+            return False, verified
+        after = verified
+    return False, after
+
+
 class ResultadoCache:
     FRESH_SECONDS = 60
     STALE_SECONDS = 15 * 60
@@ -182,7 +210,7 @@ class ResultadoCache:
     def _calculate(self, probe, load, submitted, initial):
         from backend.services.medias_compras_common import _ListaPedidoConflict
         from backend.services.medias_compras_leitura import leitura_medias, medir_etapa
-        from backend.services.medias_compras_fontes import categorias_alteradas, fontes_consistentes
+        from backend.services.medias_compras_fontes import categorias_alteradas
 
         queue_ms = (time.perf_counter() - submitted) * 1000
         started = time.perf_counter()
@@ -240,16 +268,7 @@ class ResultadoCache:
                         metrics["cache_etapas"] = metrics.get("cache_etapas", 0) + (time.perf_counter() - cache_started) * 1000
                     expected_target = receipt[-1] if receipt else before.alvo
                     validation_started = time.perf_counter()
-                    consistent = (not before.pendente and not after.pendente and
-                                  fontes_consistentes(before, after) and before.autoridade == after.autoridade and
-                                  expected_target == after.alvo)
-                    if consistent and before.assinatura != after.assinatura:
-                        # Logical sales equivalence may scan rows. Fence every
-                        # source and access policy again after that scan: stock,
-                        # catalog or permissions can change while it runs.
-                        verified = probe()
-                        consistent = verified == after
-                        after = verified
+                    consistent, after = _confirmar_fontes_calculadas(before, after, expected_target, probe)
                     metrics["fontes"] = metrics.get("fontes", 0) + (time.perf_counter() - validation_started) * 1000
                     logger.info(
                         "[MEDIAS_FENCE] execucao=%s tentativa=%d consistente=%d pendente_antes=%d pendente_depois=%d autoridade_alterada=%d alvo_alterado=%d commit_proprio=%d categorias=%s",

@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import replace
 
 import pytest
@@ -300,6 +302,78 @@ def test_authority_is_rechecked_before_even_a_fresh_hit():
         separate = await service.consultar("a", ("other-root",), lambda: state, lambda _s: {"secret": "other"}, stale=False)
         assert separate == {"secret": "other"}
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("second_write", ["during_digest", "after_validation"])
+@pytest.mark.parametrize("changed_store,expected_units,expected_loads", [
+    ("other", 2, 1),
+    ("selected", 9, 2),
+])
+def test_sales_change_during_validation_publishes_only_matching_store_rows(
+        tmp_path, monkeypatch, second_write, changed_store, expected_units, expected_loads):
+    from backend.services import medias_compras_historico as history
+    from backend.services.medias_compras_fontes import capturar_fontes
+
+    db = str(tmp_path / "vendas_historico.db")
+    scope = {"loja": "selected", "store_id": "one"}
+    loads = []
+    scanned = False
+    changed = False
+
+    with closing(sqlite3.connect(db)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE vendas (id_unico TEXT, sku TEXT, data TEXT, "
+                       "produto TEXT, quantidade REAL, loja_conta TEXT)")
+        writer.executemany("INSERT INTO vendas VALUES (?, 'SKU', '2026-10-10', 'Item', ?, ?)",
+                           [("a", 2, "selected"), ("b", 3, "other")])
+        writer.commit()
+
+        def update(store, units):
+            writer.execute("UPDATE vendas SET quantidade=? WHERE loja_conta=?", (units, store))
+            writer.commit()
+
+        def second_commit():
+            nonlocal changed
+            if not changed:
+                update(changed_store, 9)
+                changed = True
+
+        digest = history._assinatura_consulta
+
+        def read_digest(*args):
+            nonlocal scanned
+            value = digest(*args)
+            scanned = True
+            if second_write == "during_digest":
+                second_commit()
+            return value
+
+        monkeypatch.setattr(history, "_assinatura_consulta", read_digest)
+
+        def probe():
+            if scanned and second_write == "after_validation":
+                second_commit()
+            return capturar_fontes(tmp_path, extras=(db,), escopo=("one", "selected"),
+                                   snapshot={"escopo": scope, "db_paths": (db,)})
+
+        def load(before):
+            sales, _, _ = history.ler_historico_vendas(
+                client_id="tenant", loja="selected", store_id="one", db_paths=(db,),
+                meses=6, fim_periodo="2026-10-31", filtro_sql=" AND loja_conta=?",
+                filtro_params=("selected",), normalizar_sku=str, titulo_valido=str,
+                snapshot=before.snapshot,
+            )
+            units = sales["SKU"]["vendas_mensais"]["2026-10"]
+            loads.append(units)
+            if len(loads) == 1:
+                update("other", 5)
+            return units
+
+        units, accepted = cache.ResultadoCache()._calculate(probe, load, time.perf_counter(), probe())
+        assert scanned and changed
+        assert units == expected_units and accepted == probe()
+        assert len(loads) == expected_loads
 
 
 @pytest.mark.parametrize("change", ["catalog", "authority"])
