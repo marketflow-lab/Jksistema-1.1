@@ -105,6 +105,84 @@ def test_lookup_failure_is_inconclusive_instead_of_absence(monkeypatch):
     assert result[DESTINATION]["situacao"] == "inconclusivo"
 
 
+@pytest.fixture
+def consulte_com_respostas(monkeypatch):
+    from backend.services import mercadolivre_legacy_promocoes as leitor
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", leitor._ml_obter_promocoes_item)
+    monkeypatch.setattr(leitor, "ML_ITEM_PROMOTIONS_CACHE", {}, raising=False)
+    monkeypatch.setattr(leitor, "_cache_set", lambda *args: None, raising=False)
+    monkeypatch.setattr(leitor, "_promo_remover_contexto_consultado", lambda item: item, raising=False)
+
+    def executar(*respostas):
+        fila = iter(respostas)
+        esperas = []
+        chamadas = []
+        def get(client, loja, cfg, metodo, url, **opcoes):
+            assert (client, loja, metodo, cfg["user_id"]) == (TENANT, STORE, "GET", CFG["user_id"])
+            chamadas.append(url)
+            entrada = next(fila, None)
+            if entrada is None:
+                pytest.fail("O leitor tentou consultar novamente um resultado definitivo")
+            if isinstance(entrada, Exception):
+                raise entrada
+            return entrada, cfg
+
+        monkeypatch.setattr(helpers.ctx, "_ml_api_request", get)
+        monkeypatch.setattr(helpers.time, "sleep", esperas.append)
+        estado, _ = helpers._renovacao_consultar_participacoes(TENANT, STORE, dict(CFG), ITEM, [SOURCE])
+        assert chamadas == [f"https://api.mercadolibre.com/seller-promotions/items/{ITEM}"] * len(respostas)
+        return estado[SOURCE], esperas
+
+    return executar
+
+
+@pytest.mark.parametrize("primeiro", [response(429, {}), HTTPException(429, headers={"retry-after": "5"})])
+def test_participacao_respeita_retry_after_e_recupera_timeout(consulte_com_respostas, primeiro):
+    if not isinstance(primeiro, HTTPException):
+        primeiro.headers = {"Retry-After": "5"}
+    estado, esperas = consulte_com_respostas(primeiro, requests.ReadTimeout(), response(200, [participation()]))
+    assert estado["situacao"] == "participante"
+    assert len(esperas) == 2 and esperas[0] >= 5
+
+
+def test_participacao_esgota_falha_temporaria_sem_inferir_ausencia(consulte_com_respostas):
+    estado, esperas = consulte_com_respostas(response(503, {}), requests.ConnectionError(), response(502, {}))
+    assert len(esperas) == 2
+    assert estado == {"situacao": "inconclusivo", "erro": "Consulta de participacoes recebeu HTTP 502"}
+
+
+@pytest.mark.parametrize(("falha", "tentativas", "motivo"), [
+    (requests.ReadTimeout("detalhes privados"), 3, "Tempo esgotado"),
+    (requests.ConnectionError("detalhes privados"), 3, "Falha de conexao"),
+    (requests.exceptions.SSLError("detalhes privados"), 1, "Falha na conexao segura (TLS)"),
+])
+def test_participacao_distingue_falhas_de_transporte(consulte_com_respostas, falha, tentativas, motivo):
+    estado, esperas = consulte_com_respostas(*([falha] * tentativas))
+    assert len(esperas) == tentativas - 1
+    assert estado["situacao"] == "inconclusivo"
+    assert estado["erro"].startswith(motivo) and "detalhes privados" not in estado["erro"]
+
+
+def test_resposta_200_invalida_nao_e_repetida_como_um_502_remoto(consulte_com_respostas):
+    estado, esperas = consulte_com_respostas(response(200, {"invalid": True}))
+    assert estado == {"situacao": "inconclusivo", "erro": "Resposta de participacoes invalida"}
+    assert esperas == []
+
+
+@pytest.mark.parametrize(("resposta", "situacao"), [
+    (response(200, [participation(item=OTHER_ITEM)]), "inconclusivo"),
+    (response(200, []), "ausente"),
+    (response(404, {"message": "no offers found"}), "ausente"),
+    (response(403, {}), "inconclusivo"),
+    (HTTPException(429, headers={"Retry-After": "120"}), "inconclusivo"),
+])
+def test_participacao_nao_repete_resposta_definitiva_ou_antes_do_prazo(consulte_com_respostas, resposta, situacao):
+    estado, esperas = consulte_com_respostas(resposta)
+    assert estado["situacao"] == situacao
+    assert esperas == []
+
+
 @pytest.mark.parametrize("change", [
     {"status": None, "status_item": "active"},
     {"status": None, "state": None},

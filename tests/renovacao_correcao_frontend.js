@@ -107,5 +107,39 @@ function setup() {
             esperado: 908, contagem_coerente: false } }, 'Destino');
     assert.match(partial.elements.get('renovacao-sync-progress-text').textContent, /Confira a contagem da origem/);
     assert(partial.progressStyles.every(value => !/\bok\b/.test(value)), 'A count mismatch must not appear successful even with no pending items');
+
+    const blocked = setup();
+    const erro = 'Participacao inconclusiva em 20 anuncio(s). A copia nao foi iniciada.';
+    const falhas = Array.from({ length: 20 }, (_, i) => ({
+        item_id: 'MLB' + (1000000000 + i), erro: 'Motivo do anúncio ' + (i + 1), campanha_id: 'C-MLB1',
+    }));
+    const result = { success: false, copia_iniciada: false, falhas_total: 20, falhas, erro };
+    let job = { status: 'error', error: erro, result };
+    blocked.sandbox.fetch = async () => ({ ok: true, async json() { return job; } });
+    const syncButton = blocked.elements.get('btn-sincronizar-renovacao');
+    await blocked.poller('bloqueada', syncButton, 'Destino');
+    assert.strictEqual(blocked.elements.get('renovacao-sync-progress-text').textContent, erro);
+    assert.strictEqual(blocked.elements.get('renovacao-sync-progress-percent').textContent, '');
+    assert.strictEqual(blocked.elements.get('renovacao-sync-result-stats').hidden, true);
+    assert.strictEqual(blocked.elements.get('renovacao-sync-details').hidden, false);
+    const detalhes = blocked.elements.get('renovacao-sync-details-text').textContent;
+    for (const item of falhas.slice(0, 5)) assert(detalhes.includes(item.item_id + ': ' + item.erro));
+    assert(!detalhes.includes(falhas[5].item_id));
+    const download = blocked.elements.get('btn-baixar-conferencia-renovacao');
+    assert.strictEqual(download.style.display, '');
+    const arquivos = [];
+    blocked.sandbox.Blob = Blob;
+    blocked.sandbox.URL = { createObjectURL(blob) { arquivos.push(blob); return 'blob:relatorio'; }, revokeObjectURL() {} };
+    blocked.sandbox.document.createElement = () => ({ click() {} });
+    blocked.sandbox.baixarConferenciaRenovacao();
+    assert.deepStrictEqual(JSON.parse(await arquivos[0].text()), result, 'O arquivo deve conter todos os MLBs e motivos desta tentativa');
+
+    job = { status: 'error', error: 'Erro ao consultar a loja' };
+    await blocked.poller('sem-relatorio', syncButton, 'Destino');
+    assert.strictEqual(blocked.elements.get('renovacao-sync-progress-text').textContent, job.error);
+    assert.strictEqual(blocked.elements.get('renovacao-sync-details').hidden, true);
+    assert.strictEqual(download.style.display, 'none');
+    blocked.sandbox.baixarConferenciaRenovacao();
+    assert.strictEqual(arquivos.length, 1, 'Um erro sem relatório não pode baixar o resultado de outra tentativa');
     console.log('Renovacao: modos de consulta/correcao, cancelamento, version skew e resultado parcial aprovados.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

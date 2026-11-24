@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi import HTTPException
 from backend.routers.renovacao import RenovacaoRouterConfig, create_renovacao_router
 from backend.schemas.renovacao import RenovacaoCampanhaSincronizarRequest
 from backend.services import renovacao_promocoes as service
+from backend.services import renovacao_promocoes_helpers as helpers
 
 
 SOURCE = "C-MLB990001"
@@ -111,13 +113,13 @@ def test_failed_report_replace_preserves_previous_report_and_cleans_temp(tmp_pat
     assert not list(directory.glob("*.tmp"))
 
 
-def router_with_capture(capture):
+def router_with_capture(capture, job_get=None):
     noop = lambda *args, **kwargs: {}
     return create_renovacao_router(RenovacaoRouterConfig(
         get_tenant_id=noop, listar_campanhas_usuario=noop, criar_ou_completar_proximo_mes=noop,
         criar_campanha_manual=noop, atualizar_periodo_campanha=noop, deletar_campanha=noop,
         sincronizar_promocao_existente=noop, iniciar_sincronizacao_promocao=capture,
-        sync_job_get=noop, agendamento_atual=noop, agendamento_put=noop))
+        sync_job_get=job_get or noop, agendamento_atual=noop, agendamento_put=noop))
 
 
 def test_audit_uses_authenticated_tenant_and_cannot_override_it_in_body():
@@ -180,3 +182,52 @@ def test_partial_audit_worker_does_not_label_result_as_success(tmp_path, monkeyp
     assert updates[-1]["etapa"] == "Pendencias"
     assert updates[-1]["result"]["success"] is False
     assert "pendencias" in updates[-1]["mensagem"].lower()
+
+
+@pytest.mark.parametrize("disk_available", [True, False])
+def test_pre_copy_error_keeps_all_item_reasons_in_authorized_job_and_report(tmp_path, monkeypatch, disk_available):
+    job_id = "job-pre-copy"
+    monkeypatch.setattr(service.ctx, "RENOVACAO_SYNC_JOBS", {job_id: {"client_id": "tenant-a"}})
+    monkeypatch.setattr(service.ctx, "RENOVACAO_SYNC_JOBS_LOCK", threading.Lock())
+    monkeypatch.setattr(service.ctx, "get_tenant_path", lambda client: str(tmp_path / client))
+    monkeypatch.setattr(service, "_renovacao_ml_listar_campanhas_usuario", lambda *_: ([], {}))
+    items = [f"MLB{990100 + index}" for index in range(20)]
+    failures = {item: {SOURCE: "Consulta de participacoes recebeu HTTP 429"} for item in items}
+    failures[items[-1]][SOURCE] = "Falha na consulta Bearer fixture-private-token"
+
+    def refuse_pre_copy(*args, **kwargs):
+        raise helpers.RenovacaoParticipacaoInconclusiva(failures, SOURCE)
+
+    monkeypatch.setattr(service, "_renovacao_listar_itens_campanha", refuse_pre_copy)
+    if not disk_available:
+        def unavailable(*args):
+            raise OSError("fixture storage unavailable")
+        monkeypatch.setattr(service.os, "replace", unavailable)
+
+    service._renovacao_sincronizar_promocao_worker("tenant-a", job_id, {
+        "loja": "Loja", "campanha_origem_id": SOURCE, "campanha_destino_id": DESTINATION,
+    })
+    router = router_with_capture(None, helpers._renovacao_sync_job_get)
+    endpoint = next(route.endpoint for route in router.routes if route.name == "renovacao_sincronizar_promocao_progresso")
+    with pytest.raises(HTTPException) as foreign:
+        endpoint(job_id, client_id="tenant-b")
+    assert foreign.value.status_code == 404
+    job = endpoint(job_id, client_id="tenant-a")
+    result = job["result"]
+    assert job["status"] == "error"
+    assert job["error"] == job["mensagem"] == result["erro"]
+    assert "20 anuncio(s)" in job["error"]
+    assert result["success"] is False and result["copia_iniciada"] is False
+    assert result["falhas_total"] == len(result["falhas"]) == 20
+    assert [row["item_id"] for row in result["falhas"]] == items
+    assert {row["campanha_id"] for row in result["falhas"]} == {SOURCE}
+    assert result["falhas"][0]["erro"] == "Consulta de participacoes recebeu HTTP 429"
+    assert "fixture-private-token" not in json.dumps(job)
+
+    path = tmp_path / "tenant-a" / "renovacao_auditorias" / f"{job_id}.json"
+    if disk_available:
+        saved = json.loads(path.read_text(encoding="utf-8"))["resultado"]
+        assert {**saved, "relatorio_id": job_id} == result
+    else:
+        assert result["aviso_relatorio"] and "relatorio_id" not in result
+        assert not path.exists()

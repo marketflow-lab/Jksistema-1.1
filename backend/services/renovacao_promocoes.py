@@ -25,6 +25,7 @@ from backend.services.renovacao_agendamento_store import (
     _renovacao_remover_agendamento_campanha,
 )
 from backend.services.renovacao_promocoes_helpers import (
+    RenovacaoParticipacaoInconclusiva,
     _renovacao_datas_proximo_mes,
     _renovacao_contagem_esperada,
     _renovacao_consultar_participacoes,
@@ -583,12 +584,6 @@ def _renovacao_copiar_mlbs_campanha(
             progress_start=18, progress_end=48, validar_quantidade=not somente_conferir,
             estatisticas=stats)
     item_ids = list(dict.fromkeys(str(item.get("id")) for item in itens_ref if item.get("id")))
-    if not somente_conferir:
-        _renovacao_exigir_coleta_completa(itens_ref, expected_origem_count, campanha_origem_id)
-        if not item_ids:
-            raise HTTPException(400, "Nao encontrei participantes confirmados na campanha de origem.")
-        if stats.get("inconclusivos"):
-            raise HTTPException(409, "Existem consultas de participacao inconclusivas. Nenhuma copia foi iniciada.")
     consultas_iniciais = stats.get("consultas", {})
     # Mesmo uma coleta preparada so pode decidir POST/PUT por associacao exata.
     faltando_snapshot = [item for item in item_ids if item not in consultas_iniciais]
@@ -596,6 +591,12 @@ def _renovacao_copiar_mlbs_campanha(
         _novas, cfg = _renovacao_confirmar_lote(client_id, loja, cfg, faltando_snapshot,
             stats["campanhas_consulta"], stats, progress_callback, 49, 58)
         consultas_iniciais = stats["consultas"]
+    if not somente_conferir:
+        if stats.get("inconclusivos"):
+            raise RenovacaoParticipacaoInconclusiva(stats["inconclusivos"])
+        _renovacao_exigir_coleta_completa(itens_ref, expected_origem_count, campanha_origem_id)
+        if not item_ids:
+            raise HTTPException(400, "Nao encontrei participantes confirmados na campanha de origem.")
     ids_destino = {item for item in item_ids if
         consultas_iniciais.get(item,{}).get(campanha_destino_id,{}).get("situacao") == "participante"}
     erros_operacao = {}
@@ -959,6 +960,13 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
     def progress_hook(data: dict) -> None:
         _renovacao_sync_job_update(job_id, status="running", **(data or {}))
 
+    def salvar_relatorio(resultado: dict) -> None:
+        try:
+            _renovacao_salvar_conferencia(client_id, job_id, payload, resultado)
+            resultado["relatorio_id"] = job_id
+        except Exception:
+            resultado["aviso_relatorio"] = "A conferencia terminou, mas o relatorio nao foi salvo. Baixe o resultado nesta tela."
+
     try:
         if payload.get("somente_conferir") and payload.get("corrigir_divergencias"):
             raise HTTPException(400, "Os modos de conferencia somente leitura e correcao sao exclusivos.")
@@ -984,11 +992,7 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             **modo,
         )
         resultado = _renovacao_sanitizar_relatorio(resultado)
-        try:
-            _renovacao_salvar_conferencia(client_id, job_id, payload, resultado)
-            resultado["relatorio_id"] = job_id
-        except Exception:
-            resultado["aviso_relatorio"] = "A conferencia terminou, mas o relatorio nao foi salvo. Baixe o resultado nesta tela."
+        salvar_relatorio(resultado)
         completa = resultado.get("success") is True
         _renovacao_sync_job_update(
             job_id,
@@ -1004,12 +1008,13 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
         )
     except HTTPException as exc:
         detail = _renovacao_sanitizar_relatorio(exc.detail if isinstance(exc.detail, str) else json.dumps(exc.detail, ensure_ascii=False))
-        try:
-            _renovacao_salvar_conferencia(client_id, job_id, payload, {
-                "success": False, "somente_conferir": bool(payload.get("somente_conferir")),
-                "corrigir_divergencias": bool(payload.get("corrigir_divergencias")), "erro": detail})
-        except Exception:
-            pass
+        resultado = {"success": False, "somente_conferir": bool(payload.get("somente_conferir")),
+                     "corrigir_divergencias": bool(payload.get("corrigir_divergencias")), "erro": detail}
+        pre_copia = isinstance(exc, RenovacaoParticipacaoInconclusiva)
+        if pre_copia:
+            resultado.update(copia_iniciada=False, falhas_total=len(exc.falhas),
+                             falhas=_renovacao_sanitizar_relatorio(exc.falhas))
+        salvar_relatorio(resultado)
         _renovacao_sync_job_update(
             job_id,
             status="error",
@@ -1018,6 +1023,7 @@ def _renovacao_sincronizar_promocao_worker(client_id: str, job_id: str, payload:
             progress=100,
             mensagem=detail or "Erro ao sincronizar promocao.",
             error=detail or "Erro ao sincronizar promocao.",
+            result=resultado if pre_copia else None,
         )
     except Exception as exc:
         ctx.logger.error("[RENOVACAO ML] Falha no processamento da conferencia: %s", type(exc).__name__)

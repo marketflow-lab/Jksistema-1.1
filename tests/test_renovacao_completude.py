@@ -7,6 +7,7 @@ import pytest
 import requests
 from fastapi import HTTPException
 
+from backend.services import central_accounts_client
 from backend.services import renovacao_promocoes as operations
 from backend.services import renovacao_promocoes_helpers as helpers
 
@@ -116,6 +117,46 @@ def _assert_incomplete(error, expected, found):
     assert error.value.status_code == 409
     assert str(expected) in str(error.value.detail)
     assert str(found) in str(error.value.detail)
+
+
+def test_parallel_confirmation_preserves_the_initiating_store_session(monkeypatch):
+    session = SimpleNamespace(tenant=TENANT, provider_scoped=True,
+                              providers=("mercadolivre",), owns_connection=lambda store, provider: store == STORE)
+    def exact_item(client, store, cfg, item, **kwargs):
+        assert central_accounts_client.current_for_provider(client, "mercadolivre", store) is session
+        return [_entry(item)], cfg
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", exact_item)
+    token = central_accounts_client._current.set(session)
+    try:
+        consultas, _ = helpers._renovacao_confirmar_lote(TENANT, STORE, CFG, IDS[:7], [SOURCE])
+    finally:
+        central_accounts_client._current.reset(token)
+    assert {item for item, registro in consultas.items()
+            if registro[SOURCE]["situacao"] == "participante"} == set(IDS[:7])
+
+
+@pytest.mark.parametrize("campanha", [SOURCE, DESTINATION])
+def test_ambiguous_participation_reports_exact_items_before_any_copy(monkeypatch, campanha):
+    items = IDS[:3]
+    _patch_direct(monkeypatch, items)
+    def exact_item(client, store, cfg, item, **kwargs):
+        registros = [_entry(item)]
+        if item in items[1:]:
+            registros.append(_entry(item, "desconhecido", campaign_id=campanha))
+        return registros, cfg
+
+    monkeypatch.setattr(helpers.ctx, "_ml_obter_promocoes_item", exact_item)
+    monkeypatch.setattr(operations, "_renovacao_adicionar_item_campanha",
+                        lambda *a, **kw: pytest.fail("A copia com pendencias chegou ao destino"))
+    with pytest.raises(helpers.RenovacaoParticipacaoInconclusiva) as error:
+        operations._renovacao_copiar_mlbs_campanha(TENANT, STORE, CFG, SOURCE, DESTINATION,
+                                                    expected_origem_count=len(items))
+    assert error.value.status_code == 409
+    assert error.value.falhas == [
+        {"item_id": item, "campanha_id": campanha, "erro": "Estado de participacao nao confirmado"}
+        for item in items[1:]
+    ]
 
 
 def test_candidate_record_is_not_a_campaign_participant():

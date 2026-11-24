@@ -385,8 +385,6 @@
         const pendencias = Number(result.falhas_total ?? (Number(conferencia.pendentes || 0) + inconclusivos));
         const situacao = completa ? 'Concluído' : (pendencias === 0 && conferencia.contagem_coerente === false ? 'Confira a contagem da origem' : 'Finalizado com pendências');
         setRenovacaoSyncProgress(`${nome} · ${situacao}`, 100, completa ? 'ok' : 'warning');
-        const box = document.getElementById('renovacao-sync-progress');
-        if (box) box.className += ' finished';
         const indicadores = [[conferencia.confirmados, 'descontos confirmados']];
         if (result.corrigir_divergencias) indicadores.push([correcao.corrigidos, 'corrigidos']);
         else if (!result.somente_conferir) indicadores.push([result.incluidos, 'incluídos']);
@@ -407,10 +405,16 @@
         if (result.corrigir_divergencias) linhas.push(`Entre os itens selecionados para correção: ${numero(correcao.pendentes)} ainda pendentes.`);
         if (conferencia.contagem_coerente === false) linhas.push(`Contagem da origem divergente: ${conferencia.esperado == null ? 'não confirmada' : numero(conferencia.esperado)} esperados; ${numero(conferencia.total_origem)} encontrados.`);
         if (conferencia.extras_destino?.length) linhas.push(`No destino: ${numero(conferencia.extras_destino.length)} anúncios sem participação confirmada na origem.`);
+        mostrarDetalhesConferenciaRenovacao(result, linhas);
+    }
+
+    function mostrarDetalhesConferenciaRenovacao(result, linhas) {
+        const box = document.getElementById('renovacao-sync-progress');
+        if (box) box.className += ' finished';
         const exemplos = (Array.isArray(result.falhas) ? result.falhas : []).slice(0, 5);
         if (exemplos.length) linhas.push('Primeiras pendências:\n' + exemplos.map(item => `${item.item_id || 'Anúncio'}: ${result.erros_operacao?.[item.item_id] || item.erro || 'Sem detalhe'}`).join('\n'));
         if (result.aviso_relatorio) linhas.push(result.aviso_relatorio);
-        linhas.push('Baixe o relatório para consultar todos os anúncios.');
+        linhas.push(result.copia_iniciada === false ? 'Baixe o relatório para consultar todas as pendências desta tentativa.' : 'Baixe o relatório para consultar todos os anúncios.');
         const texto = document.getElementById('renovacao-sync-details-text');
         if (texto) texto.textContent = linhas.join('\n\n');
         const detalhes = document.getElementById('renovacao-sync-details');
@@ -1211,6 +1215,12 @@
 
     let ultimaConferenciaRenovacao = null;
 
+    function definirRelatorioRenovacao(result) {
+        ultimaConferenciaRenovacao = result;
+        const botao = document.getElementById('btn-baixar-conferencia-renovacao');
+        if (botao) botao.style.display = result ? '' : 'none';
+    }
+
     function quantidadeOrigemRenovacao(campanha) {
         if (campanha.contagens_verificadas === false) return null;
         const programados = campanha.programmed_count ?? campanha.scheduled_count;
@@ -1285,9 +1295,7 @@
             if (!response.ok) throw new Error(job.detail || 'Erro ao consultar o andamento da criação.');
             if (job.status === 'done') {
                 const result = job.result || {};
-                ultimaConferenciaRenovacao = result;
-                const download = document.getElementById('btn-baixar-conferencia-renovacao');
-                if (download) download.style.display = '';
+                definirRelatorioRenovacao(result);
                 mostrarResultadoSincronizacaoRenovacao(result, result.nova_campanha?.nome || contexto.nome);
                 await carregarCampanhasRenovacao(true);
                 return;
@@ -1319,9 +1327,7 @@
         const contexto = { loja, nome, jobId: '', percentual: null, controles: bloquearControlesCriacaoRenovacao() };
         renovacaoCriacaoState = contexto;
         botao.textContent = 'Criando campanha...';
-        ultimaConferenciaRenovacao = null;
-        const download = document.getElementById('btn-baixar-conferencia-renovacao');
-        if (download) download.style.display = 'none';
+        definirRelatorioRenovacao(null);
         setRenovacaoSyncProgress('Iniciando criação da campanha...', null, 'info');
         let inicioRejeitado = false;
         try {
@@ -1376,9 +1382,7 @@
                 pararPollingRenovacaoSync();
                 const geracaoFinalizada = renovacaoSyncGeracao;
                 const result = job.result || {};
-                ultimaConferenciaRenovacao = result;
-                const download = document.getElementById('btn-baixar-conferencia-renovacao');
-                if (download) download.style.display = '';
+                definirRelatorioRenovacao(result);
                 mostrarResultadoSincronizacaoRenovacao(result, destinoNome);
                 await carregarCampanhasRenovacao(true);
                 if (geracaoFinalizada === renovacaoSyncGeracao && !renovacaoCriacaoState) resetarBotaoSincronizacaoRenovacao(botao);
@@ -1387,7 +1391,11 @@
             if (status === 'error') {
                 pararPollingRenovacaoSync();
                 const erro = job.error || mensagem || 'Erro ao sincronizar promocao.';
-                setRenovacaoSyncProgress(erro, 100, 'error');
+                const result = job.result;
+                const temPendencias = result?.copia_iniciada === false && Array.isArray(result.falhas) && result.falhas.length > 0;
+                definirRelatorioRenovacao(temPendencias ? result : null);
+                setRenovacaoSyncProgress(erro, temPendencias ? null : 100, 'error');
+                if (temPendencias) mostrarDetalhesConferenciaRenovacao(result, []);
                 resetarBotaoSincronizacaoRenovacao(botao);
                 return true;
             }
@@ -1456,9 +1464,7 @@
             const controle = document.getElementById(id);
             if (controle) controle.disabled = true;
         }
-        ultimaConferenciaRenovacao = null;
-        const download = document.getElementById('btn-baixar-conferencia-renovacao');
-        if (download) download.style.display = 'none';
+        definirRelatorioRenovacao(null);
         const inicio = corrigirDivergencias ? 'Conferindo anuncios para corrigir as divergencias...' : (somenteConferir ? 'Conferindo descontos sem alterar a promocao...' : 'Iniciando sincronizacao da promocao...');
         setRenovacaoSyncProgress(inicio, 0, 'info');
         const endpoint = corrigirDivergencias ? '/api/renovacao/corrigir-divergencias/iniciar' : (somenteConferir ? '/api/renovacao/conferir-promocao/iniciar' : '/api/renovacao/sincronizar-promocao/iniciar');

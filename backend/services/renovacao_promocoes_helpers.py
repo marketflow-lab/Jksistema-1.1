@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import random
 import re
 import time
 import unicodedata
@@ -13,8 +14,12 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
+import requests
+from urllib3.exceptions import InvalidHeader
+from urllib3.util.retry import Retry
 
 from backend.services import renovacao_context as ctx
+from backend.services.central_accounts_client import with_request_context
 
 try:
     RENOVACAO_TIMEZONE = ZoneInfo("America/Sao_Paulo")
@@ -159,16 +164,66 @@ def _renovacao_selecionar_participacao_exata(
     return {"situacao": "participante", "raw": participantes[0]}
 
 
+_PARTICIPACAO_HTTP_TRANSITORIO = {408, 429, 500, 502, 503, 504}
+_PARTICIPACAO_TENTATIVAS = 3
+
+
+def _renovacao_espera_leitura(resposta, tentativa: int) -> float | None:
+    headers = getattr(resposta, "headers", None) or {}
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    espera_minima = 0.0
+    if retry_after:
+        try:
+            espera_minima = Retry().parse_retry_after(str(retry_after))
+        except (InvalidHeader, ValueError, OverflowError):
+            pass
+    # A longer provider cooldown belongs to a later check. Never retry early.
+    if espera_minima > 18:
+        return None
+    return min(18.0, max(espera_minima, 1.8 ** tentativa) + random.uniform(0.2, 1.0))
+
+
+def _renovacao_get_participacoes(client_id, loja, cfg, method, url, **opcoes):
+    if method != "GET":
+        raise ValueError("A consulta de participacoes requer GET")
+    for tentativa in range(1, _PARTICIPACAO_TENTATIVAS + 1):
+        try:
+            resposta, cfg = ctx._ml_api_request(client_id, loja, cfg, method, url, **opcoes)
+        except (HTTPException, requests.Timeout, requests.ConnectionError) as exc:
+            if (isinstance(exc, HTTPException) and exc.status_code not in _PARTICIPACAO_HTTP_TRANSITORIO
+                    or isinstance(exc, requests.exceptions.SSLError) or tentativa == _PARTICIPACAO_TENTATIVAS):
+                raise
+            espera = _renovacao_espera_leitura(exc, tentativa)
+            if espera is None:
+                raise
+        else:
+            if resposta.status_code not in _PARTICIPACAO_HTTP_TRANSITORIO or tentativa == _PARTICIPACAO_TENTATIVAS:
+                return resposta, cfg
+            espera = _renovacao_espera_leitura(resposta, tentativa)
+            if espera is None:
+                return resposta, cfg
+        time.sleep(espera)
+
+
 def _renovacao_consultar_participacoes(client_id, loja, cfg, item_id, campanhas) -> tuple[dict, dict]:
     if not re.fullmatch(r"ML[A-Z]\d+", str(item_id)):
         return {campaign: {"situacao": "inconclusivo", "erro": "Identificador do anuncio invalido"} for campaign in campanhas}, cfg
     try:
         promocoes, cfg = ctx._ml_obter_promocoes_item(
-            client_id, loja, cfg, item_id, strict=True, force_refresh=True,
+            client_id, loja, cfg, item_id, request_fn=_renovacao_get_participacoes, strict=True, force_refresh=True,
         )
     except Exception as exc:
-        status = getattr(exc, "status_code", None)
-        erro = f"Consulta de participacoes recebeu HTTP {status}" if status else "Falha na consulta de participacoes"
+        if isinstance(exc, requests.Timeout):
+            erro = "Tempo esgotado ao consultar participacoes no Mercado Livre"
+        elif isinstance(exc, requests.exceptions.SSLError):
+            erro = "Falha na conexao segura (TLS) com o Mercado Livre"
+        elif isinstance(exc, requests.ConnectionError):
+            erro = "Falha de conexao ao consultar participacoes no Mercado Livre"
+        elif isinstance(exc, HTTPException) and exc.status_code == 502 and isinstance(exc.__cause__, ValueError):
+            erro = "Resposta de participacoes invalida"
+        else:
+            status = getattr(exc, "status_code", None)
+            erro = f"Consulta de participacoes recebeu HTTP {status}" if status else "Falha na consulta de participacoes"
         return {campaign: {"situacao": "inconclusivo", "erro": erro} for campaign in campanhas}, cfg
     resultados = {}
     for campaign in campanhas:
@@ -583,6 +638,21 @@ def _renovacao_sync_jobs_limpar_antigos(max_age_seconds: int = 24 * 60 * 60) -> 
             ctx.RENOVACAO_SYNC_JOBS.pop(job_id, None)
 
 
+class RenovacaoParticipacaoInconclusiva(HTTPException):
+    def __init__(self, inconclusivos: dict, campanha_id: str | None = None):
+        self.falhas = [
+            {"item_id": item if re.fullmatch(r"ML[A-Z]\d+", item) else "", "campanha_id": campanha, "erro": motivo}
+            for item, campanhas in sorted(inconclusivos.items())
+            for campanha, motivo in sorted(campanhas.items())
+            if campanha_id is None or campanha == campanha_id
+        ]
+        if campanha_id:
+            mensagem = f"Participacao inconclusiva em {len(self.falhas)} anuncio(s) da campanha {campanha_id}. A copia nao foi iniciada."
+        else:
+            mensagem = "Existem consultas de participacao inconclusivas. Nenhuma copia foi iniciada."
+        super().__init__(409, mensagem)
+
+
 def _renovacao_confirmar_lote(client_id, loja, cfg, item_ids, campanhas, estatisticas=None,
                               progress_callback=None, progress_start=20, progress_end=48):
     stats = estatisticas if estatisticas is not None else {}
@@ -591,8 +661,9 @@ def _renovacao_confirmar_lote(client_id, loja, cfg, item_ids, campanhas, estatis
     ids = list(dict.fromkeys(str(item) for item in item_ids if item))
     pendentes = [item for item in ids if item not in consultas]
     if pendentes:
+        consultar = with_request_context(_renovacao_consultar_participacoes)
         with ThreadPoolExecutor(max_workers=min(6, len(pendentes))) as executor:
-            futures = {executor.submit(_renovacao_consultar_participacoes, client_id, loja,
+            futures = {executor.submit(consultar, client_id, loja,
                                       dict(cfg), item, campanhas): item for item in pendentes}
             for numero, future in enumerate(as_completed(futures), start=1):
                 item = futures[future]
@@ -677,9 +748,9 @@ def _renovacao_listar_itens_campanha(
             progress_start=max(progress_start, progress_end-20), progress_end=progress_end,
             estatisticas=stats)
     itens = [{"id": item} for item in ids]
-    inconclusivos = [item for item, erros in stats.get("inconclusivos", {}).items() if campanha_id in erros]
-    if validar_quantidade and inconclusivos:
-        raise HTTPException(409, f"Participacao inconclusiva em {len(inconclusivos)} anuncio(s) da campanha {campanha_id}. A copia nao foi iniciada.")
+    inconclusivos = stats.get("inconclusivos", {})
+    if validar_quantidade and any(campanha_id in erros for erros in inconclusivos.values()):
+        raise RenovacaoParticipacaoInconclusiva(inconclusivos, campanha_id)
     if validar_quantidade:
         _renovacao_exigir_coleta_completa(itens, expected_count, campanha_id)
     _renovacao_emitir_progresso(progress_callback, "Conferencia", progress_end,
