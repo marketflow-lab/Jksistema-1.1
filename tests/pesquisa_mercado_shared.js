@@ -341,12 +341,13 @@ function detailGeometryBrowser(options = {}) {
                 const height = options.height === 'steady' ? 1000
                     : options.height === 'after-five' && reads <= 5 ? 1000 : 1000 + reads % 2;
                 const avantDetailLoading = !!options.panelLoading && clock < (options.completeAfterMs ?? Infinity);
-                const pending = avantDetailLoading || options.delayed && clicks === 0
-                    || Number.isFinite(options.completeAfterMs) && clock < options.completeAfterMs;
+                const dataAfterMs = options.dataAfterMs ?? options.completeAfterMs ?? (options.panelLoading ? Infinity : 0);
+                const pending = clock < dataAfterMs || options.delayed && clicks === 0;
                 const observed = pending ? { ...item, vendas: null, media_mensal: null,
                     rankable: false, status: 'sem_dados_avant' } : { ...item };
                 return { url, height, atBottom: options.atBottom !== false, empty: !!options.empty,
-                    avantDetailLoading, anuncios: [observed] };
+                    avantDetailLoading, ...(avantDetailLoading ? { avantLoadingOffer: { id, url } } : {}),
+                    anuncios: clock < (options.titleAfterMs || 0) ? [] : [observed] };
             }
             if (code.includes('/*pm:avant-click*/')) {
                 if (firstClickAt === null) firstClickAt = clock;
@@ -429,6 +430,90 @@ async function testDetailPanelLoadingKeepsItsCollectionBudget() {
     }
 }
 
+async function testDetailWaitsForTheExpectedAvantPanel() {
+    const panelEndsAt = 180000, missingWaitMs = 15000, settleMs = 1500, pollMs = 500;
+    const collect = (fixture, options = {}) => collector.collectDetail({ browser: fixture.browser, url: fixture.url,
+        expectedItem: { id: fixture.id }, waitForLoadingPanel: true, timeoutMs: 30000,
+        missingWaitMs, settleMs, pollMs, now: fixture.browser.now,
+        wait: async ms => {
+            await fixture.browser.wait(ms);
+            assert(fixture.browser.now() <= panelEndsAt + 30000, 'a cleared panel must eventually finish');
+        }, ...options });
+
+    const ready = detailGeometryBrowser({ panelLoading: true, completeAfterMs: panelEndsAt, dataAfterMs: 0 });
+    let readyWhileLoading = false;
+    const complete = await collect(ready, { onPartial: partial => {
+        if (partial.elapsedMs >= 120000 && partial.avantPanelLoading && partial.anuncios[0]?.rankable) readyWhileLoading = true;
+    } });
+    assert(readyWhileLoading, 'the loading state is reported even when provisional values can already rank');
+    assert.equal(complete.reason, 'complete');
+    assert(complete.elapsedMs >= panelEndsAt + settleMs && complete.elapsedMs < panelEndsAt + settleMs + 2 * pollMs);
+    assert.equal(complete.avantPanelLoading, undefined);
+    assert.deepEqual([complete.anuncios[0].vendas, complete.anuncios[0].media_vendas_mensal], [100, 5]);
+
+    const earlyPanel = detailGeometryBrowser({ panelLoading: true, completeAfterMs: panelEndsAt, titleAfterMs: panelEndsAt });
+    let waitingBeforeTitle = false;
+    const afterTitle = await collect(earlyPanel, { onPartial: partial => {
+        if (partial.elapsedMs > 30000 && !partial.anuncios.length && partial.avantLoadingOffer?.id === earlyPanel.id) waitingBeforeTitle = true;
+    } });
+    assert(waitingBeforeTitle, 'the exact offer can be waiting even before its product row exists');
+    assert.equal(afterTitle.reason, 'complete');
+
+    const missing = detailGeometryBrowser({ panelLoading: true, completeAfterMs: panelEndsAt, dataAfterMs: Infinity });
+    const incomplete = await collect(missing);
+    assert.equal(incomplete.reason, 'avant_data_incomplete');
+    assert(incomplete.elapsedMs >= panelEndsAt + missingWaitMs && incomplete.elapsedMs < panelEndsAt + missingWaitMs + 2 * pollMs,
+        'a panel that clears without data gets the full wait for missing metrics');
+    assert.equal(incomplete.avantPanelLoading, undefined);
+    assert.deepEqual([incomplete.anuncios[0].vendas, incomplete.anuncios[0].media_vendas_mensal, incomplete.anuncios[0].rankable],
+        [null, null, false]);
+
+    const stuck = detailGeometryBrowser({ panelLoading: true });
+    const controller = new AbortController();
+    await assert.rejects(collect(stuck, { signal: controller.signal, onPartial: partial => {
+        if (partial.avantPanelLoading && partial.elapsedMs >= 120000) controller.abort();
+    } }), { name: 'AbortError' });
+    assert.equal(stuck.browser.now(), 120000, 'cancelling an active loader ends collection immediately');
+
+    const other = detailGeometryBrowser({ panelLoading: true });
+    const unmatched = await collect(other, { expectedItem: { id: 'MLB1000000312' }, onPartial: partial => {
+        assert.equal(partial.avantPanelLoading, undefined, 'another offer cannot signal that the target is loading');
+    } });
+    assert.equal(unmatched.reason, 'no_listings_detected');
+    assert.deepEqual(unmatched.anuncios, []);
+    assert(unmatched.elapsedMs <= 30000, 'a loader on another offer cannot extend the ordinary deadline');
+}
+
+async function testDetailBrowserMethodsWhileAvantLoads() {
+    for (const optIn of [true, false]) {
+        const fixture = detailGeometryBrowser({ panelLoading: true, completeAfterMs: 3000 });
+        const browser = fixture.browser, execute = browser.executeJavaScript.bind(browser);
+        const reads = [], actions = [], navigations = [];
+        browser.navigate = async (...args) => { navigations.push(args); };
+        const read = async (method, code) => {
+            const value = await execute(code);
+            if (code.includes('/*pm:snapshot*/')) reads.push({ method, loading: value.avantDetailLoading });
+            else actions.push(method);
+            return value;
+        };
+        browser.executeJavaScript = code => read('default', code);
+        browser.readLoadingPanel = code => read('loadingPanel', code);
+        const signal = new AbortController().signal;
+        const result = await collector.collectDetail({ browser, url: fixture.url, expectedItem: { id: fixture.id }, signal,
+            ...(optIn ? { waitForLoadingPanel: true } : {}), now: browser.now, wait: browser.wait, pollMs: 500, settleMs: 1500 });
+        assert.equal(result.reason, 'complete');
+        assert.deepEqual(navigations, [optIn ? [fixture.url, signal, { waitForAvantPanel: true }] : [fixture.url, signal]]);
+        assert.deepEqual([...new Set(actions)], ['default'], 'normal page actions keep the standard JavaScript reader');
+        assert.deepEqual(reads[0], { method: 'default', loading: true }, 'the first panel observation uses the standard reader');
+        assert(reads.some(entry => !entry.loading), 'both flows observed the loader clearing');
+        for (let index = 1; index < reads.length; index++) {
+            assert.equal(reads[index].method, optIn && reads[index - 1].loading ? 'loadingPanel' : 'default',
+                'the dedicated reader is used only after a confirmed loading observation in the opted-in flow');
+        }
+        assert.deepEqual(reads.at(-1), { method: 'default', loading: false }, 'stable values return to the standard reader');
+    }
+}
+
 async function testStableCatalogDetailDoesNotScheduleThreeVisits() {
     const { PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
     const fixture = detailGeometryBrowser({ height: 'oscillating', atBottom: false, catalogue: true });
@@ -464,6 +549,8 @@ async function run() {
     await testDetailObservationHooks();
     await testDetailStabilityIgnoresWholePageGeometry();
     await testDetailPanelLoadingKeepsItsCollectionBudget();
+    await testDetailWaitsForTheExpectedAvantPanel();
+    await testDetailBrowserMethodsWhileAvantLoads();
     await testStableCatalogDetailDoesNotScheduleThreeVisits();
     const fake = fakeBrowser();
     let updates = 0;

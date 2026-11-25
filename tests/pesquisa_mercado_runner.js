@@ -1318,6 +1318,54 @@ async function detailNavigationDoesNotConsumeCollectionBudget() {
     assert.equal(h.stopped(), 0);
 }
 
+async function loadingOfferKeepsItsTabAndCursor() {
+    const id = 'MLB1000000001';
+    for (const outcome of ['ready', 'paused', 'cancelled', 'loader_gone', 'foreign_offer']) {
+        const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+        h.runner.detailTimeoutMs = 20;
+        let observed, release;
+        const firstRead = new Promise(resolve => { observed = resolve; });
+        const finishReading = new Promise(resolve => { release = resolve; });
+        withDetailCollector(h, async options => {
+            assert.equal(options.waitForLoadingPanel, true);
+            await beginObservedDetail(options);
+            const shown = outcome === 'foreign_offer' ? 'MLB9999999999' : id;
+            await options.onPartial({ reason: 'partial', avantPanelLoading: true, avantLoadingOffer: { id: shown, url: options.url },
+                anuncios: outcome === 'ready' || outcome === 'foreign_offer' ? [] : [salesListing(shown)] });
+            observed();
+            await finishReading;
+            if (outcome === 'loader_gone') {
+                await options.onPartial({ reason: 'partial', anuncios: [salesListing(id)] });
+                await detailDelay(55);
+            }
+            return { reason: 'complete', anuncios: [salesListing(id, { vendas: 188, media_mensal: 5, rankable: true })] };
+        });
+        await h.runner.start();
+        await firstRead;
+        await detailDelay(55);
+        if (outcome !== 'foreign_offer') {
+            assert.equal(h.stopped(), 0, 'a loading panel from the current offer keeps the tab open');
+            assert.equal(h.vendors.size, 0);
+            assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
+            assert.match(h.runner.snapshot().job.progress.detail, /Aguardando o Avant Pro carregar dados/);
+        }
+        if (outcome === 'paused' || outcome === 'cancelled') await h.runner.stop(outcome);
+        release();
+        await h.runner.task;
+        if (outcome === 'paused' || outcome === 'cancelled') {
+            assert.equal(h.saved().status, outcome);
+            assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
+            assert.equal(h.vendors.size, 0, 'a late result cannot publish an explicitly interrupted offer');
+        } else if (outcome === 'ready') {
+            assert.equal(h.stopped(), 0);
+            assert.equal(h.vendors.get('id:111').anuncios[0].rankable, true);
+        } else {
+            assert.equal(h.stopped(), 1, 'an absent or unrelated loader cannot disable the ordinary deadline');
+            assert.equal(h.vendors.get('id:111').anuncios[0].rankable, false);
+        }
+    }
+}
+
 async function detailOwnTimeoutKeepsObservedMetricsWithoutCatalogRank() {
     const ids = ['MLB1000000001', 'MLB1000000002'];
     const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
@@ -2783,6 +2831,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
     await completeSalesAndMonthlyDetails();
     await detailTimeoutPreservesPartialAndContinues();
     await detailNavigationDoesNotConsumeCollectionBudget();
+    await loadingOfferKeepsItsTabAndCursor();
     await detailOwnTimeoutKeepsObservedMetricsWithoutCatalogRank();
     await timedOutLatestPartialRespectsIdentityAndTerminalVetoes();
     await pauseAfterPartialPreservesOriginalAndCursor();

@@ -63,7 +63,78 @@ function harness({ directory = profileDir, failFirstLaunch = false } = {}) {
     return { session, events, children, launches, contexts };
 }
 
+async function testPanelNavigationAndReads() {
+    const { session, contexts } = harness();
+    const adapter = session.createPage(); // The primary tab also takes product work.
+    await adapter.prepare();
+    const page = contexts[0].pages()[0];
+    const frame = {};
+    const product = 'https://produto.mercadolivre.com.br/MLB-123456789-peca-_JM';
+    let href = home, readCount = 0, deliver;
+    const navigations = [];
+    page.url = () => href;
+    page.mainFrame = () => frame;
+    page.goto = async (url, options) => {
+        href = url;
+        page.emit('framenavigated', frame);
+        navigations.push(options.waitUntil);
+    };
+    page.evaluate = async code => {
+        assert(code.includes('window !== window.top') && code.includes(JSON.stringify(href)) && code.includes('jk-market-auth:'));
+        readCount++;
+        return new Promise(resolve => { deliver = resolve; });
+    };
+    await adapter.navigate(home);
+    await adapter.navigate(product, undefined, { waitForAvantPanel: true });
+    assert.deepEqual(navigations, ['load', 'domcontentloaded']);
+
+    const originalTimer = global.setTimeout;
+    global.setTimeout = (fn, ms, ...args) => originalTimer(fn, ms === 12000 ? 1 : ms, ...args);
+    try {
+        await assert.rejects(adapter.executeJavaScript('1'), error => error.code === 'category_load_timeout');
+        await assert.rejects(adapter.readLoadingPanel('1'), /leitura do painel/);
+        deliver(null); // The renderer finishes the ordinary read after the caller's deadline.
+        await new Promise(resolve => setImmediate(resolve));
+        const pending = adapter.readLoadingPanel('1');
+        const firstCount = readCount;
+        await assert.rejects(adapter.readLoadingPanel('1'), /leitura do painel/);
+        await assert.rejects(adapter.executeJavaScript('2'), /leitura do painel/);
+        assert.equal(readCount, firstCount);
+        page.emit('framenavigated', {}); // A child frame can finish while the panel loads.
+        await new Promise(resolve => originalTimer(resolve, 10));
+        deliver({ vendas: 12 });
+        assert.deepEqual(await pending, { vendas: 12 });
+    } finally { global.setTimeout = originalTimer; }
+
+    const login = adapter.readLoadingPanel('1');
+    href = 'https://www.mercadolivre.com.br/account-verification/';
+    page.emit('framenavigated', frame);
+    await assert.rejects(login, error => error.waitingLogin && error.code === 'ml_verification_required');
+    href = product;
+    page.emit('framenavigated', frame);
+    const blocked = adapter.readLoadingPanel('1');
+    page.emit('response', { request: () => ({ isNavigationRequest: () => true, frame: () => frame }),
+        url: () => href, status: () => 429, headers: () => ({ 'retry-after': '60' }) });
+    await assert.rejects(blocked, error => error.code === 'marketplace_http_429' && Number.isSafeInteger(error.retryAt));
+
+    await adapter.navigate(product, undefined, { waitForAvantPanel: true });
+    const aborted = new AbortController();
+    const cancelled = adapter.readLoadingPanel('1', aborted.signal);
+    aborted.abort();
+    await assert.rejects(cancelled, error => error.name === 'AbortError');
+    assert(page.isClosed());
+    await adapter.prepare();
+    const replacement = contexts[0].pages().at(-1);
+    replacement.url = () => product;
+    replacement.evaluate = () => new Promise(() => {});
+    const closed = adapter.readLoadingPanel('1');
+    await replacement.close();
+    await assert.rejects(closed, error => error.code === 'research_browser_closed');
+    await session.close();
+}
+
 async function run() {
+    await testPanelNavigationAndReads();
     {
         const calls = [], started = new EventEmitter();
         let detached = false;

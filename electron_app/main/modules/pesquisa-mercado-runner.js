@@ -1616,10 +1616,13 @@ class PesquisaMercadoRunner {
         return this.detailBrowsers.slice(0, count);
     }
 
-    async collectSellerDetail(seller, items, index, browser, signal) {
+    async collectSellerDetail(seller, items, index, browser, signal, onLoadingChange) {
         this.check(signal);
         const item = items[index];
         const detailUrl = canonicalUrl(item.url);
+        const matchesItem = candidate => !!candidate && (item.id
+            ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
+            : canonicalUrl(candidate.url) === detailUrl);
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
@@ -1640,6 +1643,14 @@ class PesquisaMercadoRunner {
                 if (typeof browser.stop === 'function') browser.stop();
             }, milliseconds);
         };
+        let waitingForPanel = false;
+        const setWaitingForPanel = waiting => {
+            if (waitingForPanel === waiting) return;
+            waitingForPanel = waiting;
+            if (waiting) clearTimeout(timer);
+            else armTimeout(this.detailTimeoutMs, 'collection');
+            onLoadingChange?.(waiting);
+        };
         // Legacy collectors retain a bounded call. Current collectors give
         // navigation and the loaded Avant panel separate time budgets.
         armTimeout(this.detailTimeoutMs, 'collection');
@@ -1655,6 +1666,9 @@ class PesquisaMercadoRunner {
                         const invalid = !partial || partial.authRequired || partial.avantAuthRequired
                             || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
                         latestPartial = invalid ? null : clone(partial);
+                        setWaitingForPanel(!invalid && partial.reason === 'partial' && partial.avantPanelLoading === true
+                            && Array.isArray(partial.anuncios) && (partial.anuncios.some(matchesItem)
+                                || !partial.anuncios.length && matchesItem(partial.avantLoadingOffer)));
                         return !invalid;
                     };
                     try {
@@ -1662,6 +1676,7 @@ class PesquisaMercadoRunner {
                             browser, signal: controller.signal, url: detailUrl,
                             expectedItem: { id: item.id || '', url: item.url },
                             seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
+                            waitForLoadingPanel: true,
                             timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
                             onNavigationStart: () => {
                                 if (!alive()) return;
@@ -1671,10 +1686,10 @@ class PesquisaMercadoRunner {
                                 armTimeout(this.detailNavigationTimeoutMs, 'navigation');
                             },
                             onNavigationComplete: () => {
-                                 if (!alive()) return;
-                                 assertMarketplaceNavigation(browser, 'product');
-                                 armTimeout(this.detailTimeoutMs, 'collection');
-                             },
+                                if (!alive()) return;
+                                assertMarketplaceNavigation(browser, 'product');
+                                armTimeout(this.detailTimeoutMs, 'collection');
+                            },
                             onPartial: capture
                         });
                         // Authentication or a changed document also vetoes
@@ -1683,6 +1698,7 @@ class PesquisaMercadoRunner {
                         return valid ? observed : { ...observed, anuncios: [] };
                     } finally {
                         attemptActive = false;
+                        setWaitingForPanel(false);
                         restoreRecommendationMedia();
                     }
                 }, controller.signal, browser);
@@ -1693,9 +1709,7 @@ class PesquisaMercadoRunner {
                 usedPartial = true;
             }
             this.check(signal);
-            const found = (detail.anuncios || []).find(candidate => item.id
-                ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
-                : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+            const found = (detail.anuncios || []).find(matchesItem);
             panelLoading = !!found && detail.avantPanelLoading === true;
             const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
                 || String(value || '').toLowerCase().startsWith('avantpro');
@@ -1839,9 +1853,12 @@ class PesquisaMercadoRunner {
         let cursor = 0, finished = 0, firstError;
         try {
             const browsers = await this.detailBrowserPool(pending.length, controller.signal);
+            const loadingPanels = new Set();
             const progress = () => {
+                if (controller.signal.aborted) return;
                 const label = collection.detailRound ? 'Reconsultando apenas falhas temporarias' : 'Consultando anuncios pendentes';
-                this.setProgress('collecting', `${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                const waiting = loadingPanels.size ? `Aguardando o Avant Pro carregar dados em ${loadingPanels.size} de ${browsers.length} consultas. ` : '';
+                this.setProgress('collecting', `${waiting}${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
             };
             const work = async browser => {
                 try {
@@ -1850,7 +1867,11 @@ class PesquisaMercadoRunner {
                         const index = pending[cursor++];
                         progress();
                         const legacy = this.canRecheckLegacySeller(seller, items[index]);
-                        const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal);
+                        const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal, waiting => {
+                            if (waiting) loadingPanels.add(index);
+                            else loadingPanels.delete(index);
+                            progress();
+                        });
                         this.check(controller.signal);
                         const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
                         if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;

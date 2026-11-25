@@ -425,6 +425,10 @@ async function run() {
             const snapshot = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
             assert.equal(snapshot.avantDetailLoading, loading, 'only the current visible Avant panel can report a loading indicator');
         }
+        await page.setContent('<main>' + loaderRoot + '</main>');
+        const beforeTitle = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+        assert.deepEqual(beforeTitle.anuncios, []);
+        assert.deepEqual(beforeTitle.avantLoadingOffer, { id: modernItemId, url: beforeTitle.url });
         const readModern = async (body, sellerHeader = header) => {
             await page.setContent('<main>' + sellerHeader + body + '</main>');
             await page.evaluate(scripts.prepareScript());

@@ -1161,7 +1161,9 @@
         return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
             categoryTrends, categoryNavigationHub, categoryConflictingRouteIds: [...categoryConflictingRouteIds],
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
-            authRequired, avantAuthRequired, authReason, avantDetailLoading, hasChildren: categories.length > 0, categoryNotFound,
+            authRequired, avantAuthRequired, authReason, avantDetailLoading,
+            ...(avantDetailLoading && isProduct(url) ? { avantLoadingOffer: { id: currentItemId, url } } : {}),
+            hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16

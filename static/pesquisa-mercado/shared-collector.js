@@ -101,6 +101,8 @@
         const now = typeof opts.now === 'function' ? opts.now : Date.now;
         const wait = opts.wait || ((ms) => delay(ms, opts.signal));
         const start = now(), timeout = Math.max(1000, Number(opts.timeoutMs) || 180000);
+        const waitForLoadingPanel = opts.waitForLoadingPanel === true && opts.detail === true && !!(opts.expectedItem?.id || opts.expectedItem?.url);
+        let deadline = start + timeout;
         const settleMs = Math.max(0, Number.isFinite(opts.settleMs) ? opts.settleMs : 1500);
         const missingWaitMs = Math.max(settleMs, Number.isFinite(opts.missingWaitMs) ? opts.missingWaitMs : 15000);
         const pollMs = Math.max(10, Number(opts.pollMs) || 450);
@@ -108,6 +110,7 @@
         const items = new Map();
         let lastSignature = '', stableSince = now(), reachedBottom = false, quiet = 0, empty = false;
         let missingSince = null, clicksPending = false, avantPanelLoading = false;
+        let loadingOffer = null;
         let materialized = !!opts.detail, lastLayoutSignature = '', layoutStableSince = now(), layoutQuiet = 0;
 
         const checkpoint = async () => {
@@ -115,9 +118,10 @@
             if (opts.checkpoint) await opts.checkpoint();
             aborted(opts.signal);
         };
-        const execute = async code => {
+        const execute = async (code, readingLoadingPanel = false) => {
             await checkpoint();
-            const value = await browser.executeJavaScript(code);
+            const value = readingLoadingPanel && typeof browser.readLoadingPanel === 'function'
+                ? await browser.readLoadingPanel(code, opts.signal) : await browser.executeJavaScript(code);
             await checkpoint();
             return value;
         };
@@ -128,7 +132,8 @@
             const resultReason = reason === 'complete' && missing > 0 ? 'avant_data_incomplete' : reason;
             return { anuncios, incomplete: resultReason !== 'complete' || missing > 0, authRequired: !!authRequired, reason: resultReason,
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
-                ...(avantPanelLoading && missing > 0 && ['partial', 'timeout'].includes(reason) ? { avantPanelLoading: true } : {}),
+                ...(avantPanelLoading && (waitForLoadingPanel || missing > 0) && ['partial', 'timeout'].includes(reason)
+                    ? { avantPanelLoading: true, ...(loadingOffer ? { avantLoadingOffer: loadingOffer } : {}) } : {}),
                 primeira_pagina: !opts.detail, elapsedMs: Math.max(0, now() - start) };
         };
         // Internal observations also invalidate cached evidence when the page becomes blocked.
@@ -144,8 +149,9 @@
         // can keep moving the page bottom even after the Avant panel is ready.
         if (opts.detail) missingSince = now();
 
-        while (now() - start < timeout) {
-            const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }));
+        while (now() < deadline || (waitForLoadingPanel && avantPanelLoading)) {
+            const snapshot = await execute(scripts.snapshotScript({ seller: opts.seller || {}, detail: !!opts.detail }),
+                waitForLoadingPanel && avantPanelLoading);
             if (!snapshot || typeof snapshot !== 'object') return observe(finish('invalid_page_result'));
             if (snapshot.authRequired || snapshot.avantAuthRequired) {
                 const reason = snapshot.authReason || (snapshot.authRequired ? 'ml_login_required' : 'avant_login_required');
@@ -172,7 +178,17 @@
                 const observation = selectObservation(previous, item);
                 items.set(key, { ...observation, ordem_coleta: order });
             }
-            avantPanelLoading = !!opts.detail && matchedOffer && snapshot.avantDetailLoading === true;
+            const wasLoading = avantPanelLoading;
+            // The panel can mount before the product title that supplies the first item row.
+            const panelOffer = snapshot.avantLoadingOffer;
+            loadingOffer = waitForLoadingPanel && snapshot.avantDetailLoading === true && !snapshot.anuncios?.length
+                && panelOffer && panelOffer.url === snapshot.url && matchesExpected(panelOffer, opts.expectedItem) ? panelOffer : null;
+            avantPanelLoading = !!opts.detail && (matchedOffer || !!loadingOffer) && snapshot.avantDetailLoading === true;
+            if (waitForLoadingPanel && wasLoading && !avantPanelLoading) {
+                // The rows may arrive just after the loading label disappears.
+                missingSince = now();
+                deadline = missingSince + timeout;
+            }
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const list = Array.from(items.values());
             const signature = JSON.stringify(opts.detail
@@ -202,8 +218,7 @@
                 stableSince = now();
                 quiet = 0;
             }
-            const allReady = list.length > 0 && list.every(item => isComplete(item, now()));
-            // An active detail panel can use the rest of the existing collection budget.
+            const allReady = !(waitForLoadingPanel && avantPanelLoading) && list.length > 0 && list.every(item => isComplete(item, now()));
             const overdue = !avantPanelLoading && missingSince !== null && now() - missingSince >= missingWaitMs;
             // Avant may scroll back to a card. Once the page is materialized, its
             // current viewport must not reset the wait for missing metrics.
@@ -231,7 +246,8 @@
             if (!opts.browser || typeof opts.browser.navigate !== 'function') throw new Error('Navegacao indisponivel.');
             if (typeof opts.onNavigationStart === 'function') await opts.onNavigationStart();
             aborted(opts.signal);
-            await opts.browser.navigate(opts.url, opts.signal);
+            if (opts.waitForLoadingPanel === true) await opts.browser.navigate(opts.url, opts.signal, { waitForAvantPanel: true });
+            else await opts.browser.navigate(opts.url, opts.signal);
             aborted(opts.signal);
         }
         if (typeof opts.onNavigationComplete === 'function') await opts.onNavigationComplete();

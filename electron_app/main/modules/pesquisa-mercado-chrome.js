@@ -4,6 +4,7 @@ const path = require('node:path');
 const { mercadoLivreAuthScript, mercadoLivreRouteAuthReason } = require('../../../static/pesquisa-mercado/page-scripts');
 const { pageScript } = require('./pesquisa-mercado-avant-auth');
 const { isManualChromeRunning } = require('./pesquisa-mercado-chrome-manual');
+const { assertMarketplaceNavigation } = require('./pesquisa-mercado-runner');
 
 const EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 const STORE = 'https://chromewebstore.google.com/detail/avantpro-ml/' + EXTENSION_ID;
@@ -207,15 +208,18 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
 
     function createPage({ detail = false } = {}) {
         let tab = null, status = null, loading = false, revision = 0, documentVersion = 0, moving = null;
-        let lastUrl = HOME, media = null, lostPage = false;
+        let lastUrl = HOME, media = null, lostPage = false, interruptPanelRead = null, currentEvaluation = null;
         const live = () => tab && !tab.isClosed() ? tab : null;
         const getURL = () => live()?.url() || '';
+        const getNavigationStatus = () => status && (status.didNotCommit || status.url === getURL()) ? { ...status } : null;
         const verify = (owner, generation) => {
             if (owner !== revision || generation !== epoch) throw interrupted();
             if (lostContext || lostPage) throw browserClosed();
         };
         function discard() {
             revision++;
+            interruptPanelRead?.(interrupted());
+            currentEvaluation = null;
             const old = tab;
             tab = null; moving = null; status = null; loading = false; lostPage = false;
             if (media) media.release();
@@ -257,14 +261,24 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                             const delay = retryAfterMilliseconds(response.headers()['retry-after']);
                             if (delay !== undefined) status.retryAfterMs = delay;
                         }
+                        if (interruptPanelRead && [403, 429].includes(status.statusCode) && getNavigationStatus()) {
+                            interruptPanelRead(new Error('Documento da pesquisa bloqueado.'));
+                        }
                     }
                 });
-                page.on('framenavigated', frame => { if (tab === page && frame === page.mainFrame()) documentVersion++; });
+                page.on('framenavigated', frame => {
+                    if (tab !== page || frame !== page.mainFrame()) return;
+                    documentVersion++;
+                    currentEvaluation = null;
+                    interruptPanelRead?.(new Error('Documento da pesquisa alterado.'));
+                });
                 page.on('load', () => { if (tab === page) loading = false; });
                 const onLose = () => {
                     if (tab !== page) return;
                     if (!closing.has(active)) lostPage = true;
                     tab = null; status = null; loading = false;
+                    currentEvaluation = null;
+                    interruptPanelRead?.(lostPage ? browserClosed() : interrupted());
                 };
                 page.on('close', onLose);
                 page.on('crash', onLose);
@@ -277,7 +291,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             return mercadoLivreRouteAuthReason(new URL(url).pathname);
         }
 
-        async function navigate(url, signal) {
+        async function navigate(url, signal, options = {}) {
             if (!allowedUrl(url)) throw new Error('Link fora do Mercado Livre.');
             if (signal?.aborted) throw interrupted();
             if (moving) void discard();
@@ -297,7 +311,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                 }
                 verify(owner, generation);
                 loading = true; status = null;
-                await page.goto(url, { timeout: 35000, waitUntil: 'load' });
+                await page.goto(url, { timeout: 35000, waitUntil: options.waitForAvantPanel === true ? 'domcontentloaded' : 'load' });
                 verify(owner, generation);
                 const actual = page.url();
                 const reason = routeReason(actual);
@@ -327,10 +341,15 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             }
         }
 
-        async function evaluate(code, inspectLogin = false) {
+        async function evaluate(code, { inspectLogin = false, waitForPanel = false, signal } = {}) {
             const page = live(), owner = revision, generation = epoch, document = documentVersion;
             verify(owner, generation);
-            if (!page || (manual && !collectVisible)) throw interrupted();
+            if (signal?.aborted || !page || (manual && !collectVisible)) throw interrupted();
+            if (interruptPanelRead || currentEvaluation?.page === page && currentEvaluation.document === document) {
+                throw new Error('Uma leitura do painel ainda está em andamento.');
+            }
+            const checkHttp = () => assertMarketplaceNavigation({ getURL, getNavigationStatus }, 'product');
+            if (waitForPanel) checkHttp();
             const href = page.url(), reason = routeReason(href);
             if (reason) throw loginRequired(reason);
             // Test the document again inside the target frame. A redirect can commit between
@@ -340,30 +359,56 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             const gate = inspectLogin ? '' : 'const __jkAuth = ' + mercadoLivreAuthScript()
                 + '; if (__jkAuth) throw new Error("jk-market-auth:" + __jkAuth);\n';
             let timeout;
+            const abort = () => { void discard(); };
             try {
-                const read = page.evaluate('{\n' + guard + gate + String(code) + '\n}');
-                const value = await Promise.race([read, new Promise((_resolve, reject) => {
-                    timeout = setTimeout(() => reject(Object.assign(new Error('Tempo esgotado ao ler a página.'),
-                        { name: 'TimeoutError', code: 'category_load_timeout' })), 12000);
-                })]);
+                const interruptedRead = new Promise((_resolve, reject) => {
+                    if (waitForPanel) {
+                        interruptPanelRead = reject;
+                        signal?.addEventListener('abort', abort, { once: true });
+                    } else {
+                        timeout = setTimeout(() => reject(Object.assign(new Error('Tempo esgotado ao ler a página.'),
+                            { name: 'TimeoutError', code: 'category_load_timeout' })), 12000);
+                    }
+                });
+                const ticket = { page, document };
+                currentEvaluation = ticket;
+                // A renderer can still be evaluating after the ordinary 12 s caller timeout.
+                const read = (async () => {
+                    try { return await page.evaluate('{\n' + guard + gate + String(code) + '\n}'); }
+                    finally { if (currentEvaluation === ticket) currentEvaluation = null; }
+                })();
+                const value = await Promise.race([interruptedRead, read]);
                 verify(owner, generation);
+                if (waitForPanel) checkHttp();
                 if (page !== live() || page.url() !== href || document !== documentVersion) throw new Error('Documento da pesquisa alterado.');
                 return value;
             } catch (error) {
                 verify(owner, generation);
+                if (waitForPanel) {
+                    checkHttp();
+                    const current = getURL();
+                    const login = allowedUrl(current) && routeReason(current);
+                    if (login) throw loginRequired(login);
+                }
                 const found = String(error.message).match(/jk-market-auth:(ml_login_required|ml_verification_required)/);
                 if (found) throw loginRequired(found[1]);
-                if (error.code === 'category_load_timeout') throw error;
+                if (error.code === 'category_load_timeout' || error.name === 'AbortError' || error.waitingLogin) throw error;
                 if (/target.*closed|browser.*closed|page crashed/i.test(error.message)) throw browserClosed();
                 throw new Error('Não foi possível ler o documento da pesquisa.');
-            } finally { clearTimeout(timeout); }
+            } finally {
+                clearTimeout(timeout);
+                if (waitForPanel) {
+                    interruptPanelRead = null;
+                    signal?.removeEventListener('abort', abort);
+                }
+            }
         }
 
         async function ensureAvantSession({ signal, rankingOnly = false, force = false } = {}) {
             const end = Date.now() + (rankingOnly ? 900 : 4500);
             do {
                 if (signal?.aborted) throw interrupted();
-                const probe = await evaluate(pageScript('probe', rankingOnly), true);
+                const probe = await evaluate(pageScript('probe', rankingOnly), { inspectLogin: true });
                 if (probe?.state === 'authenticated') return { authenticated: true, attempted: false };
                 if (probe?.state === 'ml_login') return { authenticated: false, attempted: false, reason: probe.reason };
                 if (['logged_out', 'login_form', 'untrusted_form'].includes(probe?.state)) {
@@ -408,9 +453,11 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                 }
                 await getPage(revision, epoch);
             },
-            navigate, executeJavaScript: evaluate, ensureAvantSession, deferRecommendationMedia, getURL, getResumeURL: () => lastUrl,
+            navigate, executeJavaScript: code => evaluate(code),
+            readLoadingPanel: (code, signal) => evaluate(code, { waitForPanel: true, signal }),
+            ensureAvantSession, deferRecommendationMedia, getURL, getResumeURL: () => lastUrl,
             isLoading: () => loading,
-            getNavigationStatus: () => status && (status.didNotCommit || status.url === getURL()) ? { ...status } : null,
+            getNavigationStatus,
             stop: () => { void discard(); }, destroy: discard, close: discard,
             finish: async state => { if (state !== 'waiting_login' || detail) await discard(); },
             show: () => show(lastUrl, { collectVisible: true })
