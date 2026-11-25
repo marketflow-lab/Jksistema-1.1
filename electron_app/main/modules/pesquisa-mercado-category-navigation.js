@@ -6,10 +6,11 @@ function departmentPermalink(value) {
     return typeof value === 'string' && /^https:\/\/(?:www\.)?mercadolivre\.com\.br\/c\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(value)
         ? value : '';
 }
-// Public links observed in the site's item breadcrumbs/category filters. These
-// categories are omitted from their parent's expanded filter. They remain
-// route candidates: the destination must prove its category or exact items.
+// Published category links for branches that a department or its filters may omit.
+// These are navigation candidates. Only the verified destination can supply offers.
 const OBSERVED_ROUTES = Object.freeze({
+    // Listed under Categorias at https://lista.mercadolivre.com.br/acessorios-veiculos/.
+    MLB243551: 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas-motos-quadriciclos/',
     MLB122194: 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/elastomeros/*_NoIndex_True',
     MLB459353: 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/freios/kits-cabos-cambios/*_NoIndex_True'
 });

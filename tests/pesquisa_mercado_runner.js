@@ -684,6 +684,65 @@ async function nauticalOfficialNavigation() {
     ]) { const invalid=copy(checkpoint);mutate(invalid);assert.throws(()=>validateCheckpointTaxonomy(invalid),/arvore preservada/); }
 }
 
+async function motorcycleChassisHandles() {
+    const alias = (key, nome) => ({ key, nome, url: 'https://lista.mercadolivre.com.br/_CatId_' + key });
+    const department = { key: 'MLB5672', nome: 'Acessórios para Veículos', url: base + '/c/acessorios-para-veiculos' };
+    const parts = alias('MLB243551', 'Peças de Motos e Quadriciclos');
+    const chassis = alias('MLB242199', 'Chassis');
+    const handles = alias('MLB46586', 'Alças');
+    const partsUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas-motos-quadriciclos/';
+    const chassisUrl = partsUrl + 'chassis/', handlesUrl = chassisUrl + 'alcas/', listingUrl = handlesUrl + '*_NoIndex_True';
+    const promo = { id: 'MLB1000000456', url: base + '/MLB-1000000456-pneu' };
+    const offer = { id: 'MLB1000000789', url: base + '/MLB-1000000789-alca' };
+    const path = [department, parts, chassis, handles];
+    async function run(documentId, httpStatus = 200) {
+        const h = harness({
+            [department.url]: { categories: [], anuncios: [promo] },
+            [partsUrl]: { categories: [{ ...chassis, url: chassisUrl }], effectiveCategoryId: parts.key, categoryDocumentIdentity: true },
+            [chassisUrl]: { categories: [{ ...handles, url: handlesUrl }], effectiveCategoryId: chassis.key, categoryDocumentIdentity: true },
+            [handlesUrl]: { categoryTrends: true, anuncios: [promo], categoryBrowse: { ...handles, url: listingUrl } },
+            [listingUrl]: { categoryDocumentIdentity: true, effectiveCategoryId: documentId, anuncios: [offer] },
+            [offer.url]: seller('111'), [base + '/perfil/111']: seller('111'), [base + '/anuncios/111']: { atBottom: true }
+        });
+        h.runner.taxonomy = { load: async () => ({ complete: true, updatedAt: '2026-11-25T12:00:00Z',
+            get: key => path.find(node => node.key === key), children: key => key === chassis.key ? [handles] : [],
+            pathFromRoot: key => path.slice(0, path.findIndex(node => node.key === key) + 1) }) };
+        h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: httpStatus });
+        await h.runner.start(chassis); await h.runner.task;
+        return h;
+    }
+    const complete = await run(handles.key);
+    assert.equal(complete.saved().status, 'completed', 'the promotional department must not prevent reaching the public Alças listing');
+    assert.deepEqual(complete.visited.slice(0, 4), [partsUrl, chassisUrl, handlesUrl, listingUrl]);
+    assert(complete.visited.includes(offer.url));
+    assert(!complete.visited.includes(promo.url), 'department and Trends offers cannot serve as category seeds');
+    assert.equal(complete.vendors.get('id:111')?.seller.categoria, handles.nome);
+    const saved = complete.saved();
+    const consulted = complete.discovery.get(offer.id);
+    saved.status = 'failed';
+    saved.checkpoint.incompleteCategories = [{ ...handles, motivo: 'O Mercado Livre nao apresentou os links das subcategorias nesta pagina.',
+        code: 'category_filters_unavailable', stage: 'navigation' }];
+    complete.restoreCheckpoint(saved);
+    complete.discovery.set(offer.id, consulted);
+    complete.visited.length = 0;
+    const writes = complete.calls.filter(call => call.method === 'PUT').length;
+    await complete.runner.recoverIncomplete(saved.id, saved.revision); await complete.runner.task;
+    assert.equal(complete.saved().status, 'completed');
+    assert.deepEqual(complete.saved().checkpoint.incompleteCategories, []);
+    assert.deepEqual(complete.visited, [partsUrl, chassisUrl, handlesUrl, listingUrl], 'retry the incomplete category and keep already collected offers');
+    assert.equal(complete.calls.filter(call => call.method === 'PUT').length, writes, 'retrying Alças must not republish a saved seller');
+    const mismatch = await run('MLB999');
+    assert(!mismatch.visited.includes(offer.url), 'a listing with another category ID cannot authorize a seller lookup');
+    assert.equal(mismatch.vendors.size, 0);
+    for (const status of [403, 429]) {
+        const blocked = await run(handles.key, status);
+        assert.equal(blocked.saved().status, 'paused');
+        assert.equal(blocked.saved().checkpoint.marketplaceAccess.status, status);
+        assert.equal(blocked.visited.length, 1, 'stop at the first denied document without testing another route');
+        assert.equal(blocked.vendors.size, 0);
+    }
+}
+
 async function officialDirectoryAndRescueSettles() {
     const index = `${base}/categorias`;
     const native = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
@@ -2845,6 +2904,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
     await selectedCategoryScope(); await categoryRedirectScope(); await startDoesNotResumeAnotherScope();
     await categoryNavigationSettles();
     await officialTaxonomyScope();
+    await motorcycleChassisHandles();
     await nauticalOfficialNavigation();
     await officialDirectoryAndRescueSettles();
     await progressWarningAndRestart();
