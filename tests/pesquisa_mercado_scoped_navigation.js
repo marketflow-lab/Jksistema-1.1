@@ -264,7 +264,8 @@ async function javascriptNextStopsOnAccessDenied() {
             return { url: h.browser.getURL(), statusCode: blocked ? statusCode : 200 };
         };
         const first = scopeCategoryItems(pages[parts], { categoryKey: leaf.key, documentCategoryId: parent.key, categoryBaseUrl: leafUrl }, observedAncestry);
-        await assert.rejects(h.runner.nextCategoryPage(first), error => error.code === 'category_access_denied' && error.sharedCategoryFailure === true);
+        await assert.rejects(h.runner.nextCategoryPage(first), error => error.code === 'marketplace_http_' + statusCode
+            && error.status === statusCode && error.stage === 'pagination');
         assert.equal(h.visits.filter(url => url === page2).length, 1, 'a blocked next document is not clicked or retried repeatedly');
         assert.equal(blockedStatusReads, 1, 'access status is checked before waiting for document identity on a blocked page');
         assert.deepEqual(h.snapshots, []);

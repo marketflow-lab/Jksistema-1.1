@@ -2,7 +2,8 @@
 
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { discoverCategoryRoute } = require('../electron_app/main/modules/pesquisa-mercado-category-discovery');
+const { discoverCategoryRoute, discoverCategoryRouteResult } = require('../electron_app/main/modules/pesquisa-mercado-category-discovery');
+const { assertMarketplaceNavigation } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 
 const INDEX = 'https://www.mercadolivre.com.br/categorias';
 const SEARCH = 'https://www.mercadolivre.com.br/jm/search';
@@ -24,6 +25,7 @@ const scripts = { discoveryScript: () => `(() => ({ url: document.querySelector(
     authRequired: !!document.querySelector('input[type=password]'), avantAuthRequired: false,
     categoryItems: JSON.parse(document.getElementById('memberships')?.textContent || '[]'),
     categories: JSON.parse(document.getElementById('categories')?.textContent || '[]'),
+    categoryConflictingRouteIds: JSON.parse(document.querySelector('main')?.dataset.conflictingIds || '[]'),
     anuncios: [...document.querySelectorAll('a[data-item-id]')].map(anchor => ({id:anchor.dataset.itemId,url:anchor.href})) }))()` };
 
 async function fixture(browser, options = {}) {
@@ -46,7 +48,7 @@ async function fixture(browser, options = {}) {
             const rows = rowsFor(terms.at(-1)), memberships = rows.map(({ id, categoryId }) => ({ id, categoryId }));
             const categories = options.categoriesFor ? options.categoriesFor(terms.at(-1)) : options.categories || [];
             const ads = rows.filter(row => row.url).map(row => '<a data-item-id="' + escape(row.id) + '" href="' + escape(row.url) + '">Fixture</a>').join('');
-            body = '<main><script type="application/json" id="memberships">' + JSON.stringify(memberships) + '</script><script type="application/json" id="categories">'
+            body = '<main data-conflicting-ids="' + escape(JSON.stringify(options.conflictingIds || [])) + '"><script type="application/json" id="memberships">' + JSON.stringify(memberships) + '</script><script type="application/json" id="categories">'
                 + JSON.stringify(categories) + '</script><div id="ads">' + (options.hydrationDelay && url.pathname === resultPath ? '' : ads) + '</div></main>';
             if (options.hydrationDelay) body += '<script>setTimeout(()=>document.getElementById("ads").innerHTML=' + JSON.stringify(ads) + ',' + options.hydrationDelay + ')</script>';
         } else if (url.pathname.startsWith('/up/')) {
@@ -71,7 +73,10 @@ async function fixture(browser, options = {}) {
             return value;
         }
     };
-    const run = signal => discoverCategoryRoute({ browser: adapter, scripts, expected: target, ancestry: options.ancestry || ancestry,
+    const discover = options.reportOutcome ? discoverCategoryRouteResult : discoverCategoryRoute;
+    const run = signal => discover({ browser: adapter, scripts, expected: target, ancestry: options.ancestry || ancestry,
+        seedCategoryIds: options.seedCategoryIds || [],
+        assertNavigation: options.reportOutcome ? () => assertMarketplaceNavigation(adapter, 'category') : undefined,
         read: () => { throw new Error('The helper must not validate the final category.'); },
         wait: async () => {
             if (options.abortOnWait) options.abortOnWait();
@@ -92,10 +97,23 @@ async function main() {
             assert.ok(searchReads() >= 3, 'literal item metadata must wait for hydrated DOM ads and two stable reads');
             assert.equal(navigations.length, 2, 'the returned category is never opened or counted by discovery');
         } });
-        await fixture(browser, { rowsFor: term => term === contextualTerms[1] ? [seed()] : [], check: async ({ run, terms }) => {
+        await fixture(browser, { conflictingIds: [expected.key], rows: [seed()], reportOutcome: true, check: async ({ run, terms, navigations }) => {
+            assert.deepEqual(await run(), { outcome: 'ambiguous', route: null });
+            assert.equal(terms.length, 1);
+            assert.deepEqual(navigations, [INDEX], 'a valid seed cannot mask two conflicting routes for the requested category in the same document');
+        } });
+        await fixture(browser, { conflictingIds: ['MLB123'], rowsFor: term => term === contextualTerms[1] ? [seed()] : [], check: async ({ run, terms }) => {
             assert.deepEqual(await run(), { ...expected, url: LEAF });
             assert.deepEqual(terms, contextualTerms, 'both bounded searches retain the requested leaf and its domain');
         } });
+        for (const [childIds, expectedRoute] of [[[expected.key], BASE], [['MLB555'], null]]) {
+            await fixture(browser, { expected: ancestry[2], ancestry: ancestry.slice(0, 3), seedCategoryIds: childIds,
+                check: async ({ run, navigations }) => {
+                    assert.equal((await run())?.url || null, expectedRoute);
+                    assert.equal(navigations.includes(itemUrl('MLB999')), !!expectedRoute,
+                        'parent discovery only reads breadcrumbs of an item tied to an allowed category ID');
+                } });
+        }
         await fixture(browser, { expected: { ...expected, nome: 'Outros' }, rows: [], check: async ({ run, terms }) => {
             assert.equal(await run(), null);
             assert.deepEqual(terms, ['Outros Peças Ciclismo', 'Outros Ciclismo'], 'generic leaf labels never become an isolated parent query');
@@ -190,16 +208,20 @@ async function main() {
         for (const status of [403, 429]) await fixture(browser, { status, check: async ({ run }) => {
             await assert.rejects(run(), error => error.code === 'category_access_denied' && error.categoryUnavailable === true);
         } });
+        for (const status of [403, 429]) await fixture(browser, { status, reportOutcome: true, check: async ({ run }) => {
+            await assert.rejects(run(), error => error.code === 'marketplace_http_' + status
+                && (status === 403 || Number.isSafeInteger(error.retryAt)));
+        } });
         const before = new AbortController(); before.abort();
         await fixture(browser, { check: async ({ run, navigations }) => {
             await assert.rejects(run(before.signal), error => error.name === 'AbortError'); assert.equal(navigations.length, 0);
         } });
         const during = new AbortController();
         await fixture(browser, { abortOnWait: () => during.abort(), check: async ({ run }) => { await assert.rejects(run(during.signal), error => error.name === 'AbortError'); } });
-        await fixture(browser, { rows: [], check: async ({ run, terms, navigations }) => {
+        await fixture(browser, { rows: [], reportOutcome: true, check: async ({ run, terms, navigations }) => {
             const original = global.setTimeout;
             global.setTimeout = (callback, delay, ...args) => original(callback, delay === 60000 ? 0 : delay, ...args);
-            try { assert.equal(await run(), null, 'the discovery deadline remains inconclusive rather than creating a route'); }
+            try { assert.deepEqual(await run(), { outcome: 'timeout', route: null }); }
             finally { global.setTimeout = original; }
             assert.equal(terms.length, 0);
             assert(navigations.length <= 1, 'timeout cannot start another search');

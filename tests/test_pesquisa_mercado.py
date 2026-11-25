@@ -541,9 +541,12 @@ def test_recovery_diagnostic_is_compact_closed_and_owner_scoped(client, store):
     assert body["salesRecoveryPending"] is False
     assert body["scopePath"] == [job["checkpoint"]["scope"]["category"]]
     assert body["recovery"] is None
-    assert body["incompleteCategories"] == [{"key": "MLB102", "nome": "Pastilhas", "code": "category_link_missing", "motivo": "O link oficial desta categoria nao foi localizado.", "stage": "navigation", "dependency_key": "MLB100"}]
+    assert body["incompleteCategories"] == [{"key": "MLB102", "nome": "Pastilhas", "code": "category_link_missing", "motivo": "O link oficial desta categoria nao foi localizado.", "stage": "navigation", "dependency_key": "MLB100", "dependency_name": "Pecas", "discovery_outcome": None}]
     assert len(response.content) < 3000
     assert client.get(endpoint, headers={"Authorization": "Bearer cliente-a:bob"}).status_code == 404
+    with store._connection("cliente-a", write=True) as conn:
+        conn.execute("UPDATE pm_jobs SET checkpoint=json_set(checkpoint,'$.incompleteCategories[0].discovery_outcome','ambiguous') WHERE id=?", (job["id"],))
+    assert client.get(endpoint, headers=headers).json()["incompleteCategories"][0]["discovery_outcome"] == "ambiguous"
     store.recover_incomplete(job["id"], "cliente-a", "alice", expected_revision=job["revision"])
     assert client.get(endpoint, headers=headers).json()["recovery"] == {"generation": 1, "index": 0, "total": 1}
 

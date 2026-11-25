@@ -245,8 +245,38 @@
         return limite ? ordenados.slice(0, limite) : ordenados;
     }
 
+    function descreverFalhaCategoria(item) {
+        const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
+            category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
+            category_not_found: 'Categoria não encontrada.', category_load_timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            category_read_failed: 'Não foi possível ler a categoria.', category_pagination_failed: 'Não foi possível consultar a próxima página da categoria.',
+            category_access_denied: 'O Mercado Livre bloqueou o acesso à categoria.',
+            category_mismatch: 'A página aberta não corresponde à categoria.', category_unavailable: 'Categoria indisponível.',
+            navigation_timeout: 'O carregamento da categoria excedeu o tempo limite.', timeout: 'O carregamento da categoria excedeu o tempo limite.',
+            login_required: 'Login necessário no Mercado Livre.', waiting_login: 'Login necessário no Mercado Livre.',
+            blocked: 'O Mercado Livre bloqueou o acesso à página.', ancestor_unavailable: 'Uma categoria anterior do caminho ficou indisponível.',
+            listing_unrecognized: 'A listagem não pôde ser confirmada.', legacy_unknown: 'Motivo anterior desconhecido.' };
+        const code = item && typeof item === 'object' && (item.code || item.reasonCode || item.motivo);
+        const known = Object.hasOwn(reasons, code);
+        let reason = known ? reasons[code] : reasons.legacy_unknown;
+        const stage = { category: 'Leitura da categoria.', navigation: 'Navegação entre categorias.', pagination: 'Paginação dos resultados.' };
+        const outcome = { timeout: 'A busca alternativa atingiu o tempo limite.', ambiguous: 'A busca alternativa encontrou mais de um caminho possível.',
+            unconfirmed: 'A busca alternativa não confirmou outro caminho.', candidate: 'A busca alternativa encontrou um caminho, mas a listagem não pôde ser confirmada.' };
+        const dependency = item?.dependency_key;
+        if (item?.stage === 'navigation' && /^MLB\d+$/.test(dependency || '') && item.key && dependency !== item.key) {
+            const name = typeof item.dependency_name === 'string' ? texto(item.dependency_name).slice(0, 400) : '';
+            const ancestor = name ? `${name} (${dependency})` : dependency;
+            reason = code === 'category_link_missing' ? `Durante a navegação, o JK não confirmou o link da categoria anterior ${ancestor}.`
+                : `A navegação parou na categoria anterior ${ancestor}. ${reason}`;
+        } else if (known && code !== 'legacy_unknown' && Object.hasOwn(stage, item?.stage)) {
+            reason = stage[item.stage] + ' ' + reason;
+        }
+        return Object.hasOwn(outcome, item?.discovery_outcome) ? reason + ' ' + outcome[item.discovery_outcome] : reason;
+    }
+
     return {
         aplicarDetalhe,
+        descreverFalhaCategoria,
         consolidarAnuncios,
         extrairMlb,
         filtrarMaisVendidos,

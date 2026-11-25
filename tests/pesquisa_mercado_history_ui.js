@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'static/pesquisa_mercado.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace('</body>', '<script src="/pesquisa-mercado/history-ui.js"></script></body>');
+    .replace('</body>', '<script src="/pesquisa-mercado/core.js"></script><script src="/pesquisa-mercado/history-ui.js"></script></body>');
 
 async function main() {
     const scopes = Array.from({ length: 102 }, (_, index) => ({ key: `MLB${1000 + index}`, nome: `Escopo ${index}`, url: `https://lista.mercadolivre.com.br/_CatId_MLB${1000 + index}` }));
@@ -58,7 +58,8 @@ async function main() {
         const diagnostic = suffix.match(/^\/jobs\/(old-[AB])\/diagnostico$/);
         if (diagnostic) { json(diagnostic[1] === oldA.id ? {
             scopePath: [{ ...scopes[0], nome: 'Ciclismo' }, { ...scopes[0], nome: 'Freios' }],
-            incompleteCategories: oldA.salesRecoveryPending ? [] : [{ key: 'MLB1', nome: 'Pastilhas', code: 'category_access_denied', motivo: 'private raw details' }, { key: 'MLB2', nome: 'Legado', code: 'legacy_unknown' }],
+            incompleteCategories: oldA.salesRecoveryPending ? [] : [{ key: 'MLB1', nome: 'Pastilhas', code: 'category_link_missing', motivo: 'private raw details',
+                stage: 'navigation', dependency_key: 'MLB7', dependency_name: 'Freios', discovery_outcome: 'ambiguous' }, { key: 'MLB2', nome: 'Legado', code: 'legacy_unknown' }],
             salesRecoveryPending: oldA.salesRecoveryPending === true, legacyAvantMetricsPending: oldA.legacyAvantMetricsPending === true,
             recovery: oldA.status === 'running' ? { generation: 1, index: 0, total: 2 } : null
         } : { scopePath: [], incompleteCategories: [], recovery: null }); return; }
@@ -215,7 +216,7 @@ async function main() {
         await page.waitForFunction(() => window.__jkPesquisaMercadoHistory.state.history.detailId === 'old-A' && !window.__jkPesquisaMercadoHistory.state.history.detailBusy);
         assert.match(await page.locator('#pm-history-detail-heading').textContent(), /Ciclismo → Freios/);
         assert.match(await page.locator('#pm-history-incomplete-summary').textContent(), /2 categorias incompletas/);
-        assert.match(await page.locator('#pm-history-incomplete-list').textContent(), /bloqueou.*Motivo anterior desconhecido/s);
+        assert.match(await page.locator('#pm-history-incomplete-list').textContent(), /categoria anterior Freios \(MLB7\).*mais de um caminho possível.*Motivo anterior desconhecido/s);
         assert.doesNotMatch(await page.locator('#pm-history-incomplete-list').textContent(), /private raw details/);
         await page.evaluate(() => {
             window.__recoveryCalls = [];

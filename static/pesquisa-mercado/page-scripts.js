@@ -142,6 +142,19 @@
         // category IDs and available_filters must never prove a redirect scope.
         let categoryIdentityConflict = false, categoryDocumentIdentity = false, categoryContext = null;
         let categoryStructuredNavigation = null, categoryBrowse = null, categoryFilterMoreUrl = '', categoryItems = [];
+        const structuredCategories = new Map(), categoryConflictingRouteIds = new Set();
+        const categoryUrlsById = new Map(), categoryIdsByUrl = new Map();
+        const rememberTypedRoute = category => {
+            const { key, url } = category;
+            const previousUrl = categoryUrlsById.get(key), previousId = categoryIdsByUrl.get(url);
+            if (previousUrl && previousUrl !== url) categoryConflictingRouteIds.add(key);
+            if (previousId && previousId !== key) {
+                categoryConflictingRouteIds.add(previousId);
+                categoryConflictingRouteIds.add(key);
+            }
+            categoryUrlsById.set(key, url);
+            categoryIdsByUrl.set(url, key);
+        };
         const categoryExpansionUrls = new Set();
         const categoryExpansionUrl = value => {
             if (typeof value !== 'string' || value.length > 4000 || /[\\\u0000-\u0020]/.test(value)) return '';
@@ -307,6 +320,20 @@
                     return coupledCategory({ id: key, name: value.name || value.text, permalink: target.href });
                 } catch (_error) { return null; }
             };
+            const appendAvailable = filters => {
+                for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
+                    if (!filter || filter.id !== 'category') continue;
+                    rememberCategoryExpansion(filter.url);
+                    for (const group of [filter.values, filter.expanded_values]) {
+                        for (const value of Array.isArray(group) ? group.slice(0, 1000) : []) {
+                            const category = availableCategory(value);
+                            if (!category || category.url.includes('$query')) continue;
+                            rememberTypedRoute(category);
+                            structuredCategories.set(category.key, category);
+                        }
+                    }
+                }
+            };
             const itemCategories = new Map();
             const inspectCategoryItems = results => {
                 for (const result of Array.isArray(results) ? results.slice(0, 1000) : []) {
@@ -354,16 +381,7 @@
                 if (!initial || typeof initial !== 'object' || Array.isArray(initial)) continue;
                 inspectCategoryItems(initial.results);
                 const components = initial.sidebar && Array.isArray(initial.sidebar.components) ? initial.sidebar.components.slice(0, 128) : [];
-                const categories = [], breadcrumbs = [], breadcrumbComponents = [];
-                const appendAvailable = filters => {
-                    for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
-                        if (!filter || filter.id !== 'category') continue;
-                        for (const value of Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []) {
-                            const category = coupledCategory(value);
-                            if (category && !category.url.includes('$query')) categories.push(category);
-                        }
-                    }
-                };
+                const breadcrumbs = [], breadcrumbComponents = [];
                 appendAvailable(initial.available_filters);
                 for (const component of components) {
                     if (!component || typeof component !== 'object') continue;
@@ -377,7 +395,7 @@
                             && !new URL(target).username && !new URL(target).password && !isProduct(target) && !identity(target).perfilUrl) breadcrumbs.push({ nome, url: target });
                     }
                 }
-                categoryStructuredNavigation = { categories, breadcrumbs };
+                categoryStructuredNavigation = { breadcrumbs };
                 const options = Array.isArray(initial.search_filters) ? initial.search_filters.filter(option => option && option.id === 'category') : [];
                 if (options.length !== 1) continue;
                 const option = options[0], selected = coupledCategory({ ...option, id: option.value });
@@ -441,22 +459,7 @@
                 // Applied filters have a different meaning from search options.
                 inspect({ filters: optimized.filters });
                 const components = optimized.sidebar && Array.isArray(optimized.sidebar.components) ? optimized.sidebar.components : [];
-                const categoryCandidates = new Map(), categoryCandidateConflicts = new Set(), breadcrumbs = [];
-                const appendAvailable = filters => {
-                    for (const filter of Array.isArray(filters) ? filters.slice(0, 128) : []) {
-                        if (!filter || filter.id !== 'category') continue;
-                        rememberCategoryExpansion(filter.url);
-                        const values = [...(Array.isArray(filter.values) ? filter.values.slice(0, 1000) : []),
-                            ...(Array.isArray(filter.expanded_values) ? filter.expanded_values.slice(0, 1000) : [])];
-                        for (const value of values) {
-                            const category = availableCategory(value);
-                            if (!category || category.url.includes('$query')) continue;
-                            const previous = categoryCandidates.get(category.key);
-                            if (previous && previous.url !== category.url) categoryCandidateConflicts.add(category.key);
-                            else categoryCandidates.set(category.key, category);
-                        }
-                    }
-                };
+                const breadcrumbs = [];
                 appendAvailable(optimized.available_filters);
                 for (const component of components.slice(0, 128)) {
                     if (!component || typeof component !== 'object') continue;
@@ -473,8 +476,7 @@
                         }
                     }
                 }
-                const categories = [...categoryCandidates.values()].filter(category => !categoryCandidateConflicts.has(category.key));
-                categoryStructuredNavigation = { categories, breadcrumbs };
+                categoryStructuredNavigation = { breadcrumbs };
                 const options = Array.isArray(optimized.search_filters) ? optimized.search_filters.filter(option => option && option.id === 'category') : [];
                 if (options.length !== 1) continue;
                 const option = options[0];
@@ -956,7 +958,7 @@
                 _avantEvidence: { present: avantRoots.length > 0, detailPage: !!(options && options.detail), sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
         }
-        const categories = [], categorySeen = new Set();
+        const categoriesByUrl = new Map();
         const categoryIndexPage = /^\/categorias\/?$/.test(location.pathname);
         const excludedCategoryArea = '[class*="carousel"], [class*="recommend"], [class*="trending"], [data-testid="trends"], [class*="breadcrumb"], [aria-label*="breadcrumb" i], [aria-label*="caminho" i], [data-testid="breadcrumb"], .ui-search-filter-hierarchy--parent, .ui-search-filter-hierarchy--selected';
         const parentCategoryPaths = new Set(nodes('[class*="breadcrumb"] a[href], [aria-label*="breadcrumb" i] a[href], [data-testid="breadcrumb"] a[href]', content)
@@ -1077,20 +1079,22 @@
         };
         for (const anchor of categoryLinks) {
             const category = categoryData(anchor);
-            if (!category || categorySeen.has(category.url)) continue;
-            categorySeen.add(category.url);
-            categories.push(category);
+            if (!category) continue;
+            const typed = /^MLB\d+$/.test(category.key);
+            if (typed) rememberTypedRoute(category);
+            if (typed || !categoriesByUrl.has(category.url)) categoriesByUrl.set(category.url, category);
         }
         // Nordic exposes the complete Category filter, including values hidden
         // behind "Mostrar mais". IDs are read together with their own permalinks.
-        for (const category of categoryStructuredNavigation && categoryStructuredNavigation.categories || []) {
+        if (categoryStructuredNavigation) categoryStructuredNavigation.categories = [...structuredCategories.values()]
+            .filter(category => !categoryConflictingRouteIds.has(category.key));
+        for (const category of categoryStructuredNavigation?.categories || []) {
             const destination = new URL(category.url);
             if (!/^MLB\d+$/.test(category.key) || destination.search || destination.username || destination.password
                 || /_(?:Desde|OrderId|PriceRange|SHIPPING|BRAND|ITEM_CONDITION|Container)_/i.test(destination.pathname)) continue;
-            const previous = categories.findIndex(item => item.url === category.url);
-            if (previous >= 0) categories[previous] = category;
-            else { categorySeen.add(category.url); categories.push(category); }
+            categoriesByUrl.set(category.url, category);
         }
+        const categories = [...categoriesByUrl.values()].filter(category => !categoryConflictingRouteIds.has(categoryIdsByUrl.get(category.url)));
         // The canonical index exposes both roots and their direct children.
         // /c/... can be a marketing landing; do not infer its tree from carousels.
         const categoryTree = categoryIndexPage ? categories.map(category => ({ ...category, children: [] })) : [];
@@ -1155,7 +1159,7 @@
             } catch (_error) { return null; }
         })();
         return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
-            categoryTrends, categoryNavigationHub,
+            categoryTrends, categoryNavigationHub, categoryConflictingRouteIds: [...categoryConflictingRouteIds],
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired, avantAuthRequired, authReason, avantDetailLoading, hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),

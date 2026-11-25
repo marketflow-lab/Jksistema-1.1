@@ -91,6 +91,8 @@ class PesquisaMercadoIncompleteCategory(PesquisaMercadoClosedResponse):
     motivo: str
     stage: Literal["category", "navigation", "pagination"]
     dependency_key: str
+    dependency_name: str = ""
+    discovery_outcome: Literal["ambiguous", "timeout", "unconfirmed", "candidate"] | None = None
 
 
 class PesquisaMercadoRecoveryProgress(PesquisaMercadoClosedResponse):

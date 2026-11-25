@@ -8,7 +8,7 @@ const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'pesquisa_mercado.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace('</body>', '<script src="/pesquisa-mercado/global-ui.js"></script></body>');
+    .replace('</body>', '<script src="/pesquisa-mercado/core.js"></script><script src="/pesquisa-mercado/global-ui.js"></script></body>');
 
 async function main() {
     const items = Array.from({ length: 105 }, (_, index) => ({
@@ -242,13 +242,17 @@ async function main() {
         await page.setViewportSize({ width: 640, height: 900 });
         assert.strictEqual(await page.locator('#pm-global-start').isVisible(), true);
         job = { ...job, revision: job.revision + 1, status: 'completed_partial', counters: { ...job.counters, pending: 0 },
+            progress: { phase: 'completed_partial', detail: '', warning: '' },
             checkpoint: { officialTaxonomy: { ancestry: [{ nome: 'Esportes e Fitness' }, { nome: 'Ciclismo' }, { nome: 'Peças' }] },
-                incompleteCategories: [{ key: 'MLB1', nome: 'Freios', code: 'category_access_denied', motivo: 'private raw details' }, 'Categoria legada'] } };
+                incompleteCategories: [{ key: 'MLB1', nome: 'Freios', code: 'category_access_denied', motivo: 'private raw details',
+                    stage: 'navigation', dependency_key: 'MLB2', dependency_name: 'Peças', discovery_outcome: 'timeout' }, 'Categoria legada'] } };
         await page.evaluate(value => window.__pmProgress({ job: value }), job);
         assert.match(await page.locator('#pm-global-scope').textContent(), /Esportes e Fitness → Ciclismo → Peças/);
         assert.strictEqual(await page.locator('#pm-global-incomplete-count').textContent(), '2', 'falhas de categorias independem dos anúncios pendentes');
         assert.strictEqual(await page.locator('#pm-global-pending-count').textContent(), '0');
         assert.match(await page.locator('#pm-global-incomplete-list').textContent(), /bloqueou.*Motivo anterior desconhecido/s);
+        assert.match(await page.locator('#pm-global-incomplete-list').textContent(), /categoria anterior Peças \(MLB2\).*busca alternativa atingiu o tempo limite/s);
+        assert.match(await page.locator('#pm-global-status-warning').textContent(), /Freios.*categoria anterior Peças \(MLB2\)/);
         assert.doesNotMatch(await page.locator('#pm-global-incomplete-list').textContent(), /private raw details/);
         assert.strictEqual(await page.locator('#pm-global-browser').isEnabled(), true, 'pesquisa parcial permite diagnóstico');
         assert.strictEqual(await page.locator('#pm-global-resume').isDisabled(), true, 'recuperação usa ação explícita');

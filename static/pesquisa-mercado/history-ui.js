@@ -63,20 +63,7 @@
         return incompleteCategories(job).length || Number(job && job.incompleteCount) > 0
             ? 'Tentar categorias incompletas novamente' : 'Tentar dados pendentes novamente';
     }
-    function incompleteReason(item) {
-        const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
-            category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
-            category_not_found: 'Categoria não encontrada.', category_load_timeout: 'O carregamento da categoria excedeu o tempo limite.',
-            category_read_failed: 'Não foi possível ler a categoria.', category_pagination_failed: 'Não foi possível consultar a próxima página da categoria.',
-            category_access_denied: 'O Mercado Livre bloqueou o acesso à categoria.',
-            category_mismatch: 'A página aberta não corresponde à categoria.', category_unavailable: 'Categoria indisponível.',
-            navigation_timeout: 'O carregamento da categoria excedeu o tempo limite.', timeout: 'O carregamento da categoria excedeu o tempo limite.',
-            login_required: 'Login necessário no Mercado Livre.', waiting_login: 'Login necessário no Mercado Livre.',
-            blocked: 'O Mercado Livre bloqueou o acesso à página.', ancestor_unavailable: 'Uma categoria anterior do caminho ficou indisponível.',
-            listing_unrecognized: 'A listagem não pôde ser confirmada.', legacy_unknown: 'Motivo anterior desconhecido.' };
-        const code = item && typeof item === 'object' && (item.code || item.reasonCode || item.motivo);
-        return reasons[code] || 'Motivo anterior desconhecido.';
-    }
+    const incompleteReason = item => window.PesquisaMercadoCore?.descreverFalhaCategoria?.(item) || 'Motivo anterior desconhecido.';
     const freshHistory = () => ({ items: [], total: 0, offset: 0, revision: null, query: '', status: '', scope: '', scopes: [],
         scopesOffset: 0, scopesTotal: 0, busy: false, scopesBusy: false, loaded: false, generation: 0,
         deleteId: '', deleteBusy: '', detail: null, detailId: '', detailTab: 'geral', detailQuery: '', detailCategory: '', detailSeller: '',
@@ -284,6 +271,10 @@
         el('history-diagnostic-browser').disabled = operationBusy;
         const incomplete = incompleteCategories(h.detail), recovery = h.detail && h.detail.checkpoint && h.detail.checkpoint.recovery;
         el('history-incomplete').hidden = !incomplete.length;
+        if (h.detail && incomplete.length && el('history-incomplete').dataset.job !== h.detail.id) {
+            el('history-incomplete').open = incomplete.length === 1;
+            el('history-incomplete').dataset.job = h.detail.id;
+        }
         const incompleteTotal = Number.isSafeInteger(h.detail && h.detail.incompleteCount) ? h.detail.incompleteCount : incomplete.length;
         el('history-incomplete-summary').textContent = `${number(incompleteTotal)} categorias incompletas e motivos${incompleteTotal > incomplete.length ? ` (exibindo ${number(incomplete.length)})` : ''}`;
         el('history-incomplete-list').innerHTML = incomplete.map(item => `<li><strong>${escaped(typeof item === 'string' ? item : item && (item.nome || item.key) || 'Categoria')}</strong>: ${escaped(incompleteReason(item))}</li>`).join('');

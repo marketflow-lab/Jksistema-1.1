@@ -17,6 +17,7 @@ import uuid
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlencode, urlsplit, urlunsplit
@@ -728,15 +729,32 @@ class PesquisaMercadoStore:
             incomplete = []
             pending = checkpoint.get("incompleteCategories")
             pending = pending if isinstance(pending, list) else []
+            dependency_names = {}
+            needed = {item["dependency_key"] for item in pending[:1000] if isinstance(item, dict)
+                      and isinstance(item.get("dependency_key"), str) and re.fullmatch(r"MLB\d+", item["dependency_key"])
+                      and item["dependency_key"] != item.get("key")}
+            if needed:
+                children = tree.get("children") if isinstance(tree, dict) else None
+                for nodes in chain((ancestry,), children.values() if isinstance(children, dict) else ()):
+                    if isinstance(nodes, list):
+                        for node in nodes:
+                            if isinstance(node, dict) and isinstance(node.get("key"), str) and node["key"] in needed:
+                                dependency_names[node["key"]] = _text(node.get("nome"), 400)
+                    if dependency_names.keys() == needed:
+                        break
             for raw in pending[:1000]:
                 item = raw if isinstance(raw, dict) else {"nome": raw}
                 code = item.get("code")
                 if not isinstance(code, str) or code not in DIAGNOSTIC_REASONS:
                     code = "legacy_unknown"
                 stage = item.get("stage")
+                dependency = item.get("dependency_key")
+                dependency = dependency if isinstance(dependency, str) and re.fullmatch(r"MLB\d+", dependency) else ""
+                outcome = item.get("discovery_outcome")
                 incomplete.append({"key": _text(item.get("key"), 500), "nome": _text(item.get("nome") or item.get("categoria") or item.get("key"), 400),
                                    "code": code, "motivo": DIAGNOSTIC_REASONS[code], "stage": stage if stage in ("category", "navigation", "pagination") else "category",
-                                   "dependency_key": _text(item.get("dependency_key"), 500)})
+                                   "dependency_key": dependency, "dependency_name": dependency_names.get(dependency, ""),
+                                   "discovery_outcome": outcome if outcome in ("ambiguous", "timeout", "unconfirmed", "candidate") else None})
             recovery = checkpoint.get("recovery")
             progress = None
             if isinstance(recovery, dict) and isinstance(recovery.get("categoryKeys"), list):

@@ -123,7 +123,7 @@ class OfficialCategoryNavigation {
         return candidate;
     }
 
-    choose(raw, expected, parentUrl = '') {
+    choose(raw, expected, parentUrl = '', requireId = false) {
         let matches = new Map();
         const identified = new Map();
         for (const item of raw || []) {
@@ -134,10 +134,20 @@ class OfficialCategoryNavigation {
             }
         }
         if (identified.size) matches = identified;
-        if (matches.size !== 1) {
-            throw new CategoryNavigationError(matches.size ? 'category_link_ambiguous' : 'category_link_missing', expected.key);
+        if (matches.size !== 1 || requireId && !identified.size) {
+            const ambiguous = requireId || matches.size > 1;
+            const error = new CategoryNavigationError(ambiguous ? 'category_link_ambiguous' : 'category_link_missing', expected.key);
+            error.ambiguousLabels = ambiguous && !identified.size;
+            throw error;
         }
         return [...matches.values()][0];
+    }
+
+    choosePage(page, expected, parentUrl, requireId = false) {
+        if (page.categoryConflictingRouteIds?.includes(expected.key)) {
+            throw new CategoryNavigationError('category_link_ambiguous', expected.key);
+        }
+        return this.choose(page.categories, expected, parentUrl, requireId);
     }
 
     async resolve(key) {
@@ -158,11 +168,15 @@ class OfficialCategoryNavigation {
         } else {
             const parentUrl = await this.resolve(parentKey);
             let links = this.links.get(parentKey);
+            let requireId = false, cachedIdConflict = false;
             // A previously read filter can be incomplete. Refresh it once for
             // this requested child; never retain a negative cache entry.
             try { if (links) selected = this.choose(links, expected, parentUrl); }
-            catch (_error) { /* Keep known siblings until a validated refresh replaces the list. */ }
-            if (!selected && OBSERVED_ROUTES[key]) {
+            catch (error) {
+                requireId = error.code === 'category_link_ambiguous';
+                cachedIdConflict = requireId && !error.ambiguousLabels;
+            }
+            if (!selected && !requireId && OBSERVED_ROUTES[key]) {
                 // Remembered fallbacks have no fresh parent-document evidence.
                 selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl, false);
             }
@@ -194,7 +208,7 @@ class OfficialCategoryNavigation {
                             if (landing.pathname !== '/' && neutralCategoryPage(parentUrl, landing.href)) {
                                 try {
                                     const landingPage = await this.read(landing.href, 'navigation', parentKey, { ...expected, preferTrendsChildren: true });
-                                    this.choose(landingPage.categories, expected, landingPage.url || landing.href);
+                                    this.choosePage(landingPage, expected, landingPage.url || landing.href, requireId);
                                     page = landingPage;
                                 }
                                 catch (landingError) {
@@ -213,9 +227,10 @@ class OfficialCategoryNavigation {
                     }
                 }
                 links = page.categories || [];
-                try { selected = this.choose(links, expected, parentUrl); }
+                let hasConflicts = !!page.categoryConflictingRouteIds?.length;
+                try { selected = this.choosePage(page, expected, parentUrl, requireId); }
                 catch (error) {
-                    if (error.code !== 'category_link_missing') throw error;
+                    if (cachedIdConflict || error.code !== 'category_link_missing' && !error.ambiguousLabels) throw error;
                     const moreUrl = officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url || parentUrl);
                     if (!moreUrl) throw error;
                     let expanded;
@@ -226,9 +241,12 @@ class OfficialCategoryNavigation {
                         throw expandedError;
                     }
                     links = expanded.categories || [];
-                    selected = this.choose(links, expected, page.url || parentUrl);
+                    selected = this.choosePage(expanded, expected, page.url || parentUrl, error.ambiguousLabels === true);
+                    hasConflicts ||= !!expanded.categoryConflictingRouteIds?.length;
                 }
-                this.links.set(parentKey, links);
+                // A filtered-out conflicting ID must not later resolve from a cached name-only link.
+                if (hasConflicts) this.links.delete(parentKey);
+                else this.links.set(parentKey, links);
             }
         }
         this.routes.set(key, selected.url);

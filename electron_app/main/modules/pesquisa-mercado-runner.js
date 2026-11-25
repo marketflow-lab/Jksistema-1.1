@@ -17,7 +17,7 @@ const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados sufic
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
 const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath, neutralCategoryPage } = require('./pesquisa-mercado-category-navigation');
-const { discoverCategoryRoute } = require('./pesquisa-mercado-category-discovery');
+const { discoverCategoryRouteResult } = require('./pesquisa-mercado-category-discovery');
 const { scopeCategoryItems, validateCategoryItemScope, categoryItemScopeUrlAllowed } = require('./pesquisa-mercado-category-item-scope');
 const CATEGORY_FAILURES = Object.freeze({
     category_link_missing: 'O link oficial da categoria nao foi localizado.',
@@ -36,11 +36,14 @@ function hasLegacyAvantMetrics(item, version) {
         && (!Number.isSafeInteger(item.avant_metrics_version) || item.avant_metrics_version < version);
 }
 
+const DISCOVERY_OUTCOMES = new Set(['ambiguous', 'timeout', 'unconfirmed', 'candidate']);
+
 function categoryFailure(error, stage = 'category') {
     const code = Object.prototype.hasOwnProperty.call(CATEGORY_FAILURES, error && error.code) ? error.code
         : error && error.categoryScopeMismatch ? 'category_scope_mismatch' : 'category_read_failed';
     return { code, stage: ['category', 'navigation', 'pagination'].includes(stage) ? stage : 'category',
         dependency_key: /^MLB\d+$/.test(error && error.navigationDependencyKey || '') ? error.navigationDependencyKey : '',
+        ...(DISCOVERY_OUTCOMES.has(error?.discoveryOutcome) ? { discovery_outcome: error.discoveryOutcome } : {}),
         motivo: CATEGORY_FAILURES[code] };
 }
 
@@ -366,14 +369,31 @@ function normalizedIncompleteCategories(checkpoint) {
         if (!names.has(name)) names.set(name, []);
         names.get(name).push(category);
     }
-    return (checkpoint.incompleteCategories || []).map(raw => {
+    const pending = checkpoint.incompleteCategories || [];
+    const dependencies = new Map();
+    const needed = new Set(pending.filter(item => /^MLB\d+$/.test(item?.dependency_key || '')
+        && item.dependency_key !== item.key).map(item => item.dependency_key));
+    if (needed.size) {
+        const tree = checkpoint.officialTaxonomy || {};
+        for (const list of [tree.ancestry, ...Object.values(tree.children || {})]) {
+            if (!Array.isArray(list)) continue;
+            for (const node of list) {
+                if (needed.has(node?.key) && typeof node.nome === 'string') dependencies.set(node.key, clean(node.nome).slice(0, 400));
+            }
+            if (dependencies.size === needed.size) break;
+        }
+    }
+    return pending.map(raw => {
         const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : { nome: clean(raw) };
+        delete item.dependency_name;
+        if (!DISCOVERY_OUTCOMES.has(item.discovery_outcome)) delete item.discovery_outcome;
         const name = clean(item.nome || item.categoria);
         const matches = item.key ? [records.get(item.key)].filter(Boolean) : names.get(name.toLowerCase()) || [];
         const category = matches.length === 1 && !ambiguous.has(matches[0].key) ? matches[0] : null;
         // A unique record in the frozen queue supplies identity. Homonyms and
         // unknown legacy warnings remain unassigned until evidence exists.
         return { ...item, ...(category || { nome: name }),
+            ...(dependencies.get(item.dependency_key) ? { dependency_name: dependencies.get(item.dependency_key) } : {}),
             motivo: typeof item.motivo === 'string' ? item.motivo : 'Motivo anterior desconhecido.' };
     });
 }
@@ -398,6 +418,8 @@ function initialCheckpoint(saved) {
 function officialTaxonomyPath(checkpoint, key) {
     const tree = checkpoint && checkpoint.officialTaxonomy;
     if (!tree || !Array.isArray(tree.ancestry)) return [];
+    const ancestorIndex = tree.ancestry.findIndex(node => node.key === key);
+    if (ancestorIndex >= 0) return tree.ancestry.slice(0, ancestorIndex + 1);
     const records = new Map(tree.ancestry.map(node => [node.key, node]));
     const parents = new Map();
     for (const [parent, children] of Object.entries(tree.children || {})) {
@@ -494,6 +516,7 @@ class PesquisaMercadoRunner {
         this.namesController = null;
         this.namesJobId = '';
         this.officialNavigation = null;
+        this.ancestorRecovery = new Map();
         this.salesRecoveryFinished = false;
         this.salesRecoveryDeferred = false;
         this.namesBudgetMs = Math.max(1, options.namesBudgetMs || 120000);
@@ -514,7 +537,9 @@ class PesquisaMercadoRunner {
             return { key: String(item.key || '').slice(0, 500), nome: String(item.nome || '').slice(0, 400),
                 code: known ? item.code : 'legacy_unknown', motivo: known ? CATEGORY_FAILURES[item.code] : 'Motivo anterior desconhecido.',
                 stage: ['category', 'navigation', 'pagination'].includes(item.stage) ? item.stage : 'category',
-                dependency_key: /^MLB\d+$/.test(item.dependency_key || '') ? item.dependency_key : '' };
+                dependency_key: /^MLB\d+$/.test(item.dependency_key || '') ? item.dependency_key : '',
+                ...(typeof item.dependency_name === 'string' ? { dependency_name: item.dependency_name.slice(0, 400) } : {}),
+                ...(DISCOVERY_OUTCOMES.has(item.discovery_outcome) ? { discovery_outcome: item.discovery_outcome } : {}) };
         });
         const recovery = this.checkpoint && this.checkpoint.recovery;
         return { job: { id, status, revision, counters, message, created_at, updated_at, generation: this.job.generation || 0,
@@ -579,6 +604,7 @@ class PesquisaMercadoRunner {
             this.checkpoint.legacyAvantMetricsPending = true;
         }
         this.officialNavigation = null;
+        this.ancestorRecovery.clear();
         validateCheckpointTaxonomy(this.checkpoint);
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
         this.seenSellers = new Set(this.checkpoint.seenSellerKeys);
@@ -916,7 +942,7 @@ class PesquisaMercadoRunner {
                 || actual.search || actual.hash || actual.href !== page.url || actual.href !== hub.url || actual.href !== hub.canonical
                 || !neutralCategoryPage(requestedUrl, actual.href)
                 || page.categoryContext && !neutralCategoryPage(page.categoryContext.baseUrl, actual.href)) return '';
-            const selected = navigation.choose(page.categories, child, actual.href);
+            const selected = navigation.choosePage(page, child, actual.href);
             return JSON.stringify([actual.href, hub.heading, selected.key, selected.url]);
         } catch (_error) { return ''; }
     }
@@ -987,7 +1013,7 @@ class PesquisaMercadoRunner {
                         && neutralCategoryPage(url, page.url) && neutralCategoryPage(context.baseUrl, page.url)
                         && neutralCategoryPage(browse.url, page.url)) {
                         try {
-                            const selected = navigation.choose(page.categories, child, page.url);
+                            const selected = navigation.choosePage(page, child, page.url);
                             signature = JSON.stringify([page.url, context.baseUrl, browse.url, selected.key, selected.url]);
                         } catch (_error) { /* Missing or ambiguous hrefs cannot become child navigation. */ }
                     }
@@ -1018,13 +1044,14 @@ class PesquisaMercadoRunner {
                     if (hubReads >= 2) return page;
                 }
                 if (isCategory && (page.categoryBrowse || page.categoryTrends)) continue;
+                const childConflict = expectedChild && page.categoryConflictingRouteIds?.includes(expectedChild.key);
                 if (isCategoryOptions) {
                     const hasExpected = !expectedChild || (page.categories || []).some(child => child.key === expectedChild.key
                         || categoryLabel(child.nome) === categoryLabel(expectedChild.nome));
                     const conflictingParent = page.categoryDocumentIdentity && page.effectiveCategoryId
                         && navigationCategoryId && page.effectiveCategoryId !== navigationCategoryId;
                     if (!loading && !page.categoryIdentityConflict && !conflictingParent && canonicalUrl(page.url) === canonicalUrl(url)
-                        && (page.categories || []).length && hasExpected) return page;
+                        && (childConflict || (page.categories || []).length && hasExpected)) return page;
                     continue;
                 }
                 const requiresDocumentIdentity = isCategory && (purpose === 'category-transport' || browseTransition || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname));
@@ -1038,7 +1065,7 @@ class PesquisaMercadoRunner {
                     await this.ensureAvantSession(this.controller.signal, avantState);
                     if (!attemptedBefore && avantState.attempted) { poll -= 1; continue; }
                 }
-                const ready = purpose === 'navigation' && expectedChild ? page.categoryNotFound || !!page.categoryFilterMoreUrl || (page.categories || []).some(child =>
+                const ready = purpose === 'navigation' && expectedChild ? page.categoryNotFound || childConflict || !!page.categoryFilterMoreUrl || (page.categories || []).some(child =>
                     child.key === expectedChild.key || categoryLabel(child.nome) === categoryLabel(expectedChild.nome))
                     : purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
@@ -1078,7 +1105,7 @@ class PesquisaMercadoRunner {
                     && !page.authRequired && !page.avantAuthRequired && this.officialNavigation
                     && (browseTransition || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname))) {
                     let child = null;
-                    try { child = this.officialNavigation.choose(page.categories, expectedChild, page.url || url); }
+                    try { child = this.officialNavigation.choosePage(page, expectedChild, page.url || url); }
                     catch (_error) { /* Invalid or ambiguous links keep their existing classification below. */ }
                     if (child) {
                         // The child href is ready; its parent's own document ID
@@ -1179,16 +1206,43 @@ class PesquisaMercadoRunner {
         return this.officialNavigation.resolve(category.key);
     }
 
-    async discoverOfficialCategoryRoute(category) {
+    async discoverOfficialCategoryRoute(category, primaryError, seedCategoryIds = []) {
         const ancestry = officialTaxonomyPath(this.checkpoint, category.key).map(node => ({ ...node,
             url: this.officialNavigation && this.officialNavigation.routes.get(node.key) || node.url }));
         if (!ancestry.length) return null;
-        const candidate = await this.nameStep(() => discoverCategoryRoute({ browser: this.browser, scripts: this.scripts,
-            expected: category, ancestry, wait: this.wait, signal: this.controller.signal }), this.controller.signal);
-        if (!candidate) return null;
-        const route = this.officialNavigation && this.officialNavigation.route(candidate, category);
+        const result = await this.nameStep(() => discoverCategoryRouteResult({ browser: this.browser, scripts: this.scripts,
+            expected: category, ancestry, seedCategoryIds, wait: this.wait, signal: this.controller.signal,
+            assertNavigation: () => assertMarketplaceNavigation(this.browser, 'category') }), this.controller.signal);
+        const route = result.route && this.officialNavigation?.route(result.route, category);
+        if (primaryError) primaryError.discoveryOutcome = result.route && !route ? 'unconfirmed' : result.outcome;
         if (!route) return null;
         return { ...route, categoryBaseUrl: route.url, source: 'official_category_href' };
+    }
+
+    async recoverCategoryAncestor(category, ancestor) {
+        const navigation = this.officialNavigation;
+        if (!navigation || this.ancestorRecovery.has(ancestor.key)) return false;
+        const children = this.checkpoint.officialTaxonomy.children[ancestor.key] || [];
+        const seedCategoryIds = [category.key, ...children.map(child => child.key)];
+        const route = await this.discoverOfficialCategoryRoute(ancestor, null, seedCategoryIds);
+        this.ancestorRecovery.set(ancestor.key, false);
+        if (!route) return false;
+        const page = await this.read(route.url, 'category-transport', ancestor.key);
+        if (!page.categoryDocumentIdentity || page.categoryIdentityConflict || page.effectiveCategoryId !== ancestor.key
+            || !neutralCategoryPage(route.url, page.url)) return false;
+        navigation.routes.set(ancestor.key, route.url);
+        navigation.links.delete(ancestor.key);
+        if (!page.categoryConflictingRouteIds?.length && page.categories?.length) navigation.links.set(ancestor.key, page.categories);
+        this.ancestorRecovery.set(ancestor.key, true);
+        return true;
+    }
+
+    findNavigationAncestor(key, matches) {
+        const navigation = this.officialNavigation;
+        for (let parent = navigation?.parents?.get(key); parent; parent = navigation.parents.get(parent)) {
+            if (matches(parent)) return navigation.records.get(parent);
+        }
+        return null;
     }
 
     async tryCategoryItemScope(category, page, categoryUrl, { maxPages = 10, budget = null } = {}) {
@@ -1285,8 +1339,11 @@ class PesquisaMercadoRunner {
             let landingAttempted = false;
             const attemptedRoutes = new Set();
             const ancestorBudget = { remaining: 10 };
-            const recoverable = error => error.name !== 'AbortError' && !error.waitingLogin && ![401, 403, 429].includes(error.status)
+            const navigationInterrupted = error => error.name === 'AbortError' || error.waitingLogin || [401, 403, 429].includes(error.status);
+            const recoverable = error => !navigationInterrupted(error)
                 && ['category_scope_mismatch', 'category_load_timeout', 'category_not_found'].includes(error.code);
+            const canDiscover = error => !navigationInterrupted(error) && (recoverable(error)
+                || ['category_link_missing', 'category_filters_unavailable'].includes(error.code));
             const validateRoutePage = (route, page) => {
                 const renamedCategoryBase = page.categoryDocumentIdentity && !page.categoryIdentityConflict
                     && page.effectiveCategoryId === category.key && page.categoryContext?.key === category.key
@@ -1346,12 +1403,33 @@ class PesquisaMercadoRunner {
                 }
             };
             let page;
-            try { url = await this.officialCategoryUrl(category); page = await readRoute(url); }
+            try {
+                url = await this.officialCategoryUrl(category);
+                const strict = this.ancestorRecovery.size > 0 && !!this.findNavigationAncestor(category.key, key => this.ancestorRecovery.get(key));
+                page = await readRoute(url, strict);
+            }
             catch (error) {
-                if (!['category_link_missing', 'category_filters_unavailable', 'category_scope_mismatch', 'category_load_timeout', 'category_not_found'].includes(error.code)) throw error;
-                const discovered = await this.discoverOfficialCategoryRoute(category);
+                if (!canDiscover(error)) throw error;
+                const ancestor = error.navigationDependencyKey && this.findNavigationAncestor(category.key, key => key === error.navigationDependencyKey);
+                if (ancestor && !url) {
+                    try {
+                        if (await this.recoverCategoryAncestor(category, ancestor)) {
+                            url = await this.officialCategoryUrl(category);
+                            page = await readRoute(url, true);
+                        }
+                    } catch (ancestorError) {
+                        if (!canDiscover(ancestorError)) throw ancestorError;
+                        if (this.ancestorRecovery.get(ancestor.key)) error = ancestorError;
+                    }
+                }
+                if (page) return { ...page, categories: [], hasChildren: false };
+                const discovered = await this.discoverOfficialCategoryRoute(category, error);
                 if (!discovered || attemptedRoutes.has(discovered.url)) throw error;
-                page = await readRoute(discovered.url, true);
+                try { page = await readRoute(discovered.url, true); }
+                catch (routeError) {
+                    if (error.discoveryOutcome) routeError.discoveryOutcome = error.discoveryOutcome;
+                    throw routeError;
+                }
                 this.officialNavigation.routes.set(category.key, discovered.url);
             }
             return { ...page, categories: [], hasChildren: false };
@@ -1443,8 +1521,16 @@ class PesquisaMercadoRunner {
         const category = this.checkpoint.currentCategory;
         if (category) {
             const previous = this.checkpoint.incompleteCategories.find(item => item.key === category.key);
+            if (failure && failure.dependency_key && failure.dependency_key !== category.key) {
+                const dependency = this.officialNavigation?.records?.get(failure.dependency_key);
+                if (dependency) failure.dependency_name = dependency.nome;
+            }
             if (!previous) this.checkpoint.incompleteCategories.push({ ...category, motivo: String(message || 'Coleta incompleta.'), ...(failure || {}) });
-            else if (failure) Object.assign(previous, failure);
+            else if (failure) {
+                delete previous.dependency_name;
+                delete previous.discovery_outcome;
+                Object.assign(previous, failure);
+            }
             else if (SALES_PENDING_WARNINGS.has(previous.motivo) && !SALES_PENDING_WARNINGS.has(message)) {
                 previous.motivo = String(message || 'Coleta incompleta.');
             }

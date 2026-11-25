@@ -235,20 +235,7 @@
         const names = Array.isArray(path) ? path.map(item => safeText(typeof item === 'string' ? item : item && (item.nome || item.name)).trim()).filter(Boolean) : [];
         return names.length ? names.join(' → ') : safeText(state.scopeCategory && state.scopeCategory.nome);
     }
-    function incompleteReason(item) {
-        const reasons = { category_link_missing: 'Link da categoria não localizado.', category_link_ambiguous: 'Mais de um link corresponde à categoria.',
-            category_filters_unavailable: 'Os filtros de categorias não ficaram disponíveis.', category_scope_mismatch: 'A página aberta não corresponde ao escopo escolhido.',
-            category_not_found: 'Categoria não encontrada.', category_load_timeout: 'O carregamento da categoria excedeu o tempo limite.',
-            category_read_failed: 'Não foi possível ler a categoria.', category_pagination_failed: 'Não foi possível consultar a próxima página da categoria.',
-            category_access_denied: 'O Mercado Livre bloqueou o acesso à categoria.',
-            category_mismatch: 'A página aberta não corresponde à categoria.', category_unavailable: 'Categoria indisponível.',
-            navigation_timeout: 'O carregamento da categoria excedeu o tempo limite.', timeout: 'O carregamento da categoria excedeu o tempo limite.',
-            login_required: 'Login necessário no Mercado Livre.', waiting_login: 'Login necessário no Mercado Livre.',
-            blocked: 'O Mercado Livre bloqueou o acesso à página.', ancestor_unavailable: 'Uma categoria anterior do caminho ficou indisponível.',
-            listing_unrecognized: 'A listagem não pôde ser confirmada.', legacy_unknown: 'Motivo anterior desconhecido.' };
-        const code = item && typeof item === 'object' && (item.code || item.reasonCode || item.motivo);
-        return reasons[code] || 'Motivo anterior desconhecido.';
-    }
+    const incompleteReason = item => window.PesquisaMercadoCore?.descreverFalhaCategoria?.(item) || 'Motivo anterior desconhecido.';
     function renderIncomplete(job) {
         const items = incompleteCategories(job);
         if (elements['incomplete-count']) elements['incomplete-count'].textContent = number(Number.isSafeInteger(job && job.incompleteCount) ? job.incompleteCount : items.length);
@@ -414,6 +401,10 @@
         const message = safeText(job.message);
         const legacyWarning = active && /^Alguns an[uú]ncios ficaram sem dados suficientes do Avant/i.test(message);
         let warning = safeText(progress.warning || (legacyWarning ? message : ''));
+        const pendingCategory = incompleteCategories(job).findLast(item => typeof item?.code === 'string'
+            && item.code.startsWith('category_') && (warning ? item.motivo === warning
+                : ['failed', 'completed_partial'].includes(job.status)));
+        if (pendingCategory) warning = [pendingCategory.nome, incompleteReason(pendingCategory)].filter(Boolean).join('. ');
         if (!warning && Number((job.counters || {}).pending) > 0) warning = 'Existem anúncios sem dados suficientes ou com falhas de consulta.';
         if (!warning && salesRecoveryPending(job)) warning = 'Existem dados de vendas pendentes de uma nova consulta ao Avant Pro.';
         if (warning && job.status === 'running') warning += ' A pesquisa continua.';

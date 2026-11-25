@@ -94,6 +94,7 @@ async function main() {
             { key: tracked.id, nome: tracked.name, url: tracked.url.split('#')[0] }
         ], 'RSC category values and expanded_values retain coupled IDs, deduplicate equal routes and discard conflicting IDs');
         assert.equal(expandedPage.categoryFilterMoreUrl, emittedMore, 'the RSC category group exposes its emitted exact-document expansion URL');
+        assert.deepEqual(expandedPage.categoryConflictingRouteIds, [conflicted.id]);
         assert.equal(expandedPage.categories.some(value => value.key === tracked.id), true, 'an expanded-only child reaches the production navigation list');
         assert.deepEqual([expandedPage.effectiveCategoryId, expandedPage.categoryDocumentIdentity, expandedPage.categoryIdentityConflict],
             [rsc.effectiveCategoryId, rsc.categoryDocumentIdentity, rsc.categoryIdentityConflict], 'navigation expansion cannot change document identity');
@@ -116,6 +117,30 @@ async function main() {
         assert.deepEqual((await readRsc(bounded)).categoryStructuredNavigation.categories, [], 'expanded category metadata is bounded before extraction');
         const availableOnly = await readRsc({ optimizedResponse: { available_filters: [{ id: 'category', url: emittedMore, expanded_values: [tracked] }] } });
         assert.equal(availableOnly.categoryDocumentIdentity, false); assert.equal(availableOnly.effectiveCategoryId, '', 'available category IDs remain navigation candidates only');
+        const adjustment = 'https://lista.mercadolivre.com.br/fixture-ajuste-de-queda/';
+        const arms = { id: 'MLB458079', name: 'Braços', permalink: adjustment + 'bracos/' };
+        const bushes = { id: 'MLB458084', name: 'Buchas', permalink: adjustment + 'buchas/' };
+        await page.goto(adjustment);
+        const adjustmentMore = adjustment + '_FiltersAvailableSidebar?filter=category';
+        const adjustmentState = { appProps: { pageProps: { initialState: {
+            filters: [{ id: 'category', values: [{ id: 'MLB458077' }] }],
+            available_filters: [{ id: 'category', values: [arms] }],
+            sidebar: { components: [{ type: 'AVAILABLE_FILTERS', filters: [{ id: 'category', url: adjustmentMore,
+                expanded_values: [arms, bushes, { id: 'MLB999', name: 'Buchas', permalink: adjustment + 'homonimo/' },
+                    { ...arms, permalink: adjustment + 'invalido/' + tracking(bushes.id) }] }] }] }
+        } } } };
+        const adjustmentPage = await read(adjustmentState);
+        assert.deepEqual(adjustmentPage.categories.map(item => item.key), [arms.id, bushes.id, 'MLB999']);
+        assert.deepEqual(adjustmentPage.categoryConflictingRouteIds, []);
+        assert.equal(adjustmentPage.categoryFilterMoreUrl, adjustmentMore);
+        assert.deepEqual([adjustmentPage.effectiveCategoryId, adjustmentPage.categoryDocumentIdentity], ['MLB458077', true],
+            'adding hidden children leaves the applied parent intact');
+        const crossSource = await read(adjustmentState, '', '_n.ctx.r=', '__NORDIC_RENDERING_CTX__',
+            '<dl data-filter-id="category"><a href="' + adjustment + 'outro/#applied_filter_id=category&amp;applied_value_id=' + bushes.id + '">Buchas</a></dl>');
+        assert.deepEqual(crossSource.categoryConflictingRouteIds, [bushes.id], 'the document reports explicit ID conflicts across DOM and Nordic');
+        assert.deepEqual(crossSource.categories.map(item => item.key), [arms.id, 'MLB999']);
+        assert.equal(crossSource.categoryStructuredNavigation.categories.some(item => item.key === bushes.id), false);
+        await page.goto(current);
         assert.equal(await page.evaluate(() => globalThis.__nordicUnsafe), undefined);
         assert.equal((await readRsc(regular(), { trend: true })).categoryDocumentIdentity, false, 'trend documents do not prove a regular category listing');
         const wrongLabel = regular(); wrongLabel.optimizedResponse.sidebar.components[0].nodes.at(-1).text = 'Pedais';

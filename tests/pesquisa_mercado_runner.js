@@ -1963,6 +1963,8 @@ async function lateCategoryFiltersAndSharedFailure() {
     assert.equal(blocked.saved().checkpoint.incompleteCategories.length, 1, 'one failed dependency does not fabricate independent leaf failures');
     assert.equal(blocked.saved().checkpoint.incompleteCategories[0].code, 'category_filters_unavailable');
     assert.equal(blocked.saved().checkpoint.incompleteCategories[0].dependency_key, scope.key);
+    assert.equal(blocked.saved().checkpoint.incompleteCategories[0].discovery_outcome, 'unconfirmed');
+    assert.equal(blocked.runner.snapshot().job.incompleteCategories[0].dependency_name, scope.nome);
     assert.equal(blocked.visited.filter(url => url === scopeUrl).length, 2, 'shared loading failures get at most one explicit navigation retry');
     assert(!blocked.visited.includes(aUrl) && !blocked.visited.includes(bUrl));
 

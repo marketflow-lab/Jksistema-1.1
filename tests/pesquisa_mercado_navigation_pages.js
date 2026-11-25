@@ -104,6 +104,59 @@ async function expandedCategoryPages() {
     await assert.rejects(unsafe.resolve(parts.key), error => error.code === 'category_link_missing');
     assert.equal(expanded, false);
 }
+async function homonymousAlignmentPartsRequireOfficialIds() {
+    const base = 'https://lista.mercadolivre.com.br/fixture/ajuste-de-queda/';
+    const parent = node('MLB458077', 'Peças de Ajuste de Queda', base);
+    const arm = node('MLB458079', 'Braços', base + 'a/');
+    const bush = node('MLB458084', 'Buchas', base + 'b/');
+    const otherBush = node('MLB458146', 'Buchas', base + 'c/');
+    const more = base + '_FiltersAvailableSidebar?filter=category';
+    const named = link => ({ ...link, key: link.url });
+    const names = [named(bush), named(otherBush)];
+    const fixture = (collapsed, expanded) => {
+        const requests = [];
+        const resolver = navigation({ ancestry: [parent], children: { [parent.key]: [arm, bush] },
+            read: async (url, purpose, parentKey) => {
+                requests.push(url);
+                assert.equal(parentKey, parent.key);
+                if (purpose === 'navigation' && url === base) return { url, categoryFilterMoreUrl: more, ...collapsed };
+                assert.equal(purpose, 'category-options');
+                assert.equal(url, more);
+                return { url, ...expanded };
+            } });
+        resolver.routes.set(parent.key, base);
+        return { resolver, requests };
+    };
+    const confirmed = fixture({ categories: names }, { categories: [arm, otherBush, bush] });
+    assert.equal(await confirmed.resolver.resolve(bush.key), bush.url);
+    assert.equal(await confirmed.resolver.resolve(arm.key), arm.url);
+    assert.deepEqual(confirmed.requests, [base, more], 'both exact child identities come from the verified parent and modal');
+    const ambiguous = error => error.code === 'category_link_ambiguous' && error.navigationDependencyKey === bush.key;
+    for (const expanded of [
+        { categories: [named(bush)] },
+        { categories: [otherBush] },
+        { categories: [bush, { ...bush, url: base + 'another/' }] },
+        { categories: [named(bush)], categoryConflictingRouteIds: [bush.key] }
+    ]) {
+        const h = fixture({ categories: names }, expanded);
+        await assert.rejects(h.resolver.resolve(bush.key), ambiguous);
+        assert.deepEqual(h.requests, [base, more]);
+    }
+    for (const collapsed of [
+        { categories: [bush, { ...bush, url: base + 'conflicting/' }] },
+        { categories: names, categoryConflictingRouteIds: [bush.key] },
+        { categories: names, categoryFilterMoreUrl: base + 'other/_FiltersAvailableSidebar?filter=category' }
+    ]) {
+        const h = fixture(collapsed, { categories: [bush] });
+        await assert.rejects(h.resolver.resolve(bush.key), ambiguous);
+        assert.deepEqual(h.requests, [base], 'a contradictory official ID or an unrelated expansion cannot be overridden');
+    }
+    const refreshed = fixture({ categories: [named(bush)] }, { categories: [bush] });
+    refreshed.resolver.links.set(parent.key, names);
+    assert.equal(await refreshed.resolver.resolve(bush.key), bush.url);
+    assert.deepEqual(refreshed.requests, [base, more], 'a partial refresh cannot turn previously ambiguous names into proof');
+}
+
 function runnerFixture(pages, selected) {
     let current = '', polls = 0;
     const visited = [];
@@ -196,6 +249,13 @@ async function runnerExpandedOptionsWaitForDestination() {
     const modal = cycling + 'pecas/*_NoIndex_True_FiltersAvailableSidebar?filter=category';
     const stale = node('MLB999', 'Outra categoria', cycling + 'outra/');
     const wanted = node('MLB122156', 'Coroas', href);
+    for (const [purpose, url] of [['navigation', selected.url], ['category-options', modal]]) {
+        const conflicts = runnerFixture({ [url]: { categoryDocumentIdentity: true, effectiveCategoryId: selected.key,
+            categories: [], categoryConflictingRouteIds: [wanted.key] } }, selected);
+        const document = await conflicts.runner.read(url, purpose, selected.key, wanted);
+        assert.throws(() => nav.choosePage(document, wanted, selected.url), { code: 'category_link_ambiguous' },
+            'conflicting links in the intended document survive filtering and remain distinguishable from missing links');
+    }
     const h = runnerFixture({ [modal]: poll => poll === 1
         ? { url: cycling, categories: [stale], readyState: 'complete' }
         : poll === 2 ? { categories: [stale], readyState: 'loading' }
@@ -406,8 +466,8 @@ async function navigationChildLinksDoNotReplaceDocumentIdentity() {
     assert.equal(auth.polls(), 1);
     const blocked = fixture();
     blocked.runner.browser.getNavigationStatus = () => ({ url: hub.url, statusCode: 403 });
-    await assert.rejects(blocked.runner.read(hub.url, 'navigation', hub.key, child), error => error.code === 'category_access_denied');
-    assert.equal(blocked.polls(), 1);
+    await assert.rejects(blocked.runner.read(hub.url, 'navigation', hub.key, child), error => error.code === 'marketplace_http_403' && error.status === 403);
+    assert.equal(blocked.polls(), 0, 'a confirmed HTTP block stops the runner before reading the document');
 }
 
 async function cachedSiblingLinksSurviveFailedRefresh() {
@@ -498,7 +558,7 @@ async function neutralLandingMustProveTheLeaf() {
         if (kind === 'access') h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: h.runner.browser.getURL() === landing ? 403 : 200 });
         if (kind === 'abort') { const navigate = h.runner.browser.navigate; h.runner.browser.navigate = async url => { await navigate(url); if (url === landing) throw Object.assign(new Error('Cancelled'), { name: 'AbortError' }); }; }
         await assert.rejects(h.runner.readCategory(kits), error => kind === 'auth' ? error.waitingLogin === true
-            : kind === 'access' ? error.code === 'category_access_denied' : error.name === 'AbortError');
+            : kind === 'access' ? error.code === 'marketplace_http_403' && error.status === 403 : error.name === 'AbortError');
         assert.deepEqual(h.visited, [wildcard, landing], 'a security or cancellation barrier stops before ancestor probes');
     }
 }
@@ -569,7 +629,7 @@ async function failedWildcardCanUseStableTrendsChildLinks() {
         if (kind === 'access') h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: h.runner.browser.getURL() === base ? 403 : 200 });
         if (kind === 'abort') { const navigate = h.runner.browser.navigate; h.runner.browser.navigate = async url => { await navigate(url); if (url === base) throw Object.assign(new Error('Cancelled'), { name: 'AbortError' }); }; }
         await assert.rejects(h.runner.officialNavigation.resolve(child.key), error => kind === 'auth' ? error.waitingLogin === true
-            : kind === 'access' ? error.code === 'category_access_denied' : error.name === 'AbortError');
+            : kind === 'access' ? error.code === 'marketplace_http_403' && error.status === 403 : error.name === 'AbortError');
         assert.deepEqual(h.visited, [wildcard, base]);
     }
     const ordinary = fixture();
@@ -580,8 +640,61 @@ async function failedWildcardCanUseStableTrendsChildLinks() {
         error => error.code === 'category_scope_mismatch', 'the private navigation flag cannot verify a parent listing');
 }
 
+async function recoverSharedAlignmentParent() {
+    const suspension = node('MLB22648', 'Suspensão e Direção');
+    const alignment = node('MLB458077', 'Peças de Ajuste de Queda');
+    const arm = node('MLB458079', 'Braços'), bushing = node('MLB458084', 'Buchas');
+    const base = 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas-carros-caminhonetes/suspensao-direcao/';
+    const group = base + 'pecas-ajuste-queda/';
+    const routes = [{ ...arm, url: group + 'bracos/' }, { ...bushing, url: group + 'buchas/' }];
+    const children = { [alignment.key]: [arm, bushing], [arm.key]: [], [bushing.key]: [] };
+    const ancestry = [node('MLB5672', 'Acessórios para Veículos'), node('MLB22693', 'Peças de Carros e Caminhonetes'), suspension, alignment];
+    const setup = (parentId, status = 200) => {
+        const h = runnerFixture({
+            [base]: { categoryDocumentIdentity: true, effectiveCategoryId: suspension.key,
+                categories: [node('MLB123', 'Outro ramo', base + 'outro/')] },
+            [group]: { categoryDocumentIdentity: true, effectiveCategoryId: parentId, categories: routes },
+            ...Object.fromEntries(routes.map(item => [item.url, { categoryDocumentIdentity: true,
+                effectiveCategoryId: item.key, anuncios: [{ id: item.key + '-item' }] }]))
+        }, alignment);
+        h.runner.checkpoint.officialTaxonomy = { children, ancestry };
+        h.runner.officialNavigation = navigation({ ancestry, children, read: (...args) => h.runner.read(...args) });
+        h.runner.officialNavigation.routes.set(suspension.key, base);
+        h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: h.runner.browser.getURL() === group ? status : 200 });
+        const discoveries = [];
+        h.runner.discoverOfficialCategoryRoute = async (target, _error, ids) => {
+            discoveries.push(target.key);
+            if (target.key !== alignment.key) return null;
+            assert.deepEqual(new Set(ids), new Set([arm.key, bushing.key]));
+            return { ...alignment, url: group };
+        };
+        return { ...h, discoveries };
+    };
+    const good = setup(alignment.key);
+    for (const leaf of [arm, bushing]) {
+        good.runner.checkpoint.currentCategory = leaf;
+        const result = await good.runner.readCategory(leaf);
+        assert.equal(result.effectiveCategoryId, leaf.key);
+        assert.deepEqual(result.anuncios, [{ id: leaf.key + '-item' }]);
+    }
+    assert.deepEqual(good.discoveries, [alignment.key], 'one confirmed parent serves both siblings');
+    assert.deepEqual(good.visited, [base, group, ...routes.map(item => item.url)]);
+    const wrong = setup('MLB458146');
+    for (const leaf of [arm, bushing]) {
+        wrong.runner.checkpoint.currentCategory = leaf;
+        await assert.rejects(wrong.runner.readCategory(leaf), error => error.code === 'category_link_missing');
+    }
+    assert.equal(wrong.runner.officialNavigation.routes.has(alignment.key), false, 'a document from another branch cannot be cached');
+    assert.deepEqual(wrong.discoveries, [alignment.key, arm.key, bushing.key]);
+    const denied = setup(alignment.key, 403);
+    await assert.rejects(denied.runner.readCategory(arm), error => error.code === 'marketplace_http_403');
+    assert.deepEqual(denied.discoveries, [alignment.key], 'access denial stops discovery immediately');
+}
+
 (async () => {
+    await recoverSharedAlignmentParent();
     await expandedCategoryPages();
+    await homonymousAlignmentPartsRequireOfficialIds();
     await runnerTrendsTransition();
     await runnerExpandedOptionsWaitForDestination();
     await observedMissingRoutesStayCandidates();

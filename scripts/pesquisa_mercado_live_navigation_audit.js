@@ -47,6 +47,7 @@ function safePage(page) {
         documentCategoryId: /^MLB\d+$/.test(page.documentCategoryId || '') ? page.documentCategoryId
             : page.categoryDocumentIdentity === true && /^MLB\d+$/.test(page.effectiveCategoryId || '') ? page.effectiveCategoryId : '',
         categoryIdentityConflict: page.categoryIdentityConflict === true, categoryNotFound: page.categoryNotFound === true,
+        categoryConflictingRouteIds: Array.isArray(page.categoryConflictingRouteIds) ? page.categoryConflictingRouteIds.filter(key => typeof key === 'string' && /^MLB\d+$/.test(key)) : [],
         categoryDocumentIdentity: page.categoryDocumentIdentity === true || !!page.documentCategoryId && page.documentCategoryId === page.effectiveCategoryId && page.categoryIdentityConflict !== true,
         categoryFilterMoreUrl: officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url) || '',
         categoryFilterPresent: page.categoryFilterPresent === true, readyState: page.readyState === 'loading' ? 'loading' : 'complete',
@@ -178,12 +179,12 @@ class LiveNavigationAudit {
             }
         };
         const productionDiscover = this.runner.discoverOfficialCategoryRoute.bind(this.runner);
-        this.runner.discoverOfficialCategoryRoute = async node => {
+        this.runner.discoverOfficialCategoryRoute = async (node, primaryError, seedCategoryIds) => {
             this.attempt(node.key).fallbackDiscoveryAttempts += 1;
             this.discoveringRoute = true;
             await this.progress('discovering_official_route');
             try {
-                const discovered = await (this.discoverOfficialCategoryRoute || productionDiscover)(node);
+                const discovered = await (this.discoverOfficialCategoryRoute || productionDiscover)(node, primaryError, seedCategoryIds);
                 if (!discovered) return null;
                 const candidate = this.discoveryCandidate(discovered, node);
                 if (!candidate) {
@@ -322,7 +323,7 @@ class LiveNavigationAudit {
         if (key && page.effectiveCategoryId && page.effectiveCategoryId !== key) return false;
         if ((purpose === 'navigation' || purpose === 'category-options') && expected) {
             const parentUrl = purpose === 'category-options' ? this.navigation.routes.get(key) || url : url;
-            try { return !!this.navigation.choose(page.categories, expected, parentUrl); }
+            try { return !!this.navigation.choosePage(page, expected, parentUrl); }
             catch (_error) { return purpose === 'navigation' && !!page.categoryFilterMoreUrl; }
         }
         return page.listingCount > 0 || page.empty || page.categories.length > 0;
@@ -365,7 +366,11 @@ class LiveNavigationAudit {
             if (!source || !officialCategoryMoreUrl(page.url, source.parentUrl)) return;
             this.state.groupSources[key] = { ...source, kind: 'live_expanded_category_filters', expansionUrl: page.url, observedAt };
         }
-        if (page.categories.length && this.state.groupSources[key]) this.state.observedGroupLinks[key] = clone(page.categories);
+        const source = this.state.groupSources[key];
+        if (source && (page.categories.length || page.categoryConflictingRouteIds.length)) {
+            this.state.observedGroupLinks[key] = clone(page.categories);
+            source.conflictingRouteIds = [...new Set([...(source.conflictingRouteIds || []), ...page.categoryConflictingRouteIds])];
+        }
     }
 
     groupVerification(key) {
@@ -375,7 +380,7 @@ class LiveNavigationAudit {
         const missingRouteKeys = [], unconfirmedIdentityKeys = [], matched = [];
         for (const child of children) {
             let selected;
-            try { selected = this.navigation.choose(links, child, parentUrl); }
+            try { selected = this.navigation.choosePage({ categories: links, categoryConflictingRouteIds: source?.conflictingRouteIds }, child, parentUrl); }
             catch (_error) { missingRouteKeys.push(child.key); continue; }
             matched.push(child.key);
             const document = this.state.documentContexts[child.key];
@@ -445,6 +450,7 @@ class LiveNavigationAudit {
     }
 
     classify(error) {
+        if (error.code === 'marketplace_http_403' || error.code === 'marketplace_http_429') return 'category_access_denied';
         if (error.waitingLogin || error.status === 401 || error.status === 403) return 'login_required';
         if (error.name === 'AbortError') return 'audit_interrupted';
         return FAILURE_CODES.has(error.code) ? error.code : 'navigation_read_failed';
@@ -482,6 +488,7 @@ class LiveNavigationAudit {
         const functionalVerifiedNodes = verifiedGroups.length + new Set([...verifiedLeafKeys, ...verifiedExactItemScopeKeys]).size;
         const observedOfficialEdges = groups.filter(group => group.source !== 'not_observed_online').reduce((sum, group) => sum + group.observedChildRoutes, 0);
         const attempts = Object.values(this.state.nodeAttempts);
+        const selectedAttempts = Object.entries(this.state.nodeAttempts).filter(([key]) => this.selectedKeys.has(key)).map(([, item]) => item);
         const completeSelectedCoverage = functionalVerifiedNodes === this.keys.length;
         const wholeSnapshotSelected = this.keys.length === this.snapshot.summary.total;
         return { version: 1, snapshotSha256: this.snapshotSha256, implementationSha256: this.implementationSha256, status: this.state.status, totalNodes: this.keys.length,
@@ -503,10 +510,10 @@ class LiveNavigationAudit {
             snapshotObservedDocumentNodes: live.attemptedNodes,
             nodeSpecificOnlineAttempts: attempts.filter(item => item.networkNavigations > 0).length,
             finalLeafDocumentAttempts: attempts.filter(item => item.finalDocumentReadAttempts > 0).length,
-            fallbackDiscoveryNodes: attempts.filter(item => item.fallbackDiscoveryAttempts > 0).length,
+            fallbackDiscoveryNodes: selectedAttempts.filter(item => item.fallbackDiscoveryAttempts > 0).length,
             fallbackDiscoveryAttempts: attempts.reduce((sum, item) => sum + item.fallbackDiscoveryAttempts, 0),
             transportPageReadAttempts: attempts.reduce((sum, item) => sum + (item.transportPageReadAttempts || 0), 0),
-            filteredItemCandidates: Object.values(this.state.fallbackCandidates).filter(item => !item.eligibleAsLeafDocument).length,
+            filteredItemCandidates: Object.entries(this.state.fallbackCandidates).filter(([key, item]) => this.selectedKeys.has(key) && !item.eligibleAsLeafDocument).length,
             failureCodes: codes, updatedAt: this.state.updatedAt,
             completeSelectedCoverage, completeAllSnapshotCoverage: wholeSnapshotSelected && completeSelectedCoverage,
             completeLiveCoverage: wholeSnapshotSelected && completeSelectedCoverage,

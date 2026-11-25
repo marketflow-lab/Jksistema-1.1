@@ -138,7 +138,7 @@ function routeFromBreadcrumbs(snapshot, expected, ancestors) {
     return { route: routes.size === 1 ? [...routes.values()][0] : null, ambiguous: routes.size > 1 };
 }
 
-function exactSeeds(page, expectedId) {
+function exactSeeds(page, categoryIds) {
     const categories = new Map(), urls = new Map();
     for (const item of Array.isArray(page.categoryItems) ? page.categoryItems.slice(0, 1000) : []) {
         if (!item || !ID.test(item.id || '') || !ID.test(item.categoryId || '')) continue;
@@ -146,7 +146,7 @@ function exactSeeds(page, expectedId) {
         else if (categories.get(item.id) !== item.categoryId) categories.set(item.id, '');
     }
     for (const item of Array.isArray(page.anuncios) ? page.anuncios.slice(0, 1000) : []) {
-        if (!item || categories.get(item.id) !== expectedId) continue;
+        if (!item || !categoryIds.has(categories.get(item.id))) continue;
         const target = itemUrl(item.url, item.id);
         if (!target || target.id !== item.id) continue;
         if (!urls.has(item.id)) urls.set(item.id, item.url);
@@ -155,13 +155,19 @@ function exactSeeds(page, expectedId) {
     return [...urls].filter(([, url]) => url).slice(0, 3).map(([id, url]) => ({ id, url }));
 }
 
-async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wait, signal }) {
+const noRoute = Object.freeze({ outcome: 'unconfirmed', route: null });
+const ambiguous = Object.freeze({ outcome: 'ambiguous', route: null });
+
+async function discoverCategoryRouteResult({ browser, scripts, expected, ancestry, seedCategoryIds = [], wait, signal, assertNavigation }) {
     if (!expected || !ID.test(expected.key || '') || typeof expected.nome !== 'string' || !expected.nome.trim() || expected.nome.length > 400
         || !Array.isArray(ancestry) || !ancestry.length || ancestry.length > 32
         || ancestry.some(node => !node || !ID.test(node.key || '') || typeof node.nome !== 'string' || !node.nome.trim())
-        || new Set(ancestry.map(node => node.key)).size !== ancestry.length) return null;
+        || new Set(ancestry.map(node => node.key)).size !== ancestry.length) return noRoute;
     const ancestors = ancestry.at(-1).key === expected.key ? ancestry.slice(0, -1) : ancestry;
-    if (!ancestors.length || ancestors.some(node => node.key === expected.key)) return null;
+    if (!ancestors.length || ancestors.some(node => node.key === expected.key)) return noRoute;
+    // A parent breadcrumb can also be observed on an item in a confirmed child.
+    // These items supply navigation evidence only and never enter the ranking.
+    const categoryIds = new Set([expected.key, ...seedCategoryIds.filter(key => ID.test(key))]);
     const parentName = ancestors.at(-1).nome;
     const domainName = (ancestors[1] || ancestors[0]).nome;
     const contextualTerm = names => {
@@ -192,9 +198,11 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
     };
     const pause = () => step(() => wait ? wait(350, controller.signal) : new Promise(resolve => setTimeout(resolve, 350)));
     const pageState = async () => {
+        assertNavigation?.();
         let page;
         try { page = await step(() => browser.executeJavaScript(scripts.discoveryScript())); }
         catch (error) { if (navigationContextChanged(error)) return { page: {}, url: '', settled: false }; throw error; }
+        assertNavigation?.();
         if (!page || typeof page !== 'object') return { page: {}, url: '', settled: false };
         if (page.authRequired || page.avantAuthRequired) {
             const reason = page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required');
@@ -219,7 +227,7 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
                 await pause();
                 const state = await pageState();
                 if (!state.settled) continue;
-                if (state.url !== INDEX_URL) return null;
+                if (state.url !== INDEX_URL) return noRoute;
                 try { submitted = await step(() => browser.executeJavaScript(`(${submitObservedSearch.toString()})(${JSON.stringify(term)},${JSON.stringify(SEARCH_ACTION)})`)); }
                 catch (error) {
                     if (!navigationContextChanged(error)) throw error;
@@ -229,20 +237,21 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
                 }
                 if (submitted) break;
             }
-            if (!submitted) return null;
+            if (!submitted) return noRoute;
             let previous = '', stable = 0, searchUrl = '';
             for (let poll = 0; poll < 24; poll += 1) {
                 await pause();
                 const state = await pageState();
                 if (!state.settled || state.url === INDEX_URL) { previous = ''; stable = 0; continue; }
-                if (new URL(state.url).hostname !== 'lista.mercadolivre.com.br') return null;
-                if (searchUrl && searchUrl !== state.url) return null;
+                if (new URL(state.url).hostname !== 'lista.mercadolivre.com.br') return noRoute;
+                if (searchUrl && searchUrl !== state.url) return noRoute;
                 searchUrl = state.url;
+                if (state.page.categoryConflictingRouteIds?.includes(expected.key)) return ambiguous;
                 const filtered = routeFromQueryFilter(state.page, state.url, expected);
-                if (filtered.ambiguous) return null;
-                const found = exactSeeds(state.page, expected.key), signature = JSON.stringify([state.url, filtered.route, found]);
+                if (filtered.ambiguous) return ambiguous;
+                const found = exactSeeds(state.page, categoryIds), signature = JSON.stringify([state.url, filtered.route, found]);
                 stable = signature === previous ? stable + 1 : 1; previous = signature;
-                if (filtered.route && stable >= 2) return filtered.route;
+                if (filtered.route && stable >= 2) return { outcome: 'candidate', route: filtered.route };
                 if (found.length && stable >= 2) { seeds = found; break; }
             }
             if (seeds.length) break;
@@ -256,15 +265,15 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
                 const state = await pageState();
                 if (!state.settled) { previous = ''; stable = 0; continue; }
                 const opened = itemUrl(state.url, seed.id);
-                if (!opened) return null;
-                if (openedUrl && openedUrl !== state.url) return null;
+                if (!opened) return noRoute;
+                if (openedUrl && openedUrl !== state.url) return noRoute;
                 openedUrl = state.url;
                 const snapshot = await step(() => browser.executeJavaScript(`(${publicBreadcrumbs.toString()})()`));
-                if (publicUrl(snapshot.url) !== state.url || publicUrl(browser.getURL()) !== state.url) return null;
+                if (publicUrl(snapshot.url) !== state.url || publicUrl(browser.getURL()) !== state.url) return noRoute;
                 const canonical = itemUrl(snapshot.canonical, seed.id);
-                if (!canonical || !opened.id && !canonical.id) return null;
+                if (!canonical || !opened.id && !canonical.id) return noRoute;
                 const breadcrumb = routeFromBreadcrumbs(snapshot, expected, ancestors);
-                if (breadcrumb.ambiguous) return null;
+                if (breadcrumb.ambiguous) return ambiguous;
                 const candidate = breadcrumb.route, signature = JSON.stringify([state.url, candidate]);
                 stable = signature === previous ? stable + 1 : 1; previous = signature;
                 if (candidate && stable >= 2) { routes.set(candidate.url, candidate); break; }
@@ -272,16 +281,24 @@ async function discoverCategoryRoute({ browser, scripts, expected, ancestry, wai
         }
         // Only an observed route is returned. The caller must validate its final
         // document ID with read(); keyword search results never become results.
-        return routes.size === 1 ? [...routes.values()][0] : null;
+        if (routes.size === 1) return { outcome: 'candidate', route: [...routes.values()][0] };
+        return routes.size ? ambiguous : noRoute;
     } catch (error) {
         if (signal?.aborted) throw abortError();
-        if (error.discoveryTimedOut || controller.signal.aborted) return null;
+        if (error.code === 'marketplace_http_403' || error.code === 'marketplace_http_429') throw error;
+        assertNavigation?.();
+        if (error.discoveryTimedOut || controller.signal.aborted) return { outcome: 'timeout', route: null };
         if (error.waitingLogin || error.code === 'category_access_denied') throw error;
-        return null;
+        if (error.code === 'category_load_timeout' || error.name === 'TimeoutError') return { outcome: 'timeout', route: null };
+        return noRoute;
     } finally {
         clearTimeout(timer);
         signal?.removeEventListener('abort', forwardAbort);
     }
 }
 
-module.exports = { discoverCategoryRoute };
+async function discoverCategoryRoute(options) {
+    return (await discoverCategoryRouteResult(options)).route;
+}
+
+module.exports = { discoverCategoryRoute, discoverCategoryRouteResult };

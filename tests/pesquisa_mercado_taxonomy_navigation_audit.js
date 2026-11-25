@@ -69,7 +69,7 @@ async function testResumableProductionNavigation() {
     const indexUrl = base + '/categorias';
     const a = { ...snapshot.get('MLB101'), url: 'https://lista.mercadolivre.com.br/observed-child-a/' };
     const b = { ...snapshot.get('MLB102'), url: 'https://lista.mercadolivre.com.br/observed-child-b/' };
-    const fixture = denied => {
+    const fixture = indexStatus => {
         let url = '', calls = 0;
         const visits = [];
         const pages = {
@@ -78,7 +78,7 @@ async function testResumableProductionNavigation() {
             [b.url]: { effectiveCategoryId: b.key, categoryDocumentIdentity: true, anuncios: [{}] }
         };
         return { browser: { async navigate(next) { assert.notEqual(next, rootUrl, 'marketing root is not a listing destination'); calls += 1; visits.push(next); url = next; }, getURL: () => url,
-            getNavigationStatus: () => ({ url, statusCode: denied && url === indexUrl ? 403 : 200 }),
+            getNavigationStatus: () => ({ url, statusCode: url === indexUrl && indexStatus ? indexStatus : 200 }),
             async executeJavaScript() { return { url, readyState: 'complete', ...pages[url] }; } }, calls: () => calls, visits };
     };
     assert.deepEqual(breadthFirstKeys(snapshot), ['MLB100', 'MLB101', 'MLB102']);
@@ -114,7 +114,7 @@ async function testResumableProductionNavigation() {
     assert.equal(second.calls(), 1, 'resume visits only the remaining document using the frozen official routes');
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256: '0'.repeat(64), browser: second.browser, state: saved }));
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256, implementationSha256: 'changed-code', browser: second.browser, state: saved }));
-    const blocked = fixture(true);
+    const blocked = fixture(403);
     let blockedState;
     const denial = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: blocked.browser, wait: async () => {}, intervalMs: 0,
         persist: async state => { blockedState = state; } });
@@ -125,9 +125,31 @@ async function testResumableProductionNavigation() {
     assert.equal(paused.verifiedOnlineGroupNodes, 0);
     assert.equal(paused.completeLiveCoverage, false);
     assert.equal(blocked.calls(), 1, 'an HTTP block cannot launch a cascade through the remaining categories');
+    const limited = fixture(429);
+    const limitedAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: limited.browser, wait: async () => {}, intervalMs: 0 });
+    const limitedSummary = await limitedAudit.run();
+    assert.equal(limitedSummary.status, 'paused_access_denied');
+    assert.equal(limitedSummary.completedCursor, 0);
+    assert.equal(limited.calls(), 1, 'rate limiting must stop further category visits');
+    assert.equal(limitedAudit.classify({ waitingLogin: true }), 'login_required');
+    assert.equal(limitedAudit.classify({ status: 403 }), 'login_required');
     const allowed = fixture(false);
     const afterBlock = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: allowed.browser, state: blockedState, wait: async () => {}, intervalMs: 0 });
     assert.equal((await afterBlock.run()).functionalVerifiedNodes, 3);
+
+    const parentListing = 'https://lista.mercadolivre.com.br/observed-parent/';
+    const ambiguous = fixture(false);
+    ambiguous.browser.getNavigationStatus = () => ({ url: parentListing, statusCode: 200 });
+    const conflictAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: ambiguous.browser });
+    conflictAudit.runner.read = async () => ({ url: parentListing, effectiveCategoryId: 'MLB100', categoryDocumentIdentity: true,
+        categories: [a, b], categoryConflictingRouteIds: [a.key, 'other-text'] });
+    await conflictAudit.read(parentListing, 'navigation', 'MLB100', b);
+    await conflictAudit.save();
+    const restoredConflict = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: fixture(false).browser, state: conflictAudit.state });
+    const restoredParent = await restoredConflict.read(parentListing, 'navigation', 'MLB100', b);
+    assert.equal(restoredConflict.summary().pageReuseCount, 1);
+    assert.deepEqual(restoredParent.categoryConflictingRouteIds, [a.key], 'cached navigation retains only the conflicting public category ID');
+    assert.deepEqual(restoredConflict.groupVerification('MLB100').missingRouteKeys, [a.key], 'the resumed audit cannot count a conflicting route as verified');
 
     const prioritized = fixture(false);
     let priorityState;
@@ -206,10 +228,15 @@ async function testResumableProductionNavigation() {
             return { url: current, readyState: 'complete', effectiveCategoryId: key, categoryDocumentIdentity: true,
                 categoryIdentityConflict: false, categoryNotFound: false, anuncios: [{}] };
         } };
-        const discover = async category => {
+        const discover = async (category, primaryError, seedCategoryIds) => {
             // A keyword lookup can help discover an emitted category href. Its
             // result is deliberately not an audit category-document observation.
             await audit.runner.read('https://lista.mercadolivre.com.br/discovery/' + category.key + '/?q=example', 'category');
+            if (category.key === 'MLB100') {
+                assert.deepEqual([...new Set(seedCategoryIds)].sort(), ['MLB101', 'MLB102']);
+                return null;
+            }
+            assert.equal(primaryError.navigationDependencyKey, 'MLB100');
             if (itemFilter) return { key: category.key, nome: category.nome, url: pureBase(category.key) + '?q=example',
                 categoryBaseUrl: pureBase(category.key), source: 'verified_item_category_filter', exactItemCategoryId: category.key };
             return { key: category.key, nome: category.nome, url: pureBase(category.key) + (invalidReturnedQuery ? '?q=example' : ''),
@@ -233,7 +260,8 @@ async function testResumableProductionNavigation() {
     assert.equal(discoveredSummary.snapshotTotalNodes, 3);
     assert.equal(discoveredSummary.totalNodes, 2);
     assert(discovered.audit.evidence().observations.every(item => !item.url.includes('/discovery/') && !new URL(item.url).search));
-    assert.equal(discovered.calls.length, 4);
+    assert.equal(discoveredSummary.fallbackDiscoveryAttempts, 3, 'both leaves and their shared ancestor were searched');
+    assert.equal(discovered.calls.length, 5, 'the ancestor is searched once before independent leaf reads');
 
     const subset = fallbackFixture({ keywordFinal: true });
     const subsetSummary = await subset.audit.run();
@@ -331,13 +359,13 @@ async function testResumableProductionNavigation() {
     assert.equal(failedSummary.verifiedDocumentNodes, 0);
     assert(!JSON.stringify(failedAudit.state).includes('MLB900001'), 'failure diagnostics retain counts without ad IDs');
 
-    const contextFixture = fixture(true);
+    const contextFixture = fixture(403);
     const contextAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: contextFixture.browser, wait: async () => {}, intervalMs: 0 });
     contextAudit.selectCategory('MLB101');
     const originalCategory = contextAudit.runner.checkpoint.currentCategory;
     const originalScope = contextAudit.runner.checkpoint.scope;
     const originalAncestry = contextAudit.runner.checkpoint.officialTaxonomy.ancestry;
-    await assert.rejects(() => contextAudit.read(indexUrl, 'index', ''), error => error.code === 'category_access_denied');
+    await assert.rejects(() => contextAudit.read(indexUrl, 'index', ''), error => error.code === 'marketplace_http_403');
     assert.equal(contextAudit.runner.checkpoint.currentCategory, originalCategory, 'failed ancestor/index reads restore the exact original context');
     assert.equal(contextAudit.runner.checkpoint.scope, originalScope);
     assert.equal(contextAudit.runner.checkpoint.officialTaxonomy.ancestry, originalAncestry);
