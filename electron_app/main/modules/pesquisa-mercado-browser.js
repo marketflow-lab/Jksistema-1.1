@@ -367,29 +367,41 @@ async function showPesquisaMercadoChrome(runner, purpose, response) {
         throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
     }
     const currentJob = runner.job?.id === job.id;
-    const page = job.checkpoint?.page;
-    const candidates = [
-        currentJob && runner.loginBrowser?.getResumeURL(),
-        currentJob && runner.browser.getURL(),
-        currentJob && runner.browser.getResumeURL(),
-        page?.anuncios?.[Number(page.index || 0)]?.url,
-        page?.url,
-        job.checkpoint?.currentCategory?.url
-    ];
-    const target = candidates.find(value => pesquisaMercadoRunnerModule.allowedUrl(value)
-        && !/_CatId_|[?&]category_id=/i.test(value)) || 'https://www.mercadolivre.com.br/';
-    if (runner.task) {
-        if (purpose === 'names') throw new Error('A pesquisa esta usando este navegador.');
+    // The pause releases task tabs. Keep their last public destinations, then check the final checkpoint.
+    const liveTargets = currentJob ? [runner.loginBrowser?.getResumeURL(), runner.browser.getURL(), runner.browser.getResumeURL()] : [];
+    const wasRunning = !!runner.task;
+    if (wasRunning) {
+        if (purpose === 'names' || !currentJob) throw new Error('A pesquisa esta usando este navegador.');
         await runner.stop('paused');
         await runner.task;
-        pesquisaMercadoRunnerModule.assertMarketplaceRetryAllowed(runner.checkpoint);
     }
-    if (purpose === 'names' || job.status === 'waiting_login' || job.checkpoint?.marketplaceAccess?.status === 403) {
+    const checkpoint = wasRunning ? runner.checkpoint : job.checkpoint;
+    pesquisaMercadoRunnerModule.assertMarketplaceRetryAllowed(checkpoint);
+    const page = checkpoint?.page;
+    const blocked = checkpoint?.marketplaceAccess?.status === 403;
+    const blockedUrl = blocked && pesquisaMercadoRunnerModule.publicMarketplacePage(checkpoint.marketplaceAccess.url);
+    const candidates = [
+        ...liveTargets,
+        page?.anuncios?.[Number(page.index || 0)]?.url,
+        page?.url,
+        checkpoint?.currentCategory?.url
+    ];
+    const home = 'https://www.mercadolivre.com.br/';
+    const target = blockedUrl || candidates.map(pesquisaMercadoRunnerModule.publicMarketplacePage)
+        .find(value => value && value !== home && !/_CatId_|[?&]category_id=/i.test(value)) || home;
+    let latest = wasRunning ? runner.job : job;
+    if (purpose === 'names' || job.status === 'waiting_login' || latest.status === 'waiting_login' || blocked) {
         await pesquisaMercadoChrome.showManual(target);
     } else {
         await pesquisaMercadoChrome.show(target, { collectVisible: true });
     }
-    const { id, status, revision, counters, message, created_at, updated_at } = runner.job?.id === job.id ? runner.job : job;
+    if (purpose !== 'names' && checkpoint?.collectVisible !== true) {
+        const saved = await pesquisaMercadoBackendRequest('PATCH', `/api/pesquisa-mercado/jobs/${encodeURIComponent(job.id)}/checkpoint`,
+            { collect_visible: true, generation: Number(latest.generation || 0) });
+        latest = saved.job;
+        if (currentJob && runner.job?.id === job.id && runner.checkpoint) runner.checkpoint.collectVisible = true;
+    }
+    const { id, status, revision, counters, message, created_at, updated_at } = latest;
     return { job: { id, status, revision, counters, message, created_at, updated_at } };
 }
 

@@ -331,6 +331,45 @@ async function run() {
         assert.deepEqual(catalogEnriched.anuncios.map(item => item.id).sort(), ['MLB10000041', 'MLB10000042']);
         assert.deepEqual(await page.evaluate(() => window.pmClickedListings), ['https://www.mercadolivre.com.br/produto/p/MLB9999999?wid=MLB10000041']);
 
+        // A current PDP links its seller header and the seller's inventory by the same /pagina/ slug.
+        await page.goto('https://produto.mercadolivre.com.br/MLB-10000077-loja-_JM');
+        const pageOwner = { id: '123456', perfilUrl: 'https://www.mercadolivre.com.br/pagina/loja_alvo' };
+        const merchantLink = (slug, id) => '<div class="ui-seller-data-header__main-info"><a href="https://www.mercadolivre.com.br/pagina/'
+            + slug + '?seller_id=' + id + '">Loja Alvo</a></div>';
+        const merchantFixture = '<main><h1 class="ui-pdp-title">Produto</h1><a class="ui-pdp-seller-summary__link" href="'
+            + pageOwner.perfilUrl + '">Loja Alvo</a>' + merchantLink('loja_alvo', pageOwner.id) + pdpRoot()
+            + '<div class="recommendations">' + merchantLink('outra', '999999') + '</div></main>';
+        await page.setContent(merchantFixture);
+        const merchant = await page.evaluate(scripts.discoveryScript());
+        assert.equal(merchant.sellerId, pageOwner.id);
+        assert.equal(merchant.perfilUrl, pageOwner.perfilUrl);
+        assert.equal(merchant.seller_identity_conflict, false);
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: pageOwner, detail: true }))).anuncios[0].rankable, true);
+        const foreignPage = { id: pageOwner.id, perfilUrl: 'https://lista.mercadolivre.com.br/pagina/outro?seller_id=' + pageOwner.id };
+        assert.equal(sameSeller(pageOwner, foreignPage), false);
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: foreignPage, detail: true }))).anuncios[0].seller_confirmed, false,
+            'a consistent PDP for another named page cannot be attributed to the expected slug by numeric ID alone');
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: { perfilUrl: pageOwner.perfilUrl + '?seller_id=999' }, detail: true }))).anuncios[0].rankable, false,
+            'the same page slug cannot hide an explicitly different numeric seller ID');
+        await page.setContent(merchantFixture.replace('</main>', merchantLink('outra', '999999') + '</main>'));
+        assert.equal((await page.evaluate(scripts.discoveryScript())).seller_identity_conflict, true);
+        assert.equal((await page.evaluate(scripts.snapshotScript({ seller: pageOwner, detail: true }))).anuncios[0].rankable, false);
+        await page.goto(pageOwner.perfilUrl);
+        const shelf = url => '<section class="section-eshop__title--layout"><a href="' + url + '">Ver mais</a></section>';
+        const inventory = 'https://lista.mercadolivre.com.br/pagina/loja_alvo/';
+        const otherShelves = shelf(inventory + '_CustoFrete_Gratis') + shelf(inventory + '?q=oferta')
+            + shelf('https://lista.mercadolivre.com.br/pagina/outro_vendedor/');
+        await page.setContent('<main></main>' + otherShelves);
+        assert.equal((await page.evaluate(scripts.discoveryScript())).allAdsUrl, '');
+        await page.setContent('<main></main>' + otherShelves + shelf(inventory));
+        assert.equal((await page.evaluate(scripts.discoveryScript())).allAdsUrl, inventory);
+        await page.goto('https://lista.mercadolivre.com.br/pagina/loja_alvo/');
+        await page.setContent(fixture(card(77)));
+        const merchantInventory = await page.evaluate(scripts.discoveryScript());
+        assert.equal(merchantInventory.perfilUrl, pageOwner.perfilUrl);
+        assert.equal(merchantInventory.allAdsUrl, page.url());
+        assert(sameSeller(pageOwner, merchantInventory));
+
         // An explicit detail uses the selected PDP, never a recommendation card.
         await page.goto('https://produto.mercadolivre.com.br/MLB-10000034-produto-_JM');
         await page.setContent('<main><h1 class="ui-pdp-title">Produto de detalhe</h1><a class="ui-pdp-seller__link" href="https://lista.mercadolivre.com.br/_CustId_123456">Loja Alvo</a>'

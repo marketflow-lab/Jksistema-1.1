@@ -111,7 +111,7 @@ function harness(saved = [], options = {}) {
     class DormantRunner extends runnerModule.PesquisaMercadoRunner {
         async run() {
             try {
-                await this.browser.prepare();
+                await this.browser.prepare({ collectVisible: this.checkpoint.collectVisible === true });
                 if (!this.controller.signal.aborted) await new Promise(resolve => this.controller.signal.addEventListener('abort', resolve, { once: true }));
             } catch (_error) {
                 this.job.status = this.stopStatus || 'failed';
@@ -164,7 +164,10 @@ function harness(saved = [], options = {}) {
                 pending: fixtureNameSellers.filter(item => !runnerModule.cleanSellerName(item.nome, item.id)).length, job: clone(job) } };
         }
         if (options.method === 'PATCH' && match[2]) {
-            Object.assign(job, clone(JSON.parse(payload)), { revision: job.revision + 1 });
+            const patch = JSON.parse(payload);
+            if (patch.collect_visible === true) job.checkpoint.collectVisible = true;
+            else Object.assign(job, clone(patch));
+            job.revision = (job.revision || 0) + 1;
             events.push({ type: 'persist', status: job.status, owner });
         }
         return { status: 200, data: { job: clone(job) } };
@@ -216,7 +219,7 @@ function harness(saved = [], options = {}) {
                         async close() { this.closed = true; },
                         createPage(settings) {
                             const browser = { settings, getURL: () => '', getResumeURL: () => '',
-                                async prepare() {}, stop() {}, async finish() {} };
+                                async prepare(input) { this.prepared = input; }, stop() {}, async finish() {} };
                             this.pages.push(browser);
                             return browser;
                         }
@@ -1004,13 +1007,36 @@ async function testChromeProfileOwnershipAndSetup() {
     await h.command('show-browser', 'one', 'chrome-private-one');
     assert.equal(first.shows[1].settings.collectVisible, true);
     const research = h.jobs.get('chrome-private-one');
+    assert.equal(research.checkpoint.collectVisible, true, 'the Show button records the preference for this job');
     research.status = 'waiting_login';
     await h.command('show-browser', 'one', research.id);
     assert.equal(first.shows[2].manual, true, 'login requested by the job must use standalone Chrome');
     research.status = 'paused';
-    research.checkpoint.marketplaceAccess = { status: 403, stage: 'product' };
+    const product = 'https://www.mercadolivre.com.br/peca/up/MLBU123456?wid=MLB12345&pdp_filters=item_id%3AMLB12345';
+    research.checkpoint.marketplaceAccess = { status: 403, stage: 'product', url: product };
     await h.command('show-browser', 'one', research.id);
     assert.equal(first.shows[3].manual, true, 'HTTP 403 verification must use standalone Chrome');
+    assert.equal(first.shows[3].url, product, 'the exact public product that returned 403 opens for manual review');
+    for (const url of ['https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/amortecedores/*_NoIndex_True',
+        'https://www.mercadolivre.com.br/pagina/loja-fixture?seller_id=123']) {
+        research.checkpoint.marketplaceAccess.url = url;
+        await h.command('show-browser', 'one', research.id);
+        assert.equal(first.shows.at(-1).url, url);
+        assert.equal(first.shows.at(-1).manual, true);
+    }
+    research.checkpoint.marketplaceAccess.url = 'https://www.mercadolivre.com.br/login?token=fixture';
+    await h.command('show-browser', 'one', research.id);
+    assert.equal(first.shows.at(-1).url, 'https://www.mercadolivre.com.br/', 'a stored login URL is never reopened');
+    research.checkpoint.marketplaceAccess = { status: 429, retryAt: Date.now() + 60_000 };
+    const opens = first.shows.length;
+    await assert.rejects(h.command('show-browser', 'one', research.id), /HTTP 429/);
+    assert.equal(first.shows.length, opens, 'show cannot open a page during Retry-After');
+    delete research.checkpoint.marketplaceAccess;
+    const restarted = harness([research], { chrome: true });
+    await restarted.command('resume', 'one', research.id);
+    assert.equal(restarted.chromeSessions[0].pages[0].prepared.collectVisible, true, 'an explicit resume after restarting restores the visible job');
+    await restarted.command('pause', 'one', research.id);
+    await restarted.api.quit();
     await h.command('status', 'two');
     assert(first.closed, 'switching users closes the previous dedicated Chrome');
     const second = h.chromeSessions[1];

@@ -60,6 +60,22 @@ def test_selected_category_or_subcategory_seeds_only_the_selected_scope(store, c
     assert store.latest("cliente-a", "alice")["checkpoint"]["scope"]["category"]["nome"] == category["nome"]
 
 
+def test_visible_chrome_preference_survives_an_inflight_save_and_stays_with_its_owner_and_job(store):
+    job = store.start("cliente-a", "alice")
+    stale = job["checkpoint"]
+    saved = store.checkpoint(job["id"], "cliente-a", "alice", collect_visible=True, generation=0)
+    assert saved["checkpoint"] == {**stale, "collectVisible": True}
+    assert store.checkpoint(job["id"], "cliente-a", "alice", collect_visible=True)["revision"] == saved["revision"]
+    paused = store.checkpoint(job["id"], "cliente-a", "alice", checkpoint={**stale, "page": {"index": 7}}, status="paused")
+    restarted = PesquisaMercadoStore(store.info_root)
+    assert restarted.get(job["id"], "cliente-a", "alice")["checkpoint"] == {**paused["checkpoint"], "page": {"index": 7}, "collectVisible": True}
+    with pytest.raises(HTTPException) as error:
+        restarted.checkpoint(job["id"], "cliente-a", "bob", collect_visible=True)
+    assert error.value.status_code == 404
+    restarted.checkpoint(job["id"], "cliente-a", "alice", status="completed")
+    assert "collectVisible" not in restarted.start("cliente-a", "alice")["checkpoint"]
+
+
 def test_category_metadata_is_normalized_without_tracking_or_fragments(store):
     category = scope_category("  root  ", "  Ferramentas   eletricas  ", "https://www.mercadolivre.com.br/c/ferramentas/?utm_source=menu&category_id=MLB1574#origin")
     normalized = {"key": "root", "nome": "Ferramentas eletricas", "url": "https://www.mercadolivre.com.br/c/ferramentas/?category_id=MLB1574"}
@@ -840,6 +856,50 @@ def test_canonical_profile_identity_and_unknown_seller(store):
     assert rows[0]["rankable"] is False
 
 
+def test_seller_page_and_inventory_identify_the_same_seller_in_saved_ranking(store):
+    job = store.start("cliente-a", "alice")
+    owner = {"key": "perfil:loja_alvo", "perfilUrl": "https://www.mercadolivre.com.br/pagina/loja_alvo"}
+    inventory = "https://lista.mercadolivre.com.br/pagina/"
+    store.publish(job["id"], owner["key"], "cliente-a", "alice", owner, [
+        ad(1, owner="", seller_perfil_url=inventory + "loja_alvo/"),
+        ad(2, owner="", seller_perfil_url=inventory + "outro_vendedor/"),
+    ])
+    rows = store.ranking(job["id"], "cliente-a", "alice", seller_key=owner["key"])["items"]
+    assert [row["rankable"] for row in rows] == [True, False]
+
+
+def test_seller_page_slug_and_numeric_evidence_must_both_agree(store):
+    job = store.start("cliente-a", "alice")
+    owner = {"key": "perfil:loja_alvo", "perfilUrl": "https://www.mercadolivre.com.br/pagina/loja_alvo?seller_id=123"}
+    inventory = "https://lista.mercadolivre.com.br/pagina/"
+    store.publish(job["id"], owner["key"], "cliente-a", "alice", owner, [
+        ad(1, owner="", seller_perfil_url=inventory + "loja_alvo/"),
+        ad(2, owner="123"),
+        ad(3, owner="123", seller_perfil_url=inventory + "outra_loja?seller_id=123"),
+        ad(4, owner="", seller_perfil_url=inventory + "loja_alvo?seller_id=456"),
+        ad(5, owner="456", seller_perfil_url=inventory + "loja_alvo?seller_id=123"),
+        ad(6, owner="123", catalogo=True, avant_seller_id="123",
+           avant_seller_perfil_url=inventory + "outra_loja?seller_id=123"),
+    ])
+    rows = store.ranking(job["id"], "cliente-a", "alice")["items"]
+    assert {row["id"] for row in rows if row["rankable"]} == {"MLB1", "MLB2"}
+    consolidated = store.consolidated_ranking("cliente-a", "alice")["items"]
+    assert {row["seller_key"] for row in consolidated} == {"id:123"}
+
+
+@pytest.mark.parametrize("profile_type", ["loja", "perfil"])
+def test_seller_page_numeric_query_corroborates_existing_profile_types(store, profile_type):
+    job = store.start("cliente-a", "alice")
+    owner = {**seller(), "perfilUrl": f"https://www.mercadolivre.com.br/{profile_type}/nome_original"}
+    page = "https://www.mercadolivre.com.br/pagina/nome_da_pagina"
+    store.publish(job["id"], owner["key"], "cliente-a", "alice", owner, [
+        ad(1, owner="", seller_perfil_url=page + "?seller_id=123"),
+        ad(2, owner="", seller_perfil_url=page + "?seller_id=456"),
+    ])
+    rows = store.ranking(job["id"], "cliente-a", "alice")["items"]
+    assert {row["id"] for row in rows if row["rankable"]} == {"MLB1"}
+
+
 def test_all_first_page_ads_survive_pagination_filters_and_seller_rankings(store):
     job = store.start("cliente-a", "alice")
     publish(store, job, [ad(number, monthly=number) for number in range(1, 154)])
@@ -940,6 +1000,11 @@ def test_http_contract_auth_statuses_and_strict_owner_requests(client):
     assert client.post("/api/pesquisa-mercado/jobs", json={"client_id": "cliente-b"}, headers=headers).status_code == 422
     assert client.patch(base + "/checkpoint", json={"status": "auth_required"}, headers=headers).status_code == 422
     assert client.patch(base + "/checkpoint", json={"status": "waiting_login"}, headers=headers).json()["job"]["status"] == "waiting_login"
+    for invalid in [{"collect_visible": 1}, {"collect_visible": False}, {"collect_visible": True, "status": "running"}]:
+        assert client.patch(base + "/checkpoint", json=invalid, headers=headers).status_code == 422
+    visible = client.patch(base + "/checkpoint", json={"collect_visible": True, "generation": 0}, headers=headers).json()["job"]
+    assert visible["checkpoint"]["collectVisible"] is True
+    assert visible["status"] == "waiting_login"
     result = client.put(base + "/vendedores/id:123", json={"seller": seller(), "anuncios": [ad()]}, headers=headers)
     assert result.status_code == 200
     assert set(client.get(base + "/ranking", headers=headers).json()) == {"items", "total", "revision"}

@@ -91,7 +91,7 @@ def create_pesquisa_mercado_router() -> APIRouter:
 
     @router.patch("/jobs/{job_id}/checkpoint")
     def checkpoint(job_id: str, req: PesquisaMercadoCheckpointRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):
-        return {"job": get_pesquisa_mercado_store().checkpoint(job_id, client_id, _username(request), checkpoint=req.checkpoint, status=req.status, counters=req.counters, message=req.message, generation=req.generation)}
+        return {"job": get_pesquisa_mercado_store().checkpoint(job_id, client_id, _username(request), checkpoint=req.checkpoint, status=req.status, counters=req.counters, message=req.message, generation=req.generation, collect_visible=req.collect_visible)}
 
     @router.put("/jobs/{job_id}/nomes")
     def update_names(job_id: str, req: PesquisaMercadoNamesRequest, request: Request, client_id: str = Depends(favoritos_endpoints.get_tenant_id)):

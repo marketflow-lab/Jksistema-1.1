@@ -397,8 +397,15 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
         }
 
         return {
-            prepare: async () => {
-                if (!detail) { lostContext = false; lostPage = false; } // Explicit resume can start a headless browser.
+            prepare: async (options = {}) => {
+                if (!detail) {
+                    lostContext = false;
+                    lostPage = false;
+                    if (typeof options.collectVisible === 'boolean') {
+                        collectVisible = options.collectVisible;
+                        await prepare();
+                    }
+                }
                 await getPage(revision, epoch);
             },
             navigate, executeJavaScript: evaluate, ensureAvantSession, deferRecommendationMedia, getURL, getResumeURL: () => lastUrl,

@@ -29,6 +29,7 @@ class PesquisaMercadoCheckpointRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     checkpoint: dict[str, Any] | None = None
+    collect_visible: bool | None = Field(default=None, strict=True)
     status: PesquisaMercadoStatus | None = None
     counters: dict[str, int] | None = None
     message: str | None = Field(default=None, max_length=600)

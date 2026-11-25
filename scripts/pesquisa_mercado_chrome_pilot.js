@@ -51,12 +51,23 @@ function readVisiblePanel() {
     if (roots.length !== 1) return null;
     const panel = roots[0];
     if (panel.dataset.itemId) ids.push(panel.dataset.itemId.replace(/^MLB-/, 'MLB'));
-    const sellers = [...document.querySelectorAll('.ui-pdp-seller a[href], [data-testid="seller-info"] a[href], #productInfo a[href]')]
-        .filter(node => visible(node) && !node.closest(outside))
-        .map(node => new URL(node.href))
-        .filter(url => url.protocol === 'https:' && /^(www|lista)\.mercadolivre\.com\.br$/.test(url.hostname))
-        .filter(url => /^\/(?:loja\/[^/]+|perfil\/[^/]+|_CustId_\d+)\/?$/i.test(url.pathname))
-        .map(url => url.origin + url.pathname);
+    const sellers = [], panelSellers = [], pageSellerIds = [];
+    const anchors = document.querySelectorAll('.ui-pdp-seller a[href], [data-testid="seller-info"] a[href], main .ui-seller-data a[href], main a.ui-pdp-seller-summary__link[href], #productInfo a[href]');
+    for (const anchor of anchors) {
+        if (!visible(anchor) || anchor.closest(outside)) continue;
+        const url = new URL(anchor.href);
+        if (url.protocol !== 'https:' || !/^(www|lista)\.mercadolivre\.com\.br$/.test(url.hostname)
+            || url.username || url.password || url.port || !/^\/(?:loja\/[^/]+|perfil\/[^/]+|pagina\/[\w-]+|_CustId_\d+)\/?$/i.test(url.pathname)) continue;
+        const profile = new URL(url.pathname, url.origin);
+        if (/^\/pagina\//i.test(url.pathname)) {
+            for (const id of url.searchParams.getAll('seller_id').filter(id => /^\d+$/.test(id))) {
+                pageSellerIds.push(id);
+                profile.searchParams.append('seller_id', id);
+            }
+        }
+        sellers.push(profile.href);
+        if (panel.contains(anchor)) panelSellers.push(profile.href);
+    }
     const fields = new Map();
     for (const leaf of panel.querySelectorAll('span, div, dt, b, strong')) {
         if (!visible(leaf) || leaf.childElementCount || leaf.closest('[role="tooltip"]')) continue;
@@ -78,9 +89,8 @@ function readVisiblePanel() {
     };
     const pill = [...panel.querySelectorAll('span')].filter(node => visible(node) && !node.childElementCount)
         .map(node => node.innerText.trim()).find(value => /^[\d.,]+\s+vendidos?$/i.test(value));
-    return { ids: [...new Set(ids)], sellers, sellerId: panel.dataset.sellerId || '',
-        offerSales: !!read('vendas do anuncio', 'vendas do item'), panelSellers: [...panel.querySelectorAll('a[href]')]
-            .filter(node => visible(node)).map(node => node.href).filter(href => sellers.includes(href)),
+    return { ids: [...new Set(ids)], sellers, pageSellerIds, sellerId: panel.dataset.sellerId || '',
+        offerSales: !!read('vendas do anuncio', 'vendas do item'), panelSellers,
         sales: read('vendas do anuncio', 'vendas do item', 'vendas estimadas', 'vendas do produto') || (pill || '').split(/\s/)[0],
         monthly: read('vendas mensais'), date: read('anuncio criado em', 'criado em') };
 }
@@ -102,11 +112,12 @@ function compare(row, item, dom) {
     if (!dom || dom.ids.length !== 1 || dom.ids[0] !== row.id) return 'offer_unconfirmed';
     if (dom.panelMissing) return ranked ? 'ranking_unverified' : 'pending';
     const expected = { id: row.sellerId, perfilUrl: row.sellerProfile };
-    const numeric = new Set([dom.sellerId, ...dom.sellers.map(p => (p.match(/_CustId_(\d+)/i) || [])[1])].filter(Boolean));
+    const numeric = new Set([dom.sellerId, ...(dom.pageSellerIds || []), ...dom.sellers.map(p => (p.match(/_CustId_(\d+)/i) || [])[1])].filter(Boolean));
     const expectedNumeric = row.sellerId || (row.sellerProfile.match(/_CustId_(\d+)/i) || [])[1];
-    const names = dom.sellers.filter(p => /\/(?:loja|perfil)\//i.test(p));
-    const otherStorefront = /\/(?:loja|perfil)\//i.test(row.sellerProfile) && names.some(p => !sameSeller(expected, { perfilUrl: p }));
-    if (otherStorefront || numeric.size > 1
+    const names = dom.sellers.filter(p => /\/(?:loja|perfil|pagina)\//i.test(p));
+    const pageSlugs = new Set(names.map(p => new URL(p).pathname.match(/^\/pagina\/([\w-]+)\/?$/i)?.[1]?.toLowerCase()).filter(Boolean));
+    const otherStorefront = /\/(?:loja|perfil|pagina)\//i.test(row.sellerProfile) && names.some(p => !sameSeller(expected, { perfilUrl: p }));
+    if (otherStorefront || pageSlugs.size > 1 || numeric.size > 1
         || expectedNumeric && numeric.size && !numeric.has(expectedNumeric)
         || !(dom.sellers.some(p => sameSeller(expected, { perfilUrl: p })) || expectedNumeric && numeric.has(expectedNumeric))) {
         return ranked ? 'seller_unconfirmed' : 'pending';

@@ -1971,7 +1971,27 @@ async function lateCategoryFiltersAndSharedFailure() {
     denied.runner.browser.getNavigationStatus = () => ({ statusCode: 403, url: index });
     await denied.runner.start(scope); await denied.runner.task;
     assert.equal(denied.saved().status, 'paused', 'the first 403 pauses without suggesting that a login was identified');
-    assert.deepEqual(denied.saved().checkpoint.marketplaceAccess, { status: 403, stage: 'category' });
+    assert.deepEqual(denied.saved().checkpoint.marketplaceAccess, { status: 403, stage: 'category', url: index });
+    const accessGuard = require('../electron_app/main/modules/pesquisa-mercado-runner').assertMarketplaceNavigation;
+    const listing = 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/amortecedores/*_NoIndex_True';
+    const store = base + '/pagina/loja-fixture?seller_id=123';
+    const product = base + '/produto-fixture/up/MLBU123456?wid=MLB12345&pdp_filters=item_id%3AMLB12345';
+    const storeOffer = base + '/p/MLB999999?wid=MLB123456&pdp_filters=official_store%3A123%7Cvirtual_stores%3AMLB12&virtual_store_id=MLB12';
+    for (const url of [listing, store, product, storeOffer]) {
+        assert.throws(() => accessGuard({ getNavigationStatus: () => ({ url, statusCode: 403, didNotCommit: true }),
+            getURL: () => 'about:blank' }, 'product'), error => error.publicUrl === url);
+    }
+    for (const url of [store + '&access_token=fixture', product + '#sensitive', base + '/account-verification/fixture',
+        'https://lista.mercadolivre.com.br/_CustId_123?seller_id=222']) {
+        assert.throws(() => accessGuard({ getNavigationStatus: () => ({ url, statusCode: 403 }), getURL: () => url }, 'seller'),
+            error => error.code === 'marketplace_http_403' && !error.publicUrl);
+    }
+    const locked = harness({});
+    locked.restoreCheckpoint(denied.saved());
+    locked.runner.browser.prepare = async () => { throw Object.assign(new Error('fixture'), { code: 'research_chrome_manual_open' }); };
+    await locked.runner.resume('run-1'); await locked.runner.task;
+    assert.deepEqual(locked.saved().checkpoint.marketplaceAccess, denied.saved().checkpoint.marketplaceAccess,
+        'resuming before the manual window closes preserves the blocked URL for the next attempt');
     assert.deepEqual(denied.saved().checkpoint.scope.category, scope);
     assert.equal(denied.saved().checkpoint.incompleteCategories.length, 0);
     assert.equal(denied.visited.filter(url => url === index).length, 1);
@@ -1986,6 +2006,7 @@ async function lateCategoryFiltersAndSharedFailure() {
     assert.equal(paused.status, 'paused');
     assert.equal(access.status, 429);
     assert.equal(access.stage, 'category');
+    assert.equal(access.url, undefined);
     assert(access.retryAt >= before + requestedDelay && access.retryAt <= Date.now() + requestedDelay);
     assert.equal(limited.visited.filter(url => url === index).length, 1, 'HTTP 429 stops further visits immediately');
 
@@ -2474,11 +2495,19 @@ async function explicitSellerConflictsStopWithoutMetrics() {
         { seller_id: '222', seller_perfil_url: `${base}/perfil/bad%ZZ`, seller_confirmed: true },
         { avant_seller_id: '222', seller_confirmed: true },
         { seller_id: '', seller_perfil_url: `${base}/perfil/another-seller`, seller_confirmed: false },
+        { seller_id: '111', seller_perfil_url: `${base}/pagina/foreign?seller_id=111`, seller_confirmed: false },
         { seller_identity_conflict: true, seller_confirmed: false }
     ];
     for (const identity of variants) {
         const id = 'MLB1000001302', delays = [];
-        const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true,
+        const pages = avantFlowPages();
+        if (identity.seller_perfil_url?.includes('/pagina/')) {
+            const owner = { ...seller('111'), perfilUrl: `${base}/pagina/expected` };
+            pages[`${base}/product-a`] = owner;
+            pages[owner.perfilUrl] = owner;
+            pages[owner.allAdsUrl] = owner;
+        }
+        const h = harness(pages, async () => ({ anuncios: [salesListing(id)], incomplete: true,
             reason: 'avant_data_incomplete' }), { detailRetryDelaysMs: undefined,
             wait: async ms => { if (ms >= 5000) delays.push(ms); } });
         let attempts = 0;
@@ -2599,6 +2628,59 @@ async function newGenerationReopensInterruptedExhaustedCollection() {
     assert.equal(publication.anuncios.find(item => item.id === blockedId).rankable, false);
 }
 
+async function oldSellerBlocksRecheckOnlyPendingDirectOffers() {
+    const ids = Array.from({ length: 7 }, (_, i) => 'MLB' + (1000001420 + i));
+    const sellerKey = 'id:111', owner = { ...seller('111'), id: '111', seller_key: sellerKey };
+    const oldAds = [
+        salesListing(ids[0]), salesListing(ids[1]), unprovedCatalogListing(ids[2]),
+        salesListing(ids[3], { avant_seller_id: '222' }), salesListing(ids[4], { url: salesListing(ids[0]).url }),
+        salesListing(ids[5], { vendas: 99, media_mensal: 3, rankable: true }), salesListing(ids[6])
+    ];
+    const h = harness(avantFlowPages());
+    historicResearch(h, [owner], new Map([[sellerKey, oldAds]]));
+    const saved = h.saved();
+    saved.checkpoint.salesRecoverySellerKeys = [sellerKey];
+    saved.checkpoint.detailRetryState = { version: 1, generation: 0,
+        blocked: Object.fromEntries(ids.slice(0, 6).map(id => [JSON.stringify([sellerKey, 'id:' + id]), 'seller_not_confirmed'])) };
+    h.restoreCheckpoint(saved);
+    let beforePublication;
+    const api = h.runner.api;
+    h.runner.api = (method, path, body) => {
+        if (method === 'PUT' && path.includes('/vendedores/')) beforePublication = h.saved();
+        return api(method, path, body);
+    };
+    const calls = [];
+    withDetailCollector(h, async ({ expectedItem: { id } }) => {
+        calls.push(id);
+        return { anuncios: [salesListing(id, { vendas: 31, media_mensal: 2, rankable: id === ids[0],
+            seller_confirmed: id === ids[0], status: id === ids[0] ? 'analisado' : 'vendedor_nao_confirmado' })] };
+    });
+    await h.runner.resume(saved.id); await h.runner.task;
+    assert.deepEqual(calls, ids.slice(0, 2), 'revisit only eligible old decisions for an already visited seller');
+    const ads = h.vendors.get(sellerKey).anuncios;
+    assert.equal(ads.find(ad => ad.id === ids[0]).rankable, true);
+    assert.equal(ads.find(ad => ad.id === ids[1]).rankable, false);
+    assert.equal(ads.find(ad => ad.id === ids[5]).vendas, 99);
+    assert.equal(ads.length, oldAds.length);
+    const interrupted = harness(avantFlowPages());
+    historicResearch(interrupted, [owner], new Map([[sellerKey, oldAds]]));
+    interrupted.restoreCheckpoint({ ...beforePublication, status: 'paused' });
+    const repeated = [];
+    withDetailCollector(interrupted, async ({ expectedItem }) => { repeated.push(expectedItem.id); return { anuncios: [] }; });
+    await interrupted.runner.resume(saved.id); await interrupted.runner.task;
+    assert.deepEqual(repeated, [], 'an interrupted publication resumes without consulting any offer twice');
+    assert.equal(interrupted.vendors.get(sellerKey).anuncios.find(ad => ad.id === ids[0]).rankable, true);
+    const next = harness(avantFlowPages());
+    historicResearch(next, [owner], new Map([[sellerKey, ads]]));
+    const checkpoint = h.saved();
+    checkpoint.checkpoint.salesRecoverySellerKeys = [sellerKey];
+    next.restoreCheckpoint({ ...checkpoint, status: 'paused' });
+    const afterRestart = [];
+    withDetailCollector(next, async ({ expectedItem }) => { afterRestart.push(expectedItem.id); return { anuncios: [] }; });
+    await next.runner.resume(saved.id); await next.runner.task;
+    assert.deepEqual(afterRestart, [], 'the revised seller check survives process restart even after inconclusive evidence');
+}
+
 async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
     for (const mode of ['elapsed-timeout', 'timeout-result', 'partial-result', 'page-changed', 'foreign-item-result']) {
         const id = 'MLB1000001101', attempts = [], delays = [];
@@ -2661,6 +2743,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
     await missingAvantEvidenceRemainsRetryable();
     await explicitSellerConflictsStopWithoutMetrics();
     await terminalDetailDecisionsSurviveRestartPublicationAndNewGeneration();
+    await oldSellerBlocksRecheckOnlyPendingDirectOffers();
     await newGenerationReopensInterruptedExhaustedCollection();
     await partialAndTimedOutCatalogEvidenceCanStillRecover();
     await parallelDetailsOnlyRetryMissing();

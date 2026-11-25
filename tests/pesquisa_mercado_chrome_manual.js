@@ -14,7 +14,7 @@ const store = 'https://chromewebstore.google.com/detail/avantpro-ml/' + extensio
 const manualOpen = error => error?.code === 'research_chrome_manual_open';
 
 function harness({ directory = profileDir, failFirstLaunch = false } = {}) {
-    const events = [], children = [], launches = [];
+    const events = [], children = [], launches = [], contexts = [];
     const session = createChromeResearchSession({
         profileDir: directory, allowedUrl,
         async launchManualChrome({ profileDir: target, url }) {
@@ -38,14 +38,29 @@ function harness({ directory = profileDir, failFirstLaunch = false } = {}) {
                     'an active manual Chrome exclusively owns its profile');
                 events.push(options.headless ? 'headless-open' : 'diagnostic-open');
                 const context = new EventEmitter();
+                contexts.push(context);
                 context.serviceWorkers = () => [{ url: () => 'chrome-extension://' + extensionId + '/background.js' }];
-                context.pages = () => [];
-                context.close = async () => { events.push('managed-close'); context.emit('close'); };
+                const pages = [];
+                context.pages = () => [...pages];
+                context.newPage = async () => {
+                    const page = new EventEmitter();
+                    let closed = false;
+                    page.url = () => 'about:blank';
+                    page.isClosed = () => closed;
+                    page.close = async () => { closed = true; page.emit('close'); };
+                    pages.push(page);
+                    return page;
+                };
+                context.close = async () => {
+                    events.push('managed-close');
+                    await Promise.all(pages.map(page => page.close()));
+                    context.emit('close');
+                };
                 return context;
             }
         })
     });
-    return { session, events, children, launches };
+    return { session, events, children, launches, contexts };
 }
 
 async function run() {
@@ -113,6 +128,20 @@ async function run() {
         await session.prepare();
         await session.close();
         assert.deepEqual(events, ['headless-open', 'managed-close', 'manual-open', 'headless-open', 'managed-close']);
+    }
+    {
+        const { session, events, children, contexts } = harness();
+        const page = session.createPage();
+        await session.showManual(home);
+        await assert.rejects(() => page.prepare({ collectVisible: true }), manualOpen);
+        children[0].finish();
+        await page.prepare({ collectVisible: true });
+        await contexts[0].close(); // User closes the managed window.
+        assert.deepEqual(events, ['manual-open', 'diagnostic-open', 'managed-close']);
+        await page.prepare({ collectVisible: true });
+        await page.prepare({ collectVisible: false }); // Another job defaults to headless.
+        await session.close();
+        assert.deepEqual(events.slice(3), ['diagnostic-open', 'managed-close', 'headless-open', 'managed-close']);
     }
     {
         const { session, events } = harness({ failFirstLaunch: true });

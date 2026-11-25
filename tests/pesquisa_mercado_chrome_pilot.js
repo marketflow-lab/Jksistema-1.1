@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { accepted, compare, runPilot, parseOptions } = require('../scripts/pesquisa_mercado_chrome_pilot');
+const { accepted, compare, readVisiblePanel, runPilot, parseOptions } = require('../scripts/pesquisa_mercado_chrome_pilot');
 
 function sampleRow(n, sellerId) {
     const id = 'MLB' + (1000000000 + n);
@@ -72,6 +72,27 @@ async function run() {
             const row = byId.get(new URL(route.request().url()).searchParams.get('wid'));
             return route.fulfill({ contentType: 'text/html; charset=utf-8', body: row ? fixture(row) : '<main>Nenhum produto</main>' });
         });
+        const catalog = { ...row, catalogo: true, sellerProfile: 'https://www.mercadolivre.com.br/pagina/loja_alvo' };
+        const rankedCatalog = { ...ranked, seller_perfil_url: catalog.sellerProfile, data_criacao: '12/03/2025' };
+        const panelLink = '<a href="' + catalog.sellerProfile + '?seller_id=' + row.sellerId + '&amp;utm_source=fixture">Loja</a>';
+        const panelFixture = fixture(catalog).replace(' data-seller-id="' + row.sellerId + '"', '')
+            .replace('Vendas estimadas', 'Vendas do anúncio');
+        const detailPage = await context.newPage();
+        await detailPage.goto(row.url);
+        const readFixture = async link => {
+            await detailPage.setContent(panelFixture.replace('</div></main>', link + '</div></main>'));
+            return detailPage.evaluate(readVisiblePanel);
+        };
+        const linked = await readFixture(panelLink);
+        assert.deepEqual(linked.panelSellers, [catalog.sellerProfile + '?seller_id=' + row.sellerId]);
+        assert.equal(compare(catalog, rankedCatalog, linked), 'matched');
+        assert.equal(compare({ ...row, catalogo: true }, rankedCatalog, linked), 'matched', 'panel link retains numeric evidence');
+        const outsideOnly = await readFixture('<div class="ui-recommendations">' + panelLink + '</div>');
+        assert.deepEqual(outsideOnly.panelSellers, []);
+        assert.equal(compare(catalog, rankedCatalog, outsideOnly), 'catalog_ranking_unverified');
+        const conflicting = await readFixture(panelLink.replace('loja_alvo', 'outra_loja'));
+        assert.equal(compare(catalog, rankedCatalog, conflicting), 'seller_unconfirmed');
+        await detailPage.close();
         const makeSession = () => {
             const pages = [];
             return {

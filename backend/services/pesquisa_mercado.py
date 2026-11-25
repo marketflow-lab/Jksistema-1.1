@@ -136,7 +136,7 @@ def normalize_scope_category(value: Any) -> dict:
     blocked_seller = blocked_seller or any(re.search(r"(?:_CustId_|_SellerId_|(?:^|[|,;])(?:seller[_-]?id|cust[_-]?id):)", value, re.I) for values in query.values() for value in values)
     blocked_product = any(re.sub(r"[_-]", "", field).lower() in {"wid", "itemid", "productid", "catalogproductid"} for field in query)
     blocked_product = blocked_product or any(re.search(r"(?:^|[|,;])(?:item_id|catalog_product_id):", value, re.I) for values in query.values() for value in values)
-    blocked_path = re.search(r"(?:^|/)(?:p|up|perfil|loja|stores?|vendedor)(?:/|$)|/MLB-\d+|_CustId_|_SellerId_", path, re.I)
+    blocked_path = re.search(r"(?:^|/)(?:p|up|perfil|loja|pagina|stores?|vendedor)(?:/|$)|/MLB-\d+|_CustId_|_SellerId_", path, re.I)
     if blocked_path or blocked_seller or blocked_product:
         raise HTTPException(422, "Selecione uma categoria do Mercado Livre.")
     listing = host in CATEGORY_LISTING_HOSTS and bool(path.strip("/"))
@@ -163,25 +163,35 @@ def _profile_numeric_ids(value: Any) -> set[str]:
     return ids
 
 
-def _canonical_profile(value: Any) -> str:
+def _profile_keys(value: Any) -> tuple[str, str]:
     url = _ml_url(value)
-    if not url:
-        return ""
-    if len(_profile_numeric_ids(url)) > 1:
-        return ""
+    if not url or len(_profile_numeric_ids(url)) > 1:
+        return "", ""
     parts = urlsplit(url)
     path = unquote(parts.path).rstrip("/").lower()
+    page = (
+        "page:" + path
+        if parts.hostname in {"www.mercadolivre.com.br", "lista.mercadolivre.com.br"}
+        and re.fullmatch(r"/pagina/[\w-]+", path, re.ASCII)
+        else ""
+    )
+    # Consolidated seller keys retain their numeric form. Matching also needs
+    # the named page when both observations carry the same number.
     # _CustId_ and seller_id prove numeric identity across profile/listing URLs.
     match = re.search(r"_custid_(\d+)", path, re.I)
     query = parse_qs(parts.query)
     customer = (query.get("seller_id") or query.get("cust_id") or [""])[0]
     if match or str(customer).isdigit():
-        return "id:" + (match.group(1) if match else str(customer))
+        return "id:" + (match.group(1) if match else str(customer)), page
     if path.startswith("/perfil/") and path != "/perfil":
-        return "profile:" + path
+        return "profile:" + path, ""
     if path.startswith("/loja/") and path != "/loja":
-        return "store:" + path
-    return ""
+        return "store:" + path, ""
+    return page, page
+
+
+def _canonical_profile(value: Any) -> str:
+    return _profile_keys(value)[0]
 
 
 def _seller_identity(seller: dict) -> tuple[str, str]:
@@ -200,21 +210,24 @@ def _consolidated_seller_identity(seller: dict, job_id: str, seller_key: str) ->
 
 
 def _matches_identity(seller: dict, seller_id: Any, profile: Any) -> bool:
-    expected_id, expected_profile = _seller_identity(seller)
-    if len(_profile_numeric_ids(seller.get("perfilUrl"))) > 1 or len(_profile_numeric_ids(profile)) > 1:
-        return False
+    expected_url = seller.get("perfilUrl")
+    expected_id = _text(seller.get("id"), 80)
     observed_id = _text(seller_id, 80)
-    observed_id = observed_id if observed_id.isdigit() else ""
-    observed_profile = _canonical_profile(profile)
-    expected_numeric = expected_profile[3:] if expected_profile.startswith("id:") else ""
-    observed_numeric = observed_profile[3:] if observed_profile.startswith("id:") else ""
     # A matching ID must not hide a contradictory profile (or vice versa).
-    expected_ids = {value for value in (expected_id, expected_numeric) if value}
-    observed_ids = {value for value in (observed_id, observed_numeric) if value}
+    expected_ids = _profile_numeric_ids(expected_url)
+    observed_ids = _profile_numeric_ids(profile)
+    if expected_id.isdigit():
+        expected_ids.add(expected_id)
+    if observed_id.isdigit():
+        observed_ids.add(observed_id)
     if len(expected_ids) > 1 or len(observed_ids) > 1:
         return False
     if expected_ids and observed_ids and expected_ids != observed_ids:
         return False
+    expected_profile, expected_page = _profile_keys(expected_url)
+    observed_profile, observed_page = _profile_keys(profile)
+    if expected_page and observed_page:
+        return expected_page == observed_page
     if expected_profile and observed_profile and not expected_profile.startswith("id:") and not observed_profile.startswith("id:") and expected_profile != observed_profile:
         return False
     return bool((expected_ids and observed_ids == expected_ids) or (expected_profile and observed_profile == expected_profile))
@@ -747,8 +760,10 @@ class PesquisaMercadoStore:
             self._bump_owner_revision(conn, tenant, user)
             return {"deleted": True, "job_id": job_id, "revision": self._owner_revision(conn, tenant, user)}
 
-    def checkpoint(self, job_id: str, client_id: str, username: str, *, checkpoint=None, status=None, counters=None, message=None, generation=None) -> dict:
+    def checkpoint(self, job_id: str, client_id: str, username: str, *, checkpoint=None, status=None, counters=None, message=None, generation=None, collect_visible=None) -> dict:
         tenant, user = self._owner(client_id, username)
+        if collect_visible is not None and (collect_visible is not True or any(value is not None for value in (checkpoint, status, counters, message))):
+            raise HTTPException(422, "Preferencia de navegador invalida.")
         if status is not None and status not in STATUSES:
             raise HTTPException(422, "Estado de pesquisa invalido.")
         if checkpoint is not None and not isinstance(checkpoint, dict):
@@ -766,6 +781,15 @@ class PesquisaMercadoStore:
         with self._connection(tenant, write=True) as conn:
             row = self._job(conn, job_id, tenant, user)
             self._check_generation(row, generation)
+            if collect_visible is True:
+                saved = json.loads(row["checkpoint"])
+                if row["status"] not in {"cancelled", "completed"} and saved.get("collectVisible") is not True:
+                    saved["collectVisible"] = True
+                    conn.execute("UPDATE pm_jobs SET checkpoint=?,revision=revision+1,updated_at=? WHERE id=?",
+                                 (_json(saved, MAX_CHECKPOINT_BYTES), _now(), job_id))
+                    self._bump_owner_revision(conn, tenant, user)
+                    row = self._job(conn, job_id, tenant, user)
+                return self._public(row)
             # Cancellation is terminal even if an in-flight collector writes late.
             if row["status"] == "cancelled":
                 return self._public(row)
@@ -779,6 +803,10 @@ class PesquisaMercadoStore:
                 raise HTTPException(409, "Pesquisa encerrada. Inicie uma nova execucao.")
             if checkpoint is not None:
                 previous_checkpoint = json.loads(row["checkpoint"])
+                if previous_checkpoint.get("collectVisible") is True:
+                    checkpoint["collectVisible"] = True
+                else:
+                    checkpoint.pop("collectVisible", None)
                 if previous_checkpoint.get("legacyAvantMetricsOnly"):
                     checkpoint["legacyAvantMetricsOnly"] = True
                 else:

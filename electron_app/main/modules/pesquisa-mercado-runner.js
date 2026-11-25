@@ -5,7 +5,7 @@ const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
-const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed']);
+const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed', 'legacy_seller_not_confirmed']);
 const AVANT_PANEL_LOADING_MESSAGE = 'O painel do Avant Pro ainda estava carregando quando a consulta terminou.';
 const AVANT_METRIC_FIELDS = [
     'vendas', 'vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas',
@@ -71,6 +71,34 @@ function isMarketplaceAccessPause(error) {
     return error?.code === 'marketplace_http_403' || error?.code === 'marketplace_http_429';
 }
 
+function publicMarketplacePage(value) {
+    if (typeof value !== 'string' || value.length > 4000 || /[\\\u0000-\u0020]/.test(value) || !allowedUrl(value)) return '';
+    const url = new URL(value);
+    if (url.hash || /%(?:2f|5c|00|25)/i.test(url.pathname)
+        || !/^(?:(?:www|lista|produto|imoveis|servicos)\.)?mercadolivre\.com\.br$/.test(url.hostname)) return '';
+    let path;
+    try { path = decodeURIComponent(url.pathname); } catch (_error) { return ''; }
+    const listingPath = path.replace(/\/\*(?=_NoIndex_True(?:_|\/|$)|\/?$)/g, '/');
+    if (!/^\/[\p{L}\p{N}_./-]*$/u.test(listingPath)
+        || /\/(?:login|captcha|account-verification|challenge|oauth|auth|registration|logout)(?:\/|$)/i.test(path)) return '';
+    const publicPath = /^(?:lista|imoveis|servicos)\./.test(url.hostname)
+        || /^(?:\/$|\/(?:categorias|c|loja|perfil|pagina)(?:\/|$))/.test(path)
+        || /\/p\/MLB\d+(?:\/|$)|\/up\/MLBU?\d+(?:\/|$)|\/MLB-\d+(?:-|\/|$)|\/_CustId_\d+/i.test(path);
+    if (!publicPath) return '';
+    const sellerIdInPath = path.match(/_CustId_(\d+)/i)?.[1];
+    for (const [key, val] of url.searchParams) {
+        if (['wid', 'item_id', 'virtual_store_id'].includes(key) && /^MLB\d+$/i.test(val)) continue;
+        if (key === 'pdp_filters' && /^(?:item_id:MLB\d+|seller_id:\d+)(?:\|(?:item_id:MLB\d+|seller_id:\d+))*$/i.test(val)) continue;
+        if (key === 'pdp_filters' && /^official_store:\d+(?:\|virtual_stores:MLB\d+)?$/i.test(val)) continue;
+        if (key === 'category_id' && /^MLB\d+$/i.test(val)) continue;
+        if (key === 'seller_id' && /^\d+$/.test(val) && (!sellerIdInPath || sellerIdInPath === val)
+            && url.searchParams.getAll(key).length === 1) continue;
+        if (key === 'original_category_landing' && val === 'true') continue;
+        return '';
+    }
+    return url.href;
+}
+
 function assertMarketplaceNavigation(browser, stage, now = Date.now()) {
     const response = browser.getNavigationStatus?.();
     if (response?.statusCode !== 403 && response?.statusCode !== 429) return;
@@ -82,6 +110,7 @@ function assertMarketplaceNavigation(browser, stage, now = Date.now()) {
         ? `Mercado Livre retornou HTTP 403 ${location}. Abra o navegador da pesquisa, confira o acesso e retome.`
         : `Mercado Livre retornou HTTP 429 ${location}. Pesquisa pausada para respeitar o limite de consultas.`;
     const error = Object.assign(new Error(message), { code: `marketplace_http_${status}`, status, stage });
+    if (status === 403) error.publicUrl = publicMarketplacePage(response.url);
     if (status === 429) {
         const delay = Number.isSafeInteger(response.retryAfterMs) && response.retryAfterMs >= 0
             ? response.retryAfterMs : MARKETPLACE_WAIT_DEFAULT_MS;
@@ -107,7 +136,7 @@ function normalizeCategory(value) {
     if (!listingHost && !['www.mercadolivre.com.br', 'mercadolivre.com.br'].includes(parsed.hostname)) return null;
     let path;
     try { path = decodeURIComponent(parsed.pathname); } catch (_error) { return null; }
-    if (/\/(?:p|up|perfil|loja|stores?|vendedor)(?:\/|$)|\/MLB-\d+|_CustId_|_SellerId_/i.test(path)) return null;
+    if (/\/(?:p|up|perfil|loja|pagina|stores?|vendedor)(?:\/|$)|\/MLB-\d+|_CustId_|_SellerId_/i.test(path)) return null;
     if ([...parsed.searchParams.keys()].some(key => /^(?:seller|sellerid|custid|customerid|user|userid|wid|itemid|productid|catalogproductid)$/i.test(key.replace(/[_-]/g, '')) || /token|password|senha|secret|authorization|api[_-]?key|cookie/i.test(key))) return null;
     if ([...parsed.searchParams.values()].some(value => /_CustId_|_SellerId_|(?:^|[|,;])(?:item_id|catalog_product_id|seller[_-]?id|cust[_-]?id):/i.test(value))) return null;
     if (listingHost ? !path.replace(/\//g, '') : !/^\/(?:c|categorias)\/[^/]+/i.test(parsed.pathname)) return null;
@@ -236,28 +265,33 @@ function sellerIdentity(value, { ignoreInvalidProfile = false } = {}) {
         if (/^\d+$/.test(declared)) ids.add(declared);
     }
     const url = canonicalUrl(value.perfilUrl || value.seller_perfil_url || value.sellerUrl);
-    let profile = '';
+    let profile = '', pageSlug = '';
     if (url) {
         const parsed = new URL(url);
         for (const match of parsed.pathname.matchAll(/_(?:CustId|SellerId)_(\d+)/gi)) profileIds.add(match[1]);
         for (const [key, id] of parsed.searchParams) if (/^(?:seller_id|cust_?id)$/i.test(key) && /^\d+$/.test(id)) profileIds.add(id);
         for (const id of profileIds) ids.add(id);
         try {
+            if (/^(?:www|lista)\.mercadolivre\.com\.br$/.test(parsed.hostname)) {
+                pageSlug = parsed.pathname.match(/^\/pagina\/([\w-]+)\/?$/i)?.[1].toLowerCase() || '';
+            }
             if (profileIds.size === 1) profile = `id:${[...profileIds][0]}`;
             else if (/^\/loja\//i.test(parsed.pathname)) profile = `store:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
             else if (/^\/perfil\//i.test(parsed.pathname)) profile = `profile:${decodeURIComponent(parsed.pathname).replace(/\/+$/, '').toLowerCase()}`;
+            else if (pageSlug) profile = 'page:/pagina/' + pageSlug;
         } catch (_error) {
             return ignoreInvalidProfile ? { id: ids.size === 1 ? [...ids][0] : '', profile: '', conflict: ids.size > 1 }
                 : { id: '', profile: '', conflict: true };
         }
     }
-    return { id: ids.size === 1 ? [...ids][0] : '', profile, conflict: ids.size > 1 };
+    return { id: ids.size === 1 ? [...ids][0] : '', profile, pageSlug, conflict: ids.size > 1 };
 }
 
 function sameSeller(expected, observed) {
     if (expected.seller_identity_conflict || observed.seller_identity_conflict) return false;
     const left = sellerIdentity(expected), right = sellerIdentity(observed);
     if (left.conflict || right.conflict) return false;
+    if (left.pageSlug && right.pageSlug) return left.pageSlug === right.pageSlug && (!left.id || !right.id || left.id === right.id);
     if (left.profile && right.profile && !left.profile.startsWith('id:') && !right.profile.startsWith('id:') && left.profile !== right.profile) return false;
     if (left.id && right.id) return left.id === right.id;
     return !!(left.profile && right.profile && left.profile === right.profile);
@@ -270,6 +304,7 @@ function conflictingSeller(expected, observed) {
     const left = sellerIdentity(expected, { ignoreInvalidProfile: true });
     const right = sellerIdentity(observed, { ignoreInvalidProfile: true });
     if (left.conflict || right.conflict) return true;
+    if (left.pageSlug && right.pageSlug && left.pageSlug !== right.pageSlug) return true;
     if (left.id && right.id) return left.id !== right.id;
     return !!(left.profile && right.profile && left.profile.split(':', 1)[0] === right.profile.split(':', 1)[0]
         && left.profile !== right.profile);
@@ -532,7 +567,6 @@ class PesquisaMercadoRunner {
         this.job = clone(job);
         this.job.counters = { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0, ...(job.counters || {}) };
         this.checkpoint = initialCheckpoint(job.checkpoint);
-        delete this.checkpoint.marketplaceAccess;
         const metricsVersion = this.collector.AVANT_METRICS_VERSION;
         const savedCollections = [this.checkpoint.sellerCollection, this.checkpoint.preservedSellerCollection?.collection];
         this.refreshLegacyAvant = !!(job.legacyAvantMetricsPending || this.checkpoint.legacyAvantMetricsPending
@@ -1421,9 +1455,14 @@ class PesquisaMercadoRunner {
     detailRetryState() {
         const generation = Number(this.job.generation || 0);
         const saved = this.checkpoint.detailRetryState;
-        if (!saved || saved.version !== 1 || saved.generation !== generation
+        if (!saved || ![1, 2].includes(saved.version) || saved.generation !== generation
             || !saved.blocked || typeof saved.blocked !== 'object' || Array.isArray(saved.blocked)) {
-            this.checkpoint.detailRetryState = { version: 1, generation, blocked: {} };
+            this.checkpoint.detailRetryState = { version: 2, generation, blocked: {} };
+        } else if (saved.version === 1) {
+            for (const key of Object.keys(saved.blocked)) {
+                if (saved.blocked[key] === 'seller_not_confirmed') saved.blocked[key] = 'legacy_seller_not_confirmed';
+            }
+            saved.version = 2;
         }
         return this.checkpoint.detailRetryState;
     }
@@ -1437,7 +1476,22 @@ class PesquisaMercadoRunner {
     }
 
     detailRetryBlocked(seller, item) {
-        return DETAIL_RETRY_BLOCKS.has(this.detailRetryState().blocked[this.detailRetryKey(seller, item)]);
+        const reason = this.detailRetryState().blocked[this.detailRetryKey(seller, item)];
+        return reason === 'legacy_seller_not_confirmed' ? !this.canRecheckLegacySeller(seller, item) : DETAIL_RETRY_BLOCKS.has(reason);
+    }
+
+    canRecheckLegacySeller(seller, item) {
+        if (this.detailRetryState().blocked[this.detailRetryKey(seller, item)] !== 'legacy_seller_not_confirmed'
+            || item.rankable || item.catalogo || !allowedUrl(item.url) || conflictingSeller(seller, item)
+            || conflictingSeller(seller, { id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url })) return false;
+        // A catalog wid identifies an offer but cannot attribute product estimates to its seller.
+        const url = new URL(item.url);
+        const direct = /^\/MLB-(\d{6,})(?:-|\/|$)/i.exec(url.pathname);
+        if (url.hostname !== 'produto.mercadolivre.com.br' || !direct || `MLB${direct[1]}` !== item.id) return false;
+        const parameters = new URLSearchParams(url.search);
+        for (const [key, value] of new URLSearchParams(url.hash.slice(1))) parameters.append(key, value);
+        return ![...parameters].some(([key, value]) => /^(wid|item_id)$/i.test(key) && value.toUpperCase() !== item.id
+            || /^pdp_filters$/i.test(key));
     }
 
     needsLegacyAvantRefresh(item) {
@@ -1668,7 +1722,7 @@ class PesquisaMercadoRunner {
         }
     }
 
-    async collectDetailRound(seller, collection) {
+    async collectDetailRound(seller, collection, legacySellerOnly = false) {
         const items = collection.result.anuncios;
         const enrichComplete = collection.detailRound === 0;
         // Keep out-of-order completions until the contiguous cursor catches up.
@@ -1685,8 +1739,9 @@ class PesquisaMercadoRunner {
         };
         advance();
         const pending = [];
-        for (let index = collection.index; index < items.length; index += 1) {
-            if (!completed.has(index) && this.canConsultDetail(seller, items[index], enrichComplete)) pending.push(index);
+        for (let index = 0; index < items.length; index += 1) {
+            if (this.canRecheckLegacySeller(seller, items[index]) || (!legacySellerOnly && index >= collection.index
+                && !completed.has(index) && this.canConsultDetail(seller, items[index], enrichComplete))) pending.push(index);
         }
         if (!pending.length) {
             this.setProgress('collecting', `Sem novas consultas automaticas de ${seller.nome || seller.id || 'vendedor'}; ${this.detailProgressCounts(seller, items)}.`);
@@ -1708,12 +1763,14 @@ class PesquisaMercadoRunner {
                         this.check(controller.signal);
                         const index = pending[cursor++];
                         progress();
+                        const legacy = this.canRecheckLegacySeller(seller, items[index]);
                         const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal);
                         this.check(controller.signal);
-                        if (DETAIL_RETRY_BLOCKS.has(blockedReason)) {
-                            this.detailRetryState().blocked[this.detailRetryKey(seller, items[index])] = blockedReason;
-                        }
-                        completed.add(index);
+                        const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
+                        if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;
+                        else if (legacy && !this.collector.isComplete(items[index])) blocks[key] = 'seller_not_confirmed';
+                        else if (legacy) delete blocks[key];
+                        if (index >= collection.index) completed.add(index);
                         finished += 1;
                         progress();
                         advance();
@@ -1736,7 +1793,7 @@ class PesquisaMercadoRunner {
         }
     }
 
-    async complementSellerListings(seller, result, allAdsUrl, discoverySeed = null) {
+    async complementSellerListings(seller, result, allAdsUrl, discoverySeed = null, legacySellerOnly = false) {
         if (typeof this.collector.collectDetail !== 'function' || typeof this.collector.isComplete !== 'function') return result;
         const saved = this.checkpoint.sellerCollection;
         const collection = saved && saved.sellerKey === seller.key && saved.url === allAdsUrl
@@ -1744,6 +1801,10 @@ class PesquisaMercadoRunner {
                 ...(discoverySeed ? { categoryKey: this.checkpoint.currentCategory.key,
                     seedKey: String(discoverySeed.id || canonicalUrl(discoverySeed.url)), seed: clone(discoverySeed) } : {}) };
         if (!Array.isArray(collection.result.anuncios)) return result;
+        if (legacySellerOnly && !Array.isArray(collection.legacySellerProofKeys)) {
+            collection.legacySellerProofKeys = collection.result.anuncios.filter(item => this.canRecheckLegacySeller(seller, item))
+                .map(item => this.detailRetryKey(seller, item));
+        }
         const generation = Number(this.job.generation || 0);
         const metricsVersion = this.collector.AVANT_METRICS_VERSION;
         const refreshLegacyCursor = !!(metricsVersion && collection.detailMetricsVersion !== metricsVersion
@@ -1779,8 +1840,8 @@ class PesquisaMercadoRunner {
                 delete collection.retryDelayMs;
                 await this.save();
             }
-            navigated = await this.collectDetailRound(seller, collection) || navigated;
-            if (collection.detailRound >= this.detailRetryDelaysMs.length
+            navigated = await this.collectDetailRound(seller, collection, legacySellerOnly) || navigated;
+            if (legacySellerOnly || collection.detailRound >= this.detailRetryDelaysMs.length
                 || !items.some(item => this.canConsultDetail(seller, item, false))) break;
             // An empty successful response also needs a fresh consultation. Save
             // the next round before waiting so pause/login keeps its exact cursor.
@@ -1796,10 +1857,12 @@ class PesquisaMercadoRunner {
         const previousReason = collection.result.reason || 'complete';
         const reason = !missing && ['complete', 'avant_data_incomplete'].includes(previousReason)
             ? 'complete' : missing && previousReason === 'complete' ? 'avant_data_incomplete' : previousReason;
-        const legacy = new Map(items.filter(item => this.needsLegacyAvantRefresh(item))
+        const rechecked = legacySellerOnly ? new Set(collection.legacySellerProofKeys) : null;
+        const preserved = new Map(items.filter(item => this.needsLegacyAvantRefresh(item)
+            || rechecked && !rechecked.has(this.detailRetryKey(seller, item)))
             .map(item => [this.detailRetryKey(seller, item), item]));
         const anuncios = typeof this.collector.finalizeListings === 'function'
-            ? this.collector.finalizeListings(items).map(item => legacy.get(this.detailRetryKey(seller, item)) || item)
+            ? this.collector.finalizeListings(items).map(item => preserved.get(this.detailRetryKey(seller, item)) || item)
             : items;
         return { ...collection.result, anuncios, reason, incomplete: reason !== 'complete' || missing > 0,
             total: items.length, com_dados_avant: items.length - missing, incompletos: missing };
@@ -1830,10 +1893,24 @@ class PesquisaMercadoRunner {
         }
         // These keys mean visited in this interrupted round, never resolved.
         const done = new Set(this.checkpoint.salesRecoverySellerKeys);
-        for (const previous of response.items || []) {
+        const legacySellers = new Set();
+        for (const [key, reason] of Object.entries(this.detailRetryState().blocked)) {
+            if (reason === 'legacy_seller_not_confirmed') {
+                try { legacySellers.add(JSON.parse(key)[0]); } catch (_error) { /* Malformed historical key. */ }
+            }
+        }
+        const sellers = [...(response.items || [])];
+        if (saved) {
+            const activeIndex = sellers.findIndex(seller => (seller.seller_key || seller.key) === saved.sellerKey);
+            if (activeIndex > 0) sellers.unshift(...sellers.splice(activeIndex, 1));
+        }
+        for (const previous of sellers) {
             this.check();
             const key = previous.seller_key || previous.key;
-            if (!key || done.has(key)) continue;
+            const legacySellerOnly = done.has(key);
+            // Publication can be interrupted after the final consultation is checkpointed.
+            const republish = this.checkpoint.sellerCollection?.sellerKey === key;
+            if (!key || legacySellerOnly && !legacySellers.has(key) && !republish) continue;
             const seller = { ...previous, key, nome: cleanSellerName(previous.nome || previous.vendedor, previous.id) };
             this.setProgress('collecting', `Recuperando vendas e medias pendentes de ${seller.nome || seller.id || 'vendedor'}...`);
             try {
@@ -1852,14 +1929,15 @@ class PesquisaMercadoRunner {
                     }
                     anuncios.push(...page.items);
                 }
-                if (anuncios.every(item => this.areAvantMetricsComplete(item))
+                if (legacySellerOnly && !republish && !anuncios.some(item => this.canRecheckLegacySeller(seller, item))) continue;
+                if (!republish && anuncios.every(item => this.areAvantMetricsComplete(item))
                     && !anuncios.some(item => this.canConsultDetail(seller, item))) {
                     done.add(key);
                     this.checkpoint.salesRecoverySellerKeys = [...done];
                     await this.save();
                     continue;
                 }
-                if (!anuncios.some(item => this.canConsultDetail(seller, item))) {
+                if (!republish && !anuncios.some(item => this.canConsultDetail(seller, item))) {
                     // Published ads are normalized by the backend. Keep terminal
                     // proof failures in the private checkpoint across app restarts.
                     this.checkpoint.salesRecoveryPending = true;
@@ -1880,7 +1958,7 @@ class PesquisaMercadoRunner {
                 await this.read(allAdsUrl, 'first-page');
                 const result = await this.complementSellerListings(seller, {
                     anuncios, reason: 'avant_data_incomplete', incomplete: true, primeira_pagina: true
-                }, allAdsUrl);
+                }, allAdsUrl, null, legacySellerOnly);
                 this.check();
                 await this.publishSeller(seller, result, true);
                 delete this.checkpoint.sellerCollection;
@@ -1959,13 +2037,20 @@ class PesquisaMercadoRunner {
             await this.save();
             const profile = await this.read(seller.perfilUrl, 'seller');
             const confirmed = sellerFromPage(profile);
-            if (seller.id && confirmed && confirmed.id && seller.id !== confirmed.id) throw new Error('O perfil retornou um vendedor diferente do anuncio consultado.');
+            const namedSellerPage = seller.perfilUrl.includes('/pagina/');
+            if (profile.seller_identity_conflict || (confirmed && conflictingSeller(seller, confirmed))
+                || (namedSellerPage && (!confirmed || !sameSeller(seller, confirmed)))) {
+                throw new Error('O perfil retornou um vendedor diferente do anuncio consultado.');
+            }
             if (confirmed && sameSeller(seller, confirmed)) seller = { ...seller, ...confirmed, key: seller.key, id: confirmed.id || seller.id, nome: confirmed.nome || seller.nome };
             const allAdsUrl = canonicalUrl(profile.allAdsUrl || page.allAdsUrl);
             if (!allAdsUrl) throw new Error('A opcao ver todos os anuncios deste vendedor nao foi encontrada.');
             const allAdsPage = await this.read(allAdsUrl, 'first-page');
             const listingSeller = sellerFromPage(allAdsPage);
-            if (seller.id && listingSeller && listingSeller.id && seller.id !== listingSeller.id) throw new Error('A listagem retornou anuncios de outro vendedor.');
+            if (allAdsPage.seller_identity_conflict || (listingSeller && conflictingSeller(seller, listingSeller))
+                || (namedSellerPage && (!listingSeller || !sameSeller(seller, listingSeller)))) {
+                throw new Error('A listagem retornou anuncios de outro vendedor.');
+            }
             if (listingSeller && sameSeller(seller, listingSeller)) seller = { ...seller, ...listingSeller, key: listingSeller.id ? listingSeller.key : seller.key, id: listingSeller.id || seller.id,
                 nome: seller.seller_name_kind === 'store_brand' && seller.nome ? seller.nome : listingSeller.nome || seller.nome,
                 seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
@@ -2012,8 +2097,9 @@ class PesquisaMercadoRunner {
 
     async run() {
         try {
-            if (typeof this.browser.prepare === 'function') await this.browser.prepare();
+            if (typeof this.browser.prepare === 'function') await this.browser.prepare({ collectVisible: this.checkpoint.collectVisible === true });
             this.check();
+            delete this.checkpoint.marketplaceAccess;
             await this.save();
             await this.prepareOfficialTaxonomy();
             const recovery = this.checkpoint.recovery;
@@ -2219,7 +2305,10 @@ class PesquisaMercadoRunner {
             const browserPaused = ['research_browser_closed', 'research_chrome_manual_open'].includes(err.code);
             this.job.status = this.stopStatus || (marketplacePaused || browserPaused ? 'paused'
                 : err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
-            if (marketplacePaused) this.checkpoint.marketplaceAccess = { status: err.status, stage: err.stage, retryAt: err.retryAt };
+            if (marketplacePaused) {
+                this.checkpoint.marketplaceAccess = { status: err.status, stage: err.stage, retryAt: err.retryAt };
+                if (err.status === 403 && err.publicUrl) this.checkpoint.marketplaceAccess.url = err.publicUrl;
+            }
             if (!this.stopStatus) {
                 const browserMessage = marketplacePaused ? err.message : Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
                 this.setProgress(this.job.status, browserMessage || (err.waitingLogin ? err.message
@@ -2289,4 +2378,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, assertMarketplaceNavigation, assertMarketplaceRetryAllowed, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };
+module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, assertMarketplaceNavigation, assertMarketplaceRetryAllowed, publicMarketplacePage, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };

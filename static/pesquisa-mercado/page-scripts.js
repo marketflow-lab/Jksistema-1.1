@@ -100,6 +100,15 @@
                 && (!parsed.port || parsed.port === '443') && !parsed.search
                 && /^\/veiculos\/_CustId_\d+\/?$/.test(parsed.pathname) ? candidate : '';
         };
+        const sellerPageUrl = value => {
+            const candidate = absolute(value);
+            if (!candidate) return '';
+            const parsed = new URL(candidate);
+            const slug = parsed.pathname.match(/^\/pagina\/([\w-]+)\/?$/i);
+            return slug && /^(?:www|lista)\.mercadolivre\.com\.br$/.test(parsed.hostname)
+                && !parsed.username && !parsed.password && !parsed.port
+                ? 'https://www.mercadolivre.com.br/pagina/' + slug[1].toLowerCase() : '';
+        };
         const identity = value => {
             const url = absolute(value);
             const ids = new Set();
@@ -107,6 +116,8 @@
             if (url) for (const [key, id] of new URL(url).searchParams) if (/^(?:seller_id|cust_?id)$/i.test(key) && /^\d+$/.test(id)) ids.add(id);
             if (ids.size > 1) return { id: '', perfilUrl: '', store: false, conflict: true };
             const match = ids.size ? [null, [...ids][0]] : null;
+            const sellerPage = url && new URL(url).pathname.startsWith('/pagina/') && sellerPageUrl(url);
+            if (sellerPage) return { id: match ? match[1] : '', perfilUrl: sellerPage, store: false };
             const profile = url.match(/^(https:\/\/[^/]+\/perfil\/[^/?#]+)/i);
             const store = url.match(/^https:\/\/[^/]+\/loja\/([^/?#]+)/i);
             if (store) return { id: '', claimedId: match && match[1], perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
@@ -513,22 +524,43 @@
             ? nodes('.ui-vip-seller-profile .ui-vip-profile-info__info-link[href]', productMain)
                 .filter(anchor => !anchor.closest(sellerExcluded) && vehicleStockUrl(anchor.getAttribute('href')))
             : [];
+        const merchantLinks = isProduct(url) && productMain
+            ? nodes('a.ui-pdp-seller-summary__link[href], .ui-seller-data-header__main-info a[href], .ui-seller-data-footer__container a[href]', productMain)
+                .filter(anchor => !anchor.closest(sellerExcluded + ', [role="dialog"]') && visibleAuthControl(anchor) && sellerPageUrl(anchor.href))
+            : [];
+        const merchantIdentities = merchantLinks.map(anchor => identity(anchor.href));
+        const merchantLink = merchantLinks.find((_anchor, index) => merchantIdentities[index].id) || merchantLinks[0];
         const headerSeller = nodes('.ui-pdp-seller__link, .ui-pdp-seller__link-trigger, .ui-pdp-seller__header__info-container a[href], .ui-seller-info a[href], .seller-info a[href], [data-testid="seller-info"] a[href]', content)
-            .find(anchor => !anchor.closest(sellerExcluded) && absolute(anchor.getAttribute('href'))) || vehicleSellerLinks[0] || officialStore;
+            .find(anchor => !anchor.closest(sellerExcluded) && absolute(anchor.getAttribute('href'))) || merchantLink || vehicleSellerLinks[0] || officialStore;
         const currentIdentity = identity(url);
         const headerIdentity = identity(headerSeller && headerSeller.href);
         const primaryStore = currentIdentity.store ? currentIdentity : (headerIdentity.store ? headerIdentity : null);
+        const currentSellerPage = sellerPageUrl(url);
+        // A seller's storefront also links its full inventory from the section title.
+        // Filtered shelves share the slug but have an extra path segment or query.
+        const isSellerInventory = href => {
+            if (!href || sellerPageUrl(href) !== currentSellerPage) return false;
+            const target = new URL(href);
+            return target.hostname === 'lista.mercadolivre.com.br' && !target.search;
+        };
+        const inventoryLink = currentSellerPage && new URL(url).hostname === 'www.mercadolivre.com.br'
+            ? nodes('.section-eshop__title--layout a[href]').find(anchor => norm(anchor.textContent) === 'ver mais'
+                && visibleAuthControl(anchor) && isSellerInventory(absolute(anchor.getAttribute('href')))) : null;
         const allAds = nodes('a[href]', content).find(anchor => {
             if (anchor.closest(sellerExcluded)) return false;
             const label = norm(anchor.textContent);
             if (!/^(?:todos os (?:produtos|anuncios)|(?:ver|veja|ir para)\s+(?:todos?|mais|os|as)?\s*(?:os\s+|as\s+)?(?:anuncios|produtos))/.test(label)) return false;
             const candidate = absolute(anchor.getAttribute('href'));
             if (!candidate) return false;
+            if (currentSellerPage) return isSellerInventory(candidate);
             return !primaryStore || identity(candidate).perfilUrl === primaryStore.perfilUrl;
-        });
+        }) || inventoryLink;
         const allIdentity = identity(allAds && allAds.href);
         const primaryIdentity = currentIdentity.id || currentIdentity.perfilUrl ? currentIdentity : (headerIdentity.id || headerIdentity.perfilUrl ? headerIdentity : allIdentity);
         const headerConflict = !!currentIdentity.conflict || !!headerIdentity.conflict
+            || merchantIdentities.some(ref => ref.conflict)
+            || new Set([...merchantIdentities, primaryIdentity].map(ref => ref.id).filter(Boolean)).size > 1
+            || new Set([...merchantIdentities, primaryIdentity].map(ref => ref.perfilUrl).filter(p => p && p.includes('/pagina/'))).size > 1
             || vehicleSellerLinks.some(anchor => {
                 const candidate = identity(anchor.getAttribute('href'));
                 return primaryIdentity.id ? candidate.id !== primaryIdentity.id
@@ -547,12 +579,12 @@
                 || /^(?:nome (?:pendente|nao identificado)|vendedor (?:nao identificado|desconhecido))\b/.test(normalized)
                 || /^(?:vendedor|seller|comprar|saiba mais)$/.test(normalized) ? '' : name;
         };
-        const nameSelectors = '.ui-pdp-seller__header__title, .ui-pdp-seller__nickname, .ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"], .ui-ms-profile__name, .ui-ms-profile__title';
+        const nameSelectors = '.ui-pdp-seller__header__title, .ui-pdp-seller__nickname, .ui-seller-data-header__title, .ui-pdp-seller-summary__link, .ui-seller-profile__name, .seller-profile__name, [data-testid="seller-name"], .ui-ms-profile__name, .ui-ms-profile__title';
         const named = nodes(nameSelectors, content).filter(node => !node.closest(sellerExcluded))
             .map(node => nameText(node.textContent)).find(Boolean);
         const storeTitle = currentIdentity.store && !isProduct(url) ? nameText((content.querySelector('h1') || {}).textContent) : '';
         const vendedor = headerConflict ? '' : named || nameText(headerSeller && headerSeller.textContent) || storeTitle;
-        const sellerFirstPage = (currentIdentity.id || (currentIdentity.store && new URL(url).hostname === 'lista.mercadolivre.com.br')) && !isProduct(url)
+        const sellerFirstPage = (currentIdentity.id || ((currentIdentity.store || currentSellerPage) && new URL(url).hostname === 'lista.mercadolivre.com.br')) && !isProduct(url)
             && !/_Desde_(?:[2-9]\d*|1\d+)|[?&](?:page|offset)=(?:[2-9]\d*|1\d+)/i.test(url);
         const allAdsUrl = absolute(allAds && allAds.getAttribute('href')) || (sellerFirstPage ? url : '');
         const categoryPath = value => {
@@ -583,7 +615,7 @@
         const expectedSellerId = clean(options && options.seller && (options.seller.id || options.seller.sellerId || options.seller.seller_id));
         const scopedSellerId = sellerId || expectedSellerId;
         const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
-        const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja)\//i.test(value || '');
+        const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja|pagina)\//i.test(value || '');
         // Avant 7.24 displays a seller profile followed by the link to their listings.
         // Reconcile every observed ID before choosing a link for the runner.
         const sellerProof = (anchors, declaredIds = [], declaredProfile = null) => {
@@ -599,7 +631,7 @@
             const scopedProfile = references.map(ref => profiles.find(p => matches(ref, p))).find(Boolean);
             // A brand storefront and a seller nickname can refer to the same offer.
             // The same storefront/profile link or an independent matching ID must corroborate them.
-            const inconsistentProfiles = ['/perfil/', '/loja/'].some(type => {
+            const inconsistentProfiles = ['/perfil/', '/loja/', '/pagina/'].some(type => {
                 const observed = profiles.filter(p => p.toLowerCase().includes(type));
                 return observed.length && new Set([...observed, ...references.filter(p => p.toLowerCase().includes(type))].map(p => p.toLowerCase())).size > 1;
             });
@@ -1144,7 +1176,7 @@
         };
         const current = canonical(location.href);
         if (!expectedUrl || !current || current !== canonical(expectedUrl)) return { clicked: false, hasNext: false, reason: 'category_url_mismatch' };
-        if (/_CustId_|_SellerId_|[?&](?:seller_id|custid|cust_id)=|\/(?:perfil|loja|stores?|p|up)\/|\/MLB-\d+/i.test(current)) return { clicked: false, hasNext: false, reason: 'not_category_page' };
+        if (/_CustId_|_SellerId_|[?&](?:seller_id|custid|cust_id)=|\/(?:perfil|loja|pagina|stores?|p|up)\/|\/MLB-\d+/i.test(current)) return { clicked: false, hasNext: false, reason: 'not_category_page' };
         const next = document.querySelector('a[rel="next"], .andes-pagination__button--next a, [data-andes-pagination-control="next"], a.andes-pagination__link[title="Seguinte"], a[aria-label="Seguinte"]');
         if (!next || next.matches('[disabled], [aria-disabled="true"]') || next.closest('[aria-disabled="true"], .andes-pagination__button--disabled')) return { clicked: false, hasNext: false, reason: 'no_next_page' };
         const destination = next.getAttribute('href');
@@ -1184,17 +1216,34 @@
 
     function mergeAvant(page, raw, seller) {
         const norm = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        const profile = value => {
+        const identity = (id, value) => {
+            const result = { id: String(id || ''), profile: '', page: '', conflict: false };
             try {
                 const url = new URL(value);
                 const store = url.pathname.match(/^\/loja\/([^/]+)/i);
-                if (store) return 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase();
-                return (url.origin + url.pathname.replace(/\/$/, '')).toLowerCase();
-            } catch (_err) { return ''; }
+                result.profile = store ? 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase()
+                    : (url.origin + url.pathname.replace(/\/$/, '')).toLowerCase();
+                if (url.protocol === 'https:' && !url.username && !url.password && !url.port
+                    && /^(?:www|lista)\.mercadolivre\.com\.br$/.test(url.hostname)) {
+                    result.page = url.pathname.match(/^\/pagina\/([\w-]+)\/?$/i)?.[1].toLowerCase() || '';
+                    if (result.page) {
+                        const ids = new Set(result.id ? [result.id] : []);
+                        for (const [key, val] of url.searchParams) if (/^(?:seller_id|cust_?id)$/i.test(key) && /^\d+$/.test(val)) ids.add(val);
+                        result.conflict = ids.size > 1;
+                        result.id = [...ids][0] || '';
+                    }
+                }
+            } catch (_err) { /* An offer may expose only a numeric seller ID. */ }
+            return result;
         };
-        const wantedId = String(seller.sellerId || seller.seller_id || seller.id || '').replace(/^seller:/, '');
-        const wantedProfile = profile(seller.perfilUrl || seller.seller_perfil_url);
-        const same = (id, url) => wantedId && id ? wantedId === String(id) : !!(wantedProfile && profile(url) === wantedProfile);
+        const expected = identity(String(seller.sellerId || seller.seller_id || seller.id || '').replace(/^seller:/, ''), seller.perfilUrl || seller.seller_perfil_url);
+        const { id: wantedId, profile: wantedProfile } = expected;
+        const same = (id, url) => {
+            const observed = identity(id, url);
+            if (expected.conflict || observed.conflict || expected.page && observed.page && expected.page !== observed.page) return false;
+            if (wantedId && observed.id) return wantedId === observed.id;
+            return !!(expected.page && expected.page === observed.page || wantedProfile && wantedProfile === observed.profile);
+        };
         const pageMatches = same(page.sellerId, page.perfilUrl);
         const avant = Array.isArray(raw && raw.anuncios) ? raw.anuncios : [];
         page.anuncios = page.anuncios.map(base => {
@@ -1203,7 +1252,7 @@
             const metrics = evidence.metrics || {};
             const idConflict = !!(base.seller_id && wantedId && String(base.seller_id) !== wantedId);
             const directMatches = same(base.seller_id, base.seller_perfil_url);
-            const scoped = !idConflict && (directMatches || ((!base.seller_id && !base.seller_perfil_url) && pageMatches));
+            const scoped = !page.seller_identity_conflict && !idConflict && (directMatches || ((!base.seller_id && !base.seller_perfil_url) && pageMatches));
             const sellerId = base.seller_id || (scoped ? page.sellerId : '');
             const sellerProfile = base.seller_perfil_url || (scoped ? page.perfilUrl : '');
             const strongNumeric = wantedId && (String(base.seller_id || '') === wantedId || String(evidence.sellerId || '') === wantedId);
