@@ -121,13 +121,13 @@
             payload[field] = category;
         }
         if (data.action === 'browser' && input.purpose != null) {
-            if (!['categories', 'names'].includes(input.purpose)) {
+            if (!['categories', 'names', 'setup'].includes(input.purpose)) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Finalidade do navegador inválida.' });
                 return;
             }
             payload.purpose = input.purpose;
         }
-        if (['pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete'].includes(data.action) && input.jobId != null && payload.purpose !== 'categories') {
+        if (['pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete'].includes(data.action) && input.jobId != null && !['categories', 'setup'].includes(payload.purpose)) {
             if (typeof input.jobId !== 'string' || !input.jobId || input.jobId.length > 128) {
                 reply(event.source, { channel: 'jk-pesquisa-mercado-result', requestId, error: 'Pesquisa inválida.' });
                 return;

@@ -30,7 +30,8 @@
   "author": "JK",
   "license": "ISC",
   "dependencies": {
-    "electron-updater": "6.8.9"
+    "electron-updater": "6.8.9",
+    "playwright-core": "1.60.0"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",

@@ -4,6 +4,10 @@ const pesquisaMercadoTaxonomyModule = require(path.join(__dirname, 'electron_app
 const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyService({
     cachePath: path.join(app.getPath('userData'), 'public-mlb-taxonomy-v1.json')
 });
+const pesquisaMercadoUsesChrome = process.env.JK_PESQUISA_MERCADO_BROWSER !== 'electron';
+let pesquisaMercadoChrome = null;
+let pesquisaMercadoChromeOwner = '';
+let pesquisaMercadoChromeToken = '';
 let pesquisaMercadoCoordinator = null;
 let pesquisaMercadoWindow = null;
 const pesquisaMercadoDetailBrowsers = new Set();
@@ -97,7 +101,9 @@ function pesquisaMercadoBackendRequest(method, pathname, body, token = pesquisaM
             reject(err);
             return;
         }
-        if (!/^\/api\/pesquisa-mercado\//.test(pathname)) return reject(new Error('Rota de pesquisa invalida.'));
+        if (!/^\/api\/pesquisa-mercado\//.test(pathname) && !(method === 'GET' && pathname === '/api/auth/me')) {
+            return reject(new Error('Rota de pesquisa invalida.'));
+        }
         const payload = body === undefined ? '' : JSON.stringify(body);
         const headers = { Accept: 'application/json', Authorization: /^bearer /i.test(value) ? value : `Bearer ${value}` };
         if (payload) {
@@ -308,14 +314,87 @@ function pesquisaMercadoBrowserAdapter(detailIndex = 0) {
     return adapter;
 }
 
+async function preparePesquisaMercadoChromeOwner(token) {
+    if (!pesquisaMercadoUsesChrome || pesquisaMercadoChromeToken === token && pesquisaMercadoChrome) return;
+    const { success, user_data: user } = await pesquisaMercadoBackendRequest('GET', '/api/auth/me', undefined, token);
+    if (success !== true || typeof user?.client_id !== 'string' || !user.client_id.trim()
+        || typeof user.username !== 'string' || !user.username.trim()) {
+        throw new Error('Identidade da sessao do JK indisponivel para abrir o Chrome.');
+    }
+
+    const owner = require('node:crypto').createHash('sha256')
+        .update(JSON.stringify([user.client_id.trim(), user.username.trim()])).digest('hex');
+    if (owner !== pesquisaMercadoChromeOwner) {
+        if (pesquisaMercadoCoordinator?.task || pesquisaMercadoCoordinator?.namesTask) {
+            throw new Error('Uma pesquisa de outra sessao ainda esta em execucao.');
+        }
+        await pesquisaMercadoChrome?.close();
+        const modules = path.join(__dirname, 'electron_app', 'main', 'modules');
+        const { createChromeResearchSession } = require(path.join(modules, 'pesquisa-mercado-chrome.js'));
+        const { createMediaScript } = require(path.join(modules, 'pesquisa-mercado-media-preload.js'));
+        pesquisaMercadoChrome = createChromeResearchSession({
+            profileDir: path.join(app.getPath('userData'), 'pesquisa-mercado-chrome', owner),
+            allowedUrl: pesquisaMercadoRunnerModule.allowedUrl,
+            createMediaScript,
+            getChromium: () => (app.isPackaged
+                ? require(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'playwright-core'))
+                : require('playwright-core')).chromium
+        });
+        pesquisaMercadoCoordinator = null;
+        pesquisaMercadoChromeOwner = owner;
+    }
+    pesquisaMercadoChromeToken = token;
+}
+
+async function showPesquisaMercadoChrome(runner, purpose, response) {
+    if (runner.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de abrir o Chrome.');
+    if (purpose === 'setup') {
+        if (runner.task) throw new Error('Pause a pesquisa antes de configurar o Avant Pro.');
+        await pesquisaMercadoChrome.show('https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
+        return { success: true };
+    }
+    if (purpose === 'categories') {
+        if (runner.task) throw new Error('A pesquisa esta usando este navegador.');
+        if (!pesquisaMercadoCategoryLastUrl) throw new Error('Carregue as categorias antes de abrir o navegador.');
+        await pesquisaMercadoChrome.show(pesquisaMercadoCategoryLastUrl);
+        return { success: true };
+    }
+    const job = response?.job;
+    if (!job || purpose !== 'names'
+        && !['running', 'paused', 'waiting_login', 'interrupted', 'completed_partial', 'failed'].includes(job.status)) {
+        throw new Error('Inicie ou retome uma pesquisa para abrir seu navegador.');
+    }
+    const currentJob = runner.job?.id === job.id;
+    const page = job.checkpoint?.page;
+    const candidates = [
+        currentJob && runner.loginBrowser?.getResumeURL(),
+        currentJob && runner.browser.getURL(),
+        currentJob && runner.browser.getResumeURL(),
+        page?.anuncios?.[Number(page.index || 0)]?.url,
+        page?.url,
+        job.checkpoint?.currentCategory?.url
+    ];
+    const target = candidates.find(value => pesquisaMercadoRunnerModule.allowedUrl(value)
+        && !/_CatId_|[?&]category_id=/i.test(value)) || 'https://www.mercadolivre.com.br/';
+    if (runner.task) {
+        if (purpose === 'names') throw new Error('A pesquisa esta usando este navegador.');
+        await runner.stop('paused');
+        await runner.task;
+    }
+    await pesquisaMercadoChrome.show(target, { collectVisible: true });
+    const { id, status, revision, counters, message, created_at, updated_at } = runner.job?.id === job.id ? runner.job : job;
+    return { job: { id, status, revision, counters, message, created_at, updated_at } };
+}
+
 function getPesquisaMercadoCoordinator() {
     if (pesquisaMercadoCoordinator) return pesquisaMercadoCoordinator;
     const sharedDir = path.join(__dirname, 'static', 'pesquisa-mercado');
     pesquisaMercadoCoordinator = new pesquisaMercadoRunnerModule.PesquisaMercadoRunner({
         api: pesquisaMercadoBackendRequest,
         taxonomy: pesquisaMercadoTaxonomy,
-        browser: pesquisaMercadoBrowserAdapter(),
-        createDetailBrowser: index => pesquisaMercadoBrowserAdapter(index),
+        browser: pesquisaMercadoChrome ? pesquisaMercadoChrome.createPage() : pesquisaMercadoBrowserAdapter(),
+        createDetailBrowser: index => pesquisaMercadoChrome
+            ? pesquisaMercadoChrome.createPage({ detail: true }) : pesquisaMercadoBrowserAdapter(index),
         pageScripts: require(path.join(sharedDir, 'page-scripts.js')),
         collector: require(path.join(sharedDir, 'shared-collector.js')),
         emit: payload => {
@@ -356,8 +435,11 @@ async function executePesquisaMercadoCommand(action, payload) {
     const avantEmail = hasAvantEmail ? pesquisaMercadoAvantModule.normalizeEmail(payload.avantLoginEmail) : '';
     if (hasAvantEmail && (!configAction || !avantEmail)) throw new Error('E-mail do Avant Pro invalido.');
     const token = String(payload.authToken || '').trim();
+    if (action === 'show-browser' && payload.purpose != null
+        && !['categories', 'names', 'setup'].includes(payload.purpose)) throw new Error('Finalidade do navegador invalida.');
+    await preparePesquisaMercadoChromeOwner(token);
     const runner = getPesquisaMercadoCoordinator();
-    const jobId = String(payload.jobId || runner.job && runner.job.id || '');
+    const jobId = String(payload.jobId || (payload.purpose !== 'setup' && runner.job?.id) || '');
     if (runner.task && payload.jobId && runner.job.id !== jobId) throw new Error('Outra pesquisa ja esta em execucao neste aplicativo.');
     let authorizedLatest, authorizedJob;
     // Validate ownership using the new token before replacing the active request context.
@@ -368,7 +450,7 @@ async function executePesquisaMercadoCommand(action, payload) {
     } else {
         authorizedLatest = await pesquisaMercadoBackendRequest('GET', '/api/pesquisa-mercado/jobs/latest', undefined, token);
     }
-    if (action === 'recover-incomplete' || action === 'show-browser' && payload.purpose !== 'categories' && jobId) {
+    if (action === 'recover-incomplete' || action === 'show-browser' && !['categories', 'setup'].includes(payload.purpose) && jobId) {
         authorizedJob = await pesquisaMercadoBackendRequest('GET', `/api/pesquisa-mercado/jobs/${encodeURIComponent(jobId)}`, undefined, token);
     }
     if (pesquisaMercadoAuthToken !== token && !runner.task && !runner.namesTask) {
@@ -394,7 +476,10 @@ async function executePesquisaMercadoCommand(action, payload) {
     }
     if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload);
     if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
-    if (action === 'status') return runner.status(payload.jobId || '');
+    if (action === 'status') {
+        const result = await runner.status(payload.jobId || '');
+        return pesquisaMercadoUsesChrome ? { ...result, browser: 'chrome' } : result;
+    }
     if (action === 'resume') return runner.resume(jobId);
     if (action === 'recover-incomplete') return runner.recoverIncomplete(jobId, payload.expectedRevision);
     if (action === 'refresh-names') return runner.refreshNames(jobId);
@@ -408,6 +493,12 @@ async function executePesquisaMercadoCommand(action, payload) {
         return runner.stop(action === 'cancel' ? 'cancelled' : 'paused');
     }
     if (action === 'show-browser') {
+        if (pesquisaMercadoChrome) {
+            const response = authorizedJob || authorizedLatest
+                || (runner.job?.id === jobId ? { job: runner.job } : null);
+            return showPesquisaMercadoChrome(runner, payload.purpose, response);
+        }
+        if (payload.purpose === 'setup') throw new Error('O perfil do Chrome nao esta habilitado.');
         if (payload.purpose === 'categories') {
             if (runner.task) throw new Error('A pesquisa esta usando este navegador.');
             if (!pesquisaMercadoCategoryLastUrl) throw new Error('Carregue as categorias antes de abrir o navegador.');
@@ -470,5 +561,9 @@ async function persistPesquisaMercadoBeforeQuit() {
         pesquisaMercadoCategoryChildren.clear();
         destroyPesquisaMercadoDetailBrowsers();
         if (pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed()) pesquisaMercadoWindow.destroy();
+        await pesquisaMercadoChrome?.close();
+        pesquisaMercadoChrome = null;
+        pesquisaMercadoChromeOwner = '';
+        pesquisaMercadoChromeToken = '';
     }
 }

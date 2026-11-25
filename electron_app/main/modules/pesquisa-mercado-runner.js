@@ -576,14 +576,14 @@ class PesquisaMercadoRunner {
             result = await this.nameStep(() => browser.ensureAvantSession({ signal, force, rankingOnly }), signal);
         } catch (error) {
             if (error && error.status === 404) error.avantSessionRejected = true;
-            if (error && (error.name === 'AbortError' || error.status === 401 || error.status === 403 || error.status === 404)) throw error;
+            if (error && (error.name === 'AbortError' || error.code === 'research_browser_closed' || error.status === 401 || error.status === 403 || error.status === 404)) throw error;
         }
         if (signal.aborted) { const error = new Error('Pesquisa interrompida.'); error.name = 'AbortError'; throw error; }
         state.attempted = state.attempted || !!(result && result.attempted);
-        if (result && result.authenticated === true) return true;
+        if (result?.authenticated === true || !force && !rankingOnly && result?.collectionAllowed === true) return true;
         if (rankingOnly && result?.reason === 'avant_ranking_login_not_shown') return false;
         const reason = result?.reason;
-        const error = new Error(reason === 'ml_verification_required' || reason === 'ml_login_required'
+        const error = new Error(['ml_verification_required', 'ml_login_required', 'avant_login_required'].includes(reason)
             ? reason : 'Nao foi possivel autenticar no Avant Pro. Conclua o login no navegador e tente novamente.');
         error.waitingLogin = true;
         throw error;
@@ -814,7 +814,7 @@ class PesquisaMercadoRunner {
                 return result;
             } catch (err) {
                 if (err.waitingLogin || err.status === 401 || err.status === 403) this.loginBrowser = browser;
-                if (err.name === 'AbortError' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
+                if (err.name === 'AbortError' || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
                 if (index < 2) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
             }
@@ -2173,9 +2173,18 @@ class PesquisaMercadoRunner {
                 : 'Pesquisa concluida com pendencias; consulte as categorias incompletas.');
             await this.save();
         } catch (err) {
-            this.job.status = this.stopStatus || (err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
-            if (!this.stopStatus) this.setProgress(this.job.status, err.waitingLogin ? err.message :
-                this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.');
+            const browserMessages = {
+                research_browser_closed: 'O Chrome da pesquisa foi fechado. Clique em Retomar para continuar.',
+                research_chrome_unavailable: 'Nao foi possivel iniciar o Chrome da pesquisa. Confira a instalacao e feche outra janela deste perfil.',
+                avant_extension_missing: 'avant_extension_missing'
+            };
+            this.job.status = this.stopStatus || (err.code === 'research_browser_closed' ? 'paused'
+                : err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
+            if (!this.stopStatus) {
+                const browserMessage = Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
+                this.setProgress(this.job.status, browserMessage || (err.waitingLogin ? err.message
+                    : this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.'));
+            }
             try { await this.save(); } catch (_saveError) { this.emit(this.snapshot()); }
         } finally {
             await Promise.allSettled(this.detailBrowsers.map(browser =>

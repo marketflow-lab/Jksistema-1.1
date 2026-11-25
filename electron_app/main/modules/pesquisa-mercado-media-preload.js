@@ -1,7 +1,5 @@
 'use strict';
 
-const { ipcRenderer } = require('electron');
-
 function productPage(value) {
     try {
         const url = new URL(value);
@@ -18,9 +16,8 @@ function productPage(value) {
     } catch (_error) { return null; }
 }
 
-function start() {
+function deferNativeRecommendationMedia(state, productPage, onRelease) {
     if (window.top !== window || !productPage(location.href)) return;
-    const state = ipcRenderer.sendSync('jk-pesquisa-mercado:recommendation-media-state');
     if (!state || !Number.isSafeInteger(state.token)) return;
     const expected = productPage(state.url);
     if (!expected) return;
@@ -102,10 +99,10 @@ function start() {
             } else record.addedNodes.forEach(inspectTree);
         }
     });
-    function onRelease(_event, token) { if (token === state.token) release(); }
+    const unlisten = onRelease(token => { if (token === state.token) release(); });
     function release() {
         observer.disconnect();
-        ipcRenderer.removeListener('jk-pesquisa-mercado:release-recommendation-media', onRelease);
+        unlisten();
         window.removeEventListener('pagehide', release);
         const players = new Set();
         for (const node of held.keys()) {
@@ -118,10 +115,27 @@ function start() {
         }
     }
 
-    ipcRenderer.on('jk-pesquisa-mercado:release-recommendation-media', onRelease);
     window.addEventListener('pagehide', release, { once: true });
     observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
     document.querySelectorAll('video').forEach(inspect);
 }
 
-start();
+const releaseChannel = 'jk-pesquisa-mercado:release-recommendation-media';
+
+if (process.type === 'renderer') {
+    if (window.top === window && productPage(location.href)) {
+        const { ipcRenderer } = require('electron');
+        const state = ipcRenderer.sendSync('jk-pesquisa-mercado:recommendation-media-state');
+        deferNativeRecommendationMedia(state, productPage, callback => {
+            const listener = (_event, token) => callback(token);
+            ipcRenderer.on(releaseChannel, listener);
+            return () => ipcRenderer.removeListener(releaseChannel, listener);
+        });
+    }
+} else {
+    module.exports.createMediaScript = state => `(${deferNativeRecommendationMedia})(${JSON.stringify(state)}, ${productPage}, callback => {
+        const listener = event => callback(event.detail);
+        window.addEventListener(${JSON.stringify(releaseChannel)}, listener);
+        return () => window.removeEventListener(${JSON.stringify(releaseChannel)}, listener);
+    });`;
+}

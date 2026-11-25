@@ -17,6 +17,7 @@ async function main() {
     const commands = [];
     const errors = [];
     let job = null;
+    let useChrome = false;
     const server = http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://127.0.0.1');
         const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
@@ -38,6 +39,8 @@ async function main() {
             if (action === 'pause') job = { ...job, status: 'paused', revision: job.revision + 1 };
             if (action === 'resume') job = { ...job, status: 'running', revision: job.revision + 1 };
             if (action === 'cancel') job = { ...job, status: 'cancelled', revision: job.revision + 1 };
+            if (useChrome && action === 'status') { json({ job, browser: 'chrome' }); return; }
+            if (action === 'browser' && payload.purpose === 'setup') { json({ success: true }); return; }
             json(action === 'refresh-names' ? { job, updated: 0, pending: 0 } : { job }); return;
         }
         if (url.pathname === '/api/pesquisa-mercado/jobs/latest') { json({ job }); return; }
@@ -178,6 +181,25 @@ async function main() {
         });
         assert.strictEqual(await email.inputValue(), '');
         assert.strictEqual(await email.isDisabled(), true, 'logout limpa e desabilita configuração');
+        useChrome = true;
+        job = null;
+        await page.evaluate(({ value, user }) => {
+            localStorage.setItem('access_token', value);
+            localStorage.setItem('user_data', JSON.stringify(user));
+        }, { value: token('tenant-a', 'operator-a', 5), user: { client_id: 'tenant-a', username: 'operator-a' } });
+        await page.reload();
+        await page.locator('#pm-mode-global').click();
+        const setup = page.getByRole('button', { name: 'Configurar Avant Pro no Chrome' });
+        await setup.waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#pm-global-avant-legacy').isVisible(), false);
+        await setup.click();
+        await page.getByText(/No Chrome da pesquisa, instale o Avant Pro/).waitFor();
+        const setupRequest = commands.find(command => command.action === 'browser' && command.payload.purpose === 'setup');
+        assert.deepStrictEqual(Object.keys(setupRequest.payload).sort(), ['authToken', 'purpose']);
+        await page.getByRole('button', { name: 'Selecionar Categoria teste e ver subcategorias', exact: true }).click();
+        await page.locator('#pm-global-start').click();
+        await page.waitForFunction(() => !document.getElementById('pm-global-pause').disabled);
+        assert.equal(Object.hasOwn(commands.filter(command => command.action === 'start').at(-1).payload, 'avantLoginEmail'), false);
         assert.deepStrictEqual(errors, []);
         console.log('Pesquisa de Mercado Avant UI: configuração privada, renovação, isolamento de contas e comandos OK');
     } finally {

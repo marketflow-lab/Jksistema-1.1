@@ -33,13 +33,14 @@
     let sessionToken = window.localStorage.getItem('access_token') || '';
     const avantEmailStoragePrefix = 'jkPesquisaMercadoAvantEmail:v1:';
     let avantIdentity = avantConfigurationIdentity(sessionToken);
+    let chromeResearch = false;
     const elements = {};
     for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete', 'incomplete', 'incomplete-list', 'incomplete-count', 'recovery-progress', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'first', 'previous', 'next', 'last', 'page', 'pagination', 'page-numbers', 'page-error', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
         'taxonomy-list', 'taxonomy-message', 'taxonomy-browser', 'taxonomy-selection', 'taxonomy-summary', 'taxonomy-updated',
-        'taxonomy-search', 'taxonomy-clear-search', 'avant-email', 'avant-email-note']) elements[name] = el(name);
+        'taxonomy-search', 'taxonomy-clear-search', 'avant-email', 'avant-email-note', 'avant-setup', 'avant-legacy']) elements[name] = el(name);
 
     function avantConfigurationIdentity(token) {
         if (!token) return '';
@@ -330,7 +331,7 @@
         const authToken = currentSession();
         if (!authToken) throw new Error('Entre no JK Sistema para consultar a pesquisa.');
         const payload = { authToken };
-        if (state.activeJob && ['pause', 'resume', 'cancel', 'browser'].includes(action) && extras.purpose !== 'categories') payload.jobId = state.activeJob.id;
+        if (state.activeJob && ['pause', 'resume', 'cancel', 'browser'].includes(action) && !['categories', 'setup'].includes(extras.purpose)) payload.jobId = state.activeJob.id;
         if (extras.jobId) payload.jobId = extras.jobId;
         if (action === 'recover-incomplete') payload.expectedRevision = extras.expectedRevision;
         if (action === 'refresh-names' && !payload.jobId && state.activeJob) payload.jobId = state.activeJob.id;
@@ -338,8 +339,8 @@
         if (action === 'categories' && extras.parentCategory) payload.parentCategory = categoryChoice(extras.parentCategory);
         if (action === 'categories' && extras.forceRefresh === true) payload.forceRefresh = true;
         if (action === 'categories' && extras.query) payload.query = extras.query;
-        if (action === 'browser' && ['categories', 'names'].includes(extras.purpose)) payload.purpose = extras.purpose;
-        if (['start', 'resume', 'refresh-names', 'recover-incomplete'].includes(action)) {
+        if (action === 'browser' && ['categories', 'names', 'setup'].includes(extras.purpose)) payload.purpose = extras.purpose;
+        if (!chromeResearch && ['start', 'resume', 'refresh-names', 'recover-incomplete'].includes(action)) {
             const email = saveAvantConfiguration();
             if (email) payload.avantLoginEmail = email;
         }
@@ -347,6 +348,10 @@
         const result = api && typeof api[methods[action]] === 'function'
             ? await api[methods[action]](payload) : await shellSend(action, payload);
         if (currentSession() !== authToken) throw new Error('A sessão mudou. Recuperando a pesquisa atual.');
+        if (action === 'status' && chromeResearch !== (result?.browser === 'chrome')) {
+            chromeResearch = result?.browser === 'chrome';
+            renderControls();
+        }
         if (result && result.success === false) throw new Error(result.error || result.message || 'Não foi possível executar o comando.');
         return result;
     }
@@ -381,6 +386,8 @@
         elements['status-warning'].classList.remove('error');
     }
     const authPauses = {
+        avant_extension_missing: { title: 'Avant Pro precisa ser instalado',
+            detail: 'Clique em Configurar Avant Pro no Chrome, instale a extensão, vincule a conta e clique em Retomar.' },
         ml_login_required: { title: 'Acesso ao Mercado Livre pendente',
             detail: 'Abra o navegador da pesquisa, confira a solicitação do Mercado Livre e clique em Retomar.' },
         ml_verification_required: { title: 'Verificação do Mercado Livre pendente',
@@ -434,11 +441,17 @@
         const resumable = ['paused', 'waiting_login', 'interrupted', 'failed'].includes(status) && !canRecover(state.activeJob);
         const taxonomy = state.taxonomy;
         const taxonomyDisabled = !sessionToken || state.busy || taxonomy.loading || isActive(state.activeJob);
+        if (elements['avant-setup']) {
+            elements['avant-setup'].hidden = !chromeResearch;
+            elements['avant-setup'].disabled = !sessionToken || state.busy || running;
+        }
+        if (elements['avant-legacy']) elements['avant-legacy'].hidden = chromeResearch;
         if (elements['avant-email']) elements['avant-email'].disabled = !sessionToken || state.busy || running;
         elements.start.disabled = taxonomyDisabled || !taxonomy.selected || taxonomy.authRequired || taxonomy.error || !!taxonomy.search;
         elements.pause.disabled = state.busy || !running;
         elements.resume.disabled = state.busy || !!deleting || !resumable;
         elements.cancel.disabled = state.busy || !!deleting || !(isActive(state.activeJob) || resumable);
+        elements.browser.textContent = chromeResearch && running ? 'Pausar e abrir Chrome' : 'Mostrar navegador';
         elements.browser.disabled = !sessionToken || state.busy || !!deleting || !(isActive(state.activeJob) || resumable || ['completed_partial', 'failed'].includes(status) || state.namesLogin);
         if (elements['recover-incomplete']) {
             elements['recover-incomplete'].hidden = !canRecover(state.activeJob);
@@ -1080,7 +1093,7 @@
             const selected = state.taxonomy.selected;
             const result = await invoke(action, action === 'start' ? { category: selected } : {});
             if (state.disposed) return;
-            if (action !== 'browser') {
+            if (action !== 'browser' || result?.job) {
                 const changed = updateJob(result);
                 if (changed) await refresh();
                 else await synchronize();
@@ -1149,6 +1162,19 @@
         window.clearTimeout(debounce);
         debounce = window.setTimeout(refresh, 250);
     }
+    elements['avant-setup']?.addEventListener('click', async () => {
+        state.busy = true;
+        renderControls();
+        try {
+            await invoke('browser', { purpose: 'setup' });
+            showMessage('No Chrome da pesquisa, instale o Avant Pro, entre no Mercado Livre e vincule a conta. Volte ao JK para iniciar ou retomar.');
+        } catch (error) {
+            if (!state.disposed) showMessage(userErrorMessage(error), true);
+        } finally {
+            state.busy = false;
+            if (!state.disposed) renderControls();
+        }
+    });
     for (const action of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete']) if (elements[action]) elements[action].addEventListener('click', () => command(action));
     elements['taxonomy-search'].addEventListener('input', taxonomySearchChanged);
     elements['taxonomy-clear-search'].addEventListener('click', () => {

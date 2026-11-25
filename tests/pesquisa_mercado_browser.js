@@ -27,7 +27,7 @@ function harness(saved = [], options = {}) {
     const requests = [];
     const windows = [];
     const jobs = new Map(saved.map(job => [job.id, clone(job)]));
-    const avantChecks = [];
+    const avantChecks = [], chromeSessions = [];
     const session = { partition: 'fixture-ml-session' };
     const pool = { active: true, workers: new Map([['w1', { id: 'existing-favoritos-window' }]]) };
     let serial = saved.length;
@@ -120,10 +120,14 @@ function harness(saved = [], options = {}) {
         }
     }
     function serve(options, payload) {
-        const owner = options.headers.Authorization === 'Bearer fixture-owner-one' ? 'one'
+        const owner = /^Bearer fixture-owner-one(?:-refresh)?$/.test(options.headers.Authorization) ? 'one'
             : options.headers.Authorization === 'Bearer fixture-owner-two' ? 'two' : null;
         requests.push({ method: options.method, path: options.path, owner, body: payload ? JSON.parse(payload) : null });
         if (!owner) return { status: 401, data: { detail: 'Sessão inválida.' } };
+        if (options.path === '/api/auth/me') {
+            const username = owner;
+            return { status: 200, data: { success: true, user_data: { client_id: 'fixture', username } } };
+        }
         if (options.path === '/api/pesquisa-mercado/jobs/latest') {
             return { status: 200, data: { job: clone([...jobs.values()].filter(job => job.owner === owner).at(-1) || null) } };
         }
@@ -183,7 +187,7 @@ function harness(saved = [], options = {}) {
     };
     const mainWindow = { isDestroyed: () => false, webContents: new FakeWebContents() };
     const sandbox = {
-        path, __dirname: root, http, Buffer, ipcMain, JK_LOCAL_BACKEND_PORT: 8001, BrowserWindow: FakeBrowserWindow,
+        path, __dirname: root, http, Buffer, ipcMain, process: { env: { JK_PESQUISA_MERCADO_BROWSER: options.chrome ? '' : 'electron' } }, JK_LOCAL_BACKEND_PORT: 8001, BrowserWindow: FakeBrowserWindow,
         app: { getPath: name => { assert.strictEqual(name, 'userData'); return path.join(root, 'fixture-public-cache-only'); } },
         ML_BROWSER_USER_AGENT: 'fixture-user-agent', mainWindow,
         getMlSession: () => session,
@@ -200,6 +204,24 @@ function harness(saved = [], options = {}) {
         stopFavoritosWorkersPool: () => { throw new Error('A pesquisa não deve tocar no pool Favoritos.'); },
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
+            if (filename === 'node:crypto') return require(filename);
+            if (filename.endsWith('pesquisa-mercado-media-preload.js')) return require(filename);
+            if (filename.endsWith('pesquisa-mercado-chrome.js')) return {
+                createChromeResearchSession(config) {
+                    const chrome = { config, pages: [], shows: [], closed: false,
+                        async show(url, settings) { this.shows.push({ url, settings }); },
+                        async close() { this.closed = true; },
+                        createPage(settings) {
+                            const browser = { settings, getURL: () => '', getResumeURL: () => '',
+                                async prepare() {}, stop() {}, async finish() {} };
+                            this.pages.push(browser);
+                            return browser;
+                        }
+                    };
+                    chromeSessions.push(chrome);
+                    return chrome;
+                }
+            };
             if (filename.endsWith('pesquisa-mercado-avant-auth.js')) return {
                 normalizeEmail: require('../electron_app/main/modules/pesquisa-mercado-avant-auth.js').normalizeEmail,
                 AvantSession: class {
@@ -234,7 +256,7 @@ function harness(saved = [], options = {}) {
         authToken: owner === 'one' ? 'fixture-owner-one' : 'fixture-owner-two', ...(jobId ? { jobId } : {}),
         ...(action === 'start' ? { category } : {}), ...extra
     });
-    return { avantChecks, api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, ipcMain, options, taxonomyCalls, taxonomyConstructors,
+    return { avantChecks, chromeSessions, api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, ipcMain, options, taxonomyCalls, taxonomyConstructors,
         releaseRestore: () => { if (releaseRestore) releaseRestore(); },
         releaseTaxonomy: () => { if (releaseTaxonomy) releaseTaxonomy(); }, taxonomyWaiting: () => !!releaseTaxonomy };
 }
@@ -962,7 +984,35 @@ async function testTypedBrowserTimeoutsAndRecovery() {
     assert.equal(unexpectedDiscovery, 0, 'an interrupted read cannot trigger route discovery');
 }
 
+async function testChromeProfileOwnershipAndSetup() {
+    const h = harness([{ id: 'chrome-private-one', owner: 'one', status: 'paused', checkpoint: {} }], { chrome: true });
+    const state = await h.command('status');
+    assert.equal(state.browser, 'chrome');
+    assert.equal(h.chromeSessions.length, 1);
+    const first = h.chromeSessions[0];
+    assert.equal(first.shows.length, 0, 'status does not open Chrome');
+    assert.equal(first.pages.length, 1);
+    assert.match(path.basename(first.config.profileDir), /^[a-f0-9]{64}$/);
+    await h.command('status', 'one', null, { authToken: 'fixture-owner-one-refresh' });
+    assert.equal(h.chromeSessions.length, 1, 'renewing a token reuses the same authenticated owner profile');
+    await h.command('show-browser', 'one', null, { purpose: 'setup' });
+    assert.equal(first.shows[0].url, 'https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
+    assert.equal(first.shows[0].settings, undefined, 'setup does not opt into visible collection');
+    await h.command('show-browser', 'one', 'chrome-private-one');
+    assert.equal(first.shows[1].settings.collectVisible, true);
+    await h.command('status', 'two');
+    assert(first.closed, 'switching users closes the previous dedicated Chrome');
+    const second = h.chromeSessions[1];
+    assert.notEqual(second.config.profileDir, first.config.profileDir);
+    await assert.rejects(h.command('show-browser', 'two', 'chrome-private-one'), /Pesquisa não encontrada/);
+    assert.equal(second.shows.length, 0);
+    assert.equal(h.windows.length, 0, 'Chrome mode does not instantiate an Electron collection window');
+    await h.api.quit();
+    assert(second.closed);
+}
+
 async function main() {
+    await testChromeProfileOwnershipAndSetup();
     testRecommendationMediaScope();
     await testEightDetailBrowsersAndLoginLifecycle();
     await testTypedBrowserTimeoutsAndRecovery();
