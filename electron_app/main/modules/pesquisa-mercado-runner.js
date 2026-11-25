@@ -1447,11 +1447,18 @@ class PesquisaMercadoRunner {
     async collectSellerDetail(seller, items, index, browser, signal) {
         this.check(signal);
         const item = items[index];
+        const detailUrl = canonicalUrl(item.url);
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
         let timer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
         let panelLoading = false;
+        let releaseRecommendationMedia;
+        const restoreRecommendationMedia = () => {
+            const release = releaseRecommendationMedia;
+            releaseRecommendationMedia = undefined;
+            release?.();
+        };
         const armTimeout = (milliseconds, phase) => {
             if (!active || controller.signal.aborted) return;
             clearTimeout(timer);
@@ -1480,13 +1487,15 @@ class PesquisaMercadoRunner {
                     };
                     try {
                         const observed = await this.collector.collectDetail({
-                            browser, signal: controller.signal, url: canonicalUrl(item.url),
+                            browser, signal: controller.signal, url: detailUrl,
                             expectedItem: { id: item.id || '', url: item.url },
                             seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
                             timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
                             onNavigationStart: () => {
                                 if (!alive()) return;
                                 latestPartial = null;
+                                restoreRecommendationMedia();
+                                releaseRecommendationMedia = browser.deferRecommendationMedia?.(detailUrl, item.id || '');
                                 armTimeout(this.detailNavigationTimeoutMs, 'navigation');
                             },
                             onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
@@ -1496,7 +1505,10 @@ class PesquisaMercadoRunner {
                         // metrics observed before the terminal result.
                         const valid = capture(observed);
                         return valid ? observed : { ...observed, anuncios: [] };
-                    } finally { attemptActive = false; }
+                    } finally {
+                        attemptActive = false;
+                        restoreRecommendationMedia();
+                    }
                 }, controller.signal, browser);
             } catch (error) {
                 this.check(signal);
@@ -1611,6 +1623,7 @@ class PesquisaMercadoRunner {
             active = false;
             clearTimeout(timer);
             signal.removeEventListener('abort', abort);
+            restoreRecommendationMedia();
             const current = items[index];
             if (panelLoading && !this.collector.isComplete(current)
                 && !String(current.erro || '').includes(AVANT_PANEL_LOADING_MESSAGE)) {

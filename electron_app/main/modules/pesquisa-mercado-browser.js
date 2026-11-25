@@ -7,6 +7,14 @@ const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyServic
 let pesquisaMercadoCoordinator = null;
 let pesquisaMercadoWindow = null;
 const pesquisaMercadoDetailBrowsers = new Set();
+const pesquisaMercadoMediaDeferrals = new Map();
+let pesquisaMercadoMediaToken = 0;
+ipcMain.on('jk-pesquisa-mercado:recommendation-media-state', event => {
+    const contents = event.sender;
+    const state = pesquisaMercadoMediaDeferrals.get(contents);
+    event.returnValue = state && !contents.isDestroyed() && event.senderFrame && event.senderFrame === contents.mainFrame
+        ? state : null;
+});
 let pesquisaMercadoBrowserJobId = '';
 let pesquisaMercadoAuthToken = '';
 let pesquisaMercadoAvantEmail = '';
@@ -125,7 +133,8 @@ function createPesquisaMercadoBrowserWindow(title, onNavigation, onClosed) {
     if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
     const worker = new BrowserWindow({ width: 1280, height: 900, show: false,
         title, backgroundColor: '#ffffff',
-        webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
+            preload: path.join(__dirname, 'electron_app', 'main', 'modules', 'pesquisa-mercado-media-preload.js'),
             userAgent: ML_BROWSER_USER_AGENT, session: getMlSession() }
     });
     worker.setMenuBarVisibility(false);
@@ -133,7 +142,11 @@ function createPesquisaMercadoBrowserWindow(title, onNavigation, onClosed) {
     worker.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // Closing the auxiliary window only hides it, preserving the active job.
     worker.on('close', event => { if (!pesquisaMercadoQuitting) { event.preventDefault(); worker.hide(); } });
-    worker.on('closed', onClosed);
+    const contents = worker.webContents;
+    worker.on('closed', () => {
+        pesquisaMercadoMediaDeferrals.delete(contents);
+        onClosed();
+    });
     worker.webContents.on('did-navigate', (_event, url, statusCode) => {
         onNavigation(Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? { url, statusCode } : null);
     });
@@ -179,6 +192,18 @@ function pesquisaMercadoBrowserAdapter(detailIndex = 0) {
         return detailWindow;
     };
     const adapter = {
+        deferRecommendationMedia(url, itemId) {
+            const contents = ensureWindow().webContents;
+            const state = { token: ++pesquisaMercadoMediaToken, itemId, url };
+            pesquisaMercadoMediaDeferrals.set(contents, state);
+            return () => {
+                if (pesquisaMercadoMediaDeferrals.get(contents) !== state) return;
+                pesquisaMercadoMediaDeferrals.delete(contents);
+                if (!contents.isDestroyed()) {
+                    try { contents.send('jk-pesquisa-mercado:release-recommendation-media', state.token); } catch (_error) {}
+                }
+            };
+        },
         async prepare() {
             if (pesquisaMercadoQuitting) throw new Error('O aplicativo esta encerrando.');
             // The main browser prepares the shared session before details start.

@@ -1346,6 +1346,18 @@ async function detailOwnTimeoutKeepsObservedMetricsWithoutCatalogRank() {
     assert.deepEqual(h.vendors.get('id:111'), published, 'late callback and return cannot mutate a finished detail');
 }
 
+function trackRecommendationMedia(runner) {
+    const active = new Set(), attempts = [];
+    runner.browser.deferRecommendationMedia = (url, id) => {
+        assert.equal(url, salesListing(id).url);
+        assert(!active.has(id), 'a new visit must release the previous media');
+        attempts.push(id);
+        active.add(id);
+        return () => { assert(active.delete(id), 'each deferral is released exactly once'); };
+    };
+    return { active, attempts };
+}
+
 async function timedOutLatestPartialRespectsIdentityAndTerminalVetoes() {
     const invalidResults = [
         id => ({ anuncios: [salesListing('MLB9999999999', { vendas: 999, media_mensal: 999, rankable: true })] }),
@@ -1357,6 +1369,7 @@ async function timedOutLatestPartialRespectsIdentityAndTerminalVetoes() {
     ];
     const ids = invalidResults.map((_value, index) => 'MLB' + (1000000001 + index));
     const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    const media = trackRecommendationMedia(h.runner);
     h.runner.detailTimeoutMs = 12;
     withDetailCollector(h, async options => {
         await beginObservedDetail(options);
@@ -1370,11 +1383,14 @@ async function timedOutLatestPartialRespectsIdentityAndTerminalVetoes() {
     assert(ads.every(item => item.vendas === null && item.media_mensal === null && item.rankable === false),
         'timeout cannot revive data before an item, seller, login or document conflict');
     assert.equal(h.stopped(), invalidResults.length);
+    assert.deepEqual(media.attempts, ids);
+    assert.equal(media.active.size, 0, 'timed out windows resume recommendation media');
 }
 
 async function pauseAfterPartialPreservesOriginalAndCursor() {
     const id = 'MLB1000000001';
     const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+    const media = trackRecommendationMedia(h.runner);
     let entered;
     const waiting = new Promise(resolve => { entered = resolve; });
     withDetailCollector(h, async options => {
@@ -1384,22 +1400,27 @@ async function pauseAfterPartialPreservesOriginalAndCursor() {
         return waitForDetailAbort(options.signal);
     });
     await h.runner.start(); await waiting;
+    assert(media.active.has(id));
     await h.runner.stop('paused'); await h.runner.task;
     assert.equal(h.saved().status, 'paused');
     assert.equal(h.saved().checkpoint.sellerCollection.index, 0, 'user pause does not consume the detail cursor');
     assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].vendas, null, 'user pause cannot salvage callback metrics');
     assert.equal(h.vendors.size, 0);
+    assert.equal(media.active.size, 0, 'pausing releases media in the retained window');
 }
 
 async function loginAfterPartialKeepsTheDetailPending() {
     const id = 'MLB1000000001';
     const h = harness(avantFlowPages(), async () => ({ anuncios: [salesListing(id)], incomplete: true }));
+    const media = trackRecommendationMedia(h.runner);
     withDetailCollector(h, async options => {
         await beginObservedDetail(options);
         await options.onPartial({ anuncios: [salesListing(id, { vendas: 100, media_mensal: 5, rankable: true })] });
         return { anuncios: [], authRequired: true, reason: 'avant_login_required' };
     });
     await h.runner.start(); await h.runner.task;
+    assert(media.attempts.includes(id));
+    assert.equal(media.active.size, 0, 'the retained login window has no active deferral');
     assert.equal(h.saved().status, 'waiting_login');
     assert.equal(h.saved().checkpoint.sellerCollection.index, 0);
     assert.equal(h.saved().checkpoint.sellerCollection.result.anuncios[0].vendas, null);

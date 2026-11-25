@@ -304,6 +304,7 @@
     "static/pesquisa-mercado/shared-collector.js",
     "static/pesquisa-mercado/page-scripts.js",
     "electron_app/main/modules/pesquisa-mercado-browser.js",
+    "electron_app/main/modules/pesquisa-mercado-media-preload.js",
     "electron_app/main/modules/pesquisa-mercado-avant-auth.js",
     "electron_app/main/modules/pesquisa-mercado-runner.js",
     "electron_app/main/modules/pesquisa-mercado-category-navigation.js",

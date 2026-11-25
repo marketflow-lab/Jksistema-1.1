@@ -22,6 +22,7 @@ function functionSource(relative, name) {
 
 function harness(saved = [], options = {}) {
     const events = [];
+    const ipcMain = new EventEmitter();
     const fixtureNameSellers = clone(options.sellers || []);
     const requests = [];
     const windows = [];
@@ -70,7 +71,7 @@ function harness(saved = [], options = {}) {
         }
     }
     class FakeWebContents extends EventEmitter {
-        constructor() { super(); this.url = ''; this.stops = 0; this.scripts = []; }
+        constructor() { super(); this.url = ''; this.stops = 0; this.scripts = []; this.mainFrame = {}; }
         setUserAgent(value) { this.userAgent = value; }
         setWindowOpenHandler(handler) { this.windowOpenHandler = handler; }
         getURL() { return this.url; }
@@ -182,7 +183,7 @@ function harness(saved = [], options = {}) {
     };
     const mainWindow = { isDestroyed: () => false, webContents: new FakeWebContents() };
     const sandbox = {
-        path, __dirname: root, http, Buffer, JK_LOCAL_BACKEND_PORT: 8001, BrowserWindow: FakeBrowserWindow,
+        path, __dirname: root, http, Buffer, ipcMain, JK_LOCAL_BACKEND_PORT: 8001, BrowserWindow: FakeBrowserWindow,
         app: { getPath: name => { assert.strictEqual(name, 'userData'); return path.join(root, 'fixture-public-cache-only'); } },
         ML_BROWSER_USER_AGENT: 'fixture-user-agent', mainWindow,
         getMlSession: () => session,
@@ -233,9 +234,50 @@ function harness(saved = [], options = {}) {
         authToken: owner === 'one' ? 'fixture-owner-one' : 'fixture-owner-two', ...(jobId ? { jobId } : {}),
         ...(action === 'start' ? { category } : {}), ...extra
     });
-    return { avantChecks, api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, options, taxonomyCalls, taxonomyConstructors,
+    return { avantChecks, api: sandbox.testAPI, sandbox, trusted, command, events, requests, windows, jobs, pool, session, ipcMain, options, taxonomyCalls, taxonomyConstructors,
         releaseRestore: () => { if (releaseRestore) releaseRestore(); },
         releaseTaxonomy: () => { if (releaseTaxonomy) releaseTaxonomy(); }, taxonomyWaiting: () => !!releaseTaxonomy };
+}
+
+function testRecommendationMediaScope() {
+    const h = harness();
+    const main = h.api.browser();
+    const auxiliary = h.api.browser(1);
+    const url = 'https://produto.mercadolivre.com.br/MLB-1000000991-ad-_JM';
+    const readState = (sender, senderFrame = sender.mainFrame) => {
+        const event = { sender, senderFrame };
+        h.ipcMain.emit('jk-pesquisa-mercado:recommendation-media-state', event);
+        return clone(event.returnValue);
+    };
+
+    const releaseFirst = main.deferRecommendationMedia(url, 'MLB1000000991');
+    const releaseAuxiliary = auxiliary.deferRecommendationMedia(url, 'MLB1000000991');
+    const [first, second] = h.windows.map(window => window.webContents);
+    const firstState = readState(first);
+    const secondState = readState(second);
+    assert.equal(firstState.url, url);
+    assert.equal(firstState.itemId, 'MLB1000000991');
+    assert.notEqual(firstState.token, secondState.token, 'each window gets its own attempt');
+    assert.equal(readState(first, {}), null, 'a subframe cannot obtain the deferral state');
+    assert.equal(readState(h.trusted.sender), null, 'another window cannot obtain the deferral state');
+    assert.equal(path.basename(h.windows[0].options.webPreferences.preload), 'pesquisa-mercado-media-preload.js');
+
+    releaseFirst();
+    assert.equal(readState(first), null);
+    assert.equal(readState(second).token, secondState.token);
+    const releaseNext = main.deferRecommendationMedia(url, 'MLB1000000991');
+    const nextState = readState(first);
+    assert.notEqual(nextState.token, firstState.token, 'the same URL can be collected again');
+    releaseFirst();
+    assert.equal(readState(first).token, nextState.token, 'a stale end cannot release the next attempt');
+    releaseNext();
+    assert.equal(readState(first), null);
+
+    auxiliary.destroy();
+    assert.equal(readState(second), null, 'closing the window disposes of its deferral');
+    releaseAuxiliary();
+    const releases = h.events.filter(event => event.channel === 'jk-pesquisa-mercado:release-recommendation-media');
+    assert.deepEqual(releases.map(event => event.payload), [firstState.token, nextState.token]);
 }
 
 async function testBrowserIsolationAndNavigation() {
@@ -921,6 +963,7 @@ async function testTypedBrowserTimeoutsAndRecovery() {
 }
 
 async function main() {
+    testRecommendationMediaScope();
     await testEightDetailBrowsersAndLoginLifecycle();
     await testTypedBrowserTimeoutsAndRecovery();
     await testIncompleteRecoveryAndTerminalDiagnostics();
