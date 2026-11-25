@@ -102,6 +102,14 @@ function publicMarketplacePage(value) {
     return url.href;
 }
 
+function marketplacePause(job, checkpoint = job?.checkpoint) {
+    const access = checkpoint?.marketplaceAccess;
+    if (job?.status !== 'paused' || ![403, 429].includes(access?.status)) return null;
+    const stage = Object.hasOwn(MARKETPLACE_STAGES, access.stage) ? access.stage : '';
+    const url = access.status === 403 && publicMarketplacePage(access.url);
+    return { status: access.status, ...(stage ? { stage } : {}), ...(url ? { url } : {}) };
+}
+
 function assertMarketplaceNavigation(browser, stage, now = Date.now()) {
     const response = browser.getNavigationStatus?.();
     if (response?.statusCode !== 403 && response?.statusCode !== 429) return;
@@ -542,7 +550,9 @@ class PesquisaMercadoRunner {
                 ...(DISCOVERY_OUTCOMES.has(item.discovery_outcome) ? { discovery_outcome: item.discovery_outcome } : {}) };
         });
         const recovery = this.checkpoint && this.checkpoint.recovery;
+        const access = marketplacePause(this.job, this.checkpoint);
         return { job: { id, status, revision, counters, message, created_at, updated_at, generation: this.job.generation || 0,
+            ...(access ? { marketplaceAccess: access } : {}),
             scopeCategory: this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category || null,
             scopePath: this.checkpoint && this.checkpoint.officialTaxonomy && this.checkpoint.officialTaxonomy.ancestry || [],
             currentCategory: this.checkpoint && this.checkpoint.currentCategory || null,
@@ -622,7 +632,7 @@ class PesquisaMercadoRunner {
 
     async status(jobId = '') {
         if (!jobId && this.task && this.job) return this.snapshot();
-        const response = await this.api('GET', jobId ? `${ROOT}/${encodeURIComponent(jobId)}` : `${ROOT}/latest`);
+        let response = await this.api('GET', jobId ? `${ROOT}/${encodeURIComponent(jobId)}` : `${ROOT}/latest`);
         if (this.task && this.job && response.job && this.job.id === response.job.id) return this.snapshot();
         if (response.job && response.job.checkpoint && Object.prototype.hasOwnProperty.call(response.job.checkpoint, 'incompleteCategories')) {
             response.job.checkpoint.incompleteCategories = normalizedIncompleteCategories(response.job.checkpoint);
@@ -631,10 +641,12 @@ class PesquisaMercadoRunner {
             const message = 'Pesquisa recuperada. Clique em Retomar para continuar.';
             const checkpoint = clone(response.job.checkpoint || {});
             checkpoint.progress = progressState({ ...initialCheckpoint(checkpoint).progress, phase: 'paused', detail: message });
-            return this.api('PATCH', `${ROOT}/${encodeURIComponent(response.job.id)}/checkpoint`, {
+            response = await this.api('PATCH', `${ROOT}/${encodeURIComponent(response.job.id)}/checkpoint`, {
                 checkpoint, counters: response.job.counters, status: 'paused', message, generation: response.job.generation || 0
             });
         }
+        const access = marketplacePause(response.job);
+        if (access) response.job = { ...response.job, marketplaceAccess: access };
         return response;
     }
 
@@ -1405,8 +1417,9 @@ class PesquisaMercadoRunner {
             let page;
             try {
                 url = await this.officialCategoryUrl(category);
-                const strict = this.ancestorRecovery.size > 0 && !!this.findNavigationAncestor(category.key, key => this.ancestorRecovery.get(key));
-                page = await readRoute(url, strict);
+                const fromDepartment = this.officialNavigation?.departmentUrl && unsupportedCategoryAlias(category.url);
+                const recoveredAncestor = this.ancestorRecovery.size > 0 && this.findNavigationAncestor(category.key, key => this.ancestorRecovery.get(key));
+                page = await readRoute(url, fromDepartment || recoveredAncestor);
             }
             catch (error) {
                 if (!canDiscover(error)) throw error;
@@ -2485,4 +2498,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, assertMarketplaceNavigation, assertMarketplaceRetryAllowed, publicMarketplacePage, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };
+module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, assertMarketplaceNavigation, assertMarketplaceRetryAllowed, marketplacePause, publicMarketplacePage, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };

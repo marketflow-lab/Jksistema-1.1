@@ -5,7 +5,8 @@ const { chromium } = require('playwright');
 const { discoverCategoryRoute, discoverCategoryRouteResult } = require('../electron_app/main/modules/pesquisa-mercado-category-discovery');
 const { assertMarketplaceNavigation } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 
-const INDEX = 'https://www.mercadolivre.com.br/categorias';
+const DEPARTMENT = 'https://www.mercadolivre.com.br/c/esportes-e-fitness';
+const HOME = 'https://www.mercadolivre.com.br/';
 const SEARCH = 'https://www.mercadolivre.com.br/jm/search';
 const RESULTS = 'https://lista.mercadolivre.com.br/fixture-public-search/?sb=all_mercadolibre#D[A:fixture]';
 const BASE = 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/';
@@ -37,7 +38,7 @@ async function fixture(browser, options = {}) {
     await page.route('**/*', async route => {
         const url = new URL(route.request().url());
         let body = '<main></main>', code = 200;
-        if (url.pathname === '/categorias') {
+        if (url.href === DEPARTMENT || url.href === HOME) {
             body = '<main><form method="get" action="' + (options.formAction || SEARCH) + '"><input name="as_word" type="search">'
                 + (options.extraInput || '') + '</form>' + (options.login ? '<input type="password">' : '') + '</main>';
             code = options.status || 200;
@@ -60,6 +61,7 @@ async function fixture(browser, options = {}) {
         await route.fulfill({ status: code, contentType: 'text/html; charset=utf-8', body });
     });
     page.on('response', response => { if (response.request().isNavigationRequest()) status = { statusCode: response.status(), url: response.url() }; });
+    if (options.initialUrl) await page.goto(options.initialUrl);
     const adapter = {
         navigate: async url => { navigations.push(url); await page.goto(url); },
         getURL: () => page.url(), isLoading: () => false, getNavigationStatus: () => status,
@@ -100,8 +102,19 @@ async function main() {
         await fixture(browser, { conflictingIds: [expected.key], rows: [seed()], reportOutcome: true, check: async ({ run, terms, navigations }) => {
             assert.deepEqual(await run(), { outcome: 'ambiguous', route: null });
             assert.equal(terms.length, 1);
-            assert.deepEqual(navigations, [INDEX], 'a valid seed cannot mask two conflicting routes for the requested category in the same document');
+            assert.deepEqual(navigations, [DEPARTMENT], 'a valid seed cannot mask two conflicting routes for the requested category in the same document');
         } });
+        await fixture(browser, { initialUrl: DEPARTMENT, ancestry: [{ ...ancestry[0], url: DEPARTMENT.replace('www.', '') + '/' }, ...ancestry.slice(1)], check: async ({ run, navigations }) => {
+            assert.deepEqual(await run(), { ...expected, url: LEAF });
+            assert.deepEqual(navigations, [itemUrl('MLB999')], 'reuse the department already open on its canonical www host');
+        } });
+        for (const url of ['https://lista.mercadolivre.com.br/_CatId_MLB1276', DEPARTMENT + '?scope=outra', 'https://example.com/c/esportes-e-fitness']) {
+            await fixture(browser, { ancestry: [{ ...ancestry[0], url }, ...ancestry.slice(1)], rows: [], check: async ({ run, navigations, terms }) => {
+                assert.equal(await run(), null);
+                assert.deepEqual(terms, contextualTerms);
+                assert.deepEqual(navigations, [HOME, HOME], 'only a published department permalink can replace the official home search form');
+            } });
+        }
         await fixture(browser, { conflictingIds: ['MLB123'], rowsFor: term => term === contextualTerms[1] ? [seed()] : [], check: async ({ run, terms }) => {
             assert.deepEqual(await run(), { ...expected, url: LEAF });
             assert.deepEqual(terms, contextualTerms, 'both bounded searches retain the requested leaf and its domain');
@@ -133,7 +146,7 @@ async function main() {
                 const candidate = await run();
                 assert.deepEqual(candidate, { ...cables, url: cableBase }, 'only the exact observed query suffix is removed from an ID-coupled filter URL');
                 assert.deepEqual(Object.keys(candidate).sort(), ['key', 'nome', 'url'], 'a discovered filter route does not promote document identity');
-                assert.deepEqual(terms, [cableTerms[0]]); assert.deepEqual(navigations, [INDEX], 'typed routes are returned before opening item seeds or final categories');
+                assert.deepEqual(terms, [cableTerms[0]]); assert.deepEqual(navigations, [DEPARTMENT], 'typed routes are returned before opening item seeds or final categories');
             } });
         }
         await fixture(browser, { expected: cables, ancestry: cableAncestry, resultUrl: globalResult,
@@ -141,7 +154,7 @@ async function main() {
             rowsFor: term => term === cableTerms[0] ? [seed('MLB999', 'MLB47097')] : [], check: async ({ run, terms, navigations }) => {
             assert.deepEqual(await run(), { ...cables, url: cableBase });
             assert.deepEqual(terms, cableTerms, 'a second contextual query cannot broaden to car brakes through the isolated parent label');
-            assert.deepEqual(navigations, [INDEX, INDEX], 'wrong-domain item metadata cannot authorize opening a PDP');
+            assert.deepEqual(navigations, [DEPARTMENT, DEPARTMENT], 'wrong-domain item metadata cannot authorize opening a PDP');
         } });
         for (const [description, options] of [
             ['different category ID', { categories: [{ ...typed, key: 'MLB9888' }] }],

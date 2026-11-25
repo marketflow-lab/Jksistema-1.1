@@ -1,10 +1,14 @@
 'use strict';
 
-const INDEX_URL = 'https://www.mercadolivre.com.br/categorias';
+const { departmentPermalink } = require('./pesquisa-mercado-category-navigation');
 const SEARCH_ACTION = 'https://www.mercadolivre.com.br/jm/search';
 const ID = /^MLB\d+$/;
 const label = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 const navigationContextChanged = error => /execution context was destroyed|cannot find context with specified id|context.*(?:destroyed|invalidated)/i.test(String(error && error.message || ''));
+
+function entryPageKey(url) {
+    return String(url || '').replace(/^https:\/\/www\.mercadolivre\.com\.br\//, 'https://mercadolivre.com.br/').replace(/\/$/, '');
+}
 
 function publicUrl(value) {
     try {
@@ -114,7 +118,7 @@ function routeFromBreadcrumbs(snapshot, expected, ancestors) {
                 if (ancestorIndex === 0 && rootUrl && ['www.mercadolivre.com.br', 'mercadolivre.com.br'].includes(rootUrl.hostname)
                     && !rootUrl.search && /^\/c\/[^/]+\/?$/.test(rootUrl.pathname)) {
                     const knownRoot = publicUrl(ancestors[0].url), text = label(ancestor.nome);
-                    const exactRoot = knownRoot && knownRoot.replace(/\/+$/, '') === rootHref.replace(/\/+$/, '');
+                    const exactRoot = knownRoot && entryPageKey(knownRoot) === entryPageKey(rootHref);
                     if (text !== label(ancestors[0].nome) && !(exactRoot && /^(?:\.{3}|…)$/.test(text))
                         || knownRoot && new URL(knownRoot).pathname.startsWith('/c/') && !exactRoot) { valid = false; break; }
                     previousLabelIndex = 0;
@@ -169,6 +173,9 @@ async function discoverCategoryRouteResult({ browser, scripts, expected, ancestr
     // These items supply navigation evidence only and never enter the ranking.
     const categoryIds = new Set([expected.key, ...seedCategoryIds.filter(key => ID.test(key))]);
     const parentName = ancestors.at(-1).nome;
+    // Use the published search form. The public directory is unnecessary for a search.
+    const searchEntry = departmentPermalink(ancestors[0].url) || 'https://www.mercadolivre.com.br/';
+    const entryKey = entryPageKey(searchEntry);
     const domainName = (ancestors[1] || ancestors[0]).nome;
     const contextualTerm = names => {
         const seen = new Set();
@@ -221,13 +228,13 @@ async function discoverCategoryRouteResult({ browser, scripts, expected, ancestr
     try {
         let seeds = [];
         for (const term of terms.slice(0, 2)) {
-            await step(() => browser.navigate(INDEX_URL, controller.signal));
+            if (entryPageKey(browser.getURL()) !== entryKey) await step(() => browser.navigate(searchEntry, controller.signal));
             let submitted = false;
             for (let poll = 0; poll < 20; poll += 1) {
                 await pause();
                 const state = await pageState();
                 if (!state.settled) continue;
-                if (state.url !== INDEX_URL) return noRoute;
+                if (entryPageKey(state.url) !== entryKey) return noRoute;
                 try { submitted = await step(() => browser.executeJavaScript(`(${submitObservedSearch.toString()})(${JSON.stringify(term)},${JSON.stringify(SEARCH_ACTION)})`)); }
                 catch (error) {
                     if (!navigationContextChanged(error)) throw error;
@@ -242,7 +249,7 @@ async function discoverCategoryRouteResult({ browser, scripts, expected, ancestr
             for (let poll = 0; poll < 24; poll += 1) {
                 await pause();
                 const state = await pageState();
-                if (!state.settled || state.url === INDEX_URL) { previous = ''; stable = 0; continue; }
+                if (!state.settled || entryPageKey(state.url) === entryKey) { previous = ''; stable = 0; continue; }
                 if (new URL(state.url).hostname !== 'lista.mercadolivre.com.br') return noRoute;
                 if (searchUrl && searchUrl !== state.url) return noRoute;
                 searchUrl = state.url;

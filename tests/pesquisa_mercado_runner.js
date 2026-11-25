@@ -536,22 +536,21 @@ async function officialTaxonomyScope() {
 }
 
 async function nauticalOfficialNavigation() {
-    const index = `${base}/categorias`;
     const prefix = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
     const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({key, nome, url});
-    const vehicles = node('MLB5672','Acessórios para Veículos');
+    const vehicles = node('MLB5672','Acessórios para Veículos', base + '/c/acessorios-para-veiculos');
     const scope = node('MLB6005','Acessórios Náuticos');
     const branch = node('MLB271613','Sistemas de Navegação');
     const leaf = node('MLB455956','Anemômetros');
-    const rootLink = node('https://www.mercadolivre.com.br/c/acessorios-para-veiculos',vehicles.nome,'https://www.mercadolivre.com.br/c/acessorios-para-veiculos');
-    const scopeLink = node(prefix,scope.nome,prefix);
+    const scopeLink = node(scope.key,scope.nome,prefix);
+    const departmentPage = { categoryDocumentIdentity: true, effectiveCategoryId: vehicles.key, categories: [scopeLink] };
     const branchUrl=prefix+'sistemas-navegacao/', leafUrl=branchUrl+'anemometros/';
     const branchLink=node(branchUrl,branch.nome,branchUrl), leafLink=node(leafUrl,leaf.nome,leafUrl);
     const tree={ [scope.key]:[branch], [branch.key]:[leaf], [leaf.key]:[] };
     const make = (leafPage={empty:true}, parentPage={categories:[leafLink]}) => harness({
-        [index]:{categoryTree:[{...rootLink,children:[scopeLink]}],categories:[rootLink]},
+        [vehicles.url]:departmentPage,
         [prefix]:{categories:[branchLink]}, [branchUrl]:parentPage,
-        [leafUrl]:leafPage,
+        [leafUrl]:{ categoryDocumentIdentity: true, effectiveCategoryId: leaf.key, ...leafPage },
         [leaf.url]:{empty:true,categoryNotFound:true}
     });
     const taxonomy = () => ({load:async()=>({complete:true,updatedAt:'2026-10-08T12:00:00Z',
@@ -560,20 +559,29 @@ async function nauticalOfficialNavigation() {
     const h=make(); h.runner.taxonomy=taxonomy();
     await h.runner.start(scope); await h.runner.task;
     assert.equal(h.saved().status,'completed');
-    assert.deepEqual(h.visited,[index,prefix,branchUrl,leafUrl]);
+    assert.deepEqual(h.visited,[vehicles.url,prefix,branchUrl,leafUrl]);
     assert(!h.visited.some(url=>/_CatId_/.test(url)), 'unresolved IDs must never become browser navigation');
     assert.deepEqual(h.saved().checkpoint.officialTaxonomy.ancestry,[vehicles,scope]);
     assert.equal(h.saved().counters.pages,1,'ancestry navigation is not counted as seller discovery');
     assert.equal(h.saved().checkpoint.scope.category.url,scope.url,'selected scope remains immutable');
 
-    const seedUrl = `${base}/p/MLB1000000100`;
+    const listing = salesListing('MLB1000000001', { avant_metrics_version: 3 });
+    const panel = { ...listing, vendas: 188, vendas_exibicao: '188', vendas_rotulo: 'vendas do anuncio',
+        media_mensal: 5, media_mensal_rotulo: 'vendas mensais', media_vendas_mensal_exibicao: '5/Mês',
+        data_criacao: '04/2023', dataCriacaoFonte: listing.vendasFonte, status: 'analisado', rankable: true };
+    const seedUrl = listing.url;
     const full = harness({
-        [index]: { categoryTree: [{ ...rootLink, children: [scopeLink] }], categories: [rootLink] },
+        [vehicles.url]: departmentPage,
         [prefix]: { categories: [branchLink] }, [branchUrl]: { categories: [leafLink] },
-        [leafUrl]: { anuncios: [{ id: 'MLB1000000100', url: seedUrl }] },
-        [seedUrl]: seller('111'), [`${base}/perfil/111`]: seller('111'),
-        [`${base}/anuncios/111`]: {},
+        [leafUrl]: { categoryDocumentIdentity: true, effectiveCategoryId: leaf.key, anuncios: [{ id: listing.id, url: seedUrl }] },
+        [seedUrl]: { ...seller('111'), anuncios: [panel] }, [`${base}/perfil/111`]: seller('111'),
+        [`${base}/anuncios/111`]: { atBottom: true, anuncios: [listing] }
     });
+    const shared = require('../static/pesquisa-mercado/shared-collector');
+    let clock = 0;
+    const clocked = options => ({ ...options, now: () => clock, wait: async ms => { clock += ms; } });
+    full.runner.collector = { ...shared, collectFirstPage: options => shared.collectFirstPage(clocked(options)),
+        collectDetail: options => shared.collectDetail(clocked(options)) };
     full.runner.taxonomy = taxonomy();
     await full.runner.start(scope); await full.runner.task;
     assert.equal(full.saved().status, 'completed', 'official category navigation reaches the normal seller publication flow');
@@ -588,12 +596,38 @@ async function nauticalOfficialNavigation() {
     assert.equal(publication.anuncios[0].categoria_key, leaf.key);
     assert.equal(publication.anuncios[0].categoria, leaf.nome);
     assert.equal(publication.anuncios.length, 1);
-    assert.equal(publication.anuncios[0].id, 'MLB1000000001');
+    assert.equal(publication.anuncios[0].id, listing.id);
     assert.equal(publication.anuncios[0].rankable, true, 'the collected advertisement remains eligible for ranking');
     assert.equal(publication.anuncios[0].seller_id, '111');
-    assert.deepEqual(full.visited, [index, prefix, branchUrl, leafUrl, seedUrl,
-        `${base}/perfil/111`, `${base}/anuncios/111`]);
+    assert.deepEqual(full.visited, [vehicles.url, prefix, branchUrl, leafUrl, seedUrl,
+        `${base}/perfil/111`, `${base}/anuncios/111`, seedUrl, `${base}/anuncios/111`]);
     assert(!full.visited.some(url => /_CatId_/.test(url)), 'full seller collection never visits an unresolved category alias');
+    const fixturePath = require('node:path').resolve(__dirname, '../scripts/pesquisa_mercado_ranking_acceptance.py');
+    const replay = require('node:child_process').spawnSync(process.env.JK_TEST_PYTHON || 'python',
+        ['-B', '-X', 'utf8', fixturePath], { encoding: 'utf8', windowsHide: true,
+            input: JSON.stringify({ category: scope, publications: [publication] }) });
+    if (replay.error) throw replay.error;
+    assert.equal(replay.status, 0, replay.stderr);
+    const stored = JSON.parse(replay.stdout);
+    assert.equal(stored.jobCounters.pending, 0);
+    for (const view of [stored.ranking, stored.bySeller[0]]) {
+        assert.equal(view.total, 1);
+        const [ad] = view.items;
+        assert.deepEqual([ad.id, ad.rank, ad.vendas, ad.media_vendas_mensal, ad.data_criacao],
+            [listing.id, 1, 188, 5, '04/2023'], 'both persisted rankings must retain the original offer and its panel metrics');
+    }
+
+    for (const statusCode of [403, 429]) {
+        const denied = make();
+        denied.runner.taxonomy = taxonomy();
+        denied.runner.browser.getNavigationStatus = () => ({ statusCode, url: denied.runner.browser.getURL() });
+        await denied.runner.start(scope); await denied.runner.task;
+        assert.equal(denied.saved().status, 'paused');
+        assert.equal(denied.saved().checkpoint.marketplaceAccess.status, statusCode);
+        assert.deepEqual(denied.visited, [vehicles.url], 'a blocked department must not trigger another route');
+        assert.equal(denied.vendors.size, 0);
+        assert.equal(denied.saved().counters.ads, 0);
+    }
 
     const resumed=make(); resumed.runner.taxonomy={load:async()=>{throw new Error('frozen ancestry must not be refreshed');}};
     const checkpoint={...h.saved().checkpoint,categoryIndex:2,currentCategory:leaf,
@@ -685,8 +719,8 @@ async function officialDirectoryAndRescueSettles() {
     wrongDestination.runner.taxonomy = taxonomy();
     await wrongDestination.runner.start(scope); await wrongDestination.runner.task;
     assert.equal(wrongDestination.saved().status, 'failed', 'a directory tree from another destination is never consumed');
-    assert(wrongDestination.visited.length && wrongDestination.visited.every(url => url === index),
-        'independent discovery may reopen the directory, but wrong document links must never become category navigation');
+    assert.deepEqual(wrongDestination.visited, [index, base + '/'],
+        'without a department permalink, independent discovery can use the public search form but never links from the wrong document');
     assert.equal(wrongDestination.saved().counters.pages, 0);
     assert.deepEqual(wrongDestination.saved().checkpoint.scope.category, scope);
 

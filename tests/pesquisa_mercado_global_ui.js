@@ -38,6 +38,7 @@ async function main() {
             warning: 'Alguns anúncios ficaram sem dados suficientes do Avant Pro.' } };
     const commands = [];
     const requests = [];
+    let chrome = false;
     const server = http.createServer((req, res) => {
         const url = new URL(req.url, 'http://127.0.0.1');
         const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
@@ -56,6 +57,12 @@ async function main() {
             if (action === 'recover-incomplete') job = { ...job, status: 'running', revision: job.revision + 1,
                 checkpoint: { ...job.checkpoint, recovery: { categoryKeys: ['MLB1', 'MLB2'], index: 0 } } };
             if (action === 'cancel') job = { ...job, status: 'cancelled', revision: job.revision + 1 };
+            if (action === 'status' && chrome) return json({ job, browser: 'chrome' });
+            if (action === 'browser' && chrome) {
+                job = { ...job, revision: job.revision + 1 };
+                const { id, status, revision, marketplaceAccess } = job;
+                return json({ job: { id, status, revision, marketplaceAccess } });
+            }
             json({ job }); return;
         }
         if (url.pathname === '/api/pesquisa-mercado/jobs/latest') { json({ job }); return; }
@@ -207,6 +214,33 @@ async function main() {
             assert.strictEqual(await page.locator('#pm-global-status').textContent(), title);
             assert.doesNotMatch(await page.locator('#pm-global-status-detail').textContent(), /33 anúncios coletados/, 'estado encerrado não mostra atividade de coleta antiga');
         }
+        const url403 = 'https://www.mercadolivre.com.br/categorias';
+        const detailPanel = page.locator('#pm-global-status-detail');
+        chrome = true;
+        job = { ...job, revision: job.revision + 1, status: 'paused', progress: undefined,
+            message: 'Feche a janela do Chrome dedicada ao login e clique em Retomar.',
+            marketplaceAccess: { status: 403, stage: 'category', url: url403 } };
+        await page.reload();
+        await page.locator('#pm-mode-global').click();
+        await page.waitForFunction(() => document.querySelector('#pm-global-status-detail').textContent.includes('HTTP 403'));
+        const pausedText = await detailPanel.textContent();
+        assert.match(pausedText, /HTTP 403 no índice de categorias/);
+        assert.match(pausedText, /Feche a janela do Chrome.*Retomar/);
+        assert.ok(pausedText.includes(url403));
+        await page.locator('#pm-global-browser').click();
+        await page.waitForFunction(() => !document.querySelector('#pm-global-browser').disabled);
+        assert.equal(await detailPanel.textContent(), pausedText, 'a resposta compacta de Mostrar navegador mantém o endereço e o motivo');
+        job = { ...job, revision: job.revision + 1, marketplaceAccess: { status: 429 },
+            message: 'Mercado Livre retornou HTTP 429 na categoria. Pesquisa pausada para respeitar o limite de consultas.' };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.match(await detailPanel.textContent(), /HTTP 429/);
+        assert.doesNotMatch(await detailPanel.textContent(), /403|mercadolivre\.com/);
+        // Older checkpoints may identify the HTTP response without carrying a public address.
+        job = { ...job, revision: job.revision + 1, marketplaceAccess: { status: 403, stage: 'category' },
+            message: 'Mercado Livre retornou HTTP 403 na categoria.' };
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+        assert.match(await detailPanel.textContent(), /HTTP 403 na categoria/);
+        assert.doesNotMatch(await detailPanel.textContent(), /mercadolivre\.com|índice de categorias/);
         for (const [reason, title, expectedDetail] of [
             ['ml_login_required', 'Acesso ao Mercado Livre pendente', /solicitação do Mercado Livre/],
             ['ml_verification_required', 'Verificação do Mercado Livre pendente', /verificação de segurança/],
@@ -218,6 +252,7 @@ async function main() {
             assert.strictEqual(await page.locator('#pm-global-status').textContent(), title);
             const detail = await page.locator('#pm-global-status-detail').textContent();
             assert.match(detail, expectedDetail);
+            assert.doesNotMatch(detail, /HTTP 403/);
             assert.match(detail, /Retomar/);
             assert.strictEqual(await page.locator('#pm-global-browser').isDisabled(), false);
         }

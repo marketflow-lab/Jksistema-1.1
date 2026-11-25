@@ -1013,8 +1013,18 @@ async function testChromeProfileOwnershipAndSetup() {
     assert.equal(first.shows[2].manual, true, 'login requested by the job must use standalone Chrome');
     research.status = 'paused';
     const product = 'https://www.mercadolivre.com.br/peca/up/MLBU123456?wid=MLB12345&pdp_filters=item_id%3AMLB12345';
-    research.checkpoint.marketplaceAccess = { status: 403, stage: 'product', url: product };
-    await h.command('show-browser', 'one', research.id);
+    const publicAccess = { status: 403, stage: 'product', url: product };
+    research.checkpoint.marketplaceAccess = { ...publicAccess, internal: 'fixture-private' };
+    const shownBlocked = await h.command('show-browser', 'one', research.id);
+    assert.deepEqual(shownBlocked.job.marketplaceAccess, publicAccess);
+    assert(!Object.hasOwn(shownBlocked.job, 'checkpoint'));
+    assert.deepEqual((await h.command('status', 'one', research.id)).job.marketplaceAccess, publicAccess);
+    const coordinator = h.api.coordinator();
+    coordinator.job = research;
+    coordinator.checkpoint = research.checkpoint;
+    const event = coordinator.snapshot().job;
+    assert.deepEqual(event.marketplaceAccess, publicAccess);
+    assert(!JSON.stringify(event).includes('fixture-private'));
     assert.equal(first.shows[3].manual, true, 'HTTP 403 verification must use standalone Chrome');
     assert.equal(first.shows[3].url, product, 'the exact public product that returned 403 opens for manual review');
     for (const url of ['https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/amortecedores/*_NoIndex_True',
@@ -1025,9 +1035,11 @@ async function testChromeProfileOwnershipAndSetup() {
         assert.equal(first.shows.at(-1).manual, true);
     }
     research.checkpoint.marketplaceAccess.url = 'https://www.mercadolivre.com.br/login?token=fixture';
-    await h.command('show-browser', 'one', research.id);
+    const invalid = await h.command('show-browser', 'one', research.id);
+    assert.deepEqual(invalid.job.marketplaceAccess, { status: 403, stage: 'product' });
     assert.equal(first.shows.at(-1).url, 'https://www.mercadolivre.com.br/', 'a stored login URL is never reopened');
     research.checkpoint.marketplaceAccess = { status: 429, retryAt: Date.now() + 60_000 };
+    assert.deepEqual((await h.command('status', 'one', research.id)).job.marketplaceAccess, { status: 429 });
     const opens = first.shows.length;
     await assert.rejects(h.command('show-browser', 'one', research.id), /HTTP 429/);
     assert.equal(first.shows.length, opens, 'show cannot open a page during Retry-After');

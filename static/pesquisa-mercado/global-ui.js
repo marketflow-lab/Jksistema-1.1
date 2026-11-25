@@ -383,6 +383,25 @@
             detail: 'Entre no Avant Pro pelo navegador da pesquisa e clique em Retomar.' }
     };
 
+    function marketplacePauseDetail(job, detail, message) {
+        if (job.status !== 'paused') return '';
+        const access = job.marketplaceAccess || job.checkpoint?.marketplaceAccess;
+        const reason = detail || message;
+        if (access?.status === 429 || /^Mercado Livre retornou HTTP 429\b/i.test(reason)) {
+            return /^Mercado Livre retornou HTTP 429\b/i.test(reason) ? reason
+                : 'O Mercado Livre retornou HTTP 429. Aguarde o prazo de nova consulta antes de retomar.';
+        }
+        if (access?.status !== 403 && !/^Mercado Livre retornou HTTP 403\b/i.test(reason)) return '';
+        // Only the desktop projection carries a URL checked against the public marketplace routes.
+        const url = safeUrl(job.marketplaceAccess?.url);
+        const stages = { category: 'na categoria', seller: 'na página do vendedor', product: 'no anúncio', pagination: 'na paginação' };
+        const stage = /^https:\/\/(?:www\.)?mercadolivre\.com\.br\/categorias\/?$/.test(url)
+            ? 'no índice de categorias' : Object.hasOwn(stages, access?.stage) ? stages[access.stage] : 'durante a pesquisa';
+        const next = chromeResearch ? 'Confira o acesso em Mostrar navegador. Feche a janela do Chrome da pesquisa antes de clicar em Retomar.'
+            : 'Confira o acesso em Mostrar navegador e clique em Retomar.';
+        return `O Mercado Livre retornou HTTP 403 ${stage}. ${next}${url ? ' O endereço consultado foi ' + url : ''}`;
+    }
+
     function renderStatus(job) {
         const labels = { queued: 'Preparando a pesquisa', running: 'O sistema está pesquisando', pausing: 'Pausando a pesquisa',
             paused: 'Pesquisa pausada', waiting_login: 'Aguardando login', interrupted: 'Pesquisa interrompida',
@@ -416,7 +435,8 @@
         elements.status.textContent = authPause?.title || labels[job.status] || 'Acompanhando a pesquisa';
         elements.status.classList.toggle('error', job.status === 'failed');
         elements.status.classList.toggle('success', job.status === 'completed');
-        elements['status-detail'].textContent = authPause?.detail || detail || details[job.status] || 'Acompanhando o progresso salvo.';
+        elements['status-detail'].textContent = authPause?.detail || marketplacePauseDetail(job, detail, message)
+            || detail || details[job.status] || 'Acompanhando o progresso salvo.';
         elements['status-warning'].textContent = warning;
         elements['status-warning'].hidden = !warning;
         elements['status-warning'].classList.remove('error');

@@ -348,6 +348,13 @@ async function preparePesquisaMercadoChromeOwner(token) {
     pesquisaMercadoChromeToken = token;
 }
 
+function pesquisaMercadoBrowserJob(job, checkpoint = job.checkpoint) {
+    const { id, status, revision, counters, message, created_at, updated_at } = job;
+    const access = pesquisaMercadoRunnerModule.marketplacePause(job, checkpoint);
+    return { job: { id, status, revision, counters, message, created_at, updated_at,
+        ...(access ? { marketplaceAccess: access } : {}) } };
+}
+
 async function showPesquisaMercadoChrome(runner, purpose, response) {
     if (runner.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de abrir o Chrome.');
     if (purpose === 'setup') {
@@ -401,8 +408,7 @@ async function showPesquisaMercadoChrome(runner, purpose, response) {
         latest = saved.job;
         if (currentJob && runner.job?.id === job.id && runner.checkpoint) runner.checkpoint.collectVisible = true;
     }
-    const { id, status, revision, counters, message, created_at, updated_at } = latest;
-    return { job: { id, status, revision, counters, message, created_at, updated_at } };
+    return pesquisaMercadoBrowserJob(latest, latest.checkpoint || checkpoint);
 }
 
 function getPesquisaMercadoCoordinator() {
@@ -541,8 +547,7 @@ async function executePesquisaMercadoCommand(action, payload) {
         if (runner.namesTask) throw new Error('A pesquisa esta usando este navegador.');
         if (response.job.status === 'waiting_login' && runner.job && runner.job.id === response.job.id
             && runner.loginBrowser && typeof runner.loginBrowser.show === 'function' && runner.loginBrowser.show()) {
-            const { id, status, revision, counters, message, created_at, updated_at } = response.job;
-            return { job: { id, status, revision, counters, message, created_at, updated_at } };
+            return pesquisaMercadoBrowserJob(response.job);
         }
         const hadBrowser = pesquisaMercadoWindow && !pesquisaMercadoWindow.isDestroyed();
         const changedJob = pesquisaMercadoBrowserJobId !== response.job.id;
@@ -558,8 +563,7 @@ async function executePesquisaMercadoCommand(action, payload) {
         }
         pesquisaMercadoBrowserJobId = response.job.id;
         worker.show(); worker.focus();
-        const { id, status, revision, counters, message, created_at, updated_at } = response.job;
-        return { job: { id, status, revision, counters, message, created_at, updated_at } };
+        return pesquisaMercadoBrowserJob(response.job);
     }
     throw new Error('Comando de pesquisa desconhecido.');
 }

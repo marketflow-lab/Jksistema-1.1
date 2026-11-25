@@ -69,16 +69,17 @@ async function testResumableProductionNavigation() {
     const indexUrl = base + '/categorias';
     const a = { ...snapshot.get('MLB101'), url: 'https://lista.mercadolivre.com.br/observed-child-a/' };
     const b = { ...snapshot.get('MLB102'), url: 'https://lista.mercadolivre.com.br/observed-child-b/' };
-    const fixture = indexStatus => {
+    const fixture = entryStatus => {
         let url = '', calls = 0;
         const visits = [];
         const pages = {
-            [indexUrl]: { categoryTree: [{ ...snapshot.get('MLB100'), children: [a, b] }] },
+            [rootUrl]: { categories: [a, b], effectiveCategoryId: 'MLB100', categoryDocumentIdentity: true,
+                anuncios: [{ titulo: 'Produto em destaque' }] },
             [a.url]: { effectiveCategoryId: a.key, categoryDocumentIdentity: true, anuncios: [{}] },
             [b.url]: { effectiveCategoryId: b.key, categoryDocumentIdentity: true, anuncios: [{}] }
         };
-        return { browser: { async navigate(next) { assert.notEqual(next, rootUrl, 'marketing root is not a listing destination'); calls += 1; visits.push(next); url = next; }, getURL: () => url,
-            getNavigationStatus: () => ({ url, statusCode: url === indexUrl && indexStatus ? indexStatus : 200 }),
+        return { browser: { async navigate(next) { calls += 1; visits.push(next); url = next; }, getURL: () => url,
+            getNavigationStatus: () => ({ url, statusCode: [rootUrl, indexUrl].includes(url) && entryStatus ? entryStatus : 200 }),
             async executeJavaScript() { return { url, readyState: 'complete', ...pages[url] }; } }, calls: () => calls, visits };
     };
     assert.deepEqual(breadthFirstKeys(snapshot), ['MLB100', 'MLB101', 'MLB102']);
@@ -88,6 +89,12 @@ async function testResumableProductionNavigation() {
         persist: async state => { saved = state; } });
     assert.equal(scanner.runner.officialNavigation, scanner.navigation, 'production reads share the audited official-route cache');
     const productionReads = [];
+    const navReads = [];
+    const read = scanner.runner.read.bind(scanner.runner);
+    scanner.runner.read = async (url, purpose, key, expected, ...args) => {
+        navReads.push([url, purpose, key, expected?.key]);
+        return read(url, purpose, key, expected, ...args);
+    };
     const productionReadCategory = scanner.runner.readCategory.bind(scanner.runner);
     scanner.runner.readCategory = async node => { productionReads.push(node.key); return productionReadCategory(node); };
     const partial = await scanner.run({ maxNodes: 2 });
@@ -97,10 +104,14 @@ async function testResumableProductionNavigation() {
     assert.deepEqual(scanner.runner.checkpoint.officialTaxonomy.ancestry.map(node => node.key), ['MLB100', 'MLB101']);
     assert.equal(partial.status, 'paused_limit');
     assert.equal(partial.completedCursor, 2);
-    assert.equal(partial.verifiedDocumentNodes, 1, 'a real directory group is not counted as an opened category listing');
+    assert.equal(partial.verifiedDocumentNodes, 1, 'department highlights cannot count as an opened category listing');
     assert.equal(partial.verifiedOnlineGroupNodes, 1);
     assert.equal(partial.functionalVerifiedNodes, 2);
-    assert.equal(partial.physicalPageReads, 2, 'directory evidence validates the group without timing out on a marketing page');
+    assert.equal(partial.physicalPageReads, 2);
+    assert.deepEqual(first.visits, [rootUrl, a.url], 'the taxonomy department is the only entry before the leaf');
+    assert.deepEqual(navReads[0], [rootUrl, 'navigation', 'MLB100', a.key]);
+    assert.equal(scanner.groupVerification('MLB100').source, 'live_department_navigation');
+    assert.equal(scanner.evidence().observations.some(item => item.url === rootUrl), false);
     assert.equal(partial.physicalPageReads, first.calls(), 'navigation retries and direct reads count their physical navigations');
     const second = fixture(false);
     const resumed = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: second.browser, state: saved, wait: async () => {}, intervalMs: 0 });
@@ -112,6 +123,16 @@ async function testResumableProductionNavigation() {
     assert.equal(complete.completeLiveCoverage, true);
     assert.equal(complete.completeDocumentCoverage, false, 'functional group validation cannot masquerade as full document coverage');
     assert.equal(second.calls(), 1, 'resume visits only the remaining document using the frozen official routes');
+    const highlights = fixture(false);
+    highlights.browser.executeJavaScript = async () => ({ url: rootUrl, readyState: 'complete', effectiveCategoryId: 'MLB100',
+        categoryDocumentIdentity: true, categories: [], anuncios: [{ titulo: 'Oferta de destaque' }] });
+    const promotional = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: highlights.browser, onlyKeys: ['MLB100'],
+        wait: async () => {}, intervalMs: 0 });
+    const unproven = await promotional.run();
+    assert.equal(unproven.verifiedDocumentNodes, 0);
+    assert.equal(unproven.verifiedOnlineGroupNodes, 0, 'an identified department without child navigation is unverified');
+    assert.equal(unproven.observedOfficialEdges, 0);
+    assert(highlights.visits.length > 0 && highlights.visits.every(url => url === rootUrl));
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256: '0'.repeat(64), browser: second.browser, state: saved }));
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256, implementationSha256: 'changed-code', browser: second.browser, state: saved }));
     const blocked = fixture(403);
@@ -125,6 +146,7 @@ async function testResumableProductionNavigation() {
     assert.equal(paused.verifiedOnlineGroupNodes, 0);
     assert.equal(paused.completeLiveCoverage, false);
     assert.equal(blocked.calls(), 1, 'an HTTP block cannot launch a cascade through the remaining categories');
+    assert.deepEqual(blocked.visits, [rootUrl], 'a 403 at the department cannot trigger a directory fallback');
     const limited = fixture(429);
     const limitedAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: limited.browser, wait: async () => {}, intervalMs: 0 });
     const limitedSummary = await limitedAudit.run();
@@ -186,6 +208,7 @@ async function testResumableProductionNavigation() {
         'a complete frozen API tree alone cannot validate any online group or leaf');
 
     const namedCache = JSON.parse(JSON.stringify(cache));
+    namedCache.records[0][2] = 'https://lista.mercadolivre.com.br/_CatId_MLB100';
     namedCache.records[1][1] = 'Alpha'; namedCache.records[2][1] = 'Beta';
     const namedSnapshot = snapshotFromCache(namedCache);
     const namedHash = createHash('sha256').update(JSON.stringify(namedCache)).digest('hex');
@@ -193,13 +216,14 @@ async function testResumableProductionNavigation() {
     const nameOnlyLinks = [a, b].map((item, index) => ({ key: item.url, nome: index ? 'Beta' : 'Alpha', url: item.url }));
     const namedBrowser = { async navigate(url) { assert.notEqual(url, rootUrl); namedUrl = url; }, getURL: () => namedUrl,
         getNavigationStatus: () => ({ url: namedUrl, statusCode: 200 }), async executeJavaScript() {
-            if (namedUrl === indexUrl) return { url: namedUrl, readyState: 'complete', categoryTree: [{ ...namedSnapshot.get('MLB100'), children: nameOnlyLinks }] };
+            if (namedUrl === indexUrl) return { url: namedUrl, readyState: 'complete', categoryTree: [{ ...namedSnapshot.get('MLB100'), url: rootUrl, children: nameOnlyLinks }] };
             const id = namedUrl === a.url ? 'MLB101' : 'MLB102';
             return { url: namedUrl, readyState: 'complete', categoryDocumentIdentity: true, effectiveCategoryId: id, anuncios: [{}] };
         } };
     const nameOnly = new LiveNavigationAudit({ snapshot: namedSnapshot, snapshotSha256: namedHash, browser: namedBrowser,
         wait: async () => {}, intervalMs: 0, persist: async state => { namedState = state; } });
     const groupOnly = await nameOnly.run({ maxNodes: 1 });
+    assert.equal(namedUrl, indexUrl, 'legacy root aliases still resolve through the official directory');
     assert.equal(groupOnly.observedOfficialEdges, 2);
     assert.equal(groupOnly.verifiedOnlineGroupNodes, 0, 'name-only directory links need child document identity before a group can pass');
     assert.equal(groupOnly.functionalVerifiedNodes, 0);

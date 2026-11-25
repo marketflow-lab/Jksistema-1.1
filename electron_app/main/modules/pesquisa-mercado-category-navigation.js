@@ -2,6 +2,10 @@
 
 const INDEX_URL = 'https://www.mercadolivre.com.br/categorias';
 const ID = /^MLB\d+$/;
+function departmentPermalink(value) {
+    return typeof value === 'string' && /^https:\/\/(?:www\.)?mercadolivre\.com\.br\/c\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(value)
+        ? value : '';
+}
 // Public links observed in the site's item breadcrumbs/category filters. These
 // categories are omitted from their parent's expanded filter. They remain
 // route candidates: the destination must prove its category or exact items.
@@ -81,6 +85,9 @@ class OfficialCategoryNavigation {
         this.normalize = normalize;
         this.read = read;
         this.ancestry = ancestry;
+        // The official taxonomy already supplies the root department's URL.
+        // Its landing page is only an entry to the tree, never a listing of offers.
+        this.departmentUrl = departmentPermalink(ancestry[0]?.url);
         this.records = new Map(ancestry.map(node => [node.key, node]));
         this.parents = new Map();
         for (let index = 1; index < ancestry.length; index += 1) {
@@ -157,6 +164,10 @@ class OfficialCategoryNavigation {
         const parentKey = this.parents.get(key);
         let selected;
         if (!parentKey) {
+            if (this.departmentUrl && expected.key === this.ancestry[0]?.key) {
+                this.routes.set(key, this.departmentUrl);
+                return this.departmentUrl;
+            }
             let page;
             try { page = await this.read(INDEX_URL, 'index'); }
             catch (error) { error.navigationDependencyKey = expected.key; error.sharedCategoryFailure = true; throw error; }
@@ -254,5 +265,5 @@ class OfficialCategoryNavigation {
     }
 }
 
-module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label,
+module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label, departmentPermalink,
     categoryBasePath, officialCategoryMoreUrl, neutralCategoryPage };

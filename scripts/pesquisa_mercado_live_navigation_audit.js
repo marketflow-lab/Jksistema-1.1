@@ -7,7 +7,7 @@ const path = require('path');
 const { createHash } = require('crypto');
 const { snapshotFromCache, auditLiveEvidence } = require('./audit_pesquisa_mercado_taxonomy_navigation');
 const { PesquisaMercadoRunner, normalizeCategory, verifiedCategoryPage, sameCategoryPage, canonicalUrl } = require('../electron_app/main/modules/pesquisa-mercado-runner');
-const { OfficialCategoryNavigation, unsupportedCategoryAlias, officialCategoryMoreUrl, categoryBasePath } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, departmentPermalink, unsupportedCategoryAlias, officialCategoryMoreUrl, categoryBasePath } = require('../electron_app/main/modules/pesquisa-mercado-category-navigation');
 const { scopeCategoryItems, validateCategoryItemScope, categoryItemScopeUrlAllowed } = require('../electron_app/main/modules/pesquisa-mercado-category-item-scope');
 const pageScripts = require('../static/pesquisa-mercado/page-scripts');
 
@@ -43,6 +43,7 @@ function auditSelection(snapshot, { scopeKey = '', onlyKeys = [] } = {}) {
 function safePage(page) {
     const categories = items => (Array.isArray(items) ? items : []).map(item => normalizeCategory({ key: item.key, nome: item.nome, url: item.url })).filter(Boolean);
     const count = Number.isSafeInteger(page.listingCount) && page.listingCount >= 0 ? page.listingCount : (page.anuncios || []).length;
+    const department = departmentPermalink(page.url);
     return { url: safePublicUrl(page.url), effectiveCategoryId: /^MLB\d+$/.test(page.effectiveCategoryId || '') ? page.effectiveCategoryId : '',
         documentCategoryId: /^MLB\d+$/.test(page.documentCategoryId || '') ? page.documentCategoryId
             : page.categoryDocumentIdentity === true && /^MLB\d+$/.test(page.effectiveCategoryId || '') ? page.effectiveCategoryId : '',
@@ -51,7 +52,7 @@ function safePage(page) {
         categoryDocumentIdentity: page.categoryDocumentIdentity === true || !!page.documentCategoryId && page.documentCategoryId === page.effectiveCategoryId && page.categoryIdentityConflict !== true,
         categoryFilterMoreUrl: officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url) || '',
         categoryFilterPresent: page.categoryFilterPresent === true, readyState: page.readyState === 'loading' ? 'loading' : 'complete',
-        empty: page.empty === true, listingCount: count, categories: categories(page.categories),
+        empty: !department && page.empty === true, listingCount: department ? 0 : count, categories: categories(page.categories),
         categoryTree: (page.categoryTree || []).map(item => {
             const category = normalizeCategory({ key: item.key, nome: item.nome, url: item.url });
             return category ? { ...category, children: categories(item.children) } : null;
@@ -337,12 +338,13 @@ class LiveNavigationAudit {
             identityConflict: page.categoryIdentityConflict });
     }
 
-    recordOnlineContext(page, purpose, key, statusCode) {
+    recordOnlineContext(page, purpose, key, statusCode, expected = null) {
         if (!(Number.isInteger(statusCode) && statusCode >= 200 && statusCode < 300)
             || page.categoryIdentityConflict || page.categoryNotFound) return;
         const observedAt = this.now();
         if (purpose === 'index') {
             for (const root of this.snapshot.children()) {
+                if (departmentPermalink(root.url)) continue;
                 let selected;
                 try { selected = this.navigation.choose(page.categoryTree, root); } catch (_error) { continue; }
                 const group = page.categoryTree.find(item => item.url === selected.url && this.navigation.route(item, root));
@@ -354,6 +356,17 @@ class LiveNavigationAudit {
             return;
         }
         if (!key || !this.snapshot.get(key)) return;
+        if (departmentPermalink(page.url)) {
+            if (purpose !== 'navigation' || !expected || this.navigation.parents.get(expected.key) !== key
+                || this.navigation.ancestry[0]?.key !== key || !sameCategoryPage(this.navigation.departmentUrl, page.url)
+                || page.effectiveCategoryId && page.effectiveCategoryId !== key) return;
+            try { this.navigation.choosePage(page, expected, page.url); }
+            catch (_error) { return; }
+            this.state.groupSources[key] = { kind: 'live_department_navigation', pageUrl: page.url, parentUrl: page.url,
+                statusCode, observedAt, conflictingRouteIds: page.categoryConflictingRouteIds };
+            this.state.observedGroupLinks[key] = clone(page.categories);
+            return;
+        }
         if (purpose !== 'category-options' && page.documentCategoryId === key && page.categoryDocumentIdentity) {
             this.state.documentContexts[key] = { url: page.url, documentCategoryId: key, statusCode, observedAt };
             if (this.snapshot.children(key).length && purpose !== 'category-options') {
@@ -428,10 +441,10 @@ class LiveNavigationAudit {
             const status = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
             const statusCode = status && canonicalUrl(status.url) === canonicalUrl(page.url) ? status.statusCode : 0;
             if (recordEvidence && (purpose === 'index' || page.categories.length || key && this.snapshot.children(key).length)) this.pageCache.set(url, page);
-            if (recordEvidence) this.recordOnlineContext(page, purpose, key, statusCode);
+            if (recordEvidence) this.recordOnlineContext(page, purpose, key, statusCode, expected);
             // An expansion control page proves observed child links, not that
             // the corresponding category document displayed a listing.
-            if (recordEvidence && purpose !== 'category-options') this.observation(key, page, statusCode);
+            if (recordEvidence && purpose !== 'category-options' && !departmentPermalink(page.url)) this.observation(key, page, statusCode);
             return observed;
         } catch (error) {
             const status = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
@@ -544,6 +557,9 @@ class LiveNavigationAudit {
             await this.progress('starting_node');
             try {
                 this.selectCategory(key);
+                // The audit spans multiple roots. Use the production ancestry for this traversal.
+                this.navigation.ancestry = this.runner.checkpoint.officialTaxonomy.ancestry;
+                this.navigation.departmentUrl = departmentPermalink(this.navigation.ancestry[0]?.url);
                 if (this.snapshot.children(key).length) {
                     this.attempt(key).primaryRouteAttempts += 1;
                     await this.auditGroup(key);
