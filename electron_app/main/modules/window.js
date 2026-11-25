@@ -569,8 +569,19 @@ function findUnpackedChromeExtensions() {
     }
     const chromeInstalledExtensions = findInstalledChromeExtensionVersions(AVANTPRO_CHROME_EXTENSION_ID)
         .filter(isAvantProExtensionCompatibleWithElectron);
-    const preferInstalled = !/^(0|false|nao|não|off|no)$/i.test(String(process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS || '1'));
+    const installedPreference = String(process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS || '');
+    const preferInstalled = !/^(0|false|nao|não|off|no)$/i.test(installedPreference);
     const forceExplicitRoots = /^(1|true|sim|yes)$/i.test(String(process.env.JK_FORCE_CHROME_EXTENSIONS_DIR || ''));
+    const explicitChromeProfile = String(process.env.JK_AVANTPRO_CHROME_PROFILE || '').trim();
+    // In development an archived Chrome version must not shadow a newer
+    // compatible extension shipped in the checkout.
+    const devAvantDir = !app.isPackaged && !installedPreference && !explicitChromeProfile
+        && !forceExplicitRoots && chromeInstalledExtensions.length
+        ? path.join(getAppRootDir(), 'extensoes_chrome', 'avant_pro') : '';
+    const devVersion = devAvantDir ? readChromeExtensionManifest(devAvantDir)?.version : '';
+    const preferBundledUpdate = !!devVersion && isAvantProExtensionCompatibleWithElectron(devAvantDir)
+        && chromeInstalledExtensions.every(dir =>
+            compareVersionStrings(devVersion, readChromeExtensionManifest(dir)?.version) > 0);
     const allowBundledFallback = !chromeInstalledExtensions.length
         || /^(1|true|sim|yes)$/i.test(String(process.env.JK_ALLOW_BUNDLED_AVANTPRO_FALLBACK || ''));
     const fallbackRoots = allowBundledFallback ? bundledRoots : [];
@@ -581,6 +592,7 @@ function findUnpackedChromeExtensions() {
     const searchRoots = preferInstalled
         ? [
             ...(forceExplicitRoots ? explicitSearchRoots : []),
+            ...(preferBundledUpdate ? [devAvantDir] : []),
             ...chromeInstalledExtensions,
             ...(forceExplicitRoots ? [] : explicitSearchRoots),
             ...fallbackRoots
@@ -592,6 +604,7 @@ function findUnpackedChromeExtensions() {
         ];
     logElectronLifecycle('chrome-extension-search-roots', {
         preferInstalled,
+        preferBundledUpdate,
         forceExplicitRoots,
         allowBundledFallback,
         installedCount: chromeInstalledExtensions.length,

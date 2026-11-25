@@ -148,6 +148,48 @@ function explicitAndDevelopmentRoots(directory) {
   assert.doesNotThrow(() => missingResources.context.getChromeExtensionsRoots(), 'a missing resourcesPath remains supported');
 }
 
+async function developmentPrefersNewerCompatibleBundle(directory) {
+  const h = browserHarness(directory, { packaged: false });
+  const bundled = path.join(h.localApp, 'extensoes_chrome', 'avant_pro');
+  const runtime = path.join(h.context.getLocalBackendRuntimeDir(), 'extensoes_chrome', 'avant_pro');
+  const chromeRoot = path.join(h.context.getChromeUserDataDir(), 'Default', 'Extensions', extensionId);
+  const oldChrome = path.join(chromeRoot, '7.16.0_0');
+  const sidePanel = path.join(chromeRoot, '7.39.0_0');
+  const otherProfile = path.join(h.context.getChromeUserDataDir(), 'Profile 1', 'Extensions', extensionId, '7.0.3_0');
+  putExtension(bundled, '7.33.5');
+  putExtension(runtime, '7.0.3');
+  putExtension(oldChrome, '7.16.0');
+  putExtension(otherProfile, '7.0.3');
+  putExtension(sidePanel, '7.39.0', { permissions: ['sidePanel'] });
+  h.context.process.env.JK_CHROME_EXTENSIONS_DIR = runtime;
+  assert.deepEqual(Array.from(h.context.findUnpackedChromeExtensions()), [bundled],
+    'older compatible Chrome copies cannot shadow the newer development bundle');
+  assert.equal((await h.context.loadChromeExtensionsForMlSession())[0].version, '7.33.5');
+  assert.equal(h.loaded[0].extensionDir, bundled, 'the development bundle reaches the existing session loader');
+
+  h.context.process.env.JK_FORCE_CHROME_EXTENSIONS_DIR = '1';
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], runtime, 'an explicitly forced path keeps precedence');
+  delete h.context.process.env.JK_FORCE_CHROME_EXTENSIONS_DIR;
+  h.context.process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS = '1';
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], oldChrome);
+  delete h.context.process.env.JK_PREFER_INSTALLED_CHROME_EXTENSIONS;
+  h.context.process.env.JK_AVANTPRO_CHROME_PROFILE = 'Profile 1';
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], otherProfile);
+  delete h.context.process.env.JK_AVANTPRO_CHROME_PROFILE;
+
+  const latestCompatible = path.join(chromeRoot, '7.33.6_0');
+  putExtension(latestCompatible, '7.33.6');
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], latestCompatible,
+    'a newer compatible installed version keeps precedence');
+  putExtension(latestCompatible, '7.33.5');
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], latestCompatible,
+    'a compatible installed version of the same age keeps precedence');
+  putExtension(latestCompatible, '7.33.6', { permissions: ['sidePanel'] });
+  putExtension(bundled, '7.33.5', { permissions: ['sidePanel'] });
+  assert.equal(h.context.findUnpackedChromeExtensions()[0], oldChrome,
+    'development never loads an incompatible bundle');
+}
+
 function updateRejectsMissingOrStaleExtension(directory) {
   const sourceRoot = path.join(directory, 'source');
   const resourcesRoot = path.join(directory, 'packaged');
@@ -179,6 +221,7 @@ function updateRejectsMissingOrStaleExtension(directory) {
     await packagedExtensionWithoutChrome(path.join(directory, 'clean-install'));
     await chromeSidePanelFallsBackToCompatibleLogin(path.join(directory, 'side-panel-login'));
     explicitAndDevelopmentRoots(path.join(directory, 'development'));
+    await developmentPrefersNewerCompatibleBundle(path.join(directory, 'development-newer-bundle'));
     updateRejectsMissingOrStaleExtension(path.join(directory, 'package-gate'));
   } finally {
     assert(path.dirname(path.resolve(directory)) === path.resolve(os.tmpdir())
