@@ -3,11 +3,13 @@
 const path = require('node:path');
 const { mercadoLivreAuthScript, mercadoLivreRouteAuthReason } = require('../../../static/pesquisa-mercado/page-scripts');
 const { pageScript } = require('./pesquisa-mercado-avant-auth');
+const { isManualChromeRunning } = require('./pesquisa-mercado-chrome-manual');
 
 const EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 const STORE = 'https://chromewebstore.google.com/detail/avantpro-ml/' + EXTENSION_ID;
 const HOME = 'https://www.mercadolivre.com.br/';
 const RELEASE_MEDIA = 'jk-pesquisa-mercado:release-recommendation-media';
+const manualBrowsers = new Map();
 
 function retryAfterMilliseconds(value) {
     if (typeof value !== 'string') return;
@@ -51,7 +53,7 @@ function browserClosed() {
 }
 
 function chromeFailure(error) {
-    if (error?.waitingLogin || error?.name === 'AbortError' || ['research_browser_closed', 'research_chrome_unavailable', 'category_load_timeout'].includes(error?.code)) return error;
+    if (error?.waitingLogin || error?.name === 'AbortError' || ['research_browser_closed', 'research_chrome_unavailable', 'research_chrome_manual_open', 'category_load_timeout'].includes(error?.code)) return error;
     if (/target.*closed|browser.*closed|page crashed/i.test(String(error?.message))) return browserClosed();
     return Object.assign(new Error('Não foi possível acessar o Google Chrome da pesquisa.'), { code: 'research_chrome_unavailable' });
 }
@@ -63,7 +65,7 @@ function loginRequired(reason) {
     return Object.assign(new Error(message), { code: reason, waitingLogin: true });
 }
 
-function createChromeResearchSession({ profileDir, allowedUrl, getChromium, createMediaScript }) {
+function createChromeResearchSession({ profileDir, allowedUrl, getChromium, createMediaScript, launchManualChrome }) {
     if (!profileDir || !path.isAbsolute(profileDir) || typeof allowedUrl !== 'function') {
         throw new Error('Configuração do perfil de pesquisa inválida.');
     }
@@ -105,6 +107,11 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
     }
 
     async function open(visible, forResearch = true) {
+        if (isManualChromeRunning(manualBrowsers.get(profileDir))) {
+            throw Object.assign(new Error('Feche a janela do Chrome dedicada ao login e clique em Retomar.'), {
+                code: 'research_chrome_manual_open'
+            });
+        }
         if (lostContext) throw browserClosed();
         if (context && manual === visible) {
             if (forResearch && checkedContext !== context) {
@@ -172,6 +179,23 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             await manualPage.goto(url, { waitUntil: 'commit', timeout: 35000 });
             previewUrl = manualPage.url();
             await manualPage.bringToFront();
+            return true;
+        }).catch(error => { throw chromeFailure(error); });
+    }
+
+    function showManual(url = HOME) {
+        if (url !== STORE && !allowedUrl(url)) return Promise.reject(new Error('Endereço de configuração inválido.'));
+        epoch++;
+        return serialize(async () => {
+            if (isManualChromeRunning(manualBrowsers.get(profileDir))) return true;
+            await closeContext();
+            collectVisible = false;
+            lostContext = false;
+            const child = await launchManualChrome({ profileDir, url });
+            manualBrowsers.set(profileDir, child);
+            child.once('exit', () => {
+                if (manualBrowsers.get(profileDir) === child) manualBrowsers.delete(profileDir);
+            });
             return true;
         }).catch(error => { throw chromeFailure(error); });
     }
@@ -386,7 +410,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
         };
     }
 
-    return { prepare, createPage, show, close };
+    return { prepare, createPage, show, showManual, close };
 }
 
 module.exports = { createChromeResearchSession };

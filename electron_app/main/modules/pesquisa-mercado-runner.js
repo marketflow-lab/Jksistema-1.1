@@ -2212,10 +2212,12 @@ class PesquisaMercadoRunner {
             const browserMessages = {
                 research_browser_closed: 'O Chrome da pesquisa foi fechado. Clique em Retomar para continuar.',
                 research_chrome_unavailable: 'Nao foi possivel iniciar o Chrome da pesquisa. Confira a instalacao e feche outra janela deste perfil.',
-                avant_extension_missing: 'avant_extension_missing'
+                avant_extension_missing: 'avant_extension_missing',
+                research_chrome_manual_open: 'Feche a janela do Chrome dedicada ao login e clique em Retomar.'
             };
             const marketplacePaused = isMarketplaceAccessPause(err);
-            this.job.status = this.stopStatus || (marketplacePaused || err.code === 'research_browser_closed' ? 'paused'
+            const browserPaused = ['research_browser_closed', 'research_chrome_manual_open'].includes(err.code);
+            this.job.status = this.stopStatus || (marketplacePaused || browserPaused ? 'paused'
                 : err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
             if (marketplacePaused) this.checkpoint.marketplaceAccess = { status: err.status, stage: err.stage, retryAt: err.retryAt };
             if (!this.stopStatus) {

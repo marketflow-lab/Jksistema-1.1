@@ -1167,7 +1167,7 @@
         renderControls();
         try {
             await invoke('browser', { purpose: 'setup' });
-            showMessage('No Chrome da pesquisa, instale o Avant Pro, entre no Mercado Livre e vincule a conta. Volte ao JK para iniciar ou retomar.');
+            showMessage('No Chrome da pesquisa, instale o Avant Pro, entre no Mercado Livre e vincule a conta. Feche essa janela antes de iniciar ou retomar no JK.');
         } catch (error) {
             if (!state.disposed) showMessage(userErrorMessage(error), true);
         } finally {

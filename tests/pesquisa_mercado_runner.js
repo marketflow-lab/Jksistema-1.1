@@ -2635,7 +2635,27 @@ async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
     assert.equal(login.vendors.get('id:111').anuncios[0].rankable, true);
 }
 
+async function manualChromeOpenPausesWithoutLosingScope() {
+    const category = { key: 'fixture', nome: 'Fixture', url: 'https://lista.mercadolivre.com.br/fixture/' };
+    const h = harness({ [category.url]: { empty: true } });
+    h.runner.browser.prepare = async () => {
+        throw Object.assign(new Error('profile in use'), { code: 'research_chrome_manual_open' });
+    };
+    await h.runner.start(category);
+    await h.runner.task;
+    assert.equal(h.saved().status, 'paused');
+    assert.match(h.saved().message, /Feche.*Chrome.*Retomar/);
+    assert.deepEqual(h.saved().checkpoint.scope.category, category);
+    assert.deepEqual(h.visited, [], 'collection must not navigate while manual login owns the profile');
+    h.runner.browser.prepare = async () => {};
+    await h.runner.resume(h.saved().id);
+    await h.runner.task;
+    assert.equal(h.saved().status, 'completed');
+    assert.deepEqual(h.visited, [category.url]);
+}
+
 (async () => {
+    await manualChromeOpenPausesWithoutLosingScope();
     await catalogDetailsAreConsultedOnceWithoutInventingRank();
     await mixedDetailsOnlyRetryTransientFailures();
     await missingAvantEvidenceRemainsRetryable();

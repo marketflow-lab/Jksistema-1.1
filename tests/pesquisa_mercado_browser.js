@@ -205,11 +205,14 @@ function harness(saved = [], options = {}) {
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
             if (filename === 'node:crypto') return require(filename);
-            if (filename.endsWith('pesquisa-mercado-media-preload.js')) return require(filename);
+            if (filename.endsWith('pesquisa-mercado-media-preload.js') || filename.endsWith('pesquisa-mercado-chrome-manual.js')) {
+                return require(filename);
+            }
             if (filename.endsWith('pesquisa-mercado-chrome.js')) return {
                 createChromeResearchSession(config) {
                     const chrome = { config, pages: [], shows: [], closed: false,
                         async show(url, settings) { this.shows.push({ url, settings }); },
+                        async showManual(url) { this.shows.push({ url, manual: true }); },
                         async close() { this.closed = true; },
                         createPage(settings) {
                             const browser = { settings, getURL: () => '', getResumeURL: () => '',
@@ -997,9 +1000,17 @@ async function testChromeProfileOwnershipAndSetup() {
     assert.equal(h.chromeSessions.length, 1, 'renewing a token reuses the same authenticated owner profile');
     await h.command('show-browser', 'one', null, { purpose: 'setup' });
     assert.equal(first.shows[0].url, 'https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
-    assert.equal(first.shows[0].settings, undefined, 'setup does not opt into visible collection');
+    assert.equal(first.shows[0].manual, true, 'setup opens a standalone Chrome without Playwright');
     await h.command('show-browser', 'one', 'chrome-private-one');
     assert.equal(first.shows[1].settings.collectVisible, true);
+    const research = h.jobs.get('chrome-private-one');
+    research.status = 'waiting_login';
+    await h.command('show-browser', 'one', research.id);
+    assert.equal(first.shows[2].manual, true, 'login requested by the job must use standalone Chrome');
+    research.status = 'paused';
+    research.checkpoint.marketplaceAccess = { status: 403, stage: 'product' };
+    await h.command('show-browser', 'one', research.id);
+    assert.equal(first.shows[3].manual, true, 'HTTP 403 verification must use standalone Chrome');
     await h.command('status', 'two');
     assert(first.closed, 'switching users closes the previous dedicated Chrome');
     const second = h.chromeSessions[1];

@@ -331,11 +331,13 @@ async function preparePesquisaMercadoChromeOwner(token) {
         await pesquisaMercadoChrome?.close();
         const modules = path.join(__dirname, 'electron_app', 'main', 'modules');
         const { createChromeResearchSession } = require(path.join(modules, 'pesquisa-mercado-chrome.js'));
+        const { launchManualChrome } = require(path.join(modules, 'pesquisa-mercado-chrome-manual.js'));
         const { createMediaScript } = require(path.join(modules, 'pesquisa-mercado-media-preload.js'));
         pesquisaMercadoChrome = createChromeResearchSession({
             profileDir: path.join(app.getPath('userData'), 'pesquisa-mercado-chrome', owner),
             allowedUrl: pesquisaMercadoRunnerModule.allowedUrl,
             createMediaScript,
+            launchManualChrome: options => launchManualChrome({ ...options, executableCandidates: chromeExecutableCandidates }),
             getChromium: () => (app.isPackaged
                 ? require(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'playwright-core'))
                 : require('playwright-core')).chromium
@@ -350,13 +352,13 @@ async function showPesquisaMercadoChrome(runner, purpose, response) {
     if (runner.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de abrir o Chrome.');
     if (purpose === 'setup') {
         if (runner.task) throw new Error('Pause a pesquisa antes de configurar o Avant Pro.');
-        await pesquisaMercadoChrome.show('https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
+        await pesquisaMercadoChrome.showManual('https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
         return { success: true };
     }
     if (purpose === 'categories') {
         if (runner.task) throw new Error('A pesquisa esta usando este navegador.');
         if (!pesquisaMercadoCategoryLastUrl) throw new Error('Carregue as categorias antes de abrir o navegador.');
-        await pesquisaMercadoChrome.show(pesquisaMercadoCategoryLastUrl);
+        await pesquisaMercadoChrome.showManual(pesquisaMercadoCategoryLastUrl);
         return { success: true };
     }
     const job = response?.job;
@@ -382,7 +384,11 @@ async function showPesquisaMercadoChrome(runner, purpose, response) {
         await runner.task;
         pesquisaMercadoRunnerModule.assertMarketplaceRetryAllowed(runner.checkpoint);
     }
-    await pesquisaMercadoChrome.show(target, { collectVisible: true });
+    if (purpose === 'names' || job.status === 'waiting_login' || job.checkpoint?.marketplaceAccess?.status === 403) {
+        await pesquisaMercadoChrome.showManual(target);
+    } else {
+        await pesquisaMercadoChrome.show(target, { collectVisible: true });
+    }
     const { id, status, revision, counters, message, created_at, updated_at } = runner.job?.id === job.id ? runner.job : job;
     return { job: { id, status, revision, counters, message, created_at, updated_at } };
 }
