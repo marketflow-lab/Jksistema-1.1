@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { accepted, compare, runPilot } = require('../scripts/pesquisa_mercado_chrome_pilot');
+const { accepted, compare, runPilot, parseOptions } = require('../scripts/pesquisa_mercado_chrome_pilot');
 
 function sampleRow(n, sellerId) {
     const id = 'MLB' + (1000000000 + n);
@@ -21,6 +21,32 @@ function fixture(row) {
 async function run() {
     const sample = { controls: [sampleRow(1, '1001'), sampleRow(2, '1002')],
         ekom: Array.from({ length: 48 }, (_, n) => sampleRow(3 + n, '1003')) };
+    const cli = ['--live', '--sample', 'sample.json', '--profile', 'dedicated'];
+    assert.equal(parseOptions(cli).oneControl, false);
+    assert.equal(parseOptions(['--one-control', ...cli]).oneControl, true);
+    assert.equal(parseOptions([...cli, '--controls-only', '--one-control']).controlsOnly, true);
+    assert.throws(() => parseOptions(cli.filter(arg => arg !== '--live')), /usage/);
+    assert.throws(() => parseOptions([...cli, '--controls']), /usage/);
+    for (const statusCode of [403, 429]) {
+        const navigations = [];
+        const page = { async prepare() {}, async navigate(url) { navigations.push(url); }, getURL: () => navigations.at(-1),
+            getNavigationStatus: () => ({ url: navigations.at(-1), statusCode, retryAfterMs: 120000 }),
+            async ensureAvantSession() { assert.fail('a blocked initial document must not be checked for login'); } };
+        const started = Date.now();
+        let closed = false;
+        const report = await runPilot(sample, { createPage: () => page, async close() { closed = true; } }, { oneControl: true });
+        assert.deepEqual(navigations, [sample.controls[0].url]);
+        assert(closed);
+        assert.equal(report.status, 'marketplace_http_' + statusCode);
+        assert.equal(report.httpStatus, statusCode);
+        assert.equal(report.stage, 'product');
+        assert.equal(report.attempts, 0);
+        assert(!JSON.stringify(report).includes('mercadolivre.com.br'));
+        if (statusCode === 429) {
+            assert(Date.parse(report.retryAt) >= started + 120000 && Date.parse(report.retryAt) <= Date.now() + 120000);
+        } else assert.equal(report.retryAt, undefined);
+        assert(!accepted(report));
+    }
     const row = sample.controls[0], observed = { ids: [row.id], sellerId: row.sellerId, sellers: [row.sellerProfile],
         sales: '188', monthly: '5/Mês', date: 'Março de 2025' };
     const ranked = { id: row.id, rankable: true, seller_id: row.sellerId, seller_confirmed: true,
@@ -63,6 +89,13 @@ async function run() {
         assert.equal(noLogin.status, 'ml_login_required');
         assert.equal(noLogin.attempts, 0);
         authenticated = true;
+        for (const options of [{ oneControl: true }, { controlsOnly: true }]) {
+            const small = await runPilot(sample, makeSession(), options);
+            assert.equal(small.controls.matched, options.oneControl ? 1 : 2);
+            assert.equal(small.attempts, small.controls.matched);
+            assert.deepEqual(small.ekom, {});
+            assert(accepted(small));
+        }
         const progress = [];
         const result = await runPilot(sample, makeSession(), { onProgress: update => progress.push(update) });
         assert.deepEqual(result, { controls: { matched: 2 }, ekom: { matched: 48 },

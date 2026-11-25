@@ -1970,8 +1970,35 @@ async function lateCategoryFiltersAndSharedFailure() {
     denied.runner.taxonomy = taxonomy;
     denied.runner.browser.getNavigationStatus = () => ({ statusCode: 403, url: index });
     await denied.runner.start(scope); await denied.runner.task;
-    assert.equal(denied.saved().status, 'failed', 'a server block without a login document is not waiting_login');
-    assert.equal(denied.saved().checkpoint.incompleteCategories[0].code, 'category_access_denied');
+    assert.equal(denied.saved().status, 'paused', 'the first 403 pauses without suggesting that a login was identified');
+    assert.deepEqual(denied.saved().checkpoint.marketplaceAccess, { status: 403, stage: 'category' });
+    assert.deepEqual(denied.saved().checkpoint.scope.category, scope);
+    assert.equal(denied.saved().checkpoint.incompleteCategories.length, 0);
+    assert.equal(denied.visited.filter(url => url === index).length, 1);
+
+    const limited = harness({ [index]: { readyState: 'complete', categories: [] } });
+    limited.runner.taxonomy = taxonomy;
+    const requestedDelay = 120_000;
+    limited.runner.browser.getNavigationStatus = () => ({ statusCode: 429, url: index, retryAfterMs: requestedDelay });
+    const before = Date.now();
+    await limited.runner.start(scope); await limited.runner.task;
+    const paused = limited.saved(), access = paused.checkpoint.marketplaceAccess;
+    assert.equal(paused.status, 'paused');
+    assert.equal(access.status, 429);
+    assert.equal(access.stage, 'category');
+    assert(access.retryAt >= before + requestedDelay && access.retryAt <= Date.now() + requestedDelay);
+    assert.equal(limited.visited.filter(url => url === index).length, 1, 'HTTP 429 stops further visits immediately');
+
+    const restarted = harness(pages);
+    restarted.runner.taxonomy = taxonomy;
+    restarted.restoreCheckpoint(paused);
+    await assert.rejects(restarted.runner.resume(paused.id), /HTTP 429.*Aguarde/);
+    assert.equal(restarted.visited.length, 0, 'a process restart must honor the previously saved Retry-After');
+    paused.checkpoint.marketplaceAccess.retryAt = Date.now() - 1;
+    restarted.restoreCheckpoint(paused);
+    await restarted.runner.resume(paused.id); await restarted.runner.task;
+    assert.equal(restarted.saved().status, 'completed');
+    assert.equal(restarted.saved().checkpoint.marketplaceAccess, undefined);
 }
 
 async function recoverOnlyIncompleteAndFailedSeeds() {

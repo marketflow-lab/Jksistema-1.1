@@ -9,6 +9,37 @@ const STORE = 'https://chromewebstore.google.com/detail/avantpro-ml/' + EXTENSIO
 const HOME = 'https://www.mercadolivre.com.br/';
 const RELEASE_MEDIA = 'jk-pesquisa-mercado:release-recommendation-media';
 
+function retryAfterMilliseconds(value) {
+    if (typeof value !== 'string') return;
+    let text = value.trim();
+    if (/^\d+$/.test(text)) {
+        const milliseconds = Number(text) * 1000;
+        return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
+    }
+    const now = Date.now();
+    // Normalize the two historical HTTP-date formats to IMF-fixdate, always in UTC.
+    const legacy = /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\d{2})-([A-Z][a-z]{2})-(\d{2}) (\d{2}:\d{2}:\d{2}) GMT$/.exec(text);
+    if (legacy) {
+        const [, weekday, day, month, shortYear, clock] = legacy;
+        const horizon = new Date(now);
+        horizon.setUTCFullYear(horizon.getUTCFullYear() + 50);
+        let year = Math.floor(horizon.getUTCFullYear() / 100) * 100 + Number(shortYear);
+        if (Date.parse(`${day} ${month} ${year} ${clock} GMT`) > horizon.getTime()) year -= 100;
+        text = `${weekday.slice(0, 3)}, ${day} ${month} ${year} ${clock} GMT`;
+    } else {
+        const asctime = /^([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ( [1-9]|\d{2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(text);
+        if (asctime) {
+            const [, weekday, month, day, clock, year] = asctime;
+            text = `${weekday}, ${day.trim().padStart(2, '0')} ${month} ${year} ${clock} GMT`;
+        }
+    }
+    // Date.parse also accepts fractions and malformed dates. Require an actual HTTP date.
+    if (text.length !== 29) return;
+    const date = new Date(text);
+    if (!Number.isFinite(date.getTime()) || date.toUTCString() !== text) return;
+    return Math.max(0, date.getTime() - now);
+}
+
 function interrupted() {
     return Object.assign(new Error('Pesquisa interrompida.'), { name: 'AbortError' });
 }
@@ -198,6 +229,10 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                     const request = response.request();
                     if (tab === page && mainNavigation(request)) {
                         status = { url: response.url(), statusCode: response.status() };
+                        if (status.statusCode === 429 && allowedUrl(status.url)) {
+                            const delay = retryAfterMilliseconds(response.headers()['retry-after']);
+                            if (delay !== undefined) status.retryAfterMs = delay;
+                        }
                     }
                 });
                 page.on('framenavigated', frame => { if (tab === page && frame === page.mainFrame()) documentVersion++; });
@@ -245,6 +280,16 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                 if (reason) throw loginRequired(reason);
             } catch (error) {
                 verify(owner, generation);
+                // Chromium rejects an empty 403/429 body after reporting its HTTP response.
+                // Close the old document and retain only the confirmed top-level response.
+                if (moving === ticket && /net::ERR_HTTP_RESPONSE_CODE_FAILURE\b/.test(error.message)
+                    && status && [403, 429].includes(status.statusCode) && allowedUrl(status.url)) {
+                    const blocked = { ...status, didNotCommit: true };
+                    const closed = discard();
+                    status = blocked;
+                    await closed;
+                    return;
+                }
                 if (!error.waitingLogin && moving === ticket) await discard();
                 if (error.name === 'TimeoutError') throw Object.assign(new Error('Tempo esgotado ao abrir a página.'), {
                     name: 'TimeoutError', code: 'category_load_timeout'
@@ -334,7 +379,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             },
             navigate, executeJavaScript: evaluate, ensureAvantSession, deferRecommendationMedia, getURL, getResumeURL: () => lastUrl,
             isLoading: () => loading,
-            getNavigationStatus: () => status && status.url === getURL() ? { ...status } : null,
+            getNavigationStatus: () => status && (status.didNotCommit || status.url === getURL()) ? { ...status } : null,
             stop: () => { void discard(); }, destroy: discard, close: discard,
             finish: async state => { if (state !== 'waiting_login' || detail) await discard(); },
             show: () => show(lastUrl, { collectVisible: true })

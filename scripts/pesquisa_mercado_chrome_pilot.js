@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { PesquisaMercadoRunner, allowedUrl, sameSeller } = require('../electron_app/main/modules/pesquisa-mercado-runner');
+const { PesquisaMercadoRunner, allowedUrl, sameSeller, assertMarketplaceNavigation } = require('../electron_app/main/modules/pesquisa-mercado-runner');
 const collector = require('../static/pesquisa-mercado/shared-collector');
 const pageScripts = require('../static/pesquisa-mercado/page-scripts');
 const { createMemoryApi } = require('./pesquisa_mercado_live_smoke');
@@ -121,7 +121,7 @@ function compare(row, item, dom) {
         && normalize(item.media_mensal_rotulo) === 'vendas mensais' ? 'matched' : 'mismatch';
 }
 
-async function runPilot(sample, session, { productionCollector = collector, signal, onProgress = () => {} } = {}) {
+async function runPilot(sample, session, { productionCollector = collector, signal, onProgress = () => {}, controlsOnly = false, oneControl = false } = {}) {
     const observed = new Map();
     const memory = createMemoryApi();
     let attempts = 0, active = 0, peak = 0;
@@ -153,6 +153,9 @@ async function runPilot(sample, session, { productionCollector = collector, sign
     signal?.addEventListener('abort', interrupt, { once: true });
     const scope = { key: 'pilot', nome: 'Piloto', url: 'https://www.mercadolivre.com.br/categorias' };
     const totals = { controls: {}, ekom: {}, attempts: 0, peak: 0, status: 'completed' };
+    const phases = { controls: oneControl ? sample.controls.slice(0, 1) : sample.controls };
+    if (oneControl || controlsOnly) totals.mode = oneControl ? 'one-control' : 'controls-only';
+    else phases.ekom = sample.ekom;
     try {
         if (signal?.aborted) throw fail('interrupted');
         runner.job = (await memory.api('POST', ROOT, { category: scope })).job;
@@ -160,6 +163,7 @@ async function runPilot(sample, session, { productionCollector = collector, sign
         runner.seenSellers = new Set();
         await browser.prepare();
         await browser.navigate(sample.controls[0].url, runner.controller.signal);
+        assertMarketplaceNavigation(browser, 'product');
         const auth = await browser.ensureAvantSession({ signal: runner.controller.signal });
         if (!auth || !auth.authenticated && !auth.collectionAllowed) {
             const safe = new Set(['ml_login_required', 'ml_verification_required', 'avant_login_required',
@@ -167,7 +171,7 @@ async function runPilot(sample, session, { productionCollector = collector, sign
             totals.status = safe.has(auth?.reason) ? auth.reason : 'authentication_unconfirmed';
             return totals;
         }
-        for (const [phase, rows] of Object.entries({ controls: sample.controls, ekom: sample.ekom })) {
+        for (const [phase, rows] of Object.entries(phases)) {
             const started = Date.now();
             const groups = new Map();
             for (const row of rows) {
@@ -191,7 +195,16 @@ async function runPilot(sample, session, { productionCollector = collector, sign
         }
         return totals;
     } catch (error) {
-        if (runner.controller.signal.aborted) totals.status = 'interrupted';
+        if (error?.code === 'marketplace_http_403' || error?.code === 'marketplace_http_429') {
+            totals.status = error.code;
+            const status = error.code === 'marketplace_http_403' ? 403 : 429;
+            if (error.status === status) totals.httpStatus = status;
+            if (['product', 'seller', 'category', 'pagination'].includes(error.stage)) totals.stage = error.stage;
+            if (status === 429 && Number.isSafeInteger(error.retryAt) && error.retryAt > 0) {
+                const date = new Date(error.retryAt);
+                if (Number.isFinite(date.getTime())) totals.retryAt = date.toISOString();
+            }
+        } else if (runner.controller.signal.aborted) totals.status = 'interrupted';
         else if (error?.waitingLogin) totals.status = 'login_required';
         else throw error;
         return totals;
@@ -202,10 +215,27 @@ async function runPilot(sample, session, { productionCollector = collector, sign
     }
 }
 
+function parseOptions(args) {
+    const seen = new Set();
+    const options = {};
+    for (let i = 0; i < args.length; i++) {
+        const name = args[i];
+        if (seen.has(name)) throw fail('usage');
+        seen.add(name);
+        if (name === '--sample' || name === '--profile') {
+            const value = args[++i];
+            if (!value || value.startsWith('--')) throw fail('usage');
+            options[name.slice(2)] = value;
+        } else if (!['--live', '--controls-only', '--one-control'].includes(name)) throw fail('usage');
+    }
+    if (!seen.has('--live') || !options.sample || !options.profile) throw fail('usage');
+    return { ...options, controlsOnly: seen.has('--controls-only'), oneControl: seen.has('--one-control') };
+}
+
 async function main(args) {
-    if (args.length !== 5 || args[0] !== '--live' || args[1] !== '--sample' || args[3] !== '--profile') throw fail('usage');
-    const sample = readSample(args[2]);
-    const profile = path.resolve(args[4]);
+    const options = parseOptions(args);
+    const sample = readSample(options.sample);
+    const profile = path.resolve(options.profile);
     if (!process.env.LOCALAPPDATA || profile !== path.resolve(process.env.LOCALAPPDATA, 'JK Pesquisa Avant Teste')) {
         throw fail('dedicated_profile_required');
     }
@@ -217,7 +247,7 @@ async function main(args) {
     const stop = () => controller.abort();
     process.once('SIGINT', stop);
     try {
-        const report = await runPilot(sample, session, { signal: controller.signal,
+        const report = await runPilot(sample, session, { signal: controller.signal, controlsOnly: options.controlsOnly, oneControl: options.oneControl,
             onProgress: summary => process.stdout.write(JSON.stringify(summary) + '\n') });
         console.log(JSON.stringify(report));
         if (!accepted(report)) process.exitCode = 2;
@@ -226,11 +256,13 @@ async function main(args) {
 
 function accepted(report) {
     const accounted = group => (group.matched || 0) + (group.pending || 0);
+    const limited = report.mode === 'one-control' || report.mode === 'controls-only';
     return report.status === 'completed' && report.controls.matched >= 1
-        && accounted(report.controls) === 2 && accounted(report.ekom) === 48;
+        && accounted(report.controls) === (report.mode === 'one-control' ? 1 : 2)
+        && (limited ? !Object.keys(report.ekom).length : accounted(report.ekom) === 48);
 }
 
-module.exports = { readSample, readVisiblePanel, compare, runPilot, accepted };
+module.exports = { readSample, readVisiblePanel, compare, runPilot, accepted, parseOptions };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
     const publicCodes = ['usage', 'sample_mismatch', 'sample_invalid', 'sample_seller_mismatch', 'prepared_profile_missing', 'dedicated_profile_required'];
     console.error(JSON.stringify({ status: publicCodes.includes(error?.code) ? error.code : 'pilot_failed' }));

@@ -62,6 +62,41 @@ function canonicalUrl(value) {
     return url.href;
 }
 
+const MARKETPLACE_WAIT_DEFAULT_MS = 60_000;
+const MARKETPLACE_STAGES = {
+    category: 'na categoria', seller: 'na pagina do vendedor', product: 'no anuncio', pagination: 'na paginacao'
+};
+
+function isMarketplaceAccessPause(error) {
+    return error?.code === 'marketplace_http_403' || error?.code === 'marketplace_http_429';
+}
+
+function assertMarketplaceNavigation(browser, stage, now = Date.now()) {
+    const response = browser.getNavigationStatus?.();
+    if (response?.statusCode !== 403 && response?.statusCode !== 429) return;
+    const responseUrl = canonicalUrl(response.url);
+    if (!responseUrl || response.didNotCommit !== true && canonicalUrl(browser.getURL()) !== responseUrl) return;
+    const status = response.statusCode;
+    const location = Object.hasOwn(MARKETPLACE_STAGES, stage) ? MARKETPLACE_STAGES[stage] : 'na pesquisa';
+    const message = status === 403
+        ? `Mercado Livre retornou HTTP 403 ${location}. Abra o navegador da pesquisa, confira o acesso e retome.`
+        : `Mercado Livre retornou HTTP 429 ${location}. Pesquisa pausada para respeitar o limite de consultas.`;
+    const error = Object.assign(new Error(message), { code: `marketplace_http_${status}`, status, stage });
+    if (status === 429) {
+        const delay = Number.isSafeInteger(response.retryAfterMs) && response.retryAfterMs >= 0
+            ? response.retryAfterMs : MARKETPLACE_WAIT_DEFAULT_MS;
+        error.retryAt = now + Math.min(delay, Number.MAX_SAFE_INTEGER - now);
+    }
+    throw error;
+}
+
+function assertMarketplaceRetryAllowed(checkpoint, now = Date.now()) {
+    const block = checkpoint?.marketplaceAccess;
+    if (block?.status !== 429 || !Number.isSafeInteger(block.retryAt) || block.retryAt <= now) return;
+    const seconds = Math.ceil((block.retryAt - now) / 1000);
+    throw new Error(`Mercado Livre retornou HTTP 429. Aguarde ${seconds} s antes de retomar.`);
+}
+
 function normalizeCategory(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     if (Object.keys(value).some(key => !['key', 'nome', 'url'].includes(key))) return null;
@@ -465,7 +500,8 @@ class PesquisaMercadoRunner {
         this.emit(this.snapshot());
     }
 
-    async start(category) {
+    async start(category, previousCheckpoint) {
+        assertMarketplaceRetryAllowed(previousCheckpoint);
         if (this.namesTask) throw new Error('Aguarde a recuperacao dos nomes antes de iniciar uma pesquisa.');
         const selected = category === undefined ? null : normalizeCategory(category);
         if (category !== undefined && !selected) throw new Error('Escolha uma categoria ou subcategoria valida.');
@@ -487,6 +523,7 @@ class PesquisaMercadoRunner {
             if (this.job.id !== job.id) throw new Error('Outra pesquisa ja esta em execucao neste aplicativo.');
             return this.snapshot();
         }
+        assertMarketplaceRetryAllowed(job.checkpoint);
         for (const browser of this.detailBrowsers.slice(1)) {
             if (typeof browser.destroy === 'function') browser.destroy();
         }
@@ -495,6 +532,7 @@ class PesquisaMercadoRunner {
         this.job = clone(job);
         this.job.counters = { categories: 0, pages: 0, sellers: 0, ads: 0, pending: 0, ...(job.counters || {}) };
         this.checkpoint = initialCheckpoint(job.checkpoint);
+        delete this.checkpoint.marketplaceAccess;
         const metricsVersion = this.collector.AVANT_METRICS_VERSION;
         const savedCollections = [this.checkpoint.sellerCollection, this.checkpoint.preservedSellerCollection?.collection];
         this.refreshLegacyAvant = !!(job.legacyAvantMetricsPending || this.checkpoint.legacyAvantMetricsPending
@@ -604,6 +642,7 @@ class PesquisaMercadoRunner {
         if (!profile) return null;
         const avantState = { checked: false, attempted: false, forced: false };
         await this.nameStep(() => this.browser.navigate(profile, signal), signal);
+        assertMarketplaceNavigation(this.browser, 'seller');
         const candidate = page => {
             const confirmed = sellerFromPage(page);
             if (!confirmed || !sameSeller(seller, confirmed)) return null;
@@ -629,6 +668,7 @@ class PesquisaMercadoRunner {
             if (sameSeller(seller, page) && allowedUrl(page.allAdsUrl) && canonicalUrl(page.allAdsUrl) !== target) {
                 target = canonicalUrl(page.allAdsUrl);
                 await this.nameStep(() => this.browser.navigate(target, signal), signal);
+                assertMarketplaceNavigation(this.browser, 'seller');
                 avantState.checked = false;
                 continue;
             }
@@ -684,6 +724,7 @@ class PesquisaMercadoRunner {
             const authorized = await this.nameStep(() => this.api('GET', base), signal);
             job = authorized.job;
             if (!job || ['running', 'waiting_login'].includes(job.status)) throw new Error('Pause ou encerre a pesquisa antes de recuperar os nomes.');
+            assertMarketplaceRetryAllowed(job.checkpoint);
             const response = await this.nameStep(() => this.api('GET', `${base}/vendedores`), signal);
             const affected = (response.items || []).filter(seller => seller.name_pending === true || !cleanSellerName(seller.nome || seller.vendedor, seller.id));
             pending = affected.length;
@@ -701,6 +742,7 @@ class PesquisaMercadoRunner {
                     if (update && !signal.aborted) updates.push(update);
                     if (updates.length === 100) await flush();
                 } catch (error) {
+                    if (isMarketplaceAccessPause(error)) { await flush(); throw error; }
                     if (error.status === 401 || error.status === 403 || error.status === 404) throw error;
                     if (error.waitingLogin) { requiresLogin = true; break; }
                     // A single timeout or unavailable profile remains pending.
@@ -741,6 +783,7 @@ class PesquisaMercadoRunner {
         if (!current.job || current.job.id !== jobId) throw new Error('Atualize a pesquisa antes de recuperar as pendencias.');
         // Validate the frozen selection before the backend atomically starts a
         // new generation. The revision check below still rejects concurrent edits.
+        assertMarketplaceRetryAllowed(current.job.checkpoint);
         validateCheckpointTaxonomy(initialCheckpoint(current.job.checkpoint));
         const response = await this.api('POST', `${ROOT}/${encodeURIComponent(jobId)}/recover-incomplete`, { expected_revision: expectedRevision });
         return this.attach(response.job);
@@ -814,7 +857,7 @@ class PesquisaMercadoRunner {
                 return result;
             } catch (err) {
                 if (err.waitingLogin || err.status === 401 || err.status === 403) this.loginBrowser = browser;
-                if (err.name === 'AbortError' || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
+                if (err.name === 'AbortError' || isMarketplaceAccessPause(err) || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
                 if (index < 2) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
             }
@@ -852,6 +895,7 @@ class PesquisaMercadoRunner {
             await this.browser.navigate(url, this.controller.signal);
             let page;
             const isCategory = purpose === 'category' || purpose === 'navigation' || purpose === 'category-transport';
+            const stage = purpose === 'first-page' || purpose === 'seller' ? 'seller' : purpose === 'item' ? 'product' : 'category';
             const isCategoryOptions = purpose === 'category-options';
             const isOfficialIndex = purpose === 'index' && sameCategoryPage(url, 'https://www.mercadolivre.com.br/categorias');
             const verifyDestination = isCategory || isOfficialIndex;
@@ -862,19 +906,13 @@ class PesquisaMercadoRunner {
             for (let poll = 0; poll < 34; poll += 1) {
                 await this.wait(450);
                 this.check();
+                assertMarketplaceNavigation(this.browser, stage);
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 if (page.authRequired || page.avantAuthRequired) {
                     if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
                         reason: page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required') };
                     if (verifyDestination) destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
-                }
-                const navigationStatus = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
-                if (navigationStatus && [403, 429].includes(navigationStatus.statusCode)
-                    && canonicalUrl(navigationStatus.url) === canonicalUrl(page.url || this.browser.getURL())) {
-                    const error = new CategoryNavigationError('category_access_denied', navigationCategoryId);
-                    error.sharedCategoryFailure = true;
-                    throw error;
                 }
                 const listings = (page.anuncios || []).length > 0;
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
@@ -1333,6 +1371,7 @@ class PesquisaMercadoRunner {
             for (let poll = 0; poll < 34; poll += 1) {
                 this.check();
                 await this.wait(450);
+                assertMarketplaceNavigation(this.browser, 'pagination');
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 this.check();
                 if (page.authRequired || page.avantAuthRequired) {
@@ -1340,13 +1379,6 @@ class PesquisaMercadoRunner {
                         reason: page.authReason || (page.authRequired ? 'ml_login_required' : 'avant_login_required') };
                     destination.observe(page.url || this.browser.getURL(), false, true);
                     continue;
-                }
-                const navigationStatus = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
-                if (navigationStatus && [403, 429].includes(navigationStatus.statusCode)
-                    && canonicalUrl(navigationStatus.url) === canonicalUrl(page.url || this.browser.getURL())) {
-                    const error = new CategoryNavigationError('category_access_denied', itemScope ? itemScope.transportCategoryId : transportCategoryId || this.officialCategoryId());
-                    error.sharedCategoryFailure = true;
-                    throw error;
                 }
                 const ready = canonicalUrl(page.url) !== canonicalUrl(current.url) && ((page.anuncios || []).length || page.empty);
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
@@ -1498,7 +1530,11 @@ class PesquisaMercadoRunner {
                                 releaseRecommendationMedia = browser.deferRecommendationMedia?.(detailUrl, item.id || '');
                                 armTimeout(this.detailNavigationTimeoutMs, 'navigation');
                             },
-                            onNavigationComplete: () => { if (alive()) armTimeout(this.detailTimeoutMs, 'collection'); },
+                            onNavigationComplete: () => {
+                                 if (!alive()) return;
+                                 assertMarketplaceNavigation(browser, 'product');
+                                 armTimeout(this.detailTimeoutMs, 'collection');
+                             },
                             onPartial: capture
                         });
                         // Authentication or a changed document also vetoes
@@ -1617,7 +1653,7 @@ class PesquisaMercadoRunner {
             }
         } catch (error) {
             this.check(signal);
-            if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+            if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
             // A bounded unavailable detail keeps the original card's evidence.
         } finally {
             active = false;
@@ -1851,7 +1887,7 @@ class PesquisaMercadoRunner {
                 if (result.incomplete) this.checkpoint.salesRecoveryPending = true;
             } catch (error) {
                 this.check();
-                if (error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
+                if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
                 this.checkpoint.salesRecoveryPending = true;
                 this.incomplete('Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.');
             }
@@ -2045,7 +2081,7 @@ class PesquisaMercadoRunner {
                     if (preserved && preserved.categoryKey === category.key && preserved.seed) {
                         try { await this.processSeed(preserved.seed, true); }
                         catch (error) {
-                            if (error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                            if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
                             this.incomplete('A coleta interrompida foi preservada e continua pendente.');
                         }
                         await this.save();
@@ -2085,7 +2121,7 @@ class PesquisaMercadoRunner {
                         this.job.counters.pages = Number(this.job.counters.pages || 0) + 1;
                         await this.save();
                     } catch (err) {
-                        if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                        if (isMarketplaceAccessPause(err) || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                         const failure = categoryFailure(err, err.navigationDependencyKey ? 'navigation' : 'category');
                         this.incomplete(failure.motivo, failure);
                         if (err.sharedCategoryFailure) throw err;
@@ -2100,7 +2136,7 @@ class PesquisaMercadoRunner {
                         const seed = current.anuncios[current.index];
                         try { await this.processSeed(seed); }
                         catch (err) {
-                            if (this.salesRecoveryDeferred || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (this.salesRecoveryDeferred || isMarketplaceAccessPause(err) || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                             this.checkpoint.discoveredSeed = { key: String(seed.id || canonicalUrl(seed.url)),
                                 id: seed.id || '', url: seed.url, category_key: category.key, status: 'failed' };
@@ -2125,7 +2161,7 @@ class PesquisaMercadoRunner {
                             await this.save();
                             continue;
                         } catch (err) {
-                            if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (isMarketplaceAccessPause(err) || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Nao foi possivel reabrir a categoria; os anuncios ja consultados foram preservados.');
                             break;
                         }
@@ -2151,7 +2187,7 @@ class PesquisaMercadoRunner {
                         this.job.counters.pages = Number(this.job.counters.pages || 0) + 1;
                         await this.save();
                     } catch (err) {
-                        if (err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                        if (isMarketplaceAccessPause(err) || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                         const failure = categoryFailure({ ...err, code: err.code || 'category_pagination_failed' }, 'pagination');
                         this.incomplete(failure.motivo, failure);
                         break;
@@ -2178,10 +2214,12 @@ class PesquisaMercadoRunner {
                 research_chrome_unavailable: 'Nao foi possivel iniciar o Chrome da pesquisa. Confira a instalacao e feche outra janela deste perfil.',
                 avant_extension_missing: 'avant_extension_missing'
             };
-            this.job.status = this.stopStatus || (err.code === 'research_browser_closed' ? 'paused'
+            const marketplacePaused = isMarketplaceAccessPause(err);
+            this.job.status = this.stopStatus || (marketplacePaused || err.code === 'research_browser_closed' ? 'paused'
                 : err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
+            if (marketplacePaused) this.checkpoint.marketplaceAccess = { status: err.status, stage: err.stage, retryAt: err.retryAt };
             if (!this.stopStatus) {
-                const browserMessage = Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
+                const browserMessage = marketplacePaused ? err.message : Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
                 this.setProgress(this.job.status, browserMessage || (err.waitingLogin ? err.message
                     : this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.'));
             }
@@ -2239,7 +2277,7 @@ class PesquisaMercadoRunner {
                     || seed.category_key !== category.key || !allowedUrl(seed.url)) throw new Error('A fila preservada da pesquisa esta incompleta.');
                 try { await this.processSeed(seed, true); }
                 catch (error) {
-                    if (error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                    if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
                     this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                 }
                 recovery.failedSeedsAfterKey = seed.key;
@@ -2249,4 +2287,4 @@ class PesquisaMercadoRunner {
     }
 }
 
-module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };
+module.exports = { PesquisaMercadoRunner, MAX_CONCURRENT_DETAILS, assertMarketplaceNavigation, assertMarketplaceRetryAllowed, allowedUrl, canonicalUrl, sellerFromPage, cleanSellerName, sameSeller, enrichSellerName, normalizeCategory, sameCategoryPage, verifiedCategoryPage, categoryIdFromUrl, categoryPageWaiter, currentPageRequiresLogin, validateCheckpointTaxonomy };

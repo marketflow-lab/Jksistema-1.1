@@ -380,6 +380,7 @@ async function showPesquisaMercadoChrome(runner, purpose, response) {
         if (purpose === 'names') throw new Error('A pesquisa esta usando este navegador.');
         await runner.stop('paused');
         await runner.task;
+        pesquisaMercadoRunnerModule.assertMarketplaceRetryAllowed(runner.checkpoint);
     }
     await pesquisaMercadoChrome.show(target, { collectVisible: true });
     const { id, status, revision, counters, message, created_at, updated_at } = runner.job?.id === job.id ? runner.job : job;
@@ -475,7 +476,7 @@ async function executePesquisaMercadoCommand(action, payload) {
         pesquisaMercadoCategoryLastUrl = '';
     }
     if (action === 'categories') return loadPesquisaMercadoCategories(runner, payload);
-    if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category));
+    if (action === 'start') return runner.start(knownPesquisaMercadoCategory(payload.category), authorizedLatest?.job?.checkpoint);
     if (action === 'status') {
         const result = await runner.status(payload.jobId || '');
         return pesquisaMercadoUsesChrome ? { ...result, browser: 'chrome' } : result;
@@ -493,10 +494,11 @@ async function executePesquisaMercadoCommand(action, payload) {
         return runner.stop(action === 'cancel' ? 'cancelled' : 'paused');
     }
     if (action === 'show-browser') {
+        const browserResponse = authorizedJob || authorizedLatest;
+        if (payload.purpose !== 'setup') pesquisaMercadoRunnerModule.assertMarketplaceRetryAllowed(browserResponse?.job?.checkpoint);
         if (pesquisaMercadoChrome) {
-            const response = authorizedJob || authorizedLatest
-                || (runner.job?.id === jobId ? { job: runner.job } : null);
-            return showPesquisaMercadoChrome(runner, payload.purpose, response);
+            return showPesquisaMercadoChrome(runner, payload.purpose,
+                browserResponse || (runner.job?.id === jobId ? { job: runner.job } : null));
         }
         if (payload.purpose === 'setup') throw new Error('O perfil do Chrome nao esta habilitado.');
         if (payload.purpose === 'categories') {
