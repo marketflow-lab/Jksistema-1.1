@@ -668,6 +668,9 @@
             && location.protocol === 'https:' && (/\/login(?:\/|$)/i.test(location.pathname)
                 || nodes('#avantauth-root form').some(visibleAuthControl))));
         const authReason = mlAuthReason || (avantAuthRequired ? 'avant_login_required' : '');
+        const avantDetailLoading = !!(options?.detail && modernRootState.root
+            && nodes('.loader > span', modernRootState.root).some(label =>
+                /^carregando dados avantpro(?:\.{3}|…)?$/.test(norm(label.textContent)) && visibleAuthControl(label)));
         const metricRows = scope => nodes('.avantpro-product-info-row', scope).concat(
             nodes('.avt-rounded-lg.avt-p-3.avt-text-center, .avt-rounded-full.avt-font-semibold', scope)
                 .filter(node => !!modernRootState.root && node.closest(avantDetailRoot) === modernRootState.root)
@@ -1122,7 +1125,7 @@
         return { url, effectiveCategoryId, categoryDocumentIdentity, categoryIdentityConflict, categoryContext, categoryStructuredNavigation, categoryBrowse, categoryFilterMoreUrl, categoryItems,
             categoryTrends, categoryNavigationHub,
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
-            authRequired, avantAuthRequired, authReason, hasChildren: categories.length > 0, categoryNotFound,
+            authRequired, avantAuthRequired, authReason, avantDetailLoading, hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
             empty: /nao (?:ha|encontramos|temos) (?:anuncios|produtos|resultados)|nenhum (?:anuncio|produto|resultado)/.test(bodyText),
             y, height, viewport, atBottom: y + viewport >= height - 16

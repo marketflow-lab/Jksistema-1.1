@@ -340,11 +340,13 @@ function detailGeometryBrowser(options = {}) {
                 reads += 1;
                 const height = options.height === 'steady' ? 1000
                     : options.height === 'after-five' && reads <= 5 ? 1000 : 1000 + reads % 2;
-                const pending = options.delayed && clicks === 0
+                const avantDetailLoading = !!options.panelLoading && clock < (options.completeAfterMs ?? Infinity);
+                const pending = avantDetailLoading || options.delayed && clicks === 0
                     || Number.isFinite(options.completeAfterMs) && clock < options.completeAfterMs;
                 const observed = pending ? { ...item, vendas: null, media_mensal: null,
                     rankable: false, status: 'sem_dados_avant' } : { ...item };
-                return { url, height, atBottom: options.atBottom !== false, empty: !!options.empty, anuncios: [observed] };
+                return { url, height, atBottom: options.atBottom !== false, empty: !!options.empty,
+                    avantDetailLoading, anuncios: [observed] };
             }
             if (code.includes('/*pm:avant-click*/')) {
                 if (firstClickAt === null) firstClickAt = clock;
@@ -405,6 +407,28 @@ async function testDetailStabilityIgnoresWholePageGeometry() {
     console.log('Pesquisa de Mercado detail: dynamic height, no bottom, delayed panel and final catalog evidence OK');
 }
 
+async function testDetailPanelLoadingKeepsItsCollectionBudget() {
+    for (const completeAfterMs of [18000, undefined]) {
+        const fixture = detailGeometryBrowser({ panelLoading: true, completeAfterMs });
+        const partials = [];
+        const result = await collector.collectDetail({ browser: fixture.browser, url: fixture.url,
+            expectedItem: { id: fixture.id }, now: fixture.browser.now, wait: fixture.browser.wait,
+            timeoutMs: 30000, missingWaitMs: 15000, onPartial: partial => { partials.push(partial); } });
+        assert(partials.some(partial => partial.avantPanelLoading && partial.elapsedMs >= 15000));
+        assert.equal(fixture.browser.counts.clicks, 0, 'the collector does not click a panel that is already loading');
+        if (completeAfterMs) {
+            assert.equal(result.reason, 'complete');
+            assert.equal(result.avantPanelLoading, undefined, 'finished values clear the loading marker');
+            assert.deepEqual([result.anuncios[0].vendas, result.anuncios[0].media_vendas_mensal], [100, 5]);
+        } else {
+            assert.equal(result.reason, 'timeout');
+            assert.equal(result.avantPanelLoading, true);
+            assert.equal(result.anuncios[0].rankable, false);
+            assert(result.elapsedMs >= 30000 && result.elapsedMs < 30500, 'the ordinary timeout bounds a stalled panel');
+        }
+    }
+}
+
 async function testStableCatalogDetailDoesNotScheduleThreeVisits() {
     const { PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
     const fixture = detailGeometryBrowser({ height: 'oscillating', atBottom: false, catalogue: true });
@@ -439,6 +463,7 @@ async function run() {
     await testPartialAvantObservations();
     await testDetailObservationHooks();
     await testDetailStabilityIgnoresWholePageGeometry();
+    await testDetailPanelLoadingKeepsItsCollectionBudget();
     await testStableCatalogDetailDoesNotScheduleThreeVisits();
     const fake = fakeBrowser();
     let updates = 0;

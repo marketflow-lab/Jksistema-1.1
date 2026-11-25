@@ -2194,6 +2194,36 @@ async function optionalDetailDoesNotDelayMissingDetails() {
     assert.equal(published.media_vendas_mensal, 5);
 }
 
+async function stalledAvantPanelRemainsPendingAndRetryable() {
+    const [stalledId, recoveredId] = ['MLB1000000471', 'MLB1000000472'];
+    const listings = [salesListing(stalledId), salesListing(recoveredId)];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listings), reason: 'avant_data_incomplete', incomplete: true }),
+        { detailRetryDelaysMs: undefined });
+    const attempts = new Map();
+    withDetailCollector(h, async ({ expectedItem }) => {
+        const id = expectedItem.id;
+        const attempt = (attempts.get(id) || 0) + 1;
+        attempts.set(id, attempt);
+        if (id === recoveredId && attempt === 2) {
+            return { reason: 'complete', anuncios: [salesListing(id, { avant_metrics_version: 3,
+                avant_detail_observed: true, vendas: 188, media_mensal: 5, rankable: true })] };
+        }
+        return { reason: 'timeout', avantPanelLoading: true, anuncios: [salesListing(id, { avant_metrics_version: 3 })] };
+    });
+    h.runner.collector.AVANT_METRICS_VERSION = 3;
+
+    await h.runner.start(); await h.runner.task;
+
+    assert.equal(attempts.get(stalledId), 3, 'a stalled panel remains eligible for transient retries');
+    assert.equal(attempts.get(recoveredId), 2, 'a successful retry leaves the queue');
+    const published = new Map(h.vendors.get('id:111').anuncios.map(item => [item.id, item]));
+    assert.equal(published.get(stalledId).rankable, false);
+    assert.match(published.get(stalledId).erro, /painel do Avant Pro ainda estava carregando/);
+    assert.equal(published.get(recoveredId).rankable, true);
+    assert.equal(published.get(recoveredId).erro, '');
+    assert(h.events.some(event => /painel do Avant ainda carregando ao encerrar a consulta: [12]/.test(event.job.progress.detail)));
+}
+
 async function parallelDetailsPauseKeepsOutOfOrderAttempts() {
     const ids = Array.from({ length: 6 }, (_, index) => `MLB10000005${String(index).padStart(2, '0')}`);
     const listing = ids.map(id => salesListing(id)), releases = [], firstCalls = [];
@@ -2567,6 +2597,7 @@ async function partialAndTimedOutCatalogEvidenceCanStillRecover() {
     await partialAndTimedOutCatalogEvidenceCanStillRecover();
     await parallelDetailsOnlyRetryMissing();
     await optionalDetailDoesNotDelayMissingDetails();
+    await stalledAvantPanelRemainsPendingAndRetryable();
     await parallelDetailsPauseKeepsOutOfOrderAttempts();
     await parallelDetailsLoginUsesBlockedBrowser();
     await parallelDetailTimeoutOnlyStopsItsBrowser();

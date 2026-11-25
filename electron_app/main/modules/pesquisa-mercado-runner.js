@@ -6,6 +6,7 @@ const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed']);
+const AVANT_PANEL_LOADING_MESSAGE = 'O painel do Avant Pro ainda estava carregando quando a consulta terminou.';
 const AVANT_METRIC_FIELDS = [
     'vendas', 'vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas',
     'vendas_limite_inferior', 'media_mensal', 'media_mensal_fonte', 'media_mensal_rotulo',
@@ -1424,10 +1425,11 @@ class PesquisaMercadoRunner {
     }
 
     detailProgressCounts(seller, items) {
-        const validated = items.filter(item => this.areAvantMetricsComplete(item)).length;
-        const blocked = items.filter(item => !this.areAvantMetricsComplete(item)
-            && (!allowedUrl(item.url) || this.detailRetryBlocked(seller, item))).length;
-        return `validados: ${validated}; pendentes: ${items.length - validated}; sem reconsulta automatica: ${blocked}`;
+        const pending = items.filter(item => !this.areAvantMetricsComplete(item));
+        const blocked = pending.filter(item => !allowedUrl(item.url) || this.detailRetryBlocked(seller, item)).length;
+        const loading = pending.filter(item => String(item.erro || '').includes(AVANT_PANEL_LOADING_MESSAGE)).length;
+        return `validados: ${items.length - pending.length}; pendentes: ${pending.length}; sem reconsulta automatica: ${blocked}`
+            + (loading ? `; painel do Avant ainda carregando ao encerrar a consulta: ${loading}` : '');
     }
 
     async detailBrowserPool(size, signal) {
@@ -1449,6 +1451,7 @@ class PesquisaMercadoRunner {
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
         let timer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
+        let panelLoading = false;
         const armTimeout = (milliseconds, phase) => {
             if (!active || controller.signal.aborted) return;
             clearTimeout(timer);
@@ -1505,6 +1508,7 @@ class PesquisaMercadoRunner {
             const found = (detail.anuncios || []).find(candidate => item.id
                 ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
                 : canonicalUrl(candidate.url) === canonicalUrl(item.url));
+            panelLoading = !!found && detail.avantPanelLoading === true;
             const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
                 || String(value || '').toLowerCase().startsWith('avantpro');
             if (found && found.seller_confirmed === true && sameSeller(seller, found)
@@ -1607,6 +1611,11 @@ class PesquisaMercadoRunner {
             active = false;
             clearTimeout(timer);
             signal.removeEventListener('abort', abort);
+            const current = items[index];
+            if (panelLoading && !this.collector.isComplete(current)
+                && !String(current.erro || '').includes(AVANT_PANEL_LOADING_MESSAGE)) {
+                current.erro = [current.erro, AVANT_PANEL_LOADING_MESSAGE].filter(Boolean).join(' ');
+            }
         }
     }
 

@@ -377,6 +377,15 @@ async function run() {
         const modernUrl = 'https://www.mercadolivre.com.br/fixture/up/MLBU10000077?wid=' + modernItemId;
         await page.goto(modernUrl);
         const header = '<h1 class="ui-pdp-title">Produto fixture</h1><a class="ui-pdp-seller__link" href="https://lista.mercadolivre.com.br/_CustId_123456">Loja Alvo</a>';
+        const avantLoader = '<div class="loader"><span>Carregando dados Avantpro...</span></div>';
+        const loaderRoot = '<div id="productInfo" class="avantpro-in-product-content">' + avantLoader + '</div>';
+        for (const [body, loading] of [[loaderRoot, true], [avantLoader, false],
+            [loaderRoot.replace('<span>', '<span hidden>'), false],
+            ['<div class="recommendation">' + loaderRoot + '</div>', false]]) {
+            await page.setContent('<main>' + header + body + '</main>');
+            const snapshot = await page.evaluate(scripts.snapshotScript({ seller, detail: true }));
+            assert.equal(snapshot.avantDetailLoading, loading, 'only the current visible Avant panel can report a loading indicator');
+        }
         const readModern = async (body, sellerHeader = header) => {
             await page.setContent('<main>' + sellerHeader + body + '</main>');
             await page.evaluate(scripts.prepareScript());

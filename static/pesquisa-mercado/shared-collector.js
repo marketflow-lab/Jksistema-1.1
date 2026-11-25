@@ -107,7 +107,7 @@
         const initialUrl = pageKey(await browser.getURL());
         const items = new Map();
         let lastSignature = '', stableSince = now(), reachedBottom = false, quiet = 0, empty = false;
-        let missingSince = null, clicksPending = false;
+        let missingSince = null, clicksPending = false, avantPanelLoading = false;
         let materialized = !!opts.detail, lastLayoutSignature = '', layoutStableSince = now(), layoutQuiet = 0;
 
         const checkpoint = async () => {
@@ -128,6 +128,7 @@
             const resultReason = reason === 'complete' && missing > 0 ? 'avant_data_incomplete' : reason;
             return { anuncios, incomplete: resultReason !== 'complete' || missing > 0, authRequired: !!authRequired, reason: resultReason,
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
+                ...(avantPanelLoading && missing > 0 && ['partial', 'timeout'].includes(reason) ? { avantPanelLoading: true } : {}),
                 primeira_pagina: !opts.detail, elapsedMs: Math.max(0, now() - start) };
         };
         // Internal observations also invalidate cached evidence when the page becomes blocked.
@@ -154,8 +155,10 @@
             // A PDP can contain an empty recommendations block. Only listing
             // pages may use that page-wide signal to finish before Avant loads.
             empty = !opts.detail && !!snapshot.empty;
+            let matchedOffer = false;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {
                 if (!matchesExpected(incoming, opts.expectedItem)) continue;
+                matchedOffer = true;
                 const metric = ranking.calculateMetrics(incoming, now());
                 const hasSales = Number.isFinite(metric.vendas) && metric.vendas >= 0;
                 const item = incoming.rankable === true && !isComplete(incoming, now())
@@ -169,13 +172,14 @@
                 const observation = selectObservation(previous, item);
                 items.set(key, { ...observation, ordem_coleta: order });
             }
+            avantPanelLoading = !!opts.detail && matchedOffer && snapshot.avantDetailLoading === true;
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const list = Array.from(items.values());
             const signature = JSON.stringify(opts.detail
-                ? list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal,
+                ? [avantPanelLoading, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal,
                     item.media_vendas_mensal, item.data_criacao, item.status, item.seller_confirmed,
                     item.seller_id, item.seller_perfil_url, item.avant_seller_id, item.avant_seller_perfil_url,
-                    item.vendas_rotulo, item.vendas_exibicao, item.media_mensal_rotulo, item.media_vendas_mensal_exibicao])
+                    item.vendas_rotulo, item.vendas_exibicao, item.media_mensal_rotulo, item.media_vendas_mensal_exibicao])]
                 : [snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
             if (signature !== lastSignature) { lastSignature = signature; stableSince = now(); quiet = 0; }
             else quiet += 1;
@@ -199,17 +203,19 @@
                 quiet = 0;
             }
             const allReady = list.length > 0 && list.every(item => isComplete(item, now()));
+            // An active detail panel can use the rest of the existing collection budget.
+            const overdue = !avantPanelLoading && missingSince !== null && now() - missingSince >= missingWaitMs;
             // Avant may scroll back to a card. Once the page is materialized, its
             // current viewport must not reset the wait for missing metrics.
             if (quiet >= 2 && now() - stableSince >= settleMs && (!clicksPending || allReady)) {
                 if (allReady || empty) return finish('complete');
-                if (missingSince !== null && now() - missingSince >= missingWaitMs) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
+                if (overdue) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
-            const click = allReady ? null : await execute(scripts.clickAvantScript({ pending: list.filter(item => !isComplete(item, now())), detail: !!opts.detail }));
+            const click = allReady || avantPanelLoading ? null : await execute(scripts.clickAvantScript({ pending: list.filter(item => !isComplete(item, now())), detail: !!opts.detail }));
             if (click && click.loginBlocked) return observe(finish('avant_login_required', true));
             clicksPending = !!(click && (click.clicked > 0 || click.eligiblePending > 0 || (Array.isArray(click.pendingKeys) && click.pendingKeys.length)));
             // Pending cards must not turn a failed Avant session into an endless job.
-            if (quiet >= 2 && missingSince !== null && now() - missingSince >= missingWaitMs && !(click && click.clicked > 0)) {
+            if (quiet >= 2 && overdue && !(click && click.clicked > 0)) {
                 if (!allReady && !empty) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
             await checkpoint();
