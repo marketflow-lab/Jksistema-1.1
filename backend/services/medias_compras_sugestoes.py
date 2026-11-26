@@ -13,11 +13,12 @@ from datetime import datetime
 
 import openpyxl
 import pandas as pd
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from backend.schemas import ListaCompraRequest
+from backend.schemas.medias_compras import MediasListaSugestaoRequest
 from backend.services import medias_compras_common as medias_common
 from backend.services.medias_compras_common import *
 from backend.services.medias_compras_excel import (
@@ -671,19 +672,50 @@ async def api_medias_compras_gerar_lista_sugestao(
     loja: str = "__todas",
     store_id: str = "",
     quantidades_sugeridas: str = "",
-    client_id: str = Depends(medias_common.get_tenant_id)
+    client_id: str = Depends(medias_common.get_tenant_id),
+    *,
+    request: Request = None,
 ):
     from backend.services.blocking_workers import run_heavy
 
-    return await run_heavy(_api_medias_compras_gerar_lista_sugestao_sync, meses=meses, loja=loja, store_id=store_id, quantidades_sugeridas=quantidades_sugeridas, client_id=client_id)
+    username = getattr(request.state, "username", "") if request is not None else ""
+    return await run_heavy(
+        _api_medias_compras_gerar_lista_sugestao_sync,
+        meses=meses,
+        loja=loja,
+        store_id=store_id,
+        quantidades_sugeridas=quantidades_sugeridas,
+        client_id=client_id,
+        username=username,
+    )
+
+
+async def api_medias_compras_gerar_lista_sugestao_post(
+    req: MediasListaSugestaoRequest,
+    client_id: str = Depends(medias_common.get_tenant_id),
+):
+    from backend.services.blocking_workers import run_heavy
+
+    return await run_heavy(
+        _api_medias_compras_gerar_lista_sugestao_sync,
+        meses=req.meses,
+        loja=req.loja,
+        store_id=req.store_id,
+        quantidades_sugeridas=req.quantidades_sugeridas,
+        client_id=client_id,
+        hidden_skus=req.hidden_skus,
+    )
 
 
 def _api_medias_compras_gerar_lista_sugestao_sync(
     meses: int = 12,
     loja: str = "__todas",
     store_id: str = "",
-    quantidades_sugeridas: str = "",
-    client_id: str = Depends(medias_common.get_tenant_id)
+    quantidades_sugeridas: str | dict = "",
+    client_id: str = Depends(medias_common.get_tenant_id),
+    *,
+    hidden_skus: list[str] | None = None,
+    username: str = "",
 ):
     from backend.services.medias_compras_visao import _api_medias_compras_visao_sync
 
@@ -702,12 +734,19 @@ def _api_medias_compras_gerar_lista_sugestao_sync(
         client_id=client_id,
     )
     quantidades_ajustadas = _normalizar_quantidades_sugeridas(quantidades_sugeridas)
+    if hidden_skus is None and username:
+        preferencias = _carregar_preferencias_skus_ocultos_medias(client_id, username)
+        hidden_skus = preferencias.get("skus_ocultos")
+    skus_ocultos = {sku.strip().upper() for sku in (hidden_skus or [])}
     quantidades_ajustadas_aplicadas = set()
     itens = []
     for item_original in (data.get("itens") or []):
+        sku = str(item_original.get("sku") or "")
+        if sku.strip().upper() in skus_ocultos:
+            continue
         item = dict(item_original)
         item["compra_sugerida"] = _resolver_quantidade_sugerida(
-            item.get("sku", ""),
+            sku,
             item.get("compra_sugerida", 0),
             quantidades_ajustadas,
             quantidades_ajustadas_aplicadas,
@@ -906,5 +945,6 @@ __all__ = [
     "api_medias_compras_gerar_lista_compra",
     "api_medias_compras_gerar_lista_compra_get",
     "api_medias_compras_gerar_lista_sugestao",
+    "api_medias_compras_gerar_lista_sugestao_post",
     "api_medias_compras_produtos_sem_venda",
 ]

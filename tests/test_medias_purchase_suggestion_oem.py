@@ -8,8 +8,11 @@ import json
 import openpyxl
 import pandas as pd
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 from PIL import Image
 
+from backend.routers.medias_compras import create_medias_compras_router
 from backend.services import cadastro_fotos as fotos
 from backend.services import cadastro_lojas_produtos as produtos
 from backend.services import integracoes
@@ -131,6 +134,39 @@ def _gerar(client="cliente-a", store="store-a"):
     )
     workbook = openpyxl.load_workbook(io.BytesIO(sugestoes.TEMP_FILES_STORAGE[response["file_id"]]))
     return response, workbook.active
+
+
+def test_sugestao_exclui_skus_ocultos_e_reexibe_sem_esperar_persistencia(ambiente):
+    ambiente["configure"]("cliente-a", {})
+    common._salvar_preferencias_skus_ocultos_medias("cliente-a", "operador", ["002", "003"])
+
+    def tenant_autenticado(request: Request):
+        request.state.username = "operador"
+        return "cliente-a"
+
+    app = FastAPI()
+    app.include_router(create_medias_compras_router())
+    app.dependency_overrides[common.get_tenant_id] = tenant_autenticado
+    rota = "/api/medias-compras/gerar-lista-sugestao"
+    escopo = {"meses": 6, "loja": "cliente-a store-a", "store_id": "store-a"}
+    quantidades = {"001": 7, "002": 9, "003": 3}
+    with TestClient(app) as client:
+        respostas = [
+            client.get(rota, params={**escopo, "quantidades_sugeridas": json.dumps(quantidades)}),
+            client.post(rota, json={**escopo, "hidden_skus": [" 002 ", "003"],
+                                   "quantidades_sugeridas": quantidades}),
+            client.post(rota, json={**escopo, "hidden_skus": [],
+                                   "quantidades_sugeridas": quantidades}),
+        ]
+
+    esperados = [[("001", 7)], [("001", 7)], [("001", 7), ("002", 9), ("003", 3)]]
+    for resposta, esperado in zip(respostas, esperados, strict=True):
+        assert resposta.status_code == 200, resposta.text
+        dados = resposta.json()
+        workbook = openpyxl.load_workbook(io.BytesIO(sugestoes.TEMP_FILES_STORAGE[dados["file_id"]]))
+        linhas = [(row[0], row[6]) for row in workbook.active.iter_rows(min_row=2, values_only=True)]
+        assert linhas == esperado
+        assert dados["total_itens"] == dados["total_quantidades_ajustadas"] == len(esperado)
 
 
 @pytest.mark.parametrize("source", ["principal", "backup"])

@@ -308,18 +308,21 @@
             setStatus('Gerando lista de sugestão de compra...');
             try {
                 await confirmarVisaoAtualizada();
-                const params = new URLSearchParams();
-                params.set('meses', String(Number(periodoAtual || 12)));
-                params.set('loja', String(lojaSelecionada || '__todas'));
-                params.set('store_id', String(storeIdSelecionado || ''));
-                const quantidadesSugeridas = obterQuantidadesSugeridasEditadas();
-                if (Object.keys(quantidadesSugeridas).length) {
-                    params.set('quantidades_sugeridas', JSON.stringify(quantidadesSugeridas));
-                }
+                const payload = {
+                    meses: Number(periodoAtual || 12),
+                    loja: String(lojaSelecionada || '__todas'),
+                    store_id: String(storeIdSelecionado || ''),
+                    hidden_skus: Array.from(skusOcultosSet),
+                    quantidades_sugeridas: obterQuantidadesSugeridasEditadas()
+                };
 
-                const resp = await fetch('/api/medias-compras/gerar-lista-sugestao?' + params.toString(), {
-                    method: 'GET',
-                    headers: { ...obterAuthHeaders() }
+                const resp = await fetch('/api/medias-compras/gerar-lista-sugestao', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...obterAuthHeaders()
+                    },
+                    body: JSON.stringify(payload)
                 });
 
                 if (!resp.ok) {

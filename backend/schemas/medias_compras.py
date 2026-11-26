@@ -39,6 +39,16 @@ class ListaCompraRequest(BaseModel):
     quantidades_sugeridas: dict[str, int] | None = None
 
 
+class MediasListaSugestaoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    meses: int = 12
+    loja: str = "__todas"
+    store_id: str = ""
+    hidden_skus: list[str]
+    quantidades_sugeridas: dict[str, Any] = Field(default_factory=dict)
+
+
 class ListaPedidoUpdateRequest(BaseModel):
     nome_lista: str | None = None
     loja: str | None = None

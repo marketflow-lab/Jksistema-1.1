@@ -56,6 +56,12 @@ def create_medias_compras_router() -> APIRouter:
         name="api_medias_compras_gerar_lista_sugestao",
     )
     medias_router.add_api_route(
+        "/api/medias-compras/gerar-lista-sugestao",
+        medias_compras.api_medias_compras_gerar_lista_sugestao_post,
+        methods=["POST"],
+        name="api_medias_compras_gerar_lista_sugestao_post",
+    )
+    medias_router.add_api_route(
         "/api/medias-compras/produtos-sem-venda",
         medias_compras.api_medias_compras_produtos_sem_venda,
         methods=["GET"],

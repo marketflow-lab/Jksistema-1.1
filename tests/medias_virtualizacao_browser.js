@@ -111,7 +111,8 @@ async function fixture(browser, count, { adiarFotos = false, respeitarCancelamen
       })) });
     }
     if (url.pathname.endsWith('/gerar-lista-sugestao')) {
-      exports.push(Object.fromEntries(url.searchParams));
+      assert.strictEqual(route.request().method(), 'POST');
+      exports.push(route.request().postDataJSON());
       return json({ file_id: 'synthetic-export' });
     }
     if (url.pathname.includes('/download/')) return route.fulfill({ contentType: 'application/octet-stream', body: 'synthetic' });
@@ -285,7 +286,16 @@ async function testLargeTable(browser, count) {
     await page.evaluate(() => baixarListaSugestaoExcel());
     assert.strictEqual(f.exports.length, 1);
     assert.strictEqual(f.exports[0].store_id, 'store-virtual');
-    assert.deepStrictEqual(JSON.parse(f.exports[0].quantidades_sugeridas), { [sku(1)]: 73 }, 'export includes edits outside rendered window');
+    assert.deepStrictEqual(f.exports[0].quantidades_sugeridas, { [sku(1)]: 73 }, 'export includes edits outside rendered window');
+    assert.deepStrictEqual(f.exports[0].hidden_skus, [], 'a restored SKU is included again');
+
+    await page.locator('#pesquisaSkuInput').fill(sku(count));
+    await page.locator(`${rowSelector} [data-jk-action="ocultar-sku"]`).click();
+    await page.locator('[data-jk-action="baixar-sugestao"]').click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('gerada com sucesso'));
+    assert.strictEqual(f.exports.length, 2);
+    assert.deepStrictEqual(f.exports[1].hidden_skus, [sku(count)]);
+    await page.locator('#pesquisaSkuInput').fill('');
 
     await page.evaluate(() => {
       skusOcultosSet = new Set(itensVisaoAtual.map(item => item.sku));

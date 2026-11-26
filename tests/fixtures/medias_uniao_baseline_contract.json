@@ -85,6 +85,13 @@
   },
   "additive_routes": [
     [
+      "/api/medias-compras/gerar-lista-sugestao",
+      [
+        "POST"
+      ],
+      "api_medias_compras_gerar_lista_sugestao_post"
+    ],
+    [
       "/api/medias-compras/listas-pedidos/{lista_id}/base-custos",
       [
         "GET"

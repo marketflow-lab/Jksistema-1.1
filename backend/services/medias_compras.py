@@ -76,6 +76,7 @@ __all__ = [
     "api_medias_compras_gerar_lista_compra",
     "api_medias_compras_gerar_lista_compra_get",
     "api_medias_compras_gerar_lista_sugestao",
+    "api_medias_compras_gerar_lista_sugestao_post",
     "api_medias_compras_produtos_sem_venda",
     "api_medias_compras_listas_pedidos",
     "api_medias_compras_listas_uniao_previa",
