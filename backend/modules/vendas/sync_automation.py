@@ -240,9 +240,12 @@ def tick():
 
 
 def _loop():
+    from .monthly_closing import dispatch as preparar_meses_fechados
+
     while not _STOP.is_set():
         try:
             tick()
+            preparar_meses_fechados(_tenants, _STOP)
         except Exception:
             logger.warning("Trabalhador de vendas aguardando nova tentativa.")
         _WAKE.wait(15)

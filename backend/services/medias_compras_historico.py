@@ -71,7 +71,8 @@ class _Projecao:
     titulos: dict
     ultimas: dict
     primeiras: dict
-    assinatura: str
+    assinatura: object
+    fechados: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -98,15 +99,24 @@ def _digest_linha(digest, row):
     digest.update(b"\0")
 
 
-def _assinatura_consulta(path, filtro_sql, filtro_params):
+def _assinatura_consulta(path, filtro_sql, filtro_params, comprovante=None):
     digest = hashlib.sha256(b"medias-historico-v1\0")
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        for row in conn.execute(_QUERY_PROJECAO + filtro_sql, filtro_params):
+        sql = _QUERY_PROJECAO + filtro_sql
+        if comprovante is not None:
+            from backend.services import medias_compras_fechamento as mensal
+            chave, meses, _ = comprovante
+            conn.execute("BEGIN")
+            if not mensal.tokens_validos(conn, chave, dict(meses)):
+                return None
+            sql = mensal.consulta_abertos(sql, dict(meses))
+            filtro_params = (*filtro_params, *(m for m, _ in meses))
+        for row in conn.execute(sql, filtro_params):
             _digest_linha(digest, row)
     finally:
         conn.close()
-    return digest.hexdigest()
+    return (*comprovante[:2], digest.hexdigest()) if comprovante is not None else digest.hexdigest()
 
 
 def conferir_leitura_historico(leitura, db_paths, revisoes_esperadas, escopo):
@@ -128,10 +138,11 @@ def conferir_leitura_historico(leitura, db_paths, revisoes_esperadas, escopo):
             if _revisao_banco(path) != expected:
                 return False
             if original != expected:
-                key = (leitura.escopo, chave_arquivo(path))
+                key = (leitura.escopo, chave_arquivo(path), digest[:2] if isinstance(digest, tuple) else None)
                 current = _ASSINATURAS.obter(
                     key, expected,
-                    lambda path=path: (_assinatura_consulta(path, leitura.escopo[3], leitura.escopo[4]), 512),
+                    lambda path=path: ((_assinatura_consulta(path, leitura.escopo[3], leitura.escopo[4], digest)
+                                        if isinstance(digest, tuple) else _assinatura_consulta(path, leitura.escopo[3], leitura.escopo[4])), 512),
                     lambda path=path, expected=expected: _revisao_banco(path) == expected,
                 )
                 if current != digest:
@@ -182,7 +193,11 @@ def _vendas_da_projecao(projecao):
             yield identificador, original, sku, mes, _QUANTIDADE_INVALIDA if quantidade is None else quantidade
 
 
-def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, titulo_valido):
+class _MesMudou(Exception):
+    pass
+
+
+def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, titulo_valido, *, fechamento=None):
     recentes = []
     blocos = []
     titulos = {}
@@ -197,6 +212,18 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
     # Opening a GET must not create a missing database or an index.
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
+        if fechamento is not None:
+            from backend.services import medias_compras_fechamento as mensal
+            chave, tokens, resumos = fechamento
+            conn.execute("BEGIN")
+            if not mensal.tokens_validos(conn, chave, tokens):
+                raise _MesMudou()
+            aberto = mensal.consulta_abertos(query, tokens)
+            parametros = (*filtro_params, *tokens)
+            plano = lambda sql, args: tuple(r[-1] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, args))
+            if plano(aberto, parametros) != plano(query, filtro_params):
+                raise _MesMudou()
+            query, filtro_params = aberto, parametros
         registrar_contagem("historico_bancos_lidos")
         for row in conn.execute(query, filtro_params):
             _digest_linha(digest, row)
@@ -255,14 +282,41 @@ def _ler_projecao(path, inicio, fim, filtro_sql, filtro_params, normalizar_sku, 
         conn.close()
     if recentes:
         blocos.append(_compactar_vendas(recentes))
+    assinatura = digest.hexdigest()
+    totais_fechados = None
+    if fechamento is not None:
+        assinatura = (chave, tuple(tokens.items()), assinatura)
+        totais_fechados = {}
+        for mes, resumo in resumos.items():
+            totais = {}
+            for original, qty in resumo.get("totais", {}).items():
+                sku = normalizar_sku(original)
+                totais[sku] = totais.get(sku, 0.0) + qty
+            totais_fechados[mes] = totais
+            weight += sum(128 + _peso_textos(sku) for sku in totais)
+            for original, (primeira, ultima) in resumo["datas"].items():
+                sku = normalizar_sku(original)
+                if primeira and (sku not in primeiras or primeira < primeiras[sku]):
+                    primeiras[sku] = primeira
+                if ultima and (sku not in ultimas or ultima > ultimas[sku]):
+                    ultimas[sku] = ultima
+            for original, produto, texto, dia, valor, _ in sorted(resumo["titulos"], key=lambda t: t[-1]):
+                sku = normalizar_sku(original)
+                titulo = titulo_valido(produto)
+                anterior = titulos.get(sku)
+                ordem = (dia, _ordem_sqlite(valor))
+                if titulo and (anterior is None or texto > anterior[1]
+                               or (texto == anterior[1] and ordem <= ordens_titulos[sku])):
+                    titulos[sku] = (titulo, texto)
+                    ordens_titulos[sku] = ordem
     weight += sum(len(bloco) + 64 for bloco in blocos)
     weight += sum(96 + _peso_textos(sku, *value) for sku, value in titulos.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in ultimas.items())
     weight += sum(72 + _peso_textos(sku, date) for sku, date in primeiras.items())
-    return _Projecao(tuple(blocos), titulos, ultimas, primeiras, digest.hexdigest()), weight + 128
+    return _Projecao(tuple(blocos), titulos, ultimas, primeiras, assinatura, totais_fechados), weight + 128
 
 
-def _consolidar(paths, projecoes, ultimo_mes):
+def _consolidar(paths, projecoes, ultimo_mes, ids_fechados=None, conflitos=None):
     # Thirteen inclusive months supply twelve complete months for forecasting.
     refs = {periodo: _meses_referencia(ultimo_mes, periodo) for periodo in (3, 6, 12, 13)}
     conjuntos = {periodo: set(meses) for periodo, meses in refs.items()}
@@ -275,6 +329,8 @@ def _consolidar(paths, projecoes, ultimo_mes):
         basename = os.path.basename(path)
         for identificador, sku_original, sku_norm, mes, qty in _vendas_da_projecao(projecao):
             chave = None if qty is _QUANTIDADE_INVALIDA else identificador or f"{basename}::{sku_original}::{mes}::{qty}"
+            if ids_fechados and chave in ids_fechados:
+                conflitos.add(ids_fechados[chave])
             for periodo, meses in refs.items():
                 if mes not in conjuntos[periodo] or vendas[periodo] is None:
                     continue
@@ -290,6 +346,15 @@ def _consolidar(paths, projecoes, ultimo_mes):
                 if item is None:
                     item = vendas[periodo][sku_norm] = {"sku": sku_norm, "vendas_mensais": dict.fromkeys(meses, 0.0)}
                 item["vendas_mensais"][mes] += qty
+        for mes, totais in (projecao.fechados or {}).items():
+            for periodo, meses in refs.items():
+                if mes not in conjuntos[periodo] or vendas[periodo] is None:
+                    continue
+                for sku, qty in totais.items():
+                    item = vendas[periodo].get(sku)
+                    if item is None:
+                        item = vendas[periodo][sku] = {"sku": sku, "vendas_mensais": dict.fromkeys(meses, 0.0)}
+                    item["vendas_mensais"][mes] += qty
         for sku, (titulo, data) in projecao.titulos.items():
             atual = titulos.get(sku)
             if atual is None or data >= atual["data"]:
@@ -320,9 +385,16 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
     params = tuple(filtro_params)
     scope = (str(client_id), str(store_id), str(loja), filtro_sql, params,
              normalizar_sku, normalizacao_token or titulo_valido)
-    key = (scope, tuple(chave_arquivo(path) for path in paths), fim_periodo)
+    from backend.services import medias_compras_fechamento as mensal
+    provas = mensal.provas_para_leitura(client_id, store_id, fim_periodo[:7])
+    key = (scope, tuple(chave_arquivo(path) for path in paths), fim_periodo, tuple(sorted(provas.items())))
 
     def construir():
+        if provas:
+            persistido = _ler_meses_confirmados(paths, revisoes, scope, client_id, loja, store_id, provas, inicio, fim_periodo,
+                                               filtro_sql, params, normalizar_sku, titulo_valido)
+            if persistido is not None:
+                return persistido
         projecoes = []
         for path, revision in zip(paths, revisoes):
             projection_key = (scope, chave_arquivo(path), fim_periodo)
@@ -350,3 +422,78 @@ def ler_historico_vendas(*, client_id, loja, store_id, db_paths, meses, fim_peri
             for sku, item in vendas[13].items()
         })
     return copy.deepcopy(vendas[meses]), copy.deepcopy(titulos), dict(ultimas)
+
+
+def _ler_meses_confirmados(paths, revisoes, scope, client_id, loja, store_id, provas, inicio, fim, sql, params, normalizar, titulo):
+    from backend.services import medias_compras_fechamento as mensal
+    try:
+        chave, arquivos = mensal.inventario(client_id, loja, store_id, paths, provas, filtro=sql, params=params, provas_checadas=True)
+        if not arquivos:
+            return None
+        por_banco = {}
+        meses = set(next(iter(arquivos.values())))
+        ids = {}
+        conflitos = set()
+        somas = {}
+        for path in paths:
+            tokens = arquivos[str(Path(path).absolute())]
+            conn = sqlite3.connect(Path(path).resolve().as_uri()+"?mode=ro", uri=True)
+            try:
+                conn.execute("BEGIN")
+                resumos = mensal.resumos_confirmados(conn, chave, tokens, inicio[:7])
+            finally:
+                conn.close()
+            if resumos is None:
+                return None
+            por_banco[path] = (tokens, resumos)
+            for mes, resumo in resumos.items():
+                if not resumo.get("meta_segura"):
+                    conflitos.add(mes)
+                    continue
+                if mes < inicio[:7]:
+                    continue
+                if not resumo.get("seguro"):
+                    conflitos.add(mes)
+                    continue
+                # A sole subtotal has the exact row-order sum, even for
+                # fractions. Several subtotals combine associatively only for
+                # integral units bounded within the exact range of a double.
+                fracionados = set(resumo["fracionados"])
+                for original, magnitude in resumo["magnitudes"].items():
+                    grupo = (mes, normalizar(original))
+                    anterior = somas.get(grupo)
+                    soma = magnitude + (anterior[0] if anterior else 0)
+                    fracao = original in fracionados or bool(anterior and anterior[1])
+                    somas[grupo] = (soma, fracao)
+                    if anterior is not None and (fracao or soma >= 2**53):
+                        conflitos.add(mes)
+                for identificador in resumo["ids"]:
+                    anterior = ids.get(identificador)
+                    if anterior is not None:
+                        conflitos.update((anterior, mes))
+                    ids[identificador] = mes
+
+        while meses - conflitos:
+            meses.difference_update(conflitos)
+            conflitos.clear()
+            ids_validos = {i: mes for i, mes in ids.items() if mes in meses}
+            projecoes = []
+            for path, revisao in zip(paths, revisoes):
+                recibos, dados = por_banco[path]
+                tokens = {m: recibos[m] for m in sorted(meses)}
+                resumos = {m: dados[m] for m in tokens}
+                k = (scope, chave_arquivo(path), fim, tuple(tokens.items()))
+                projecoes.append(_PROJECOES.obter(
+                    k, revisao,
+                    lambda: _ler_projecao(path, inicio, fim, sql, params, normalizar, titulo,
+                                          fechamento=(chave, tokens, resumos)),
+                    lambda: _revisao_banco(path) == revisao,
+                ))
+            resultado = _consolidar(paths, projecoes, fim[:7], ids_validos, conflitos)
+            if not conflitos:
+                registrar_contagem("historico_meses_fechados_reusados", len(meses))
+                return resultado
+    except (_MesMudou, OSError, sqlite3.Error, zlib.error, KeyError, TypeError, ValueError):
+        # A partially rebuilt or unreadable projection never replaces canonical rows.
+        pass
+    return None
