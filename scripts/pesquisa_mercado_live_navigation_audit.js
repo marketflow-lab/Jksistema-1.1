@@ -43,16 +43,17 @@ function auditSelection(snapshot, { scopeKey = '', onlyKeys = [] } = {}) {
 function safePage(page) {
     const categories = items => (Array.isArray(items) ? items : []).map(item => normalizeCategory({ key: item.key, nome: item.nome, url: item.url })).filter(Boolean);
     const count = Number.isSafeInteger(page.listingCount) && page.listingCount >= 0 ? page.listingCount : (page.anuncios || []).length;
-    const department = departmentPermalink(page.url);
+    const trends = page.categoryTrends === true;
+    const navigationOnly = trends || departmentPermalink(page.url);
     return { url: safePublicUrl(page.url), effectiveCategoryId: /^MLB\d+$/.test(page.effectiveCategoryId || '') ? page.effectiveCategoryId : '',
-        documentCategoryId: /^MLB\d+$/.test(page.documentCategoryId || '') ? page.documentCategoryId
+        categoryTrends: trends, documentCategoryId: trends ? '' : /^MLB\d+$/.test(page.documentCategoryId || '') ? page.documentCategoryId
             : page.categoryDocumentIdentity === true && /^MLB\d+$/.test(page.effectiveCategoryId || '') ? page.effectiveCategoryId : '',
         categoryIdentityConflict: page.categoryIdentityConflict === true, categoryNotFound: page.categoryNotFound === true,
         categoryConflictingRouteIds: Array.isArray(page.categoryConflictingRouteIds) ? page.categoryConflictingRouteIds.filter(key => typeof key === 'string' && /^MLB\d+$/.test(key)) : [],
-        categoryDocumentIdentity: page.categoryDocumentIdentity === true || !!page.documentCategoryId && page.documentCategoryId === page.effectiveCategoryId && page.categoryIdentityConflict !== true,
+        categoryDocumentIdentity: !trends && (page.categoryDocumentIdentity === true || !!page.documentCategoryId && page.documentCategoryId === page.effectiveCategoryId && page.categoryIdentityConflict !== true),
         categoryFilterMoreUrl: officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url) || '',
         categoryFilterPresent: page.categoryFilterPresent === true, readyState: page.readyState === 'loading' ? 'loading' : 'complete',
-        empty: !department && page.empty === true, listingCount: department ? 0 : count, categories: categories(page.categories),
+        empty: !navigationOnly && page.empty === true, listingCount: navigationOnly ? 0 : count, categories: categories(page.categories),
         categoryTree: (page.categoryTree || []).map(item => {
             const category = normalizeCategory({ key: item.key, nome: item.nome, url: item.url });
             return category ? { ...category, children: categories(item.children) } : null;
@@ -101,6 +102,7 @@ class LiveNavigationAudit {
             nodeOutcomes: {}, observations: [], resolvedRoutes: [], parentLinks: [], cachedPages: [], dependencyFailures: {},
             groupSources: {}, observedGroupLinks: {}, documentContexts: {}, nodeAttempts: {}, fallbackCandidates: {}, exactItemScopes: {} };
         this.state.exactItemScopes ||= {};
+        this.state.trendsChildRoutes ||= {};
         this.pageCache = new Map();
         for (const [url, page] of this.state.cachedPages || []) {
             if (safePublicUrl(url) && page && safePublicUrl(page.url)) this.pageCache.set(url, safePage(page));
@@ -321,7 +323,7 @@ class LiveNavigationAudit {
     }
 
     reusable(page, url, purpose, key, expected) {
-        if (!page || page.categoryIdentityConflict || page.categoryNotFound) return false;
+        if (!page || page.categoryTrends || page.categoryIdentityConflict || page.categoryNotFound) return false;
         if (purpose === 'index') return sameCategoryPage(url, page.url) && page.categoryTree.length > 0;
         if (!verifiedCategoryPage(url, page.url, key, page.effectiveCategoryId)) return false;
         if (key && page.effectiveCategoryId && page.effectiveCategoryId !== key) return false;
@@ -334,14 +336,14 @@ class LiveNavigationAudit {
     }
 
     observation(key, page, statusCode) {
-        if (!key || !this.snapshot.get(key)) return;
+        if (!key || !this.snapshot.get(key) || page.categoryTrends) return;
         this.state.observations.push({ categoryKey: key, source: 'live_document', observedAt: this.now(),
             url: safePublicUrl(page.url), documentCategoryId: page.documentCategoryId || '', statusCode: Number.isInteger(statusCode) ? statusCode : 0,
             listingCount: page.listingCount, empty: page.empty, categoryNotFound: page.categoryNotFound,
             identityConflict: page.categoryIdentityConflict });
     }
 
-    recordOnlineContext(page, purpose, key, statusCode, expected = null) {
+    recordOnlineContext(page, purpose, key, statusCode, expected = null, trendsChild = null) {
         if (!(Number.isInteger(statusCode) && statusCode >= 200 && statusCode < 300)
             || page.categoryIdentityConflict || page.categoryNotFound) return;
         const observedAt = this.now();
@@ -359,6 +361,16 @@ class LiveNavigationAudit {
             return;
         }
         if (!key || !this.snapshot.get(key)) return;
+        if (page.categoryTrends) {
+            if (purpose !== 'navigation' || !expected || trendsChild?.parentKey !== key || trendsChild.key !== expected.key
+                || this.navigation.parents.get(expected.key) !== key || !page.url) return;
+            let link;
+            try { link = this.navigation.choosePage(page, expected, page.url); } catch (_error) { return; }
+            if (link.url !== trendsChild.url) return;
+            this.state.trendsChildRoutes[key] ||= {};
+            this.state.trendsChildRoutes[key][expected.key] = { link, parentUrl: page.url, statusCode, observedAt };
+            return;
+        }
         if (departmentPermalink(page.url)) {
             if (purpose !== 'navigation' || !expected || this.navigation.parents.get(expected.key) !== key
                 || this.navigation.ancestry[0]?.key !== key || !sameCategoryPage(this.navigation.departmentUrl, page.url)
@@ -391,23 +403,31 @@ class LiveNavigationAudit {
 
     groupVerification(key) {
         const children = this.snapshot.children(key), source = this.state.groupSources[key];
-        const links = this.state.observedGroupLinks[key] || this.navigation.links.get(key) || [];
+        const links = this.state.observedGroupLinks[key] || [];
+        const trendsRoutes = this.state.trendsChildRoutes[key] || {};
         const parentUrl = source && source.parentUrl || this.navigation.routes.get(key) || '';
         const missingRouteKeys = [], unconfirmedIdentityKeys = [], matched = [];
         for (const child of children) {
             let selected;
             try { selected = this.navigation.choosePage({ categories: links, categoryConflictingRouteIds: source?.conflictingRouteIds }, child, parentUrl); }
-            catch (_error) { missingRouteKeys.push(child.key); continue; }
+            catch (error) {
+                const edge = trendsRoutes[child.key];
+                if (edge && error.code === 'category_link_missing') selected = edge.link;
+                else { missingRouteKeys.push(child.key); continue; }
+            }
             matched.push(child.key);
             const document = this.state.documentContexts[child.key];
             if (selected.key !== child.key && !(document && verifiedCategoryPage(selected.url, document.url, child.key, document.documentCategoryId))) {
                 unconfirmedIdentityKeys.push(child.key);
             }
         }
+        const groupSource = source?.kind || (Object.keys(trendsRoutes).length ? 'live_trends_child_navigation' : '');
         return { categoryKey: key, expectedChildCount: children.length, observedChildRoutes: matched.length,
             confirmedChildIdentities: matched.length - unconfirmedIdentityKeys.length,
-            source: source ? source.kind : 'not_observed_online', missingRouteKeys, unconfirmedIdentityKeys,
-            verified: children.length > 0 && !!source && !missingRouteKeys.length && !unconfirmedIdentityKeys.length };
+            source: groupSource || 'not_observed_online', missingRouteKeys, unconfirmedIdentityKeys,
+            ...(this.state.trendsChildRoutes[key] && { trendsChildRoutes: Object.entries(trendsRoutes).map(([childKey, edge]) => ({
+                childKey, parentUrl: edge.parentUrl, url: edge.link.url, statusCode: edge.statusCode, observedAt: edge.observedAt })) }),
+            verified: children.length > 0 && !!groupSource && !missingRouteKeys.length && !unconfirmedIdentityKeys.length };
     }
 
     async auditGroup(key) {
@@ -443,8 +463,8 @@ class LiveNavigationAudit {
             const page = safePage(observed);
             const status = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
             const statusCode = status && canonicalUrl(status.url) === canonicalUrl(page.url) ? status.statusCode : 0;
-            if (recordEvidence && (purpose === 'index' || page.categories.length || key && this.snapshot.children(key).length)) this.pageCache.set(url, page);
-            if (recordEvidence) this.recordOnlineContext(page, purpose, key, statusCode, expected);
+            if (recordEvidence && !page.categoryTrends && (purpose === 'index' || page.categories.length || key && this.snapshot.children(key).length)) this.pageCache.set(url, page);
+            if (recordEvidence) this.recordOnlineContext(page, purpose, key, statusCode, expected, observed.categoryTrendsChild);
             // An expansion control page proves observed child links, not that
             // the corresponding category document displayed a listing.
             if (recordEvidence && purpose !== 'category-options' && !departmentPermalink(page.url)) this.observation(key, page, statusCode);

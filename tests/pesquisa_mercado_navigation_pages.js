@@ -563,7 +563,7 @@ async function neutralLandingMustProveTheLeaf() {
     }
 }
 
-async function failedWildcardCanUseStableTrendsChildLinks() {
+async function navigateUsingStableTrendsChildLinks() {
     const parts = node('MLB1934', 'Peças', cycling + 'pecas/');
     const base = parts.url + 'kits-motor/', wildcard = base + '*_NoIndex_True';
     const hub = node('MLB417791', 'Kits de Motor', wildcard);
@@ -572,7 +572,8 @@ async function failedWildcardCanUseStableTrendsChildLinks() {
     const parentPage = { categoryDocumentIdentity: true, effectiveCategoryId: parts.key,
         categoryContext: { key: parts.key, baseUrl: parts.url }, anuncios: [{ id: 'ancestor-item' }] };
     const trends = { categoryTrends: true, categoryDocumentIdentity: false, effectiveCategoryId: '',
-        categoryContext: { key: hub.key, baseUrl: base }, categoryBrowse: { key: hub.key, url: wildcard }, categories: [child, sibling], anuncios: [] };
+        categoryContext: { key: hub.key, baseUrl: base }, categoryBrowse: { key: hub.key, url: wildcard }, categories: [child, sibling],
+        anuncios: [{ id: 'group-recommendation' }] };
     const fixture = (patch = {}) => {
         const h = runnerFixture({ [wildcard]: parentPage, [base]: poll => typeof patch === 'function' ? patch(trends, poll) : { ...trends, ...patch },
             [child.url]: { categoryDocumentIdentity: true, effectiveCategoryId: child.key, anuncios: [{ id: 'leaf-item' }] },
@@ -591,7 +592,7 @@ async function failedWildcardCanUseStableTrendsChildLinks() {
     assert.equal(valid.runner.officialNavigation.links.get(hub.key)[0].key, child.key);
     assert.equal(trends.categoryDocumentIdentity, false); assert.equal(trends.effectiveCategoryId, '', 'Trends never receives the frozen parent ID as document proof');
     assert.equal(await valid.runner.officialNavigation.resolve(sibling.key), sibling.url);
-    assert.deepEqual(valid.visited, [wildcard, base, child.url], 'the other observed child remains available without reloading the parent');
+    assert.deepEqual(valid.visited, [wildcard, base, child.url, base], 'the sibling must prove its own link on the working landing');
     const ordinaryDocument = fixture({ categoryTrends: false, categoryBrowse: null, categoryDocumentIdentity: true, effectiveCategoryId: hub.key });
     assert.equal(await ordinaryDocument.runner.officialNavigation.resolve(child.key), child.url,
         'the fallback also retains normal navigation when a real parent document proves its own ID');
@@ -633,11 +634,46 @@ async function failedWildcardCanUseStableTrendsChildLinks() {
         assert.deepEqual(h.visited, [wildcard, base]);
     }
     const ordinary = fixture();
-    await assert.rejects(ordinary.runner.read(base, 'navigation', hub.key, child), error => error.code === 'category_scope_mismatch');
-    assert.deepEqual(ordinary.visited, [base, wildcard], 'ordinary navigation retains its existing Trends transition behavior');
+    ordinary.runner.officialNavigation.routes.set(hub.key, base);
+    const offers = await ordinary.runner.readCategory(node(child.key, child.nome));
+    assert.deepEqual(offers.anuncios, [{ id: 'leaf-item' }]);
+    assert.deepEqual(ordinary.visited, [base, child.url], 'the observed child takes precedence over the generic listing of its group');
+    const namedChild = { ...child, key: child.url };
+    const named = fixture({ categories: [namedChild, sibling] });
+    const edge = await named.runner.read(base, 'navigation', hub.key, child);
+    assert.equal(named.polls(), 2);
+    assert.deepEqual(edge.categoryTrendsChild, { parentKey: hub.key, key: child.key, url: child.url });
+    assert.deepEqual(edge.categories, [namedChild], 'only the requested child has proved a stable link');
+    const withoutIdentity = named.runner.browser.executeJavaScript;
+    named.runner.browser.executeJavaScript = async () => ({ ...await withoutIdentity(), categoryDocumentIdentity: false, effectiveCategoryId: '' });
+    await assert.rejects(named.runner.read(child.url), error => error.code === 'category_load_timeout',
+        'the child route must confirm its own category ID even when the URL is a neutral landing');
+    const homonym = { ...sibling, nome: child.nome };
+    const partial = fixture({ categories: [namedChild] });
+    partial.runner.checkpoint.officialTaxonomy.children[hub.key] = [child, homonym];
+    for (const h of [partial, fixture({ categories: [sibling] }), fixture({ categories: [namedChild, homonym] })]) {
+        await assert.rejects(h.runner.read(base, 'navigation', hub.key, child), error => error.code === 'category_scope_mismatch');
+        assert.deepEqual(h.visited, [base, wildcard], 'without proof navigation still checks the emitted generic listing');
+    }
+    const typed = fixture({ categories: [child, homonym] });
+    typed.runner.checkpoint.officialTaxonomy.children[hub.key] = [child, homonym];
+    assert.deepEqual((await typed.runner.read(base, 'navigation', hub.key, child)).categories, [child]);
+    const unstable = fixture((page, poll) => ({ ...page, categories: [{ ...child, url: base + 'alternative-' + poll + '/' }] }));
+    await assert.rejects(unstable.runner.read(base, 'navigation', hub.key, child), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(unstable.visited, [base, wildcard], 'a changing link cannot exhaust the normal wildcard option');
     const strict = fixture();
     await assert.rejects(strict.runner.read(base, 'category-transport', hub.key, { ...child, preferTrendsChildren: true }),
         error => error.code === 'category_scope_mismatch', 'the private navigation flag cannot verify a parent listing');
+    const nextUrl = child.url + '_Desde_49';
+    const saved = { categoryKey: child.key, url: child.url, nextUrl, hasNext: true };
+    const alias = node(child.key, child.nome);
+    for (const proven of [false, true]) {
+        const resumed = runnerFixture({ [nextUrl]: { categoryDocumentIdentity: proven, effectiveCategoryId: proven ? child.key : '',
+            anuncios: [{ id: 'next-offer' }] } }, alias);
+        const result = resumed.runner.nextCategoryPage(saved);
+        if (proven) assert.equal((await result).effectiveCategoryId, child.key);
+        else await assert.rejects(result, error => error.code === 'category_load_timeout', 'a fresh process still verifies the next leaf document');
+    }
 }
 
 async function recoverSharedAlignmentParent() {
@@ -703,6 +739,6 @@ async function recoverSharedAlignmentParent() {
     await navigationChildLinksDoNotReplaceDocumentIdentity();
     await cachedSiblingLinksSurviveFailedRefresh();
     await neutralLandingMustProveTheLeaf();
-    await failedWildcardCanUseStableTrendsChildLinks();
+    await navigateUsingStableTrendsChildLinks();
     console.log('Pesquisa de Mercado navigation: observed NoIndex routes, category IDs, safe expanded filters and proven Trends transitions OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -533,6 +533,7 @@ class PesquisaMercadoRunner {
         this.namesController = null;
         this.namesJobId = '';
         this.officialNavigation = null;
+        this.trendsChildRoutes = new Map();
         this.ancestorRecovery = new Map();
         this.salesRecoveryFinished = false;
         this.salesRecoveryDeferred = false;
@@ -623,6 +624,7 @@ class PesquisaMercadoRunner {
             this.checkpoint.legacyAvantMetricsPending = true;
         }
         this.officialNavigation = null;
+        this.trendsChildRoutes.clear();
         this.ancestorRecovery.clear();
         validateCheckpointTaxonomy(this.checkpoint);
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
@@ -979,12 +981,14 @@ class PesquisaMercadoRunner {
             const stage = purpose === 'first-page' || purpose === 'seller' ? 'seller' : purpose === 'item' ? 'product' : 'category';
             const isCategoryOptions = purpose === 'category-options';
             const isOfficialIndex = purpose === 'index' && sameCategoryPage(url, 'https://www.mercadolivre.com.br/categorias');
+            const recoveringTrendsLanding = purpose === 'navigation' && expectedChild?.preferTrendsChildren === true;
             const verifyDestination = isCategory || isOfficialIndex;
             const categoryId = isOfficialIndex ? '' : ['navigation', 'category-transport'].includes(purpose) ? navigationCategoryId : this.officialCategoryId();
             const destination = categoryPageWaiter(isOfficialIndex || isCategory && this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null,
                 verifyDestination ? categoryId : '');
             let mismatchSignature = '', mismatchReads = 0, hubSignature = '', hubReads = 0;
-            for (let poll = 0; poll < 34; poll += 1) {
+            const maxPolls = 34;
+            for (let poll = 0; poll < maxPolls; poll += 1) {
                 await this.wait(450);
                 this.check();
                 assertMarketplaceNavigation(this.browser, stage);
@@ -1020,9 +1024,10 @@ class PesquisaMercadoRunner {
                     // The login can reload the ranking. Use the new document before following its links.
                     if (avantState.attempted) { poll -= 1; continue; }
                 }
-                if (purpose === 'navigation' && expectedChild?.preferTrendsChildren === true
+                if (purpose === 'navigation' && expectedChild
+                    && (recoveringTrendsLanding || !browseTransition && page.categoryTrends && page.categoryBrowse)
                     && (page.categoryTrends || !page.categoryDocumentIdentity || page.effectiveCategoryId !== categoryId)) {
-                    let signature = '';
+                    let signature = '', selected;
                     const navigation = this.officialNavigation, context = page.categoryContext, browse = page.categoryBrowse;
                     const child = navigation && navigation.records.get(expectedChild.key);
                     if (!loading && page.categoryTrends && !page.categoryIdentityConflict && !page.categoryNotFound
@@ -1034,16 +1039,24 @@ class PesquisaMercadoRunner {
                         && neutralCategoryPage(url, page.url) && neutralCategoryPage(context.baseUrl, page.url)
                         && neutralCategoryPage(browse.url, page.url)) {
                         try {
-                            const selected = navigation.choosePage(page, child, page.url);
+                            const siblings = this.checkpoint.officialTaxonomy?.children?.[categoryId];
+                            const sameName = entry => entry.key !== child.key && categoryLabel(entry.nome) === categoryLabel(child.nome);
+                            const requireId = !siblings?.some(entry => entry.key === child.key) || siblings.some(sameName)
+                                || (page.categories || []).some(entry => /^MLB\d+$/i.test(entry?.key) && sameName(entry));
+                            selected = navigation.choosePage(page, child, page.url, requireId);
                             signature = JSON.stringify([page.url, context.baseUrl, browse.url, selected.key, selected.url]);
                         } catch (_error) { /* Missing or ambiguous hrefs cannot become child navigation. */ }
                     }
                     hubReads = signature && signature === hubSignature ? hubReads + 1 : signature ? 1 : 0;
                     hubSignature = signature;
-                    if (hubReads >= 2) return page;
-                    // This fallback must not force the wildcard that already
-                    // returned an ancestor instead of the requested parent.
-                    continue;
+                    if (hubReads >= 2) {
+                        if (recoveringTrendsLanding) navigation.routes.set(categoryId, page.url);
+                        this.trendsChildRoutes.set(child.key, selected.url);
+                        return { ...page, categories: [selected], categoryTrendsChild: { parentKey: categoryId, key: child.key, url: selected.url } };
+                    }
+                    // Never reopen a wildcard that has already returned an ancestor.
+                    // On the first visit it remains available if the child link cannot be proven.
+                    if (recoveringTrendsLanding || signature && poll + 1 < maxPolls) continue;
                 }
                 if (isCategory && page.categoryBrowse && !browseTransition && !loading
                     && canonicalUrl(page.url) === canonicalUrl(this.browser.getURL())) {
@@ -1075,7 +1088,8 @@ class PesquisaMercadoRunner {
                         && (childConflict || (page.categories || []).length && hasExpected)) return page;
                     continue;
                 }
-                const requiresDocumentIdentity = isCategory && (purpose === 'category-transport' || browseTransition || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname));
+                const requiresDocumentIdentity = isCategory && (purpose === 'category-transport' || browseTransition
+                    || this.trendsChildRoutes.get(categoryId) === url || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname));
                 if (requiresDocumentIdentity && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== categoryId)) {
                     destination.observe(page.url || this.browser.getURL(), false, loading, page.effectiveCategoryId, page.categoryIdentityConflict);
                     continue;
@@ -1479,12 +1493,17 @@ class PesquisaMercadoRunner {
         const itemScope = current.categoryItemScope;
         if (transportCategoryId && !officialTaxonomyPath(this.checkpoint, this.officialCategoryId()).slice(0, -1)
             .some(node => node.key === transportCategoryId)) throw new CategoryNavigationError('category_scope_mismatch');
+        const leaf = this.checkpoint?.currentCategory;
+        // A resumed official leaf already carries its ID even when its public route was discovered in a previous run.
+        const fromOfficialLeaf = !itemScope && leaf && leaf.key === current.categoryKey && unsupportedCategoryAlias(leaf.url)
+            && this.checkpoint.officialTaxonomy?.children?.[leaf.key]?.length === 0;
+        const requiredDocumentId = transportCategoryId || (fromOfficialLeaf ? leaf.key : '');
         const next = canonicalUrl(current.nextUrl);
         if (next) {
             if (itemScope) return this.readScopedCategoryPage(next, itemScope);
             if ((transportCategoryId || this.officialCategoryId()) && !neutralCategoryPage(current.url, next)) throw new CategoryNavigationError('category_scope_mismatch');
             if (!transportCategoryId) this.assertCategoryDestination(current.url, next);
-            const page = await this.read(next, transportCategoryId ? 'category-transport' : 'category', transportCategoryId);
+            const page = await this.read(next, requiredDocumentId ? 'category-transport' : 'category', requiredDocumentId);
             if ((transportCategoryId || this.officialCategoryId()) && !neutralCategoryPage(current.url, page.url)) throw new CategoryNavigationError('category_scope_mismatch');
             return page;
         }
@@ -1494,7 +1513,7 @@ class PesquisaMercadoRunner {
         // saved category page before using its own JavaScript pagination control.
         return this.attempt(async avantState => {
             if (itemScope) await this.readScopedCategoryPage(current.url, itemScope);
-            else if (transportCategoryId) await this.read(current.url, 'category-transport', transportCategoryId);
+            else if (requiredDocumentId) await this.read(current.url, 'category-transport', requiredDocumentId);
             else await this.read(current.url);
             const click = await this.browser.executeJavaScript(this.scripts.nextCategoryPageScript(current.url));
             if (!click || !click.clicked) {
@@ -1521,7 +1540,7 @@ class PesquisaMercadoRunner {
                 if (ready && !loading && !itemScope && (transportCategoryId || this.officialCategoryId())
                     && !neutralCategoryPage(current.url, page.url)) throw new CategoryNavigationError('category_scope_mismatch');
                 if (itemScope && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== itemScope.transportCategoryId)) continue;
-                if (transportCategoryId && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== transportCategoryId)) continue;
+                if (requiredDocumentId && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== requiredDocumentId)) continue;
                 if (destination.observe(page.url || this.browser.getURL(), ready, loading, page.effectiveCategoryId, page.categoryIdentityConflict)) {
                     if (page.categoryNotFound && !(page.anuncios || []).length) {
                         const error = new Error('O Mercado Livre nao reconheceu a pagina da categoria.');

@@ -173,6 +173,40 @@ async function testResumableProductionNavigation() {
     assert.deepEqual(restoredParent.categoryConflictingRouteIds, [a.key], 'cached navigation retains only the conflicting public category ID');
     assert.deepEqual(restoredConflict.groupVerification('MLB100').missingRouteKeys, [a.key], 'the resumed audit cannot count a conflicting route as verified');
 
+    const trendsA = { ...a, url: parentListing + 'a/' }, trendsB = { ...b, url: parentListing + 'b/' };
+    let parentReads = 0, parentStatus = 200, parentIdentity = 'MLB100';
+    const trendsBrowser = { navigate: async url => assert.equal(url, parentListing), getURL: () => parentListing,
+        getNavigationStatus: () => ({ url: parentListing, statusCode: parentStatus }), async executeJavaScript() {
+            parentReads += 1;
+            return { url: parentListing, readyState: 'complete', categoryTrends: true, effectiveCategoryId: parentIdentity,
+                categoryDocumentIdentity: true, categoryContext: { key: parentIdentity, baseUrl: parentListing },
+                categoryBrowse: { key: parentIdentity, url: parentListing + '*_NoIndex_True' },
+                categories: [trendsA, trendsB], anuncios: [{}] };
+        } };
+    const trendsOptions = { snapshot, snapshotSha256, browser: trendsBrowser, wait: async () => {}, intervalMs: 0 };
+    const trendsAudit = new LiveNavigationAudit(trendsOptions);
+    await trendsAudit.read(parentListing, 'navigation', 'MLB100', trendsA);
+    assert(parentReads >= 2, 'the audited link comes from the production stability checks');
+    assert.deepEqual(trendsAudit.groupVerification('MLB100').missingRouteKeys, [trendsB.key]);
+    assert.equal(trendsAudit.summary().observedOfficialEdges, 1);
+    assert.equal(trendsAudit.summary().verifiedOnlineGroupNodes, 0);
+    assert.deepEqual(trendsAudit.state.documentContexts, {});
+    assert.deepEqual(trendsAudit.evidence().observations, [], 'Trends cards cannot establish an offer or a listing document');
+    assert.deepEqual(trendsAudit.functionalEvidence().groups[0].trendsChildRoutes.map(edge => [edge.childKey, edge.url]), [[trendsA.key, trendsA.url]]);
+    await trendsAudit.save();
+    const resumedTrends = new LiveNavigationAudit({ ...trendsOptions, state: trendsAudit.state });
+    parentStatus = 403;
+    await assert.rejects(resumedTrends.read(parentListing, 'navigation', 'MLB100', trendsB), error => error.code === 'marketplace_http_403');
+    parentStatus = 200; parentIdentity = 'MLB999';
+    await assert.rejects(resumedTrends.read(parentListing, 'navigation', 'MLB100', trendsB), error => error.code === 'category_scope_mismatch');
+    assert.deepEqual(resumedTrends.groupVerification('MLB100').missingRouteKeys, [trendsB.key]);
+    assert.equal(resumedTrends.summary().verifiedDocumentNodes, 0);
+    parentIdentity = 'MLB100';
+    await resumedTrends.read(parentListing, 'navigation', 'MLB100', trendsB);
+    assert.equal(resumedTrends.summary().observedOfficialEdges, 2, 'each child needs its own observed edge');
+    assert.equal(resumedTrends.summary().verifiedOnlineGroupNodes, 1);
+    assert.equal(resumedTrends.summary().verifiedDocumentNodes, 0, 'confirming every link still does not open a listing');
+
     const prioritized = fixture(false);
     let priorityState;
     const priorityAudit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser: prioritized.browser,
