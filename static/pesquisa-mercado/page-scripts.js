@@ -69,8 +69,25 @@
     const mercadoLivreAuthScript = () => '(' + readMercadoLivreAuth.toString() + ')('
         + mercadoLivreRouteAuthReason.toString() + ',' + visibleAuthControl.toString() + ')';
 
+    function normalizeMarketplaceLink(url) {
+        const fragment = url.hash.slice(1);
+        let offerSelectors = new URLSearchParams(fragment).getAll('wid');
+        if (!offerSelectors.length && fragment) {
+            try { offerSelectors = new URLSearchParams(decodeURIComponent(fragment)).getAll('wid'); } catch (_error) {}
+        }
+        for (const value of offerSelectors) {
+            const wid = value.toUpperCase();
+            if (/^MLB\d{6,}$/.test(wid) && !url.searchParams.getAll('wid').some(item => item.toUpperCase() === wid)) {
+                url.searchParams.append('wid', wid);
+            }
+        }
+        url.hash = '';
+        for (const key of ['tracking_id', 'position', 'polycard_client', 'sid', 'reco_id', 'searchVariation']) url.searchParams.delete(key);
+        return url.href;
+    }
+
     // Self contained: serialized into the Mercado Livre renderer. Never follows pagination.
-    function readPage(mlAuthReason, visibleAuthControl, options) {
+    function readPage(mlAuthReason, visibleAuthControl, normalizeMarketplaceLink, options) {
         const clean = value => String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
         const norm = value => clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
         const nodes = (selector, scope) => Array.from((scope || document).querySelectorAll(selector));
@@ -79,17 +96,7 @@
             try {
                 const url = new URL(value, location.href);
                 if (url.protocol !== 'https:' || !/(^|\.)mercadolivre\.com\.br$/i.test(url.hostname)) return '';
-                const fragmentText = url.hash.replace(/^#/, '');
-                let fragmentWid = new URLSearchParams(fragmentText).get('wid');
-                if (!fragmentWid) {
-                    try { fragmentWid = new URLSearchParams(decodeURIComponent(fragmentText)).get('wid'); } catch (_error) {}
-                }
-                if (!url.searchParams.has('wid') && /^MLB\d{6,}$/i.test(fragmentWid || '')) {
-                    url.searchParams.set('wid', fragmentWid.toUpperCase());
-                }
-                url.hash = '';
-                for (const key of ['tracking_id', 'position', 'polycard_client', 'sid', 'reco_id', 'searchVariation']) url.searchParams.delete(key);
-                return url.href;
+                return normalizeMarketplaceLink(url);
             } catch (_error) { return ''; }
         };
         const vehicleStockUrl = value => {
@@ -123,9 +130,37 @@
             if (store) return { id: '', claimedId: match && match[1], perfilUrl: 'https://www.mercadolivre.com.br/loja/' + store[1].toLowerCase(), store: true };
             return { id: match ? match[1] : '', perfilUrl: profile ? profile[1].replace(/\/$/, '') : (match ? vehicleStockUrl(url) || 'https://lista.mercadolivre.com.br/_CustId_' + match[1] : ''), store: false };
         };
+        const offerId = value => {
+            const match = clean(value).match(/^MLB-?(\d{6,})$/i);
+            return match ? 'MLB' + match[1] : '';
+        };
+        const catalogId = value => {
+            try {
+                const path = new URL(value, location.href).pathname;
+                return (path.match(/\/p\/(MLB\d+)(?:\/|$)/i)?.[1] || '').toUpperCase();
+            } catch (_error) { return ''; }
+        };
+        const catalogOfferFromAddress = (value, catalog) => {
+            const params = new URL(value, location.href).searchParams;
+            const selected = [...params.getAll('wid'), ...params.getAll('item_id')];
+            for (const filters of params.getAll('pdp_filters')) {
+                for (const filter of filters.split(/[|,;]/)) {
+                    if (/^item_id:/i.test(filter)) selected.push(filter.slice('item_id:'.length));
+                }
+            }
+            const ids = new Set(selected.map(offerId));
+            const conflict = ids.has('') || ids.has(catalog) || ids.size > 1;
+            return { id: conflict ? '' : [...ids][0] || '', conflict };
+        };
         const productId = (value, element) => {
             const explicit = clean(element && (element.getAttribute('data-item-id') || element.getAttribute('data-id')));
             const raw = clean(value);
+            const catalog = catalogId(raw);
+            if (catalog) {
+                const selected = catalogOfferFromAddress(raw, catalog);
+                const cardItem = offerId(explicit);
+                return selected.conflict ? '' : selected.id || (cardItem === catalog ? '' : cardItem);
+            }
             const match = raw.match(/[?&](?:wid|item_id)=(MLB\d{6,})(?:[&#]|$)/i)
                 || explicit.match(/\b(MLB-?\d{6,})\b/i)
                 || raw.match(/\b(MLB-\d{6,})\b/i);
@@ -613,7 +648,26 @@
         const avantDetailRoot = '#productInfo.avantpro-in-product-content';
         const avantSelector = '[class*="avantpro"], [id*="avantpro"]';
         const excludedMetricArea = '[class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]';
-        const currentItemId = productId(url);
+        const currentCatalogId = catalogId(url);
+        const catalogAddress = currentCatalogId ? catalogOfferFromAddress(url, currentCatalogId) : null;
+        const expectedItem = options?.detail && options.expectedItem;
+        const expectedId = offerId(expectedItem?.id);
+        const expectedCatalog = expectedId && catalogId(expectedItem.url || '');
+        const sameRequestedCatalog = currentCatalogId && currentCatalogId === expectedCatalog;
+        // If Mercado Livre drops the offer selector, only the native buy box
+        // can establish which offer was rendered. The requested ID is a check.
+        const buyBoxItems = sameRequestedCatalog ? new Set(nodes('.ui-pdp-buybox[data-item-id]', content)
+            .filter(node => !node.closest(avantSelector + ', ' + excludedMetricArea + ', [role="dialog"]') && visibleAuthControl(node))
+            .map(node => offerId(node.getAttribute('data-item-id'))).filter(id => id && id !== currentCatalogId)) : new Set();
+        const catalogOfferConflict = catalogAddress?.conflict || currentCatalogId && expectedCatalog && currentCatalogId !== expectedCatalog
+            || buyBoxItems.size > 1
+            || (buyBoxItems.size > 0 && catalogAddress?.id && !buyBoxItems.has(catalogAddress.id));
+        const recoveredOffer = !catalogAddress?.id && !catalogOfferConflict && buyBoxItems.has(expectedId);
+        const currentItemId = catalogOfferConflict ? '' : currentCatalogId
+            ? catalogAddress.id || (recoveredOffer ? expectedId : '') : productId(url);
+        const avantDetailIdentityConflict = !!expectedId && (catalogOfferConflict
+            || !!currentItemId && currentItemId !== expectedId
+            || buyBoxItems.size === 1 && !buyBoxItems.has(expectedId));
         const expectedSellerId = clean(options && options.seller && (options.seller.id || options.seller.sellerId || options.seller.seller_id));
         const scopedSellerId = sellerId || expectedSellerId;
         const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
@@ -645,7 +699,8 @@
             return { id, perfilUrl: profile, conflict };
         };
         const currentUpId = (url.match(/\/up\/(MLBU\d+)/i) || [])[1] || '';
-        const currentCatalogId = (url.match(/\/p\/(MLB\d+)/i) || [])[1] || '';
+        const panelDeclaresOffer = root => ['data-item-id', 'data-mlb']
+            .some(field => offerId(root?.getAttribute(field)) === currentItemId);
         const rootMatchesDocument = root => {
             const declaredItems = ['data-item-id', 'data-mlb'].map(field => clean(root.getAttribute(field)).replace('-', '').toUpperCase()).filter(Boolean);
             const declaredUp = clean(root.getAttribute('data-user-product-id')).toUpperCase();
@@ -677,7 +732,7 @@
         };
         const modernRootState = (() => {
             if (!isProduct(url)) return { root: null, conflict: false };
-            if (sellerId && expectedSellerId && sellerId !== expectedSellerId) return { root: null, conflict: true };
+            if (catalogOfferConflict || sellerId && expectedSellerId && sellerId !== expectedSellerId) return { root: null, conflict: true };
             const candidates = nodes(avantDetailRoot, content).filter(root => {
                 if (root.closest(cardSelector + ', ' + excludedMetricArea)) return false;
                 const rect = root.getBoundingClientRect(), style = window.getComputedStyle(root);
@@ -868,6 +923,7 @@
         });
         const detailNodeBelongs = (node, id, itemUrl) => {
             const modernRoot = node.closest(avantDetailRoot);
+            if (catalogOfferConflict || recoveredOffer && (!modernRoot || !panelDeclaresOffer(modernRoot))) return false;
             if (modernRoot && modernRoot !== modernRootState.root) return false;
             const panel = node.closest('[role="dialog"], aside, [class*="avantpro"][class*="panel"]');
             if (panel) {
@@ -943,17 +999,24 @@
             });
         }
         // Item pages are used for discovery and optional explicit detail collection.
+        let avantDetailDataRead = false;
         if (!anuncios.length && isProduct(url) && document.querySelector('.ui-pdp-title, [data-testid="product-title"]')) {
             const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
-            const avantRoots = nodes(avantSelector, content).filter(node => detailNodeBelongs(node, productId(url), url));
-            const proof = sellerProof(nodes('a[href]', content).filter(anchor => anchor.closest(avantSelector) && detailNodeBelongs(anchor, productId(url), url)),
+            const belongsToOffer = node => detailNodeBelongs(node, currentItemId, url);
+            const avantRoots = nodes(avantSelector, content).filter(belongsToOffer);
+            const proof = sellerProof(nodes('a[href]', content).filter(anchor => anchor.closest(avantSelector) && belongsToOffer(anchor)),
                 [clean(modernRootState.root && modernRootState.root.getAttribute('data-seller-id'))],
                 identity(modernRootState.root && modernRootState.root.getAttribute('data-seller-profile-url')));
-            const detailKey = productId(url) || url;
-            const metrics = combineMetrics(structuredCache[detailKey], readMetrics(floatingRows.filter(row => detailNodeBelongs(row, productId(url), url))));
+            const detailKey = currentItemId || url;
+            const measured = readMetrics(floatingRows.filter(belongsToOffer));
+            const measuredMonthly = measured.historicalSeen ? measured.monthlyHistorical : measured.monthly;
+            const measuredSales = Number.isFinite(measured.total) || Number.isFinite(measured.estimated) || !!measured.lowerBound;
+            avantDetailDataRead = !proof.conflict && !measured.identityConflict
+                && measuredSales && !!measured.created && Number.isFinite(measuredMonthly);
+            const metrics = avantDetailDataRead ? measured : combineMetrics(structuredCache[detailKey], measured);
             if (proof.conflict || metrics.identityConflict) delete structuredCache[detailKey];
             else if (metrics.rows) structuredCache[detailKey] = metrics;
-            anuncios.push({ id: productId(url), key: productId(url) || url, url, titulo: clean(title.textContent), catalogo: /\/p\/MLB/i.test(url) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
+            anuncios.push({ id: currentItemId, key: detailKey, url, titulo: clean(title.textContent), catalogo: !!currentCatalogId || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
                 _avantEvidence: { present: avantRoots.length > 0, detailPage: !!(options && options.detail), sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
@@ -1167,6 +1230,7 @@
             categoryTrends, categoryNavigationHub, categoryConflictingRouteIds: [...categoryConflictingRouteIds],
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired, avantAuthRequired, authReason, avantDetailLoading,
+            ...(options?.detail ? { avantDetailDataRead, avantDetailIdentityConflict } : {}),
             ...(avantDetailLoading && isProduct(url) ? { avantLoadingOffer: { id: currentItemId, url } } : {}),
             hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),
@@ -1350,12 +1414,14 @@
 
     function create(options) {
         const render = options && options.renderAvantScript || defaultRender;
-        const authArgs = mercadoLivreAuthScript() + ',' + visibleAuthControl.toString();
-        const discoveryScript = () => '/*pm:discovery*/(' + readPage.toString() + ')(' + authArgs + ')';
+        const readPageArgs = [mercadoLivreAuthScript(), visibleAuthControl.toString(), normalizeMarketplaceLink.toString()].join(',');
+        const discoveryScript = () => '/*pm:discovery*/(' + readPage.toString() + ')(' + readPageArgs + ')';
         const snapshotScript = options => {
             const seller = options && options.seller || {};
+            const expectedItem = options && options.detail && options.expectedItem
+                ? { id: options.expectedItem.id, url: options.expectedItem.url } : undefined;
             const extract = render('extrair-anuncios-avant-pro-dom-webview-1', { p0: String(Number.MAX_SAFE_INTEGER) }).trim().replace(/;\s*$/, '');
-            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + authArgs + ',' + JSON.stringify({ detail: !!(options && options.detail), seller }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
+            return '/*pm:snapshot*/(async function(){const page=(' + readPage.toString() + ')(' + readPageArgs + ',' + JSON.stringify({ detail: !!(options && options.detail), seller, expectedItem }) + ');const avant=await (' + withItemLinks.toString() + ')(()=>(' + extract + '));return (' + mergeAvant.toString() + ')(page,avant,' + JSON.stringify(seller) + ');})()';
         };
         const clickAvantScript = options => {
             if (options && options.detail) return '/*pm:avant-click*/(' + clickDetailAvant.toString() + ')(' + JSON.stringify(options.pending || []) + ')';
@@ -1372,5 +1438,5 @@
         const nextCategoryPageScript = expectedUrl => '/*pm:next-category*/(' + clickNextCategoryPage.toString() + ')(' + JSON.stringify(String(expectedUrl || '')) + ')';
         return Object.freeze({ discoveryScript, sellerInfoScript: discoveryScript, snapshotScript, clickAvantScript, scrollScript, prepareScript, nextCategoryPageScript });
     }
-    return Object.freeze({ create, mercadoLivreAuthScript, mercadoLivreRouteAuthReason, ...create() });
+    return Object.freeze({ create, mercadoLivreAuthScript, mercadoLivreRouteAuthReason, normalizeMarketplaceLink, ...create() });
 });

@@ -329,7 +329,7 @@ function detailGeometryBrowser(options = {}) {
         vendas: 100, media_mensal: 5, vendasFonte: 'avantpro_dom_estruturado',
         media_mensal_fonte: 'avantpro_dom_estruturado', data_criacao: '',
         rankable: !options.catalogue, status: options.catalogue ? 'catalogo_sem_evidencia_vendedor' : 'analisado',
-        vendas_rotulo: options.catalogue ? 'vendidos' : 'vendas do anuncio' };
+        vendas_rotulo: options.catalogue ? 'vendidos' : 'vendas do anuncio', ...options.item };
     const browser = {
         now: () => clock,
         wait: async ms => { clock += ms; },
@@ -484,6 +484,64 @@ async function testDetailWaitsForTheExpectedAvantPanel() {
     assert(unmatched.elapsedMs <= 30000, 'a loader on another offer cannot extend the ordinary deadline');
 }
 
+async function testDetailWaitsForAllThreeAvantFields() {
+    const fixture = detailGeometryBrowser({ item: { ...panelItem, data_criacao: 'mar/2024 (aprox.)',
+        media_mensal_rotulo: 'vendas mensais' } });
+    const observed = fixture.item;
+    const pendingTimes = [];
+    const readyAt = 6100;
+    const collect = (snapshotAt, onPartial, signal) => {
+        let elapsed = 0;
+        const browser = { getURL: () => fixture.url, navigate: async () => {},
+            executeJavaScript: async code => code.includes('/*pm:snapshot*/')
+                ? { url: fixture.url, atBottom: true, ...snapshotAt(elapsed) } : {} };
+        return collector.collectDetail({ browser, url: fixture.url, expectedItem: { id: fixture.id, url: fixture.url },
+            waitForLoadingPanel: true, waitForAvantData: true, timeoutMs: 1000, missingWaitMs: 300, settleMs: 200,
+            now: () => elapsed, pollMs: 100, onPartial, signal, wait: async ms => {
+                elapsed += ms;
+                assert(elapsed <= readyAt + 1000, 'a complete panel or cancellation must end the wait');
+            } });
+    };
+    const provisional = { ...observed, vendas: 25, media_mensal: 5 };
+    const result = await collect(elapsed => {
+        let row = observed;
+        if (elapsed < 500) row = provisional;
+        else if (elapsed < 2700) row = { id: fixture.id, url: fixture.url, rankable: false };
+        else if (elapsed < 3700) row = provisional; // The old numbers are still cached while the widget rebuilds.
+        else if (elapsed < 4200) row = { ...observed, avant_metrics_version: undefined };
+        else if (elapsed < 4700) row = { ...observed, data_criacao: '' };
+        else if (elapsed < 5200) row = { ...observed, media_mensal: null, rankable: false };
+        const differentOffer = { ...observed, id: 'MLB1000000312' };
+        return { anuncios: [row, differentOffer], avantDetailDataRead: elapsed < 500 || elapsed >= 3700,
+            avantDetailLoading: elapsed < 500 || elapsed >= 5200 && elapsed < readyAt };
+    }, partial => {
+        if (partial.avantDataPending) pendingTimes.push(partial.elapsedMs);
+        assert(partial.anuncios.every(item => item.id === fixture.id), 'a neighboring offer cannot supply the metrics');
+    });
+    for (const elapsed of [1200, 2500, 3100, 4000, 4500, 5000]) {
+        assert(pendingTimes.includes(elapsed), 'waiting for Avant data must be reported at ' + elapsed + ' ms');
+    }
+    assert(result.elapsedMs >= readyAt, 'wait for the loader to clear even after the last required field appears');
+    assert.equal(result.reason, 'complete');
+    assert(!result.avantDataPending);
+    assert.deepEqual([result.anuncios[0].vendas, result.anuncios[0].data_criacao, result.anuncios[0].media_vendas_mensal],
+        [188, 'mar/2024 (aprox.)', 8]);
+
+    const controller = new AbortController();
+    const missingSales = { ...observed, vendas: null, vendas_limite_inferior: '', vendas_exibicao: '', rankable: false };
+    await assert.rejects(collect(() => ({ anuncios: [missingSales] }), partial => {
+        if (partial.elapsedMs >= 1800 && partial.avantDataPending) controller.abort();
+    }, controller.signal), { name: 'AbortError' });
+
+    const catalog = { ...missingSales, catalogo: true, status: 'catalogo_sem_evidencia_vendedor',
+        vendas_limite_inferior: '+100', vendas_exibicao: '+100' };
+    const lowerBound = await collect(() => ({ anuncios: [catalog] }));
+    assert.equal(lowerBound.reason, 'avant_data_incomplete', 'the displayed lower bound completes observation without attribution');
+    assert(!lowerBound.avantDataPending);
+    assert.deepEqual([lowerBound.anuncios[0].vendas, lowerBound.anuncios[0].vendas_limite_inferior,
+        lowerBound.anuncios[0].rankable, lowerBound.anuncios[0].rank], [null, '+100', false, null]);
+}
+
 async function testDetailBrowserMethodsWhileAvantLoads() {
     for (const optIn of [true, false]) {
         const fixture = detailGeometryBrowser({ panelLoading: true, completeAfterMs: 3000 });
@@ -516,7 +574,8 @@ async function testDetailBrowserMethodsWhileAvantLoads() {
 
 async function testStableCatalogDetailDoesNotScheduleThreeVisits() {
     const { PesquisaMercadoRunner } = require('../electron_app/main/modules/pesquisa-mercado-runner');
-    const fixture = detailGeometryBrowser({ height: 'oscillating', atBottom: false, catalogue: true });
+    const fixture = detailGeometryBrowser({ height: 'oscillating', atBottom: false, catalogue: true,
+        item: { avant_metrics_version: 3, data_criacao: 'mar/2024 (aprox.)', media_mensal_rotulo: 'vendas mensais' } });
     const seller = { key: 'id:123456', id: '123456', nome: 'Fixture Seller',
         perfilUrl: 'https://www.mercadolivre.com.br/perfil/FIXTURE' };
     const waits = [];
@@ -550,6 +609,7 @@ async function run() {
     await testDetailStabilityIgnoresWholePageGeometry();
     await testDetailPanelLoadingKeepsItsCollectionBudget();
     await testDetailWaitsForTheExpectedAvantPanel();
+    await testDetailWaitsForAllThreeAvantFields();
     await testDetailBrowserMethodsWhileAvantLoads();
     await testStableCatalogDetailDoesNotScheduleThreeVisits();
     const fake = fakeBrowser();

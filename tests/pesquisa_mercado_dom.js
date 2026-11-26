@@ -3,7 +3,7 @@ const assert = require('assert');
 const { chromium } = require('playwright');
 const scripts = require('../static/pesquisa-mercado/page-scripts');
 const { normalizeCategory, sameSeller } = require('../electron_app/main/modules/pesquisa-mercado-runner');
-const { collectFirstPage } = require('../static/pesquisa-mercado/shared-collector');
+const { collectFirstPage, collectDetail } = require('../static/pesquisa-mercado/shared-collector');
 const { createPageScriptRenderer } = require('./helpers/favoritos_browser_sources');
 const path = require('path');
 const originalAvant = createPageScriptRenderer(path.resolve(__dirname, '..'));
@@ -48,11 +48,83 @@ function pdpRoot({ total = 100, estimated = 155, rhythm = 10, monthly = '5/Mês'
         + (created ? pdpStat('Anúncio criado em', created) : '') + extra + '</div>';
 }
 
+async function testRedirectedCatalogOffer(page) {
+    const catalogUrl = 'https://www.mercadolivre.com.br/teste/p/MLB9999999';
+    const id = 'MLB10000077', otherId = 'MLB10000078';
+    const expectedItem = { id, url: catalogUrl + '?wid=' + id };
+    const buybox = itemId => '<section class="ui-pdp-buybox" data-item-id="' + itemId + '"><button>Comprar</button></section>';
+    const explicitSales = pdpStat('Vendas do vendedor neste anúncio', '77');
+    const header = '<h1 class="ui-pdp-title">Oferta de teste</h1>'
+        + '<a class="ui-pdp-seller__link" href="https://lista.mercadolivre.com.br/_CustId_123456">Loja Alvo</a>';
+    async function show(url, { native = '', panel = '', sales = explicitSales, panelSeller = seller.id } = {}) {
+        await page.goto(url);
+        await page.setContent('<main>' + header + native + pdpRoot({
+            attrs: 'data-seller-id="' + panelSeller + '" ' + panel, extra: sales
+        }) + '</main>');
+    }
+    const read = () => page.evaluate(scripts.snapshotScript({ seller, detail: true, expectedItem }));
+    const panelId = 'data-item-id="' + id + '"';
+    const selected = '?pdp_filters=item_id%3A' + id;
+    for (const [url, evidence] of [
+        [catalogUrl + selected, {}],
+        [catalogUrl + '?pdp_filters=item_id:' + id, {}],
+        [catalogUrl, { native: buybox(id), panel: panelId }]
+    ]) {
+        await show(url, evidence);
+        const item = (await read()).anuncios.find(ad => ad.id === id);
+        assert.ok(item, 'a oferta selecionada comprovada no destino precisa ser identificada');
+        assert.deepEqual([item.vendas, item.data_criacao, item.media_vendas_mensal, item.avant_seller_id, item.rankable],
+            [77, '12/03/2025', 5, seller.id, true]);
+    }
+    for (const [reason, url, evidence] of [
+        ['somente o pedido', catalogUrl, {}],
+        ['somente o painel', catalogUrl, { panel: panelId }],
+        ['somente a oferta nativa', catalogUrl, { native: buybox(id) }],
+        ['oferta em recomendação', catalogUrl, { native: '<div class="recommendations">' + buybox(id) + '</div>', panel: panelId }],
+        ['oferta nativa oculta', catalogUrl, { native: '<div hidden>' + buybox(id) + '</div>', panel: panelId }],
+        ['outra oferta do mesmo vendedor', catalogUrl, { native: buybox(otherId), panel: panelId }],
+        ['painel de outra oferta', catalogUrl, { native: buybox(id), panel: 'data-item-id="' + otherId + '"' }],
+        ['conflito entre wid e filtro', catalogUrl + selected + '&wid=' + otherId, { native: buybox(id), panel: panelId }],
+        ['wid esperado com filtro de outra oferta', catalogUrl + '?wid=' + id + '&pdp_filters=item_id:' + otherId, { panel: panelId }],
+        ['outro catálogo', catalogUrl.replace('MLB9999999', 'MLB9999998'), { native: buybox(id), panel: panelId }],
+        ['filtro esperado em outro catálogo', catalogUrl.replace('MLB9999999', 'MLB9999998') + selected, { panel: panelId }],
+        ['outro vendedor no painel', catalogUrl, { native: buybox(id), panel: panelId, panelSeller: '654321' }]
+    ]) {
+        await show(url, evidence);
+        assert.ok(!(await read()).anuncios.some(ad => ad.id === id && ad.rankable), reason + ' não pode validar a oferta esperada');
+    }
+    await show(catalogUrl, { native: buybox(id), panel: panelId, sales: '' });
+    const generic = (await read()).anuncios.find(ad => ad.id === id);
+    assert.ok(generic, 'a oferta é identificável mesmo se o Avant exibir apenas as vendas agregadas');
+    assert.equal(generic.status, 'catalogo_sem_evidencia_vendedor');
+    assert.equal(generic.rankable, false);
+
+    for (const [destination, evidence] of [
+        [catalogUrl, { native: buybox(id), panel: 'data-mlb="' + id + '"' }],
+        [catalogUrl + '#wid=' + id, {}]
+    ]) {
+        const browser = {
+            getURL: () => page.url(),
+            executeJavaScript: code => page.evaluate(code),
+            async navigate(url) {
+                assert.equal(url, expectedItem.url);
+                await show(destination, evidence);
+            }
+        };
+        const result = await collectDetail({ browser, seller, url: expectedItem.url, expectedItem,
+            settleMs: 40, missingWaitMs: 200, pollMs: 40, timeoutMs: 3000 });
+        assert.equal(result.reason, 'complete', 'o coletor deve validar a oferta após redirecionamento para ' + destination);
+        assert.deepEqual(result.anuncios.map(ad => [ad.id, ad.vendas, ad.data_criacao, ad.media_vendas_mensal, ad.rank]),
+            [[id, 77, '12/03/2025', 5, 1]]);
+    }
+}
+
 async function run() {
     const browser = await chromium.launch({ headless: true });
     try {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+        await testRedirectedCatalogOffer(page);
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
         await page.goto('https://www.mercadolivre.com.br/item/up/MLBU123456?wid=MLB10000001');
         await page.setContent('<main><h1 class="ui-pdp-title">Titulo do produto</h1><section class="ui-pdp-seller"><a class="ui-pdp-seller__link-trigger" href="https://www.mercadolivre.com.br/loja/tivui">Ir para a loja oficial</a><span class="ui-pdp-seller__header__title">Tivui</span></section></main>');

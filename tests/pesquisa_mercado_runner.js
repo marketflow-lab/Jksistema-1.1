@@ -2406,6 +2406,131 @@ async function untilDetail(predicate) {
     }
 }
 
+async function nextDetailBatchWaitsForEveryOpenPanel() {
+    const ids = Array.from({ length: 9 }, (_, index) => 'MLB' + (1000000440 + index));
+    const create = () => harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    for (const outcome of ['complete', 'cancelled', 'paused']) {
+        const h = create();
+        const browsers = parallelDetailBrowsers(h), started = [];
+        let releaseSeven, releaseLast;
+        const firstSeven = new Promise(resolve => { releaseSeven = resolve; });
+        const lastPanel = new Promise(resolve => { releaseLast = resolve; });
+        withDetailCollector(h, async options => {
+            const id = options.expectedItem.id;
+            await beginObservedDetail(options);
+            started.push(id);
+            if (id === ids[7]) {
+                await options.onPartial({ reason: 'partial', avantPanelLoading: true, anuncios: [salesListing(id)] });
+                await lastPanel;
+            } else if (id !== ids[8]) {
+                await firstSeven;
+            }
+            return { reason: 'complete', anuncios: [salesListing(id, { vendas: 25, media_mensal: 5, rankable: true })] };
+        });
+        await h.runner.start();
+        try {
+            await untilDetail(() => started.length === 8);
+            assert.deepEqual([...started].sort(), ids.slice(0, 8));
+            releaseSeven();
+            await untilDetail(() => h.saved().checkpoint.sellerCollection?.index === 7);
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(started.includes(ids[8]), false, 'the ninth offer stays queued while the eighth Avant panel is loading');
+            assert.equal(h.vendors.size, 0, 'the unfinished batch cannot publish its seller');
+            if (outcome !== 'complete') await h.runner.stop(outcome);
+        } finally {
+            releaseSeven();
+            releaseLast();
+            await h.runner.task;
+        }
+        if (outcome !== 'complete') {
+            assert.equal(h.saved().status, outcome);
+            assert.equal(started.length, 8, 'interrupting a batch never opens the next one');
+            assert.equal(h.vendors.size, 0);
+            assert(browsers.slice(1).every(browser => browser.finishes.includes(outcome)));
+        } else {
+            assert.deepEqual(started.slice(8), [ids[8]]);
+            assert.equal(h.vendors.get('id:111').anuncios.filter(item => item.rankable).length, 9);
+        }
+        if (outcome === 'paused') {
+            const paused = h.saved();
+            assert.equal(paused.checkpoint.sellerCollection.detailBatchEnd, 8);
+            const resumed = create(), resumedIds = [];
+            resumed.restoreCheckpoint(paused);
+            parallelDetailBrowsers(resumed);
+            let releaseEighth;
+            const eighthReady = new Promise(resolve => { releaseEighth = resolve; });
+            withDetailCollector(resumed, async options => {
+                await beginObservedDetail(options);
+                const id = options.expectedItem.id;
+                resumedIds.push(id);
+                if (id === ids[7]) await eighthReady;
+                return { reason: 'complete', anuncios: [salesListing(id, { vendas: 25, media_mensal: 5, rankable: true })] };
+            });
+            await resumed.runner.resume(paused.id);
+            try {
+                await untilDetail(() => resumedIds.includes(ids[7]));
+                await new Promise(resolve => setImmediate(resolve));
+                assert.deepEqual(resumedIds, [ids[7]], 'resuming waits for the last offer of the interrupted batch');
+            } finally {
+                releaseEighth();
+                await resumed.runner.task;
+            }
+            assert.deepEqual(resumedIds, ids.slice(7), 'the seven completed offers are not consulted again');
+            assert.equal(resumed.vendors.get('id:111').anuncios.filter(ad => ad.rankable).length, 9);
+        }
+    }
+}
+
+async function strictDetailNavigationFailureKeepsTheCurrentOffer() {
+    const ids = ['MLB1000000450', 'MLB1000000451'];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
+    const attempted = [], browser = h.runner.browser, navigate = browser.navigate.bind(browser);
+    browser.navigate = async (url, signal) => {
+        if (url === salesListing(ids[0]).url) throw new Error('Navigation failed before the first Avant snapshot');
+        return navigate(url, signal);
+    };
+    withDetailCollector(h, async options => {
+        attempted.push(options.expectedItem.id);
+        await beginObservedDetail(options);
+        return { reason: 'complete', avantDataLoaded: true, anuncios: [salesListing(options.expectedItem.id,
+            { vendas: 20, media_mensal: 2, data_criacao: '01/02/2025', avant_metrics_version: 3, rankable: true })] };
+    });
+    h.runner.collector.hasAvantDetailData = require('../static/pesquisa-mercado/shared-collector').hasAvantDetailData;
+    await h.runner.start(); await h.runner.task;
+    assert(attempted.length > 0);
+    assert.deepEqual([...new Set(attempted)], [ids[0]], 'a failed first navigation must not dispatch the next offer');
+    assert.equal(h.saved().status, 'paused');
+    assert.equal(h.saved().checkpoint.sellerCollection.index, 0, 'the failed navigation retains the current offer');
+    assert.equal(h.vendors.size, 0);
+}
+
+async function confirmedLowerBoundReplacesAnEarlierExactCount() {
+    const ids = ['MLB1000000452', 'MLB1000000453'];
+    const shared = require('../static/pesquisa-mercado/shared-collector');
+    const listings = [salesListing(ids[0], { avant_metrics_version: 3, vendas: 75, vendas_rotulo: 'vendas do anuncio',
+        vendas_exibicao: '75', avant_seller_id: '111' }), salesListing(ids[1])];
+    const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listings), incomplete: true }));
+    const attempted = [];
+    withDetailCollector(h, async options => {
+        const id = options.expectedItem.id;
+        attempted.push(id);
+        await beginObservedDetail(options);
+        const observed = salesListing(id, { avant_metrics_version: 3, avant_seller_id: '111',
+            media_mensal: 5, media_vendas_mensal: 5, media_mensal_rotulo: 'vendas mensais',
+            data_criacao: '01/02/2025', dataCriacaoFonte: 'avantpro_dom_estruturado',
+            ...(id === ids[0] ? { vendas: null, vendasFonte: '', vendas_rotulo: 'vendidos', vendas_exibicao: '+25',
+                vendas_limite_inferior: '+25', status: 'sem_quantidade_avant' } : { vendas: 55, rankable: true }) });
+        assert(shared.hasAvantDetailData(observed), 'the displayed lower bound, date and monthly sales are a complete panel read');
+        return { reason: 'complete', avantDataLoaded: true, anuncios: [observed] };
+    });
+    Object.assign(h.runner.collector, { hasAvantDetailData: shared.hasAvantDetailData, AVANT_METRICS_VERSION: shared.AVANT_METRICS_VERSION });
+    await h.runner.start(); await h.runner.task;
+    assert.deepEqual(attempted, ids, 'after reading the lower bound, the runner can open the next offer');
+    const ad = h.vendors.get('id:111').anuncios.find(item => item.id === ids[0]);
+    assert.deepEqual([ad.vendas, ad.vendas_limite_inferior, ad.vendas_exibicao, ad.data_criacao, ad.media_vendas_mensal, ad.rankable, ad.rank],
+        [null, '+25', '+25', '01/02/2025', 5, false, null], '75 old sales cannot replace the new displayed lower bound');
+}
+
 async function parallelDetailsOnlyRetryMissing() {
     const ids = Array.from({ length: 10 }, (_, index) => `MLB10000004${String(index).padStart(2, '0')}`);
     const listing = ids.map((id, index) => salesListing(id, index === 0 ? { vendas: 0, media_mensal: 0, rankable: true } : {}));
@@ -2940,6 +3065,9 @@ async function manualChromeOpenPausesWithoutLosingScope() {
 }
 
 (async () => {
+    await nextDetailBatchWaitsForEveryOpenPanel();
+    await strictDetailNavigationFailureKeepsTheCurrentOffer();
+    await confirmedLowerBoundReplacesAnEarlierExactCount();
     await manualChromeOpenPausesWithoutLosingScope();
     await catalogDetailsAreConsultedOnceWithoutInventingRank();
     await mixedDetailsOnlyRetryTransientFailures();

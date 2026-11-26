@@ -6,6 +6,7 @@ const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed', 'legacy_seller_not_confirmed']);
+const AVANT_DETAIL_UNCONFIRMED = 'avant_detail_unconfirmed';
 const AVANT_PANEL_LOADING_MESSAGE = 'O painel do Avant Pro ainda estava carregando quando a consulta terminou.';
 const AVANT_METRIC_FIELDS = [
     'vendas', 'vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas',
@@ -944,7 +945,9 @@ class PesquisaMercadoRunner {
                 return result;
             } catch (err) {
                 if (err.waitingLogin || err.status === 401 || err.status === 403) this.loginBrowser = browser;
-                if (err.name === 'AbortError' || isMarketplaceAccessPause(err) || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
+                if (err.name === 'AbortError' || err.code === AVANT_DETAIL_UNCONFIRMED || isMarketplaceAccessPause(err)
+                    || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable
+                    || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
                 if (index + 1 < maxAttempts) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
             }
@@ -1784,6 +1787,10 @@ class PesquisaMercadoRunner {
         this.check(signal);
         const item = items[index];
         const detailUrl = canonicalUrl(item.url);
+        const requiresAvantData = typeof this.collector.hasAvantDetailData === 'function';
+        const unconfirmedDetail = () => Object.assign(
+            new Error('O Avant Pro não confirmou os dados deste anúncio. Confira o anúncio no Chrome da pesquisa e clique em Retomar.'),
+            { code: AVANT_DETAIL_UNCONFIRMED });
         const matchesItem = candidate => !!candidate && (item.id
             ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
             : canonicalUrl(candidate.url) === detailUrl);
@@ -1791,7 +1798,7 @@ class PesquisaMercadoRunner {
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
         let timer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
-        let panelLoading = false;
+        let panelLoading = false, waitedForData = false;
         let releaseRecommendationMedia;
         const restoreRecommendationMedia = () => {
             const release = releaseRecommendationMedia;
@@ -1828,11 +1835,14 @@ class PesquisaMercadoRunner {
                     const capture = partial => {
                         if (!alive()) return false;
                         const invalid = !partial || partial.authRequired || partial.avantAuthRequired
-                            || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result'].includes(partial.reason);
+                            || ['avant_login_required', 'ml_login_required', 'ml_verification_required', 'page_changed', 'invalid_page_result',
+                                'offer_identity_mismatch'].includes(partial.reason);
                         latestPartial = invalid ? null : clone(partial);
-                        setWaitingForPanel(!invalid && partial.reason === 'partial' && partial.avantPanelLoading === true
-                            && Array.isArray(partial.anuncios) && (partial.anuncios.some(matchesItem)
-                                || !partial.anuncios.length && matchesItem(partial.avantLoadingOffer)));
+                        const stillMissing = !invalid && partial.avantDataPending === true;
+                        waitedForData ||= stillMissing;
+                        setWaitingForPanel(!invalid && partial.reason === 'partial' && (stillMissing
+                            || partial.avantPanelLoading === true && Array.isArray(partial.anuncios) && (partial.anuncios.some(matchesItem)
+                                || !partial.anuncios.length && matchesItem(partial.avantLoadingOffer))));
                         return !invalid;
                     };
                     try {
@@ -1840,7 +1850,7 @@ class PesquisaMercadoRunner {
                             browser, signal: controller.signal, url: detailUrl,
                             expectedItem: { id: item.id || '', url: item.url },
                             seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
-                            waitForLoadingPanel: true,
+                            waitForLoadingPanel: true, waitForAvantData: true,
                             timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
                             onNavigationStart: () => {
                                 if (!alive()) return;
@@ -1856,10 +1866,20 @@ class PesquisaMercadoRunner {
                             },
                             onPartial: capture
                         });
+                        const noConfirmation = observed?.avantDataLoaded === false
+                            || requiresAvantData && (observed?.avantDataLoaded !== true || !observed.anuncios?.some(matchesItem));
+                        if (noConfirmation && !observed?.authRequired && !observed?.avantAuthRequired
+                            && observed?.reason !== 'avant_login_required') {
+                            throw unconfirmedDetail();
+                        }
                         // Authentication or a changed document also vetoes
                         // metrics observed before the terminal result.
                         const valid = capture(observed);
                         return valid ? observed : { ...observed, anuncios: [] };
+                    } catch (error) {
+                        if (waitedForData && error.name !== 'AbortError' && !isMarketplaceAccessPause(error) && !error.waitingLogin
+                            && !error.avantSessionRejected && error.status !== 401 && error.status !== 403) throw unconfirmedDetail();
+                        throw error;
                     } finally {
                         attemptActive = false;
                         setWaitingForPanel(false);
@@ -1893,12 +1913,13 @@ class PesquisaMercadoRunner {
                 const merged = { ...item, ...found, id: item.id || found.id, url: item.url, ordem_coleta: item.ordem_coleta };
                 const freshComplete = this.collector.isComplete(found);
                 const currentVersion = this.collector.AVANT_METRICS_VERSION;
+                const loadedPanel = detail.avantDataLoaded === true && !usedPartial;
                 if (this.needsLegacyAvantRefresh(item) && found.avant_metrics_version !== currentVersion) return;
-                if (currentVersion && found.avant_metrics_version === currentVersion && item.avant_metrics_version !== currentVersion) {
+                if (loadedPanel || currentVersion && found.avant_metrics_version === currentVersion && item.avant_metrics_version !== currentVersion) {
                     const settled = !usedPartial && !['partial', 'timeout', 'page_changed', 'invalid_page_result', 'no_listings_detected'].includes(detail.reason);
                     const showedPanelMetrics = !!(found.vendas_exibicao || found.data_criacao || found.media_vendas_mensal_exibicao);
-                    if (freshComplete || !this.needsLegacyAvantRefresh(item) || settled && showedPanelMetrics) {
-                        // Never complete a fresh observation with values derived by the old parser.
+                    if (loadedPanel || freshComplete || !this.needsLegacyAvantRefresh(item) || settled && showedPanelMetrics) {
+                        // Do not complete fresh panel data with values from a prior observation.
                         for (const field of AVANT_METRIC_FIELDS) {
                             if (!Object.hasOwn(found, field)) delete merged[field];
                         }
@@ -1971,7 +1992,12 @@ class PesquisaMercadoRunner {
             }
         } catch (error) {
             this.check(signal);
-            if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403 || error.status === 404) throw error;
+            if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
+            if (requiresAvantData || waitedForData || error.code === AVANT_DETAIL_UNCONFIRMED) {
+                this.loginBrowser = browser;
+                throw unconfirmedDetail();
+            }
+            if (error.status === 404) throw error;
             // A bounded unavailable detail keeps the original card's evidence.
         } finally {
             active = false;
@@ -2020,44 +2046,61 @@ class PesquisaMercadoRunner {
             const loadingPanels = new Set();
             const progress = () => {
                 if (controller.signal.aborted) return;
+                if (firstError?.code === AVANT_DETAIL_UNCONFIRMED) {
+                    this.setProgress('collecting', 'Uma consulta deste lote precisa ser retomada. Aguardando as demais consultas em andamento.');
+                    return;
+                }
                 const label = collection.detailRound ? 'Reconsultando apenas falhas temporarias' : 'Consultando anuncios pendentes';
                 const waiting = loadingPanels.size ? `Aguardando o Avant Pro carregar dados em ${loadingPanels.size} de ${browsers.length} consultas. ` : '';
                 this.setProgress('collecting', `${waiting}${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
             };
-            const work = async browser => {
+            const work = async (browser, index) => {
                 try {
-                    while (cursor < pending.length) {
-                        this.check(controller.signal);
-                        const index = pending[cursor++];
+                    this.check(controller.signal);
+                    progress();
+                    const legacy = this.canRecheckLegacySeller(seller, items[index]);
+                    const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal, waiting => {
+                        if (waiting) loadingPanels.add(index);
+                        else loadingPanels.delete(index);
                         progress();
-                        const legacy = this.canRecheckLegacySeller(seller, items[index]);
-                        const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal, waiting => {
-                            if (waiting) loadingPanels.add(index);
-                            else loadingPanels.delete(index);
-                            progress();
-                        });
-                        this.check(controller.signal);
-                        const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
-                        if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;
-                        else if (legacy && !this.collector.isComplete(items[index])) blocks[key] = 'seller_not_confirmed';
-                        else if (legacy) delete blocks[key];
-                        if (index >= collection.index) completed.add(index);
-                        finished += 1;
-                        progress();
-                        advance();
-                        await this.save();
-                    }
+                    });
+                    this.check(controller.signal);
+                    const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
+                    if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;
+                    else if (legacy && !this.collector.isComplete(items[index])) blocks[key] = 'seller_not_confirmed';
+                    else if (legacy) delete blocks[key];
+                    if (index >= collection.index) completed.add(index);
+                    finished += 1;
+                    progress();
+                    advance();
+                    await this.save();
                 } catch (error) {
-                    if (!firstError) firstError = error;
+                    if (!firstError || firstError.code === AVANT_DETAIL_UNCONFIRMED) firstError = error;
+                    if (error.code === AVANT_DETAIL_UNCONFIRMED) {
+                        progress();
+                        return;
+                    }
                     controller.abort();
                     this.stopBrowsers();
                 }
             };
-            // All workers must settle before run() saves a terminal status or a
-            // later seller can reuse these windows and mutate the checkpoint.
-            await Promise.all(browsers.map(work));
-            if (firstError) throw firstError;
-            this.check(controller.signal);
+            // Save the boundary before opening the batch. Resuming must finish
+            // any remaining ads from it before a later batch can start.
+            while (cursor < pending.length) {
+                this.check(controller.signal);
+                const savedEnd = collection.detailBatchEnd;
+                const continuing = Number.isSafeInteger(savedEnd) && savedEnd <= items.length && pending[cursor] < savedEnd;
+                const batch = pending.slice(cursor, cursor + browsers.length).filter(index => !continuing || index < savedEnd);
+                if (!continuing) {
+                    collection.detailBatchEnd = batch.at(-1) + 1;
+                    await this.save();
+                }
+                await Promise.all(batch.map((index, slot) => work(browsers[slot], index)));
+                if (firstError) throw firstError;
+                this.check(controller.signal);
+                cursor += batch.length;
+            }
+            delete collection.detailBatchEnd;
             return true;
         } finally {
             this.controller.signal.removeEventListener('abort', abort);
@@ -2088,6 +2131,7 @@ class PesquisaMercadoRunner {
                 collection.index = 0;
                 collection.detailRound = 0;
                 collection.completedIndices = [];
+                delete collection.detailBatchEnd;
                 delete collection.retryDelayMs;
             }
             collection.detailGeneration = generation;
@@ -2120,6 +2164,7 @@ class PesquisaMercadoRunner {
             collection.detailRound += 1;
             collection.index = 0;
             collection.completedIndices = [];
+            delete collection.detailBatchEnd;
             await this.save();
         }
         this.check();
@@ -2236,7 +2281,8 @@ class PesquisaMercadoRunner {
                 if (result.incomplete) this.checkpoint.salesRecoveryPending = true;
             } catch (error) {
                 this.check();
-                if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
+                if (error.code === AVANT_DETAIL_UNCONFIRMED || isMarketplaceAccessPause(error) || error.waitingLogin
+                    || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
                 this.checkpoint.salesRecoveryPending = true;
                 this.incomplete('Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.');
             }
@@ -2438,7 +2484,8 @@ class PesquisaMercadoRunner {
                     if (preserved && preserved.categoryKey === category.key && preserved.seed) {
                         try { await this.processSeed(preserved.seed, true); }
                         catch (error) {
-                            if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                            if (error.code === AVANT_DETAIL_UNCONFIRMED || isMarketplaceAccessPause(error) || error.waitingLogin
+                                || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
                             this.incomplete('A coleta interrompida foi preservada e continua pendente.');
                         }
                         await this.save();
@@ -2493,7 +2540,8 @@ class PesquisaMercadoRunner {
                         const seed = current.anuncios[current.index];
                         try { await this.processSeed(seed); }
                         catch (err) {
-                            if (this.salesRecoveryDeferred || isMarketplaceAccessPause(err) || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
+                            if (this.salesRecoveryDeferred || err.code === AVANT_DETAIL_UNCONFIRMED || isMarketplaceAccessPause(err)
+                                || err.avantSessionRejected || err.waitingLogin || err.name === 'AbortError' || err.status === 401 || err.status === 403) throw err;
                             this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                             this.checkpoint.discoveredSeed = { key: String(seed.id || canonicalUrl(seed.url)),
                                 id: seed.id || '', url: seed.url, category_key: category.key, status: 'failed' };
@@ -2574,14 +2622,15 @@ class PesquisaMercadoRunner {
             };
             const marketplacePaused = isMarketplaceAccessPause(err);
             const browserPaused = ['research_browser_closed', 'research_chrome_manual_open'].includes(err.code);
-            this.job.status = this.stopStatus || (marketplacePaused || browserPaused ? 'paused'
+            const detailPaused = err.code === AVANT_DETAIL_UNCONFIRMED;
+            this.job.status = this.stopStatus || (marketplacePaused || browserPaused || detailPaused ? 'paused'
                 : err.waitingLogin || err.status === 401 || err.status === 403 ? 'waiting_login' : 'failed');
             if (marketplacePaused) {
                 this.checkpoint.marketplaceAccess = { status: err.status, stage: err.stage, retryAt: err.retryAt };
                 if (err.status === 403 && err.publicUrl) this.checkpoint.marketplaceAccess.url = err.publicUrl;
             }
             if (!this.stopStatus) {
-                const browserMessage = marketplacePaused ? err.message : Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
+                const browserMessage = marketplacePaused || detailPaused ? err.message : Object.hasOwn(browserMessages, err.code) ? browserMessages[err.code] : '';
                 this.setProgress(this.job.status, browserMessage || (err.waitingLogin ? err.message
                     : this.job.status === 'waiting_login' ? 'Atualize o login e clique em Retomar.' : 'Pesquisa interrompida; o progresso foi preservado.'));
             }
@@ -2639,7 +2688,8 @@ class PesquisaMercadoRunner {
                     || seed.category_key !== category.key || !allowedUrl(seed.url)) throw new Error('A fila preservada da pesquisa esta incompleta.');
                 try { await this.processSeed(seed, true); }
                 catch (error) {
-                    if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
+                    if (error.code === AVANT_DETAIL_UNCONFIRMED || isMarketplaceAccessPause(error) || error.waitingLogin
+                        || error.avantSessionRejected || error.name === 'AbortError' || error.status === 401 || error.status === 403) throw error;
                     this.incomplete('Um anuncio ou vendedor nao pode ser consultado; a pesquisa continuara.');
                 }
                 recovery.failedSeedsAfterKey = seed.key;
