@@ -7,6 +7,14 @@
         let controladorTabelaVirtual = null;
         let escopoTabelaVirtual = '';
 
+        function preservarRolagemPagina(atualizar) {
+            const pagina = document.scrollingElement;
+            const scrollTop = pagina?.scrollTop;
+            atualizar();
+            // A tabela encolhe enquanto é remontada e o navegador pode limitar a rolagem da página.
+            if (pagina && pagina.scrollTop !== scrollTop) pagina.scrollTop = scrollTop;
+        }
+
         function obterQuantidadesSugeridasEditadas() {
             const quantidades = {};
             Array.from(comprasSugeridasEditadas.entries())
@@ -46,14 +54,16 @@
                     if (quantidade === null) {
                         input.setCustomValidity('Informe um número inteiro maior ou igual a zero.');
                         input.reportValidity();
-                        setTimeout(() => input.focus(), 0);
+                        setTimeout(() => input.focus({ preventScroll: true }), 0);
                         return;
                     }
                     item.compra_sugerida = quantidade;
                     comprasSugeridasEditadas.set(sku, quantidade);
                 }
                 finalizado = true;
-                if (!context.modules['visao-carregamento'].concluirEdicaoVisao()) renderAbaAtual();
+                preservarRolagemPagina(() => {
+                    if (!context.modules['visao-carregamento'].concluirEdicaoVisao()) renderAbaAtual();
+                });
             };
 
             input.addEventListener('input', () => input.setCustomValidity(''));
@@ -69,7 +79,7 @@
             input.addEventListener('blur', () => finalizar(true));
 
             celula.replaceChildren(input);
-            input.focus();
+            input.focus({ preventScroll: true });
             input.select();
         }
 
@@ -371,6 +381,7 @@
         }
 
         return {
+            preservarRolagemPagina,
             obterQuantidadesSugeridasEditadas,
             iniciarEdicaoCompraSugerida,
             obterItensVisiveis,

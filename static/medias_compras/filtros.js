@@ -282,7 +282,7 @@
             if (!sku) return;
             skusOcultosSet.add(sku);
             salvarSkusOcultos();
-            renderAbaAtual();
+            context.modules.tabela.preservarRolagemPagina(renderAbaAtual);
             setStatus('SKU ocultado com sucesso.');
         }
 
@@ -291,7 +291,7 @@
             if (!sku) return;
             skusOcultosSet.delete(sku);
             salvarSkusOcultos();
-            renderAbaAtual();
+            context.modules.tabela.preservarRolagemPagina(renderAbaAtual);
             setStatus('SKU removido da aba de ocultados.');
         }
 

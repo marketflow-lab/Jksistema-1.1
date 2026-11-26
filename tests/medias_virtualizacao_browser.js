@@ -147,6 +147,61 @@ async function visibleAnchor(page) {
   });
 }
 
+async function testEdicaoEOcultacaoPreservamRolagem(browser) {
+  const f = await fixture(browser, 432);
+  const { page } = f;
+  const obterRolagem = () => page.evaluate(() => {
+    const wrap = document.getElementById('secaoTabelaPrincipal');
+    return { horizontal: wrap.scrollLeft, pagina: window.scrollY, topoTabela: wrap.getBoundingClientRect().top };
+  });
+  const linha = codigo => page.locator(`${rowSelector}[data-virtual-key="${codigo}"]`);
+
+  try {
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await scrollTo(page, 0.5);
+    await page.evaluate(() => {
+      const wrap = document.getElementById('secaoTabelaPrincipal');
+      wrap.scrollLeft = wrap.scrollWidth;
+    });
+    const alvo = await visibleAnchor(page);
+    const numeroSku = Number(alvo.key.slice(4));
+    const editado = sku(numeroSku + 1);
+    const rolagemAntesDeAbrir = await obterRolagem();
+    assert(rolagemAntesDeAbrir.pagina > 0 && rolagemAntesDeAbrir.horizontal > 0, 'a página e a tabela devem estar roladas');
+    await linha(editado).locator('.compra-sugerida-editavel').click();
+    const input = linha(editado).locator('.compra-sugerida-input');
+    await input.fill('73');
+    const antesDeEditar = await visibleAnchor(page);
+    assert.strictEqual(antesDeEditar.key, alvo.key, 'abrir a edição mantém o mesmo SKU no topo visível');
+    assert.deepStrictEqual(await obterRolagem(), rolagemAntesDeAbrir, 'abrir a edição mantém a posição da tabela');
+    await input.press('Enter');
+    await settle(page);
+    const depoisDeEditar = await visibleAnchor(page);
+    assert.strictEqual(depoisDeEditar.key, antesDeEditar.key, 'confirmar a edição mantém o mesmo SKU no topo visível');
+    assert(Math.abs(depoisDeEditar.offset - antesDeEditar.offset) < 3, 'confirmar a edição mantém o deslocamento da linha');
+    assert.deepStrictEqual(await obterRolagem(), rolagemAntesDeAbrir, 'confirmar a edição mantém a posição da tabela');
+    assert.strictEqual(await linha(editado).locator('.compra-sugerida-editavel').textContent(), '73');
+
+    const ocultar = linha(depoisDeEditar.key).locator('[data-jk-action="ocultar-sku"]');
+    await ocultar.scrollIntoViewIfNeeded();
+    const antesDeOcultar = await visibleAnchor(page);
+    assert.strictEqual(antesDeOcultar.key, depoisDeEditar.key);
+    const rolagemAntesDeOcultar = await obterRolagem();
+    await ocultar.click();
+    await settle(page);
+    const depoisDeOcultar = await visibleAnchor(page);
+    assert.strictEqual(depoisDeOcultar.key, editado, 'ocultar o primeiro SKU visível mantém a posição na linha seguinte');
+    assert(Math.abs(depoisDeOcultar.offset - antesDeOcultar.offset) < 3, 'ocultar o SKU mantém o deslocamento da linha seguinte');
+    const rolagemDepoisDeOcultar = await obterRolagem();
+    assert.strictEqual(rolagemDepoisDeOcultar.horizontal, rolagemAntesDeOcultar.horizontal, 'ocultar o SKU mantém a posição horizontal');
+    assert(Math.abs(rolagemDepoisDeOcultar.topoTabela - rolagemAntesDeOcultar.topoTabela) < 2, 'ocultar o SKU mantém a altura da tabela na janela');
+    assert.strictEqual(await linha(antesDeOcultar.key).count(), 0);
+    assert(f.savedHidden.some(item => item.skus_ocultos.includes(antesDeOcultar.key)));
+    assert.deepStrictEqual(f.errors, []);
+    console.log('PASS edição da sugestão e ocultação de SKU mantêm a posição da tabela');
+  } finally { await f.context.close(); }
+}
+
 async function testLargeTable(browser, count) {
   const f = await fixture(browser, count);
   const { page } = f;
@@ -427,6 +482,7 @@ async function testFotosLimitamRetentativasECancelamEspera(browser) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    await testEdicaoEOcultacaoPreservamRolagem(browser);
     await testFotosAdiadas(browser);
     await testFotosRecuperamSemRemontarLinhas(browser);
     await testFotosLimitamRetentativasECancelamEspera(browser);
