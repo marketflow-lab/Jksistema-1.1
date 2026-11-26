@@ -175,6 +175,97 @@ function runnerFixture(pages, selected) {
     return { runner, visited, polls: () => polls };
 }
 
+async function loadedDepartmentCanUseItsDirectoryGroup() {
+    const index = 'https://www.mercadolivre.com.br/categorias';
+    const root = node('MLB1574', 'Casa, Móveis e Decoração', 'https://www.mercadolivre.com.br/c/casa-moveis-e-decoracao');
+    const child = node('MLB7069', 'Segurança para Casa'), sibling = node('MLB999', 'Outro');
+    const link = node(child.key, child.nome, 'https://lista.mercadolivre.com.br/fixture/seguranca/');
+    const siblingLink = node(sibling.key, sibling.nome, 'https://lista.mercadolivre.com.br/fixture/outro/');
+    const group = { ...root, key: root.url, children: [link, siblingLink] };
+    const fixture = ({ department = {}, directory = {}, destination = {}, siblings = [child, sibling], status = {} } = {}) => {
+        const h = runnerFixture({ [root.url]: department, [index]: { categoryTree: [group], ...directory },
+            [link.url]: { categoryDocumentIdentity: true, effectiveCategoryId: child.key, anuncios: [{ id: 'leaf-offer' }], ...destination } }, child);
+        const children = { [root.key]: siblings, [child.key]: [], [sibling.key]: [] };
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [root, child], children };
+        h.runner.officialNavigation = navigation({ ancestry: [root, child], children, read: (...args) => h.runner.read(...args) });
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        h.runner.browser.getNavigationStatus = () => {
+            const url = h.runner.browser.getURL();
+            return { url, statusCode: 200, ...status[url] };
+        };
+        return h;
+    };
+    const good = fixture();
+    assert.deepEqual((await good.runner.readCategory(child)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(good.visited, [root.url, index, link.url]);
+    assert.equal(await good.runner.officialNavigation.resolve(sibling.key), siblingLink.url);
+    assert.equal(good.visited.filter(url => url === index).length, 1, 'the whole navigation session shares one directory read');
+    const original = fixture({ department: { categories: [link] } });
+    assert.equal(await original.runner.officialNavigation.resolve(child.key), link.url);
+    assert.deepEqual(original.visited, [root.url], 'a working department filter does not need the directory');
+    const wrongDestination = fixture({ destination: { categoryDocumentIdentity: true, effectiveCategoryId: sibling.key } });
+    await assert.rejects(wrongDestination.runner.readCategory(child), error => error.code === 'category_scope_mismatch');
+    const named = { ...link, key: link.url }, homonym = { ...sibling, nome: child.nome };
+    for (const id of ['', sibling.key, child.key]) {
+        const leafOnly = fixture({ directory: { categoryTree: [{ ...group, children: [named] }] },
+            destination: { categoryDocumentIdentity: !!id, effectiveCategoryId: id } });
+        delete leafOnly.runner.checkpoint.officialTaxonomy.children[root.key];
+        const resolve = leafOnly.runner.officialNavigation.resolve(child.key);
+        if (id === child.key) assert.equal(await resolve, link.url);
+        else {
+            await assert.rejects(resolve, error => error.code === 'category_filters_unavailable');
+            assert(!leafOnly.runner.officialNavigation.routes.has(child.key), 'an unverifiable name-only candidate cannot enter the route cache');
+        }
+        assert.equal(leafOnly.visited.filter(url => url === index).length, 1);
+    }
+    const proof = fixture({ siblings: [child, homonym], directory: { categoryTree: [{ ...group, children: [named, link] }] } });
+    assert.equal(await proof.runner.officialNavigation.resolve(child.key), link.url, 'the official child ID disambiguates the observed name');
+    for (const options of [
+        { directory: { categoryTree: [{ ...group, url: root.url + '-outro' }] } },
+        { directory: { categoryTree: [{ ...group, key: sibling.key }] } },
+        { directory: { categoryTree: [group, group] } },
+        { directory: { categoryTree: [group, { ...group, url: root.url + '-outro' }] } },
+        { directory: { categoryTree: [{ ...group, children: [] }, { ...group, nome: 'Outro', url: root.url + '-outro' }] } },
+        { directory: { categoryTree: [{ ...group, children: [link, { ...link, url: siblingLink.url }] }] } },
+        { siblings: [child, homonym], directory: { categoryTree: [{ ...group, children: [named] }] } },
+        { directory: { categoryTree: [] } },
+        { directory: { url: root.url } },
+        { status: { [index]: { statusCode: 500 } } }
+    ]) {
+        const h = fixture(options);
+        await assert.rejects(h.runner.officialNavigation.resolve(child.key), error =>
+            error.code === 'category_filters_unavailable' && error.categoryPage.url === root.url);
+        assert.deepEqual(h.visited, [root.url, index], 'failed index evidence preserves the original department error');
+    }
+    for (const options of [
+        { department: { categoryIdentityConflict: true } }, { department: { effectiveCategoryId: sibling.key } },
+        { department: { categoryContext: { key: sibling.key } } }, { department: { url: root.url + '-outro' } },
+        { status: { [root.url]: { statusCode: 500 } } }, { status: { [root.url]: { statusCode: 0 } } },
+        { status: { [root.url]: { didNotCommit: true } } }, { status: { [root.url]: { url: index } } },
+        { department: { authRequired: true } }, { status: { [root.url]: { statusCode: 403 } } }, { status: { [root.url]: { statusCode: 429 } } }
+    ]) {
+        const h = fixture(options);
+        await assert.rejects(h.runner.officialNavigation.resolve(child.key));
+        assert(h.visited.every(url => url === root.url), 'the directory requires a completed, accessible document for this exact department');
+    }
+    for (const code of [403, 429]) {
+        const h = fixture({ status: { [index]: { statusCode: code } } });
+        await assert.rejects(h.runner.officialNavigation.resolve(child.key), error => error.status === code);
+        assert.deepEqual(h.visited, [root.url, index]);
+    }
+    const unavailable = fixture({ directory: { categoryTree: [] } });
+    for (const node of [child, sibling]) await assert.rejects(unavailable.runner.officialNavigation.resolve(node.key),
+        error => error.code === 'category_filters_unavailable');
+    assert.equal(unavailable.visited.filter(url => url === index).length, 1, 'a failed directory is not retried for each sibling');
+    const login = fixture({ directory: { authRequired: true } });
+    await assert.rejects(login.runner.officialNavigation.resolve(child.key), error => error.waitingLogin === true);
+    assert.deepEqual(login.visited, [root.url, index]);
+    const cancelled = fixture();
+    cancelled.runner.browser.navigate = async url => { cancelled.visited.push(url); throw Object.assign(new Error('Cancelled'), { name: 'AbortError' }); };
+    await assert.rejects(cancelled.runner.officialNavigation.resolve(child.key), error => error.name === 'AbortError');
+    assert.deepEqual(cancelled.visited, [root.url]);
+}
+
 async function runnerTrendsTransition() {
     const source = cycling + 'pecas/coroas/';
     const browse = source + '*_NoIndex_True';
@@ -728,6 +819,7 @@ async function recoverSharedAlignmentParent() {
 }
 
 (async () => {
+    await loadedDepartmentCanUseItsDirectoryGroup();
     await recoverSharedAlignmentParent();
     await expandedCategoryPages();
     await homonymousAlignmentPartsRequireOfficialIds();

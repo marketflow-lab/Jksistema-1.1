@@ -678,6 +678,10 @@ async function run() {
         assert.equal(discovery.allAdsUrl, '');
         assert.deepEqual(discovery.categoryTree.map(item => [item.nome, item.children.map(child => child.nome)]), [['Acessorios', ['Pecas']], ['Agro', ['Ferramentas']]], 'indice canonico mantem filhos separados e associados a sua propria raiz');
         assert.equal(discovery.categoryTree[0].children[0].url, 'https://lista.mercadolivre.com.br/acessorios-veiculos/pecas');
+        const duplicateGroup = await page.locator('.categories__container').first().evaluate(element => element.outerHTML);
+        await page.setContent('<main>' + duplicateGroup + duplicateGroup + '</main>');
+        assert.deepEqual((await page.evaluate(scripts.discoveryScript())).categoryTree[0].children, [],
+            'dois blocos do mesmo departamento impedem atribuir os filhos pelo índice');
         // The next three hrefs were followed from the public ML directory and
         // its Category filters on 2026-10-08, rather than generated from names.
         const nauticalUrl = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';

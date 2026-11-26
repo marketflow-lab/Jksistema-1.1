@@ -16,7 +16,8 @@ const AVANT_METRIC_FIELDS = [
 const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados suficientes do Avant.',
     'Alguns vendedores salvos continuam com vendas ou medias pendentes de consulta.']);
 const clone = value => JSON.parse(JSON.stringify(value));
-const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath, neutralCategoryPage } = require('./pesquisa-mercado-category-navigation');
+const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath, neutralCategoryPage,
+    departmentPermalink, exactDirectoryUrl } = require('./pesquisa-mercado-category-navigation');
 const { discoverCategoryRouteResult } = require('./pesquisa-mercado-category-discovery');
 const { scopeCategoryItems, validateCategoryItemScope, categoryItemScopeUrlAllowed } = require('./pesquisa-mercado-category-item-scope');
 const CATEGORY_FAILURES = Object.freeze({
@@ -923,10 +924,10 @@ class PesquisaMercadoRunner {
         if (recovery && recovery.generation !== Number(this.job.generation || 0)) throw new Error('A pesquisa foi atualizada. Reabra o progresso salvo.');
     }
 
-    async attempt(operation, signal = this.controller.signal, browser = this.browser) {
+    async attempt(operation, signal = this.controller.signal, browser = this.browser, maxAttempts = 3) {
         let last;
         const avantState = { checked: false, attempted: false, forced: false };
-        for (let index = 0; index < 3; index += 1) {
+        for (let index = 0; index < maxAttempts; index += 1) {
             this.check();
             try {
                 const result = await this.nameStep(() => operation(avantState), signal);
@@ -942,7 +943,7 @@ class PesquisaMercadoRunner {
                 if (err.waitingLogin || err.status === 401 || err.status === 403) this.loginBrowser = browser;
                 if (err.name === 'AbortError' || isMarketplaceAccessPause(err) || err.code === 'research_browser_closed' || err.waitingLogin || err.categoryScopeMismatch || err.categoryUnavailable || err.status === 401 || err.status === 403 || err.status === 404) throw err;
                 last = err;
-                if (index < 2) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
+                if (index + 1 < maxAttempts) await this.nameStep(() => this.wait(600 * (index + 1)), signal);
             }
         }
         throw last;
@@ -973,6 +974,8 @@ class PesquisaMercadoRunner {
     async read(url, purpose = 'category', navigationCategoryId = '', expectedChild = null, browseTransition = false) {
         if (!allowedUrl(url)) throw new Error('Link de pesquisa fora do Mercado Livre.');
         let pendingBrowseUrl = '';
+        const isOfficialIndex = purpose === 'index' && exactDirectoryUrl(url, 'https://www.mercadolivre.com.br/categorias');
+        const directoryEvidence = isOfficialIndex || purpose === 'navigation' && departmentPermalink(url);
         const result = await this.attempt(async avantState => {
             this.check();
             await this.browser.navigate(url, this.controller.signal);
@@ -980,7 +983,6 @@ class PesquisaMercadoRunner {
             const isCategory = purpose === 'category' || purpose === 'navigation' || purpose === 'category-transport';
             const stage = purpose === 'first-page' || purpose === 'seller' ? 'seller' : purpose === 'item' ? 'product' : 'category';
             const isCategoryOptions = purpose === 'category-options';
-            const isOfficialIndex = purpose === 'index' && sameCategoryPage(url, 'https://www.mercadolivre.com.br/categorias');
             const recoveringTrendsLanding = purpose === 'navigation' && expectedChild?.preferTrendsChildren === true;
             const verifyDestination = isCategory || isOfficialIndex;
             const categoryId = isOfficialIndex ? '' : ['navigation', 'category-transport'].includes(purpose) ? navigationCategoryId : this.officialCategoryId();
@@ -1001,6 +1003,11 @@ class PesquisaMercadoRunner {
                 }
                 const listings = (page.anuncios || []).length > 0;
                 const loading = page.readyState === 'loading' || typeof this.browser.isLoading === 'function' && this.browser.isLoading();
+                if (directoryEvidence) {
+                    const response = this.browser.getNavigationStatus?.();
+                    page.categoryHttpStatus = !loading && response && !response.didNotCommit && exactDirectoryUrl(response.url, url)
+                        && exactDirectoryUrl(this.browser.getURL(), url) && exactDirectoryUrl(page.url, url) ? response.statusCode : 0;
+                }
                 const observedId = page.categoryDocumentIdentity ? page.effectiveCategoryId
                     : page.categoryTrends && page.categoryContext && page.categoryContext.key;
                 if (isCategory && categoryId && observedId && observedId !== categoryId && !loading
@@ -1159,7 +1166,7 @@ class PesquisaMercadoRunner {
             error.code = 'category_load_timeout';
             error.categoryPage = page;
             throw error;
-        });
+        }, this.controller.signal, this.browser, isOfficialIndex && expectedChild ? 1 : 3);
         // Keep the transition outside attempt(): a retry of the destination
         // must not reopen the Trends hub and repeat the transition.
         return pendingBrowseUrl ? this.read(pendingBrowseUrl, purpose, navigationCategoryId, expectedChild, true) : result;

@@ -15,6 +15,15 @@ const OBSERVED_ROUTES = Object.freeze({
     MLB459353: 'https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas/freios/kits-cabos-cambios/*_NoIndex_True'
 });
 const label = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+function exactDirectoryUrl(actual, expected) {
+    return typeof actual === 'string' && !!expected && actual.replace(/\/$/, '') === expected.replace(/\/$/, '');
+}
+
+function completeDirectoryPage(page, url) {
+    return !!page && Number.isInteger(page.categoryHttpStatus) && page.categoryHttpStatus >= 200 && page.categoryHttpStatus < 300
+        && page.readyState === 'complete' && exactDirectoryUrl(page.url, url) && !page.categoryNotFound
+        && !page.categoryIdentityConflict && !page.authRequired && !page.avantAuthRequired;
+}
 
 class CategoryNavigationError extends Error {
     constructor(code, dependencyKey = '') {
@@ -90,6 +99,7 @@ class OfficialCategoryNavigation {
         // Its landing page is only an entry to the tree, never a listing of offers.
         this.departmentUrl = departmentPermalink(ancestry[0]?.url);
         this.records = new Map(ancestry.map(node => [node.key, node]));
+        this.children = children;
         this.parents = new Map();
         for (let index = 1; index < ancestry.length; index += 1) {
             this.parents.set(ancestry[index].key, ancestry[index - 1].key);
@@ -102,6 +112,7 @@ class OfficialCategoryNavigation {
         }
         this.routes = new Map();
         this.links = new Map();
+        this.indexRead = null;
     }
 
     route(raw, expected, parentUrl = '', allowObservedAlias = true) {
@@ -158,7 +169,75 @@ class OfficialCategoryNavigation {
         return this.choose(page.categories, expected, parentUrl, requireId);
     }
 
+    readDirectory(key, expected) {
+        if (!this.indexRead) this.indexRead = Promise.resolve().then(() => this.read(INDEX_URL, 'index', key, expected));
+        return this.indexRead;
+    }
+
+    departmentIndexGroup(page, root) {
+        const url = departmentPermalink(root?.url);
+        if (!url || !completeDirectoryPage(page, INDEX_URL) || page.categoryDocumentIdentity || page.effectiveCategoryId
+            || page.categoryTrends || page.categoryContext?.key) return null;
+        const groups = Array.isArray(page.categoryTree) ? page.categoryTree : [];
+        const exact = groups.filter(group => exactDirectoryUrl(group?.url, url));
+        if (exact.length !== 1 || !this.route(exact[0], root) || !Array.isArray(exact[0].children)) return null;
+        const typed = String(exact[0].key).toUpperCase() === root.key;
+        if (groups.some(group => group !== exact[0] && (String(group?.key).toUpperCase() === root.key
+            || !typed && label(group?.nome) === label(root.nome)))) return null;
+        return exact[0];
+    }
+
+    departmentIndexChild(group, root, expected, requireId = false) {
+        if (!group || this.parents.get(expected.key) !== root.key) return null;
+        const sameName = item => label(item?.nome) === label(expected.nome);
+        const homonym = (this.children[root.key] || []).some(item => item.key !== expected.key && sameName(item))
+            || group.children.some(item => ID.test(String(item?.key).toUpperCase()) && item.key.toUpperCase() !== expected.key && sameName(item));
+        try { return this.choose(group.children, expected, group.url, requireId || homonym); }
+        catch (_error) { return null; }
+    }
+
+    canUseDepartmentIndex(error, expected) {
+        const root = this.ancestry[0], page = error.categoryPage;
+        return !!expected && !!this.departmentUrl && root?.key === this.parents.get(expected.key)
+            && (error.code === 'category_filters_unavailable' || error.code === 'category_link_missing' || error.ambiguousLabels === true)
+            && !error.categoryScopeMismatch && !error.waitingLogin && error.name !== 'AbortError' && ![401, 403, 429].includes(error.status)
+            && completeDirectoryPage(page, this.departmentUrl) && !page.categoryConflictingRouteIds?.includes(expected.key)
+            && (!page.categoryDocumentIdentity || page.effectiveCategoryId === root.key)
+            && (!page.effectiveCategoryId || page.effectiveCategoryId === root.key)
+            && (!page.categoryContext?.key || page.categoryContext.key === root.key)
+            && (!page.categoryContext?.baseUrl || exactDirectoryUrl(page.categoryContext.baseUrl, this.departmentUrl));
+    }
+
     async resolve(key) {
+        try { return await this.resolveFromFilters(key); }
+        catch (error) {
+            const expected = this.records.get(key);
+            if (!this.canUseDepartmentIndex(error, expected)) throw error;
+            const root = this.ancestry[0];
+            let selected;
+            try {
+                const index = await this.readDirectory(root.key, expected);
+                const group = this.departmentIndexGroup(index, root);
+                selected = this.departmentIndexChild(group, root, expected, error.ambiguousLabels === true);
+                if (selected && selected.key !== expected.key && !this.children[root.key]?.some(child => child.key === key)) {
+                    // A leaf-only checkpoint omits its ancestors' other children. A name-only href may be a homonym.
+                    const document = await this.read(selected.url, 'category-transport', key);
+                    if (!document.categoryDocumentIdentity || document.categoryIdentityConflict || document.effectiveCategoryId !== key
+                        || !neutralCategoryPage(selected.url, document.url)) selected = null;
+                }
+            }
+            catch (indexError) {
+                if (indexError.waitingLogin || indexError.name === 'AbortError' || [401, 403, 429].includes(indexError.status)
+                    || indexError.code === 'research_browser_closed' || indexError.avantSessionRejected) throw indexError;
+                throw error;
+            }
+            if (!selected) throw error;
+            this.routes.set(key, selected.url);
+            return selected.url;
+        }
+    }
+
+    async resolveFromFilters(key) {
         if (this.routes.has(key)) return this.routes.get(key);
         const expected = this.records.get(key);
         if (!expected) throw new Error('Categoria fora da arvore selecionada.');
@@ -170,7 +249,7 @@ class OfficialCategoryNavigation {
                 return this.departmentUrl;
             }
             let page;
-            try { page = await this.read(INDEX_URL, 'index'); }
+            try { page = await this.readDirectory(); }
             catch (error) { error.navigationDependencyKey = expected.key; error.sharedCategoryFailure = true; throw error; }
             const groups = Array.isArray(page.categoryTree) ? page.categoryTree : [];
             try { selected = this.choose(groups, expected); }
@@ -198,7 +277,7 @@ class OfficialCategoryNavigation {
                     for (let attempt = 0; attempt < 2; attempt += 1) {
                         try { page = await this.read(parentUrl, 'navigation', parentKey, expected); break; }
                         catch (error) {
-                            if (attempt || !['category_filters_unavailable', 'category_load_timeout'].includes(error.code)) throw error;
+                            if (attempt || this.canUseDepartmentIndex(error, expected) || !['category_filters_unavailable', 'category_load_timeout'].includes(error.code)) throw error;
                         }
                     }
                 }
@@ -244,7 +323,10 @@ class OfficialCategoryNavigation {
                 catch (error) {
                     if (cachedIdConflict || error.code !== 'category_link_missing' && !error.ambiguousLabels) throw error;
                     const moreUrl = officialCategoryMoreUrl(page.categoryFilterMoreUrl, page.url || parentUrl);
-                    if (!moreUrl) throw error;
+                    if (!moreUrl) {
+                        error.categoryPage = page;
+                        throw error;
+                    }
                     let expanded;
                     try { expanded = await this.read(moreUrl, 'category-options', parentKey, expected); }
                     catch (expandedError) {
@@ -266,5 +348,5 @@ class OfficialCategoryNavigation {
     }
 }
 
-module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label, departmentPermalink,
+module.exports = { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel: label, departmentPermalink, exactDirectoryUrl,
     categoryBasePath, officialCategoryMoreUrl, neutralCategoryPage };

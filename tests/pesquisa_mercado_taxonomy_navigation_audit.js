@@ -132,7 +132,30 @@ async function testResumableProductionNavigation() {
     assert.equal(unproven.verifiedDocumentNodes, 0);
     assert.equal(unproven.verifiedOnlineGroupNodes, 0, 'an identified department without child navigation is unverified');
     assert.equal(unproven.observedOfficialEdges, 0);
-    assert(highlights.visits.length > 0 && highlights.visits.every(url => url === rootUrl));
+    assert(highlights.visits.length > 0 && highlights.visits.every(url => url === rootUrl || url === indexUrl));
+    for (const mode of ['exact', 'different_permalink', 'denied_index']) {
+        let current = '';
+        const visits = [];
+        const browser = { async navigate(url) { current = url; visits.push(url); }, getURL: () => current,
+            getNavigationStatus: () => ({ url: current, statusCode: mode === 'denied_index' && current === indexUrl ? 403 : 200 }),
+            async executeJavaScript() {
+                const group = { ...snapshot.get('MLB100'), url: mode === 'different_permalink' ? base + '/c/wrong' : rootUrl, children: [a, b] };
+                return { url: current, readyState: 'complete', ...(current === indexUrl ? { categoryTree: [group] }
+                    : { effectiveCategoryId: 'MLB100', categoryDocumentIdentity: true, categories: [], anuncios: [{}] }) };
+            } };
+        const scanner = new LiveNavigationAudit({ snapshot, snapshotSha256, browser, onlyKeys: ['MLB100'], wait: async () => {}, intervalMs: 0 });
+        const outcome = await scanner.run();
+        assert.equal(visits.filter(url => url === indexUrl).length, 1, mode + ' attempts the official directory once');
+        assert.equal(outcome.verifiedDocumentNodes, 0, mode);
+        assert.equal(outcome.observedOfficialEdges, mode === 'exact' ? 2 : 0, mode);
+        assert.equal(outcome.verifiedOnlineGroupNodes, mode === 'exact' ? 1 : 0, mode);
+        if (mode === 'denied_index') assert.equal(outcome.status, 'paused_access_denied');
+        if (mode === 'exact') {
+            assert.equal(scanner.groupVerification('MLB100').source, 'live_category_directory');
+            await scanner.read(indexUrl, 'index', 'MLB100', a);
+            assert.equal(scanner.summary().observedOfficialEdges, 2, 'reading the same two links again cannot duplicate evidence');
+        }
+    }
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256: '0'.repeat(64), browser: second.browser, state: saved }));
     assert.throws(() => new LiveNavigationAudit({ snapshot, snapshotSha256, implementationSha256: 'changed-code', browser: second.browser, state: saved }));
     const blocked = fixture(403);
@@ -312,6 +335,7 @@ async function testResumableProductionNavigation() {
     assert.equal(discoveredSummary.nodeSpecificOnlineAttempts, 2);
     assert.equal(discoveredSummary.dependencyUnresolvedNodes, 0);
     assert.equal(discoveredSummary.verifiedLeafDocumentNodes, 2);
+    assert.equal(discovered.audit.state.nodeOutcomes.MLB102.routeSource, 'official_category_href');
     assert.equal(discoveredSummary.completeSelectedCoverage, true);
     assert.equal(discoveredSummary.completeAllSnapshotCoverage, false);
     assert.equal(discoveredSummary.completeLiveCoverage, false, 'a successful two-leaf test is not a successful full-snapshot audit');
@@ -429,7 +453,47 @@ async function testResumableProductionNavigation() {
     assert.equal(contextAudit.runner.checkpoint.officialTaxonomy.ancestry, originalAncestry);
     assert.equal(contextAudit.activeReadKey, '');
     await cachedPositivePathsBypassOnlyEarlierFailures();
+    await auditPublishedLeafDestination();
     console.log('Pesquisa de Mercado live navigation audit: online groups, real leaf documents, priority, progress, cancellation and resumable block pause OK');
+}
+
+async function auditPublishedLeafDestination() {
+    const { LiveNavigationAudit } = require('../scripts/pesquisa_mercado_live_navigation_audit');
+    const ids = ['MLB1574', 'MLB7069', 'MLB412355', 'MLB411819'], leaf = ids[3];
+    const names = ['Casa, Móveis e Decoração', 'Segurança para Casa', 'Automação para Portões', 'Peças'];
+    const root = 'https://www.mercadolivre.com.br/c/casa-moveis-e-decoracao';
+    const base = 'https://lista.mercadolivre.com.br/casa-moveis-decoracao/seguranca-casa/automacao-portoes/pecas/';
+    const listing = base + '*_NoIndex_True';
+    const frozen = { ...cache, records: ids.map((id, i) => [id, names[i], i ? 'https://lista.mercadolivre.com.br/_CatId_' + id : root,
+        ids.slice(i + 1, i + 2), ids.slice(0, i + 1)]) };
+    const tree = snapshotFromCache(frozen), hash = createHash('sha256').update(JSON.stringify(frozen)).digest('hex');
+    for (const mode of ['published', 'stale_fallback', 'different_leaf', 'denied']) {
+        let current = '';
+        const visits = [];
+        const browser = { async navigate(url) { current = url; visits.push(url); }, getURL: () => current,
+            getNavigationStatus: () => ({ url: current, statusCode: mode === 'denied' && current === listing ? 403 : 200 }),
+            async executeJavaScript() {
+                if (current === base) return { url: current, readyState: 'complete', categoryTrends: true,
+                    categoryContext: { key: leaf, baseUrl: base }, categoryBrowse: { key: leaf, url: listing } };
+                return { url: current, readyState: 'complete', categoryDocumentIdentity: true,
+                    effectiveCategoryId: mode === 'different_leaf' ? 'MLB999' : leaf, anuncios: [{}] };
+            } };
+        const scan = new LiveNavigationAudit({ snapshot: tree, snapshotSha256: hash, onlyKeys: [leaf], browser,
+            wait: async () => {}, intervalMs: 0, discoverOfficialCategoryRoute: async () => null });
+        if (mode === 'stale_fallback') scan.state.fallbackCandidates[leaf] = {
+            categoryBaseUrl: 'https://lista.mercadolivre.com.br/old-candidate/', source: 'official_category_href' };
+        const result = await scan.run();
+        assert.deepEqual(visits, [base, listing], mode);
+        assert.equal(scan.navigation.routes.has(leaf), false, 'published entries need no cached alias resolution');
+        if (mode === 'published' || mode === 'stale_fallback') {
+            assert.equal(result.verifiedLeafDocumentNodes, 1, mode + ' must validate against the route emitted by production');
+            assert.equal(scan.state.nodeOutcomes[leaf].routeSource, 'official_category_navigation');
+            assert.equal(scan.state.documentContexts[leaf].url, listing);
+        } else {
+            assert.equal(result.verifiedLeafDocumentNodes, 0, mode);
+            assert.equal(result.failureCodes[mode === 'denied' ? 'category_access_denied' : 'category_scope_mismatch'], 1, mode);
+        }
+    }
 }
 async function cachedPositivePathsBypassOnlyEarlierFailures() {
     const { LiveNavigationAudit } = require('../scripts/pesquisa_mercado_live_navigation_audit');

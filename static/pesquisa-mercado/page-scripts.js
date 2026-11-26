@@ -1099,20 +1099,25 @@
         // /c/... can be a marketing landing; do not infer its tree from carousels.
         const categoryTree = categoryIndexPage ? categories.map(category => ({ ...category, children: [] })) : [];
         if (categoryIndexPage) {
+            const seenGroups = new Set();
             for (const group of nodes('.categories__container', content)) {
                 const title = group.querySelector('.categories__title-link, .categories__title a[href]');
                 const rootCategory = title && categoryData(title);
                 const tree = rootCategory && categoryTree.find(category => category.url === rootCategory.url);
                 if (!tree) continue;
-                const seenChildren = new Set();
-                tree.children = nodes('.categories__list a[href]', group)
-                    .filter(anchor => anchor.closest('.categories__container') === group)
-                    .map(categoryData)
-                    .filter(child => {
-                        if (!child || child.url === tree.url || seenChildren.has(child.url)) return false;
-                        seenChildren.add(child.url);
-                        return true;
-                    });
+                if (seenGroups.has(tree.url)) { tree.children = []; continue; }
+                seenGroups.add(tree.url);
+                const children = new Map();
+                for (const anchor of nodes('.categories__list a[href]', group)) {
+                    if (anchor.closest('.categories__container') !== group) continue;
+                    const child = categoryData(anchor);
+                    if (!child || child.url === tree.url) continue;
+                    const previous = children.get(child.url);
+                    if (previous === null || previous && (previous.key !== child.key || norm(previous.nome) !== norm(child.nome))) {
+                        children.set(child.url, null);
+                    } else children.set(child.url, child);
+                }
+                tree.children = [...children.values()].filter(Boolean);
             }
         }
         const categoryIndex = nodes('a[href]').find(anchor => /^(?:ver (?:mais|todas as)|todas as|mais) categorias$/.test(norm(anchor.textContent)) && /\/categorias\/?(?:$|\?)/.test(absolute(anchor.href)));
