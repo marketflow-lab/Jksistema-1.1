@@ -13,7 +13,22 @@ const extensionId = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 const store = 'https://chromewebstore.google.com/detail/avantpro-ml/' + extensionId;
 const manualOpen = error => error?.code === 'research_chrome_manual_open';
 
-function harness({ directory = profileDir, failFirstLaunch = false } = {}) {
+function mockPage(initialUrl = 'about:blank') {
+    const page = new EventEmitter(), frame = {};
+    let href = initialUrl, closed = false;
+    page.url = () => href;
+    page.mainFrame = () => frame;
+    page.commit = url => { href = url; page.emit('framenavigated', frame); };
+    page.navigations = [];
+    page.goto = async (url, options) => { page.navigations.push({ url, waitUntil: options.waitUntil }); page.commit(url); };
+    page.focusCount = 0;
+    page.bringToFront = async () => { page.focusCount++; };
+    page.isClosed = () => closed;
+    page.close = async () => { if (!closed) { closed = true; page.emit('close'); } };
+    return page;
+}
+
+function harness({ directory = profileDir, failFirstLaunch = false, initialUrls = [] } = {}) {
     const events = [], children = [], launches = [], contexts = [];
     const session = createChromeResearchSession({
         profileDir: directory, allowedUrl,
@@ -34,20 +49,17 @@ function harness({ directory = profileDir, failFirstLaunch = false } = {}) {
         getChromium: () => ({
             async launchPersistentContext(target, options) {
                 assert.equal(target, directory, 'the manual and research browsers must use the same dedicated profile');
+                assert(options.ignoreDefaultArgs.includes('about:blank'), 'the managed launch must not add a blank beside restored tabs');
                 assert(!children.some(child => child.exitCode === null && child.signalCode === null),
                     'an active manual Chrome exclusively owns its profile');
                 events.push(options.headless ? 'headless-open' : 'diagnostic-open');
                 const context = new EventEmitter();
                 contexts.push(context);
                 context.serviceWorkers = () => [{ url: () => 'chrome-extension://' + extensionId + '/background.js' }];
-                const pages = [];
-                context.pages = () => [...pages];
+                const pages = initialUrls.map(mockPage);
+                context.pages = () => pages.filter(page => !page.isClosed());
                 context.newPage = async () => {
-                    const page = new EventEmitter();
-                    let closed = false;
-                    page.url = () => 'about:blank';
-                    page.isClosed = () => closed;
-                    page.close = async () => { closed = true; page.emit('close'); };
+                    const page = mockPage();
                     pages.push(page);
                     return page;
                 };
@@ -67,26 +79,19 @@ async function testPanelNavigationAndReads() {
     const { session, contexts } = harness();
     const adapter = session.createPage(); // The primary tab also takes product work.
     await adapter.prepare();
+    assert.equal(contexts[0].pages().length, 0, 'preparing a primary adapter does not need a blank tab');
+    await adapter.navigate(home);
     const page = contexts[0].pages()[0];
-    const frame = {};
+    const frame = page.mainFrame();
     const product = 'https://produto.mercadolivre.com.br/MLB-123456789-peca-_JM';
-    let href = home, readCount = 0, deliver;
-    const navigations = [];
-    page.url = () => href;
-    page.mainFrame = () => frame;
-    page.goto = async (url, options) => {
-        href = url;
-        page.emit('framenavigated', frame);
-        navigations.push(options.waitUntil);
-    };
+    let readCount = 0, deliver;
     page.evaluate = async code => {
-        assert(code.includes('window !== window.top') && code.includes(JSON.stringify(href)) && code.includes('jk-market-auth:'));
+        assert(code.includes('window !== window.top') && code.includes(JSON.stringify(page.url())) && code.includes('jk-market-auth:'));
         readCount++;
         return new Promise(resolve => { deliver = resolve; });
     };
-    await adapter.navigate(home);
     await adapter.navigate(product, undefined, { waitForAvantPanel: true });
-    assert.deepEqual(navigations, ['load', 'domcontentloaded']);
+    assert.deepEqual(page.navigations.map(entry => entry.waitUntil), ['load', 'domcontentloaded']);
 
     const originalTimer = global.setTimeout;
     global.setTimeout = (fn, ms, ...args) => originalTimer(fn, ms === 12000 ? 1 : ms, ...args);
@@ -107,14 +112,12 @@ async function testPanelNavigationAndReads() {
     } finally { global.setTimeout = originalTimer; }
 
     const login = adapter.readLoadingPanel('1');
-    href = 'https://www.mercadolivre.com.br/account-verification/';
-    page.emit('framenavigated', frame);
+    page.commit('https://www.mercadolivre.com.br/account-verification/');
     await assert.rejects(login, error => error.waitingLogin && error.code === 'ml_verification_required');
-    href = product;
-    page.emit('framenavigated', frame);
+    page.commit(product);
     const blocked = adapter.readLoadingPanel('1');
     page.emit('response', { request: () => ({ isNavigationRequest: () => true, frame: () => frame }),
-        url: () => href, status: () => 429, headers: () => ({ 'retry-after': '60' }) });
+        url: page.url, status: () => 429, headers: () => ({ 'retry-after': '60' }) });
     await assert.rejects(blocked, error => error.code === 'marketplace_http_429' && Number.isSafeInteger(error.retryAt));
 
     await adapter.navigate(product, undefined, { waitForAvantPanel: true });
@@ -124,8 +127,8 @@ async function testPanelNavigationAndReads() {
     await assert.rejects(cancelled, error => error.name === 'AbortError');
     assert(page.isClosed());
     await adapter.prepare();
+    await adapter.navigate(product);
     const replacement = contexts[0].pages().at(-1);
-    replacement.url = () => product;
     replacement.evaluate = () => new Promise(() => {});
     const closed = adapter.readLoadingPanel('1');
     await replacement.close();
@@ -135,6 +138,9 @@ async function testPanelNavigationAndReads() {
 
 async function run() {
     await testPanelNavigationAndReads();
+    await testLazyPagesAndCancellation();
+    await testOwnedPreview();
+    await testFailedPreviews();
     {
         const calls = [], started = new EventEmitter();
         let detached = false;
@@ -223,6 +229,105 @@ async function run() {
             'a failed native launch must not leave a phantom profile lock');
     }
     console.log('Pesquisa de Mercado Chrome manual: isolated profile, user-owned window, wait and resume OK');
+}
+
+async function testLazyPagesAndCancellation() {
+    const restoredUrls = [home, 'about:blank'];
+    const { session, contexts } = harness({ initialUrls: restoredUrls });
+    const primary = session.createPage(), details = Array.from({ length: 7 }, () => session.createPage({ detail: true }));
+    await primary.prepare({ collectVisible: true });
+    const context = contexts[0], restored = context.pages();
+    await Promise.all(details.map(detail => detail.prepare()));
+    assert.deepEqual(context.pages(), restored, 'eight prepared workers leave restored tabs alone and allocate no tabs');
+    await details[0].destroy();
+    const create = context.newPage;
+    let started, release;
+    const creating = new Promise(resolve => { started = resolve; });
+    const hold = new Promise(resolve => { release = resolve; });
+    context.newPage = async () => { const page = await create(); started(page); await hold; return page; };
+    const controller = new AbortController();
+    const failed = assert.rejects(details[1].navigate(home, controller.signal), error => error.name === 'AbortError');
+    const interrupted = await creating;
+    controller.abort(); release(); await failed;
+    assert(interrupted.isClosed());
+    assert.deepEqual(interrupted.navigations, [], 'an aborted worker must never navigate the newly allocated page');
+    context.newPage = create;
+    await details[2].navigate(home);
+    assert.equal(context.pages().length, restored.length + 1);
+    await Promise.all(details.map(detail => detail.finish('cancelled')));
+    assert.deepEqual(context.pages(), restored);
+    assert.deepEqual(restored.map(page => page.url()), restoredUrls);
+    assert(restored.every(page => page.navigations.length === 0));
+    await session.close();
+
+    const single = harness({ initialUrls: ['chrome://new-tab-page/'] });
+    const main = single.session.createPage();
+    await main.prepare();
+    const initial = single.contexts[0].pages()[0];
+    await main.navigate(home);
+    assert.deepEqual(single.contexts[0].pages(), [initial], 'the lone startup tab is available for the requested URL');
+    assert.equal(initial.url(), home);
+    await single.session.close();
+}
+
+async function testOwnedPreview() {
+    const requested = 'https://lista.mercadolivre.com.br/pecas/', finalUrl = requested + '*_NoIndex_True';
+    const manualUrl = 'https://www.mercadolivre.com.br/account-verification/';
+    const visible = { collectVisible: true };
+    const { session, contexts } = harness({ initialUrls: [home, 'about:blank'] });
+    const main = session.createPage();
+    await main.prepare(visible);
+    const context = contexts[0], restored = context.pages(), create = context.newPage;
+    context.newPage = async () => {
+        const page = await create(), goto = page.goto;
+        page.goto = async (url, options) => { await goto(url, options); if (url === requested) page.commit(finalUrl); };
+        return page;
+    };
+    await session.show(requested, visible);
+    const preview = context.pages().at(-1);
+    await session.show(requested, visible);
+    await session.show(finalUrl, visible);
+    assert.equal(context.pages().length, restored.length + 1);
+    assert.deepEqual(preview.navigations.map(entry => entry.url), [requested], 'the displayed redirect destination remains in place');
+    assert.equal(preview.focusCount, 3);
+    preview.commit(manualUrl);
+    await session.show(requested, visible);
+    const nextPreview = context.pages().at(-1);
+    assert.notEqual(nextPreview, preview);
+    const detail = session.createPage({ detail: true });
+    await detail.prepare(); await detail.navigate(home);
+    assert.equal(nextPreview.url(), finalUrl, 'a detail worker cannot adopt the preview');
+    await main.navigate(home);
+    assert.deepEqual(nextPreview.navigations.map(entry => entry.url), [requested, home], 'the primary worker adopts the current preview');
+    await main.finish('completed'); await detail.finish('completed');
+    assert.deepEqual(context.pages(), [...restored, preview]);
+    assert.equal(preview.url(), manualUrl, 'the tab the user navigated remains untouched');
+    await session.close();
+}
+
+async function testFailedPreviews() {
+    const target = 'https://lista.mercadolivre.com.br/pecas/';
+    const { session, contexts } = harness({ initialUrls: [home, 'about:blank'] });
+    await session.createPage().prepare({ collectVisible: true });
+    const context = contexts[0], restored = context.pages(), create = context.newPage;
+    for (const committed of [false, true]) {
+        let opened;
+        context.newPage = async () => {
+            opened = await create();
+            opened.goto = async () => {
+                if (committed) {
+                    opened.commit(target);
+                    opened.emit('response', { url: () => target, status: () => 403 });
+                }
+                throw new Error('net::ERR_HTTP_RESPONSE_CODE_FAILURE');
+            };
+            return opened;
+        };
+        await assert.rejects(session.show(target, { collectVisible: true }));
+        assert.equal(opened.isClosed(), !committed, 'close only a failed blank preview; preserve the committed document');
+        assert.deepEqual(context.pages(), committed ? [...restored, opened] : restored);
+    }
+    await session.close();
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });

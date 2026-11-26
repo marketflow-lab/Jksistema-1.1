@@ -9,6 +9,7 @@ const { assertMarketplaceNavigation } = require('./pesquisa-mercado-runner');
 const EXTENSION_ID = 'jdefnfmbnchmnjkcknaadaddgjbgephh';
 const STORE = 'https://chromewebstore.google.com/detail/avantpro-ml/' + EXTENSION_ID;
 const HOME = 'https://www.mercadolivre.com.br/';
+const STARTUP_TAB_URLS = new Set(['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/']);
 const RELEASE_MEDIA = 'jk-pesquisa-mercado:release-recommendation-media';
 const manualBrowsers = new Map();
 
@@ -70,8 +71,8 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
     if (!profileDir || !path.isAbsolute(profileDir) || typeof allowedUrl !== 'function') {
         throw new Error('Configuração do perfil de pesquisa inválida.');
     }
-    let context = null, manual = false, collectVisible = false, manualPage = null;
-    let previewUrl = '', epoch = 0, nextMediaToken = 0;
+    let context = null, manual = false, collectVisible = false, preview = null;
+    let epoch = 0, nextMediaToken = 0;
     let startPage = null, checkedContext = null, lostContext = false;
     const closing = new WeakSet();
     let transition = Promise.resolve();
@@ -104,7 +105,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             closing.add(old);
             try { await old.close(); } catch (error) { throw chromeFailure(error); }
         }
-        if (context === old) { context = null; manualPage = null; }
+        if (context === old) { context = null; preview = null; }
     }
 
     async function open(visible, forResearch = true) {
@@ -127,7 +128,8 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             const chromium = await (getChromium ? getChromium() : require('playwright-core').chromium);
             active = await chromium.launchPersistentContext(profileDir, {
                 channel: 'chrome', headless: !visible, viewport: null, acceptDownloads: false,
-                ignoreDefaultArgs: ['--disable-extensions']
+                // Let Chrome open its usual startup page instead of adding an explicit blank.
+                ignoreDefaultArgs: ['--disable-extensions', 'about:blank']
             });
         } catch (error) {
             const busy = /processsingleton|profile.{0,30}(?:in use|em uso)|singletonlock/i.test(error.message);
@@ -137,13 +139,13 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
         }
         context = active;
         manual = visible;
-        // A newly started Chrome usually supplies exactly one blank tab.
+        // Reuse a lone startup tab without touching a set of restored tabs.
         const initial = active.pages();
-        startPage = initial.length === 1 && initial[0].url() === 'about:blank' ? initial[0] : null;
+        startPage = initial.length === 1 && STARTUP_TAB_URLS.has(initial[0].url()) ? initial[0] : null;
         active.on('close', () => {
             if (active !== context) return;
             if (!closing.has(active)) { lostContext = true; collectVisible = false; }
-            context = null; manualPage = null; startPage = null; checkedContext = null;
+            context = null; preview = null; startPage = null; checkedContext = null;
         });
         try {
             if (forResearch) { await checkExtension(active); checkedContext = active; }
@@ -161,7 +163,13 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
     function takeStartPage() {
         const first = startPage;
         startPage = null;
-        return first && !first.isClosed() && first.url() === 'about:blank' ? first : null;
+        return first && !first.isClosed() && STARTUP_TAB_URLS.has(first.url()) ? first : null;
+    }
+
+    function availablePreview() {
+        // Give up ownership for reuse if the user navigated this tab.
+        if (preview && (preview.page.isClosed() || preview.page.url() !== preview.openedUrl)) preview = null;
+        return preview;
     }
 
     function show(url = HOME, options = {}) {
@@ -170,16 +178,24 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
         return serialize(async () => {
             lostContext = false;
             const active = await open(true, false);
+            const current = availablePreview();
+            const alreadyOpened = current && (current.requestedUrl === url || current.openedUrl === url);
+            const reusable = alreadyOpened || current && allowedUrl(current.openedUrl)
+                && !mercadoLivreRouteAuthReason(new URL(current.openedUrl).pathname);
             const useForJob = options.collectVisible === true && url !== STORE;
-            if (!useForJob && !collectVisible && manualPage && !manualPage.isClosed() && url !== STORE) {
-                await manualPage.bringToFront(); return true;
+            const page = reusable ? current.page : takeStartPage() || await active.newPage();
+            let openedUrl;
+            try {
+                if (!alreadyOpened) await page.goto(url, { waitUntil: 'commit', timeout: 35000 });
+                openedUrl = page.url();
+                if (STARTUP_TAB_URLS.has(openedUrl)) throw new Error('O Chrome não abriu o endereço da pesquisa.');
+                await page.bringToFront();
+            } catch (error) {
+                if (!reusable && !page.isClosed() && page.url() === 'about:blank') await page.close().catch(() => {});
+                throw error;
             }
             collectVisible = useForJob;
-            // Only tabs opened by this adapter can later be assigned to the collector.
-            manualPage = takeStartPage() || await active.newPage();
-            await manualPage.goto(url, { waitUntil: 'commit', timeout: 35000 });
-            previewUrl = manualPage.url();
-            await manualPage.bringToFront();
+            preview = { page, requestedUrl: url, openedUrl };
             return true;
         }).catch(error => { throw chromeFailure(error); });
     }
@@ -226,7 +242,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
             return old && !old.isClosed() ? old.close().catch(() => {}) : Promise.resolve();
         }
 
-        async function getPage(owner, generation) {
+        async function getPage(owner, generation, { prepareOnly = false } = {}) {
             verify(owner, generation);
             if (live() && (!manual || collectVisible)) return tab;
             return serialize(async () => {
@@ -234,11 +250,14 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                 if (live() && (!manual || collectVisible)) return tab;
                 const active = await open(collectVisible);
                 verify(owner, generation);
+                // Preparing the worker validates Chrome and Avant without opening
+                // an empty tab. The first navigation already has its destination.
+                if (prepareOnly) return null;
                 let page;
-                if (collectVisible && !detail && manualPage && !manualPage.isClosed() && manualPage.url() === previewUrl
-                    && allowedUrl(previewUrl) && !routeReason(previewUrl)) {
-                    page = manualPage;
-                    manualPage = null;
+                const available = collectVisible && !detail && availablePreview();
+                if (available && allowedUrl(available.openedUrl) && !routeReason(available.openedUrl)) {
+                    page = available.page;
+                    preview = null;
                 } else page = takeStartPage() || await active.newPage();
                 if (owner !== revision || generation !== epoch) {
                     await page.close().catch(() => {}); throw interrupted();
@@ -451,7 +470,7 @@ function createChromeResearchSession({ profileDir, allowedUrl, getChromium, crea
                         await prepare();
                     }
                 }
-                await getPage(revision, epoch);
+                await getPage(revision, epoch, { prepareOnly: true });
             },
             navigate, executeJavaScript: code => evaluate(code),
             readLoadingPanel: (code, signal) => evaluate(code, { waitForPanel: true, signal }),
