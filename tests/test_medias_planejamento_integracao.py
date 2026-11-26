@@ -126,7 +126,7 @@ def ambiente(tmp_path, monkeypatch):
                         f"{sku}-{mes}", sku, f"2026-{mes:02d}-01", sku,
                         quantidade * (2 if client == "tenant-b" else 1), "Loja A",
                     ))
-            conn.execute("INSERT INTO vendas VALUES ('parcial','STABLE','2026-11-10','STABLE',9999,'Loja A')")
+            conn.execute("INSERT INTO vendas VALUES ('parcial','STABLE','2026-11-10','STABLE',40,'Loja A')")
             conn.execute("INSERT INTO vendas VALUES ('outra-loja','STABLE','2026-10-01','STABLE',9999,'Loja B')")
         common._salvar_listas_pedidos(client, [
             _lista("Em trânsito", 100, id="confirmada", itens=[{"SKU": "STABLE", "Quantidade": 100, "received_quantity": 40}]),
@@ -166,28 +166,60 @@ def _visao(client="tenant-a", meses=6):
     return {item["sku"]: item for item in resposta["itens"]}
 
 
-def test_tendencia_independe_da_janela_exibida_e_preserva_zero_real(ambiente):
-    resultados = [_visao(meses=meses) for meses in (3, 6, 12)]
-    for itens in resultados:
-        assert itens["UP"]["tendencia_vendas"] == "alta"
-        assert itens["DOWN"]["tendencia_vendas"] == "queda"
-        assert itens["STABLE"]["media_mensal_prevista"] == 100
-        assert itens["UP"]["compra_sugerida"] > itens["STABLE"]["compra_sugerida"] > itens["DOWN"]["compra_sugerida"]
-        assert itens["ZERO"]["saldo_atual_estoque"] == 0
-        assert itens["ZERO"]["risco_ruptura_antes_chegada"] is True
-        assert itens["STABLE"]["transito_confirmado"] == 60
-        assert itens["STABLE"]["estoque_previsto_antes_chegada"] == pytest.approx(160)
-        assert itens["STABLE"]["compra_sugerida"] == 540
-        assert itens["STABLE"]["estoque_previsto_apos_chegada"] == 700
-    for sku in resultados[0]:
-        assert len({itens[sku]["compra_sugerida"] for itens in resultados}) == 1
-    assert _visao(client="tenant-b")["STABLE"]["media_mensal_prevista"] == 200
+@pytest.mark.parametrize("meses, totais, saldo_antes, compra, saldo_depois", [
+    (3, {"UP": 260, "DOWN": 140, "STABLE": 240, "ZERO": 200}, 280, 280, 560),
+    (6, {"UP": 590, "DOWN": 410, "STABLE": 540, "ZERO": 500}, 220, 410, 630),
+    (12, {"UP": 690, "DOWN": 510, "STABLE": 640, "ZERO": 600}, 440, 0, 440),
+])
+def test_media_e_compra_usam_janela_exibida_com_tendencia_informativa(
+    ambiente, meses, totais, saldo_antes, compra, saldo_depois,
+):
+    itens = _visao(meses=meses)
+    assert itens["UP"]["tendencia_vendas"] == "alta"
+    assert itens["DOWN"]["tendencia_vendas"] == "queda"
+    assert itens["STABLE"]["tendencia_vendas"] == "estavel"
+    for sku, total in totais.items():
+        assert itens[sku]["total_vendas_periodo"] == total
+        assert itens[sku]["media_mensal"] == pytest.approx(total / meses)
+        assert itens[sku]["media_mensal_prevista"] == pytest.approx(total / meses)
+    assert itens["ZERO"]["saldo_atual_estoque"] == 0
+    assert itens["ZERO"]["risco_ruptura_antes_chegada"] is True
+    assert itens["STABLE"]["transito_confirmado"] == 60
+    assert itens["STABLE"]["estoque_previsto_antes_chegada"] == saldo_antes
+    assert itens["STABLE"]["compra_sugerida"] == compra
+    assert itens["STABLE"]["estoque_previsto_apos_chegada"] == saldo_depois
+    total_outro_cliente = {3: 440, 6: 1040, 12: 1240}[meses]
+    outro_cliente = _visao(client="tenant-b", meses=meses)["STABLE"]
+    assert outro_cliente["total_vendas_periodo"] == total_outro_cliente
+    assert outro_cliente["media_mensal_prevista"] == pytest.approx(total_outro_cliente / meses)
 
 
-def test_geracao_e_download_usam_as_mesmas_quantidades_da_tabela(ambiente, monkeypatch):
-    esperados = {sku: item["compra_sugerida"] for sku, item in _visao().items() if item["compra_sugerida"] > 0}
+def test_sku_12_inclui_mes_atual_e_mes_zerado_excluindo_mes_anterior_ao_periodo(ambiente):
+    raiz = ambiente / "tenant-a"
+    with (raiz / "produtos_compilado.csv").open("a", encoding="utf-8") as arquivo:
+        arquivo.write("12,254,254,Loja A\n")
+    with sqlite3.connect(raiz / "vendas_historico.db") as conn:
+        for mes, quantidade in [(5, 98), (6, 12), (7, 1), (9, 6), (10, 15), (11, 23)]:
+            conn.execute("INSERT INTO vendas VALUES (?,?,?,?,?,?)", (
+                f"sku12-{mes}", "12", f"2026-{mes:02d}-01", "Produto sintético", quantidade, "Loja A",
+            ))
+    linha = _visao(meses=6)["12"]
+    assert linha["vendas_mensais"] == {
+        "2026-06": 12, "2026-07": 1, "2026-08": 0, "2026-09": 6, "2026-10": 15, "2026-11": 23,
+    }
+    assert linha["total_vendas_periodo"] == 57
+    assert linha["media_mensal"] == linha["media_mensal_prevista"] == 9.5
+    assert linha["tendencia_vendas"] == "indeterminada"
+    assert linha["estoque_previsto_antes_chegada"] == 197
+    assert linha["estoque_alvo_apos_chegada"] == 66.5
+    assert linha["compra_sugerida"] == 0
+
+
+@pytest.mark.parametrize("meses", [3, 6, 12])
+def test_geracao_e_download_usam_as_mesmas_quantidades_da_tabela(ambiente, monkeypatch, meses):
+    esperados = {sku: item["compra_sugerida"] for sku, item in _visao(meses=meses).items() if item["compra_sugerida"] > 0}
     req = ListaCompraRequest(opcao="media_6m", nome_lista="Pedido sintético", loja="Loja A", store_id="store-a",
-                            fornecedor_id="supplier", periodo_meses=6)
+                            fornecedor_id="supplier", periodo_meses=meses)
     resultado = sugestoes._api_medias_compras_gerar_lista_compra_sync(req, client_id="tenant-a")
     criada = next(lista for lista in common._carregar_listas_pedidos("tenant-a") if lista["id"] == resultado["lista_id"])
     assert {item["SKU"]: item["Quantidade"] for item in criada["itens"]} == esperados
@@ -197,7 +229,7 @@ def test_geracao_e_download_usam_as_mesmas_quantidades_da_tabela(ambiente, monke
         exportados.extend(itens)
         return b"xlsx-sintetico"
     monkeypatch.setattr(sugestoes, "_gerar_excel_lista_pedido_bytes", excel)
-    sugestoes._api_medias_compras_gerar_lista_sugestao_sync(meses=6, loja="Loja A", store_id="store-a", client_id="tenant-a")
+    sugestoes._api_medias_compras_gerar_lista_sugestao_sync(meses=meses, loja="Loja A", store_id="store-a", client_id="tenant-a")
     assert {item["SKU"]: item["Quantidade"] for item in exportados} == esperados
 
 
@@ -218,13 +250,14 @@ def test_pedido_em_analise_abate_sugestao_na_tabela_lista_e_excel(ambiente, monk
     common._salvar_listas_pedidos("tenant-a", listas)
 
     linha = _visao()["79"]
-    assert linha["media_mensal_prevista"] == pytest.approx(152.2)
+    assert linha["total_vendas_periodo"] == 770
+    assert linha["media_mensal_prevista"] == pytest.approx(770 / 6)
     assert linha["estoque_em_transito"] == 700
     assert linha["transito_confirmado"] == 0
     assert linha["transito_em_analise_quantidade"] == 700
     assert linha["pedidos_considerados_quantidade"] == 700
     assert linha["abatimento_pedidos_quantidade"] == 700
-    assert linha["compra_sugerida"] == 370
+    assert linha["compra_sugerida"] == 200
     assert linha["estoque_previsto_antes_chegada"] == 0
     assert linha["reserva_antes_chegada_atendida"] is False
     assert linha["planejamento_requer_revisao"] is True
@@ -234,7 +267,7 @@ def test_pedido_em_analise_abate_sugestao_na_tabela_lista_e_excel(ambiente, monk
                             store_id="store-a", fornecedor_id="supplier", periodo_meses=6)
     resultado = sugestoes._api_medias_compras_gerar_lista_compra_sync(req, client_id="tenant-a")
     criada = next(lista for lista in common._carregar_listas_pedidos("tenant-a") if lista["id"] == resultado["lista_id"])
-    assert next(item["Quantidade"] for item in criada["itens"] if item["SKU"] == "79") == 370
+    assert next(item["Quantidade"] for item in criada["itens"] if item["SKU"] == "79") == 200
     assert resultado["planejamento_requer_revisao"] is True
 
     exportados = []
@@ -245,7 +278,7 @@ def test_pedido_em_analise_abate_sugestao_na_tabela_lista_e_excel(ambiente, monk
     sugestoes._api_medias_compras_gerar_lista_sugestao_sync(
         meses=6, loja="Loja A", store_id="store-a", client_id="tenant-a",
     )
-    assert next(item["Quantidade"] for item in exportados if item["SKU"] == "79") == 370
+    assert next(item["Quantidade"] for item in exportados if item["SKU"] == "79") == 200
 
 
 def test_primeira_venda_antiga_e_mes_fechado_extra_compartilham_leitura(ambiente):

@@ -1,7 +1,6 @@
 import calendar
 import math
 from datetime import date, datetime
-from statistics import median
 from typing import Any
 
 ItemEntrada = dict[str, Any]
@@ -47,7 +46,7 @@ def calcular_reposicao_periodo(
     """
     if vendas_mensais is not None:
         return _calcular_planejamento_reposicao(
-            vendas_mensais, saldo_atual, estoque_em_transito, periodo_meses,
+            total_vendido_periodo, vendas_mensais, saldo_atual, estoque_em_transito, periodo_meses,
             lead_time_meses, margem_seguranca_meses, fator_crescimento,
             data_referencia, entradas_previstas, primeira_venda,
         )
@@ -118,13 +117,8 @@ def _somar_meses_planejamento(referencia: date, meses: int) -> date:
     return date(ano, mes, min(referencia.day, calendar.monthrange(ano, mes)[1]))
 
 
-def _prever_vendas_mensais(vendas, referencia, periodo, saldo, primeira_venda):
-    """Transparent six-month signal, damped toward the preceding quarter.
-
-    The last (possibly partial) calendar month is never used. A 70/30 blend
-    updates the demand level rather than compounding a quarterly percentage
-    into every future month. Small/intermittent series remain reviewable.
-    """
+def _classificar_tendencia_vendas(vendas, referencia, saldo, primeira_venda):
+    """Compare completed months to describe the sales trend."""
     refs = [_somar_meses_planejamento(referencia.replace(day=1), i).strftime("%Y-%m")
             for i in range(-12, 0)]
     valores = {}
@@ -138,11 +132,7 @@ def _prever_vendas_mensais(vendas, referencia, periodo, saldo, primeira_venda):
     inicio = primeira.strftime("%Y-%m") if primeira else next(
         (mes for mes in refs if valores.get(mes, 0) > 0), refs[0])
     disponiveis = [mes for mes in refs if mes >= inicio and mes in valores]
-    janela = [valores[mes] for mes in refs[-periodo:] if mes in disponiveis]
-    media = sum(janela) / len(janela) if janela else 0.0
     resultado = {
-        "media_mensal": media,
-        "media_mensal_prevista": media,
         "tendencia_vendas": "insuficiente",
         "variacao_vendas_percentual": None,
         "meses_historico": len(disponiveis),
@@ -200,11 +190,9 @@ def _prever_vendas_mensais(vendas, referencia, periodo, saldo, primeira_venda):
     if sinal_recente:
         resultado.update(
             tendencia_vendas="alta" if direcao > 0 else "queda",
-            media_mensal_prevista=ultimo * 0.7 + recente * 0.3,
             tendencia_motivo=(
                 "Os três últimos meses completos se movem no mesmo sentido, com variação acumulada "
-                "de pelo menos 10%. A previsão combina 70% do último mês e 30% da média recente, "
-                "sem repetir esse crescimento ou queda nos meses futuros."
+                "de pelo menos 10%."
             ),
         )
         return resultado
@@ -212,24 +200,21 @@ def _prever_vendas_mensais(vendas, referencia, periodo, saldo, primeira_venda):
     if direcao and consistentes < 2:
         resultado.update(
             tendencia_vendas="indeterminada",
-            media_mensal_prevista=float(median(serie)),
-            tendencia_motivo="Variação concentrada em um mês; a previsão usa o nível típico dos seis meses.",
+            tendencia_motivo="A variação está concentrada em um mês.",
         )
         return resultado
     resultado.update(
         tendencia_vendas="alta" if direcao > 0 else "queda" if direcao < 0 else "estavel",
-        media_mensal_prevista=recente * 0.7 + anterior * 0.3,
         tendencia_motivo=(
-            "Comparação dos três últimos meses completos com os três anteriores; "
-            "alta ou queda a partir de 10%, com movimento consistente em pelo menos dois meses. "
-            "Previsão com 70% do ritmo recente e 30% do anterior, sem crescimento composto."
+            "Os três últimos meses completos são comparados aos três anteriores. "
+            "Alta ou queda exige variação de pelo menos 10% e movimento consistente em pelo menos dois meses."
         ),
     )
     return resultado
 
 
 def _calcular_planejamento_reposicao(
-    vendas, saldo_atual, estoque_em_transito, periodo_meses, lead_time_meses,
+    total_vendido_periodo, vendas, saldo_atual, estoque_em_transito, periodo_meses, lead_time_meses,
     margem_seguranca_meses, fator_crescimento, data_referencia, entradas,
     primeira_venda,
 ):
@@ -240,15 +225,16 @@ def _calcular_planejamento_reposicao(
     fator = _numero_planejamento(fator_crescimento, 1)
     fisico = _numero_planejamento(saldo_atual)
     transito_legado = _numero_planejamento(estoque_em_transito)
-    previsao = _prever_vendas_mensais(vendas, referencia, periodo, fisico, primeira_venda)
-    ritmo = previsao["media_mensal_prevista"] * fator
+    tendencia = _classificar_tendencia_vendas(vendas, referencia, fisico, primeira_venda)
+    media = _numero_planejamento(total_vendido_periodo) / periodo
+    ritmo = media * fator
     chegada = _somar_meses_planejamento(referencia, lead)
     alvo = ritmo * 7  # Total AFTER receipt; already includes the safety month.
     reserva = ritmo * reserva_meses
     avisos = []
-    revisar = previsao["tendencia_vendas"] in {"insuficiente", "indeterminada"}
+    revisar = tendencia["tendencia_vendas"] in {"insuficiente", "indeterminada"}
     if revisar:
-        avisos.append(previsao["tendencia_motivo"])
+        avisos.append(tendencia["tendencia_motivo"])
     eventos = []
     mesmo_dia = sem_data = confirmado = em_analise = analise_abatida = posteriores = 0.0
     for entrada in entradas or []:
@@ -334,22 +320,22 @@ def _calcular_planejamento_reposicao(
         "margem_seguranca_meses": reserva_meses,
         "meses_cobertura": lead + 7,
         "fator_crescimento": round(fator, 4),
-        "media_mensal": round(previsao["media_mensal"], 2),
-        "media_mensal_ajustada": round(ritmo, 2),
+        "media_mensal": media,
+        "media_mensal_ajustada": ritmo,
         "demanda_total": round(ritmo * (lead + 7), 2),
         "estoque_fisico": round(fisico, 2),
         "estoque_em_transito": round(transito_legado, 2),
         "posicao_estoque": round(fisico + transito_legado, 2),
         "compra_sugerida": compra,
         "planejamento_versao": 1,
-        "media_mensal_prevista": round(ritmo, 2),
-        "tendencia_vendas": previsao["tendencia_vendas"],
+        "media_mensal_prevista": ritmo,
+        "tendencia_vendas": tendencia["tendencia_vendas"],
         "variacao_vendas_percentual": (
-            round(previsao["variacao_vendas_percentual"], 2)
-            if previsao["variacao_vendas_percentual"] is not None else None
+            round(tendencia["variacao_vendas_percentual"], 2)
+            if tendencia["variacao_vendas_percentual"] is not None else None
         ),
-        "tendencia_motivo": previsao["tendencia_motivo"],
-        "meses_historico": previsao["meses_historico"],
+        "tendencia_motivo": tendencia["tendencia_motivo"],
+        "meses_historico": tendencia["meses_historico"],
         "data_chegada_prevista": chegada.isoformat(),
         "meses_estoque_apos_chegada": 7,
         "reserva_antes_chegada_quantidade": round(reserva, 2),

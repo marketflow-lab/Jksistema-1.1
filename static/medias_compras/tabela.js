@@ -183,7 +183,7 @@
             head.innerHTML = '';
             const headers = ['SKU', 'Foto', 'Título anúncio']
                 .concat(colunasMeses.map(c => c.key))
-                .concat(['Total período', 'VMM fechada', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
+                .concat(['Total período', 'VMM do período', 'Estoque físico', 'Em trânsito', 'Posição estoque', 'Cobertura (meses)', 'Sugestão compra', 'Ocultar']);
             chavesColunasAtuais = ['sku', 'foto', 'titulo_anuncio']
                 .concat(colunasMeses.map((_c, indice) => 'mes_' + indice))
                 .concat(['total_periodo', 'media_mensal', 'saldo_estoque', 'estoque_transito', 'posicao_estoque', 'cobertura_meses', 'compra_sugerida', 'acao']);
@@ -225,8 +225,8 @@
                     th.appendChild(label);
                 }
                 th.dataset.colKey = chavesColunasAtuais[idx] || ('col_' + idx);
-                if (th.dataset.colKey === 'media_mensal') th.title = 'VMM dos últimos meses completos do período selecionado. O mês corrente exibido nas vendas não entra nessa média. A previsão mensal por produto aparece abaixo.';
-                if (th.dataset.colKey === 'compra_sugerida') th.title = 'Quantidade para completar 7 meses de estoque após receber, com a tendência de alta ou queda de cada produto. Passe o mouse sobre a quantidade para ver o saldo previsto antes da entrega e a reserva de 1 mês.';
+                if (th.dataset.colKey === 'media_mensal') th.title = 'Venda média mensal (VMM) do período. O sistema divide o total vendido pelo número de meses exibidos, incluindo o mês atual.';
+                if (th.dataset.colKey === 'compra_sugerida') th.title = 'A sugestão usa a média mensal do período para completar 7 meses de estoque após a entrega. Passe o mouse sobre a quantidade para ver o saldo previsto antes da entrega e a reserva de 1 mês.';
                 if (th.dataset.colKey.startsWith('mes_')) {
                     th.classList.add('col-venda-mes', (idx - inicioMeses) % 2 === 0 ? 'col-venda-mes-a' : 'col-venda-mes-b');
                     if (idx === inicioMeses) th.classList.add('col-venda-mes-primeira');

@@ -17,19 +17,23 @@ MESES_FECHADOS = (
 )
 
 
-def historico(valores=None, *, mes_atual=5000):
+def historico(valores=None, *, mes_atual=100):
     valores = [100] * 12 if valores is None else valores
     meses = MESES_FECHADOS[-len(valores):] if valores else ()
     return {**dict(zip(meses, valores)), "2026-11": mes_atual}
 
 
-def planejar(*, vendas=None, saldo=700, transito=0, entradas=None, **kwargs):
+def planejar(*, vendas=None, saldo=700, transito=0, entradas=None, periodo=6, total=None, **kwargs):
+    vendas = historico() if vendas is None else vendas
+    if total is None:
+        meses_visiveis = (*MESES_FECHADOS, "2026-11")[-periodo:]
+        total = sum(vendas.get(mes, 0) for mes in meses_visiveis)
     return calcular_reposicao_periodo(
-        total_vendido_periodo=600,
+        total_vendido_periodo=total,
         saldo_atual=saldo,
         estoque_em_transito=transito,
-        periodo_meses=6,
-        vendas_mensais=historico() if vendas is None else vendas,
+        periodo_meses=periodo,
+        vendas_mensais=vendas,
         data_referencia=REFERENCIA,
         entradas_previstas=[] if entradas is None else entradas,
         **kwargs,
@@ -40,7 +44,7 @@ def exigir_json_finito(resultado):
     # API/cache serialization must never receive NaN/Infinity from source data.
     json.dumps(resultado, allow_nan=False)
     for chave in (
-        "media_mensal_prevista", "estoque_previsto_antes_chegada",
+        "media_mensal", "media_mensal_ajustada", "media_mensal_prevista", "estoque_previsto_antes_chegada",
         "estoque_previsto_apos_chegada", "estoque_alvo_apos_chegada",
         "reserva_antes_chegada_quantidade", "falta_antes_chegada_quantidade",
         "transito_sem_previsao_quantidade",
@@ -97,42 +101,42 @@ def test_large_current_stock_never_creates_an_unnecessary_purchase():
     assert resultado["estoque_previsto_apos_chegada"] == pytest.approx(1000)
 
 
-def test_current_partial_month_does_not_change_trend_or_purchase():
+def test_current_partial_month_counts_for_demand_but_not_the_trend():
     pequeno = planejar(vendas=historico(mes_atual=1))
-    grande = planejar(vendas=historico(mes_atual=1_000_000))
+    grande = planejar(vendas=historico(mes_atual=121))
 
-    for chave in (
-        "media_mensal_prevista", "tendencia_vendas", "variacao_vendas_percentual",
-        "compra_sugerida", "estoque_previsto_antes_chegada", "estoque_alvo_apos_chegada",
-    ):
-        assert pequeno[chave] == grande[chave], chave
-
-
-def test_sales_window_selection_does_not_remove_the_trend_history():
-    resultados = [
-        calcular_reposicao_periodo(
-            total_vendido_periodo=100 * periodo, saldo_atual=700,
-            periodo_meses=periodo, vendas_mensais=historico(),
-            data_referencia=REFERENCIA, entradas_previstas=[],
-        )
-        for periodo in (3, 6, 12)
-    ]
-
-    assert [r["compra_sugerida"] for r in resultados] == [600, 600, 600]
-    assert all(r["media_mensal_prevista"] == pytest.approx(100) for r in resultados)
+    assert pequeno["tendencia_vendas"] == grande["tendencia_vendas"] == "estavel"
+    assert pequeno["variacao_vendas_percentual"] == grande["variacao_vendas_percentual"] == 0
+    assert pequeno["media_mensal_prevista"] == 83.5
+    assert grande["media_mensal_prevista"] == 103.5
+    assert pequeno["compra_sugerida"] == 390
+    assert grande["compra_sugerida"] == 650
 
 
-def test_product_trend_changes_demand_and_purchase_in_both_directions():
+@pytest.mark.parametrize("periodo,media,compra", [(3, 90, 470), (6, 85, 405), (12, 60, 80)])
+def test_sales_window_determines_demand_and_preserves_trend_history(periodo, media, compra):
+    vendas = historico([30] * 6 + [60] * 3 + [120] * 3, mes_atual=30)
+    resultado = planejar(vendas=vendas, periodo=periodo)
+
+    assert resultado["media_mensal"] == media
+    assert resultado["media_mensal_prevista"] == media
+    assert resultado["compra_sugerida"] == compra
+    assert resultado["tendencia_vendas"] == "alta"
+
+
+def test_equal_visible_totals_give_the_same_purchase_across_product_trends():
     estavel = planejar()
-    alta = planejar(vendas=historico([100] * 6 + [80] * 3 + [120] * 3))
-    queda = planejar(vendas=historico([100] * 6 + [120] * 3 + [80] * 3))
+    alta = planejar(vendas=historico([80] * 3 + [120] * 3, mes_atual=80))
+    queda = planejar(vendas=historico([120] * 3 + [80] * 3, mes_atual=120))
 
     assert alta["tendencia_vendas"] == "alta"
     assert alta["variacao_vendas_percentual"] > 0
     assert queda["tendencia_vendas"] == "queda"
     assert queda["variacao_vendas_percentual"] < 0
-    assert queda["media_mensal_prevista"] < estavel["media_mensal_prevista"] < alta["media_mensal_prevista"]
-    assert queda["compra_sugerida"] < estavel["compra_sugerida"] < alta["compra_sugerida"]
+    assert estavel["tendencia_vendas"] == "estavel"
+    for resultado in (alta, queda, estavel):
+        assert resultado["media_mensal_prevista"] == 100
+        assert resultado["compra_sugerida"] == 600
 
 
 def test_decline_with_zero_current_stock_is_flagged_as_ambiguous():
@@ -149,7 +153,7 @@ def test_recent_decline_is_not_stable_when_quarterly_averages_offset():
 
     assert resultado["tendencia_vendas"] == "queda"
     assert resultado["variacao_vendas_percentual"] < 0
-    assert resultado["media_mensal_prevista"] < 45
+    assert resultado["media_mensal_prevista"] == pytest.approx(355 / 6)
     exigir_json_finito(resultado)
 
 
@@ -168,7 +172,7 @@ def test_recent_rise_is_not_stable_when_quarterly_averages_offset():
 
     assert resultado["tendencia_vendas"] == "alta"
     assert resultado["variacao_vendas_percentual"] > 0
-    assert resultado["media_mensal_prevista"] > 55
+    assert resultado["media_mensal_prevista"] == 57.5
     exigir_json_finito(resultado)
 
 
@@ -190,12 +194,9 @@ def test_partial_current_month_does_not_change_the_recent_decline_signal():
     parcial_zerado = planejar(vendas=historico(valores, mes_atual=0), saldo=400)
     parcial_alto = planejar(vendas=historico(valores, mes_atual=100_000), saldo=400)
 
-    for chave in (
-        "tendencia_vendas", "variacao_vendas_percentual", "media_mensal_prevista",
-        "compra_sugerida", "estoque_previsto_antes_chegada",
-    ):
-        assert parcial_zerado[chave] == parcial_alto[chave], chave
-    assert parcial_zerado["tendencia_vendas"] == "queda"
+    assert parcial_zerado["tendencia_vendas"] == parcial_alto["tendencia_vendas"] == "queda"
+    assert parcial_zerado["variacao_vendas_percentual"] == parcial_alto["variacao_vendas_percentual"]
+    assert parcial_zerado["compra_sugerida"] < parcial_alto["compra_sugerida"]
 
 
 @pytest.mark.parametrize("recente,tendencia", [(110, "alta"), (90, "queda")])
@@ -206,13 +207,13 @@ def test_ten_percent_consistent_change_is_classified_symmetrically(recente, tend
     assert abs(resultado["variacao_vendas_percentual"]) == pytest.approx(10)
 
 
-def test_isolated_sales_spike_requires_review_instead_of_becoming_permanent_growth():
+def test_isolated_sales_spike_requires_review_and_counts_once_in_the_average():
     resultado = planejar(vendas=historico([100] * 11 + [1000]))
 
     assert resultado["tendencia_vendas"] == "indeterminada"
     assert resultado["planejamento_requer_revisao"] is True
-    assert resultado["media_mensal_prevista"] == pytest.approx(100)
-    assert resultado["compra_sugerida"] == 600
+    assert resultado["media_mensal_prevista"] == 250
+    assert resultado["compra_sugerida"] == 1750
 
 
 def test_months_without_sales_require_confirmation_of_product_availability():
@@ -249,14 +250,14 @@ def test_zero_comparison_period_does_not_generate_infinite_growth():
     exigir_json_finito(resultado)
 
 
-def test_first_sale_date_prevents_diluting_a_new_product_with_prelaunch_zeros():
+def test_short_history_keeps_the_full_selected_period_in_the_denominator():
     resultado = planejar(
-        vendas=historico([0] * 11 + [100]), saldo=0, primeira_venda="2026-10-01",
+        vendas=historico([0] * 11 + [100], mes_atual=20), saldo=0, primeira_venda="2026-10-01",
     )
 
     assert resultado["tendencia_vendas"] == "insuficiente"
-    assert resultado["media_mensal_prevista"] == pytest.approx(100)
-    assert resultado["compra_sugerida"] == 700
+    assert resultado["media_mensal_prevista"] == 20
+    assert resultado["compra_sugerida"] == 140
     assert resultado["planejamento_requer_revisao"] is True
 
 
@@ -343,15 +344,15 @@ def test_existing_quote_offsets_the_sku79_example_without_guaranteeing_delivery(
         entradas=[{"quantidade": 700, "data_prevista": None, "confirmada": False}],
     )
 
-    assert resultado["media_mensal_prevista"] == pytest.approx(152.2)
-    assert sem_pedidos["compra_sugerida"] == 1070
-    assert resultado["compra_sugerida"] == 370
+    assert resultado["media_mensal_prevista"] == pytest.approx(770 / 6)
+    assert sem_pedidos["compra_sugerida"] == 900
+    assert resultado["compra_sugerida"] == 200
     assert resultado["transito_em_analise_quantidade"] == 700
     assert resultado["pedidos_considerados_quantidade"] == 700
     assert resultado["abatimento_pedidos_quantidade"] == 700
     assert resultado["transito_confirmado"] == 0
     assert resultado["estoque_previsto_antes_chegada"] == 0
-    assert resultado["falta_antes_chegada_quantidade"] == pytest.approx(913.2)
+    assert resultado["falta_antes_chegada_quantidade"] == 770
     assert resultado["reserva_antes_chegada_atendida"] is False
     assert resultado["planejamento_requer_revisao"] is True
     assert any("700 un consideradas provisoriamente" in aviso for aviso in resultado["avisos_planejamento"])
@@ -408,14 +409,14 @@ def test_mixed_confirmed_and_provisional_supply_is_counted_once():
 
 def test_confirmed_supply_consumed_before_arrival_is_not_a_second_discount():
     resultado = planejar(
-        vendas=historico([73, 16, 75, 147, 253, 182]), saldo=0, transito=700,
+        vendas=historico([73, 16, 75, 147, 253, 182], mes_atual=97), saldo=0, transito=700,
         entradas=[{"quantidade": 700, "data_prevista": REFERENCIA}],
     )
 
-    assert resultado["compra_sugerida"] == 1070
+    assert resultado["compra_sugerida"] == 900
     assert resultado["pedidos_considerados_quantidade"] == 700
     assert resultado["abatimento_pedidos_quantidade"] == 0
-    assert resultado["falta_antes_chegada_quantidade"] == pytest.approx(213.2)
+    assert resultado["falta_antes_chegada_quantidade"] == 70
 
 
 def test_provisional_supply_larger_than_target_does_not_create_negative_orders():
@@ -441,12 +442,12 @@ def test_purchase_rounds_up_to_five_without_adding_an_extra_month_of_reserve():
     assert resultado["estoque_alvo_apos_chegada"] <= resultado["estoque_previsto_apos_chegada"] < resultado["estoque_alvo_apos_chegada"] + 5
 
 
-@pytest.mark.parametrize("quantidade", ["1.5", "1,5"])
-def test_decimal_sales_strings_do_not_become_fifteen_units(quantidade):
-    resultado = planejar(vendas=historico([quantidade] * 12), saldo=0)
+@pytest.mark.parametrize("total", ["9.6", "9,6"])
+def test_decimal_sales_totals_accept_a_dot_or_comma(total):
+    resultado = planejar(vendas=historico([1.6] * 12, mes_atual=1.6), total=total, saldo=0)
 
-    assert resultado["media_mensal_prevista"] == pytest.approx(1.5)
-    assert resultado["estoque_alvo_apos_chegada"] == pytest.approx(10.5)
+    assert resultado["media_mensal_prevista"] == pytest.approx(1.6)
+    assert resultado["estoque_alvo_apos_chegada"] == pytest.approx(11.2)
     assert resultado["compra_sugerida"] == 15
 
 
@@ -455,7 +456,7 @@ def test_invalid_source_quantities_never_escape_as_nonfinite_or_negative(invalid
     vendas = historico()
     vendas["2026-08"] = invalido
     resultado = planejar(
-        vendas=vendas, saldo=invalido, transito=invalido,
+        vendas=vendas, total=invalido, saldo=invalido, transito=invalido,
         entradas=[{"quantidade": invalido, "data_prevista": "2026-12-01", "data_estimada": False}],
     )
 
