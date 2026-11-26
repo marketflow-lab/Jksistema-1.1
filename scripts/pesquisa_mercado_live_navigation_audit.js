@@ -148,6 +148,9 @@ class LiveNavigationAudit {
         };
         const productionCategoryUrl = this.runner.officialCategoryUrl.bind(this.runner);
         this.runner.officialCategoryUrl = async node => {
+            // The production runner can start with a published listing. Only alias
+            // resolution depends on the availability of the ancestor filters.
+            if (!unsupportedCategoryAlias(node.url)) return productionCategoryUrl(node);
             const ancestry = snapshot.pathFromRoot(node.key);
             let parentUrl = '', knownThrough = -1;
             for (const [index, item] of ancestry.entries()) {

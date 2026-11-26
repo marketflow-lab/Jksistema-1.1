@@ -441,6 +441,15 @@ function officialTaxonomyPath(checkpoint, key) {
     return [...tree.ancestry, ...tail];
 }
 
+// The taxonomy API omits the permalink for this leaf. The published landing
+// links to its listing, whose document must still prove the selected ID.
+function publishedLeafPermalink(checkpoint, key) {
+    if (key !== 'MLB411819') return '';
+    const path = officialTaxonomyPath(checkpoint, key).map(node => node.key);
+    if (path.join('/') !== 'MLB1574/MLB7069/MLB412355/MLB411819') return '';
+    return 'https://lista.mercadolivre.com.br/casa-moveis-decoracao/seguranca-casa/automacao-portoes/pecas/';
+}
+
 function itemScopeAncestry(checkpoint, scope) {
     return officialTaxonomyPath(checkpoint, scope.categoryKey).map(node => ({ ...node,
         url: node.key === scope.categoryKey ? scope.categoryBaseUrl
@@ -1416,10 +1425,12 @@ class PesquisaMercadoRunner {
             };
             let page;
             try {
-                url = await this.officialCategoryUrl(category);
+                const permalink = publishedLeafPermalink(this.checkpoint, category.key);
+                const entry = permalink && unsupportedCategoryAlias(category.url) ? { ...category, url: permalink } : category;
+                url = await this.officialCategoryUrl(entry);
                 const fromDepartment = this.officialNavigation?.departmentUrl && unsupportedCategoryAlias(category.url);
                 const recoveredAncestor = this.ancestorRecovery.size > 0 && this.findNavigationAncestor(category.key, key => this.ancestorRecovery.get(key));
-                page = await readRoute(url, fromDepartment || recoveredAncestor);
+                page = await readRoute(url, url === permalink || fromDepartment || recoveredAncestor);
             }
             catch (error) {
                 if (!canDiscover(error)) throw error;

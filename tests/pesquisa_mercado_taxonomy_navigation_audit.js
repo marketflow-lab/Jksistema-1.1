@@ -418,7 +418,7 @@ async function cachedPositivePathsBypassOnlyEarlierFailures() {
         scanner.state.documentContexts.MLB210 = { url: branch.url, documentCategoryId: branch.key, statusCode: 200, observedAt: cache.updatedAt };
         return { scanner, calls: () => calls };
     };
-    for (const mode of ['target_route', 'descendant_route', 'positive_chain']) {
+    for (const mode of ['published_leaf', 'target_route', 'descendant_route', 'positive_chain']) {
         const { scanner, calls } = fixture();
         if (mode === 'target_route') scanner.navigation.routes.set(leaf.key, leaf.url);
         if (mode === 'descendant_route') scanner.navigation.routes.set(branch.key, branch.url);
@@ -428,7 +428,7 @@ async function cachedPositivePathsBypassOnlyEarlierFailures() {
         }
         if (mode !== 'target_route') scanner.navigation.links.set(branch.key, [leaf]);
         const contexts = JSON.stringify(scanner.state.documentContexts);
-        assert.equal(await scanner.runner.officialCategoryUrl(tree.get(leaf.key)), leaf.url, mode);
+        assert.equal(await scanner.runner.officialCategoryUrl(mode === 'published_leaf' ? leaf : tree.get(leaf.key)), leaf.url, mode);
         assert.equal(calls(), 0, mode + ' follows only existing route candidates or a positive cached chain');
         assert.equal(JSON.stringify(scanner.state.documentContexts), contexts, 'route-cache use cannot alter verified document contexts');
         assert.equal(scanner.state.observations.length, 0, 'route-cache use cannot fabricate a live document observation');

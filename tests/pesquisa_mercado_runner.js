@@ -743,6 +743,64 @@ async function motorcycleChassisHandles() {
     }
 }
 
+async function gateAutomationParts() {
+    const alias = (key, nome) => ({ key, nome, url: 'https://lista.mercadolivre.com.br/_CatId_' + key });
+    const department = { key: 'MLB1574', nome: 'Casa, Móveis e Decoração', url: base + '/c/casa-moveis-e-decoracao' };
+    const security = alias('MLB7069', 'Segurança para Casa');
+    const gates = alias('MLB412355', 'Automação para Portões');
+    const parts = alias('MLB411819', 'Peças');
+    const ancestry = [department, security, gates, parts];
+    const landing = 'https://lista.mercadolivre.com.br/casa-moveis-decoracao/seguranca-casa/automacao-portoes/pecas/';
+    const listing = landing + '*_NoIndex_True';
+    const offer = { id: 'MLB1000000001', url: base + '/MLB-1000000001-placa' };
+    const owner = seller('222');
+    async function run({ path = ancestry, documentId = parts.key, http = 200, retry = false } = {}) {
+        const scope = path.at(-1);
+        const h = harness({
+            [department.url]: { categories: [], anuncios: [] },
+            [landing]: { categoryTrends: true, categoryBrowse: { key: parts.key, url: listing } },
+            [listing]: { categoryDocumentIdentity: true, effectiveCategoryId: documentId, anuncios: [offer] },
+            [offer.url]: owner, [owner.perfilUrl]: owner, [owner.allAdsUrl]: { atBottom: true }
+        });
+        h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: http });
+        h.runner.taxonomy = { load: async () => ({ complete: true, updatedAt: '2026-11-25T12:00:00Z',
+            children: () => [], get: key => path.find(node => node.key === key), pathFromRoot: () => copy(path) }) };
+        if (retry) {
+            const saved = h.saved();
+            saved.status = 'failed';
+            saved.checkpoint = { scope: { category: scope }, categories: [scope], currentCategory: scope,
+                discoveryInitialized: true, categoryIndex: 0, incompleteCategories: [{ ...scope,
+                    code: 'category_filters_unavailable', stage: 'navigation', dependency_key: department.key }],
+                officialTaxonomy: { updatedAt: '2026-11-25T12:00:00Z', children: { [scope.key]: [] }, ancestry: path } };
+            h.restoreCheckpoint(saved);
+            await h.runner.recoverIncomplete(saved.id, saved.revision);
+        } else await h.runner.start(scope);
+        await h.runner.task;
+        return h;
+    }
+    for (const retry of [false, true]) {
+        const result = await run({ retry });
+        assert.deepEqual(result.visited.slice(0, 2), [landing, listing], 'enter Peças directly on a new search and on retry');
+        assert.equal(result.saved().status, 'completed');
+        assert.equal(result.vendors.get('id:222')?.seller.categoria, parts.nome);
+        assert.deepEqual(result.saved().checkpoint.incompleteCategories, []);
+        assert.deepEqual(result.saved().checkpoint.scope.category, parts, 'keep the original scope saved by the taxonomy');
+    }
+    for (const path of [[department, security, gates, alias('MLB999', 'Peças')],
+        [department, security, alias('MLB999', 'Outro ramo'), parts]]) {
+        const outside = await run({ path });
+        assert(!outside.visited.includes(landing), 'only the matching official ancestry can use the direct entry');
+        assert.equal(outside.vendors.size, 0);
+    }
+    const mismatch = await run({ documentId: gates.key });
+    assert(!mismatch.visited.includes(offer.url));
+    assert.equal(mismatch.vendors.size, 0);
+    const blocked = await run({ http: 403 });
+    assert.deepEqual(blocked.visited, [landing], 'a denied direct entry stops without switching routes');
+    assert.equal(blocked.saved().status, 'paused');
+    assert.equal(blocked.vendors.size, 0);
+}
+
 async function officialDirectoryAndRescueSettles() {
     const index = `${base}/categorias`;
     const native = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
@@ -2905,6 +2963,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
     await categoryNavigationSettles();
     await officialTaxonomyScope();
     await motorcycleChassisHandles();
+    await gateAutomationParts();
     await nauticalOfficialNavigation();
     await officialDirectoryAndRescueSettles();
     await progressWarningAndRestart();
