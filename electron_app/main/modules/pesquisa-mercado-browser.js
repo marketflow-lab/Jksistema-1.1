@@ -6,6 +6,7 @@ const pesquisaMercadoTaxonomy = new pesquisaMercadoTaxonomyModule.TaxonomyServic
 });
 const pesquisaMercadoUsesChrome = process.env.JK_PESQUISA_MERCADO_BROWSER !== 'electron';
 let pesquisaMercadoChrome = null;
+let pesquisaMercadoCategoryRouteStore = null;
 let pesquisaMercadoChromeOwner = '';
 let pesquisaMercadoChromeToken = '';
 let pesquisaMercadoCoordinator = null;
@@ -331,10 +332,12 @@ async function preparePesquisaMercadoChromeOwner(token) {
         await pesquisaMercadoChrome?.close();
         const modules = path.join(__dirname, 'electron_app', 'main', 'modules');
         const { createChromeResearchSession } = require(path.join(modules, 'pesquisa-mercado-chrome.js'));
+        const { createCategoryRouteStore } = require(path.join(modules, 'pesquisa-mercado-category-route-store.js'));
         const { launchManualChrome } = require(path.join(modules, 'pesquisa-mercado-chrome-manual.js'));
         const { createMediaScript } = require(path.join(modules, 'pesquisa-mercado-media-preload.js'));
+        const profileDir = path.join(app.getPath('userData'), 'pesquisa-mercado-chrome', owner);
         pesquisaMercadoChrome = createChromeResearchSession({
-            profileDir: path.join(app.getPath('userData'), 'pesquisa-mercado-chrome', owner),
+            profileDir,
             allowedUrl: pesquisaMercadoRunnerModule.allowedUrl,
             createMediaScript,
             launchManualChrome: options => launchManualChrome({ ...options, executableCandidates: chromeExecutableCandidates }),
@@ -342,6 +345,7 @@ async function preparePesquisaMercadoChromeOwner(token) {
                 ? require(path.join(process.resourcesPath, 'app.asar', 'node_modules', 'playwright-core'))
                 : require('playwright-core')).chromium
         });
+        pesquisaMercadoCategoryRouteStore = createCategoryRouteStore({ filePath: path.join(profileDir, 'jk-category-routes-v1.json') });
         pesquisaMercadoCoordinator = null;
         pesquisaMercadoChromeOwner = owner;
     }
@@ -417,6 +421,7 @@ function getPesquisaMercadoCoordinator() {
     pesquisaMercadoCoordinator = new pesquisaMercadoRunnerModule.PesquisaMercadoRunner({
         api: pesquisaMercadoBackendRequest,
         taxonomy: pesquisaMercadoTaxonomy,
+        categoryRouteStore: pesquisaMercadoCategoryRouteStore,
         browser: pesquisaMercadoChrome ? pesquisaMercadoChrome.createPage() : pesquisaMercadoBrowserAdapter(),
         createDetailBrowser: index => pesquisaMercadoChrome
             ? pesquisaMercadoChrome.createPage({ detail: true }) : pesquisaMercadoBrowserAdapter(index),

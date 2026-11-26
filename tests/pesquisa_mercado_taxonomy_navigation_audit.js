@@ -454,7 +454,53 @@ async function testResumableProductionNavigation() {
     assert.equal(contextAudit.activeReadKey, '');
     await cachedPositivePathsBypassOnlyEarlierFailures();
     await auditPublishedLeafDestination();
+    await auditStoredCategoryDestinations();
     console.log('Pesquisa de Mercado live navigation audit: online groups, real leaf documents, priority, progress, cancellation and resumable block pause OK');
+}
+
+async function auditStoredCategoryDestinations() {
+    const { LiveNavigationAudit } = require('../scripts/pesquisa_mercado_live_navigation_audit');
+    const group = { ...snapshot.get('MLB100'), url: 'https://lista.mercadolivre.com.br/parent-known/' };
+    const children = snapshot.children(group.key).map((node, i) => ({ ...node, url: group.url + 'child-' + i + '/' }));
+    const leaf = children[0];
+    for (const mode of ['listing', 'trends_group', 'denied', 'wrong_leaf']) {
+        let current = '';
+        const visits = [], forgotten = [];
+        const store = { get: async ids => ({ MLB100: group.url, 'MLB100/MLB101': leaf.url })[ids.join('/')],
+            put: async () => {}, forget: async (ids, url) => { forgotten.push([ids.join('/'), url]); } };
+        const browser = { async navigate(url) { current = url; visits.push(url); }, getURL: () => current,
+            getNavigationStatus: () => ({ url: current,
+                statusCode: mode === 'denied' || mode === 'wrong_leaf' && current !== leaf.url ? 403 : 200 }),
+            async executeJavaScript() {
+                if (mode === 'trends_group' && current === group.url) return { url: current, readyState: 'complete', categoryTrends: true,
+                    categoryNavigationHub: { version: 1, url: current, canonical: current, heading: group.nome },
+                    categoryContext: { key: group.key, baseUrl: current }, categories: children, anuncios: [{}] };
+                return { url: current, readyState: 'complete', categoryDocumentIdentity: true, anuncios: [{}],
+                    effectiveCategoryId: mode === 'wrong_leaf' ? 'MLB999' : current === group.url ? group.key : leaf.key,
+                    categories: current === group.url ? children : [] };
+            } };
+        const audit = new LiveNavigationAudit({ snapshot, snapshotSha256, browser, categoryRouteStore: store, intervalMs: 0, wait: async () => {},
+            onlyKeys: mode === 'wrong_leaf' ? [leaf.key] : [group.key, leaf.key], discoverOfficialCategoryRoute: async () => null });
+        const partial = await audit.run({ maxNodes: 1 });
+        assert.equal(partial.verifiedLeafDocumentNodes, 0, 'a group or a wrong ID cannot prove a leaf');
+        if (mode === 'denied' || mode === 'wrong_leaf') {
+            assert.equal(partial.status, 'paused_access_denied');
+            assert.equal(partial.functionalVerifiedNodes, 0);
+            assert.deepEqual(visits, mode === 'denied' ? [group.url] : [leaf.url, group.url]);
+            assert.deepEqual(forgotten, mode === 'wrong_leaf' ? [['MLB100/MLB101', leaf.url]] : []);
+            continue;
+        }
+        assert.deepEqual(visits, [group.url], 'an identified direct group is visited before the marketing department');
+        assert.equal(partial.verifiedOnlineGroupNodes, mode === 'listing' ? 1 : 0);
+        assert.equal(partial.observedOfficialEdges, mode === 'listing' ? 2 : 1);
+        if (mode === 'trends_group') assert.equal(partial.verifiedDocumentNodes, 0, 'the Trends edge cannot verify its source as a listing');
+        const completed = await audit.run();
+        assert.deepEqual(visits, [group.url, leaf.url]);
+        assert.equal(completed.verifiedLeafDocumentNodes, 1);
+        assert.equal(completed.finalLeafDocumentAttempts, 1);
+        assert.equal(audit.state.documentContexts[leaf.key].url, leaf.url);
+        assert.equal(audit.state.nodeOutcomes[leaf.key].routeSource, 'verified_direct_category_listing');
+    }
 }
 
 async function auditPublishedLeafDestination() {

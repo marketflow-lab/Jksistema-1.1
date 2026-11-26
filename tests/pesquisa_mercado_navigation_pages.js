@@ -266,6 +266,140 @@ async function loadedDepartmentCanUseItsDirectoryGroup() {
     assert.deepEqual(cancelled.visited, [root.url]);
 }
 
+async function persistentCategoryRoutesRequireFreshDocuments() {
+    const dep = node('MLB990001', 'Departamento', 'https://www.mercadolivre.com.br/c/departamento');
+    const group = node('MLB990002', 'Grupo'), leaf = node('MLB990003', 'Folha');
+    const groupUrl = 'https://lista.mercadolivre.com.br/fixture/grupo/', leafUrl = groupUrl + 'folha/';
+    const stale = 'https://lista.mercadolivre.com.br/fixture/anterior/';
+    const groupIds = [dep.key, group.key], leafIds = [...groupIds, leaf.key];
+    const records = new Map(), changes = [];
+    const store = {
+        async get(ids) { return records.get(ids.join('/')); },
+        async put(ids, url) { records.set(ids.join('/'), url); changes.push(['put', ...ids, url]); },
+        async forget(ids, url) { if (records.get(ids.join('/')) === url) records.delete(ids.join('/')); changes.push(['forget', ...ids, url]); }
+    };
+    const doc = (key, values) => ({ categoryDocumentIdentity: true, effectiveCategoryId: key, ...values });
+    const pages = {
+        [dep.url]: { categories: [{ ...group, url: groupUrl }] },
+        [groupUrl]: doc(group.key, { categories: [{ ...leaf, url: leafUrl }] }),
+        [leafUrl]: doc(leaf.key, { anuncios: [{ id: 'leaf-offer' }] })
+    };
+    const fixture = (extra = {}, statusFor = () => 200) => {
+        const h = runnerFixture({ ...pages, ...extra }, leaf);
+        h.runner.checkpoint.officialTaxonomy = { ancestry: [dep, group, leaf], children: { [leaf.key]: [] } };
+        h.runner.categoryRouteStore = store;
+        h.runner.browser.getNavigationStatus = () => ({ url: h.runner.browser.getURL(), statusCode: statusFor(h.runner.browser.getURL()) });
+        return h;
+    };
+    const learn = fixture();
+    assert.deepEqual((await learn.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(learn.visited, [dep.url, groupUrl, leafUrl]);
+    assert.deepEqual(changes, [['put', ...groupIds, groupUrl], ['put', ...leafIds, leafUrl]]);
+    const warm = fixture();
+    assert.deepEqual((await warm.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(warm.visited, [leafUrl], 'the verified cached leaf is the collecting document');
+    records.delete(leafIds.join('/'));
+    const warmGroup = fixture();
+    await warmGroup.runner.readCategory(leaf);
+    assert.deepEqual(warmGroup.visited, [groupUrl, leafUrl], 'verified parent filters are consumed without reopening the page');
+    const marked = leafUrl + '_NoIndex_True?original_category_landing=true';
+    const markerDocument = doc(leaf.key, { url: marked, categoryContext: { key: leaf.key, baseUrl: leafUrl },
+        anuncios: [{ id: 'marked-offer' }] });
+    const redirected = page => {
+        const h = fixture({ [leafUrl]: page }), requested = h.runner.browser.getURL;
+        h.runner.browser.getURL = () => requested() === leafUrl ? marked : requested();
+        h.runner.discoverOfficialCategoryRoute = async () => null;
+        return h;
+    };
+    records.delete(leafIds.join('/'));
+    const firstLanding = redirected(markerDocument);
+    assert.deepEqual((await firstLanding.runner.readCategory(leaf)).anuncios, [{ id: 'marked-offer' }]);
+    assert.equal(records.get(leafIds.join('/')), marked);
+    const reusedLanding = fixture({ [marked]: markerDocument });
+    assert.deepEqual((await reusedLanding.runner.readCategory(leaf)).anuncios, [{ id: 'marked-offer' }]);
+    assert.deepEqual(reusedLanding.visited, [marked]);
+    const missingId = fixture({ [marked]: { ...markerDocument, categoryDocumentIdentity: false, effectiveCategoryId: '' } });
+    missingId.runner.prepareOfficialNavigation();
+    assert.equal(await missingId.runner.readKnownCategory(leaf.key), null, 'the public context alone cannot supply offers from a marked URL');
+    const changedId = fixture({ [marked]: { ...markerDocument, effectiveCategoryId: group.key } });
+    assert.deepEqual((await changedId.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(changedId.visited, [marked, groupUrl, leafUrl]);
+    for (const context of [null, { key: leaf.key, baseUrl: groupUrl }]) {
+        records.delete(leafIds.join('/'));
+        const unconfirmed = redirected({ ...markerDocument, categoryContext: context });
+        await assert.rejects(unconfirmed.runner.readCategory(leaf), error => error.code === 'category_scope_mismatch');
+        assert.equal(records.has(leafIds.join('/')), false, 'a category filter on a keyword search does not prove the listing base');
+    }
+    for (const status of [200, 404, 500]) {
+        records.set(leafIds.join('/'), stale); changes.length = 0;
+        const h = fixture({ [stale]: doc(group.key, { anuncios: [{ id: 'ancestor-offer' }] }) }, url => url === stale ? status : 200);
+        assert.deepEqual((await h.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+        assert.deepEqual(h.visited, [stale, groupUrl, leafUrl]);
+        assert.deepEqual(changes.filter(row => row[0] === 'forget'), status === 500 ? [] : [['forget', ...leafIds, stale]]);
+    }
+    for (const status of [401, 403, 429]) {
+        records.set(leafIds.join('/'), stale); changes.length = 0;
+        const h = fixture({ [stale]: doc(leaf.key, { anuncios: [{ id: 'ignored' }] }) }, url => url === stale ? status : 200);
+        await assert.rejects(h.runner.readCategory(leaf), error => error.status === status);
+        assert.deepEqual(h.visited, [stale]); assert.deepEqual(changes, []);
+    }
+    const login = fixture({ [stale]: { authRequired: true } });
+    await assert.rejects(login.runner.readCategory(leaf), error => error.waitingLogin === true);
+    assert.deepEqual(login.visited, [stale]);
+    records.set(leafIds.join('/'), leafUrl);
+    const repeated = fixture({}, url => url === leafUrl ? 500 : 200);
+    repeated.runner.discoverOfficialCategoryRoute = async () => null;
+    await assert.rejects(repeated.runner.readCategory(leaf), error => error.code === 'category_load_timeout');
+    assert.equal(repeated.visited.filter(url => url === leafUrl).length, 1,
+        'a 500 page with apparent offers cannot be reused by rediscovery or trigger an immediate duplicate visit');
+    for (const url of ['https://lista.mercadolivre.com.br/_CustId_123', leafUrl + '_Desde_49', leafUrl + '?q=folha']) {
+        records.set(leafIds.join('/'), url);
+        const h = fixture(); await h.runner.readCategory(leaf);
+        assert.deepEqual(h.visited, [groupUrl, leafUrl], 'a seller, search or pagination URL cannot become a cached category entry');
+    }
+    const faulty = fixture();
+    const unavailable = async () => { throw new Error('Disk unavailable'); };
+    faulty.runner.categoryRouteStore = { get: unavailable, put: unavailable, forget: unavailable };
+    assert.deepEqual((await faulty.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(faulty.visited, [dep.url, groupUrl, leafUrl]);
+    const baby = node('MLB1384', 'Bebês', 'https://www.mercadolivre.com.br/c/bebes'), playpen = node('MLB40563', 'Cercadinho');
+    const published = 'https://lista.mercadolivre.com.br/bebes/cercadinho/';
+    const cold = runnerFixture({ [published]: doc(playpen.key, { anuncios: [{ id: 'confirmed-offer' }] }) }, playpen);
+    cold.runner.checkpoint.officialTaxonomy = { ancestry: [baby, playpen], children: { [playpen.key]: [] } };
+    cold.runner.categoryRouteStore = store;
+    assert.deepEqual((await cold.runner.readCategory(playpen)).anuncios, [{ id: 'confirmed-offer' }]);
+    assert.deepEqual(cold.visited, [published]); assert.equal(records.get(baby.key + '/' + playpen.key), published);
+    const hub = { categoryTrends: true, categoryDocumentIdentity: false, categoryContext: { key: group.key, baseUrl: groupUrl },
+        categoryNavigationHub: { version: 1, url: groupUrl, canonical: groupUrl, heading: group.nome },
+        categories: [{ ...leaf, url: leafUrl }], anuncios: [{ id: 'promotion' }] };
+    records.clear(); changes.length = 0;
+    const seedGroup = fixture({ [groupUrl]: hub });
+    assert.deepEqual((await seedGroup.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.equal(records.get(groupIds.join('/')), groupUrl, 'normal navigation can learn a hub with a confirmed context and child');
+    records.delete(leafIds.join('/'));
+    const viaHub = fixture({ [groupUrl]: hub });
+    assert.deepEqual((await viaHub.runner.readCategory(leaf)).anuncios, [{ id: 'leaf-offer' }]);
+    assert.deepEqual(viaHub.visited, [groupUrl, leafUrl]);
+    const hubOnly = fixture({ [groupUrl]: hub });
+    hubOnly.runner.prepareOfficialNavigation();
+    const edge = await hubOnly.runner.readKnownCategory(group.key, leaf);
+    assert.deepEqual(edge.categoryTrendsChild, { parentKey: group.key, key: leaf.key, url: leafUrl });
+    assert.deepEqual(edge.anuncios, []); assert.equal(edge.categoryDocumentIdentity, false);
+    assert.equal(hubOnly.polls(), 2);
+    assert.equal(await hubOnly.runner.readKnownCategory(group.key), null, 'group recommendations never become leaf offers');
+    for (const patch of [
+        { categoryContext: null },
+        { categoryNavigationHub: { ...hub.categoryNavigationHub, heading: 'Outro grupo' } },
+        { categoryNavigationHub: { ...hub.categoryNavigationHub, canonical: groupUrl + 'outro/' } },
+        { categoryConflictingRouteIds: [leaf.key] },
+        { categories: [{ ...leaf, url: leafUrl, key: leafUrl }] } // untyped and siblings unknown
+    ]) {
+        const rejected = fixture({ [groupUrl]: { ...hub, ...patch } });
+        rejected.runner.prepareOfficialNavigation();
+        assert.equal(await rejected.runner.readKnownCategory(group.key, leaf), null);
+    }
+}
+
 async function runnerTrendsTransition() {
     const source = cycling + 'pecas/coroas/';
     const browse = source + '*_NoIndex_True';
@@ -819,6 +953,7 @@ async function recoverSharedAlignmentParent() {
 }
 
 (async () => {
+    await persistentCategoryRoutesRequireFreshDocuments();
     await loadedDepartmentCanUseItsDirectoryGroup();
     await recoverSharedAlignmentParent();
     await expandedCategoryPages();

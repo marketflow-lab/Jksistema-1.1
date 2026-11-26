@@ -91,9 +91,10 @@ function officialCategoryMoreUrl(value, currentParentUrl) {
 // Routes come from the Category directory/filter links, never from a guessed
 // slug or a free-text search. Each coordinator owns its navigation cache.
 class OfficialCategoryNavigation {
-    constructor({ ancestry, children, normalize, read }) {
+    constructor({ ancestry, children, normalize, read, readKnownGroup }) {
         this.normalize = normalize;
         this.read = read;
+        this.readKnownGroup = readKnownGroup;
         this.ancestry = ancestry;
         // The official taxonomy already supplies the root department's URL.
         // Its landing page is only an entry to the tree, never a listing of offers.
@@ -113,6 +114,16 @@ class OfficialCategoryNavigation {
         this.routes = new Map();
         this.links = new Map();
         this.indexRead = null;
+    }
+
+    pathIds(key) {
+        const root = this.ancestry[0]?.key, path = [];
+        while (key && this.records.has(key) && !path.includes(key)) {
+            path.unshift(key);
+            if (key === root) return path;
+            key = this.parents.get(key);
+        }
+        return [];
     }
 
     route(raw, expected, parentUrl = '', allowObservedAlias = true) {
@@ -257,8 +268,12 @@ class OfficialCategoryNavigation {
             const group = groups.find(item => item.url === selected.url && this.route(item, expected));
             if (group && Array.isArray(group.children) && group.children.length) this.links.set(key, group.children);
         } else {
+            const publishedChild = this.departmentUrl && this.ancestry[0]?.key === parentKey && OBSERVED_ROUTES[key];
+            const rejectedGroupRoutes = new Map();
+            const knownGroup = !publishedChild && !this.routes.has(parentKey) && await this.readKnownGroup?.(parentKey, expected, rejectedGroupRoutes);
+            if (knownGroup) this.routes.set(parentKey, knownGroup.url);
             const parentUrl = await this.resolve(parentKey);
-            let links = this.links.get(parentKey);
+            let links = knownGroup ? null : this.links.get(parentKey);
             let requireId = false, cachedIdConflict = false;
             // A previously read filter can be incomplete. Refresh it once for
             // this requested child; never retain a negative cache entry.
@@ -267,14 +282,15 @@ class OfficialCategoryNavigation {
                 requireId = error.code === 'category_link_ambiguous';
                 cachedIdConflict = requireId && !error.ambiguousLabels;
             }
-            if (!selected && !requireId && OBSERVED_ROUTES[key]) {
+            if (!selected && !knownGroup && !requireId && OBSERVED_ROUTES[key]) {
                 // Remembered fallbacks have no fresh parent-document evidence.
                 selected = this.route({ key, nome: expected.nome, url: OBSERVED_ROUTES[key] }, expected, parentUrl, false);
             }
             if (!selected) {
-                let page;
+                let page = knownGroup || null;
                 try {
-                    for (let attempt = 0; attempt < 2; attempt += 1) {
+                    if (rejectedGroupRoutes.has(parentUrl)) throw rejectedGroupRoutes.get(parentUrl);
+                    for (let attempt = 0; !page && attempt < 2; attempt += 1) {
                         try { page = await this.read(parentUrl, 'navigation', parentKey, expected); break; }
                         catch (error) {
                             if (attempt || this.canUseDepartmentIndex(error, expected) || !['category_filters_unavailable', 'category_load_timeout'].includes(error.code)) throw error;

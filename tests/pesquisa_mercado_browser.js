@@ -208,6 +208,9 @@ function harness(saved = [], options = {}) {
         getFavoritosWorkerBrowser: () => { throw new Error('A pesquisa não deve compartilhar janela Favoritos.'); },
         require: filename => {
             if (filename === 'node:crypto') return require(filename);
+            if (filename.endsWith('pesquisa-mercado-category-route-store.js')) return {
+                createCategoryRouteStore: ({ filePath }) => ({ filePath, get: async () => null, put: async () => true, forget: async () => true })
+            };
             if (filename.endsWith('pesquisa-mercado-media-preload.js') || filename.endsWith('pesquisa-mercado-chrome-manual.js')) {
                 return require(filename);
             }
@@ -996,11 +999,14 @@ async function testChromeProfileOwnershipAndSetup() {
     assert.equal(state.browser, 'chrome');
     assert.equal(h.chromeSessions.length, 1);
     const first = h.chromeSessions[0];
+    const firstStore = h.api.coordinator().categoryRouteStore;
+    assert.equal(path.dirname(firstStore.filePath), first.config.profileDir);
     assert.equal(first.shows.length, 0, 'status does not open Chrome');
     assert.equal(first.pages.length, 1);
     assert.match(path.basename(first.config.profileDir), /^[a-f0-9]{64}$/);
     await h.command('status', 'one', null, { authToken: 'fixture-owner-one-refresh' });
     assert.equal(h.chromeSessions.length, 1, 'renewing a token reuses the same authenticated owner profile');
+    assert.equal(h.api.coordinator().categoryRouteStore, firstStore);
     await h.command('show-browser', 'one', null, { purpose: 'setup' });
     assert.equal(first.shows[0].url, 'https://chromewebstore.google.com/detail/avantpro-ml/jdefnfmbnchmnjkcknaadaddgjbgephh');
     assert.equal(first.shows[0].manual, true, 'setup opens a standalone Chrome without Playwright');
@@ -1053,6 +1059,7 @@ async function testChromeProfileOwnershipAndSetup() {
     assert(first.closed, 'switching users closes the previous dedicated Chrome');
     const second = h.chromeSessions[1];
     assert.notEqual(second.config.profileDir, first.config.profileDir);
+    assert.equal(path.dirname(h.api.coordinator().categoryRouteStore.filePath), second.config.profileDir);
     await assert.rejects(h.command('show-browser', 'two', 'chrome-private-one'), /Pesquisa não encontrada/);
     assert.equal(second.shows.length, 0);
     assert.equal(h.windows.length, 0, 'Chrome mode does not instantiate an Electron collection window');

@@ -67,7 +67,7 @@ function restoredPage(value) {
 class LiveNavigationAudit {
     constructor({ snapshot, snapshotSha256, implementationSha256 = 'fixture', browser, state = null, wait = ms => new Promise(resolve => setTimeout(resolve, ms)),
         intervalMs = 1000, checkpointEvery = 25, priorityKeys = [], scopeKey = '', onlyKeys = [],
-        discoverOfficialCategoryRoute = null, persist = async () => {}, onProgress = () => {},
+        categoryRouteStore = null, discoverOfficialCategoryRoute = null, persist = async () => {}, onProgress = () => {},
         shouldCancel = async () => false, now = () => new Date().toISOString() }) {
         this.snapshot = snapshot;
         this.snapshotSha256 = snapshotSha256;
@@ -126,7 +126,7 @@ class LiveNavigationAudit {
             await this.progress('navigating');
             return browser.navigate(url, signal);
         };
-        this.runner = new PesquisaMercadoRunner({ browser: trackedBrowser, pageScripts, collector: {}, taxonomy: { load: async () => snapshot }, wait: async ms => {
+        this.runner = new PesquisaMercadoRunner({ browser: trackedBrowser, pageScripts, collector: {}, categoryRouteStore, taxonomy: { load: async () => snapshot }, wait: async ms => {
             await this.checkCancellation(); await wait(ms); await this.checkCancellation();
         },
             api: async () => { throw new Error('A public navigation audit cannot call the application backend.'); } });
@@ -134,6 +134,7 @@ class LiveNavigationAudit {
         this.runner.job = { id: 'public-navigation-audit', status: 'running', counters: {} };
         this.runner.checkpoint = { categories: [], scope: {}, officialTaxonomy: { children }, currentCategory: null };
         this.navigation = new OfficialCategoryNavigation({ ancestry: [], children, normalize: normalizeCategory,
+            readKnownGroup: (key, child, rejected) => this.runner.readKnownCategory(key, child, rejected),
             read: (url, purpose, key, expected) => this.read(url, purpose, key, expected) });
         this.runner.officialNavigation = this.navigation;
         const productionRead = this.runner.read.bind(this.runner);
@@ -141,6 +142,7 @@ class LiveNavigationAudit {
             if (this.currentNodeKey) {
                 const attempt = this.attempt(this.currentNodeKey);
                 if (purpose === 'category' && !this.discoveringRoute) attempt.finalDocumentReadAttempts += 1;
+                if (purpose === 'category-route' && !args[1] && args[0] === this.currentNodeKey) attempt.finalDocumentReadAttempts += 1;
                 if (purpose === 'category-transport') {
                     if (args[0] === this.currentNodeKey && !this.discoveringRoute) attempt.finalDocumentReadAttempts += 1;
                     else attempt.transportPageReadAttempts += 1;
@@ -183,6 +185,17 @@ class LiveNavigationAudit {
         };
         const recordLeafRoute = (key, url, source) => {
             if (this.leafAttempt?.key === key) Object.assign(this.leafAttempt, { url, source });
+        };
+        const productionKnownCategory = this.runner.readKnownCategory.bind(this.runner);
+        this.runner.readKnownCategory = async (key, expected, attemptedRoutes) => {
+            const observed = await productionKnownCategory(key, expected, attemptedRoutes);
+            if (!observed) return null;
+            if (expected) {
+                const page = safePage(observed), status = this.runner.categoryRouteStatus(observed.url);
+                this.recordOnlineContext(page, 'navigation', key, status, expected, observed);
+                this.observation(key, page, status);
+            } else recordLeafRoute(key, observed.url, 'verified_direct_category_listing');
+            return observed;
         };
         this.runner.officialCategoryUrl = async node => {
             // Published entries bypass the ancestor filters and may never enter the navigation cache.
@@ -449,7 +462,6 @@ class LiveNavigationAudit {
     async auditGroup(key) {
         // A /c/ marketing page is not a product listing. Resolve only the
         // destinations needed by the same official child-navigation workflow.
-        await this.navigation.resolve(key);
         let check = this.groupVerification(key);
         if (check.missingRouteKeys.length) {
             await this.navigation.resolve(check.missingRouteKeys[0]);
@@ -476,6 +488,7 @@ class LiveNavigationAudit {
         this.selectCategory(key);
         try {
             const observed = await this.runner.read(url, purpose, key, expected);
+            if (purpose === 'navigation') await this.runner.rememberCategoryRoute(key, url, observed, expected);
             const page = safePage(observed);
             const status = typeof this.browser.getNavigationStatus === 'function' ? this.browser.getNavigationStatus() : null;
             const statusCode = status && canonicalUrl(status.url) === canonicalUrl(page.url) ? status.statusCode : 0;
@@ -682,6 +695,7 @@ async function main(argv) {
     const snapshotSha256 = createHash('sha256').update(bytes).digest('hex');
     const implementation = createHash('sha256');
     for (const filename of ['../electron_app/main/modules/pesquisa-mercado-runner.js', '../electron_app/main/modules/pesquisa-mercado-category-navigation.js',
+        '../electron_app/main/modules/pesquisa-mercado-category-route-store.js', '../electron_app/main/modules/pesquisa-mercado-published-listings.js',
         '../electron_app/main/modules/pesquisa-mercado-category-discovery.js', '../electron_app/main/modules/pesquisa-mercado-category-item-scope.js',
         '../static/pesquisa-mercado/page-scripts.js', './audit_pesquisa_mercado_taxonomy_navigation.js', './pesquisa_mercado_live_navigation_audit.js']) {
         implementation.update(filename); implementation.update(await fs.readFile(path.resolve(__dirname, filename)));

@@ -18,6 +18,8 @@ const SALES_PENDING_WARNINGS = new Set(['Alguns anuncios ficaram sem dados sufic
 const clone = value => JSON.parse(JSON.stringify(value));
 const { OfficialCategoryNavigation, unsupportedCategoryAlias, CategoryNavigationError, categoryLabel, categoryBasePath, neutralCategoryPage,
     departmentPermalink, exactDirectoryUrl } = require('./pesquisa-mercado-category-navigation');
+const { validCategoryRouteUrl, originalCategoryLandingBase } = require('./pesquisa-mercado-category-route-store');
+const { publishedCategoryListing } = require('./pesquisa-mercado-published-listings');
 const { discoverCategoryRouteResult } = require('./pesquisa-mercado-category-discovery');
 const { scopeCategoryItems, validateCategoryItemScope, categoryItemScopeUrlAllowed } = require('./pesquisa-mercado-category-item-scope');
 const CATEGORY_FAILURES = Object.freeze({
@@ -522,6 +524,7 @@ class PesquisaMercadoRunner {
         this.scripts = options.pageScripts;
         this.collector = options.collector;
         this.taxonomy = options.taxonomy || null;
+        this.categoryRouteStore = options.categoryRouteStore || null;
         this.emit = options.emit || (() => {});
         this.wait = options.wait || (ms => new Promise(resolve => setTimeout(resolve, ms)));
         this.job = null;
@@ -949,7 +952,14 @@ class PesquisaMercadoRunner {
         throw last;
     }
 
-    navigationHubCandidate(page, requestedUrl, parentKey, expectedChild) {
+    requireTrendsChildId(page, parentKey, child) {
+        const siblings = this.checkpoint.officialTaxonomy?.children?.[parentKey];
+        const sameName = entry => entry.key !== child.key && categoryLabel(entry.nome) === categoryLabel(child.nome);
+        return !siblings?.some(entry => entry.key === child.key) || siblings.some(sameName)
+            || (page.categories || []).some(entry => /^MLB\d+$/i.test(entry?.key) && sameName(entry));
+    }
+
+    navigationHubCandidate(page, requestedUrl, parentKey, expectedChild, requireContext) {
         const hub = page && page.categoryNavigationHub, navigation = this.officialNavigation;
         const parent = navigation && navigation.records.get(parentKey), child = expectedChild && navigation && navigation.records.get(expectedChild.key);
         if (!hub || hub.version !== 1 || Object.keys(hub).some(key => !['version', 'url', 'canonical', 'heading'].includes(key))
@@ -966,8 +976,10 @@ class PesquisaMercadoRunner {
                 || actual.search || actual.hash || actual.href !== page.url || actual.href !== hub.url || actual.href !== hub.canonical
                 || !neutralCategoryPage(requestedUrl, actual.href)
                 || page.categoryContext && !neutralCategoryPage(page.categoryContext.baseUrl, actual.href)) return '';
-            const selected = navigation.choosePage(page, child, actual.href);
-            return JSON.stringify([actual.href, hub.heading, selected.key, selected.url]);
+            if (requireContext && (page.categoryContext?.key !== parentKey || page.readyState !== 'complete' || !validCategoryRouteUrl(actual.href)
+                || !exactDirectoryUrl(page.categoryContext.baseUrl, actual.href))) return null;
+            const selected = navigation.choosePage(page, child, actual.href, requireContext && this.requireTrendsChildId(page, parentKey, child));
+            return { signature: JSON.stringify([actual.href, hub.heading, page.categoryContext?.key, selected.key, selected.url]), selected };
         } catch (_error) { return ''; }
     }
 
@@ -980,12 +992,12 @@ class PesquisaMercadoRunner {
             this.check();
             await this.browser.navigate(url, this.controller.signal);
             let page;
-            const isCategory = purpose === 'category' || purpose === 'navigation' || purpose === 'category-transport';
+            const isCategory = purpose === 'category' || purpose === 'navigation' || purpose === 'category-transport' || purpose === 'category-route';
             const stage = purpose === 'first-page' || purpose === 'seller' ? 'seller' : purpose === 'item' ? 'product' : 'category';
             const isCategoryOptions = purpose === 'category-options';
             const recoveringTrendsLanding = purpose === 'navigation' && expectedChild?.preferTrendsChildren === true;
             const verifyDestination = isCategory || isOfficialIndex;
-            const categoryId = isOfficialIndex ? '' : ['navigation', 'category-transport'].includes(purpose) ? navigationCategoryId : this.officialCategoryId();
+            const categoryId = isOfficialIndex ? '' : ['navigation', 'category-transport', 'category-route'].includes(purpose) ? navigationCategoryId : this.officialCategoryId();
             const destination = categoryPageWaiter(isOfficialIndex || isCategory && this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category ? url : null,
                 verifyDestination ? categoryId : '');
             let mismatchSignature = '', mismatchReads = 0, hubSignature = '', hubReads = 0;
@@ -994,6 +1006,12 @@ class PesquisaMercadoRunner {
                 await this.wait(450);
                 this.check();
                 assertMarketplaceNavigation(this.browser, stage);
+                if (purpose === 'category-route') {
+                    const status = this.categoryRouteStatus(this.browser.getURL());
+                    if (status >= 400) throw Object.assign(new Error('A listagem da categoria nao esta disponivel.'), {
+                        status, waitingLogin: status === 401
+                    });
+                }
                 page = await this.browser.executeJavaScript(this.scripts.discoveryScript());
                 if (page.authRequired || page.avantAuthRequired) {
                     if (currentPageRequiresLogin(page, this.browser)) return { ...page, authRequired: true,
@@ -1046,11 +1064,7 @@ class PesquisaMercadoRunner {
                         && neutralCategoryPage(url, page.url) && neutralCategoryPage(context.baseUrl, page.url)
                         && neutralCategoryPage(browse.url, page.url)) {
                         try {
-                            const siblings = this.checkpoint.officialTaxonomy?.children?.[categoryId];
-                            const sameName = entry => entry.key !== child.key && categoryLabel(entry.nome) === categoryLabel(child.nome);
-                            const requireId = !siblings?.some(entry => entry.key === child.key) || siblings.some(sameName)
-                                || (page.categories || []).some(entry => /^MLB\d+$/i.test(entry?.key) && sameName(entry));
-                            selected = navigation.choosePage(page, child, page.url, requireId);
+                            selected = navigation.choosePage(page, child, page.url, this.requireTrendsChildId(page, categoryId, child));
                             signature = JSON.stringify([page.url, context.baseUrl, browse.url, selected.key, selected.url]);
                         } catch (_error) { /* Missing or ambiguous hrefs cannot become child navigation. */ }
                     }
@@ -1071,6 +1085,7 @@ class PesquisaMercadoRunner {
                     const target = allowedUrl(browse.url) && new URL(browse.url);
                     if (browse.key === categoryId && target && !target.search
                         && target.hostname === 'lista.mercadolivre.com.br' && /\/\*_NoIndex_True$/.test(target.pathname)
+                        && (purpose !== 'category-route' || validCategoryRouteUrl(browse.url) && neutralCategoryPage(url, browse.url))
                         && sameCategoryPage(url, page.url) && !page.categoryIdentityConflict) {
                         // The template is emitted by this category's Trends
                         // document. Its destination must then prove the same ID.
@@ -1078,11 +1093,17 @@ class PesquisaMercadoRunner {
                         return null;
                     }
                 }
-                if (purpose === 'navigation' && expectedChild) {
-                    const signature = !loading && this.navigationHubCandidate(page, url, navigationCategoryId, expectedChild);
+                if ((purpose === 'navigation' || purpose === 'category-route') && expectedChild) {
+                    const scopedHub = !loading && this.navigationHubCandidate(page, url, navigationCategoryId, expectedChild, true);
+                    const hub = scopedHub || purpose === 'navigation' && !loading && this.navigationHubCandidate(page, url, navigationCategoryId, expectedChild, false);
+                    const signature = hub && JSON.stringify([!!scopedHub, hub.signature]);
                     hubReads = signature && signature === hubSignature ? hubReads + 1 : signature ? 1 : 0;
                     hubSignature = signature || '';
-                    if (hubReads >= 2) return page;
+                    if (hubReads >= 2) {
+                        if (!scopedHub) return page;
+                        return { ...page, categories: [hub.selected], anuncios: [], listingUrl: '', nextUrl: '', hasNext: false,
+                            categoryTrendsChild: { parentKey: categoryId, key: expectedChild.key, url: hub.selected.url } };
+                    }
                 }
                 if (isCategory && (page.categoryBrowse || page.categoryTrends)) continue;
                 const childConflict = expectedChild && page.categoryConflictingRouteIds?.includes(expectedChild.key);
@@ -1095,7 +1116,7 @@ class PesquisaMercadoRunner {
                         && (childConflict || (page.categories || []).length && hasExpected)) return page;
                     continue;
                 }
-                const requiresDocumentIdentity = isCategory && (purpose === 'category-transport' || browseTransition
+                const requiresDocumentIdentity = isCategory && (purpose === 'category-transport' || purpose === 'category-route' || browseTransition
                     || this.trendsChildRoutes.get(categoryId) === url || /\/\*_NoIndex_True(?:_|$)/.test(new URL(url).pathname));
                 if (requiresDocumentIdentity && (!page.categoryDocumentIdentity || page.effectiveCategoryId !== categoryId)) {
                     destination.observe(page.url || this.browser.getURL(), false, loading, page.effectiveCategoryId, page.categoryIdentityConflict);
@@ -1107,7 +1128,7 @@ class PesquisaMercadoRunner {
                     await this.ensureAvantSession(this.controller.signal, avantState);
                     if (!attemptedBefore && avantState.attempted) { poll -= 1; continue; }
                 }
-                const ready = purpose === 'navigation' && expectedChild ? page.categoryNotFound || childConflict || !!page.categoryFilterMoreUrl || (page.categories || []).some(child =>
+                const ready = (purpose === 'navigation' || purpose === 'category-route') && expectedChild ? page.categoryNotFound || childConflict || !!page.categoryFilterMoreUrl || (page.categories || []).some(child =>
                     child.key === expectedChild.key || categoryLabel(child.nome) === categoryLabel(expectedChild.nome))
                     : purpose === 'seller' ? !!page.allAdsUrl
                     : purpose === 'item' ? !!sellerFromPage(page)
@@ -1166,7 +1187,7 @@ class PesquisaMercadoRunner {
             error.code = 'category_load_timeout';
             error.categoryPage = page;
             throw error;
-        }, this.controller.signal, this.browser, isOfficialIndex && expectedChild ? 1 : 3);
+        }, this.controller.signal, this.browser, purpose === 'category-route' || isOfficialIndex && expectedChild ? 1 : 3);
         // Keep the transition outside attempt(): a retry of the destination
         // must not reopen the Trends hub and repeat the transition.
         return pendingBrowseUrl ? this.read(pendingBrowseUrl, purpose, navigationCategoryId, expectedChild, true) : result;
@@ -1235,14 +1256,96 @@ class PesquisaMercadoRunner {
         await this.save();
     }
 
-    async officialCategoryUrl(category) {
+    categoryRouteStatus(url) {
+        const response = this.browser.getNavigationStatus?.();
+        return url && response && !response.didNotCommit && this.browser.getURL() === url && response.url === url
+            && Number.isInteger(response.statusCode) ? response.statusCode : 0;
+    }
+
+    provenCategoryRoute(key, requested, page) {
+        if (!page?.categoryDocumentIdentity || page.effectiveCategoryId !== key || page.categoryIdentityConflict
+            || page.categoryContext?.key && page.categoryContext.key !== key || page.categoryNotFound || page.categoryTrends
+            || page.categoryBrowse || page.categoryItemScope || page.authRequired || page.avantAuthRequired || page.readyState !== 'complete'
+            || this.browser.isLoading?.() || !validCategoryRouteUrl(requested) || !validCategoryRouteUrl(page.url)
+            || !neutralCategoryPage(requested, page.url)
+            || page.categoryContext?.baseUrl && !neutralCategoryPage(page.categoryContext.baseUrl, page.url)) return false;
+        const landingBase = originalCategoryLandingBase(requested) || originalCategoryLandingBase(page.url);
+        if (landingBase && (page.categoryContext?.key !== key || !exactDirectoryUrl(page.categoryContext.baseUrl, landingBase))) return false;
+        const status = this.categoryRouteStatus(page.url);
+        return status >= 200 && status < 300;
+    }
+
+    provenGroupRoute(key, requested, page, child) {
+        const edge = page?.categoryTrendsChild;
+        if (!child || !edge || !page.categoryTrends || !page.categoryNavigationHub || page.categoryBrowse || page.categoryDocumentIdentity
+            || page.categoryIdentityConflict || page.categoryNotFound || page.authRequired || page.avantAuthRequired
+            || page.categoryContext?.key !== key || edge.parentKey !== key || edge.key !== child.key
+            || !validCategoryRouteUrl(requested) || !validCategoryRouteUrl(page.url) || !neutralCategoryPage(requested, page.url)) return false;
+        const status = this.categoryRouteStatus(page.url);
+        return status >= 200 && status < 300;
+    }
+
+    async categoryRouteStorage(method, pathIds, url) {
+        if (!this.categoryRouteStore || !pathIds.length) return null;
+        try { return await this.categoryRouteStore[method](pathIds, url); }
+        catch (_error) { return null; } // Local availability does not change marketplace results.
+    }
+
+    async readKnownCategory(key, expectedChild = null, rejectedRoutes = null) {
+        const pathIds = this.officialNavigation?.pathIds?.(key);
+        if (!pathIds?.length) return null;
+        const cached = await this.categoryRouteStorage('get', pathIds);
+        const candidates = new Set([cached, publishedCategoryListing(pathIds)]);
+        for (const url of candidates) {
+            if (!validCategoryRouteUrl(url)) continue;
+            let page, error;
+            try { page = await this.read(url, 'category-route', key, expectedChild); }
+            catch (failure) {
+                if (failure.name === 'AbortError' || failure.waitingLogin || failure.avantSessionRejected
+                    || failure.code === 'research_browser_closed' || [401, 403, 429].includes(failure.status)) throw failure;
+                error = failure;
+            }
+            if (this.provenGroupRoute(key, url, page, expectedChild)
+                || this.provenCategoryRoute(key, url, page) && (expectedChild || page.empty || page.anuncios?.length)) {
+                if (cached !== page.url) await this.categoryRouteStorage('put', pathIds, page.url);
+                return page;
+            }
+            const observed = error?.categoryPage || page, failedStatus = this.categoryRouteStatus(observed?.url);
+            const stale = error?.status === 404 || failedStatus >= 200 && failedStatus < 300 && observed
+                && !observed.authRequired && !observed.avantAuthRequired && (observed.categoryNotFound || observed.categoryIdentityConflict
+                    || observed.categoryDocumentIdentity && observed.effectiveCategoryId && observed.effectiveCategoryId !== key
+                    || observed.categoryTrends && observed.categoryContext?.key && observed.categoryContext.key !== key);
+            if (cached === url && stale) await this.categoryRouteStorage('forget', pathIds, url);
+            const code = error?.status === 404 || observed?.categoryNotFound ? 'category_not_found' : stale ? 'category_scope_mismatch' : 'category_load_timeout';
+            rejectedRoutes?.set(url, new CategoryNavigationError(code, key));
+        }
+        return null;
+    }
+
+    async rememberCategoryRoute(key, url, page, child) {
+        if (this.categoryRouteStore && (this.provenCategoryRoute(key, url, page) || this.provenGroupRoute(key, url, page, child))) {
+            const pathIds = this.officialNavigation?.pathIds?.(key);
+            if (pathIds?.length) await this.categoryRouteStorage('put', pathIds, page.url);
+        }
+    }
+
+    prepareOfficialNavigation() {
         const tree = this.checkpoint.officialTaxonomy;
         if (!this.officialNavigation && tree && tree.ancestry) {
             this.officialNavigation = new OfficialCategoryNavigation({
                 ancestry: tree.ancestry, children: tree.children,
-                normalize: normalizeCategory, read: (url, purpose, key, expected) => this.read(url, purpose, key, expected)
+                normalize: normalizeCategory, readKnownGroup: (key, child, rejected) => this.readKnownCategory(key, child, rejected),
+                read: async (url, purpose, key, expected) => {
+                    const page = await this.read(url, purpose, key, expected);
+                    if (purpose === 'navigation') await this.rememberCategoryRoute(key, url, page, expected);
+                    return page;
+                }
             });
         }
+    }
+
+    async officialCategoryUrl(category) {
+        this.prepareOfficialNavigation();
         if (!unsupportedCategoryAlias(category.url)) return category.url;
         if (!this.officialNavigation) throw new Error('O caminho oficial da categoria nao esta disponivel.');
         return this.officialNavigation.resolve(category.key);
@@ -1379,7 +1482,11 @@ class PesquisaMercadoRunner {
             if (children.length) return { url: category.url, categories: children, hasChildren: true };
             let url = '';
             let landingAttempted = false;
-            const attemptedRoutes = new Set();
+            this.prepareOfficialNavigation();
+            const rejectedRoutes = new Map();
+            const knownPage = await this.readKnownCategory(category.key, null, rejectedRoutes);
+            if (knownPage) return { ...knownPage, categories: [], hasChildren: false };
+            const attemptedRoutes = new Set(rejectedRoutes.keys());
             const ancestorBudget = { remaining: 10 };
             const navigationInterrupted = error => error.name === 'AbortError' || error.waitingLogin || [401, 403, 429].includes(error.status);
             const recoverable = error => !navigationInterrupted(error)
@@ -1387,6 +1494,11 @@ class PesquisaMercadoRunner {
             const canDiscover = error => !navigationInterrupted(error) && (recoverable(error)
                 || ['category_link_missing', 'category_filters_unavailable'].includes(error.code));
             const validateRoutePage = (route, page) => {
+                const marked = [route, page.url].some(value => value?.includes('?') && allowedUrl(value)
+                    && new URL(value).searchParams.has('original_category_landing'));
+                if (marked && !this.provenCategoryRoute(category.key, route, page)) {
+                    throw new CategoryNavigationError('category_scope_mismatch', category.key);
+                }
                 const renamedCategoryBase = page.categoryDocumentIdentity && !page.categoryIdentityConflict
                     && page.effectiveCategoryId === category.key && page.categoryContext?.key === category.key
                     && neutralCategoryPage(page.categoryContext.baseUrl, page.url);
@@ -1399,6 +1511,7 @@ class PesquisaMercadoRunner {
                 return page;
             };
             const readRoute = async (route, strict = false) => {
+                if (rejectedRoutes.has(route)) throw rejectedRoutes.get(route);
                 attemptedRoutes.add(route);
                 try {
                     const page = await this.read(route, strict ? 'category-transport' : 'category', strict ? category.key : '');
@@ -1447,11 +1560,12 @@ class PesquisaMercadoRunner {
             let page;
             try {
                 const permalink = publishedLeafPermalink(this.checkpoint, category.key);
-                const entry = permalink && unsupportedCategoryAlias(category.url) ? { ...category, url: permalink } : category;
+                const entry = permalink && !attemptedRoutes.has(permalink) && unsupportedCategoryAlias(category.url) ? { ...category, url: permalink } : category;
                 url = await this.officialCategoryUrl(entry);
                 const fromDepartment = this.officialNavigation?.departmentUrl && unsupportedCategoryAlias(category.url);
                 const recoveredAncestor = this.ancestorRecovery.size > 0 && this.findNavigationAncestor(category.key, key => this.ancestorRecovery.get(key));
                 page = await readRoute(url, url === permalink || fromDepartment || recoveredAncestor);
+                if (!recoveredAncestor && (page.empty || page.anuncios?.length)) await this.rememberCategoryRoute(category.key, url, page);
             }
             catch (error) {
                 if (!canDiscover(error)) throw error;

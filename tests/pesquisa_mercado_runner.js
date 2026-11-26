@@ -536,6 +536,7 @@ async function officialTaxonomyScope() {
 }
 
 async function nauticalOfficialNavigation() {
+    const publishedDepartment = 'https://lista.mercadolivre.com.br/acessorios-veiculos/';
     const prefix = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
     const node = (key, nome, url = `https://lista.mercadolivre.com.br/_CatId_${key}`) => ({key, nome, url});
     const vehicles = node('MLB5672','Acessórios para Veículos', base + '/c/acessorios-para-veiculos');
@@ -559,7 +560,7 @@ async function nauticalOfficialNavigation() {
     const h=make(); h.runner.taxonomy=taxonomy();
     await h.runner.start(scope); await h.runner.task;
     assert.equal(h.saved().status,'completed');
-    assert.deepEqual(h.visited,[vehicles.url,prefix,branchUrl,leafUrl]);
+    assert.deepEqual(h.visited,[publishedDepartment,vehicles.url,prefix,branchUrl,leafUrl]);
     assert(!h.visited.some(url=>/_CatId_/.test(url)), 'unresolved IDs must never become browser navigation');
     assert.deepEqual(h.saved().checkpoint.officialTaxonomy.ancestry,[vehicles,scope]);
     assert.equal(h.saved().counters.pages,1,'ancestry navigation is not counted as seller discovery');
@@ -599,7 +600,7 @@ async function nauticalOfficialNavigation() {
     assert.equal(publication.anuncios[0].id, listing.id);
     assert.equal(publication.anuncios[0].rankable, true, 'the collected advertisement remains eligible for ranking');
     assert.equal(publication.anuncios[0].seller_id, '111');
-    assert.deepEqual(full.visited, [vehicles.url, prefix, branchUrl, leafUrl, seedUrl,
+    assert.deepEqual(full.visited, [publishedDepartment, vehicles.url, prefix, branchUrl, leafUrl, seedUrl,
         `${base}/perfil/111`, `${base}/anuncios/111`, seedUrl, `${base}/anuncios/111`]);
     assert(!full.visited.some(url => /_CatId_/.test(url)), 'full seller collection never visits an unresolved category alias');
     const fixturePath = require('node:path').resolve(__dirname, '../scripts/pesquisa_mercado_ranking_acceptance.py');
@@ -624,7 +625,7 @@ async function nauticalOfficialNavigation() {
         await denied.runner.start(scope); await denied.runner.task;
         assert.equal(denied.saved().status, 'paused');
         assert.equal(denied.saved().checkpoint.marketplaceAccess.status, statusCode);
-        assert.deepEqual(denied.visited, [vehicles.url], 'a blocked department must not trigger another route');
+        assert.deepEqual(denied.visited, [publishedDepartment], 'a blocked department must not trigger another route');
         assert.equal(denied.vendors.size, 0);
         assert.equal(denied.saved().counters.ads, 0);
     }
@@ -803,6 +804,7 @@ async function gateAutomationParts() {
 
 async function officialDirectoryAndRescueSettles() {
     const index = `${base}/categorias`;
+    const publishedDepartment = 'https://lista.mercadolivre.com.br/acessorios-veiculos/';
     const native = 'https://lista.mercadolivre.com.br/acessorios-veiculos/acessorios-nauticos/';
     const vehicles = { key: 'MLB5672', nome: 'Acessorios para Veiculos', url: 'https://lista.mercadolivre.com.br/_CatId_MLB5672' };
     const scope = { key: 'MLB6005', nome: 'Acessorios Nauticos', url: 'https://lista.mercadolivre.com.br/_CatId_6005' };
@@ -826,7 +828,7 @@ async function officialDirectoryAndRescueSettles() {
         await h.runner.start(scope); await h.runner.task;
         assert.equal(h.saved().status, 'completed', description + ' must settle to the official directory');
         assert.equal(indexReads, 3, description + ' must precede two stable ready reads');
-        assert.deepEqual(h.visited, [index, native]);
+        assert.deepEqual(h.visited, [publishedDepartment, index, native]);
         assert.equal(h.saved().counters.pages, 1, 'directory settling is not a discovery page');
         assert.deepEqual(h.saved().checkpoint.scope.category, scope);
     }
@@ -836,7 +838,7 @@ async function officialDirectoryAndRescueSettles() {
     wrongDestination.runner.taxonomy = taxonomy();
     await wrongDestination.runner.start(scope); await wrongDestination.runner.task;
     assert.equal(wrongDestination.saved().status, 'failed', 'a directory tree from another destination is never consumed');
-    assert.deepEqual(wrongDestination.visited, [index, base + '/'],
+    assert.deepEqual(wrongDestination.visited, [publishedDepartment, index, base + '/'],
         'without a department permalink, independent discovery can use the public search form but never links from the wrong document');
     assert.equal(wrongDestination.saved().counters.pages, 0);
     assert.deepEqual(wrongDestination.saved().checkpoint.scope.category, scope);
