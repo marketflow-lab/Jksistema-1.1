@@ -42,6 +42,20 @@ def configure_shared_sync_user_pairs_runtime(runtime_module=None, peer_globals: 
     return runtime
 
 
+def _shared_sync_known_keys_for_user_push(
+    source_sessao: dict, link_id: str, scope: str, bundle_id: str, *, reenviar_se_ausente: bool = True
+) -> Optional[set[str]]:
+    if scope == "lojas_integracoes":
+        return None
+    known_keys = _shared_sync_user_share_known_keys(
+        source_sessao.get("client_id"), source_sessao.get("username") or "", link_id, scope
+    )
+    if reenviar_se_ausente and known_keys and _shared_sync_remote_meta_by_id(bundle_id, strict=True) is None:
+        # A publicacao pode ter expirado antes de o destinatario recebe-la.
+        return set()
+    return known_keys
+
+
 def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, machine_id: str = "", link_id: str = "", invite_id: str = "") -> dict:
     item_ref = {
         "source_client_id": source_sessao.get("client_id"),
@@ -72,12 +86,7 @@ def _shared_sync_push_pair_scope(source_sessao: dict, target: dict, scope: str, 
         target.get("username"),
         scope,
     )
-    known_keys = None if scope == "lojas_integracoes" else _shared_sync_user_share_known_keys(
-        source_sessao.get("client_id"),
-        source_sessao.get("username") or "",
-        link_ref["id"],
-        scope,
-    )
+    known_keys = _shared_sync_known_keys_for_user_push(source_sessao, link_ref["id"], scope, bundle_id)
     result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
         scope,
@@ -525,11 +534,9 @@ def _shared_sync_push_link_scope(
         raise HTTPException(status_code=400, detail="Lojas e integracoes nao podem voltar do cliente compartilhado para o cliente de origem.")
     from_client, from_username, to_client, to_username = _shared_sync_link_direction_parts(link, direction_key)
     bundle_id = _shared_sync_link_bundle_id_for_direction(link, scope, direction_key)
-    known_keys = None if scope == "lojas_integracoes" else _shared_sync_user_share_known_keys(
-        source_sessao.get("client_id"),
-        source_sessao.get("username") or "",
-        link.get("id"),
-        scope,
+    known_keys = _shared_sync_known_keys_for_user_push(
+        source_sessao, link.get("id"), scope, bundle_id,
+        reenviar_se_ausente=not skip_if_remote_hash_matches,
     )
     result = _shared_sync_push_scope(
         source_sessao.get("client_id"),
