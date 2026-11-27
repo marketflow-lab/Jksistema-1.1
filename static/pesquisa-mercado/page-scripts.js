@@ -1000,6 +1000,7 @@
         }
         // Item pages are used for discovery and optional explicit detail collection.
         let avantDetailDataRead = false;
+        let avantDetailMissingFields = null;
         if (!anuncios.length && isProduct(url) && document.querySelector('.ui-pdp-title, [data-testid="product-title"]')) {
             const title = document.querySelector('.ui-pdp-title, [data-testid="product-title"]');
             const belongsToOffer = node => detailNodeBelongs(node, currentItemId, url);
@@ -1013,6 +1014,15 @@
             const measuredSales = Number.isFinite(measured.total) || Number.isFinite(measured.estimated) || !!measured.lowerBound;
             avantDetailDataRead = !proof.conflict && !measured.identityConflict
                 && measuredSales && !!measured.created && Number.isFinite(measuredMonthly);
+            // Report what is visible in this read, before merging values from earlier reads.
+            if (options?.detail && !avantDetailIdentityConflict && !headerConflict && !primaryIdentity.conflict
+                && !proof.conflict && !measured.identityConflict
+                && (measured.rows > 0 || modernRootState.root && belongsToOffer(modernRootState.root))) {
+                avantDetailMissingFields = [];
+                if (!Number.isSafeInteger(measured.total) && !Number.isSafeInteger(measured.estimated) && !measured.lowerBound) avantDetailMissingFields.push('vendas');
+                if (!measured.created) avantDetailMissingFields.push('data_criacao');
+                if (!Number.isFinite(measuredMonthly)) avantDetailMissingFields.push('media_mensal');
+            }
             const metrics = avantDetailDataRead ? measured : combineMetrics(structuredCache[detailKey], measured);
             if (proof.conflict || metrics.identityConflict) delete structuredCache[detailKey];
             else if (metrics.rows) structuredCache[detailKey] = metrics;
@@ -1230,7 +1240,7 @@
             categoryTrends, categoryNavigationHub, categoryConflictingRouteIds: [...categoryConflictingRouteIds],
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired, avantAuthRequired, authReason, avantDetailLoading,
-            ...(options?.detail ? { avantDetailDataRead, avantDetailIdentityConflict } : {}),
+            ...(options?.detail ? { avantDetailDataRead, avantDetailIdentityConflict, avantDetailMissingFields } : {}),
             ...(avantDetailLoading && isProduct(url) ? { avantLoadingOffer: { id: currentItemId, url } } : {}),
             hasChildren: categories.length > 0, categoryNotFound,
             categoryFilterPresent: groups.some(group => groupKind(group) === 'category'),

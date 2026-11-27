@@ -2481,27 +2481,132 @@ async function nextDetailBatchWaitsForEveryOpenPanel() {
     }
 }
 
-async function strictDetailNavigationFailureKeepsTheCurrentOffer() {
-    const ids = ['MLB1000000450', 'MLB1000000451'];
-    const h = harness(avantFlowPages(), async () => ({ anuncios: ids.map(id => salesListing(id)), incomplete: true }));
-    const attempted = [], browser = h.runner.browser, navigate = browser.navigate.bind(browser);
-    browser.navigate = async (url, signal) => {
-        if (url === salesListing(ids[0]).url) throw new Error('Navigation failed before the first Avant snapshot');
-        return navigate(url, signal);
-    };
-    withDetailCollector(h, async options => {
-        attempted.push(options.expectedItem.id);
-        await beginObservedDetail(options);
-        return { reason: 'complete', avantDataLoaded: true, anuncios: [salesListing(options.expectedItem.id,
-            { vendas: 20, media_mensal: 2, data_criacao: '01/02/2025', avant_metrics_version: 3, rankable: true })] };
-    });
-    h.runner.collector.hasAvantDetailData = require('../static/pesquisa-mercado/shared-collector').hasAvantDetailData;
-    await h.runner.start(); await h.runner.task;
-    assert(attempted.length > 0);
-    assert.deepEqual([...new Set(attempted)], [ids[0]], 'a failed first navigation must not dispatch the next offer');
-    assert.equal(h.saved().status, 'paused');
-    assert.equal(h.saved().checkpoint.sellerCollection.index, 0, 'the failed navigation retains the current offer');
-    assert.equal(h.vendors.size, 0);
+async function automaticDetailRetryKeepsTheOtherOffersOpen() {
+    const ids = Array.from({ length: 9 }, (_, index) => 'MLB' + (1000000450 + index));
+    const firstId = ids[0], siblingId = ids[7], nextId = ids[8];
+    const listings = ids.map(id => salesListing(id, { titulo: 'Anúncio ' + id }));
+    const missingFields = ['data_criacao', 'media_mensal'];
+    const clock = require('node:test').mock.timers;
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+
+    for (const outcome of ['spinner', 'navigation', 'panel', 'cancel']) {
+        // Exercise the production two-minute default as well as a shorter test interval.
+        const interval = outcome === 'spinner' ? 120000 : 400;
+        clock.enable({ apis: ['Date', 'setTimeout'], now: 1700000000000 });
+        const h = harness(avantFlowPages(), async () => ({ anuncios: copy(listings), incomplete: true }),
+            outcome === 'spinner' ? {} : { detailRetryIntervalMs: interval });
+        const browsers = parallelDetailBrowsers(h), calls = [];
+        const callsFor = id => calls.filter(call => call.id === id);
+        const detail = id => h.runner.snapshot().job.detailConsultations?.find(item => item.adId === id);
+        const failPanel = Promise.withResolvers(), confirmSibling = Promise.withResolvers();
+        const finishSibling = Promise.withResolvers(), finishRetry = Promise.withResolvers();
+
+        h.runner.browser.getNavigationStatus = () => ['navigation', 'cancel'].includes(outcome)
+            && callsFor(firstId).length === 1 && h.runner.browser.getURL() === listings[0].url
+            ? { url: listings[0].url, statusCode: 404 } : null;
+        withDetailCollector(h, async options => {
+            const id = options.expectedItem.id;
+            calls.push({ id, browser: options.browser, at: Date.now() });
+            await beginObservedDetail(options);
+            const item = salesListing(id, { vendas: 20, media_mensal: 2, data_criacao: '01/02/2025',
+                avant_metrics_version: 3, rankable: true });
+            if (id === firstId && callsFor(id).length === 1) {
+                if (outcome === 'panel') {
+                    await options.onPartial({ reason: 'partial', avantDataPending: true,
+                        avantDetailProgress: { phase: 'missing_fields', missingFields }, anuncios: [salesListing(id)] });
+                    await failPanel.promise;
+                    throw new Error('Temporary fixture error reading the Avant panel');
+                }
+                if (outcome === 'spinner') {
+                    await options.onPartial({ reason: 'partial', avantDataPending: true, avantPanelLoading: true,
+                        avantDetailProgress: { phase: 'loading', missingFields }, anuncios: [salesListing(id)] });
+                    return waitForDetailAbort(options.signal);
+                }
+            }
+            if (id === siblingId) {
+                await options.onPartial({ reason: 'partial', avantDataPending: true,
+                    avantDetailProgress: { phase: 'loading', missingFields }, anuncios: [salesListing(id)] });
+                await confirmSibling.promise;
+                await options.onPartial({ reason: 'partial', avantDataPending: false,
+                    avantDetailProgress: { phase: 'confirming', missingFields: [] }, anuncios: [item] });
+                await finishSibling.promise;
+            }
+            if (id === firstId && callsFor(id).length === 2) await finishRetry.promise;
+            return { reason: 'complete', avantDataLoaded: true, anuncios: [item] };
+        });
+        h.runner.collector.hasAvantDetailData = require('../static/pesquisa-mercado/shared-collector').hasAvantDetailData;
+        try {
+            await h.runner.start();
+            await settle();
+            const original = detail(firstId), sibling = detail(siblingId);
+            assert.equal(original.title, listings[0].titulo);
+            assert(Number.isSafeInteger(original.key));
+            assert.notEqual(original.key, sibling.key);
+            assert.deepEqual([original.attempt, original.startedAt, original.retryAt], [1, Date.now(), Date.now() + interval]);
+            assert.deepEqual(sibling.missingFields, missingFields);
+            assert(!h.saved().checkpoint.detailConsultations, 'live observations stay out of the checkpoint');
+            clock.tick(interval / 2);
+            failPanel.resolve();
+            await settle();
+            const waiting = detail(firstId);
+            if (outcome === 'spinner') assert.equal(waiting.phase, 'loading');
+            else {
+                assert.equal(waiting.phase, 'failed');
+                assert.match(waiting.error, outcome === 'panel' ? /confirmar a leitura/ : /abrir o anúncio/);
+                if (outcome === 'panel') assert.deepEqual(waiting.missingFields, missingFields);
+            }
+            assert.equal(waiting.retryAt, original.retryAt, 'an early error waits for the original deadline');
+            clock.tick(interval / 2 - 1);
+            confirmSibling.resolve();
+            await settle();
+            assert.equal(detail(siblingId).phase, 'confirming');
+            assert.equal(detail(siblingId).retryAt, null, 'confirmed data is given time to settle');
+            assert.equal(callsFor(firstId).length, 1, 'no retry before the two-minute boundary');
+            assert.equal(callsFor(nextId).length, 0);
+
+            if (outcome === 'cancel') {
+                await h.runner.stop('cancelled');
+                clock.tick(interval * 2);
+                await settle();
+                assert.equal(callsFor(firstId).length, 1);
+                assert.equal(callsFor(nextId).length, 0);
+                assert.equal(h.runner.snapshot().job.detailConsultations, undefined);
+                assert.equal(h.vendors.size, 0);
+            } else {
+                clock.tick(1);
+                await settle();
+                const retried = detail(firstId);
+                assert.equal(callsFor(firstId).length, 2, outcome + ' retries at the deadline');
+                assert.deepEqual(callsFor(firstId).map(call => call.browser), [browsers[0], browsers[0]]);
+                assert.equal(callsFor(firstId)[1].at, original.retryAt);
+                assert.deepEqual([retried.key, retried.startedAt, retried.attempt, retried.retryAt],
+                    [original.key, original.startedAt, 2, original.retryAt + interval]);
+                assert.deepEqual([detail(siblingId).key, detail(siblingId).attempt, detail(siblingId).retryAt],
+                    [sibling.key, 1, null]);
+                assert(browsers.slice(1).every(browser => browser.stops === 0 && browser.finishes.length === 0));
+                finishRetry.resolve();
+                await settle();
+                assert.deepEqual(calls.slice(0, 8).map(call => call.id).sort(), ids.slice(0, 8));
+                assert.equal(calls.length, 9, 'only the pending offer navigated again');
+                assert.equal(callsFor(nextId).length, 0, 'the following batch waits for the confirming sibling');
+                assert.equal(h.vendors.size, 0);
+                finishSibling.resolve();
+                await h.runner.task;
+                assert.equal(calls.at(-1).id, nextId);
+                assert.equal(calls.length, 10);
+                assert.equal(h.vendors.get('id:111').anuncios.filter(item => item.rankable).length, 9);
+            }
+            assert.equal(h.saved().status, outcome === 'cancel' ? 'cancelled' : 'completed');
+        } finally {
+            failPanel.resolve();
+            confirmSibling.resolve();
+            finishSibling.resolve();
+            finishRetry.resolve();
+            if (h.runner.task) await h.runner.stop('cancelled');
+            await h.runner.task;
+            clock.reset();
+        }
+    }
 }
 
 async function confirmedLowerBoundReplacesAnEarlierExactCount() {
@@ -3066,7 +3171,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
 
 (async () => {
     await nextDetailBatchWaitsForEveryOpenPanel();
-    await strictDetailNavigationFailureKeepsTheCurrentOffer();
+    await automaticDetailRetryKeepsTheOtherOffersOpen();
     await confirmedLowerBoundReplacesAnEarlierExactCount();
     await manualChromeOpenPausesWithoutLosingScope();
     await catalogDetailsAreConsultedOnceWithoutInventingRank();

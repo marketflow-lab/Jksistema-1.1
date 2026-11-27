@@ -515,6 +515,23 @@ async function run() {
         assert.equal(modern.data_criacao, '12/03/2025');
         assert.equal(modern.rankable, true);
         assert.equal(modern.avant_seller_id, '', 'vendedor nao e fabricado a partir da URL da pagina');
+        const progressSnapshot = () => page.evaluate(scripts.snapshotScript({ seller, detail: true,
+            expectedItem: { id: modernItemId, url: modernUrl } }));
+        assert.deepEqual((await progressSnapshot()).avantDetailMissingFields, []);
+        for (const [body, missing] of [
+            [pdpRoot({ total: null, estimated: null, created: '', rhythm: null, monthly: null }),
+                ['vendas', 'data_criacao', 'media_mensal']],
+            [pdpRoot({ total: '+25', estimated: null, monthly: '0/Mês', created: '' }), ['data_criacao']],
+            [pdpRoot({ total: null, estimated: 0, monthly: '', created: 'mar/2024 (aprox.)' }), ['media_mensal']],
+            [avant(12), []],
+            [pdpRoot({ attrs: 'data-seller-id="999999"' }), null],
+            ['<div class="recommendation">' + pdpRoot() + '</div>', null],
+            ['<button>Tentar novamente</button>', null]
+        ]) {
+            // Keep the same window and cached metrics as the complete panel above.
+            await page.evaluate(markup => { document.querySelector('main').innerHTML = markup; }, header + body);
+            assert.deepEqual((await progressSnapshot()).avantDetailMissingFields, missing);
+        }
         for (const [month, displayedDate, normalizedDate] of [
             [5, 'mar/2024 (aprox.)', 'mar/2024 (aprox.)'],
             [8, 'Março de 2025', 'mar/2025 (aprox.)']

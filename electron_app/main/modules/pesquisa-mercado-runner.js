@@ -1,12 +1,21 @@
 'use strict';
 
+const timers = require('node:timers/promises');
+
 // A page only observes this coordinator. Its lifetime belongs to Electron main.
 const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
+const AVANT_DETAIL_RETRY_MS = 2 * 60 * 1000;
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
 const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed', 'legacy_seller_not_confirmed']);
 const AVANT_DETAIL_UNCONFIRMED = 'avant_detail_unconfirmed';
+const AVANT_DETAIL_FAILURES = Object.freeze({
+    navigation_failed: 'Não foi possível abrir o anúncio.',
+    page_changed: 'A página mudou durante a consulta do anúncio.',
+    offer_identity_mismatch: 'A página ou o painel corresponde a outro anúncio.',
+    avant_detail_timeout: 'O prazo de espera pelos dados do Avant Pro terminou.'
+});
 const AVANT_PANEL_LOADING_MESSAGE = 'O painel do Avant Pro ainda estava carregando quando a consulta terminou.';
 const AVANT_METRIC_FIELDS = [
     'vendas', 'vendasFonte', 'vendas_fonte', 'vendas_rotulo', 'vendas_exibicao', 'vendas_estimadas',
@@ -521,6 +530,7 @@ class PesquisaMercadoRunner {
         this.browser = options.browser;
         this.createDetailBrowser = options.createDetailBrowser;
         this.detailBrowsers = [this.browser];
+        this.detailConsultations = [];
         this.loginBrowser = null;
         this.scripts = options.pageScripts;
         this.collector = options.collector;
@@ -546,6 +556,7 @@ class PesquisaMercadoRunner {
         this.namesSellerTimeoutMs = Math.max(1, options.namesSellerTimeoutMs || 18000);
         this.detailTimeoutMs = Math.max(1, options.detailTimeoutMs || 30000);
         this.detailNavigationTimeoutMs = Math.max(1, options.detailNavigationTimeoutMs || 35000);
+        this.detailRetryIntervalMs = Math.max(1, options.detailRetryIntervalMs || AVANT_DETAIL_RETRY_MS);
         this.detailRetryDelaysMs = (Array.isArray(options.detailRetryDelaysMs) ? options.detailRetryDelaysMs : DETAIL_RETRY_DELAYS_MS)
             .slice(0, 2).map(ms => Math.max(0, Math.min(60000, Number(ms) || 0)));
     }
@@ -566,8 +577,14 @@ class PesquisaMercadoRunner {
         });
         const recovery = this.checkpoint && this.checkpoint.recovery;
         const access = marketplacePause(this.job, this.checkpoint);
+        const detailConsultations = status === 'running' && this.detailConsultations.length
+            ? this.detailConsultations.map(({ key, adId, title, startedAt, phase, missingFields, error, retryAt, attempt }) =>
+                ({ key, adId, title, startedAt, phase, missingFields, attempt,
+                    retryAt: phase === 'confirming' ? null : retryAt, ...(error ? { error } : {}) }))
+            : null;
         return { job: { id, status, revision, counters, message, created_at, updated_at, generation: this.job.generation || 0,
             ...(access ? { marketplaceAccess: access } : {}),
+            ...(detailConsultations ? { detailConsultations } : {}),
             scopeCategory: this.checkpoint && this.checkpoint.scope && this.checkpoint.scope.category || null,
             scopePath: this.checkpoint && this.checkpoint.officialTaxonomy && this.checkpoint.officialTaxonomy.ancestry || [],
             currentCategory: this.checkpoint && this.checkpoint.currentCategory || null,
@@ -1783,22 +1800,23 @@ class PesquisaMercadoRunner {
         return this.detailBrowsers.slice(0, count);
     }
 
-    async collectSellerDetail(seller, items, index, browser, signal, onLoadingChange) {
+    async collectSellerDetail(seller, items, index, browser, signal, retryAt, onLoadingChange) {
         this.check(signal);
         const item = items[index];
         const detailUrl = canonicalUrl(item.url);
         const requiresAvantData = typeof this.collector.hasAvantDetailData === 'function';
-        const unconfirmedDetail = () => Object.assign(
-            new Error('O Avant Pro não confirmou os dados deste anúncio. Confira o anúncio no Chrome da pesquisa e clique em Retomar.'),
-            { code: AVANT_DETAIL_UNCONFIRMED });
+        const unconfirmedDetail = (reason, cause) => Object.assign(
+            new Error(Object.hasOwn(AVANT_DETAIL_FAILURES, reason) ? AVANT_DETAIL_FAILURES[reason]
+                : 'O JK não conseguiu confirmar a leitura do Avant Pro neste anúncio.'),
+            { code: AVANT_DETAIL_UNCONFIRMED, resetBrowser: cause?.code === 'research_browser_closed' });
         const matchesItem = candidate => !!candidate && (item.id
             ? String(candidate.id || '').replace(/-/g, '').toUpperCase() === String(item.id).replace(/-/g, '').toUpperCase()
             : canonicalUrl(candidate.url) === detailUrl);
         const controller = new AbortController();
         const abort = () => controller.abort();
         signal.addEventListener('abort', abort, { once: true });
-        let timer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
-        let panelLoading = false, waitedForData = false;
+        let timer, retryTimer, latestPartial = null, collectionTimedOut = false, active = true, usedPartial = false;
+        let panelLoading = false, waitedForData = false, navigationCompleted = false, retryExpired = false;
         let releaseRecommendationMedia;
         const restoreRecommendationMedia = () => {
             const release = releaseRecommendationMedia;
@@ -1814,17 +1832,34 @@ class PesquisaMercadoRunner {
                 if (typeof browser.stop === 'function') browser.stop();
             }, milliseconds);
         };
+        const armRetryTimer = () => {
+            if (!requiresAvantData || retryTimer || controller.signal.aborted) return;
+            retryTimer = setTimeout(() => {
+                retryExpired = true;
+                controller.abort();
+            }, Math.max(0, retryAt - Date.now()));
+        };
         let waitingForPanel = false;
-        const setWaitingForPanel = waiting => {
-            if (waitingForPanel === waiting) return;
-            waitingForPanel = waiting;
-            if (waiting) clearTimeout(timer);
-            else armTimeout(this.detailTimeoutMs, 'collection');
-            onLoadingChange?.(waiting);
+        const setWaitingForPanel = (waiting, observation) => {
+            if (!active) return;
+            if (observation?.phase === 'confirming') {
+                // The three fields arrived in time. Allow the normal settling period.
+                clearTimeout(retryTimer);
+                retryTimer = null;
+            } else if (observation) {
+                armRetryTimer();
+            }
+            if (waitingForPanel !== waiting) {
+                waitingForPanel = waiting;
+                if (waiting) clearTimeout(timer);
+                else armTimeout(this.detailTimeoutMs, 'collection');
+            }
+            onLoadingChange?.(waiting, observation);
         };
         // Legacy collectors retain a bounded call. Current collectors give
         // navigation and the loaded Avant panel separate time budgets.
         armTimeout(this.detailTimeoutMs, 'collection');
+        armRetryTimer();
         try {
             let detail;
             try {
@@ -1842,7 +1877,8 @@ class PesquisaMercadoRunner {
                         waitedForData ||= stillMissing;
                         setWaitingForPanel(!invalid && partial.reason === 'partial' && (stillMissing
                             || partial.avantPanelLoading === true && Array.isArray(partial.anuncios) && (partial.anuncios.some(matchesItem)
-                                || !partial.anuncios.length && matchesItem(partial.avantLoadingOffer))));
+                                || !partial.anuncios.length && matchesItem(partial.avantLoadingOffer))),
+                            !invalid && partial.reason === 'partial' ? partial.avantDetailProgress : undefined);
                         return !invalid;
                     };
                     try {
@@ -1855,6 +1891,7 @@ class PesquisaMercadoRunner {
                             onNavigationStart: () => {
                                 if (!alive()) return;
                                 latestPartial = null;
+                                navigationCompleted = false;
                                 restoreRecommendationMedia();
                                 releaseRecommendationMedia = browser.deferRecommendationMedia?.(detailUrl, item.id || '');
                                 armTimeout(this.detailNavigationTimeoutMs, 'navigation');
@@ -1862,6 +1899,13 @@ class PesquisaMercadoRunner {
                             onNavigationComplete: () => {
                                 if (!alive()) return;
                                 assertMarketplaceNavigation(browser, 'product');
+                                const response = browser.getNavigationStatus?.();
+                                if (requiresAvantData && response?.statusCode >= 400 && response.statusCode < 600
+                                    && canonicalUrl(response.url) === canonicalUrl(browser.getURL())) {
+                                    if (response.statusCode === 401) throw Object.assign(new Error('O Mercado Livre pediu login.'), { status: 401 });
+                                    throw unconfirmedDetail('navigation_failed');
+                                }
+                                navigationCompleted = true;
                                 armTimeout(this.detailTimeoutMs, 'collection');
                             },
                             onPartial: capture
@@ -1870,25 +1914,26 @@ class PesquisaMercadoRunner {
                             || requiresAvantData && (observed?.avantDataLoaded !== true || !observed.anuncios?.some(matchesItem));
                         if (noConfirmation && !observed?.authRequired && !observed?.avantAuthRequired
                             && observed?.reason !== 'avant_login_required') {
-                            throw unconfirmedDetail();
+                            throw unconfirmedDetail(observed?.reason);
                         }
                         // Authentication or a changed document also vetoes
                         // metrics observed before the terminal result.
                         const valid = capture(observed);
                         return valid ? observed : { ...observed, anuncios: [] };
                     } catch (error) {
-                        if (waitedForData && error.name !== 'AbortError' && !isMarketplaceAccessPause(error) && !error.waitingLogin
-                            && !error.avantSessionRejected && error.status !== 401 && error.status !== 403) throw unconfirmedDetail();
+                        if (waitedForData && error.name !== 'AbortError' && error.code !== AVANT_DETAIL_UNCONFIRMED
+                            && !isMarketplaceAccessPause(error) && !error.waitingLogin && !error.avantSessionRejected
+                            && error.status !== 401 && error.status !== 403) throw unconfirmedDetail(undefined, error);
                         throw error;
                     } finally {
                         attemptActive = false;
                         setWaitingForPanel(false);
                         restoreRecommendationMedia();
                     }
-                }, controller.signal, browser);
+                }, controller.signal, browser, requiresAvantData ? 1 : undefined);
             } catch (error) {
                 this.check(signal);
-                if (!collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
+                if (requiresAvantData || !collectionTimedOut || error.name !== 'AbortError' || !latestPartial) throw error;
                 detail = latestPartial;
                 usedPartial = true;
             }
@@ -1993,15 +2038,17 @@ class PesquisaMercadoRunner {
         } catch (error) {
             this.check(signal);
             if (isMarketplaceAccessPause(error) || error.waitingLogin || error.avantSessionRejected || error.status === 401 || error.status === 403) throw error;
-            if (requiresAvantData || waitedForData || error.code === AVANT_DETAIL_UNCONFIRMED) {
-                this.loginBrowser = browser;
-                throw unconfirmedDetail();
+            if (retryExpired) throw unconfirmedDetail('avant_detail_timeout');
+            if (error.code === AVANT_DETAIL_UNCONFIRMED) throw error;
+            if (requiresAvantData || waitedForData) {
+                throw unconfirmedDetail(navigationCompleted ? undefined : 'navigation_failed', error);
             }
             if (error.status === 404) throw error;
             // A bounded unavailable detail keeps the original card's evidence.
         } finally {
             active = false;
             clearTimeout(timer);
+            clearTimeout(retryTimer);
             signal.removeEventListener('abort', abort);
             restoreRecommendationMedia();
             const current = items[index];
@@ -2043,27 +2090,47 @@ class PesquisaMercadoRunner {
         let cursor = 0, finished = 0, firstError;
         try {
             const browsers = await this.detailBrowserPool(pending.length, controller.signal);
-            const loadingPanels = new Set();
             const progress = () => {
                 if (controller.signal.aborted) return;
-                if (firstError?.code === AVANT_DETAIL_UNCONFIRMED) {
-                    this.setProgress('collecting', 'Uma consulta deste lote precisa ser retomada. Aguardando as demais consultas em andamento.');
-                    return;
-                }
+                const loading = this.detailConsultations.filter(detail => detail.waiting).length;
+                const failed = this.detailConsultations.filter(detail => detail.phase === 'failed').length;
                 const label = collection.detailRound ? 'Reconsultando apenas falhas temporarias' : 'Consultando anuncios pendentes';
-                const waiting = loadingPanels.size ? `Aguardando o Avant Pro carregar dados em ${loadingPanels.size} de ${browsers.length} consultas. ` : '';
-                this.setProgress('collecting', `${waiting}${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
+                const waiting = loading ? `Aguardando o Avant Pro carregar dados em ${loading} de ${browsers.length} consultas. ` : '';
+                const retry = failed ? `Aguardando a nova tentativa automática de ${failed} consulta(s). ` : '';
+                this.setProgress('collecting', `${waiting}${retry}${label} de ${seller.nome || seller.id || 'vendedor'}: consultados: ${finished} de ${pending.length} nesta tentativa; ${this.detailProgressCounts(seller, items)}; ate ${browsers.length} consultas simultaneas; tentativa ${collection.detailRound + 1} de ${this.detailRetryDelaysMs.length + 1}...`);
             };
-            const work = async (browser, index) => {
+            const work = async (browser, index, detail) => {
+                const observe = (waiting, observation) => {
+                    const phase = observation?.phase || (waiting ? 'loading' : detail.phase);
+                    const missingFields = observation?.missingFields || detail.missingFields;
+                    if (detail.waiting === waiting && detail.phase === phase
+                        && detail.missingFields.join() === missingFields.join()) return;
+                    Object.assign(detail, { waiting, phase, missingFields });
+                    progress();
+                };
                 try {
                     this.check(controller.signal);
-                    progress();
                     const legacy = this.canRecheckLegacySeller(seller, items[index]);
-                    const blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal, waiting => {
-                        if (waiting) loadingPanels.add(index);
-                        else loadingPanels.delete(index);
-                        progress();
-                    });
+                    let blockedReason;
+                    for (;;) {
+                        try {
+                            blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal,
+                                detail.retryAt, observe);
+                            break;
+                        } catch (error) {
+                            if (error.code !== AVANT_DETAIL_UNCONFIRMED) throw error;
+                            Object.assign(detail, { phase: 'failed', error: error.message, waiting: false });
+                            progress();
+                            const remaining = detail.retryAt - Date.now();
+                            if (remaining > 0) await timers.setTimeout(remaining, undefined, { signal: controller.signal });
+                            this.check(controller.signal);
+                            if (error.resetBrowser) browser.stop?.();
+                            Object.assign(detail, { phase: 'opening', missingFields: [],
+                                retryAt: Date.now() + this.detailRetryIntervalMs, attempt: detail.attempt + 1 });
+                            delete detail.error;
+                            progress();
+                        }
+                    }
                     this.check(controller.signal);
                     const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
                     if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;
@@ -2071,17 +2138,16 @@ class PesquisaMercadoRunner {
                     else if (legacy) delete blocks[key];
                     if (index >= collection.index) completed.add(index);
                     finished += 1;
+                    this.detailConsultations = this.detailConsultations.filter(consultation => consultation !== detail);
                     progress();
                     advance();
                     await this.save();
                 } catch (error) {
-                    if (!firstError || firstError.code === AVANT_DETAIL_UNCONFIRMED) firstError = error;
-                    if (error.code === AVANT_DETAIL_UNCONFIRMED) {
-                        progress();
-                        return;
+                    if (!firstError) firstError = error;
+                    if (!controller.signal.aborted) {
+                        controller.abort();
+                        this.stopBrowsers();
                     }
-                    controller.abort();
-                    this.stopBrowsers();
                 }
             };
             // Save the boundary before opening the batch. Resuming must finish
@@ -2095,7 +2161,21 @@ class PesquisaMercadoRunner {
                     collection.detailBatchEnd = batch.at(-1) + 1;
                     await this.save();
                 }
-                await Promise.all(batch.map((index, slot) => work(browsers[slot], index)));
+                const startedAt = Date.now();
+                const consultations = batch.map(index => ({
+                    key: index,
+                    adId: String(items[index].id || '').slice(0, 80),
+                    title: String(items[index].titulo || '').slice(0, 400),
+                    startedAt,
+                    retryAt: startedAt + this.detailRetryIntervalMs,
+                    attempt: 1,
+                    phase: 'opening',
+                    missingFields: [],
+                    waiting: false
+                }));
+                this.detailConsultations = consultations;
+                progress();
+                await Promise.all(batch.map((index, slot) => work(browsers[slot], index, consultations[slot])));
                 if (firstError) throw firstError;
                 this.check(controller.signal);
                 cursor += batch.length;
@@ -2103,6 +2183,7 @@ class PesquisaMercadoRunner {
             delete collection.detailBatchEnd;
             return true;
         } finally {
+            this.detailConsultations = [];
             this.controller.signal.removeEventListener('abort', abort);
         }
     }

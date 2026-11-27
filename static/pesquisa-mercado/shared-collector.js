@@ -114,6 +114,7 @@
         const items = new Map();
         let lastSignature = '', stableSince = now(), reachedBottom = false, quiet = 0, empty = false;
         let missingSince = null, clicksPending = false, avantPanelLoading = false, avantDataPending = waitForAvantData;
+        let avantDetailProgress = { phase: 'checking_offer', missingFields: [] };
         let loadingOffer = null;
         let materialized = !!opts.detail, lastLayoutSignature = '', layoutStableSince = now(), layoutQuiet = 0;
 
@@ -136,7 +137,7 @@
             const resultReason = reason === 'complete' && missing > 0 ? 'avant_data_incomplete' : reason;
             return { anuncios, incomplete: resultReason !== 'complete' || missing > 0, authRequired: !!authRequired, reason: resultReason,
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
-                ...(waitForAvantData && (reason === 'partial' ? { avantDataPending }
+                ...(waitForAvantData && (reason === 'partial' ? { avantDataPending, avantDetailProgress }
                     : { avantDataLoaded: !avantDataPending && ['complete', 'avant_data_incomplete'].includes(reason) })),
                 ...(avantPanelLoading && (waitForLoadingPanel || missing > 0) && ['partial', 'timeout'].includes(reason)
                     ? { avantPanelLoading: true, ...(loadingOffer ? { avantLoadingOffer: loadingOffer } : {}) } : {}),
@@ -203,6 +204,14 @@
             // Data about the catalog can settle the panel without qualifying the
             // seller's offer for the ranking.
             avantDataPending = waitForAvantData && (avantPanelLoading || !observedDetailData);
+            if (waitForAvantData) {
+                const missing = matchedOffer && Array.isArray(snapshot.avantDetailMissingFields) ? snapshot.avantDetailMissingFields : null;
+                let phase = 'checking_offer';
+                if (avantPanelLoading) phase = 'loading';
+                else if (observedDetailData) phase = 'confirming';
+                else if (matchedOffer) phase = missing ? 'missing_fields' : 'waiting_panel';
+                avantDetailProgress = { phase, missingFields: missing || [] };
+            }
             if (typeof opts.onPartial === 'function') await observe(finish('partial'));
             const signature = JSON.stringify(opts.detail
                 ? [avantPanelLoading, avantDataPending, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal,

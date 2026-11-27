@@ -22,6 +22,8 @@
     const deletedJobs = new Set();
     let unsubscribe = null;
     let polling = null;
+    const consultationRows = new Map();
+    let consultationClock = null;
     let debounce = null;
     let taxonomySearchTimer = null;
     let refreshTask = null;
@@ -35,7 +37,7 @@
     let avantIdentity = avantConfigurationIdentity(sessionToken);
     let chromeResearch = false;
     const elements = {};
-    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete', 'incomplete', 'incomplete-list', 'incomplete-count', 'recovery-progress', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current',
+    for (const name of ['start', 'pause', 'resume', 'cancel', 'browser', 'refresh-names', 'recover-incomplete', 'incomplete', 'incomplete-list', 'incomplete-count', 'recovery-progress', 'status', 'status-panel', 'status-detail', 'status-warning', 'category-current', 'detail-consultations', 'detail-list',
         'categories-count', 'pages-count', 'sellers-count', 'ads-count', 'pending-count', 'search',
         'category', 'tab-geral', 'tab-vendedor', 'sellers', 'seller-search', 'seller-list', 'seller-label',
         'body', 'empty', 'count', 'first', 'previous', 'next', 'last', 'page', 'pagination', 'page-numbers', 'page-error', 'scope', 'taxonomy-refresh', 'taxonomy-breadcrumb',
@@ -271,6 +273,7 @@
             restoreAvantConfiguration();
             deletedJobs.clear();
             state.activeJob = null;
+            renderConsultations(null);
             state.namesLogin = false;
             state.scopeCategory = null;
             state.taxonomy = emptyTaxonomy();
@@ -312,7 +315,8 @@
     const methods = {
         start: 'startPesquisaMercadoJob', status: 'getPesquisaMercadoJobStatus', pause: 'pausePesquisaMercadoJob',
         resume: 'resumePesquisaMercadoJob', cancel: 'cancelPesquisaMercadoJob', browser: 'showPesquisaMercadoBrowser',
-        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames', 'recover-incomplete': 'recoverPesquisaMercadoIncomplete'
+        categories: 'getPesquisaMercadoCategories', 'refresh-names': 'refreshPesquisaMercadoNames',
+        'recover-incomplete': 'recoverPesquisaMercadoIncomplete'
     };
     async function invoke(action, extras = {}) {
         const authToken = currentSession();
@@ -400,6 +404,83 @@
         const next = chromeResearch ? 'Confira o acesso em Mostrar navegador. Feche a janela do Chrome da pesquisa antes de clicar em Retomar.'
             : 'Confira o acesso em Mostrar navegador e clique em Retomar.';
         return `O Mercado Livre retornou HTTP 403 ${stage}. ${next}${url ? ' O endereço consultado foi ' + url : ''}`;
+    }
+
+    const consultationPhases = { opening: 'Abrindo anúncio', checking_offer: 'Verificando a oferta',
+        waiting_panel: 'Aguardando o painel do Avant Pro', loading: 'Carregando dados do Avant Pro',
+        missing_fields: 'Aguardando os campos pendentes', confirming: 'Confirmando os dados', failed: 'Falha na consulta' };
+    const consultationFields = { vendas: 'vendas', data_criacao: 'data de criação', media_mensal: 'média mensal de vendas' };
+
+    function consultationDuration(seconds) {
+        return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, '0')} s`;
+    }
+
+    function tickConsultations() {
+        const now = Date.now();
+        for (const row of consultationRows.values()) {
+            const seconds = Math.max(0, Math.floor((now - row.startedAt) / 1000));
+            const label = `${consultationDuration(seconds)} desde o início`;
+            if (row.time.textContent !== label) row.time.textContent = label;
+            const remaining = row.retryAt === null ? null : Math.ceil((row.retryAt - now) / 1000);
+            const next = remaining === null ? '' : remaining > 0 ? `Reconsulta automática em ${consultationDuration(remaining)}` : 'Aguardando reconsulta automática';
+            if (row.next.textContent !== next) row.next.textContent = next;
+            row.next.hidden = remaining === null;
+        }
+    }
+
+    function newConsultationRow() {
+        const item = document.createElement('li');
+        const title = document.createElement('strong');
+        const time = document.createElement('span');
+        const info = document.createElement('span');
+        const error = document.createElement('span');
+        const next = document.createElement('span');
+        time.className = 'pm-detail-summary';
+        info.className = 'pm-detail-info pm-detail-summary';
+        error.className = 'pm-detail-error';
+        next.className = 'pm-detail-info pm-detail-summary';
+        item.append(title, time, info, error, next);
+        return { item, title, time, info, error, next };
+    }
+
+    function renderConsultations(job) {
+        const list = elements['detail-list'];
+        if (!list) return;
+        const active = job?.status === 'running' && Array.isArray(job.detailConsultations) ? job.detailConsultations : [];
+        const seen = new Set();
+        for (const detail of active) {
+            if (!detail || !Object.hasOwn(consultationPhases, detail.phase) || !Number.isSafeInteger(detail.key)
+                || !Number.isSafeInteger(detail.startedAt) || seen.has(detail.key)) continue;
+            seen.add(detail.key);
+            let row = consultationRows.get(detail.key);
+            if (!row) {
+                row = newConsultationRow();
+                consultationRows.set(detail.key, row);
+                list.append(row.item);
+            }
+            row.startedAt = detail.startedAt;
+            row.retryAt = Number.isSafeInteger(detail.retryAt) ? detail.retryAt : null;
+            const fields = (Array.isArray(detail.missingFields) ? detail.missingFields : []).filter(key => Object.hasOwn(consultationFields, key));
+            const title = [detail.adId, detail.title].filter(Boolean).join(' · ') || 'Anúncio';
+            const info = [`Tentativa ${detail.attempt}`, consultationPhases[detail.phase],
+                fields.length ? 'Faltam ' + fields.map(key => consultationFields[key]).join(', ') : ''].filter(Boolean).join(' · ');
+            const error = safeText(detail.error);
+            if (row.title.textContent !== title) row.title.textContent = title;
+            if (row.info.textContent !== info) row.info.textContent = info;
+            if (row.error.textContent !== error) row.error.textContent = error;
+            row.error.hidden = !error;
+        }
+        for (const [id, row] of consultationRows) {
+            if (!seen.has(id)) { row.item.remove(); consultationRows.delete(id); }
+        }
+        elements['detail-consultations'].hidden = !consultationRows.size;
+        if (consultationRows.size) {
+            tickConsultations();
+            if (consultationClock === null) consultationClock = window.setInterval(tickConsultations, 1000);
+        } else if (consultationClock !== null) {
+            window.clearInterval(consultationClock);
+            consultationClock = null;
+        }
     }
 
     function renderStatus(job) {
@@ -711,6 +792,7 @@
             `${scopeName(job) || 'Pesquisa geral no ML'} · ${number(job.counters && job.counters.ads || 0)} anúncios salvos`;
     }
     function clearJob() {
+        renderConsultations(null);
         state.activeJob = null; state.namesLogin = false; state.scopeCategory = null;
         state.seller = ''; state.sellers = []; state.offsets = { geral: 0, vendedor: 0 };
         state.rankings = { geral: null, vendedor: null }; state.generation += 1;
@@ -742,6 +824,7 @@
         if (state.activeJob && state.activeJob.id === job.id && Number(job.revision) < Number(state.activeJob.revision)) return false;
         const changed = !state.activeJob || state.activeJob.id !== job.id || state.activeJob.revision !== job.revision;
         if (!state.activeJob || state.activeJob.id !== job.id) {
+            renderConsultations(null);
             state.namesLogin = false;
             state.offsets = { geral: 0, vendedor: 0 };
             state.rankings = { geral: null, vendedor: null };
@@ -766,6 +849,7 @@
             ? safeText(currentCategory.nome || currentCategory.name || currentCategory.categoria) : safeText(currentCategory);
         elements['category-current'].textContent = categoryName ? `Categoria atual: ${categoryName}` : 'Aguardando categoria';
         renderStatus(job);
+        renderConsultations(job);
         renderControls();
         return changed;
     }
@@ -1279,6 +1363,7 @@
         unsubscribe = () => window.top.postMessage({ channel: 'jk-pesquisa-mercado-command', requestId: `pm-${Date.now()}-${++state.commandSerial}`, action: 'unsubscribe', payload: {} }, '*');
     }
     function dispose() {
+        renderConsultations(null);
         cancelPageEditing();
         photoPreview.dispose();
         state.disposed = true;

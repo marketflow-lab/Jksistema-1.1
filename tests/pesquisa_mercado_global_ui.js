@@ -3,12 +3,62 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const { chromium } = require('playwright');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'pesquisa_mercado.html'), 'utf8')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace('</body>', '<script src="/pesquisa-mercado/core.js"></script><script src="/pesquisa-mercado/global-ui.js"></script></body>');
+
+async function checkDetailConsultations(page, job) {
+    const now = Date.parse('2026-11-27T12:00:00Z');
+    await page.clock.setFixedTime(now);
+    const loading = { key: 1, adId: 'MLB1000000001', title: 'Selim <script>untrusted()</script>',
+        startedAt: now - 55000, phase: 'missing_fields', missingFields: ['data_criacao', 'media_mensal'],
+        retryAt: now + 65000, attempt: 1 };
+    const failed = { key: 2, adId: 'MLB1000000002', title: 'Pedal de bicicleta', startedAt: now - 65000,
+        phase: 'failed', missingFields: ['vendas'], error: 'O painel do anúncio não respondeu.',
+        retryAt: now + 55000, attempt: 1 };
+    const progress = async consultations => {
+        job.detailConsultations = consultations;
+        await page.evaluate(value => window.__pmProgress({ job: value }), job);
+    };
+    await progress([loading, failed]);
+    const list = page.locator('#pm-global-detail-consultations');
+    const first = list.locator('li').filter({ hasText: loading.adId });
+    const second = list.locator('li').filter({ hasText: failed.adId });
+    assert.equal(await list.locator('li').count(), 2);
+    assert.match(await first.textContent(), /Selim <script>untrusted\(\)<\/script>/);
+    assert.equal(await first.locator('script').count(), 0);
+    assert.match(await first.textContent(), /data de cria[çc][ãa]o/i);
+    assert.match(await first.textContent(), /mensal|mensais/i);
+    assert.ok((await second.textContent()).includes(failed.error));
+    assert.match(await second.textContent(), /vendas/i);
+    assert.equal(await list.locator('button').count(), 0, 'nenhuma fase, incluindo falha, oferece reconsulta manual');
+    assert.match(await first.textContent(), /55 s desde o início/);
+    assert.match(await first.textContent(), /Reconsulta automática em 1 min 05 s/);
+    assert.match(await second.textContent(), /Reconsulta automática em 55 s/);
+
+    const originalRow = await first.elementHandle();
+    await page.clock.setFixedTime(now + 65000);
+    await page.waitForFunction(() => {
+        const text = document.querySelector('#pm-global-detail-consultations li')?.textContent || '';
+        return text.includes('2 min 00 s desde o início') && text.includes('Aguardando reconsulta automática');
+    }, undefined, { timeout: 4000 });
+    const verifying = { ...loading, phase: 'confirming', missingFields: [], attempt: 2, retryAt: null };
+    await progress([verifying, failed]);
+    assert.ok(await first.evaluate((row, original) => row === original, originalRow), 'a nova tentativa atualiza a mesma linha do anúncio');
+    await originalRow.dispose();
+    const verification = await first.textContent();
+    assert.match(verification, /Tentativa 2/);
+    assert.match(verification, /confirmando/i);
+    assert.match(verification, /2 min 00 s desde o início/, 'o relógio total continua após a reconsulta');
+    assert.doesNotMatch(verification, /reconsulta automática|média mensal|data de cria[çc][ãa]o/i);
+    assert.ok((await second.textContent()).includes(failed.error));
+    await progress([]);
+    assert.equal(await list.isVisible(), false);
+    assert.equal(await list.locator('li').count(), 0);
+    await progress([verifying]);
+}
 
 async function main() {
     const items = Array.from({ length: 105 }, (_, index) => ({
@@ -39,15 +89,17 @@ async function main() {
     const commands = [];
     const requests = [];
     let chrome = false;
-    const server = http.createServer((req, res) => {
-        const url = new URL(req.url, 'http://127.0.0.1');
-        const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
-        if (url.pathname === '/pesquisa_mercado.html') { res.setHeader('Content-Type', 'text/html'); res.end(html); return; }
-        if (url.pathname === '/dashboard.html') { res.end('<!doctype html><title>Dashboard</title>'); return; }
+    const origin = 'http://jk.test';
+    function respond(route) {
+        const url = new URL(route.request().url());
+        if (url.origin !== origin) return route.abort();
+        const json = value => route.fulfill({ json: value });
+        if (url.pathname === '/pesquisa_mercado.html') return route.fulfill({ contentType: 'text/html', body: html });
+        if (url.pathname === '/dashboard.html') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>Dashboard</title>' });
         if (url.pathname.startsWith('/pesquisa-mercado/')) {
             const file = path.basename(url.pathname);
-            res.setHeader('Content-Type', file.endsWith('.css') ? 'text/css' : 'text/javascript');
-            res.end(fs.readFileSync(path.join(root, 'static/pesquisa-mercado', file))); return;
+            return route.fulfill({ contentType: file.endsWith('.css') ? 'text/css' : 'text/javascript',
+                body: fs.readFileSync(path.join(root, 'static/pesquisa-mercado', file)) });
         }
         if (url.pathname === '/test/command') {
             const action = url.searchParams.get('action');
@@ -63,13 +115,13 @@ async function main() {
                 const { id, status, revision, marketplaceAccess } = job;
                 return json({ job: { id, status, revision, marketplaceAccess } });
             }
-            json({ job }); return;
+            return json({ job });
         }
-        if (url.pathname === '/api/pesquisa-mercado/jobs/latest') { json({ job }); return; }
+        if (url.pathname === '/api/pesquisa-mercado/jobs/latest') return json({ job });
         if (url.pathname.endsWith('/vendedores')) {
-            json({ items: [{ seller_key: 'id:1', vendedor: 'Loja A', ads: 101 }, { seller_key: 'id:2', vendedor: 'Loja B', ads: 6 }] }); return;
+            return json({ items: [{ seller_key: 'id:1', vendedor: 'Loja A', ads: 101 }, { seller_key: 'id:2', vendedor: 'Loja B', ads: 6 }] });
         }
-        if (url.pathname.endsWith('/categorias')) { json({ items: [{ categoria: 'Ferramentas', status: 'incomplete' }] }); return; }
+        if (url.pathname.endsWith('/categorias')) return json({ items: [{ categoria: 'Ferramentas', status: 'incomplete' }] });
         if (url.pathname.endsWith('/ranking')) {
             requests.push(url.searchParams);
             const seller = url.searchParams.get('seller_key');
@@ -79,16 +131,15 @@ async function main() {
                 && `${item.id} ${item.titulo} ${item.vendedor}`.toLowerCase().includes(query));
             const offset = Number(url.searchParams.get('offset'));
             const limit = Number(url.searchParams.get('limit'));
-            json({ items: filtered.slice(offset, offset + limit), total: filtered.length, revision: job.revision }); return;
+            return json({ items: filtered.slice(offset, offset + limit), total: filtered.length, revision: job.revision });
         }
-        res.statusCode = 404; res.end();
-    });
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`;
+        return route.fulfill({ status: 404 });
+    }
     let browser;
     try {
         browser = await chromium.launch({ headless: true });
         const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+        await context.route('**/*', respond);
         await context.addInitScript(() => {
             localStorage.setItem('access_token', 'fixture-token');
             const command = action => async payload => {
@@ -168,8 +219,13 @@ async function main() {
         await page.locator('#pm-global-search').fill('Novo produto');
         await page.waitForFunction(() => document.querySelectorAll('#pm-global-body tr').length === 1);
         assert.match(await page.locator('#pm-global-body').textContent(), /Novo produto/);
+        const filteredRank = page.waitForResponse(response => {
+            const { pathname, searchParams } = new URL(response.url());
+            return pathname.endsWith('/ranking') && searchParams.get('category') === 'Ferramentas'
+                && searchParams.get('q') === 'Novo produto';
+        });
         await page.locator('#pm-global-category').selectOption('Ferramentas');
-        await page.waitForTimeout(350);
+        await filteredRank;
         assert.ok(requests.every(params => params.get('limit') === '100'));
         assert.ok(requests.some(params => params.get('category') === 'Ferramentas' && params.get('q') === 'Novo produto'));
         await page.locator('#pm-global-pause').click();
@@ -321,10 +377,13 @@ async function main() {
         await page.locator('#pm-global-recover-incomplete').click();
         await page.waitForFunction(() => document.querySelector('#pm-global-recover-incomplete').hidden);
         assert.deepStrictEqual(await page.evaluate(() => [window.__lastCommandPayload.jobId, window.__lastCommandPayload.expectedRevision]), [job.id, legacyRevision]);
+        await checkDetailConsultations(page, job);
         await page.evaluate(() => {
             localStorage.removeItem('access_token');
             dispatchEvent(new StorageEvent('storage', { key: 'access_token' }));
         });
+        await page.evaluate(previous => window.__pmProgress({ job: previous }), job);
+        assert.equal(await page.locator('#pm-global-detail-consultations li').count(), 0, 'um evento antigo não restaura as consultas após o logout');
         assert.strictEqual(await page.locator('#pm-global-body tr').count(), 0, 'logout limpa os anúncios da tela');
         assert.strictEqual(await page.locator('#pm-global-ads-count').textContent(), '0', 'logout limpa dados da sessão anterior');
         assert.strictEqual(await page.locator('#pm-global-status-detail').textContent(), '', 'logout limpa a etapa da sessão anterior');
@@ -337,7 +396,6 @@ async function main() {
         console.log('Pesquisa de Mercado global UI: paginação, abas, filtros, progresso e controles OK');
     } finally {
         if (browser) await browser.close();
-        await new Promise(resolve => server.close(resolve));
     }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

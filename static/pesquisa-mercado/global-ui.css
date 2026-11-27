@@ -57,6 +57,13 @@
 .pm-global-status-warning { margin-top: 14px; padding: 10px 12px; border-left: 3px solid var(--warning); background: rgba(251, 191, 36, .06); color: #ffe59a; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .pm-global-status-warning.error { color: var(--danger); border-color: var(--danger); }
 .pm-global-status-warning[hidden] { display: none; }
+.pm-detail-consultations { margin-top: 16px; }
+.pm-detail-consultations h3 { margin: 0 0 8px; font-size: 15px; }
+.pm-detail-consultations ul { list-style: none; margin: 0; padding: 0; }
+.pm-detail-consultations li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 12px; padding: 9px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.pm-detail-consultations .pm-detail-summary { color: var(--muted); font-size: 13px; }
+.pm-detail-consultations .pm-detail-error { grid-column: 1 / -1; color: var(--warning); }
+.pm-detail-consultations .pm-detail-info { grid-column: 1 / -1; }
 @keyframes pm-status-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .pm-global-status[data-state] .pm-global-status-indicator { animation: none; } }
 .pm-global-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin: 16px 0 20px; }

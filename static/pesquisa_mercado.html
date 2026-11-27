@@ -287,7 +287,7 @@
             .filter-row input { width: 100%; }
         }
     </style>
-    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261124-metricas-avant">
+    <link rel="stylesheet" href="/pesquisa-mercado/global-ui.css?v=20261127-reconsulta-avant">
     <link rel="stylesheet" href="/pesquisa-mercado/history-ui.css?v=20261007-apagar-historico-v1">
     <script src="/auth.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </head>
@@ -377,6 +377,10 @@
                     <p id="pm-global-recovery-progress" class="pm-global-note" hidden></p>
                     <details id="pm-global-incomplete" class="pm-category-incomplete" hidden><summary>Categorias incompletas e motivos</summary><ul id="pm-global-incomplete-list"></ul></details>
                 </div>
+                <section id="pm-global-detail-consultations" class="pm-detail-consultations" aria-labelledby="pm-detail-consultations-title" hidden>
+                    <h3 id="pm-detail-consultations-title">Consultas do lote atual</h3>
+                    <ul id="pm-global-detail-list"></ul>
+                </section>
                 <div class="pm-global-stats" aria-label="Progresso da pesquisa em todo ML">
                     <article class="stat-card"><div class="stat-label">Categorias</div><div id="pm-global-categories-count" class="stat-value">0</div><div class="stat-detail">percorridas</div></article>
                     <article class="stat-card"><div class="stat-label">P&aacute;ginas</div><div id="pm-global-pages-count" class="stat-value">0</div><div class="stat-detail">consultadas</div></article>
@@ -529,7 +533,7 @@
 
     <script src="/pesquisa-mercado/core.js?v=20261125-diagnostico-categoria"></script>
     <script src="/pesquisa-mercado/runtime.js?v=20261007-nomes-lojas-v1"></script>
-    <script src="/pesquisa-mercado/global-ui.js?v=20261125-pausa-403"></script>
+    <script src="/pesquisa-mercado/global-ui.js?v=20261127-reconsulta-avant"></script>
     <script src="/pesquisa-mercado/history-ui.js?v=20261125-diagnostico-categoria"></script>
     <script src="/ia-sidebar.js?v=20260828-cadastro-fotos-lojas-v1"></script>
 </body>

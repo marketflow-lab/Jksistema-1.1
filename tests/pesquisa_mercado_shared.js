@@ -489,6 +489,8 @@ async function testDetailWaitsForAllThreeAvantFields() {
         media_mensal_rotulo: 'vendas mensais' } });
     const observed = fixture.item;
     const pendingTimes = [];
+    const progressByTime = new Map();
+    let firstProgress;
     const readyAt = 6100;
     const collect = (snapshotAt, onPartial, signal) => {
         let elapsed = 0;
@@ -512,9 +514,17 @@ async function testDetailWaitsForAllThreeAvantFields() {
         else if (elapsed < 4700) row = { ...observed, data_criacao: '' };
         else if (elapsed < 5200) row = { ...observed, media_mensal: null, rankable: false };
         const differentOffer = { ...observed, id: 'MLB1000000312' };
-        return { anuncios: [row, differentOffer], avantDetailDataRead: elapsed < 500 || elapsed >= 3700,
+        if (elapsed >= 500 && elapsed < 1200) return { anuncios: [differentOffer], avantDetailLoading: true, avantDetailMissingFields: ['vendas'] };
+        let missing = null;
+        if (elapsed >= 2700 && elapsed < 3700) missing = ['vendas', 'data_criacao'];
+        if (elapsed >= 4200 && elapsed < 4700) missing = ['data_criacao'];
+        if (elapsed >= 4700 && elapsed < 5200) missing = ['media_mensal'];
+        if (elapsed >= 5200) missing = [];
+        return { anuncios: [row, differentOffer], avantDetailMissingFields: missing, avantDetailDataRead: elapsed < 500 || elapsed >= 3700,
             avantDetailLoading: elapsed < 500 || elapsed >= 5200 && elapsed < readyAt };
     }, partial => {
+        firstProgress ||= partial.avantDetailProgress;
+        progressByTime.set(partial.elapsedMs, partial.avantDetailProgress);
         if (partial.avantDataPending) pendingTimes.push(partial.elapsedMs);
         assert(partial.anuncios.every(item => item.id === fixture.id), 'a neighboring offer cannot supply the metrics');
     });
@@ -522,6 +532,12 @@ async function testDetailWaitsForAllThreeAvantFields() {
         assert(pendingTimes.includes(elapsed), 'waiting for Avant data must be reported at ' + elapsed + ' ms');
     }
     assert(result.elapsedMs >= readyAt, 'wait for the loader to clear even after the last required field appears');
+    assert.deepEqual(firstProgress, { phase: 'checking_offer', missingFields: [] }, 'before the first observation the panel state is unknown');
+    for (const [at, phase, missingFields] of [
+        [800, 'checking_offer', []], [2000, 'waiting_panel', []],
+        [3100, 'missing_fields', ['vendas', 'data_criacao']], [4500, 'missing_fields', ['data_criacao']],
+        [5000, 'missing_fields', ['media_mensal']], [5500, 'loading', []], [readyAt, 'confirming', []]
+    ]) assert.deepEqual(progressByTime.get(at), { phase, missingFields }, 'only current observations of the expected offer at ' + at);
     assert.equal(result.reason, 'complete');
     assert(!result.avantDataPending);
     assert.deepEqual([result.anuncios[0].vendas, result.anuncios[0].data_criacao, result.anuncios[0].media_vendas_mensal],
