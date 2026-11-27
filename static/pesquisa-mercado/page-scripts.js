@@ -172,6 +172,17 @@
         // document safely while the coordinator waits for the new listing.
         const content = document.querySelector('main') || document.body || document;
         const url = absolute(location.href);
+        if (url && !mlAuthReason) {
+            for (const alert of nodes('.avantpro-alert-dialog__wrapper')) {
+                const cta = alert.querySelector('.avantpro-alert-dialog__footer .avantpro-admin-modal-btn');
+                const title = norm(alert.querySelector('.avantpro-alert-dialog__header-title')?.textContent);
+                const subscriptionOffer = /^(?:assinar|assine|quero assinar)\b/.test(norm(cta?.textContent))
+                    || (/\b(?:plano|assinatura)\b/.test(title) && /\bdesconto\b|\d\s*%\s*(?:off|de desconto)\b/.test(title));
+                if (!subscriptionOffer) continue;
+                const close = alert.querySelector('.avantpro-alert-dialog__header button.avt-dialog-close-icon');
+                if (close && !close.disabled && visibleAuthControl(close)) close.click();
+            }
+        }
         const mlVerificationRequired = mlAuthReason === 'ml_verification_required';
         // Read only category identity for this listing. Product/recommendation
         // category IDs and available_filters must never prove a redirect scope.

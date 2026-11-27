@@ -48,6 +48,59 @@ function pdpRoot({ total = 100, estimated = 155, rhythm = 10, monthly = '5/Mês'
         + (created ? pdpStat('Anúncio criado em', created) : '') + extra + '</div>';
 }
 
+async function testAvantSubscriptionOffer(page) {
+    const itemId = 'MLB10000077';
+    const url = 'https://produto.mercadolivre.com.br/MLB-10000077-produto-_JM';
+    const header = '<main><h1 class="ui-pdp-title">Produto de detalhe</h1></main>';
+    const offerTitle = 'SUPER BLACK: PLANO MCP ANUAL COM 15%OFF';
+    const dialog = (title, action) => '<div role="dialog" data-state="open" class="avantpro-alert-dialog__wrapper">'
+        + '<div class="avantpro-alert-dialog__header"><h2 class="avantpro-alert-dialog__header-title"><span>' + title + '</span></h2>'
+        + '<button type="button" class="avt-dialog-close-icon" aria-label="Close dialog"><span aria-hidden="true">×</span></button></div>'
+        + '<div class="avantpro-alert-dialog__content">Comunicado Avantpro</div>'
+        + '<div class="avantpro-alert-dialog__footer"><p class="avantpro-alert-dialog__disclaimer">Este comunicado diz respeito ao Avantpro e não está relacionado ao Mercado Livre.</p>'
+        + '<button type="button" class="avantpro-admin-modal-btn">' + action + '</button></div></div>';
+
+    await page.goto(url);
+    await page.setContent(header + '<div role="dialog"><button aria-label="Close dialog">×</button></div>');
+    await page.evaluate(() => {
+        window.fixtureClicks = [];
+        document.body.addEventListener('click', event => {
+            const button = event.target.closest('button');
+            if (!button) return;
+            window.fixtureClicks.push(button.className);
+            if (button.matches('.avt-dialog-close-icon')) button.closest('[role="dialog"]').remove();
+        });
+    });
+    const insert = markup => page.evaluate(html => document.body.insertAdjacentHTML('beforeend', html), markup);
+    const clicks = () => page.evaluate(() => window.fixtureClicks);
+    await insert(dialog(offerTitle, 'Assinar agora!'));
+    const discovered = await page.evaluate(scripts.discoveryScript());
+    assert.equal(discovered.anuncios[0].id, itemId);
+    assert.deepEqual(await clicks(), ['avt-dialog-close-icon']);
+    assert.equal(await page.locator('.avantpro-alert-dialog__wrapper').count(), 0);
+
+    // The extension can inject a new offer after discovery while the collector waits for data.
+    await insert(dialog('Comunicado Avantpro', 'Assinar agora!'));
+    await page.evaluate(panel => {
+        document.querySelector('.avt-dialog-close-icon').addEventListener('click', () => {
+            document.querySelector('main').insertAdjacentHTML('beforeend', panel);
+        });
+    }, pdpRoot());
+    const snapshot = await page.evaluate(scripts.snapshotScript({ detail: true, expectedItem: { id: itemId, url } }));
+    assert.deepEqual([snapshot.anuncios[0].id, snapshot.anuncios[0].vendas], [itemId, 155]);
+    assert.deepEqual(await clicks(), ['avt-dialog-close-icon', 'avt-dialog-close-icon']);
+
+    await insert(dialog(offerTitle, 'Saiba mais'));
+    await page.evaluate(scripts.discoveryScript());
+    const expectedClicks = Array(3).fill('avt-dialog-close-icon');
+    assert.deepEqual(await clicks(), expectedClicks, 'o título identifica a oferta quando o CTA é genérico');
+
+    await insert(dialog('Manutenção programada do Avantpro', 'Entendi'));
+    await page.evaluate(scripts.discoveryScript());
+    assert.equal(await page.locator('[role="dialog"]').count(), 2, 'preserva o aviso de manutenção e o diálogo do site');
+    assert.deepEqual(await clicks(), expectedClicks, 'nenhum clique no CTA nem em outros diálogos');
+}
+
 async function testInternationalOffer(page) {
     const badge = '<span class="poly-component__cbt">Compra internacional</span>';
     const catalog = 'https://www.mercadolivre.com.br/selim/p/MLB9999999';
@@ -231,6 +284,7 @@ async function run() {
     try {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+        await testAvantSubscriptionOffer(page);
         await testInternationalOffer(page);
         await testInternationalShippingOrigin(page);
         await testRedirectedCatalogOffer(page);
