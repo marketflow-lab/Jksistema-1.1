@@ -151,13 +151,28 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
     if user_only and bool((SHARED_SYNC_SCOPES.get(scope) or {}).get("user_scoped")):
         user_scoped_rels = set(_shared_sync_user_scoped_rels(scope, username))
 
+    patterns = user_scoped_rels or (SHARED_SYNC_SCOPES.get(scope) or {}).get("patterns") or []
+    directory_prefixes = []
+    for pattern in patterns:
+        pattern = str(pattern or "").replace("\\", "/").strip().lower()
+        if pattern:
+            literal, *wildcard = re.split(r"[*?\[]", pattern, maxsplit=1)
+            directory_prefixes.append((literal, bool(wildcard)))
+
     for root, dirs, files in os.walk(tenant_abs, followlinks=False):
+        root_rel = os.path.relpath(root, tenant_abs).replace("\\", "/")
+        parent = "" if root_rel == "." else root_rel + "/"
         safe_dirs = []
         for directory in dirs:
-            rel_dir = os.path.relpath(os.path.join(root, directory), tenant_abs).replace("\\", "/")
+            rel_dir = (parent + directory).replace("\\", "/")
             if _shared_sync_path_permanently_excluded(rel_dir):
                 continue
             if directory in {"__pycache__", "_drive_restore_backup", "_shared_sync_backups"} or directory.startswith("."):
+                continue
+            # fnmatch can match across "/" after the first wildcard.
+            prefix = rel_dir.lstrip().lower() + "/"
+            if not any(literal.startswith(prefix) or (wildcard and prefix.startswith(literal))
+                       for literal, wildcard in directory_prefixes):
                 continue
             try:
                 safe_dir = _shared_sync_resolve_tenant_path(tenant_abs, rel_dir)
@@ -177,8 +192,10 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             ext = os.path.splitext(filename)[1].lower()
             if ext not in SHARED_SYNC_ALLOWED_EXTENSIONS:
                 continue
-            rel = os.path.relpath(os.path.join(root, filename), tenant_abs).replace("\\", "/")
+            rel = (parent + filename).replace("\\", "/")
             if _shared_sync_path_permanently_excluded(rel):
+                continue
+            if not _shared_sync_scope_match(scope, rel):
                 continue
             try:
                 abs_path = _shared_sync_resolve_tenant_path(tenant_abs, rel)
@@ -188,8 +205,6 @@ def _shared_sync_coletar_arquivos(client_id: str, scope: str, username: str = ""
             if _shared_sync_path_permanently_excluded(rel):
                 continue
             if user_scoped_rels and rel not in user_scoped_rels:
-                continue
-            if not _shared_sync_scope_match(scope, rel):
                 continue
             if (
                 scope == "favoritos_historico"

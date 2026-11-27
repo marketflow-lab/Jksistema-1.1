@@ -514,12 +514,18 @@ def _shared_sync_push_scope(
             client_id=client_id,
         )
     encrypted_bundle = _shared_sync_encrypt_bundle(bundle_id, bundle, encryption_secret)
+    del bundle
     bundle_sha256 = _shared_sync_bytes_sha256(encrypted_bundle)
-    bundle_b64 = base64.b64encode(encrypted_bundle).decode("ascii")
-    chunks = [bundle_b64[i:i + SHARED_SYNC_CHUNK_CHARS] for i in range(0, len(bundle_b64), SHARED_SYNC_CHUNK_CHARS)] or [""]
+    encrypted_size = len(encrypted_bundle)
+    # Each encoded fragment can be joined by existing v2 readers. Only the last
+    # fragment may have Base64 padding, so split on whole three-byte groups.
+    chunk_bytes = max(3, SHARED_SYNC_CHUNK_CHARS // 4 * 3)
+    chunk_count = (encrypted_size + chunk_bytes - 1) // chunk_bytes
     snapshot_id = f"{bundle_id}__{uuid.uuid4().hex}"
     chunks_coll = db.collection(_firebase_shared_sync_chunks_collection_name())
-    for idx, chunk in enumerate(chunks):
+    for idx in range(chunk_count):
+        start = idx * chunk_bytes
+        chunk = base64.b64encode(encrypted_bundle[start:start + chunk_bytes]).decode("ascii")
         chunks_coll.document(f"{snapshot_id}_{idx:05d}").set({
             "bundle_id": snapshot_id,
             "pointer_id": bundle_id,
@@ -530,19 +536,22 @@ def _shared_sync_push_scope(
             "updated_at": manifest["created_at"],
         })
     # Fase 1: todos os chunks precisam ser legiveis e produzir o mesmo hash.
-    validated_chunks = []
-    for idx in range(len(chunks)):
+    del encrypted_bundle
+    validated_hash = hashlib.sha256()
+    for idx in range(chunk_count):
         snap = chunks_coll.document(f"{snapshot_id}_{idx:05d}").get()
         if not snap.exists:
             _shared_sync_delete_chunks(db, snapshot_id)
             raise HTTPException(status_code=502, detail="Upload incompleto; o snapshot anterior foi preservado.")
-        validated_chunks.append(str((snap.to_dict() or {}).get("data") or ""))
-    try:
-        validated_bundle = base64.b64decode("".join(validated_chunks).encode("ascii"))
-    except Exception:
-        _shared_sync_delete_chunks(db, snapshot_id)
-        raise HTTPException(status_code=502, detail="Upload corrompido; o snapshot anterior foi preservado.")
-    if _shared_sync_bytes_sha256(validated_bundle) != bundle_sha256:
+        try:
+            decoded = base64.b64decode((snap.to_dict() or {}).get("data") or "", validate=True)
+            if len(decoded) != min(chunk_bytes, encrypted_size - idx * chunk_bytes):
+                raise ValueError("Tamanho de bloco divergente.")
+            validated_hash.update(decoded)
+        except (ValueError, TypeError) as exc:
+            _shared_sync_delete_chunks(db, snapshot_id)
+            raise HTTPException(status_code=502, detail="Upload corrompido; o snapshot anterior foi preservado.") from exc
+    if validated_hash.hexdigest() != bundle_sha256:
         _shared_sync_delete_chunks(db, snapshot_id)
         raise HTTPException(status_code=502, detail="Hash do upload divergente; o snapshot anterior foi preservado.")
     meta = {
@@ -564,9 +573,9 @@ def _shared_sync_push_scope(
         "stores_count": stores_count,
         "delta": bool(manifest.get("delta")),
         "item_count": manifest.get("item_count") or 0,
-        "bundle_bytes": len(encrypted_bundle),
-        "bundle_b64_chars": len(bundle_b64),
-        "chunk_count": len(chunks),
+        "bundle_bytes": encrypted_size,
+        "bundle_b64_chars": ((encrypted_size + 2) // 3) * 4,
+        "chunk_count": chunk_count,
         "snapshot_hash": manifest.get("snapshot_hash") or "",
         "files": (manifest.get("files") or [])[:250],
         "extensions": manifest.get("extensions") or {},
@@ -958,18 +967,21 @@ def _shared_sync_obter_bundle_por_id(
     chunk_count = int(meta.get("chunk_count") or 0)
     if chunk_count <= 0:
         raise HTTPException(status_code=404, detail="Backup remoto sem chunks.")
-    chunks = []
     coll = db.collection(_firebase_shared_sync_chunks_collection_name())
-    for idx in range(chunk_count):
-        snap = coll.document(f"{snapshot_id}_{idx:05d}").get()
-        if not snap.exists:
-            raise HTTPException(status_code=502, detail=f"Backup remoto incompleto: parte {idx + 1}/{chunk_count}.")
-        data = snap.to_dict() or {}
-        chunks.append(str(data.get("data") or ""))
-    try:
-        encrypted_bundle = base64.b64decode("".join(chunks).encode("ascii"))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Backup remoto corrompido: {exc}")
+    with io.BytesIO() as encoded:
+        for idx in range(chunk_count):
+            snap = coll.document(f"{snapshot_id}_{idx:05d}").get()
+            if not snap.exists:
+                raise HTTPException(status_code=502, detail=f"Backup remoto incompleto: parte {idx + 1}/{chunk_count}.")
+            data = snap.to_dict() or {}
+            try:
+                encoded.write(str(data.get("data") or "").encode("ascii"))
+            except UnicodeEncodeError as exc:
+                raise HTTPException(status_code=502, detail="Backup remoto corrompido.") from exc
+        try:
+            encrypted_bundle = base64.b64decode(encoded.getvalue())
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="Backup remoto corrompido.") from exc
     expected_hash = str(meta.get("bundle_sha256") or "")
     if not expected_hash or _shared_sync_bytes_sha256(encrypted_bundle) != expected_hash:
         raise HTTPException(status_code=502, detail="Hash do pacote remoto invalido.")

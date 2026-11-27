@@ -64,3 +64,27 @@ def test_export_prunes_publication_tree_even_with_wildcard_scope(tmp_path, monke
     entries, warnings = collect._shared_sync_coletar_arquivos("tenant-test", "synthetic")
     assert [entry["relative_path"] for entry in entries] == ["ordinary.json"]
     assert warnings == []
+
+def test_export_keeps_nested_wildcard_matches_and_skips_unrelated_directories(tmp_path, monkeypatch):
+    patterns = ["meta/Exato.json", "Imagens/**", "bloco_*.json", "lote[12]/itens?.csv"]
+    expected = [
+        "IMAGENS/produto/thumb.jpg", "META/EXATO.JSON",
+        "bloco_historico/antigo/dados.json", "lote1/itens2.csv",
+    ]
+    for relative in [*expected, "outros/subdir/dados.json", "meta/extra.json"]:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"sample")
+
+    monkeypatch.setattr(collect, "get_tenant_path", lambda _: str(tmp_path), raising=False)
+    monkeypatch.setitem(common.SHARED_SYNC_SCOPES, "synthetic", {"patterns": patterns})
+    scandir = collect.os.scandir
+
+    def guarded_scandir(directory):
+        assert directory != str(tmp_path / "outros"), "unrelated directory scanned"
+        return scandir(directory)
+
+    monkeypatch.setattr(collect.os, "scandir", guarded_scandir)
+    entries, warnings = collect._shared_sync_coletar_arquivos("tenant", "synthetic")
+    assert sorted(item["relative_path"] for item in entries) == sorted(expected)
+    assert warnings == []

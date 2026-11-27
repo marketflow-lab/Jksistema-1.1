@@ -3048,26 +3048,45 @@
         sincronizacaoMaquinasStatusTimer = null;
     });
 
-    async function salvarSincronizacaoMinhasMaquinas(silencioso) {
-        const payload = coletarSincronizacaoMinhasMaquinas();
+    function selecaoMaquinasConfirmada(config, payload) {
+        return config?.enabled === payload.enabled
+            && config.auto_pull === payload.auto_pull && config.auto_push === payload.auto_push
+            && Array.isArray(config.scopes) && config.scopes.length === payload.scopes.length
+            && payload.scopes.every(scope => config.scopes.includes(scope));
+    }
+
+    async function salvarSincronizacaoMinhasMaquinas(silencioso, payload = coletarSincronizacaoMinhasMaquinas()) {
         if (payload.enabled && !payload.scopes.length) {
-            setStatus('Selecione pelo menos um dado para sincronizar entre suas máquinas.', true);
+            setMachineSyncStatus('Selecione pelo menos um dado para sincronizar entre suas máquinas.', true);
             return false;
+        }
+        const confirmada = sincronizacaoMaquinasCache?.config;
+        if (silencioso && confirmada?.needs_migration !== true && selecaoMaquinasConfirmada(confirmada, payload)) {
+            return true;
         }
         if (!silencioso) setStatus('Salvando sincronização das minhas máquinas...');
         try {
-            const resp = await fetch('/api/shared-sync/machine-sync', {
+            const url = '/api/shared-sync/machine-sync' + (silencioso ? '?config_only=true' : '');
+            const resp = await fetch(url, {
                 method: 'PUT',
                 headers: obterAuthHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify(payload)
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok || data.success === false) throw new Error(mensagemErroSincronizacao(data, 'Erro ao salvar sincronização.'));
-            renderSincronizacaoMinhasMaquinas(data);
-            if (!silencioso) setStatus('Seleção salva. Use Enviar agora ou Importar agora para transferir os dados.');
+            if (silencioso) {
+                if (!selecaoMaquinasConfirmada(data.config, payload)) {
+                    throw new Error('O servidor não confirmou todos os dados selecionados. Atualize a seleção e tente novamente.');
+                }
+                if (sincronizacaoMaquinasCache) sincronizacaoMaquinasCache.config = data.config;
+            } else {
+                renderSincronizacaoMinhasMaquinas(data);
+                setStatus('Seleção salva. Use Enviar agora ou Importar agora para transferir os dados.');
+            }
             return true;
         } catch (error) {
-            setStatus(error.message || 'Erro ao salvar sincronização.', true);
+            if (sincronizacaoMaquinasCache) sincronizacaoMaquinasCache.config = null;
+            setMachineSyncStatus(error.message || 'Erro ao salvar sincronização.', true);
             return false;
         }
     }
@@ -3079,8 +3098,16 @@
             body: JSON.stringify({ direction: direcao, scopes: scopes || [], machine_id: machineIdAtual() })
         });
         const data = await resp.json().catch(() => ({}));
+        const previaMaquinas = url === '/api/shared-sync/machine-sync/preview';
         if (!resp.ok || data.success === false || !data.operation_id) {
+            if (previaMaquinas && (resp.status === 400 || resp.status === 403) && sincronizacaoMaquinasCache) {
+                sincronizacaoMaquinasCache.config = null;
+            }
             throw new Error(mensagemErroSincronizacao(data, 'Não foi possível gerar a prévia.'));
+        }
+        if (previaMaquinas && scopes.some(scope => !Object.hasOwn(data.scopes || {}, scope))) {
+            if (sincronizacaoMaquinasCache) sincronizacaoMaquinasCache.config = null;
+            throw new Error('A prévia não confirmou todos os dados selecionados. Confira a seleção e tente novamente.');
         }
         const total = data.totals || {};
         const resumo = [
@@ -3107,13 +3134,10 @@
             enviando ? 'Preparando o envio dos dados...' : 'Preparando o recebimento dos dados...'
         );
         try {
-            const salvou = await salvarSincronizacaoMinhasMaquinas(true);
+            const payload = coletarSincronizacaoMinhasMaquinas();
+            const salvou = await salvarSincronizacaoMinhasMaquinas(true, payload);
             if (!salvou) return;
-            const scopes = scopesSelecionadosSincronizacaoMinhasMaquinas();
-            if (!scopes.length) {
-                setMachineSyncStatus('Selecione pelo menos um dado para sincronizar.', true);
-                return;
-            }
+            const scopes = payload.scopes;
             const endpoint = enviando ? '/api/shared-sync/machine-sync/push' : '/api/shared-sync/machine-sync/pull';
             setMachineSyncStatus(enviando ? 'Enviando dados desta máquina...' : 'Importando dados para esta máquina...');
             atualizarBalaoSincronizacaoMaquinas(

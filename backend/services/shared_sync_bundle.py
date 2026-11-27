@@ -869,7 +869,7 @@ def _shared_sync_montar_pacote_locked(
 
             zf.writestr(AI_CONTEXT_EXTENSION_PATH, ai_context_data)
     bundle = buffer.getvalue()
-    if len(bundle) > _shared_sync_max_bundle_bytes():
+    if len(bundle) > _shared_sync_max_bundle_bytes(scope, delta=known_keys is not None):
         raise HTTPException(
             status_code=413,
             detail="Pacote maior que o limite de sincronizacao. Reduza arquivos antigos ou aumente JK_SHARED_SYNC_MAX_BUNDLE_BYTES.",

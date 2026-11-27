@@ -59,9 +59,12 @@ def shared_sync_machine_salvar_config(
     payload: SharedSyncMachineConfigRequest,
     authorization: Optional[str] = Header(default=None),
     client_id: str = Depends(get_tenant_id),
+    config_only: bool = False,
 ):
     sessao = _shared_sync_session(authorization, client_id)
     config = _shared_sync_machine_config_save(sessao, payload.model_dump() if hasattr(payload, "model_dump") else payload.dict())
+    if config_only:
+        return {"success": True, "config": config}
     return _shared_sync_machine_status_payload(sessao, payload.machine_id or "")
 
 

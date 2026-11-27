@@ -359,9 +359,9 @@ def _shared_sync_machine_pull_scope_serialized(
     }
 
 def _shared_sync_machine_status_payload(sessao: dict, machine_id: str = "") -> dict:
-    config = _shared_sync_machine_config_read(sessao)
-    permitidos = set(_shared_sync_machine_allowed_scopes(sessao))
     state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+    config = _shared_sync_machine_config_read(sessao, state=state)
+    permitidos = set(_shared_sync_machine_allowed_scopes(sessao))
     state_scopes = state.get("scopes") if isinstance(state.get("scopes"), dict) else {}
     scopes = {}
     for scope in SHARED_SYNC_SCOPES:

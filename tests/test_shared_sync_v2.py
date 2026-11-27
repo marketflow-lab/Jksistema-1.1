@@ -147,24 +147,31 @@ def test_machine_config_normaliza_preferencia_antiga_para_manual_sem_mudar_escop
 
 
 def test_machine_config_save_preserva_historico_e_isola_sessao(monkeypatch, tmp_path):
-    _configure_integracoes_sync_test(tmp_path)
+    info, tenant = _configure_integracoes_sync_test(tmp_path)
+    monkeypatch.setattr(shared_sync_config, "get_tenant_path", lambda client_id: str(info / client_id), raising=False)
     sessao = {"username": "operador", "client_id": "000002", "permissions": {"integracao": True}}
-    original_scopes = {"machine-sync:cadastro": {"snapshot_hash": "confirmed", "synced_at": "2026-09-08"}}
-    state = {"scopes": original_scopes}
-    monkeypatch.setattr(shared_sync_config, "_shared_sync_state_read", lambda *args: dict(state))
-    identities = []
-    def save_state(client_id, username, payload):
-        identities.append((client_id, username))
-        state.clear()
-        state.update(payload)
-    monkeypatch.setattr(shared_sync_config, "_shared_sync_state_write", save_state)
+    history = tenant / "shared_sync_state_operador.json"
+    original = json.dumps({
+        "scopes": {"machine-sync:cadastro": {"snapshot_hash": "confirmed"}},
+        "machine_sync": {"enabled": True, "scopes": ["lojas_integracoes"]},
+        "user_share_known": {"link": {"cadastro": {"keys": ["a", "b"]}}},
+    }).encode()
+    history.write_bytes(original)
+    legacy_config = shared_sync_config._shared_sync_machine_config_read(sessao)
+    assert legacy_config["scopes"] == ["lojas_integracoes"]
+    assert legacy_config["needs_migration"] is True
+
     saved = shared_sync_config._shared_sync_machine_config_save(
-        sessao, {"enabled": True, "scopes": ["lojas_integracoes"], "auto_pull": True, "auto_push": True},
+        sessao, {"enabled": False, "scopes": [], "auto_pull": True, "auto_push": True},
     )
     assert saved["auto_pull"] is False and saved["auto_push"] is False
     assert saved["mode_version"] == 3
-    assert state["scopes"] == original_scopes
-    assert identities == [("000002", "operador")]
+    assert history.read_bytes() == original
+    monkeypatch.setattr(shared_sync_config, "_shared_sync_state_read", lambda *args: pytest.fail("leu o histórico"))
+    assert shared_sync_config._shared_sync_machine_config_read(sessao) == saved
+    assert "needs_migration" not in saved
+    for other in ({**sessao, "client_id": "000003"}, {**sessao, "username": "outra"}):
+        assert shared_sync_config._shared_sync_machine_config_read(other, state={})["updated_at"] == ""
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -196,7 +203,7 @@ def test_machine_status_expoe_recebimento_pendente_e_ultimo_pull(monkeypatch):
     monkeypatch.setattr(
         shared_sync_machine,
         "_shared_sync_machine_config_read",
-        lambda _sessao: {"enabled": True, "scopes": ["cadastro"], "auto_pull": True, "auto_push": False},
+        lambda _sessao, **_kwargs: {"enabled": True, "scopes": ["cadastro"], "auto_pull": True, "auto_push": False},
     )
     monkeypatch.setattr(shared_sync_machine, "_shared_sync_machine_allowed_scopes", lambda _sessao: ["cadastro"])
     monkeypatch.setattr(
@@ -242,7 +249,8 @@ def test_machine_config_save_returns_status_bound_to_current_machine(monkeypatch
     from backend.schemas.shared_sync import SharedSyncMachineConfigRequest
     session = {"username": "operador", "client_id": "000002"}
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_session", lambda *args: session)
-    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_config_save", lambda *args: {})
+    saved_config = {"enabled": True, "scopes": ["cadastro"]}
+    monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_config_save", lambda *args: saved_config)
     received = []
     monkeypatch.setattr(shared_sync_machine_endpoints, "_shared_sync_machine_status_payload",
                         lambda _session, machine_id: received.append(machine_id) or {"success": True})
@@ -250,6 +258,9 @@ def test_machine_config_save_returns_status_bound_to_current_machine(monkeypatch
     result = shared_sync_machine_endpoints.shared_sync_machine_salvar_config(
         payload, authorization="Bearer fixture", client_id="000002")
     assert result["success"] is True
+    compact = shared_sync_machine_endpoints.shared_sync_machine_salvar_config(
+        payload, authorization="Bearer fixture", client_id="000002", config_only=True)
+    assert compact == {"success": True, "config": saved_config}
     assert received == ["pc:atual"]
 
 
@@ -4336,6 +4347,31 @@ def _configure_remote_push_for_test(monkeypatch, db, bundle):
     monkeypatch.setattr(shared_sync_remote, "SHARED_SYNC_CHUNK_CHARS", 40)
 
 
+def test_cadastro_com_fotos_maior_que_limite_padrao_respeita_override(tmp_path, monkeypatch):
+    from backend.services import cadastro_fotos
+
+    info, tenant = _configure_integracoes_sync_test(tmp_path)
+    photo = os.urandom(1100000)
+    (tenant / "cadastro_fotos").mkdir()
+    (tenant / "cadastro_fotos" / "produto.webp").write_bytes(photo)
+    for module in (shared_sync_collect_files, shared_sync_bundle, cadastro_fotos):
+        monkeypatch.setattr(module, "get_tenant_path", lambda _: str(tenant), raising=False)
+    monkeypatch.setattr(cadastro_fotos, "PASTA_INFO", str(info), raising=False)
+    monkeypatch.delenv("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", raising=False)
+    monkeypatch.setattr(shared_sync_common, "SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES", 1024 * 1024)
+
+    bundle, _, _ = shared_sync_bundle._shared_sync_montar_pacote_locked("000002", "cadastro", "operador")
+    assert len(bundle) > shared_sync_common._shared_sync_max_bundle_bytes("vendas")
+    assert len(bundle) > shared_sync_common._shared_sync_max_bundle_bytes("cadastro", delta=True)
+    _, files = shared_sync_apply_scope._shared_sync_read_validated_bundle(bundle, "cadastro")
+    assert dict(files)["cadastro_fotos/produto.webp"] == photo
+
+    monkeypatch.setenv("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", str(1024 * 1024))
+    with pytest.raises(HTTPException) as error:
+        shared_sync_bundle._shared_sync_montar_pacote_locked("000002", "cadastro", "operador")
+    assert error.value.status_code == 413
+
+
 def test_upload_interrompido_preserva_ultimo_snapshot_valido(monkeypatch):
     db = _FakeFirestore()
     meta_name = "shared_sync"
@@ -4350,6 +4386,30 @@ def test_upload_interrompido_preserva_ultimo_snapshot_valido(monkeypatch):
     assert exc.value.status_code == 502
     assert db.collection(meta_name).data["bundle"]["snapshot_id"] == "snapshot-anterior"
     assert not any(doc_id.startswith("bundle__") for doc_id in db.collection(meta_name).data)
+
+
+@pytest.mark.parametrize("bad_chunk", ["!", "YQ==", "A" * 40], ids=["base64", "truncado", "hash"])
+def test_upload_v2_bloco_corrompido_preserva_pacote_anterior(monkeypatch, bad_chunk):
+    db = _FakeFirestore()
+    _configure_remote_push_for_test(monkeypatch, db, b"cadastro" * 20)
+    pointers = db.collection("shared_sync").data
+    pointers["bundle"] = {"snapshot_id": "anterior"}
+    original = _FakeSnapshot.to_dict
+
+    def corrupted(snapshot):
+        data = original(snapshot)
+        if snapshot.id.endswith("_00001"):
+            data["data"] = bad_chunk
+        return data
+
+    monkeypatch.setattr(_FakeSnapshot, "to_dict", corrupted)
+    with pytest.raises(HTTPException) as error:
+        shared_sync_remote._shared_sync_push_scope(
+            "000002", "cadastro", {"username": "origem"}, bundle_id="bundle",
+        )
+    assert error.value.status_code == 502
+    assert pointers == {"bundle": {"snapshot_id": "anterior"}}
+    assert not db.collection("shared_sync_chunks").data
 
 
 def test_upload_v2_publica_chunks_cifrados_antes_de_trocar_ponteiro(monkeypatch):
@@ -4369,6 +4429,14 @@ def test_upload_v2_publica_chunks_cifrados_antes_de_trocar_ponteiro(monkeypatch)
     remote_text = json.dumps(db.collection("shared_sync_chunks").data)
     assert "token-remoto-que-nao-pode-vazar" not in remote_text
     assert "v1-legivel" not in remote_text
+    chunks = db.collection("shared_sync_chunks").data
+    encoded = "".join(chunks[f"{pointer['snapshot_id']}_{index:05d}"]["data"] for index in range(pointer["chunk_count"]))
+    assert len(encoded) == pointer["bundle_b64_chars"]
+    ciphertext = base64.b64decode(encoded, validate=True)
+    assert len(ciphertext) == pointer["bundle_bytes"]
+    assert hashlib.sha256(ciphertext).hexdigest() == pointer["bundle_sha256"]
+    restored, _ = shared_sync_remote._shared_sync_obter_bundle_por_id("bundle", pointer)
+    assert restored == secret
 
 
 def test_push_igual_so_pula_depois_de_criar_autoridade_v2(monkeypatch):

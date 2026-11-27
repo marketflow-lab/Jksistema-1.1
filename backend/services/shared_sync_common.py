@@ -31,6 +31,7 @@ from backend.services.store_coordination import (
 
 SHARED_SYNC_DEFAULT_MAX_FILE_BYTES = 75 * 1024 * 1024
 SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES = 75 * 1024 * 1024
+SHARED_SYNC_DEFAULT_MAX_CADASTRO_BUNDLE_BYTES = 128 * 1024 * 1024
 SHARED_SYNC_DEFAULT_LOCAL_BACKUP_RETENTION = 24
 
 SHARED_SYNC_DOCS_CACHE_LOCK = threading.RLock()
@@ -147,8 +148,11 @@ def _shared_sync_max_file_bytes() -> int:
     return _shared_sync_env_int("JK_SHARED_SYNC_MAX_FILE_BYTES", SHARED_SYNC_DEFAULT_MAX_FILE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
 
 
-def _shared_sync_max_bundle_bytes() -> int:
-    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES, 1024 * 1024, 250 * 1024 * 1024)
+def _shared_sync_max_bundle_bytes(scope: str = "", *, delta: bool = False) -> int:
+    default = SHARED_SYNC_DEFAULT_MAX_BUNDLE_BYTES
+    if scope == "cadastro" and not delta:
+        default = SHARED_SYNC_DEFAULT_MAX_CADASTRO_BUNDLE_BYTES
+    return _shared_sync_env_int("JK_SHARED_SYNC_MAX_BUNDLE_BYTES", default, 1024 * 1024, 250 * 1024 * 1024)
 
 
 def _shared_sync_local_backup_retention() -> int:

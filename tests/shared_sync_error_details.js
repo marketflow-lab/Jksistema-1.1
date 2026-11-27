@@ -59,7 +59,72 @@ async function runScenario(responses) {
     await context.executarVinculoCompartilhamentoUsuario('link-test', 'pull');
     return { calls, status, notifications };
 }
+async function testPreparacaoEnvioMaquinas() {
+    const source = section('    function selecaoMaquinasConfirmada(', '    async function carregarUsuariosParaCompartilhar(');
+    const config = { enabled: true, auto_pull: false, auto_push: false, scopes: ['vendas', 'cadastro'] };
+    let saved = { success: true, config };
+    let preview = { operation_id: 'fixture', scopes: { cadastro: {}, vendas: {} } };
+    const calls = [], errors = [];
+    const context = {
+        sincronizacaoMaquinasCache: { config },
+        coletarSincronizacaoMinhasMaquinas: () => ({ ...config, scopes: ['cadastro', 'vendas'], machine_id: 'pc:test' }),
+        sincronizacaoFirebasePronta: () => true, atualizarBalaoSincronizacaoMaquinas() {},
+        machineIdAtual: () => 'pc:test', obterAuthHeaders: () => ({}), confirm: () => true,
+        setMachineSyncStatus: (msg, failed) => { if (failed) errors.push(msg); },
+        atualizarCacheHistoricoFavoritosSincronizado: async () => {},
+        window: { jkNotificarImportacaoMaquinas() {} },
+        carregarSincronizacaoMinhasMaquinas: async () => {}, resumoResultadosSync: () => '',
+        fetch: async (url, options) => {
+            const action = options.method === 'PUT' ? 'salvar' : url.split('/').at(-1);
+            calls.push(action);
+            if (action === 'salvar') assert(url.endsWith('?config_only=true'));
+            const data = action === 'salvar' ? saved : action === 'preview' ? preview
+                : { results: [{ scope: 'cadastro' }, { scope: 'vendas' }] };
+            return { ok: data.success !== false, status: data.status || 200, json: async () => data };
+        },
+    };
+    vm.createContext(context);
+    vm.runInContext(formatter + source, context);
+    async function enviar(expected, direcao = 'push') {
+        calls.length = 0;
+        errors.length = 0;
+        await context.executarSincronizacaoMinhasMaquinas(direcao);
+        assert.deepStrictEqual(calls, expected);
+    }
+    // Owner-selected scope order can differ from checkbox order.
+    await enviar(['preview', 'push']);
+    assert.deepStrictEqual(errors, []);
+    for (const direcao of ['push', 'pull']) {
+        context.sincronizacaoMaquinasCache.config = { ...config, needs_migration: true };
+        await enviar(['salvar', 'preview', direcao], direcao);
+        assert.deepStrictEqual(errors, []);
+        await enviar(['preview', direcao], direcao);
+        assert.deepStrictEqual(errors, []);
+    }
+    context.sincronizacaoMaquinasCache = { config: { ...config, scopes: ['cadastro'] } };
+    await enviar(['salvar', 'preview', 'push']);
+    await enviar(['preview', 'push']);
+    context.sincronizacaoMaquinasCache = null;
+    saved = { success: false, detail: 'Falha ao salvar seleção de teste.' };
+    await enviar(['salvar']);
+    assert.deepStrictEqual(errors, [saved.detail]);
+    saved = { success: true, config: { ...config, scopes: ['cadastro'] } };
+    await enviar(['salvar']);
+    assert.match(errors[0], /não confirmou/);
+    context.sincronizacaoMaquinasCache = { config };
+    preview = { operation_id: 'fixture', scopes: { cadastro: {} } };
+    await enviar(['preview']);
+    assert.match(errors[0], /prévia não confirmou/);
+    assert.strictEqual(context.sincronizacaoMaquinasCache.config, null);
+    context.sincronizacaoMaquinasCache.config = config;
+    preview = { success: false, status: 400, detail: 'Seleção desativada.' };
+    await enviar(['preview']);
+    assert.deepStrictEqual(errors, [preview.detail]);
+    assert.strictEqual(context.sincronizacaoMaquinasCache.config, null);
+}
+
 (async () => {
+    await testPreparacaoEnvioMaquinas();
     const detail = { code: 'cadastro_photo_config_required', message: 'Configuração de fotos ausente.' };
     const beforePreview = await runScenario([{ ok: false, data: { detail } }]);
     assert.strictEqual(beforePreview.calls.length, 1);

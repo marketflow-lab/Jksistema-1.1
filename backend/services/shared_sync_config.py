@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -211,6 +212,7 @@ def _shared_sync_state_path(client_id: str, username: str) -> str:
 
 
 _SHARED_SYNC_STATE_LOCK = threading.RLock()
+_MACHINE_PREFS_LOCK = threading.Lock()
 
 
 def _shared_sync_state_read(client_id: str, username: str) -> dict:
@@ -225,29 +227,30 @@ def _shared_sync_state_read(client_id: str, username: str) -> dict:
         except Exception:
             return {"scopes": {}}
 
+def _write_sync_json(path: str, payload: dict) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".shared_sync_state_", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _shared_sync_state_write(client_id: str, username: str, data: dict) -> None:
     with _SHARED_SYNC_STATE_LOCK:
-        path = _shared_sync_state_path(client_id, username)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         payload = data if isinstance(data, dict) else {"scopes": {}}
         payload["updated_at"] = _shared_sync_now_iso()
-        fd, temp_path = tempfile.mkstemp(
-            prefix=".shared_sync_state_",
-            suffix=".tmp",
-            dir=os.path.dirname(path),
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_path, path)
-        except Exception:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-            raise
+        _write_sync_json(_shared_sync_state_path(client_id, username), payload)
+
 
 def _shared_sync_immutable_snapshot_id(meta: dict) -> str:
     """Retorna somente IDs de snapshots v2 imutaveis e criptografados."""
@@ -556,21 +559,37 @@ def _shared_sync_machine_config_normalizar(sessao: dict, payload: Optional[dict]
         "updated_at": str(data.get("updated_at") or ""),
     }
 
-def _shared_sync_machine_config_read(sessao: dict) -> dict:
-    state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
-    return _shared_sync_machine_config_normalizar(sessao, state.get("machine_sync") if isinstance(state, dict) else None)
+def _machine_preferences_path(sessao: dict) -> str:
+    username = str(sessao.get("username") or "").strip().lower()
+    user_key = hashlib.sha256(username.encode("utf-8")).hexdigest()
+    return os.path.join(get_tenant_path(sessao.get("client_id")), f"shared_sync_machine_{user_key}.json")
+
+
+def _shared_sync_machine_config_read(sessao: dict, *, state: Optional[dict] = None) -> dict:
+    # Older installations keep the selection in the potentially large sharing history.
+    try:
+        with _MACHINE_PREFS_LOCK, open(_machine_preferences_path(sessao), encoding="utf-8") as handle:
+            config = json.load(handle)
+    except FileNotFoundError:
+        if state is None:
+            state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
+        legacy = state.get("machine_sync")
+        config = _shared_sync_machine_config_normalizar(sessao, legacy)
+        if isinstance(legacy, dict):
+            config["needs_migration"] = True
+        return config
+    except (ValueError, OSError) as exc:
+        raise HTTPException(500, "Falha ao ler a seleção de dados desta máquina.") from exc
+    return _shared_sync_machine_config_normalizar(sessao, config)
+
 
 def _shared_sync_machine_config_save(sessao: dict, payload: dict) -> dict:
-    explicit_payload = dict(payload) if isinstance(payload, dict) else {}
-    explicit_payload["auto_pull_explicit"] = True
-    explicit_payload["mode_version"] = 3
-    config = _shared_sync_machine_config_normalizar(sessao, explicit_payload)
+    config = _shared_sync_machine_config_normalizar(sessao, payload)
     config["updated_at"] = _shared_sync_now_iso()
-    with _SHARED_SYNC_STATE_LOCK:
-        state = _shared_sync_state_read(sessao.get("client_id"), sessao.get("username") or "")
-        state["machine_sync"] = config
-        _shared_sync_state_write(sessao.get("client_id"), sessao.get("username") or "", state)
+    with _MACHINE_PREFS_LOCK:
+        _write_sync_json(_machine_preferences_path(sessao), config)
     return config
+
 
 def _shared_sync_machine_resolver_scopes(sessao: dict, requested: Optional[list[str]] = None, require_enabled: bool = True) -> list[str]:
     config = _shared_sync_machine_config_read(sessao)
