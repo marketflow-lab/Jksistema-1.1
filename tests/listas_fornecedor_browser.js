@@ -15,6 +15,10 @@ const nationalizers = [
   { id: 'nationalizer-a', nome_empresa: 'Nacionalizador A' },
   { id: 'nationalizer-b', nome_empresa: 'Nacionalizador B' },
 ];
+const stores = [
+  { nome: 'Loja sem pedidos', store_id: 'store-new' },
+  { nome: 'JK Pecas', store_id: 'store-jk' },
+];
 const state = {
   suppliers,
   nationalizers,
@@ -47,7 +51,7 @@ function addList(payload) {
   assert(supplier, 'Toda lista criada deve enviar um fornecedor cadastrado');
   const list = {
     id: 'created-' + state.lists.length, nome_lista: payload.nome_lista || 'Pedido importado',
-    loja: 'JK Pecas', store_id: 'store-jk', status: 'Analisando orçamento',
+    loja: payload.loja || 'JK Pecas', store_id: payload.store_id || 'store-jk', status: 'Analisando orçamento',
     fornecedor_id: supplier.id, supplier: supplier.nome_empresa,
     created_at: '2026-10-02T13:00:00Z', itens: [], total_itens: 0,
   };
@@ -96,7 +100,7 @@ async function installRoutes(page) {
         ? json(route, { detail: 'Cadastro de nacionalizadores indisponível' }, 500)
         : json(route, snapshot);
     }
-    if (pathname === '/api/lojas') return json(route, [{ nome: 'JK Pecas', store_id: 'store-jk' }]);
+    if (pathname === '/api/lojas') return json(route, stores);
     if (pathname === '/api/medias-compras/preferencias-skus-ocultos') return json(route, { skus_ocultos: [] });
     if (pathname === '/api/medias-compras/visao') {
       return json(route, { colunas_meses: [], itens: [{
@@ -113,10 +117,14 @@ async function installRoutes(page) {
     }
     if (pathname === '/api/medias-compras/listas-pedidos/importar-excel') {
       const multipart = request.postDataBuffer().toString('utf8');
-      const match = multipart.match(/name="fornecedor_id"\r\n\r\n([^\r\n]+)/);
-      assert(match, 'Excel deve enviar fornecedor_id no multipart');
-      state.imports.push(match[1]);
-      return json(route, { lista: addList({ fornecedor_id: match[1] }) });
+      const campos = Object.fromEntries([...multipart.matchAll(/name="(fornecedor_id|loja|store_id)"\r\n\r\n([^\r\n]+)/g)]
+        .map(([, campo, valor]) => [campo, valor]));
+      assert(campos.fornecedor_id, 'Excel deve enviar fornecedor_id no multipart');
+      if (!stores.some(loja => loja.store_id === campos.store_id && loja.nome === campos.loja)) {
+        return json(route, { detail: 'Selecione uma loja específica para continuar.' }, 400);
+      }
+      state.imports.push(campos);
+      return json(route, { lista: addList(campos) });
     }
     if (pathname === '/api/medias-compras/listas-pedidos') {
       return json(route, { listas: state.lists.map(list => ({ ...list, total_itens: list.itens.length })) });
@@ -161,8 +169,12 @@ async function openGeneration(page) {
   await page.locator('#modalListaCompra.open').waitFor();
 }
 
-async function chooseSupplierForImport(page, trigger, id) {
+async function chooseSupplierForImport(page, trigger, id, storeId) {
   await trigger.click();
+  if (storeId) {
+    await page.locator('#lojaPedidoImportadoSelect').selectOption(storeId);
+    await page.locator('#lojaPedidoImportado button[value="continuar"]').click();
+  }
   const select = page.locator('#jkFornecedorListaSelect');
   await page.waitForFunction(() => {
     const select = document.getElementById('jkFornecedorListaSelect');
@@ -173,10 +185,17 @@ async function chooseSupplierForImport(page, trigger, id) {
   const chooserPromise = page.waitForEvent('filechooser');
   const importPromise = page.waitForResponse(response =>
     new URL(response.url()).pathname === '/api/medias-compras/listas-pedidos/importar-excel' && response.request().method() === 'POST');
+  const alerta = await trigger.getAttribute('id') === 'btnImportarPedidoMenu' ? page.waitForEvent('dialog').then(async dialog => {
+    const mensagem = dialog.message();
+    await dialog.accept();
+    return mensagem;
+  }) : null;
   await page.locator('#jkFornecedorListaConfirmar').click();
   const chooser = await chooserPromise;
   await chooser.setFiles({ name: 'pedido.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from('fixture') });
-  await importPromise;
+  const [response, mensagem] = await Promise.all([importPromise, alerta]);
+  assert.strictEqual(response.status(), 200, await response.text());
+  if (mensagem) assert.match(mensagem, /Lista criada com sucesso/);
 }
 
 const inlineListNames = new Map([['long-name', 'JK55-Richard Aproved']]);
@@ -736,7 +755,7 @@ async function testInlineSuppliers(page, longSupplier) {
     assert.strictEqual(state.imports.length, 0);
     await chooseSupplierForImport(page, page.locator('#btnImportarListaPedidoExcel'), 'supplier-b');
     await page.locator('#statusListaPedido', { hasText: 'Lista adicionada por Excel com sucesso.' }).waitFor();
-    assert.deepStrictEqual(state.imports, ['supplier-b']);
+    assert.deepStrictEqual(state.imports, [{ fornecedor_id: 'supplier-b', loja: 'JK Pecas', store_id: 'store-jk' }]);
 
     const longSupplier = ('Fornecedor Internacional de Componentes Automotivos e Equipamentos para Importação ' + 'Exemplo '.repeat(5)).trim();
     state.lists.push({ id: 'long-name', nome_lista: 'JK55-Richard Aproved', loja: 'JK Pecas', store_id: 'store-jk',
@@ -751,6 +770,7 @@ async function testInlineSuppliers(page, longSupplier) {
     if (previewDirectory) {
       await page.locator('.container').screenshot({ path: path.join(previewDirectory, 'listas-com-fornecedor.png') });
     }
+    await selectStore(page);
     state.suppliers = [];
     await page.locator('#btnImportarPedidoMenu').click();
     await page.locator('#jkFornecedorListaModal', { hasText: 'Cadastre um fornecedor' }).waitFor();
@@ -760,7 +780,7 @@ async function testInlineSuppliers(page, longSupplier) {
     state.suppliers = suppliers;
     await chooseSupplierForImport(page, page.locator('#btnImportarPedidoMenu'), 'supplier-a');
     await page.locator('.meta-fornecedor').filter({ hasText: 'Fornecedor A' }).first().waitFor();
-    assert.deepStrictEqual(state.imports, ['supplier-b', 'supplier-a']);
+    assert.deepStrictEqual(state.imports.at(-1), { fornecedor_id: 'supplier-a', loja: 'JK Pecas', store_id: 'store-jk' });
 
     const imported = state.lists.at(-1);
     await page.goto('http://jk.test/importacoes_lista.html?lista_id=' + imported.id);
@@ -774,6 +794,17 @@ async function testInlineSuppliers(page, longSupplier) {
     assert.deepStrictEqual(state.updates.at(-1), { fornecedor_id: 'supplier-b' });
     assert.strictEqual(imported.supplier, 'Fornecedor B');
     await testInlineSuppliers(page, longSupplier);
+
+    await page.goto('http://jk.test/importacoes.html');
+    const triggerImport = page.locator('#btnImportarPedidoMenu');
+    await triggerImport.click();
+    const dialog = page.locator('#lojaPedidoImportado');
+    await dialog.waitFor();
+    assert.strictEqual(await page.locator('#jkFornecedorListaModal').count(), 0);
+    await dialog.getByRole('button', { name: 'Cancelar' }).click();
+    assert.strictEqual(state.imports.length, 2);
+    await chooseSupplierForImport(page, triggerImport, 'supplier-a', 'store-new');
+    assert.deepStrictEqual(state.imports.at(-1), { fornecedor_id: 'supplier-a', loja: 'Loja sem pedidos', store_id: 'store-new' });
     assert.deepStrictEqual(errors, []);
     console.log('Listas com fornecedor e nacionalizador: geração POST/GET, Excel, detalhe, pills, duplo clique, Enter/blur/Esc, históricos, catálogo atrasado/erro, retry, concorrência e layout: OK');
   } finally {
