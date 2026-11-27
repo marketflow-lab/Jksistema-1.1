@@ -86,6 +86,7 @@ async function captchaStockPreservesDiscovery(browser) {
         runner.controller = new AbortController();
         runner.seenSeeds = new Set(previousSeeds);
         runner.seenSellers = new Set();
+        runner.internationalSellers = new Set(runner.checkpoint.internationalSellerKeys);
 
         await assert.rejects(runner.processSeed(seed), error => error.waitingLogin === true && error.message === 'ml_verification_required',
             'the logged-in item with hidden controls leads to the seller stock, where an actual verification pauses discovery');
