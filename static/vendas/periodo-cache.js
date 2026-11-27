@@ -505,7 +505,10 @@ function getDataFimISO() {
 }
 
 function getHojeISO() {
-    return new Date().toISOString().split('T')[0];
+    const hoje = new Date();
+    const mes = String(hoje.getMonth() + 1).padStart(2, '0');
+    const dia = String(hoje.getDate()).padStart(2, '0');
+    return `${hoje.getFullYear()}-${mes}-${dia}`;
 }
 
 function chavePreferenciaPeriodoData() {
@@ -528,7 +531,8 @@ function salvarPreferenciaPeriodoData(preferencia = {}) {
             data_fim: fimIso,
             origem,
             periodo,
-            versao: 2
+            acompanhar_mes_atual: preferencia?.acompanharMesAtual === true,
+            versao: 3
         }));
     } catch (_e) {
         // Ignora erro de localStorage.
@@ -542,18 +546,31 @@ function carregarPreferenciaPeriodoData() {
         const pref = JSON.parse(raw);
         let inicio = pref?.data_inicio;
         let fim = pref?.data_fim;
-        if (!inicio || !fim) return null;
+        if (typeof inicio !== 'string' || typeof fim !== 'string' || !inicio || !fim) return null;
 
         const hojeIso = getHojeISO();
+        const inicioMesAtual = `${hojeIso.slice(0, 7)}-01`;
+        const origem = String(pref.origem || '').trim();
+        const versao = Number(pref.versao || 0);
+        // As preferências antigas salvavam a escolha do mês como intervalo manual.
+        const mesAtualLegado = versao < 3 && (!origem || origem === 'manual')
+            && inicio === inicioMesAtual && fim >= inicio && fim < hojeIso
+            && toIsoDateFromInput(fim) === fim;
+        const acompanharMesAtual = pref.acompanhar_mes_atual === true || mesAtualLegado;
+        if (acompanharMesAtual) {
+            inicio = inicioMesAtual;
+            fim = hojeIso;
+        }
         if (fim > hojeIso) fim = hojeIso;
         if (inicio > fim) inicio = fim;
 
         return {
             inicio,
             fim,
-            origem: String(pref?.origem || '').trim(),
-            periodo: String(pref?.periodo || '').trim(),
-            versao: Number(pref?.versao || 0)
+            origem: acompanharMesAtual ? 'manual' : origem,
+            periodo: String(pref.periodo || '').trim(),
+            versao,
+            acompanharMesAtual
         };
     } catch (_e) {
         return null;
@@ -766,14 +783,16 @@ function preencherMeses() {
 function selecionarMes(mesAnoValue) {
     if (!mesAnoValue) return;
     const [ano, mes] = mesAnoValue.split('-');
-    const data = new Date(ano, parseInt(mes) - 1, 1);
     const ultimoDia = new Date(ano, parseInt(mes), 0);
 
     const ini = ano + '-' + mes + '-01';
     const fim = ano + '-' + mes + '-' + ultimoDia.getDate().toString().padStart(2, '0');
+    const acompanharMesAtual = mesAnoValue === getHojeISO().slice(0, 7);
 
+    mesAno.value = mesAnoValue;
     setDataRangeISO(ini, fim);
-    atualizarPeriodoComRecarregamento(true);
+    removerDatasExplicitasUrlAposAtalho();
+    atualizarPeriodoComRecarregamento(true, { acompanharMesAtual });
 }
 
 function sincronizarPeriodoTopo(inicioIso, fimIso) {
@@ -910,5 +929,9 @@ dataFim.addEventListener('blur', () => {
 });
 
 preencherMeses();
+if (!(data_inicio_param && data_fim_param) && periodoPrefSalvo?.acompanharMesAtual) {
+    mesAno.value = periodoPrefSalvo.inicio.slice(0, 7);
+    if (periodoPrefSalvo.versao < 3) salvarPreferenciaPeriodoData({ acompanharMesAtual: true });
+}
 atualizarPeriodoTexto();
 mesAno.addEventListener('change', (e) => selecionarMes(e.target.value));

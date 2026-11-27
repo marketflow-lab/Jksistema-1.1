@@ -219,7 +219,7 @@ assert.match(initSource, /const periodoNormalizado = await normalizarPeriodoGraf
 assert.match(initSource, /periodoNormalizado === false\s*&& !periodoGraficoAtalhoPendente[\s\S]*await reaplicarPeriodoGraficoAposMudancaFiltro\(\)/);
 assert.match(initSource, /if \(data_inicio_param && data_fim_param\) \{\s*periodoGrafico = 'manual'/);
 assert.match(periodoCacheSource, /function salvarPreferenciaPeriodoData\(preferencia = \{\}\)/);
-assert.match(periodoCacheSource, /origem,\s*periodo,\s*versao: 2/);
+assert.match(periodoCacheSource, /origem,\s*periodo,\s*acompanhar_mes_atual:[^\n]+\n\s*versao: 3/);
 assert.match(periodoCacheSource, /marcarPeriodoGraficoManual\(\)/);
 assert.match(source, /function invalidarPeriodoGraficoPendente\(\) \{[\s\S]*periodoGraficoAtalhoPendente = null/);
 assert.match(source, /periodoGraficoIncluiMesAtual\(\)\) params\.set\('incluir_previsao_mes_atual', 'true'\)/);
@@ -260,7 +260,7 @@ assert.strictEqual(dadosCompactados.labels.at(-1), 'dia-319', 'compactação dev
 assert.strictEqual(dadosCompactados.series[0].at(-1), 319, 'séries devem preservar o valor do último ponto');
 
 assert.match(htmlStatic, /periodos-completos\.js\?v=20260827-vendas-previsao-mes-atual-v1/);
-assert.match(htmlStatic, /periodo-cache\.js\?v=20261116-automacao-salva-v1/);
+assert.match(htmlStatic, /periodo-cache\.js\?v=20261127-mes-atual-v1/);
 assert.match(htmlStatic, /sync\.js\?v=20261116-automacao-salva-v1/);
 assert.match(htmlStatic, /dados-render\.js\?v=20261030-resumo-salvo-v1/);
 assert.match(htmlStatic, /grafico\.js\?v=20261112-periodo-grafico-v1/);

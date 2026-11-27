@@ -51,7 +51,9 @@ async function json(route, body, status = 200) {
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) }).catch(() => {});
 }
 async function start() {
-    const context = await chromium.launchPersistentContext(profile, { headless: true, viewport: { width: 1250, height: 850 } });
+    const context = await chromium.launchPersistentContext(profile, {
+        headless: true, timezoneId: 'America/Sao_Paulo', viewport: { width: 1250, height: 850 }
+    });
     state = { mode: 'live', holdStores: false, held: [], calls: [] };
     await context.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -123,6 +125,54 @@ async function waitHeld(predicate) {
     throw new Error('A requisição sintética esperada não iniciou.');
 }
 function takeHeld(route) { state.held = state.held.filter(candidate => candidate !== route); return route; }
+
+async function verifyCurrentMonthOnEntry(page) {
+    state.mode = 'live';
+    await page.evaluate(() => {
+        localStorage.setItem('user_data', JSON.stringify({client_id:'current-month-test',username:'usuario-a'}));
+        localStorage.setItem('access_token', 'current-month-fixture-token');
+        localStorage.setItem('vendas_periodo_pref_current-month-test', JSON.stringify({
+            data_inicio: '2026-11-01', data_fim: '2026-11-26', origem: 'manual', periodo: '', versao: 2
+        }));
+    });
+    const setDate = iso => page.clock.setFixedTime(new Date(`${iso}T21:30:00-03:00`));
+    const navigate = url => page.goto(url, { waitUntil: 'domcontentloaded' });
+    const dates = () => page.evaluate(() => {
+        const { inicio, fim } = JKVendasLegacyBridge.getSnapshot().filters;
+        return [inicio, fim, mesAno.value];
+    });
+
+    await setDate('2026-11-27');
+    const reads = ['/api/vendas/resumo', '/api/vendas/grafico'].map(pathname =>
+        page.waitForRequest(request => new URL(request.url()).pathname === pathname));
+    const [, ...requests] = await Promise.all([navigate(maxUrl), ...reads]);
+    assert.deepEqual(await dates(), ['2026-11-01', '2026-11-27', '2026-11']);
+    for (const request of requests) {
+        const { searchParams } = new URL(request.url());
+        assert.equal(searchParams.get('data_inicio'), '2026-11-01');
+        assert.equal(searchParams.get('data_fim'), '2026-11-27');
+    }
+
+    await setDate('2026-12-01');
+    await navigate(maxUrl);
+    assert.deepEqual(await dates(), ['2026-12-01', '2026-12-01', '2026-12']);
+
+    await navigate(mainUrl);
+    assert.deepEqual((await dates()).slice(0, 2), ['2026-10-01', '2026-10-20']);
+    await page.evaluate(() => JKVendasLegacyBridge.setMonth('2026-12'));
+    await setDate('2026-12-02');
+    await page.reload({waitUntil:'domcontentloaded'});
+    assert.deepEqual(await dates(), ['2026-12-01', '2026-12-02', '2026-12']);
+
+    await page.evaluate(() => JKVendasLegacyBridge.setPeriod('2026-12-01', '2026-12-02'));
+    await setDate('2026-12-03');
+    await navigate(maxUrl);
+    assert.deepEqual((await dates()).slice(0, 2), ['2026-12-01', '2026-12-02']);
+
+    await page.locator('#mesAno').selectOption('2026-10');
+    await navigate(maxUrl);
+    assert.deepEqual((await dates()).slice(0, 2), ['2026-10-01', '2026-10-31']);
+}
 
 async function main() {
     let context = await start();
@@ -304,9 +354,11 @@ async function main() {
         await page.evaluate(() => carregarGrafico());
         assert.equal(await page.locator('#tBody tr').count(), 0, 'A current graph 401 clears the visible saved session');
         assert.equal(await page.evaluate(() => JKVendasLegacyBridge.getSnapshot().graph.data), null);
+        await corruptSku.close();
+        await verifyCurrentMonthOnEntry(page);
         assert.ok(state.calls.every(call => call.method === 'GET'));
         assert.deepEqual(errors, []);
-        console.log('PASS Vendas: browser restart restores list and graph before stores; max/comparison and saved bounds survive API failure; timestamps, stale graph/401, user isolation and malformed cache pass.');
+        console.log('PASS Vendas: cache restoration, max/comparison, session isolation and current month on entry.');
     } finally {
         await context.close();
         const resolved = path.resolve(profile);

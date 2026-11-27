@@ -28,7 +28,7 @@ assert.match(canonicalHtml, />Todas as lojas virtuais<\/option>/);
 for (const [asset, expectedCacheKey] of Object.entries({
   'styles.css': '20261020-vendas-status-compacto-v2',
   'runtime.js': '20261027-cache-persistente-v1',
-  'periodo-cache.js': '20261116-automacao-salva-v1',
+  'periodo-cache.js': '20261127-mes-atual-v1',
   'sync.js': '20261116-automacao-salva-v1',
   'dados-render.js': '20261030-resumo-salvo-v1',
 })) {
