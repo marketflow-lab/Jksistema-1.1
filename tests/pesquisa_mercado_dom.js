@@ -116,6 +116,45 @@ async function testInternationalOffer(page) {
     }
 }
 
+async function testInternationalShippingOrigin(page) {
+    const itemId = 'MLB6241837538', otherId = 'MLB6241837539', sellerId = '3153716181';
+    const url = 'https://www.mercadolivre.com.br/produto/p/MLB9999999?wid=' + itemId + '&seller_id=' + sellerId;
+    const shipping = text => '<div class="ui-pdp-shipping"><span class="ui-pdp-shipping__title">' + text + '</span></div>';
+    const origin = shipping('Envio da China');
+    const label = '<span class="andes-badge">Internacional</span>';
+    const itemInput = id => '<input type="hidden" name="item_id" value="' + id + '">';
+    const form = (id, body = '', attrs = '') => '<form id="buybox-form" class="ui-pdp-buybox" ' + attrs + '>'
+        + itemInput(id) + '<button type="submit">Comprar agora</button>' + body + '</form>';
+    const right = body => '<div class="ui-pdp--sticky-wrapper ui-pdp--sticky-wrapper-right">' + body + '</div>';
+    const otherOffer = className => '<section class="ui-pdp-buybox ' + className + '" data-item-id="' + otherId + '">'
+        + itemInput(otherId) + origin + '</section>';
+    const options = { detail: true, seller: { id: sellerId }, expectedItem: { id: itemId, url } };
+    await page.goto(url);
+    for (const [name, body, expected] of [
+        ['origem e selo ao lado do formulário da oferta selecionada', right(form(itemId) + label + origin), true],
+        ['frete internacional no formulário identificado pelo campo oculto', form(itemId, shipping('Frete internacional')), true],
+        ['selo curto e impostos de importação da oferta', form(itemId, label + shipping('Tributações estimadas') + shipping('Imposto de importação')), true],
+        ['origem na oferta principal com outra oferta no comparador', right(form(itemId, origin) + otherOffer('ui-pdp-table__row')), true],
+        ['campo oculto de outro MLB', right(form(otherId) + label + origin), false],
+        ['raiz e campo oculto em conflito', form(otherId, origin, 'data-item-id="' + itemId + '"'), false],
+        ['origem em compra de outro vendedor', form(itemId, origin, 'data-seller-id="3153716182"'), false],
+        ['origem em recomendação da mesma coluna', right(form(itemId) + '<section class="ui-recommendations">' + origin + '</section>'), false],
+        ['origem apenas na outra oferta', right(form(itemId) + otherOffer('ui-pdp-s-table__row')), false],
+        ['origem em outra coluna', right(form(itemId)) + right(origin), false],
+        ['China como destino da entrega', form(itemId, shipping('Envio para a China')), false],
+        ['selo curto com frete nacional', form(itemId, label + shipping('Envio do Brasil')), false],
+        ['selo curto e tributações sem imposto de importação', form(itemId, label + shipping('Tributações estimadas')), false]
+    ]) {
+        await page.setContent('<main><h1 class="ui-pdp-title">Produto internacional com envio da China</h1>' + body + '</main>');
+        for (const [reader, source] of [['descoberta', scripts.discoveryScript()], ['detalhe', scripts.snapshotScript(options)]]) {
+            const result = await page.evaluate(source);
+            assert.equal(result.internationalOffer === true, expected, reader + ' da página: ' + name);
+            assert.deepEqual(result.anuncios.filter(ad => ad.internationalOffer === true).map(ad => ad.id),
+                expected ? [itemId] : [], reader + ' da oferta: ' + name);
+        }
+    }
+}
+
 async function testRedirectedCatalogOffer(page) {
     const catalogUrl = 'https://www.mercadolivre.com.br/teste/p/MLB9999999';
     const id = 'MLB10000077', otherId = 'MLB10000078';
@@ -193,6 +232,7 @@ async function run() {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
         await testInternationalOffer(page);
+        await testInternationalShippingOrigin(page);
         await testRedirectedCatalogOffer(page);
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
         await page.goto('https://www.mercadolivre.com.br/item/up/MLBU123456?wid=MLB10000001');

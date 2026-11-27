@@ -651,6 +651,7 @@
         const excludedOfferArea = excludedMetricArea + ', ' + avantSelector
             + ', [role="dialog"], [class*="other-seller"], [class*="other-offer"], [data-testid*="other-seller"], [data-testid*="other-offer"]'
             + ', [class*="description"], [data-testid*="description"], h1, h2, h3, .poly-component__title, .ui-search-item__title, [data-testid="product-title"]';
+        const otherOfferRows = '.ui-pdp-table__row, .ui-pdp-s-table__row';
         const currentCatalogId = catalogId(url);
         const catalogAddress = currentCatalogId ? catalogOfferFromAddress(url, currentCatalogId) : null;
         const expectedItem = options?.detail && options.expectedItem;
@@ -660,7 +661,8 @@
         // If Mercado Livre drops the offer selector, only the native buy box
         // can establish which offer was rendered. The requested ID is a check.
         const buyBoxItems = sameRequestedCatalog ? new Set(nodes('.ui-pdp-buybox[data-item-id]', content)
-            .filter(node => !node.closest(avantSelector + ', ' + excludedMetricArea + ', [role="dialog"]') && visibleAuthControl(node))
+            .filter(node => !node.closest(avantSelector + ', ' + excludedMetricArea + ', [role="dialog"], ' + otherOfferRows)
+                && visibleAuthControl(node))
             .map(node => offerId(node.getAttribute('data-item-id'))).filter(id => id && id !== currentCatalogId)) : new Set();
         const catalogOfferConflict = catalogAddress?.conflict || currentCatalogId && expectedCatalog && currentCatalogId !== expectedCatalog
             || buyBoxItems.size > 1
@@ -683,19 +685,43 @@
         const internationalOffer = (() => {
             if (!isProduct(url) || !productMain || authRequired || catalogOfferConflict || avantDetailIdentityConflict
                 || headerConflict || expectedSellerId && sellerId && expectedSellerId !== sellerId) return false;
-            const boxes = nodes('.ui-pdp-buybox', productMain).filter(box => !box.closest(cardSelector + ', ' + excludedOfferArea) && visibleAuthControl(box));
+            const buyBox = '.ui-pdp-buybox';
+            const excluded = cardSelector + ', ' + excludedOfferArea + ', ' + otherOfferRows;
+            const boxes = nodes(buyBox, productMain).filter(box => !box.closest(excluded) && visibleAuthControl(box));
             if (boxes.length !== 1) return false;
             const box = boxes[0];
-            const boxItem = offerId(box.getAttribute('data-item-id'));
-            if (currentCatalogId && (!currentItemId || boxItem !== currentItemId)
-                || box.hasAttribute('data-item-id') && (!boxItem || currentItemId && boxItem !== currentItemId)) return false;
+
+            // A selected catalog offer can declare its MLB in the native checkout form.
+            const declared = box.hasAttribute('data-item-id') ? [offerId(box.getAttribute('data-item-id'))] : [];
+            if (box.matches('form#buybox-form')) {
+                for (const input of nodes('input[name="item_id"]', box)) {
+                    if (input.form === box && !input.closest(excluded)) declared.push(offerId(input.value));
+                }
+            }
+            const offerIds = new Set(declared);
+            const boxItem = declared[0] || '';
+            if (offerIds.has('') || offerIds.size > 1 || boxItem && currentItemId && boxItem !== currentItemId
+                || currentCatalogId && (!currentItemId || boxItem !== currentItemId)) return false;
             const boxSeller = clean(box.getAttribute('data-seller-id'));
             if (boxSeller && scopedSellerId && boxSeller !== scopedSellerId) return false;
+
+            const purchase = box.closest('.ui-pdp--sticky-wrapper-right') || box;
             const shipping = ':is(.andes-badge, [class^="ui-pdp-shipping"], [class*=" ui-pdp-shipping"])';
-            return nodes('.poly-component__cbt, ' + shipping + ', ' + shipping + ' :is(span, strong, p)', box).some(node =>
-                !node.closest(cardSelector) && node.closest('.ui-pdp-buybox') === box
-                && nativeBadgeBelongs(node, box, currentItemId || boxItem, scopedSellerId || boxSeller)
-                && (node.matches('.poly-component__cbt') || norm(node.innerText) === 'compra internacional'));
+            const texts = new Set();
+            for (const node of nodes('.poly-component__cbt, ' + shipping + ', span, strong, p, summary', purchase)) {
+                const owner = node.closest(buyBox);
+                const shippingPart = node.closest(shipping);
+                const inScope = owner === box || !owner && shippingPart;
+                if (!inScope || node.closest(excluded)
+                    || !nativeBadgeBelongs(node, purchase, currentItemId || boxItem, scopedSellerId || boxSeller)) continue;
+                const text = norm(node.innerText).replace(/:$/, '');
+                if (node.matches('.poly-component__cbt') || shippingPart
+                    && ['compra internacional', 'frete internacional', 'envio da china'].includes(text)) return true;
+                texts.add(text);
+            }
+            // The short badge alone can also occur in unrelated seller text.
+            return texts.has('internacional') && (texts.has('envio da china')
+                || texts.has('tributacoes estimadas') && texts.has('imposto de importacao'));
         })();
         const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
         const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja|pagina)\//i.test(value || '');
