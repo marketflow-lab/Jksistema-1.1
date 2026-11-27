@@ -100,6 +100,10 @@ for route in routes:
         pairs.append((method, route.path))
 duplicates=[item for item,count in collections.Counter(pairs).items() if count > 1]
 assert {method for method, path in pairs if path == "/api/comentarios-sku"} == {"GET", "PUT"}
+suggestion_methods = sorted(
+    method for method, path in pairs if path == "/api/medias-compras/gerar-lista-sugestao"
+)
+assert suggestion_methods == ["GET", "POST"]
 margin_configuration = [route for route in routes
     if route.path == "/api/medias-compras/listas-pedidos/configuracao-margens"]
 assert len(margin_configuration) == 1
@@ -125,8 +129,9 @@ print(json.dumps({"routes":len(routes),"pairs":len(pairs),"duplicates":duplicate
         # Approved import margin concurrency adds the verified configuration GET.
         # Immediate automatic settings add one POST; all older paths are frozen.
         # The approved shared GPT catalog adds GET /api/codex/models outside Vendas.
-        "routes": 547,
-        "pairs": 545,
+        # The suggestion export accepts the current hidden SKU list through POST.
+        "routes": 548,
+        "pairs": 546,
         "duplicates": [],
         "openapi": "cdff2722a11d4efdd5c3f0392dabcdc03dbfa595eb3164e2e644eb0398d7e50c",
         "previous_openapi": "d0579612bb1adcae1d5e89bc63a845f9061e2b9bf59aba7160bd6be121dae586",

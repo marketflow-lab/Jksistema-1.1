@@ -23,7 +23,7 @@ assert(runtimeSource.includes("event.key === 'Enter'"), 'Enter deve confirmar a 
 assert(runtimeSource.includes("event.key === 'Escape'"), 'Escape deve cancelar a edicao');
 assert(runtimeSource.includes('payload.quantidades_sugeridas = obterQuantidadesSugeridasEditadas()'));
 assert(runtimeSource.includes("params.set('quantidades_sugeridas', JSON.stringify(payload.quantidades_sugeridas))"));
-assert(runtimeSource.includes("params.set('quantidades_sugeridas', JSON.stringify(quantidadesSugeridas))"));
+assert(runtimeSource.includes('quantidades_sugeridas: obterQuantidadesSugeridasEditadas()'), 'o Excel deve receber os ajustes atuais de quantidade');
 assert(runtimeSource.includes('comprasSugeridasEditadas.clear()'), 'uma nova consulta deve limpar ajustes da consulta anterior');
 
 const normalizarSource = runtimeSource.match(/function normalizarQuantidadeCompraSugerida\(valor\) \{[\s\S]*?\n    \}/);
