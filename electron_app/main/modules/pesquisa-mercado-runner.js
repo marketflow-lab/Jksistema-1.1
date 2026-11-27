@@ -7,8 +7,12 @@ const ACTIVE = new Set(['running', 'paused', 'waiting_login', 'failed']);
 const ROOT = '/api/pesquisa-mercado/jobs';
 const MAX_CONCURRENT_DETAILS = 8;
 const AVANT_DETAIL_RETRY_MS = 2 * 60 * 1000;
+const MAX_AVANT_DETAIL_ATTEMPTS = 3;
+const AVANT_ATTEMPTS_EXHAUSTED = 'avant_attempts_exhausted';
 const DETAIL_RETRY_DELAYS_MS = Object.freeze([5000, 15000]);
-const DETAIL_RETRY_BLOCKS = new Set(['catalogue_proof_missing', 'seller_not_confirmed', 'legacy_seller_not_confirmed']);
+const DETAIL_RETRY_BLOCKS = new Set([
+    'catalogue_proof_missing', 'seller_not_confirmed', 'legacy_seller_not_confirmed', AVANT_ATTEMPTS_EXHAUSTED
+]);
 const AVANT_DETAIL_UNCONFIRMED = 'avant_detail_unconfirmed';
 const AVANT_DETAIL_FAILURES = Object.freeze({
     navigation_failed: 'Não foi possível abrir o anúncio.',
@@ -580,7 +584,8 @@ class PesquisaMercadoRunner {
         const detailConsultations = status === 'running' && this.detailConsultations.length
             ? this.detailConsultations.map(({ key, adId, title, startedAt, phase, missingFields, error, retryAt, attempt }) =>
                 ({ key, adId, title, startedAt, phase, missingFields, attempt,
-                    retryAt: phase === 'confirming' ? null : retryAt, ...(error ? { error } : {}) }))
+                    retryAt: phase === 'confirming' || attempt >= MAX_AVANT_DETAIL_ATTEMPTS ? null : retryAt,
+                    ...(error ? { error } : {}) }))
             : null;
         return { job: { id, status, revision, counters, message, created_at, updated_at, generation: this.job.generation || 0,
             ...(access ? { marketplaceAccess: access } : {}),
@@ -2061,6 +2066,8 @@ class PesquisaMercadoRunner {
 
     async collectDetailRound(seller, collection, legacySellerOnly = false) {
         const items = collection.result.anuncios;
+        const savedFailures = collection.detailAttemptFailures;
+        const failures = savedFailures && typeof savedFailures === 'object' && !Array.isArray(savedFailures) ? savedFailures : {};
         const enrichComplete = collection.detailRound === 0;
         // Keep out-of-order completions until the contiguous cursor catches up.
         // Unavailable details also count as attempted within this round.
@@ -2111,27 +2118,41 @@ class PesquisaMercadoRunner {
                 try {
                     this.check(controller.signal);
                     const legacy = this.canRecheckLegacySeller(seller, items[index]);
-                    let blockedReason;
+                    let blockedReason, resetBrowser = false;
                     for (;;) {
+                        if (detail.phase === 'failed') {
+                            const remaining = detail.retryAt - Date.now();
+                            if (remaining > 0) await timers.setTimeout(remaining, undefined, { signal: controller.signal });
+                            this.check(controller.signal);
+                            if (resetBrowser) browser.stop?.();
+                            Object.assign(detail, { phase: 'opening', missingFields: [],
+                                retryAt: Date.now() + this.detailRetryIntervalMs, attempt: detail.attempt + 1 });
+                            delete detail.error;
+                            progress();
+                        }
                         try {
                             blockedReason = await this.collectSellerDetail(seller, items, index, browser, controller.signal,
                                 detail.retryAt, observe);
                             break;
                         } catch (error) {
                             if (error.code !== AVANT_DETAIL_UNCONFIRMED) throw error;
+                            if (detail.attempt >= MAX_AVANT_DETAIL_ATTEMPTS) {
+                                items[index] = { ...items[index], rankable: false,
+                                    erro: `O Avant Pro não confirmou os dados após ${MAX_AVANT_DETAIL_ATTEMPTS} tentativas.` };
+                                blockedReason = AVANT_ATTEMPTS_EXHAUSTED;
+                                break;
+                            }
+                            resetBrowser = error.resetBrowser;
                             Object.assign(detail, { phase: 'failed', error: error.message, waiting: false });
+                            const { attempt, retryAt, startedAt } = detail;
+                            failures[index] = { attempt, retryAt, startedAt };
+                            collection.detailAttemptFailures = failures;
                             progress();
-                            const remaining = detail.retryAt - Date.now();
-                            if (remaining > 0) await timers.setTimeout(remaining, undefined, { signal: controller.signal });
-                            this.check(controller.signal);
-                            if (error.resetBrowser) browser.stop?.();
-                            Object.assign(detail, { phase: 'opening', missingFields: [],
-                                retryAt: Date.now() + this.detailRetryIntervalMs, attempt: detail.attempt + 1 });
-                            delete detail.error;
-                            progress();
+                            await this.save();
                         }
                     }
                     this.check(controller.signal);
+                    delete failures[index];
                     const blocks = this.detailRetryState().blocked, key = this.detailRetryKey(seller, items[index]);
                     if (DETAIL_RETRY_BLOCKS.has(blockedReason)) blocks[key] = blockedReason;
                     else if (legacy && !this.collector.isComplete(items[index])) blocks[key] = 'seller_not_confirmed';
@@ -2161,18 +2182,23 @@ class PesquisaMercadoRunner {
                     collection.detailBatchEnd = batch.at(-1) + 1;
                     await this.save();
                 }
-                const startedAt = Date.now();
-                const consultations = batch.map(index => ({
-                    key: index,
-                    adId: String(items[index].id || '').slice(0, 80),
-                    title: String(items[index].titulo || '').slice(0, 400),
-                    startedAt,
-                    retryAt: startedAt + this.detailRetryIntervalMs,
-                    attempt: 1,
-                    phase: 'opening',
-                    missingFields: [],
-                    waiting: false
-                }));
+                const now = Date.now();
+                const consultations = batch.map(index => {
+                    const failure = failures[index];
+                    const resume = Number.isSafeInteger(failure?.attempt) && failure.attempt > 0
+                        && failure.attempt < MAX_AVANT_DETAIL_ATTEMPTS && Number.isSafeInteger(failure.retryAt);
+                    return {
+                        key: index,
+                        adId: String(items[index].id || '').slice(0, 80),
+                        title: String(items[index].titulo || '').slice(0, 400),
+                        startedAt: resume && Number.isSafeInteger(failure.startedAt) ? Math.min(failure.startedAt, now) : now,
+                        retryAt: resume ? Math.min(failure.retryAt, now + this.detailRetryIntervalMs) : now + this.detailRetryIntervalMs,
+                        attempt: resume ? failure.attempt : 1,
+                        phase: resume ? 'failed' : 'opening',
+                        missingFields: [],
+                        waiting: false
+                    };
+                });
                 this.detailConsultations = consultations;
                 progress();
                 await Promise.all(batch.map((index, slot) => work(browsers[slot], index, consultations[slot])));
@@ -2181,6 +2207,7 @@ class PesquisaMercadoRunner {
                 cursor += batch.length;
             }
             delete collection.detailBatchEnd;
+            delete collection.detailAttemptFailures;
             return true;
         } finally {
             this.detailConsultations = [];
@@ -2213,6 +2240,7 @@ class PesquisaMercadoRunner {
                 collection.detailRound = 0;
                 collection.completedIndices = [];
                 delete collection.detailBatchEnd;
+                delete collection.detailAttemptFailures;
                 delete collection.retryDelayMs;
             }
             collection.detailGeneration = generation;

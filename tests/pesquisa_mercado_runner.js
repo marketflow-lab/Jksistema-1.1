@@ -2609,6 +2609,125 @@ async function automaticDetailRetryKeepsTheOtherOffersOpen() {
     }
 }
 
+async function exhaustedAvantOfferStaysPendingAfterResume() {
+    const ids = Array.from({ length: 9 }, (_, index) => 'MLB' + (1000000470 + index));
+    const [failedId] = ids, siblingId = ids[7], nextId = ids[8];
+    const shared = require('../static/pesquisa-mercado/shared-collector');
+    // An otherwise rankable card still needs its creation date from the offer panel.
+    const cards = ids.map(id => salesListing(id, id === failedId
+        ? { vendas: 20, media_mensal: 2, avant_metrics_version: 3, rankable: true } : {}));
+    const interval = 400, calls = [], finishSibling = Promise.withResolvers();
+    const attempts = id => calls.filter(call => call === id).length;
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    const clock = require('node:test').mock.timers;
+    const create = () => {
+        const h = harness(avantFlowPages(), async () => ({ anuncios: copy(cards), incomplete: true }),
+            { detailRetryIntervalMs: interval, detailRetryDelaysMs: undefined });
+        const api = h.runner.api;
+        h.runner.api = async (method, path, body) => {
+            const publication = h.vendors.get('id:111');
+            if (method === 'GET' && path.endsWith('/vendedores')) {
+                return { items: publication ? [{ ...publication.seller, seller_key: 'id:111',
+                    pending: publication.anuncios.filter(item => !item.rankable).length }] : [] };
+            }
+            if (method === 'GET' && path.includes('/ranking?')) {
+                return { items: copy(publication.anuncios), total: publication.anuncios.length, revision: 1 };
+            }
+            return api(method, path, body);
+        };
+        parallelDetailBrowsers(h);
+        withDetailCollector(h, async options => {
+            const id = options.expectedItem.id;
+            calls.push(id);
+            await beginObservedDetail(options);
+            if (id === failedId && attempts(id) <= 3) {
+                if (attempts(id) < 3) throw new Error('Fixture panel unavailable');
+                await options.onPartial({ reason: 'partial', avantDataPending: true, avantPanelLoading: true,
+                    avantDetailProgress: { phase: 'loading', missingFields: ['data_criacao'] }, anuncios: [cards[0]] });
+                return waitForDetailAbort(options.signal);
+            }
+            const item = salesListing(id, { vendas: 10, media_mensal: 2, data_criacao: '01/02/2020',
+                media_mensal_rotulo: 'vendas mensais', avant_metrics_version: 3, rankable: true });
+            if (id === siblingId) {
+                await options.onPartial({ reason: 'partial', avantDataPending: false,
+                    avantDetailProgress: { phase: 'confirming', missingFields: [] }, anuncios: [item] });
+                await finishSibling.promise;
+            }
+            return { reason: 'complete', avantDataLoaded: true, anuncios: [item] };
+        });
+        Object.assign(h.runner.collector, { hasAvantDetailData: shared.hasAvantDetailData, AVANT_METRICS_VERSION: 3 });
+        return h;
+    };
+    clock.enable({ apis: ['Date', 'setTimeout'], now: 1700000000000 });
+    let h = create();
+    const consultation = id => h.runner.snapshot().job.detailConsultations?.find(item => item.adId === id);
+    try {
+        await h.runner.start();
+        await settle();
+        assert.deepEqual([...calls].sort(), ids.slice(0, 8));
+        clock.tick(interval);
+        await settle();
+        assert.equal(attempts(failedId), 2);
+        assert.equal(consultation(failedId).phase, 'failed');
+        const retryAt = consultation(failedId).retryAt;
+        clock.tick(interval / 2);
+        await h.runner.stop('paused');
+        await h.runner.task;
+        const paused = h.saved();
+        assert.equal(paused.status, 'paused');
+        assert.equal(paused.checkpoint.sellerCollection.detailBatchEnd, 8);
+
+        h = create();
+        h.restoreCheckpoint(paused);
+        await h.runner.resume(paused.id);
+        await settle();
+        assert.equal(consultation(failedId).attempt, 2);
+        assert.equal(consultation(failedId).retryAt, retryAt);
+        clock.tick(retryAt - Date.now() - 1);
+        await settle();
+        assert.equal(attempts(failedId), 2, 'restart respects the remaining delay after failure two');
+        clock.tick(1);
+        await settle();
+        assert.equal(attempts(failedId), 3);
+        assert.equal(consultation(failedId).attempt, 3);
+        assert.equal(consultation(failedId).retryAt, null, 'the final attempt cannot schedule a fourth visit');
+        clock.tick(interval);
+        await settle();
+        assert.equal(consultation(failedId), undefined, 'the exhausted offer releases its slot');
+        assert.equal(consultation(siblingId).phase, 'confirming', 'the other offer is still in the same batch');
+        assert.equal(attempts(nextId), 0);
+        clock.tick(2 * interval);
+        await settle();
+        assert.equal(attempts(failedId), 3);
+        finishSibling.resolve();
+        await h.runner.task;
+        const publication = h.vendors.get('id:111');
+        const pending = publication.anuncios.find(item => item.id === failedId);
+        assert.deepEqual([pending.rankable, pending.rank, pending.erro],
+            [false, null, 'O Avant Pro não confirmou os dados após 3 tentativas.']);
+        assert.equal(publication.anuncios.filter(item => item.rankable).length, 8);
+        assert.equal(attempts(nextId), 1);
+        assert.equal(attempts(failedId), 3, 'seller retry rounds do not reopen the exhausted offer');
+        assert.equal(h.saved().status, 'completed_partial');
+
+        const published = h.saved();
+        h = create();
+        const reads = historicResearch(h, [{ ...publication.seller, seller_key: 'id:111', pending: 1 }],
+            new Map([['id:111', publication.anuncios]]));
+        h.restoreCheckpoint({ ...published, status: 'paused' });
+        await h.runner.resume(published.id);
+        await h.runner.task;
+        assert.deepEqual(reads, [['id:111', 0]], 'automatic recovery examined the published offers');
+        assert.equal(attempts(failedId), 3, 'recovering the same generation preserves the exhaustion decision');
+        assert.equal(h.saved().checkpoint.salesRecoveryPending, true);
+    } finally {
+        finishSibling.resolve();
+        if (h.runner.task) await h.runner.stop('cancelled');
+        await h.runner.task;
+        clock.reset();
+    }
+}
+
 async function confirmedLowerBoundReplacesAnEarlierExactCount() {
     const ids = ['MLB1000000452', 'MLB1000000453'];
     const shared = require('../static/pesquisa-mercado/shared-collector');
@@ -3172,6 +3291,7 @@ async function manualChromeOpenPausesWithoutLosingScope() {
 (async () => {
     await nextDetailBatchWaitsForEveryOpenPanel();
     await automaticDetailRetryKeepsTheOtherOffersOpen();
+    await exhaustedAvantOfferStaysPendingAfterResume();
     await confirmedLowerBoundReplacesAnEarlierExactCount();
     await manualChromeOpenPausesWithoutLosingScope();
     await catalogDetailsAreConsultedOnceWithoutInventingRank();

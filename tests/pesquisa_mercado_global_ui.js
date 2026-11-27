@@ -72,6 +72,8 @@ async function main() {
         media_vendas_mensal_exibicao: '5/Mês', media_mensal_rotulo: 'Vendas mensais' });
     Object.assign(items[1], { vendas: null, vendas_limite_inferior: '+100', media_vendas_mensal_exibicao: '4/Mês', media_mensal_rotulo: 'Ritmo atual' });
     const catalogueTooltip = 'Vendas de catalogo sem identificacao especifica do vendedor. A origem dos dados anteriores deste anuncio precisa ser confirmada em uma nova coleta completa.';
+    const exhausted = 'O Avant Pro não confirmou os dados após 3 tentativas.';
+    items[101] = { ...items[101], catalogo: true, rank: null, status: 'pending', erro: `Vendas de catalogo sem identificacao especifica do vendedor. ${exhausted}` };
     items[102] = { ...items[102], catalogo: true, rank: null, status: 'catalogo_sem_evidencia_vendedor' };
     items[103] = { ...items[103], catalogo: true, rank: null, status: 'pending',
         erro: 'Vendas de catálogo sem identificação específica do vendedor. ' + catalogueTooltip };
@@ -183,6 +185,10 @@ async function main() {
         assert.strictEqual(await invalid.locator('td').first().textContent(), '', 'pendente não recebe posição numérica');
         assert.strictEqual(await invalid.locator('a,img').count(), 0, 'links e imagens de hosts externos devem ser recusados');
         assert.match(await invalid.textContent(), /Avant sem dados/);
+        const exhaustedRow = ranking.filter({ hasText: 'Produto 101' });
+        assert.strictEqual(await exhaustedRow.locator('.status-chip').innerText(), exhausted);
+        assert.strictEqual(await exhaustedRow.locator('.status-chip').getAttribute('title'), items[101].erro);
+        assert.strictEqual(await exhaustedRow.locator('td').first().innerText(), '', 'o anúncio esgotado continua pendente');
         for (const title of ['Produto 102', 'Produto 103']) {
             const row = page.locator('#pm-global-body tr').filter({ hasText: title });
             const chip = row.locator('.status-chip');

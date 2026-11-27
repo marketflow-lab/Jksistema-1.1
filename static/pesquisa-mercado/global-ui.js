@@ -887,6 +887,8 @@
     function announcementStatus(item, ranked) {
         if (ranked) return { label: 'Analisado', title: '' };
         const reason = safeText(item.erro);
+        const exhausted = 'O Avant Pro não confirmou os dados após 3 tentativas.';
+        if (reason.includes(exhausted)) return { label: exhausted, title: reason === exhausted ? '' : reason };
         const normalized = reason.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ');
         const catalogueProofMissing = item.status === 'catalogo_sem_evidencia_vendedor'
             || normalized.includes('vendas de catalogo sem identificacao especifica do vendedor')
