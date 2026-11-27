@@ -228,10 +228,12 @@
             btn.type = 'button';
             btn.className = 'sku-ia-btn';
             btn.textContent = 'IA';
-            btn.title = 'Preencher Pesquisa 1, 2 e 3 deste SKU com IA';
+            btn.title = 'Preencher Pesquisa 1, 2 e 3 deste SKU com o Codex';
             btn.addEventListener('click', () => {
                 skuGerarPesquisasComIa({
                     skus: [skuObterSku(row)],
+                    lojas: [skuObterLoja(row)],
+                    model: 'codex',
                     sobrescrever: true,
                     botao: btn
                 });

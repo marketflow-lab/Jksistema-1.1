@@ -52,6 +52,7 @@
         async function skuGerarPesquisasComIa(opcoes = {}) {
             const chamadaSilenciosa = !!(opcoes && opcoes.silencioso);
             const botaoAcao = opcoes && opcoes.botao ? opcoes.botao : null;
+            const usarCodex = opcoes.model === 'codex';
             const itens = skuColetarSkusParaIa(opcoes);
             if (!itens.length) {
                 const mensagem = 'Nenhum SKU disponivel para preencher com IA.';
@@ -69,7 +70,7 @@
             const startedAt = Date.now();
             if (botaoAcao) {
                 botaoAcao.disabled = true;
-                botaoAcao.textContent = 'IA trabalhando...';
+                botaoAcao.textContent = usarCodex ? 'Codex trabalhando...' : 'IA trabalhando...';
             }
             skuDefinirStatus('');
             skuAtualizarBarraIa({
@@ -94,7 +95,7 @@
                         loteFim: fim,
                         startedAt,
                         erros: errosAcumulados.length,
-                        message: `${mensagemLote} Aguardando resposta da IA...`
+                        message: usarCodex ? `Aguardando o Codex preencher as pesquisas do SKU ${lote[0].sku}...` : `${mensagemLote} Aguardando resposta da IA...`
                     });
                     await skuPausarUi(30);
 
@@ -113,6 +114,7 @@
                             body: JSON.stringify({
                                 itens: itensLoja,
                                 loja: lojaLote,
+                                model: usarCodex ? 'codex' : undefined,
                                 chunk_tamanho: tamanhoLote,
                                 sobrescrever: !!(opcoes && opcoes.sobrescrever)
                             })
@@ -129,6 +131,17 @@
                         const data = await response.json();
                         const resultados = Array.isArray(data.resultados) ? data.resultados : [];
                         const erros = Array.isArray(data.erros) ? data.erros : [];
+                        if (usarCodex) {
+                            const erro = erros.find(item => item && item.erro);
+                            if (erro) throw new Error(erro.erro);
+                            const sku = skuChaveSku(itensLoja[0].sku);
+                            const [salvo] = resultados;
+                            const campos = ['pesquisa_1', 'pesquisa_2', 'pesquisa_3'];
+                            if (resultados.length !== 1 || skuChaveSku(salvo?.sku) !== sku
+                                || !campos.every(campo => typeof salvo[campo] === 'string' && salvo[campo].trim())) {
+                                throw new Error('O servidor não confirmou a gravação das pesquisas deste SKU.');
+                            }
+                        }
                         errosAcumulados.push(...erros.filter(item => item && item.erro));
                         resultadosAcumulados.push(...resultados);
                         resultadosLote = resultadosLote.concat(resultados);
@@ -186,7 +199,7 @@
                     startedAt,
                     erros: Math.max(1, errosAcumulados.length),
                     phase: 'error',
-                    message: `Erro ao preencher pesquisas com IA: ${mensagemErro}`
+                    message: usarCodex ? `Erro ao preencher pesquisas com o Codex: ${mensagemErro}` : `Erro ao preencher pesquisas com IA: ${mensagemErro}`
                 });
                 return { success: false, total: itens.length, atualizadas: 0, error: mensagemErro };
             } finally {

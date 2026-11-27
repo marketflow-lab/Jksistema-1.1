@@ -2396,16 +2396,28 @@ def favoritos_gerar_pesquisas_sku_ia(
     if not payload:
         raise HTTPException(status_code=400, detail="Nenhum SKU válido encontrado.")
 
-    try:
-        sugestoes = _favoritos_gerar_pesquisas_ia(
-            client_id=client_id,
-            itens=payload,
-            limite_por_chamada=(req.chunk_tamanho or 24),
-            model=_ia_modelo_favoritos_configurado(),
-        )
-    except Exception as exc:
-        logger.exception("[Favoritos IA] Falha ao gerar pesquisas para lotes: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Erro ao gerar pesquisas com IA: {exc}")
+    if req.model == "codex":
+        from backend.services.favoritos_pesquisas_codex import gerar_pesquisas
+
+        sugestoes = [
+            {
+                "sku": item["sku"],
+                "produto": item["produto"],
+                **gerar_pesquisas(client_id, item["produto"], item["descricao"]),
+            }
+            for item in payload
+        ]
+    else:
+        try:
+            sugestoes = _favoritos_gerar_pesquisas_ia(
+                client_id=client_id,
+                itens=payload,
+                limite_por_chamada=(req.chunk_tamanho or 24),
+                model=_ia_modelo_favoritos_configurado(),
+            )
+        except Exception as exc:
+            logger.exception("[Favoritos IA] Falha ao gerar pesquisas para lotes: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Erro ao gerar pesquisas com IA: {exc}")
 
     username = _extrair_username_do_request(request)
     pesquisas_salvas = (_favoritos_carregar_pesquisas_usuario(client_id, username).get("pesquisas") or {})

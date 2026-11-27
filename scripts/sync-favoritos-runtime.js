@@ -38,6 +38,7 @@ const runtimeCodeFiles = [
     'backend/services/favoritos_jobs.py',
     'backend/services/favoritos_margem.py',
     'backend/services/favoritos_ml.py',
+    'backend/services/favoritos_pesquisas_codex.py',
     'backend/services/favoritos_planilhas_colar.py',
     'backend/services/favoritos_ranking_ia.py',
     'backend/services/favoritos_storage.py',
