@@ -427,11 +427,12 @@ function initialCheckpoint(saved) {
     const checkpoint = {
         version: 1, phase: 'categories', categories: [], categoryIndex: 0,
         currentCategory: null, page: null, categorySeenPages: [], seenSeedIds: [],
-        seenSellerKeys: [], incompleteCategories: [], discoveryInitialized: false,
+        seenSellerKeys: [], internationalSellerKeys: [], incompleteCategories: [], discoveryInitialized: false,
         ...clone(saved || {})
     };
     checkpoint.progress = progressState(checkpoint.progress);
     checkpoint.incompleteCategories = normalizedIncompleteCategories(checkpoint);
+    if (!Array.isArray(checkpoint.internationalSellerKeys)) checkpoint.internationalSellerKeys = [];
     if (!Array.isArray(checkpoint.countedCategoryKeys)) checkpoint.countedCategoryKeys = checkpoint.categories.slice(0, checkpoint.categoryIndex).map(item => item.key);
     if (!checkpoint.progress.warning) {
         const previous = Array.isArray(checkpoint.incompleteCategories) ? checkpoint.incompleteCategories.at(-1) : null;
@@ -656,6 +657,7 @@ class PesquisaMercadoRunner {
         validateCheckpointTaxonomy(this.checkpoint);
         this.seenSeeds = new Set(this.checkpoint.seenSeedIds);
         this.seenSellers = new Set(this.checkpoint.seenSellerKeys);
+        this.internationalSellers = new Set(this.checkpoint.internationalSellerKeys);
         this.stopStatus = '';
         this.salesRecoveryFinished = false;
         this.salesRecoveryDeferred = false;
@@ -1156,7 +1158,7 @@ class PesquisaMercadoRunner {
                 const ready = (purpose === 'navigation' || purpose === 'category-route') && expectedChild ? page.categoryNotFound || childConflict || !!page.categoryFilterMoreUrl || (page.categories || []).some(child =>
                     child.key === expectedChild.key || categoryLabel(child.nome) === categoryLabel(expectedChild.nome))
                     : purpose === 'seller' ? !!page.allAdsUrl
-                    : purpose === 'item' ? !!sellerFromPage(page)
+                    : purpose === 'item' ? page.internationalOffer === true || !!sellerFromPage(page)
                     : purpose === 'first-page' ? true // The collector owns settling and scrolling this page.
                     : isOfficialIndex ? (page.categoryTree || []).length > 0 || (page.categories || []).length > 0
                     : listings || (page.categories || []).length > 0 || page.listingUrl || (purpose === 'index' && page.categoriesIndexUrl) || page.empty;
@@ -1756,7 +1758,8 @@ class PesquisaMercadoRunner {
     }
 
     canRecheckLegacySeller(seller, item) {
-        if (this.detailRetryState().blocked[this.detailRetryKey(seller, item)] !== 'legacy_seller_not_confirmed'
+        if (item.internationalOffer === true
+            || this.detailRetryState().blocked[this.detailRetryKey(seller, item)] !== 'legacy_seller_not_confirmed'
             || item.rankable || item.catalogo || !allowedUrl(item.url) || conflictingSeller(seller, item)
             || conflictingSeller(seller, { id: item.avant_seller_id, perfilUrl: item.avant_seller_perfil_url })) return false;
         // A catalog wid identifies an offer but cannot attribute product estimates to its seller.
@@ -1779,6 +1782,7 @@ class PesquisaMercadoRunner {
     }
 
     canConsultDetail(seller, item, enrichComplete = true) {
+        if (item.internationalOffer === true) return false;
         const metricsVersion = this.collector.AVANT_METRICS_VERSION;
         const needsPanel = enrichComplete && metricsVersion && item.avant_metrics_version === metricsVersion
             && !item.avant_detail_observed && (item.media_mensal_rotulo !== 'vendas mensais' || !item.data_criacao);
@@ -1786,10 +1790,11 @@ class PesquisaMercadoRunner {
     }
 
     detailProgressCounts(seller, items) {
-        const pending = items.filter(item => !this.areAvantMetricsComplete(item));
+        const eligible = items.filter(item => item.internationalOffer !== true);
+        const pending = eligible.filter(item => !this.areAvantMetricsComplete(item));
         const blocked = pending.filter(item => !allowedUrl(item.url) || this.detailRetryBlocked(seller, item)).length;
         const loading = pending.filter(item => String(item.erro || '').includes(AVANT_PANEL_LOADING_MESSAGE)).length;
-        return `validados: ${items.length - pending.length}; pendentes: ${pending.length}; sem reconsulta automatica: ${blocked}`
+        return `validados: ${eligible.length - pending.length}; pendentes: ${pending.length}; sem reconsulta automatica: ${blocked}`
             + (loading ? `; painel do Avant ainda carregando ao encerrar a consulta: ${loading}` : '');
     }
 
@@ -1891,7 +1896,7 @@ class PesquisaMercadoRunner {
                             browser, signal: controller.signal, url: detailUrl,
                             expectedItem: { id: item.id || '', url: item.url },
                             seller: { ...seller, sellerId: seller.id, vendedor: seller.nome },
-                            waitForLoadingPanel: true, waitForAvantData: true,
+                            waitForLoadingPanel: true, waitForAvantData: true, excludeInternational: true,
                             timeoutMs: this.detailTimeoutMs, missingWaitMs: Math.min(15000, this.detailTimeoutMs), wait: this.wait,
                             onNavigationStart: () => {
                                 if (!alive()) return;
@@ -1915,6 +1920,7 @@ class PesquisaMercadoRunner {
                             },
                             onPartial: capture
                         });
+                        if (observed?.reason === 'international_offer') return observed;
                         const noConfirmation = observed?.avantDataLoaded === false
                             || requiresAvantData && (observed?.avantDataLoaded !== true || !observed.anuncios?.some(matchesItem));
                         if (noConfirmation && !observed?.authRequired && !observed?.avantAuthRequired
@@ -1943,6 +1949,11 @@ class PesquisaMercadoRunner {
                 usedPartial = true;
             }
             this.check(signal);
+            if (detail.reason === 'international_offer') {
+                // The saved batch still points to this index. Filter only at publication.
+                items[index] = { ...item, internationalOffer: true };
+                return;
+            }
             const found = (detail.anuncios || []).find(matchesItem);
             panelLoading = !!found && detail.avantPanelLoading === true;
             const avantSource = value => /^(?:avant|avant_pro|avant-pro)$/.test(String(value || '').toLowerCase())
@@ -2278,19 +2289,22 @@ class PesquisaMercadoRunner {
         }
         this.check();
         if (navigated) await this.read(allAdsUrl, 'first-page');
-        const missing = items.filter(item => !this.areAvantMetricsComplete(item)).length;
+        const eligible = items.filter(item => item.internationalOffer !== true);
+        const internationalExcluded = (collection.result.internationalExcluded || 0) + items.length - eligible.length;
+        const missing = eligible.filter(item => !this.areAvantMetricsComplete(item)).length;
         const previousReason = collection.result.reason || 'complete';
         const reason = !missing && ['complete', 'avant_data_incomplete'].includes(previousReason)
             ? 'complete' : missing && previousReason === 'complete' ? 'avant_data_incomplete' : previousReason;
         const rechecked = legacySellerOnly ? new Set(collection.legacySellerProofKeys) : null;
-        const preserved = new Map(items.filter(item => this.needsLegacyAvantRefresh(item)
+        const preserved = new Map(eligible.filter(item => this.needsLegacyAvantRefresh(item)
             || rechecked && !rechecked.has(this.detailRetryKey(seller, item)))
             .map(item => [this.detailRetryKey(seller, item), item]));
         const anuncios = typeof this.collector.finalizeListings === 'function'
-            ? this.collector.finalizeListings(items).map(item => preserved.get(this.detailRetryKey(seller, item)) || item)
-            : items;
+            ? this.collector.finalizeListings(eligible).map(item => preserved.get(this.detailRetryKey(seller, item)) || item)
+            : eligible;
         return { ...collection.result, anuncios, reason, incomplete: reason !== 'complete' || missing > 0,
-            total: items.length, com_dados_avant: items.length - missing, incompletos: missing };
+            total: eligible.length, com_dados_avant: eligible.length - missing, incompletos: missing,
+            ...(internationalExcluded ? { internationalExcluded } : {}) };
     }
 
     async recoverPublishedSales() {
@@ -2335,7 +2349,7 @@ class PesquisaMercadoRunner {
             const legacySellerOnly = done.has(key);
             // Publication can be interrupted after the final consultation is checkpointed.
             const republish = this.checkpoint.sellerCollection?.sellerKey === key;
-            if (!key || legacySellerOnly && !legacySellers.has(key) && !republish) continue;
+            if (!key || this.internationalSellers.has(key) || legacySellerOnly && !legacySellers.has(key) && !republish) continue;
             const seller = { ...previous, key, nome: cleanSellerName(previous.nome || previous.vendedor, previous.id) };
             this.setProgress('collecting', `Recuperando vendas e medias pendentes de ${seller.nome || seller.id || 'vendedor'}...`);
             try {
@@ -2414,6 +2428,7 @@ class PesquisaMercadoRunner {
 
     async publishSeller(seller, result, preserveCategories = false) {
         this.checkMutationGeneration();
+        if (!preserveCategories && result.internationalExcluded && !result.anuncios.length) return;
         seller = enrichSellerName(seller, result.anuncios);
         const category = this.checkpoint.currentCategory;
         const anuncios = (result.anuncios || []).map((item, index) => ({
@@ -2447,15 +2462,50 @@ class PesquisaMercadoRunner {
         return found;
     }
 
+    recordConsultedSeed(seed, key, sellerKey = '', international = false) {
+        if (!this.seenSeeds.has(key)) {
+            this.checkpoint.seenSeedIds.push(key);
+            this.seenSeeds.add(key);
+        }
+        this.checkpoint.discoveredSeed = { key, id: seed.id || '', url: seed.url,
+            category_key: this.checkpoint.currentCategory.key, seller_key: sellerKey, status: 'consulted' };
+        this.checkpoint.phase = 'discovery';
+        if (international) {
+            if (this.checkpoint.sellerCollection?.seedKey === key) delete this.checkpoint.sellerCollection;
+            if (this.checkpoint.preservedSellerCollection?.collection?.seedKey === key) delete this.checkpoint.preservedSellerCollection;
+        }
+        const message = international ? 'Oferta de compra internacional ignorada. ' : '';
+        this.setProgress('discovery', `${message}Descobrindo outros vendedores em ${this.checkpoint.currentCategory.nome}...`);
+    }
+
     async processSeed(seed, retryFailed = false) {
         const key = String(retryFailed ? seed.key || seed.id || canonicalUrl(seed.url) : seed.id || canonicalUrl(seed.url));
         if (!key || !retryFailed && this.seenSeeds.has(key)) return;
+        if (seed.internationalOffer === true) {
+            this.recordConsultedSeed(seed, key, '', true);
+            return;
+        }
         const history = await this.api('GET', `${ROOT}/${encodeURIComponent(this.job.id)}/descoberta?seed_key=${encodeURIComponent(key)}${retryFailed ? '&include_status=true' : ''}`);
         if (history.seen && (!retryFailed || history.status !== 'failed')) { this.seenSeeds.add(key); return; }
         this.setProgress('discovery', `Consultando anuncio${seed.id ? ' ' + seed.id : ''} para identificar o vendedor...`);
         const page = await this.read(seed.url, 'item');
         let seller = sellerFromPage(page);
+        if (page.internationalOffer === true) {
+            // Only a direct, matching offer can establish the seller's origin.
+            if (seller && seed.id && (page.anuncios || []).some(item => item.id === seed.id
+                && item.internationalOffer === true && item.catalogo !== true && sameSeller(seller, item))
+                && !this.internationalSellers.has(seller.key)) {
+                this.internationalSellers.add(seller.key);
+                this.checkpoint.internationalSellerKeys.push(seller.key);
+            }
+            this.recordConsultedSeed(seed, key, seller?.key, true);
+            return;
+        }
         if (!seller) throw new Error('Nao foi possivel confirmar o perfil do vendedor deste anuncio.');
+        if (this.internationalSellers.has(seller.key)) {
+            this.recordConsultedSeed(seed, key, seller.key, true);
+            return;
+        }
         const discoveredKey = seller.key;
         if (!(await this.sellerPublished(seller.key))) {
             this.setProgress('seller', `Consultando a primeira pagina de ${seller.nome || seller.id || 'vendedor'}...`);
@@ -2480,6 +2530,10 @@ class PesquisaMercadoRunner {
             if (listingSeller && sameSeller(seller, listingSeller)) seller = { ...seller, ...listingSeller, key: listingSeller.id ? listingSeller.key : seller.key, id: listingSeller.id || seller.id,
                 nome: seller.seller_name_kind === 'store_brand' && seller.nome ? seller.nome : listingSeller.nome || seller.nome,
                 seller_name_kind: seller.seller_name_kind === 'store_brand' && seller.nome ? 'store_brand' : listingSeller.seller_name_kind };
+            if (this.internationalSellers.has(seller.key)) {
+                this.recordConsultedSeed(seed, key, seller.key, true);
+                return;
+            }
             if (!(await this.sellerPublished(seller.key))) {
                 this.setProgress('collecting', `Coletando anuncios de ${seller.nome || seller.id || 'vendedor'} e consultando os dados do Avant...`);
                 const preserved = this.checkpoint.preservedSellerCollection;
@@ -2493,7 +2547,7 @@ class PesquisaMercadoRunner {
                     return this.collector.collectFirstPage({
                         browser: this.browser, signal: this.controller.signal, seller: {
                             ...seller, sellerId: seller.id, vendedor: seller.nome
-                        }, wait: this.wait,
+                        }, wait: this.wait, excludeInternational: true,
                         onProgress: progress => {
                             if (this.stopStatus) return;
                             const total = Number(progress.coletados || progress.total || 0);
@@ -2513,12 +2567,7 @@ class PesquisaMercadoRunner {
             }
             this.rememberSeller(discoveredKey);
         }
-        this.checkpoint.seenSeedIds.push(key);
-        this.seenSeeds.add(key);
-        this.checkpoint.discoveredSeed = { key, id: seed.id || '', url: seed.url,
-            category_key: this.checkpoint.currentCategory.key, seller_key: seller.key, status: 'consulted' };
-        this.checkpoint.phase = 'discovery';
-        this.setProgress('discovery', `Descobrindo outros vendedores em ${this.checkpoint.currentCategory.nome}...`);
+        this.recordConsultedSeed(seed, key, seller.key);
     }
 
     async run() {

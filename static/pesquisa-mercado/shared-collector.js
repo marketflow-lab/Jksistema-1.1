@@ -112,6 +112,7 @@
         const pollMs = Math.max(10, Number(opts.pollMs) || 450);
         const initialUrl = pageKey(await browser.getURL());
         const items = new Map();
+        const international = new Set();
         let lastSignature = '', stableSince = now(), reachedBottom = false, quiet = 0, empty = false;
         let missingSince = null, clicksPending = false, avantPanelLoading = false, avantDataPending = waitForAvantData;
         let avantDetailProgress = { phase: 'checking_offer', missingFields: [] };
@@ -135,8 +136,10 @@
             const anuncios = finalizeListings(Array.from(items.values()), timestamp);
             const missing = anuncios.filter(item => item.rankable !== true).length;
             const resultReason = reason === 'complete' && missing > 0 ? 'avant_data_incomplete' : reason;
-            return { anuncios, incomplete: resultReason !== 'complete' || missing > 0, authRequired: !!authRequired, reason: resultReason,
+            return { anuncios, incomplete: !['complete', 'international_offer'].includes(resultReason) || missing > 0,
+                authRequired: !!authRequired, reason: resultReason,
                 total: anuncios.length, com_dados_avant: anuncios.length - missing, incompletos: missing,
+                ...(international.size ? { internationalExcluded: international.size } : {}),
                 ...(waitForAvantData && (reason === 'partial' ? { avantDataPending, avantDetailProgress }
                     : { avantDataLoaded: !avantDataPending && ['complete', 'avant_data_incomplete'].includes(reason) })),
                 ...(avantPanelLoading && (waitForLoadingPanel || missing > 0) && ['partial', 'timeout'].includes(reason)
@@ -173,6 +176,14 @@
             let matchedOffer = false, observedDetailData = false;
             for (const incoming of Array.isArray(snapshot.anuncios) ? snapshot.anuncios : []) {
                 if (!matchesExpected(incoming, opts.expectedItem)) continue;
+                const key = incoming.id || incoming.key || incoming.url;
+                if (!key) continue;
+                if (opts.excludeInternational && incoming.internationalOffer === true) {
+                    international.add(key);
+                    items.delete(key);
+                    if (opts.detail) return observe(finish('international_offer'));
+                }
+                if (international.has(key)) continue;
                 matchedOffer = true;
                 const freshlyLoaded = waitForAvantData && snapshot.avantDetailDataRead !== false && hasAvantDetailData(incoming);
                 observedDetailData ||= freshlyLoaded;
@@ -182,10 +193,8 @@
                     ? { ...incoming, rankable: false, status: hasSales ? 'sem_dados_avant' : 'sem_quantidade_avant',
                         erro: hasSales ? 'Aguardando a metrica mensal do Avant Pro.' : 'Aguardando a quantidade de vendas do Avant Pro.' }
                     : incoming;
-                const key = item.id || item.key || item.url;
-                if (!key) continue;
                 const previous = items.get(key);
-                const order = previous ? previous.ordem_coleta : items.size + 1;
+                const order = previous ? previous.ordem_coleta : items.size + international.size + 1;
                 const observation = freshlyLoaded ? item : selectObservation(previous, item);
                 items.set(key, { ...observation, ordem_coleta: order });
             }
@@ -218,7 +227,7 @@
                     item.media_vendas_mensal, item.data_criacao, item.status, item.seller_confirmed,
                     item.seller_id, item.seller_perfil_url, item.avant_seller_id, item.avant_seller_perfil_url,
                     item.vendas_rotulo, item.vendas_exibicao, item.media_mensal_rotulo, item.media_vendas_mensal_exibicao])]
-                : [snapshot.height, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
+                : [snapshot.height, international.size, list.map(item => [item.id || item.url, item.rankable, item.vendas, item.media_mensal, item.data_criacao])]);
             if (signature !== lastSignature) { lastSignature = signature; stableSince = now(); quiet = 0; }
             else quiet += 1;
             reachedBottom = !!snapshot.atBottom;
@@ -226,7 +235,7 @@
             // Materialize every card before spending the bounded job time waiting
             // for individual Avant clicks. Already visible Avant data is kept above.
             if (!materialized) {
-                const layoutSignature = JSON.stringify([snapshot.height, list.map(item => item.id || item.key || item.url)]);
+                const layoutSignature = JSON.stringify([snapshot.height, international.size, list.map(item => item.id || item.key || item.url)]);
                 if (layoutSignature !== lastLayoutSignature) { lastLayoutSignature = layoutSignature; layoutStableSince = now(); layoutQuiet = 0; }
                 else layoutQuiet += 1;
                 if (!reachedBottom || layoutQuiet < 2 || now() - layoutStableSince < settleMs) {
@@ -242,15 +251,16 @@
             }
             const allReady = !avantDataPending && !(waitForLoadingPanel && avantPanelLoading)
                 && list.length > 0 && list.every(item => isComplete(item, now()));
+            const allExcluded = international.size > 0 && !list.length;
             const loadedData = waitForAvantData && !avantDataPending;
             const overdue = !waitForAvantData && !avantPanelLoading && missingSince !== null && now() - missingSince >= missingWaitMs;
             // Avant may scroll back to a card. Once the page is materialized, its
             // current viewport must not reset the wait for missing metrics.
             if (quiet >= 2 && now() - stableSince >= settleMs && (!clicksPending || allReady || loadedData)) {
-                if (allReady || empty) return finish('complete');
+                if (allReady || empty || allExcluded) return finish('complete');
                 if (loadedData || overdue) return finish(list.length ? 'avant_data_incomplete' : 'no_listings_detected');
             }
-            const click = allReady || loadedData || avantPanelLoading ? null : await execute(scripts.clickAvantScript({
+            const click = allReady || allExcluded || loadedData || avantPanelLoading ? null : await execute(scripts.clickAvantScript({
                 pending: list.filter(item => waitForAvantData || !isComplete(item, now())), detail: !!opts.detail
             }));
             if (click && click.loginBlocked) return observe(finish('avant_login_required', true));

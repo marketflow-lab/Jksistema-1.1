@@ -648,6 +648,9 @@
         const avantDetailRoot = '#productInfo.avantpro-in-product-content';
         const avantSelector = '[class*="avantpro"], [id*="avantpro"]';
         const excludedMetricArea = '[class*="recommend"], [class*="carousel"], [class*="same-seller"], [class*="eshop"]';
+        const excludedOfferArea = excludedMetricArea + ', ' + avantSelector
+            + ', [role="dialog"], [class*="other-seller"], [class*="other-offer"], [data-testid*="other-seller"], [data-testid*="other-offer"]'
+            + ', [class*="description"], [data-testid*="description"], h1, h2, h3, .poly-component__title, .ui-search-item__title, [data-testid="product-title"]';
         const currentCatalogId = catalogId(url);
         const catalogAddress = currentCatalogId ? catalogOfferFromAddress(url, currentCatalogId) : null;
         const expectedItem = options?.detail && options.expectedItem;
@@ -670,6 +673,30 @@
             || buyBoxItems.size === 1 && !buyBoxItems.has(expectedId));
         const expectedSellerId = clean(options && options.seller && (options.seller.id || options.seller.sellerId || options.seller.seller_id));
         const scopedSellerId = sellerId || expectedSellerId;
+        const nativeBadgeBelongs = (node, owner, itemId, seller) => {
+            if (node.closest(excludedOfferArea) || !visibleAuthControl(node)) return false;
+            const taggedItem = node.closest('[data-item-id]');
+            if (taggedItem && owner.contains(taggedItem) && offerId(taggedItem.getAttribute('data-item-id')) !== itemId) return false;
+            const taggedSeller = node.closest('[data-seller-id]');
+            return !seller || !taggedSeller || !owner.contains(taggedSeller) || clean(taggedSeller.getAttribute('data-seller-id')) === seller;
+        };
+        const internationalOffer = (() => {
+            if (!isProduct(url) || !productMain || authRequired || catalogOfferConflict || avantDetailIdentityConflict
+                || headerConflict || expectedSellerId && sellerId && expectedSellerId !== sellerId) return false;
+            const boxes = nodes('.ui-pdp-buybox', productMain).filter(box => !box.closest(cardSelector + ', ' + excludedOfferArea) && visibleAuthControl(box));
+            if (boxes.length !== 1) return false;
+            const box = boxes[0];
+            const boxItem = offerId(box.getAttribute('data-item-id'));
+            if (currentCatalogId && (!currentItemId || boxItem !== currentItemId)
+                || box.hasAttribute('data-item-id') && (!boxItem || currentItemId && boxItem !== currentItemId)) return false;
+            const boxSeller = clean(box.getAttribute('data-seller-id'));
+            if (boxSeller && scopedSellerId && boxSeller !== scopedSellerId) return false;
+            const shipping = ':is(.andes-badge, [class^="ui-pdp-shipping"], [class*=" ui-pdp-shipping"])';
+            return nodes('.poly-component__cbt, ' + shipping + ', ' + shipping + ' :is(span, strong, p)', box).some(node =>
+                !node.closest(cardSelector) && node.closest('.ui-pdp-buybox') === box
+                && nativeBadgeBelongs(node, box, currentItemId || boxItem, scopedSellerId || boxSeller)
+                && (node.matches('.poly-component__cbt') || norm(node.innerText) === 'compra internacional'));
+        })();
         const expectedSellerProfile = identity(options && options.seller && (options.seller.perfilUrl || options.seller.seller_perfil_url));
         const namedProfile = value => /^https:\/\/[^/]+\/(?:perfil|loja|pagina)\//i.test(value || '');
         // Avant 7.24 displays a seller profile followed by the link to their listings.
@@ -963,6 +990,16 @@
             const cardIdentity = sellerProof(cardLinks, [clean(card.getAttribute('data-seller-id')),
                 enclosingSeller && card.contains(enclosingSeller) && clean(enclosingSeller.getAttribute('data-seller-id'))]);
             const attributedSeller = cardIdentity.id;
+            const owner = link.closest(cardSelector);
+            const linkedId = productId(productUrl);
+            const linkedCatalog = catalogId(productUrl);
+            // A catalog card can select its offer by wid; any native ID on the card must agree.
+            const internationalCard = owner && card.contains(owner) && !cardIdentity.conflict
+                && !link.closest(excludedMetricArea + ', ' + avantSelector) && (!linkedId || !id || id === linkedId)
+                && (!linkedCatalog || !!id && !catalogOfferFromAddress(productUrl, linkedCatalog).conflict)
+                && [owner, card].every(node => !node.hasAttribute('data-item-id') || !!id && offerId(node.getAttribute('data-item-id')) === id)
+                && nodes('.poly-component__cbt', owner).some(node => node.closest(cardSelector) === owner
+                    && nativeBadgeBelongs(node, owner, id, attributedSeller));
             const avantRoots = nodes(avantSelector + ', [data-jk-field]', card);
             const avantIdentity = sellerProof(cardLinks.filter(anchor => anchor.closest(avantSelector + ', [data-jk-field]')));
             const localRows = metricRows(card);
@@ -986,6 +1023,7 @@
             const centsText = clean(cents && cents.textContent).replace(/\D/g, '');
             const priceValue = Number.isFinite(integerPart) ? integerPart + (centsText ? Number(centsText) / 100 : 0) : null;
             anuncios.push({
+                ...(internationalCard ? { internationalOffer: true } : {}),
                 id, key, url: productUrl, titulo: clean(title.textContent), imagem: image ? (image.getAttribute('data-src') || image.currentSrc || image.src || '') : '',
                 preco: priceValue,
                 posicao: anuncios.length + 1, catalogo: /\/p\/MLB/i.test(productUrl) || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
@@ -1027,6 +1065,7 @@
             if (proof.conflict || metrics.identityConflict) delete structuredCache[detailKey];
             else if (metrics.rows) structuredCache[detailKey] = metrics;
             anuncios.push({ id: currentItemId, key: detailKey, url, titulo: clean(title.textContent), catalogo: !!currentCatalogId || !!metrics.catalog || /\bcatalogo\b/.test(metrics.totalLabel),
+                ...(internationalOffer ? { internationalOffer: true } : {}),
                 seller_id: sellerId, seller_perfil_url: perfilUrl, vendedor,
                 _avantEvidence: { present: avantRoots.length > 0, detailPage: !!(options && options.detail), sellerId: proof.id || metrics.sellerId, perfilUrl: proof.perfilUrl || metrics.perfilUrl, identityConflict: !!(proof.conflict || metrics.identityConflict), sellerMetric: metrics.totalPriority === 2, metrics }
             });
@@ -1240,6 +1279,7 @@
             categoryTrends, categoryNavigationHub, categoryConflictingRouteIds: [...categoryConflictingRouteIds],
             readyState: document.readyState, categories, categoryTree, categoriesIndexUrl, listingUrl, anuncios, nextUrl, hasNext, perfilUrl, sellerId, vendedor, seller_identity_conflict: !!primaryIdentity.conflict || headerConflict, seller_name_kind: primaryStore && !headerConflict ? 'store_brand' : 'seller', allAdsUrl,
             authRequired, avantAuthRequired, authReason, avantDetailLoading,
+            ...(internationalOffer ? { internationalOffer: true } : {}),
             ...(options?.detail ? { avantDetailDataRead, avantDetailIdentityConflict, avantDetailMissingFields } : {}),
             ...(avantDetailLoading && isProduct(url) ? { avantLoadingOffer: { id: currentItemId, url } } : {}),
             hasChildren: categories.length > 0, categoryNotFound,

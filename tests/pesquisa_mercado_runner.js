@@ -121,6 +121,58 @@ async function categoryAndSellerFlow() {
     assert.ok(h.events.every(event => !('checkpoint' in event.job)), 'do not expose full persisted state in progress');
 }
 
+async function internationalSeedsDoNotExcludeUnprovenSellers() {
+    const local = { ...seller('111'), vendedor: 'Loja Internacional de Importados' };
+    const foreign = seller('222'), allInternational = seller('333');
+    const offer = (index, owner, extra = {}) => salesListing('MLB' + (1000001600 + index),
+        { seller_id: owner.sellerId, seller_perfil_url: owner.perfilUrl, ...extra });
+    const card = offer(1, local, { internationalOffer: true });
+    const direct = offer(2, foreign), anotherForeign = offer(3, foreign);
+    const catalog = offer(4, local, { catalogo: true,
+        url: base + '/produto/p/MLB9999999?wid=MLB1000001604' });
+    const conflict = offer(5, local), recommended = offer(6, local, { internationalOffer: true });
+    const domestic = offer(7, local, { titulo: 'Produto importado com garantia internacional' });
+    const wrongOffer = offer(8, local);
+    const filteredStore = offer(9, allInternational);
+    const seeds = [card, direct, anotherForeign, catalog, conflict, wrongOffer, domestic, filteredStore];
+    const internationalPage = (owner, ad) => ({ ...owner, internationalOffer: true,
+        anuncios: [{ ...ad, internationalOffer: true }] });
+    const pages = {
+        [base + '/']: { categories: [{ key: 'a', nome: 'A', url: base + '/a' }] },
+        [base + '/a']: { anuncios: seeds },
+        [direct.url]: internationalPage(foreign, direct),
+        [anotherForeign.url]: { ...foreign, anuncios: [anotherForeign] },
+        [catalog.url]: internationalPage(local, catalog),
+        [conflict.url]: internationalPage(local, { ...conflict, seller_id: '222', seller_perfil_url: foreign.perfilUrl }),
+        [wrongOffer.url]: internationalPage(local, recommended),
+        [domestic.url]: { ...local, anuncios: [domestic, recommended] },
+        [filteredStore.url]: { ...allInternational, anuncios: [filteredStore] },
+        [allInternational.perfilUrl]: allInternational, [allInternational.allAdsUrl]: allInternational,
+        [local.perfilUrl]: local, [local.allAdsUrl]: local,
+        [foreign.perfilUrl]: foreign, [foreign.allAdsUrl]: foreign
+    };
+    const firstPages = [];
+    const h = harness(pages, async options => {
+        firstPages.push([options.seller.id, options.excludeInternational]);
+        if (options.seller.id === allInternational.sellerId) {
+            return { anuncios: [], reason: 'complete', incomplete: false, internationalExcluded: 3 };
+        }
+        return { anuncios: [{ ...domestic, vendas: 25, media_mensal: 5, rankable: true }], reason: 'complete' };
+    });
+    await h.runner.start(); await h.runner.task;
+    assert(!h.visited.includes(card.url), 'the native badge on a result card skips opening that offer');
+    assert(!h.visited.includes(foreign.perfilUrl), 'a direct offer proves this seller even for a later unmarked seed');
+    assert([catalog, conflict, wrongOffer].every(seed => h.visited.includes(seed.url)));
+    assert(h.visited.includes(domestic.url) && h.visited.indexOf(domestic.url) < h.visited.indexOf(local.perfilUrl),
+        'neither catalog nor conflicting seller evidence triggers a seller visit or blocks the next domestic seed');
+    assert.deepEqual(firstPages, [['111', true], ['333', true]], 'each remaining store gets one filtered inventory collection');
+    assert.deepEqual([...h.vendors.keys()], ['id:111'], 'excluding the entire inventory does not publish an empty seller');
+    assert.deepEqual(h.vendors.get('id:111').anuncios.map(item => item.id), [domestic.id]);
+    assert(seeds.every(seed => h.discovery.get(seed.id)?.status === 'consulted'), 'excluded seeds are resolved');
+    assert.equal(h.saved().status, 'completed');
+    assert.deepEqual(h.saved().checkpoint.incompleteCategories, []);
+}
+
 async function pauseAndResume() {
     let entered;
     const started = new Promise(resolve => { entered = resolve; });
@@ -2481,6 +2533,59 @@ async function nextDetailBatchWaitsForEveryOpenPanel() {
     }
 }
 
+async function internationalDetailKeepsOtherOffersAndTheResumeCursor() {
+    const ids = Array.from({ length: 9 }, (_, index) => 'MLB' + (1000001630 + index));
+    const [foreign] = ids, held = ids[7], nextBatch = ids[8], calls = [], inventoryOptions = [];
+    const release = Promise.withResolvers();
+    const shared = require('../static/pesquisa-mercado/shared-collector');
+    const create = () => {
+        const h = harness(avantFlowPages(), async options => {
+            inventoryOptions.push(options.excludeInternational);
+            return { anuncios: ids.map(id => salesListing(id)), incomplete: true, reason: 'avant_data_incomplete' };
+        });
+        parallelDetailBrowsers(h);
+        withDetailCollector(h, async options => {
+            const id = options.expectedItem.id;
+            calls.push({ id, filter: options.excludeInternational });
+            await beginObservedDetail(options);
+            if (id === foreign) return { reason: 'international_offer', anuncios: [], incomplete: false };
+            if (id === held) await release.promise;
+            return { reason: 'complete', avantDataLoaded: true, anuncios: [salesListing(id,
+                { vendas: 25, media_mensal: 5, data_criacao: '01/01/2020', avant_metrics_version: 3, rankable: true })] };
+        });
+        h.runner.collector.hasAvantDetailData = shared.hasAvantDetailData;
+        return h;
+    };
+    let h = create();
+    try {
+        await h.runner.start();
+        await untilDetail(() => h.saved().checkpoint.sellerCollection?.index === 7);
+        assert.deepEqual(calls.map(call => call.id).sort(), ids.slice(0, 8));
+        await h.runner.stop('paused'); await h.runner.task;
+        const paused = h.saved();
+        assert.equal(paused.checkpoint.sellerCollection.detailBatchEnd, 8);
+        h = create();
+        h.restoreCheckpoint(paused);
+        await h.runner.resume(paused.id);
+        await untilDetail(() => calls.filter(call => call.id === held).length === 2);
+        assert(!calls.some(call => call.id === nextBatch), 'the later batch stays queued through pause and resume');
+        release.resolve();
+        await h.runner.task;
+        assert.deepEqual(inventoryOptions, [true]);
+        assert(calls.every(call => call.filter === true));
+        assert.deepEqual(calls.slice(8).map(call => call.id), [held, nextBatch]);
+        const ads = h.vendors.get('id:111').anuncios;
+        assert.deepEqual(ads.map(ad => ad.id).sort(), ids.slice(1));
+        assert(ads.every(ad => ad.rankable));
+        assert.equal(h.saved().status, 'completed', 'excluded offers are not missing Avant data');
+        assert.deepEqual(h.saved().checkpoint.incompleteCategories, []);
+    } finally {
+        release.resolve();
+        if (h.runner.task) await h.runner.stop('cancelled');
+        await h.runner.task;
+    }
+}
+
 async function automaticDetailRetryKeepsTheOtherOffersOpen() {
     const ids = Array.from({ length: 9 }, (_, index) => 'MLB' + (1000000450 + index));
     const firstId = ids[0], siblingId = ids[7], nextId = ids[8];
@@ -3289,6 +3394,8 @@ async function manualChromeOpenPausesWithoutLosingScope() {
 }
 
 (async () => {
+    await internationalSeedsDoNotExcludeUnprovenSellers();
+    await internationalDetailKeepsOtherOffersAndTheResumeCursor();
     await nextDetailBatchWaitsForEveryOpenPanel();
     await automaticDetailRetryKeepsTheOtherOffersOpen();
     await exhaustedAvantOfferStaysPendingAfterResume();

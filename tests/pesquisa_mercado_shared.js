@@ -484,6 +484,59 @@ async function testDetailWaitsForTheExpectedAvantPanel() {
     assert(unmatched.elapsedMs <= 30000, 'a loader on another offer cannot extend the ordinary deadline');
 }
 
+async function testResearchExcludesInternationalCardsBeforeAvant() {
+    const shopUrl = 'https://lista.mercadolivre.com.br/_CustId_123456';
+    const foreign = { id: 'MLB1000000313', url: 'https://produto.mercadolivre.com.br/MLB-1000000313-intl',
+        internationalOffer: true, rankable: false };
+    const local = { id: 'MLB1000000314', titulo: 'Produto importado com envio nacional', rankable: false };
+
+    async function collect(rows, options = {}) {
+        const url = options.detail ? foreign.url : shopUrl;
+        const clicks = [];
+        let elapsed = 0, snapshot = 0;
+        const browser = {
+            getURL: () => url,
+            executeJavaScript: async code => code === 'snapshot' ? {
+                url, atBottom: true, height: 600, anuncios: rows(snapshot++, clicks.length),
+                avantDetailLoading: options.detail === true
+            } : { clicked: 0 }
+        };
+        const pageScripts = { prepareScript: () => 'prepare', scrollScript: () => 'scroll',
+            snapshotScript: () => 'snapshot', clickAvantScript: ({ pending }) => {
+                clicks.push(pending.map(item => item.id));
+                return 'click';
+            } };
+        const result = await collector.collectFirstPage({
+            browser, pageScripts, excludeInternational: true, timeoutMs: 1000, settleMs: 20,
+            now: () => elapsed, pollMs: 10, ...options,
+            wait: async ms => { elapsed += ms; assert(elapsed <= 1000, 'an intentional exclusion must finish'); }
+        });
+        return { result, clicks };
+    }
+
+    const mixed = await collect((snapshot, clickCount) => [
+        snapshot === 1 ? foreign : { ...foreign, internationalOffer: undefined },
+        clickCount ? { ...local, ...panelItem } : local
+    ]);
+    assert.deepEqual(mixed.result.anuncios.map(item => item.id), [local.id]);
+    assert.equal(mixed.result.internationalExcluded, 1);
+    assert.equal(mixed.result.incomplete, false);
+    assert(mixed.clicks.length > 0);
+    assert(mixed.clicks.every(pending => pending.length === 1 && pending[0] === local.id));
+
+    const foreignOnly = await collect(() => [foreign]);
+    assert.deepEqual(foreignOnly.result.anuncios, []);
+    assert.equal(foreignOnly.result.incomplete, false);
+    assert.equal(foreignOnly.result.internationalExcluded, 1);
+    assert.deepEqual(foreignOnly.clicks, []);
+
+    const detail = await collect(() => [foreign], { detail: true, expectedItem: foreign,
+        waitForLoadingPanel: true, waitForAvantData: true });
+    assert.equal(detail.result.reason, 'international_offer');
+    assert.equal(detail.result.incomplete, false);
+    assert.deepEqual(detail.clicks, []);
+}
+
 async function testDetailWaitsForAllThreeAvantFields() {
     const fixture = detailGeometryBrowser({ item: { ...panelItem, data_criacao: 'mar/2024 (aprox.)',
         media_mensal_rotulo: 'vendas mensais' } });
@@ -626,6 +679,7 @@ async function run() {
     await testDetailPanelLoadingKeepsItsCollectionBudget();
     await testDetailWaitsForTheExpectedAvantPanel();
     await testDetailWaitsForAllThreeAvantFields();
+    await testResearchExcludesInternationalCardsBeforeAvant();
     await testDetailBrowserMethodsWhileAvantLoads();
     await testStableCatalogDetailDoesNotScheduleThreeVisits();
     const fake = fakeBrowser();

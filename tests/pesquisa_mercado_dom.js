@@ -48,6 +48,74 @@ function pdpRoot({ total = 100, estimated = 155, rhythm = 10, monthly = '5/Mês'
         + (created ? pdpStat('Anúncio criado em', created) : '') + extra + '</div>';
 }
 
+async function testInternationalOffer(page) {
+    const badge = '<span class="poly-component__cbt">Compra internacional</span>';
+    const catalog = 'https://www.mercadolivre.com.br/selim/p/MLB9999999';
+    const selector = 'MLB10000009';
+    const catalogCard = (index, itemId) => card(index, badge)
+        .replace(/https:\/\/produto\.mercadolivre\.com\.br\/MLB-\d+-produto-_JM/, catalog + '?wid=MLB' + (10000000 + index))
+        .replace('<li class="ui-search-layout__item">', '<li class="ui-search-layout__item"' + (itemId ? ' data-item-id="' + itemId + '"' : '') + '>');
+    await page.goto('https://lista.mercadolivre.com.br/esportes-fitness/ciclismo/pecas');
+    await page.setContent(fixture([
+        card(1, badge + avant(12)),
+        card(2, '<p>Compra internacional</p>').replace('Produto 2</a>', 'Compra internacional</a>'),
+        card(3, '<div hidden>' + badge + '</div>'),
+        card(4, '<section class="ui-recommendations">' + badge + '</section>'),
+        card(5, '<section class="avantpro-product-info">' + badge + '</section>'),
+        card(6, badge).replace('class="ui-search-layout__item"', 'class="ui-search-layout__item" data-item-id="MLB10009999"'),
+        card(7, badge).replace('class="poly-card"', 'class="poly-card" style="display:none"'),
+        catalogCard(8, ''), catalogCard(9, selector), catalogCard(10, 'MLB10009998'),
+        card(11, '<span class="andes-badge">Compra Internacional</span>'),
+        catalogCard(12, 'MLB10000012').replace('?wid=MLB10000012', '?wid=MLB10000012&amp;pdp_filters=item_id%3AMLB10009997'),
+        card(13, '<article class="poly-card">' + badge + '</article>')
+    ].join('')));
+    const markedIds = value => value.anuncios.filter(item => item.internationalOffer === true).map(item => item.id);
+    for (const source of [scripts.discoveryScript(), scripts.snapshotScript({ seller })]) {
+        const listing = await page.evaluate(source);
+        assert.equal(listing.anuncios[0].id, 'MLB10000001');
+        assert.equal(listing.anuncios[0].internationalOffer, true, 'a primeira semente preserva o selo do próprio anúncio');
+        assert.deepStrictEqual(markedIds(listing), ['MLB10000001', 'MLB10000008', selector]);
+        assert.notEqual(listing.internationalOffer, true, 'o selo de um card não classifica a página inteira');
+    }
+
+    const id = 'MLB10000077', otherId = 'MLB10000078';
+    const direct = 'https://produto.mercadolivre.com.br/MLB-10000077-selim-_JM';
+    const selected = catalog + '?wid=' + id;
+    const buybox = (itemId, body = badge) => '<section class="ui-pdp-buybox"' + (itemId ? ' data-item-id="' + itemId + '"' : '')
+        + '><button>Comprar</button>' + body + '</section>';
+    const productHeader = '<h1 class="ui-pdp-title">Selim de compra internacional</h1><p>Compra internacional</p>';
+    for (const [name, url, body, expected] of [
+        ['compra do anúncio direto', direct, buybox(''), true],
+        ['selo Andes da oferta', selected, buybox(id, '<span class="andes-badge">Compra Internacional</span>'), true],
+        ['rótulo de frete da oferta', direct, buybox(id, '<span class="ui-pdp-shipping__title">Compra Internacional</span>'), true],
+        ['apenas título e descrição', direct, buybox('', ''), false],
+        ['texto sem classe na compra', direct, buybox(id, '<span>Compra Internacional</span>'), false],
+        ['frase de venda no selo', direct, buybox(id, '<span class="andes-badge">Consulte as regras de compra internacional</span>'), false],
+        ['selo fora da compra', direct, badge + buybox('', ''), false],
+        ['compra de outra oferta', direct, buybox(otherId), false],
+        ['recomendação', direct, '<section class="ui-recommendations">' + buybox(id) + '</section>', false],
+        ['painel do Avant', direct, buybox(id, pdpRoot({ extra: badge })), false],
+        ['compra oculta', direct, '<section hidden>' + buybox(id) + '</section>', false],
+        ['selo invisível', direct, buybox(id, '<span style="visibility:hidden">' + badge + '</span>'), false],
+        ['oferta selecionada do catálogo', selected, buybox(id), true],
+        ['catálogo sem ID na compra', selected, buybox(''), false],
+        ['oferta diferente do wid', selected, buybox(otherId), false],
+        ['selo de outra oferta dentro da compra', selected, buybox(id, '<div data-item-id="' + otherId + '">' + badge + '</div>'), false],
+        ['duas ofertas ativas no catálogo', selected, buybox(id) + buybox(otherId, ''), false],
+        ['oferta da URL em conflito', selected + '&pdp_filters=item_id%3A' + otherId, buybox(id), false],
+        ['catálogo sem oferta selecionada', catalog, buybox(''), false]
+    ]) {
+        await page.goto(url);
+        await page.setContent('<main>' + productHeader + body + '</main>');
+        for (const source of [scripts.discoveryScript(), scripts.snapshotScript({ seller, detail: true,
+            expectedItem: { id, url: url === direct ? direct : selected } })]) {
+            const result = await page.evaluate(source);
+            assert.equal(result.internationalOffer === true, expected, 'página: ' + name);
+            assert.deepEqual(markedIds(result), expected ? [id] : [], 'anúncio: ' + name);
+        }
+    }
+}
+
 async function testRedirectedCatalogOffer(page) {
     const catalogUrl = 'https://www.mercadolivre.com.br/teste/p/MLB9999999';
     const id = 'MLB10000077', otherId = 'MLB10000078';
@@ -124,6 +192,7 @@ async function run() {
     try {
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+        await testInternationalOffer(page);
         await testRedirectedCatalogOffer(page);
         await page.goto('https://lista.mercadolivre.com.br/_CustId_123456');
         await page.goto('https://www.mercadolivre.com.br/item/up/MLBU123456?wid=MLB10000001');
